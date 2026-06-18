@@ -10,7 +10,9 @@ rust-version.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+async-trait.workspace = true
 cinatoken-api = { path = "../api" }
+cinatoken-cache = { path = "../cache" }
 cinatoken-core = { path = "../core" }
 cinatoken-relay = { path = "../relay" }
 cinatoken-storage = { path = "../storage" }

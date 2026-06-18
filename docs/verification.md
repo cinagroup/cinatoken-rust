@@ -34,6 +34,11 @@ Last checked: 2026-06-18
 - `cargo test -p cinatoken-billing` covering quota conversion and settlement
   primitives.
 - `cargo test -p cinatoken-storage` covering shared storage record helpers.
+- `cargo test -p cinatoken-cache` covering Upstash REST command encoding,
+  response/error parsing, `/multi-exec` expiring counters, and rate limiter
+  decisions.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` covering the
+  Worker Upstash Redis REST fetch transport and status feature detection.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus

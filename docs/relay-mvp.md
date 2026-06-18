@@ -64,7 +64,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - The audit log uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are not implemented yet.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
-- Redis/KV cache acceleration is not connected yet.
+- Cache acceleration is not connected to token/channel relay lookups yet. The
+  cache crate and Worker Upstash REST transport are available for the next
+  integration step.
 
 Full settlement should port the original billing expression flow before any
 real quota decrement:

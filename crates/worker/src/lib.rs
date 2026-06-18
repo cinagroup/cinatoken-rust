@@ -1,3 +1,4 @@
+mod cache;
 mod relay;
 
 use worker::{event, Context, Env, Method, Request, Response, Result, Router};
@@ -16,7 +17,14 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 .var("ENVIRONMENT")
                 .map(|value| value.to_string())
                 .unwrap_or_else(|_| "development".to_string());
-            json_with_status(&cinatoken_api::status(environment), 200)
+            let mut status = cinatoken_api::status(environment);
+            set_feature(&mut status, "d1", ctx.env.d1("DB").is_ok());
+            set_feature(
+                &mut status,
+                "upstash_redis",
+                cache::upstash_redis_configured(&ctx.env),
+            );
+            json_with_status(&status, 200)
         })
         .get("/v1/models", |_, _| {
             json_with_status(&cinatoken_api::models(), 200)
@@ -61,6 +69,16 @@ pub(crate) fn set_cors_headers(response: &mut Response) -> Result<()> {
         "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     )?;
     Ok(())
+}
+
+fn set_feature(status: &mut cinatoken_core::StatusResponse, name: &'static str, enabled: bool) {
+    if let Some(feature) = status
+        .features
+        .iter_mut()
+        .find(|feature| feature.name == name)
+    {
+        feature.enabled = enabled;
+    }
 }
 
 #[allow(dead_code)]

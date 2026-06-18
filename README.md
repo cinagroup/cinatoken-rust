@@ -29,7 +29,7 @@ crates/core       shared DTOs, error types, JSON-facing structs
 crates/api        route-level business handlers independent from Worker APIs
 crates/auth       user, token, admin, OAuth, 2FA, and passkey boundaries
 crates/storage    D1 repository abstractions
-crates/cache      KV and Upstash Redis abstractions
+crates/cache      KV, counters, rate limits, and Upstash Redis REST abstractions
 crates/relay      relay pipeline traits and context
 crates/providers  upstream provider adapter traits and registry
 crates/billing    quota and settlement abstractions
@@ -72,6 +72,7 @@ wrangler secret put UPSTASH_REDIS_REST_TOKEN
 ```
 
 Copy `.dev.vars.example` to `.dev.vars` for local Wrangler development.
+See `docs/cache-upstash.md` for the Upstash Redis REST cache boundary.
 
 ## Migration CLI
 

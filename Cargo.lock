@@ -80,6 +80,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "cinatoken-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -160,7 +161,9 @@ dependencies = [
 name = "cinatoken-worker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "cinatoken-api",
+ "cinatoken-cache",
  "cinatoken-core",
  "cinatoken-relay",
  "cinatoken-storage",

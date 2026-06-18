@@ -1,3 +1,4 @@
+use cinatoken_cache::{ExpiringCounterRateLimiter, RateLimiter};
 use cinatoken_core::ErrorBody;
 use cinatoken_relay::{
     apply_model_mapping, clamp_i64_to_i32 as d1_i32, csv_contains, first_channel_key,
@@ -13,6 +14,10 @@ use crate::{json_with_status, set_cors_headers};
 
 const TOKEN_STATUS_EXPIRED: i32 = 3;
 const TOKEN_STATUS_EXHAUSTED: i32 = 4;
+const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u32 = 60;
+const TOKEN_RATE_LIMIT_ENV: &str = "RELAY_TOKEN_RATE_LIMIT_PER_WINDOW";
+const IP_RATE_LIMIT_ENV: &str = "RELAY_IP_RATE_LIMIT_PER_WINDOW";
+const RATE_LIMIT_WINDOW_ENV: &str = "RELAY_RATE_LIMIT_WINDOW_SECONDS";
 
 #[derive(Clone, Copy)]
 struct OpenAiCompatibleEndpoint {
@@ -133,6 +138,10 @@ async fn openai_compatible_endpoint(
         Err(response) => return response,
     };
 
+    if let Err(response) = enforce_relay_rate_limits(&env, &auth, client_ip.as_deref()).await {
+        return response;
+    }
+
     let channel = match select_channel(&db, &model, auth.effective_group()).await {
         Ok(channel) => channel,
         Err(response) => return response,
@@ -190,6 +199,161 @@ async fn openai_compatible_endpoint(
         },
     )
     .await
+}
+
+pub(crate) fn relay_rate_limit_configured(env: &Env) -> bool {
+    let Ok(config) = RelayRateLimitConfig::from_env(env) else {
+        return false;
+    };
+    config.enabled() && crate::cache::upstash_redis_configured(env)
+}
+
+async fn enforce_relay_rate_limits(
+    env: &Env,
+    auth: &AuthenticatedToken,
+    client_ip: Option<&str>,
+) -> Result<(), worker::Result<Response>> {
+    let config = RelayRateLimitConfig::from_env(env).map_err(|err| {
+        openai_error_response(
+            format!("invalid relay rate limit configuration: {err}"),
+            500,
+        )
+    })?;
+    if !config.enabled() {
+        return Ok(());
+    }
+
+    let redis = match crate::cache::upstash_redis_from_env(env) {
+        Ok(Some(redis)) => redis,
+        Ok(None) => {
+            worker::console_warn!(
+                "relay rate limit is configured but Upstash Redis is not configured; skipping"
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(openai_error_response(
+                format!("failed to initialize rate limit cache: {err}"),
+                500,
+            ));
+        }
+    };
+
+    let limiter = ExpiringCounterRateLimiter::new(redis, "relay:rate");
+    if let Some(limit) = config.token_limit_per_window {
+        let key = format!("token:{}", auth.token_id);
+        let allowed = limiter
+            .check(&key, limit, config.window_seconds)
+            .await
+            .map_err(|err| rate_limit_failure_response(err.to_string()))?;
+        if !allowed {
+            return Err(rate_limited_response(
+                "token rate limit exceeded",
+                config.window_seconds,
+            ));
+        }
+    }
+
+    if let (Some(limit), Some(ip)) = (config.ip_limit_per_window, client_ip) {
+        let ip = ip.trim();
+        if !ip.is_empty() {
+            let key = format!("ip:{ip}");
+            let allowed = limiter
+                .check(&key, limit, config.window_seconds)
+                .await
+                .map_err(|err| rate_limit_failure_response(err.to_string()))?;
+            if !allowed {
+                return Err(rate_limited_response(
+                    "IP rate limit exceeded",
+                    config.window_seconds,
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelayRateLimitConfig {
+    token_limit_per_window: Option<u32>,
+    ip_limit_per_window: Option<u32>,
+    window_seconds: u32,
+}
+
+impl RelayRateLimitConfig {
+    fn from_env(env: &Env) -> Result<Self, String> {
+        Self::from_raw(
+            optional_env_var(env, TOKEN_RATE_LIMIT_ENV),
+            optional_env_var(env, IP_RATE_LIMIT_ENV),
+            optional_env_var(env, RATE_LIMIT_WINDOW_ENV),
+        )
+    }
+
+    fn from_raw(
+        token_limit: Option<String>,
+        ip_limit: Option<String>,
+        window_seconds: Option<String>,
+    ) -> Result<Self, String> {
+        let token_limit_per_window = parse_optional_limit(TOKEN_RATE_LIMIT_ENV, token_limit)?;
+        let ip_limit_per_window = parse_optional_limit(IP_RATE_LIMIT_ENV, ip_limit)?;
+        let window_seconds = match window_seconds.as_deref().map(str::trim) {
+            Some("") | None => DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+            Some(raw) => raw
+                .parse::<u32>()
+                .map_err(|_| format!("{RATE_LIMIT_WINDOW_ENV} must be a positive integer"))?,
+        };
+        if window_seconds == 0 {
+            return Err(format!("{RATE_LIMIT_WINDOW_ENV} must be greater than 0"));
+        }
+
+        Ok(Self {
+            token_limit_per_window,
+            ip_limit_per_window,
+            window_seconds,
+        })
+    }
+
+    fn enabled(&self) -> bool {
+        self.token_limit_per_window.is_some() || self.ip_limit_per_window.is_some()
+    }
+}
+
+fn optional_env_var(env: &Env, name: &str) -> Option<String> {
+    env.var(name)
+        .ok()
+        .map(|value| value.to_string())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_optional_limit(name: &str, value: Option<String>) -> Result<Option<u32>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() || value == "0" {
+        return Ok(None);
+    }
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| format!("{name} must be a non-negative integer"))?;
+    Ok((parsed > 0).then_some(parsed))
+}
+
+fn rate_limited_response(message: &str, window_seconds: u32) -> worker::Result<Response> {
+    let mut response = json_with_status(
+        &ErrorBody::rate_limited(format!("{message}; retry after {window_seconds} seconds")),
+        429,
+    )?;
+    response
+        .headers_mut()
+        .set("retry-after", &window_seconds.to_string())?;
+    Ok(response)
+}
+
+fn rate_limit_failure_response(message: String) -> worker::Result<Response> {
+    openai_error_response(format!("rate limit check failed: {message}"), 503)
 }
 
 fn extract_api_key(req: &Request) -> Option<String> {
@@ -627,4 +791,55 @@ fn worker_error_response(err: worker::Error) -> worker::Result<Response> {
         &ErrorBody::bad_request(format!("worker runtime error: {err}")),
         500,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_config_defaults_to_disabled() {
+        let config = RelayRateLimitConfig::from_raw(None, None, None).unwrap();
+        assert!(!config.enabled());
+        assert_eq!(config.window_seconds, DEFAULT_RATE_LIMIT_WINDOW_SECONDS);
+    }
+
+    #[test]
+    fn rate_limit_config_parses_limits_and_window() {
+        let config = RelayRateLimitConfig::from_raw(
+            Some("120".to_string()),
+            Some("60".to_string()),
+            Some("30".to_string()),
+        )
+        .unwrap();
+
+        assert!(config.enabled());
+        assert_eq!(config.token_limit_per_window, Some(120));
+        assert_eq!(config.ip_limit_per_window, Some(60));
+        assert_eq!(config.window_seconds, 30);
+    }
+
+    #[test]
+    fn rate_limit_config_treats_zero_limits_as_disabled() {
+        let config =
+            RelayRateLimitConfig::from_raw(Some("0".to_string()), Some("0".to_string()), None)
+                .unwrap();
+
+        assert!(!config.enabled());
+    }
+
+    #[test]
+    fn rate_limit_config_rejects_invalid_window() {
+        let err =
+            RelayRateLimitConfig::from_raw(Some("1".to_string()), None, Some("0".to_string()))
+                .unwrap_err();
+
+        assert!(err.contains(RATE_LIMIT_WINDOW_ENV));
+    }
+
+    #[test]
+    fn parse_optional_limit_rejects_non_integer() {
+        let err = parse_optional_limit(TOKEN_RATE_LIMIT_ENV, Some("many".to_string())).unwrap_err();
+        assert!(err.contains(TOKEN_RATE_LIMIT_ENV));
+    }
 }

@@ -37,6 +37,10 @@ impl StatusResponse {
                     name: "upstash_redis",
                     enabled: false,
                 },
+                RuntimeFeature {
+                    name: "relay_rate_limit",
+                    enabled: false,
+                },
             ],
         }
     }

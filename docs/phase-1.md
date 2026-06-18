@@ -24,13 +24,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Cache traits for string KV, expiring counters, and rate limiting.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.
+- Optional Upstash-backed relay token/IP rate limiting.
 - Migration CLI `dev-seed` command for local D1 seed SQL.
 - Initial D1 schema for users, tokens, channels, abilities, options, and logs.
 
 ## Next
 
 - Move D1 SQL into storage repositories once the MVP stabilizes.
-- Connect token/channel read-through caching and request rate limiting to the relay path.
+- Connect token/channel read-through caching to the relay path.
 - Implement full quota pre-consume and post-consume settlement.
 - Port the billing expression evaluator and token normalization rules.
 - Add streaming chat completion relay.

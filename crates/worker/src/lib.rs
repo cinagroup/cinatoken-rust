@@ -24,6 +24,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 "upstash_redis",
                 cache::upstash_redis_configured(&ctx.env),
             );
+            set_feature(
+                &mut status,
+                "relay_rate_limit",
+                relay::relay_rate_limit_configured(&ctx.env),
+            );
             json_with_status(&status, 200)
         })
         .get("/v1/models", |_, _| {

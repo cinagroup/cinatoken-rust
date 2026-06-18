@@ -39,6 +39,8 @@ Last checked: 2026-06-18
   decisions.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` covering the
   Worker Upstash Redis REST fetch transport and status feature detection.
+- `cargo test -p cinatoken-worker --lib` covering relay rate-limit configuration
+  parsing and invalid configuration rejection.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus

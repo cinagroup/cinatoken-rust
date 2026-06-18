@@ -76,4 +76,14 @@ impl ErrorBody {
             },
         }
     }
+
+    pub fn rate_limited(message: impl Into<String>) -> Self {
+        Self {
+            error: ErrorItem {
+                message: message.into(),
+                kind: "rate_limit_error",
+                code: "rate_limited",
+            },
+        }
+    }
 }

@@ -72,7 +72,8 @@ wrangler secret put UPSTASH_REDIS_REST_TOKEN
 ```
 
 Copy `.dev.vars.example` to `.dev.vars` for local Wrangler development.
-See `docs/cache-upstash.md` for the Upstash Redis REST cache boundary.
+See `docs/cache-upstash.md` for the Upstash Redis REST cache boundary and
+optional relay token/IP rate limiting.
 
 ## Migration CLI
 

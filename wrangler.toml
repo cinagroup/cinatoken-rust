@@ -1,0 +1,37 @@
+name = "cinatoken-rust-api"
+main = "crates/worker/build/worker/shim.mjs"
+compatibility_date = "2026-06-17"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "cd crates/worker && worker-build --release"
+
+[vars]
+ENVIRONMENT = "development"
+FRONTEND_BASE_URL = "http://localhost:3000"
+AI_GATEWAY_ID = ""
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cinatoken-rust-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "00000000000000000000000000000000"
+
+[[kv_namespaces]]
+binding = "CONFIG_KV"
+id = "00000000000000000000000000000000"
+
+[[r2_buckets]]
+binding = "FILE_BUCKET"
+bucket_name = "cinatoken-rust-files"
+
+[[queues.producers]]
+queue = "cinatoken-rust-log-events"
+binding = "LOG_QUEUE"
+
+[[queues.producers]]
+queue = "cinatoken-rust-task-events"
+binding = "TASK_QUEUE"

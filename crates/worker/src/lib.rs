@@ -1,0 +1,69 @@
+mod relay;
+
+use worker::{event, Context, Env, Method, Request, Response, Result, Router};
+
+#[event(fetch)]
+pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    console_error_panic_hook::set_once();
+
+    if req.method() == Method::Options {
+        return empty_cors_response();
+    }
+
+    Router::new()
+        .get("/api/status", |_, ctx| {
+            let environment = ctx
+                .var("ENVIRONMENT")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|_| "development".to_string());
+            json_with_status(&cinatoken_api::status(environment), 200)
+        })
+        .get("/v1/models", |_, _| {
+            json_with_status(&cinatoken_api::models(), 200)
+        })
+        .post_async("/v1/chat/completions", |req, ctx| async move {
+            relay::chat_completions(req, ctx.env).await
+        })
+        .post_async("/v1/completions", |req, ctx| async move {
+            relay::completions(req, ctx.env).await
+        })
+        .post_async("/v1/responses", |req, ctx| async move {
+            relay::responses(req, ctx.env).await
+        })
+        .post_async("/v1/embeddings", |req, ctx| async move {
+            relay::embeddings(req, ctx.env).await
+        })
+        .run(req, env)
+        .await
+}
+
+pub(crate) fn json_with_status<T: serde::Serialize>(body: &T, status: u16) -> Result<Response> {
+    let mut response = Response::from_json(body)?.with_status(status);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn empty_cors_response() -> Result<Response> {
+    let mut response = Response::empty()?.with_status(204);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+pub(crate) fn set_cors_headers(response: &mut Response) -> Result<()> {
+    let headers = response.headers_mut();
+    headers.set("Access-Control-Allow-Origin", "*")?;
+    headers.set(
+        "Access-Control-Allow-Headers",
+        "authorization,content-type,x-api-key",
+    )?;
+    headers.set(
+        "Access-Control-Allow-Methods",
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn is_supported_preflight(method: &Method) -> bool {
+    *method == Method::Options
+}

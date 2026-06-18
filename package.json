@@ -1,0 +1,22 @@
+{
+  "name": "cinatoken-rust",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "install:worker-build": "cargo install worker-build --locked",
+    "inspect:source": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- inspect-source",
+    "export:sqlite": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- export",
+    "import:d1-sql": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- import",
+    "dev:seed:sql": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- dev-seed",
+    "build:worker": "cd crates/worker && worker-build --release",
+    "check": "cargo fmt --all --check && cargo test --workspace --exclude cinatoken-worker && cargo check -p cinatoken-worker --target wasm32-unknown-unknown",
+    "check:worker": "cargo check -p cinatoken-worker --target wasm32-unknown-unknown",
+    "verify:sqlite": "python tools/verify_sqlite.py",
+    "fmt": "cargo fmt --all"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

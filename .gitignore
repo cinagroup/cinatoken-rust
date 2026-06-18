@@ -1,0 +1,9 @@
+/target/
+/node_modules/
+/dist/
+/build/
+/.wrangler/
+/.dev.vars
+/exports/
+*.cinatoken-export.json
+*.log

@@ -13,7 +13,7 @@ fn main() {
         "inspect-source" => print_source_inspection(args.collect()),
         "export" => export_sqlite(args.collect()),
         "import" => import_d1_sql(args.collect()),
-        "verify" => print_placeholder("verify"),
+        "verify" => verify_migration(args.collect()),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -29,11 +29,6 @@ fn main() {
     }
 }
 
-fn print_placeholder(command: &str) -> Result<(), String> {
-    println!("migration command '{command}' is scaffolded but not implemented yet");
-    Ok(())
-}
-
 fn print_help() {
     println!("cinatoken-migrate");
     println!();
@@ -42,7 +37,7 @@ fn print_help() {
     println!("  cinatoken-migrate inspect-source [options]");
     println!("  cinatoken-migrate export --sqlite <path> --output <path> [options]");
     println!("  cinatoken-migrate import --input <path> --output <path> [options]");
-    println!("  cinatoken-migrate verify");
+    println!("  cinatoken-migrate verify [options]");
     println!();
     println!("dev-seed options:");
     println!("  --upstream-key <key>       upstream provider key, or CINATOKEN_DEV_UPSTREAM_KEY");
@@ -69,6 +64,11 @@ fn print_help() {
     println!("  --table <name>             import one supported D1 table; repeatable");
     println!("  --all                      import all supported D1 tables");
     println!("  --truncate                 delete selected D1 tables before insert");
+    println!();
+    println!("verify options:");
+    println!("  --input <path>             JSON export bundle to validate");
+    println!("  --sql <path>               generated D1 SQL to execute with SQLite");
+    println!("  --schema <path>            D1 schema SQL, default migrations/d1/0001_core.sql");
 }
 
 fn print_dev_seed(args: Vec<String>) -> Result<(), String> {
@@ -151,6 +151,19 @@ fn import_d1_sql(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn verify_migration(args: Vec<String>) -> Result<(), String> {
+    let config = VerifyConfig::from_args(args)?;
+    if let Some(input) = config.input.as_deref() {
+        let bundle = fs::read_to_string(input)
+            .map_err(|err| format!("failed to read {}: {err}", input.display()))?;
+        println!("{}", verify_export_bundle(&bundle)?);
+    }
+    if let Some(sql) = config.sql.as_deref() {
+        println!("{}", verify_d1_sql_with_sqlite(&config.schema, sql)?);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DevSeedConfig {
     upstream_key: String,
@@ -181,6 +194,13 @@ struct ImportConfig {
     output: PathBuf,
     tables: Vec<String>,
     truncate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifyConfig {
+    input: Option<PathBuf>,
+    sql: Option<PathBuf>,
+    schema: PathBuf,
 }
 
 impl SourceInspectConfig {
@@ -372,6 +392,44 @@ impl ImportConfig {
             tables,
             truncate,
         })
+    }
+}
+
+impl VerifyConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut config = Self {
+            input: None,
+            sql: None,
+            schema: PathBuf::from("migrations/d1/0001_core.sql"),
+        };
+
+        let mut iter = args.into_iter();
+        while let Some(flag) = iter.next() {
+            match flag.as_str() {
+                "--input" => config.input = Some(PathBuf::from(next_value(&mut iter, &flag)?)),
+                "--sql" => config.sql = Some(PathBuf::from(next_value(&mut iter, &flag)?)),
+                "--schema" => config.schema = PathBuf::from(next_value(&mut iter, &flag)?),
+                "--" => {}
+                "-h" | "--help" => {
+                    print_help();
+                    process::exit(0);
+                }
+                _ => return Err(format!("unknown verify option: {flag}")),
+            }
+        }
+
+        if config.input.is_none() && config.sql.is_none() {
+            return Err("verify requires --input <path>, --sql <path>, or both".to_string());
+        }
+        if let Some(input) = config.input.as_deref() {
+            ensure_existing_file(input, "JSON export bundle")?;
+        }
+        if let Some(sql) = config.sql.as_deref() {
+            ensure_existing_file(sql, "generated D1 SQL")?;
+            ensure_existing_file(&config.schema, "D1 schema SQL")?;
+        }
+
+        Ok(config)
     }
 }
 
@@ -756,6 +814,16 @@ fn write_output(path: &str, content: &str) -> Result<(), String> {
     fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
+fn ensure_existing_file(path: &Path, label: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("{label} does not exist: {}", path.display()));
+    }
+    if !path.is_file() {
+        return Err(format!("{label} is not a file: {}", path.display()));
+    }
+    Ok(())
+}
+
 fn ensure_parent_dir(path: &Path) -> Result<(), String> {
     if let Some(parent) = path
         .parent()
@@ -836,6 +904,143 @@ for table in tables:
         let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(format!(
             "sqlite inspection failed: {}{}",
+            stdout.trim_end(),
+            stderr.trim_end()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
+}
+
+fn verify_export_bundle(bundle: &str) -> Result<String, String> {
+    let value: Value =
+        serde_json::from_str(bundle).map_err(|err| format!("invalid export JSON: {err}"))?;
+    let format = value
+        .get("format")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "export JSON is missing format".to_string())?;
+    if format != "cinatoken-sqlite-export-v1" {
+        return Err(format!("unsupported export format: {format}"));
+    }
+
+    let tables = value
+        .get("tables")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "export JSON is missing tables object".to_string())?;
+    if tables.is_empty() {
+        return Err("export JSON does not contain any tables".to_string());
+    }
+
+    let mut summary = String::from("Export bundle verified\nTables:\n");
+    for (name, table) in tables {
+        if !SOURCE_TABLES.contains(&name.as_str()) {
+            summary.push_str(&format!("  {name}: unknown table in bundle\n"));
+            continue;
+        }
+        let table = table
+            .as_object()
+            .ok_or_else(|| format!("table {name} is not an object"))?;
+        if table
+            .get("missing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            summary.push_str(&format!("  {name}: missing\n"));
+            continue;
+        }
+        let columns = table
+            .get("columns")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("table {name} is missing columns array"))?;
+        if !columns.iter().all(Value::is_string) {
+            return Err(format!("table {name} columns must be strings"));
+        }
+        let rows = table
+            .get("rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("table {name} is missing rows array"))?;
+        for (index, row) in rows.iter().enumerate() {
+            if !row.is_object() {
+                return Err(format!("table {name} row {} is not an object", index + 1));
+            }
+        }
+        summary.push_str(&format!("  {name}: {} rows\n", rows.len()));
+    }
+
+    let present_core = D1_CORE_IMPORT_TABLES
+        .iter()
+        .filter(|table| {
+            tables
+                .get(**table)
+                .and_then(Value::as_object)
+                .map(|table| {
+                    !table
+                        .get("missing")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        })
+        .count();
+    summary.push_str(&format!(
+        "Core D1 tables present: {present_core}/{}\n",
+        D1_CORE_IMPORT_TABLES.len()
+    ));
+    Ok(summary.trim_end().to_string())
+}
+
+fn verify_d1_sql_with_sqlite(schema: &Path, sql: &Path) -> Result<String, String> {
+    let table_literal = D1_IMPORT_TABLES
+        .iter()
+        .map(|table| format!("{table:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let script = format!(
+        r#"
+import sqlite3
+import sys
+
+tables = [{table_literal}]
+schema_path = sys.argv[1]
+sql_path = sys.argv[2]
+
+conn = sqlite3.connect(":memory:")
+with open(schema_path, "r", encoding="utf-8") as schema_file:
+    conn.executescript(schema_file.read())
+with open(sql_path, "r", encoding="utf-8") as sql_file:
+    conn.executescript(sql_file.read())
+
+print(f"D1 SQL verified with SQLite: {{sql_path}}")
+print("Table counts:")
+for table in tables:
+    quoted = '"' + table.replace('"', '""') + '"'
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    if row is None:
+        print(f"  {{table}}: missing")
+        continue
+    count = conn.execute(f"SELECT COUNT(*) FROM {{quoted}}").fetchone()[0]
+    print(f"  {{table}}: {{count}}")
+"#,
+        table_literal = table_literal
+    );
+    let output = Command::new("python")
+        .arg("-c")
+        .arg(script)
+        .arg(schema)
+        .arg(sql)
+        .output()
+        .map_err(|err| format!("failed to run python D1 SQL verification: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "D1 SQL verification failed: {}{}",
             stdout.trim_end(),
             stderr.trim_end()
         ));
@@ -1435,6 +1640,39 @@ mod tests {
     }
 
     #[test]
+    fn verify_config_requires_input_or_sql() {
+        let err = VerifyConfig::from_args(vec![]).unwrap_err();
+        assert!(err.contains("verify requires"));
+    }
+
+    #[test]
+    fn verify_config_parses_input_sql_and_schema() {
+        let temp = unique_temp_dir("verify-config");
+        let input = temp.join("core.cinatoken-export.json");
+        let sql = temp.join("core.d1.sql");
+        let schema = temp.join("schema.sql");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(&input, "{}").unwrap();
+        fs::write(&sql, "").unwrap();
+        fs::write(&schema, "").unwrap();
+
+        let config = VerifyConfig::from_args(vec![
+            "--input".to_string(),
+            input.display().to_string(),
+            "--sql".to_string(),
+            sql.display().to_string(),
+            "--schema".to_string(),
+            schema.display().to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(config.input.as_deref(), Some(input.as_path()));
+        assert_eq!(config.sql.as_deref(), Some(sql.as_path()));
+        assert_eq!(config.schema, schema);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn render_import_sql_maps_ability_group_to_group_name() {
         let bundle = r#"{
           "format": "cinatoken-sqlite-export-v1",
@@ -1461,6 +1699,76 @@ mod tests {
         assert!(sql.contains("'default'"));
         assert!(sql.contains("'gpt-test'"));
         assert!(sql.contains("INSERT OR REPLACE INTO \"abilities\""));
+    }
+
+    #[test]
+    fn verify_export_bundle_reports_rows_and_core_presence() {
+        let bundle = r#"{
+          "format": "cinatoken-sqlite-export-v1",
+          "tables": {
+            "users": {
+              "missing": false,
+              "columns": ["id", "username"],
+              "rows": [{"id": 1, "username": "dev"}]
+            },
+            "tokens": {
+              "missing": true,
+              "columns": [],
+              "rows": []
+            }
+          }
+        }"#;
+
+        let summary = verify_export_bundle(bundle).unwrap();
+        assert!(summary.contains("users: 1 rows"));
+        assert!(summary.contains("tokens: missing"));
+        assert!(summary.contains("Core D1 tables present: 1/5"));
+    }
+
+    #[test]
+    fn verify_export_bundle_rejects_non_object_rows() {
+        let bundle = r#"{
+          "format": "cinatoken-sqlite-export-v1",
+          "tables": {
+            "users": {
+              "missing": false,
+              "columns": ["id"],
+              "rows": [1]
+            }
+          }
+        }"#;
+
+        let err = verify_export_bundle(bundle).unwrap_err();
+        assert!(err.contains("row 1 is not an object"));
+    }
+
+    #[test]
+    fn verify_d1_sql_executes_schema_and_sql() {
+        let temp = unique_temp_dir("verify-d1-sql");
+        let schema = temp.join("schema.sql");
+        let sql = temp.join("import.sql");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(
+            &schema,
+            r#"
+CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT);
+CREATE TABLE tokens (id INTEGER PRIMARY KEY);
+CREATE TABLE channels (id INTEGER PRIMARY KEY);
+CREATE TABLE abilities (id INTEGER PRIMARY KEY);
+CREATE TABLE options (id INTEGER PRIMARY KEY);
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &sql,
+            r#"INSERT INTO users (id, username) VALUES (1, 'dev');"#,
+        )
+        .unwrap();
+
+        let summary = verify_d1_sql_with_sqlite(&schema, &sql).unwrap();
+        assert!(summary.contains("D1 SQL verified with SQLite"));
+        assert!(summary.contains("users: 1"));
+        fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]

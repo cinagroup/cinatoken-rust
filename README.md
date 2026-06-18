@@ -91,6 +91,7 @@ Convert an export bundle to D1 SQL:
 
 ```powershell
 bun run import:d1-sql -- --input exports\core.cinatoken-export.json --output exports\core.d1.sql
+bun run verify:migration -- --input exports\core.cinatoken-export.json --sql exports\core.d1.sql
 ```
 
 Generate local D1 seed SQL for a development token and channel:

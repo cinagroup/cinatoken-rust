@@ -9,6 +9,7 @@
     "inspect:source": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- inspect-source",
     "export:sqlite": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- export",
     "import:d1-sql": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- import",
+    "verify:migration": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- verify",
     "dev:seed:sql": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- dev-seed",
     "build:worker": "cd crates/worker && worker-build --release",
     "check": "cargo fmt --all --check && cargo test --workspace --exclude cinatoken-worker && cargo check -p cinatoken-worker --target wasm32-unknown-unknown",

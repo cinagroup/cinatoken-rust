@@ -18,6 +18,9 @@ Last checked: 2026-06-18
 - `cargo test -p cinatoken-migration` covering D1 import SQL argument parsing,
   supported-table validation, SQL literal escaping, and `abilities.group` to
   `abilities.group_name` mapping.
+- `cargo test -p cinatoken-migration` covering migration verification argument
+  parsing, export-bundle validation, malformed-row rejection, and D1 SQL
+  execution against SQLite.
 - `bun run inspect:source -- --repo Z:\cinatoken` confirming the source
   checkout has the expected Go/backend/frontend markers.
 - Smoke-tested `cinatoken-migrate export --sqlite ... --output ... --table users
@@ -26,6 +29,8 @@ Last checked: 2026-06-18
 - Smoke-tested `bun run export:sqlite` followed by `bun run import:d1-sql`
   against a temporary SQLite source database, then executed the generated SQL
   with `python tools/verify_sqlite.py --seed <generated.sql>`.
+- Smoke-tested `bun run verify:migration -- --input <export.json> --sql
+  <generated.sql>` against a generated export and D1 SQL pair.
 - `cargo test -p cinatoken-billing` covering quota conversion and settlement
   primitives.
 - `cargo test -p cinatoken-storage` covering shared storage record helpers.

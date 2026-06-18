@@ -67,6 +67,7 @@ Convert the export bundle to reviewable D1 SQL:
 
 ```powershell
 bun run import:d1-sql -- --input exports\core.cinatoken-export.json --output exports\core.d1.sql
+bun run verify:migration -- --input exports\core.cinatoken-export.json --sql exports\core.d1.sql
 ```
 
 ## Wrangler

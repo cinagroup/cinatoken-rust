@@ -14,6 +14,12 @@ channel upstream keys. Keep them outside source control. The repository ignores
 bun run export:sqlite -- --sqlite Z:\path\to\one-api.db --output exports\core.cinatoken-export.json
 ```
 
+Validate the bundle structure and row counts:
+
+```powershell
+bun run verify:migration -- --input exports\core.cinatoken-export.json
+```
+
 By default the CLI exports the core configuration tables needed by the current
 Worker MVP:
 
@@ -64,6 +70,14 @@ Convert a JSON export bundle into reviewable D1 SQL:
 bun run import:d1-sql -- `
   --input exports\core.cinatoken-export.json `
   --output exports\core.d1.sql
+```
+
+Validate the generated SQL against the D1 schema with local SQLite:
+
+```powershell
+bun run verify:migration -- `
+  --input exports\core.cinatoken-export.json `
+  --sql exports\core.d1.sql
 ```
 
 By default this imports the Worker MVP tables:

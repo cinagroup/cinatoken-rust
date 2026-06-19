@@ -145,6 +145,9 @@ async fn openai_compatible_endpoint(
         return json_with_status(&ErrorBody::not_implemented(feature), 501);
     }
     let should_relay_stream = endpoint.should_relay_stream(&request_body);
+    if should_relay_stream && context.is_none() {
+        return openai_error_response("streaming relay context is unavailable", 500);
+    }
 
     let model = match request_body.get("model").and_then(Value::as_str) {
         Some(model) if !model.trim().is_empty() => model.trim().to_string(),
@@ -210,16 +213,14 @@ async fn openai_compatible_endpoint(
         }
     };
     let mut tiered_billing_preflight = tiered_billing_preflight;
-    if !should_relay_stream {
-        if let Some(preflight) = tiered_billing_preflight.as_mut() {
-            if let Err(err) =
-                reserve_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
-            {
-                return openai_error_response(
-                    format!("tiered billing reserve failed: {err}"),
-                    quota_mutation_error_status(&err),
-                );
-            }
+    if let Some(preflight) = tiered_billing_preflight.as_mut() {
+        if let Err(err) =
+            reserve_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+        {
+            return openai_error_response(
+                format!("tiered billing reserve failed: {err}"),
+                quota_mutation_error_status(&err),
+            );
         }
     }
 
@@ -273,9 +274,7 @@ async fn openai_compatible_endpoint(
     };
 
     if should_relay_stream {
-        let Some(context) = context else {
-            return openai_error_response("streaming relay context is unavailable", 500);
-        };
+        let context = context.expect("streaming context checked before reserve");
         return complete_streaming_relay_response(
             upstream_response,
             db,
@@ -820,7 +819,21 @@ async fn complete_streaming_relay_response(
         .flatten()
         .unwrap_or_else(|| "text/event-stream".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
-    let mut audit_response = upstream.cloned()?;
+    let mut audit_response = match upstream.cloned() {
+        Ok(response) => response,
+        Err(err) => {
+            if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
+                if let Err(refund_err) =
+                    refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+                {
+                    return Err(worker::Error::RustError(format!(
+                        "failed to initialize streaming audit branch: {err}; tiered billing reserve refund failed: {refund_err}"
+                    )));
+                }
+            }
+            return Err(err);
+        }
+    };
 
     context.wait_until(async move {
         let usage = match streaming_usage_summary(&mut audit_response).await {

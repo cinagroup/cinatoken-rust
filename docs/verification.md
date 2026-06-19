@@ -52,11 +52,11 @@ Last checked: 2026-06-19
 - `cargo test -p cinatoken-worker --lib` covering Worker request-body token
   estimation, max-token extraction, request-time tiered billing preflight
   snapshots, and settlement deltas against frozen snapshots.
-- `cargo test -p cinatoken-worker --lib` covering non-streaming tiered reserve
+- `cargo test -p cinatoken-worker --lib` covering tiered reserve
   fallback/refund metadata and compiling the D1 repository pre-consume quota
   mutation paths.
 - `cargo test -p cinatoken-worker --lib` covering streaming missing-usage
-  refund reason metadata and compiling the Worker streaming audit path.
+  refund reason metadata and compiling the Worker streaming audit/reserve path.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus

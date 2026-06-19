@@ -1303,22 +1303,21 @@ Relay：
 - Tiered billing expression foundations are in place: expression execution,
   request `param()`/`header()` probes, tier trace capture, group-ratio
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and
-  non-streaming D1 pre-consume reserve/delta settlement for
+  D1 pre-consume reserve/delta settlement for OpenAI-compatible
   tiered-expression responses.
 - OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
   crate, including final streaming usage chunks, `[DONE]`, CRLF streams, and
   nested response usage metadata.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
   relay using the original request body and a lightweight prompt/completion
-  token estimate, reserves estimated wallet/token quota for non-streaming
-  requests, then settles successful usage against that frozen snapshot.
+  token estimate, reserves estimated wallet/token quota for tiered requests,
+  then settles successful usage against that frozen snapshot.
 - Streaming chat passthrough now tees the upstream response and consumes an
   audit branch with incremental SSE usage parsing in `wait_until`; successful
-  tiered streaming responses settle actual quota after full stream usage is
-  known, without streaming pre-consume reserve yet.
+  tiered streaming responses settle reserved quota after full stream usage is
+  known.
 - Remaining Phase 3 billing work: tokenizer/media parity for request-time token
-  estimation, streaming pre-consume reserve/refund/additional adjustment, and
-  broader Go/Rust golden billing parity tests.
+  estimation and broader Go/Rust golden billing parity tests.
 
 ## 20. 最终交付形态
 

@@ -51,32 +51,27 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 The Worker now reads Go-compatible D1 billing options. For a model configured
 with tiered-expression billing, it freezes a request-time preflight snapshot
 before upstream relay using the original request body, request probes, group
-ratio, and a lightweight prompt/completion token estimate. For non-streaming
-OpenAI-compatible requests, it reserves the estimated wallet/token quota before
-forwarding upstream. For streaming chat completions, it tees the upstream
-response, streams one branch to the client, and consumes the audit branch in
-`wait_until` with an incremental SSE usage parser.
+ratio, and a lightweight prompt/completion token estimate. For
+OpenAI-compatible tiered requests, including streaming chat completions, it
+reserves the estimated wallet/token quota before forwarding upstream. For
+streaming chat completions, it tees the upstream response, streams one branch
+to the client, and consumes the audit branch in `wait_until` with an
+incremental SSE usage parser.
 
-For successful non-streaming OpenAI-compatible tiered-expression responses with
-usage metadata, it settles final tiered quota against that frozen snapshot and
+For successful OpenAI-compatible tiered-expression responses with usage
+metadata, it settles final tiered quota against that frozen snapshot and
 applies only the delta from pre-consumed quota:
 
 - before upstream: decrement `users.quota`, decrement `tokens.remain_quota`,
   and increment `tokens.used_quota` by the estimated quota;
-- after upstream: refund or additionally debit `users.quota`,
+- after upstream or full stream consumption: refund or additionally debit `users.quota`,
   `tokens.remain_quota`, and `tokens.used_quota` by the settlement delta;
-- after upstream: increment `users.used_quota`, `users.request_count`, and
-  `channels.used_quota` by the final quota;
+- after upstream or full stream consumption: increment `users.used_quota`,
+  `users.request_count`, and `channels.used_quota` by the final quota;
 - write the final log `quota` and `other.tiered_billing` metadata.
 
-For successful streaming tiered-expression responses with usage metadata, the
-Worker now performs post-stream actual quota settlement with the same frozen
-snapshot and writes `other.tiered_billing`. Streaming pre-consume reserve is
-not wired yet, so this path applies the full final quota after stream
-completion instead of a pre-consume delta.
-
-If upstream forwarding fails or a non-streaming response has no billable usage,
-the Worker refunds the reserved wallet/token quota and records
+If upstream forwarding fails or a response has no billable usage, the Worker
+refunds the reserved wallet/token quota and records
 `other.tiered_billing_refund`. If post-response expression evaluation fails
 after reserve, it falls back to the pre-consumed quota and records
 `other.tiered_billing_fallback`, matching the Go fallback behavior.
@@ -85,16 +80,14 @@ If the tiered computation succeeds but D1 quota mutation cannot be applied, the
 Worker leaves `quota = 0`, keeps `other.billing_pending = true`, and records
 the computed result under `other.tiered_billing_shadow` with an error.
 
-Do not expand Worker quota mutation beyond non-streaming reserve and
-post-stream actual settlement until the migration ports and verifies these
-remaining Go billing behaviors:
+Do not expand Worker quota mutation beyond tiered pre-consume reserve and
+post-response/post-stream delta settlement until the migration ports and
+verifies these remaining Go billing behaviors:
 
 - expression compile/cache metadata and validation;
 - broader Go/Rust golden parity tests for expression edge cases;
 - request-rule handling for expressions stored with `|||`;
 - tokenizer/media parity for request-time token estimation;
-- streaming pre-consume reserve/refund/additional adjustment before the client
-  stream starts;
 - matched tier metadata injection for usage-log display.
 
 ## Compatibility Tests
@@ -115,7 +108,7 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - Worker request-body token estimation, request-time tiered preflight
   snapshots, and settlement deltas against frozen snapshots;
 - Worker tiered reserve metadata, fallback metadata, and refund metadata for
-  non-streaming pre-consume paths;
+  pre-consume paths;
 - OpenAI-compatible SSE usage parsing for final streaming usage chunks, CRLF
   streams, invalid events, split byte chunks, `[DONE]`, and nested response
   usage metadata;

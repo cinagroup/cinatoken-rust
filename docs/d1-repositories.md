@@ -10,8 +10,8 @@ This module owns Worker-specific storage operations:
 - billing option lookup for Go-compatible `billing_setting.*` maps and group
   ratio maps;
 - cached-auth quota-state refresh before validation;
-- non-streaming tiered-expression quota mutation for user, token, and channel
-  counters with compensation on later-step failures;
+- tiered-expression quota reserve, refund, and settlement mutation for user,
+  token, and channel counters with compensation on later-step failures;
 - token access-time updates;
 - user request-count increments;
 - relay audit log insertion.

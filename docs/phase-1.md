@@ -39,8 +39,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   lightweight prompt/completion token estimates, frozen request probes, and
   post-response settlement against the frozen snapshot.
 - Cached-auth quota-state refresh plus request-time D1 reserve, failed-request
-  refund, and post-response delta settlement for successful non-streaming
-  tiered-expression responses.
+  refund, and post-response delta settlement for successful tiered-expression
+  responses, including streaming chat after full-stream usage reconciliation.
 - Worker-side streaming usage reconciliation for chat passthrough via response
   tee, incremental SSE usage parsing, and `wait_until` audit recording.
 - Cache traits for string KV, expiring counters, and rate limiting.
@@ -58,6 +58,4 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   parity tests.
 - Replace the lightweight Worker request-token estimate with tokenizer/media
   parity against the Go `TokenCountMeta` path.
-- Extend tiered pre-consume reserve/refund/additional adjustment to streaming
-  paths now that full-stream usage reconciliation is wired.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

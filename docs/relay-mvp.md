@@ -48,18 +48,15 @@ The Worker:
   tiered-expression preflight snapshot from the original request body,
   request probes, group ratio, and a lightweight prompt/completion token
   estimate;
-- for non-streaming tiered-expression requests, reserves the estimated
-  wallet/token quota before upstream relay and refunds it if upstream forwarding
-  fails or no billable usage is returned;
+- for tiered-expression requests, reserves the estimated wallet/token quota
+  before upstream relay and refunds it if upstream forwarding fails or no
+  billable usage is returned;
 - refreshes cached token quota state from D1 before auth validation so quota
   mutation is not hidden by read-through cache TTLs;
-- for successful non-streaming tiered-expression responses with usage metadata,
-  settles final tiered quota against the frozen preflight snapshot, applies
-  only the delta from pre-consumed quota, increments user/channel usage
-  counters, and records metadata under `other.tiered_billing`;
-- for successful streaming tiered-expression responses with usage metadata,
-  settles final tiered quota after the full stream is consumed; streaming
-  pre-consume reserve is not wired yet;
+- for successful tiered-expression responses with usage metadata, settles final
+  tiered quota against the frozen preflight snapshot, applies only the delta
+  from pre-consumed quota, increments user/channel usage counters, and records
+  metadata under `other.tiered_billing`;
 - if post-response tiered expression evaluation fails after a successful
   reserve, falls back to the pre-consumed quota and records
   `other.tiered_billing_fallback`;
@@ -103,9 +100,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - Streaming is only implemented for chat completion passthrough.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, but live upstream SSE coverage is still pending.
-- Tiered pre-consume reserve is currently implemented for non-streaming
-  OpenAI-compatible requests only; streaming currently settles after full
-  stream usage is known.
+- Streaming tiered reserve is applied before the upstream call, but live
+  upstream SSE reserve/refund/delta behavior still needs end-to-end coverage.
 - Request-time token estimation is currently lightweight JSON-body text
   estimation and max-token extraction, not tokenizer/media parity.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
@@ -117,7 +113,6 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 Full settlement still needs to complete the remaining request-time side of the
 original billing expression flow:
 
-- streaming pre-consume reserve plus refund/additional adjustment;
 - tokenizer/media parity for the preflight token estimate;
 - token normalization based on expression variables;
 - log display metadata for matched tier and expression details.

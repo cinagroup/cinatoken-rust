@@ -1,15 +1,14 @@
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
-    apply_model_mapping, clamp_i64_to_i32 as d1_i32, csv_contains, first_channel_key,
-    ip_allowlist_matches, is_openai_compatible_channel_type, upstream_v1_url,
+    apply_model_mapping, csv_contains, first_channel_key, ip_allowlist_matches, upstream_v1_url,
     usage_summary_from_body, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
     UsageSummary,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde_json::{json, Value};
 use wasm_bindgen::JsValue;
-use worker::{D1Database, D1Type, Env, Fetch, Headers, Method, Request, RequestInit, Response};
+use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
 use crate::{json_with_status, set_cors_headers};
 
@@ -466,37 +465,7 @@ async fn authenticate_from_d1(
     model: &str,
     client_ip: Option<&str>,
 ) -> Result<AuthenticatedToken, worker::Result<Response>> {
-    let stmt = db.prepare(
-        r#"
-        SELECT
-          t.id AS token_id,
-          t.user_id AS user_id,
-          t.name AS token_name,
-          t.status AS token_status,
-          t.expired_time AS expired_time,
-          t.remain_quota AS remain_quota,
-          t.unlimited_quota AS unlimited_quota,
-          t.model_limits_enabled AS model_limits_enabled,
-          t.model_limits AS model_limits,
-          t.allow_ips AS allow_ips,
-          t."group" AS token_group,
-          u.username AS username,
-          u.status AS user_status,
-          u.quota AS user_quota,
-          u."group" AS user_group
-        FROM tokens t
-        JOIN users u ON u.id = t.user_id
-        WHERE t."key" = ?1
-          AND t.deleted_at IS NULL
-          AND u.deleted_at IS NULL
-        LIMIT 1
-        "#,
-    );
-    let key_arg = D1Type::Text(api_key);
-    let row = stmt
-        .bind_refs(&key_arg)
-        .map_err(worker_error_response)?
-        .first::<AuthenticatedToken>(None)
+    let row = crate::d1_repositories::authenticate_token(db, api_key)
         .await
         .map_err(worker_error_response)?
         .ok_or_else(|| openai_error_response("invalid API key", 401))?;
@@ -573,19 +542,9 @@ where
 }
 
 async fn mark_token_status(db: &D1Database, token_id: i64, status: i32) {
-    let args = [
-        D1Type::Integer(status),
-        D1Type::Integer(d1_i32(unix_timestamp())),
-        D1Type::Integer(d1_i32(token_id)),
-    ];
-    let result = match db
-        .prepare("UPDATE tokens SET status = ?1, accessed_time = ?2 WHERE id = ?3")
-        .bind_refs(&args)
+    if let Err(err) =
+        crate::d1_repositories::mark_token_status(db, token_id, status, unix_timestamp()).await
     {
-        Ok(stmt) => stmt.run().await.map(|_| ()),
-        Err(err) => Err(err),
-    };
-    if let Err(err) = result {
         worker::console_warn!("failed to update token status: {}", err);
     }
 }
@@ -619,11 +578,17 @@ async fn select_channel_from_d1(
     model: &str,
     group: &str,
 ) -> Result<RelayChannel, worker::Result<Response>> {
-    if let Some(channel) = select_channel_from_abilities(db, model, group).await? {
-        return Ok(channel);
-    }
-
-    select_channel_from_channel_csv(db, model, group).await
+    crate::d1_repositories::select_openai_compatible_channel(db, model, group)
+        .await
+        .map_err(worker_error_response)?
+        .ok_or_else(|| {
+            openai_error_response(
+                format!(
+                    "no enabled OpenAI-compatible channel or ability for model {model} in group {group}"
+                ),
+                503,
+            )
+        })
 }
 
 async fn read_cached_relay_channel<C>(cache: &C, cache_key: &str) -> ApiResult<Option<RelayChannel>>
@@ -653,96 +618,6 @@ where
             ApiError::Internal(format!("failed to encode relay channel cache entry: {err}"))
         })?;
     cache.put_string(cache_key, &value, Some(ttl_seconds)).await
-}
-
-async fn select_channel_from_abilities(
-    db: &D1Database,
-    model: &str,
-    group: &str,
-) -> Result<Option<RelayChannel>, worker::Result<Response>> {
-    let group_arg = D1Type::Text(group);
-    let model_arg = D1Type::Text(model);
-    let args = [group_arg, model_arg];
-    let rows = db
-        .prepare(
-            r#"
-            SELECT
-              c.id,
-              c.type AS channel_type,
-              c."key",
-              c.name,
-              c.base_url,
-              c.models,
-              c."group" AS channel_group,
-              c.model_mapping,
-              c.openai_organization
-            FROM abilities a
-            JOIN channels c ON c.id = a.channel_id
-            WHERE a.group_name = ?1
-              AND a.model = ?2
-              AND a.enabled = 1
-              AND c.status = 1
-              AND c.type IN (1, 20, 40, 42, 43, 48, 53)
-            ORDER BY a.priority DESC, a.weight DESC, c.priority DESC, c.id ASC
-            LIMIT 50
-            "#,
-        )
-        .bind_refs(&args)
-        .map_err(worker_error_response)?
-        .all()
-        .await
-        .map_err(worker_error_response)?
-        .results::<RelayChannel>()
-        .map_err(worker_error_response)?;
-
-    Ok(rows.into_iter().next())
-}
-
-async fn select_channel_from_channel_csv(
-    db: &D1Database,
-    model: &str,
-    group: &str,
-) -> Result<RelayChannel, worker::Result<Response>> {
-    let rows = db
-        .prepare(
-            r#"
-            SELECT
-              id,
-              type AS channel_type,
-              "key",
-              name,
-              base_url,
-              models,
-              "group" AS channel_group,
-              model_mapping,
-              openai_organization
-            FROM channels
-            WHERE status = 1
-              AND type IN (1, 20, 40, 42, 43, 48, 53)
-            ORDER BY priority DESC, id ASC
-            LIMIT 50
-            "#,
-        )
-        .all()
-        .await
-        .map_err(worker_error_response)?
-        .results::<RelayChannel>()
-        .map_err(worker_error_response)?;
-
-    rows.into_iter()
-        .find(|channel| {
-            is_openai_compatible_channel_type(channel.channel_type)
-                && csv_contains(&channel.channel_group, group)
-                && (channel.models.trim().is_empty() || csv_contains(&channel.models, model))
-        })
-        .ok_or_else(|| {
-            openai_error_response(
-                format!(
-                    "no enabled OpenAI-compatible channel or ability for model {model} in group {group}"
-                ),
-                503,
-            )
-        })
 }
 
 async fn forward_openai_compatible(
@@ -840,20 +715,8 @@ async fn record_relay_audit(
     upstream_request_id: Option<&str>,
 ) -> worker::Result<()> {
     let now = unix_timestamp();
-    let token_touch_args = [
-        D1Type::Integer(d1_i32(now)),
-        D1Type::Integer(d1_i32(auth.token_id)),
-    ];
-    db.prepare("UPDATE tokens SET accessed_time = ?1 WHERE id = ?2")
-        .bind_refs(&token_touch_args)?
-        .run()
-        .await?;
-
-    let user_request_args = [D1Type::Integer(d1_i32(auth.user_id))];
-    db.prepare("UPDATE users SET request_count = request_count + 1 WHERE id = ?1")
-        .bind_refs(&user_request_args)?
-        .run()
-        .await?;
+    crate::d1_repositories::touch_token(db, auth.token_id, now).await?;
+    crate::d1_repositories::increment_user_request_count(db, auth.user_id).await?;
 
     let use_time = now.saturating_sub(audit.started_at);
     let other_json = json!({
@@ -885,43 +748,7 @@ async fn record_relay_audit(
     };
 
     let content = format!("Rust relay forwarded {endpoint_path}; quota settlement pending");
-    let log_args = [
-        D1Type::Integer(d1_i32(audit_log.user_id)),
-        D1Type::Integer(d1_i32(now)),
-        D1Type::Integer(2),
-        D1Type::Text(&content),
-        D1Type::Text(audit_log.username),
-        D1Type::Text(audit_log.token_name),
-        D1Type::Text(audit_log.model),
-        D1Type::Integer(d1_i32(audit_log.quota)),
-        D1Type::Integer(audit_log.prompt_tokens),
-        D1Type::Integer(audit_log.completion_tokens),
-        D1Type::Integer(d1_i32(audit_log.use_time_seconds)),
-        D1Type::Integer(i32::from(audit_log.is_stream)),
-        D1Type::Integer(d1_i32(audit_log.channel_id)),
-        D1Type::Integer(d1_i32(audit_log.token_id)),
-        D1Type::Text(audit_log.group),
-        D1Type::Text(audit_log.ip),
-        D1Type::Text(audit_log.request_id),
-        D1Type::Text(audit_log.upstream_request_id),
-        D1Type::Text(audit_log.other),
-    ];
-    db.prepare(
-        r#"
-        INSERT INTO logs (
-          user_id, created_at, type, content, username, token_name, model_name,
-          quota, prompt_tokens, completion_tokens, use_time, is_stream,
-          channel_id, token_id, "group", ip, request_id, upstream_request_id, other
-        ) VALUES (
-          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
-        )
-        "#,
-    )
-    .bind_refs(&log_args)?
-    .run()
-    .await?;
-
-    Ok(())
+    crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
 }
 
 fn client_ip(req: &Request) -> Option<String> {

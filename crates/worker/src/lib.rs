@@ -1,4 +1,5 @@
 mod cache;
+mod d1_repositories;
 mod relay;
 
 use worker::{event, Context, Env, Method, Request, Response, Result, Router};

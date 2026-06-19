@@ -36,13 +36,18 @@ The Worker:
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
 - returns the upstream body, status, and content type to the client;
 - returns upstream chat completion streams without buffering the full response;
-- updates token `accessed_time`, increments user `request_count`, and writes a
-  zero-quota consume audit log with parsed usage token counts;
+- updates token `accessed_time`, increments user `request_count`, and writes
+  consume audit logs with parsed usage token counts;
 - reads Go-compatible `billing_setting.billing_mode`,
   `billing_setting.billing_expr`, and group-ratio options from D1 `options`;
-- for non-streaming tiered-expression models, records shadow tiered settlement
-  metadata under `other.tiered_billing_shadow` while leaving real quota
-  deduction disabled;
+- refreshes cached token quota state from D1 before auth validation so quota
+  mutation is not hidden by read-through cache TTLs;
+- for successful non-streaming tiered-expression responses with usage metadata,
+  computes final tiered quota, decrements user/token quota, increments
+  user/token/channel usage counters, and records metadata under
+  `other.tiered_billing`;
+- if tiered quota mutation cannot be applied, keeps the audit log pending and
+  records the computed result under `other.tiered_billing_shadow` plus an error;
 - writes a zero-quota pending audit log for streaming chat completions via
   `wait_until`; stream token usage is not reconciled yet;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
@@ -80,19 +85,18 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 
 - Streaming is only implemented for chat completion passthrough.
 - Streaming usage reconciliation is not implemented yet.
-- Formal pre-consume and post-consume quota settlement is not implemented yet.
-- The audit log uses `quota = 0` and `other.billing_pending = true`; tiered
-  expression results are shadow metadata only.
+- Request-time token estimation and pre-consume reserve are not implemented yet;
+  current tiered-expression mutation is post-response only for non-streaming
+  responses with usage metadata.
+- Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are not implemented yet.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
 - Token/channel cache invalidation is TTL-based; explicit invalidation still
   needs to be added when dashboard/admin mutation paths are ported.
 
-Full settlement should port the original billing expression flow before any
-real quota decrement:
+Full settlement still needs to port the request-time side of the original
+billing expression flow:
 
 - pre-consume estimate and frozen billing snapshot;
-- actual usage extraction;
 - token normalization based on expression variables;
-- group ratio and quota conversion;
 - log display metadata for matched tier and expression details.

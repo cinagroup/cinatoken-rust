@@ -9,6 +9,9 @@ This module owns Worker-specific storage operations:
 - OpenAI-compatible channel selection from `abilities` first, then channel CSV fallback;
 - billing option lookup for Go-compatible `billing_setting.*` maps and group
   ratio maps;
+- cached-auth quota-state refresh before validation;
+- non-streaming tiered-expression quota mutation for user, token, and channel
+  counters with compensation on later-step failures;
 - token access-time updates;
 - user request-count increments;
 - relay audit log insertion.

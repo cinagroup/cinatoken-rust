@@ -5,7 +5,7 @@ use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use worker::{D1Database, D1Type};
+use worker::{D1Database, D1Result, D1Type};
 
 const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
 const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
@@ -16,6 +16,16 @@ const BILLING_MODE_TIERED_EXPR: &str = "tiered_expr";
 #[derive(Debug, Deserialize)]
 struct OptionValueRow {
     value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuotaStateRow {
+    token_status: i32,
+    expired_time: i64,
+    remain_quota: i64,
+    unlimited_quota: i32,
+    user_status: i32,
+    user_quota: i64,
 }
 
 pub async fn authenticate_token(
@@ -52,6 +62,49 @@ pub async fn authenticate_token(
     stmt.bind_refs(&key_arg)?
         .first::<AuthenticatedToken>(None)
         .await
+}
+
+pub async fn refresh_authenticated_token_quota_state(
+    db: &D1Database,
+    auth: &mut AuthenticatedToken,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(d1_i32(auth.token_id)),
+        D1Type::Integer(d1_i32(auth.user_id)),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              t.status AS token_status,
+              t.expired_time AS expired_time,
+              t.remain_quota AS remain_quota,
+              t.unlimited_quota AS unlimited_quota,
+              u.status AS user_status,
+              u.quota AS user_quota
+            FROM tokens t
+            JOIN users u ON u.id = t.user_id
+            WHERE t.id = ?1
+              AND u.id = ?2
+              AND t.deleted_at IS NULL
+              AND u.deleted_at IS NULL
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<QuotaStateRow>(None)
+        .await?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+
+    auth.token_status = row.token_status;
+    auth.expired_time = row.expired_time;
+    auth.remain_quota = row.remain_quota;
+    auth.unlimited_quota = row.unlimited_quota;
+    auth.user_status = row.user_status;
+    auth.user_quota = row.user_quota;
+    Ok(true)
 }
 
 pub async fn mark_token_status(
@@ -225,6 +278,181 @@ pub async fn insert_relay_audit_log(
     Ok(())
 }
 
+pub async fn apply_relay_quota_usage(
+    db: &D1Database,
+    user_id: i64,
+    token_id: i64,
+    channel_id: i64,
+    quota: i64,
+    accessed_time: i64,
+) -> worker::Result<()> {
+    let quota = quota_i32(quota)?;
+    debit_user_quota_usage_and_request_count(db, user_id, quota).await?;
+    if let Err(err) = debit_token_quota_usage(db, token_id, quota, accessed_time).await {
+        if let Err(compensate_err) =
+            credit_user_quota_usage_and_request_count(db, user_id, quota).await
+        {
+            worker::console_error!(
+                "failed to compensate user quota after token quota debit failure: {}",
+                compensate_err
+            );
+        }
+        return Err(err);
+    }
+    if let Err(err) = increment_channel_used_quota(db, channel_id, quota).await {
+        if let Err(compensate_err) =
+            credit_token_quota_usage(db, token_id, quota, accessed_time).await
+        {
+            worker::console_error!(
+                "failed to compensate token quota after channel quota update failure: {}",
+                compensate_err
+            );
+        }
+        if let Err(compensate_err) =
+            credit_user_quota_usage_and_request_count(db, user_id, quota).await
+        {
+            worker::console_error!(
+                "failed to compensate user quota after channel quota update failure: {}",
+                compensate_err
+            );
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+async fn debit_user_quota_usage_and_request_count(
+    db: &D1Database,
+    user_id: i64,
+    quota: i32,
+) -> worker::Result<()> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE users
+            SET quota = quota - ?1,
+                used_quota = used_quota + ?1,
+                request_count = request_count + 1
+            WHERE id = ?2
+              AND quota >= ?1
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    require_one_change(result, "user quota is not enough")
+}
+
+async fn credit_user_quota_usage_and_request_count(
+    db: &D1Database,
+    user_id: i64,
+    quota: i32,
+) -> worker::Result<()> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    db.prepare(
+        r#"
+        UPDATE users
+        SET quota = quota + ?1,
+            used_quota = MAX(used_quota - ?1, 0),
+            request_count = MAX(request_count - 1, 0)
+        WHERE id = ?2
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+async fn debit_token_quota_usage(
+    db: &D1Database,
+    token_id: i64,
+    quota: i32,
+    accessed_time: i64,
+) -> worker::Result<()> {
+    let args = [
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(accessed_time)),
+        D1Type::Integer(d1_i32(token_id)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE tokens
+            SET remain_quota = remain_quota - ?1,
+                used_quota = used_quota + ?1,
+                accessed_time = ?2
+            WHERE id = ?3
+              AND (unlimited_quota != 0 OR remain_quota >= ?1)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    require_one_change(result, "token quota is not enough")
+}
+
+async fn credit_token_quota_usage(
+    db: &D1Database,
+    token_id: i64,
+    quota: i32,
+    accessed_time: i64,
+) -> worker::Result<()> {
+    let args = [
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(accessed_time)),
+        D1Type::Integer(d1_i32(token_id)),
+    ];
+    db.prepare(
+        r#"
+        UPDATE tokens
+        SET remain_quota = remain_quota + ?1,
+            used_quota = MAX(used_quota - ?1, 0),
+            accessed_time = ?2
+        WHERE id = ?3
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+async fn increment_channel_used_quota(
+    db: &D1Database,
+    channel_id: i64,
+    quota: i32,
+) -> worker::Result<()> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(channel_id))];
+    let result = db
+        .prepare("UPDATE channels SET used_quota = used_quota + ?1 WHERE id = ?2")
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    require_one_change(result, "relay channel no longer exists")
+}
+
+fn require_one_change(result: D1Result, message: &str) -> worker::Result<()> {
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    if changes == 1 {
+        Ok(())
+    } else {
+        Err(worker::Error::RustError(message.to_string()))
+    }
+}
+
+fn quota_i32(quota: i64) -> worker::Result<i32> {
+    if quota < 0 {
+        return Err(worker::Error::RustError(
+            "quota must be non-negative".to_string(),
+        ));
+    }
+    i32::try_from(quota).map_err(|_| {
+        worker::Error::RustError(format!("quota {quota} exceeds D1 integer binding range"))
+    })
+}
+
 pub async fn tiered_billing_expr_for_model(
     db: &D1Database,
     model: &str,
@@ -360,5 +588,13 @@ mod tests {
             resolve_group_ratio("missing", r#"{"vip":2}"#).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn quota_i32_accepts_non_negative_d1_range() {
+        assert_eq!(quota_i32(0).unwrap(), 0);
+        assert_eq!(quota_i32(i64::from(i32::MAX)).unwrap(), i32::MAX);
+        assert!(quota_i32(-1).is_err());
+        assert!(quota_i32(i64::from(i32::MAX) + 1).is_err());
     }
 }

@@ -48,23 +48,29 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 
 ## Boundary
 
-This is not wired into Worker quota mutation yet. The Worker still records
-`quota = 0` audit logs with `other.billing_pending = true`.
+The Worker now reads Go-compatible D1 billing options. For successful
+non-streaming OpenAI-compatible tiered-expression responses with usage
+metadata, it computes final tiered quota after the upstream response and applies
+the D1 quota mutation:
 
-The Worker now reads Go-compatible D1 billing options and, for non-streaming
-OpenAI-compatible responses with usage metadata, records tiered expression
-shadow results under `other.tiered_billing_shadow`. Shadow results include
-matched tier, expression cost, group ratio, and computed quota, but they do not
-decrement user or token quota.
+- decrement `users.quota`;
+- increment `users.used_quota` and `users.request_count`;
+- decrement `tokens.remain_quota` and increment `tokens.used_quota`;
+- increment `channels.used_quota`;
+- write the final log `quota` and `other.tiered_billing` metadata.
 
-Do not decrement user or token quota from the Worker until the migration ports
-and verifies these remaining Go billing behaviors:
+If the tiered computation succeeds but D1 quota mutation cannot be applied, the
+Worker leaves `quota = 0`, keeps `other.billing_pending = true`, and records
+the computed result under `other.tiered_billing_shadow` with an error.
+
+Do not expand Worker quota mutation beyond this non-streaming tiered-expression
+path until the migration ports and verifies these remaining Go billing
+behaviors:
 
 - expression compile/cache metadata and validation;
 - broader Go/Rust golden parity tests for expression edge cases;
 - request-rule handling for expressions stored with `|||`;
-- Worker relay wiring for formal quota pre-consume, final mutation, and error
-  fallback;
+- request-time token estimation and pre-consume reserve before upstream relay;
 - matched tier metadata injection for usage-log display.
 
 ## Compatibility Tests

@@ -34,6 +34,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Worker-side D1 repository boundary for auth, channel selection, token updates, user counters, and relay audit logs.
 - Worker-side D1 billing option lookup and non-streaming tiered-expression
   shadow settlement metadata in audit logs.
+- Cached-auth quota-state refresh plus post-response D1 quota mutation for
+  successful non-streaming tiered-expression responses.
 - Cache traits for string KV, expiring counters, and rate limiting.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.
@@ -45,8 +47,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 
 ## Next
 
-- Add formal Worker quota pre-consume, post-consume mutation, and error
-  fallback around tiered billing snapshots.
+- Add request-time token estimation and pre-consume reserve before upstream
+  relay for tiered billing snapshots.
 - Add billing expression compile/cache metadata and broader Go/Rust golden
   parity tests.
 - Reconcile streaming usage metadata after full stream consumption.

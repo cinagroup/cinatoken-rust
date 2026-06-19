@@ -1,9 +1,10 @@
-use cinatoken_cache::{ExpiringCounterRateLimiter, RateLimiter};
-use cinatoken_core::ErrorBody;
+use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
+use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
     apply_model_mapping, clamp_i64_to_i32 as d1_i32, csv_contains, first_channel_key,
     ip_allowlist_matches, is_openai_compatible_channel_type, upstream_v1_url,
-    usage_summary_from_body, UsageSummary,
+    usage_summary_from_body, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
+    UsageSummary,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde_json::{json, Value};
@@ -18,6 +19,8 @@ const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u32 = 60;
 const TOKEN_RATE_LIMIT_ENV: &str = "RELAY_TOKEN_RATE_LIMIT_PER_WINDOW";
 const IP_RATE_LIMIT_ENV: &str = "RELAY_IP_RATE_LIMIT_PER_WINDOW";
 const RATE_LIMIT_WINDOW_ENV: &str = "RELAY_RATE_LIMIT_WINDOW_SECONDS";
+const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
+const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 
 #[derive(Clone, Copy)]
 struct OpenAiCompatibleEndpoint {
@@ -133,7 +136,7 @@ async fn openai_compatible_endpoint(
     };
 
     let db = env.d1("DB")?;
-    let auth = match authenticate(&db, &api_key, &model, client_ip.as_deref()).await {
+    let auth = match authenticate(&db, &env, &api_key, &model, client_ip.as_deref()).await {
         Ok(auth) => auth,
         Err(response) => return response,
     };
@@ -142,7 +145,7 @@ async fn openai_compatible_endpoint(
         return response;
     }
 
-    let channel = match select_channel(&db, &model, auth.effective_group()).await {
+    let channel = match select_channel(&db, &env, &model, auth.effective_group()).await {
         Ok(channel) => channel,
         Err(response) => return response,
     };
@@ -203,6 +206,13 @@ async fn openai_compatible_endpoint(
 
 pub(crate) fn relay_rate_limit_configured(env: &Env) -> bool {
     let Ok(config) = RelayRateLimitConfig::from_env(env) else {
+        return false;
+    };
+    config.enabled() && crate::cache::upstash_redis_configured(env)
+}
+
+pub(crate) fn relay_read_cache_configured(env: &Env) -> bool {
+    let Ok(config) = RelayReadCacheConfig::from_env(env) else {
         return false;
     };
     config.enabled() && crate::cache::upstash_redis_configured(env)
@@ -319,6 +329,34 @@ impl RelayRateLimitConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelayReadCacheConfig {
+    ttl_seconds: Option<u32>,
+}
+
+impl RelayReadCacheConfig {
+    fn from_env(env: &Env) -> Result<Self, String> {
+        Self::from_raw(optional_env_var(env, RELAY_CACHE_TTL_ENV))
+    }
+
+    fn from_raw(ttl_seconds: Option<String>) -> Result<Self, String> {
+        let ttl_seconds = match ttl_seconds.as_deref().map(str::trim) {
+            Some("0") => None,
+            Some("") | None => Some(DEFAULT_RELAY_CACHE_TTL_SECONDS),
+            Some(raw) => Some(
+                raw.parse::<u32>()
+                    .map_err(|_| format!("{RELAY_CACHE_TTL_ENV} must be a non-negative integer"))?,
+            ),
+        };
+
+        Ok(Self { ttl_seconds })
+    }
+
+    fn enabled(&self) -> bool {
+        self.ttl_seconds.is_some()
+    }
+}
+
 fn optional_env_var(env: &Env, name: &str) -> Option<String> {
     env.var(name)
         .ok()
@@ -356,6 +394,26 @@ fn rate_limit_failure_response(message: String) -> worker::Result<Response> {
     openai_error_response(format!("rate limit check failed: {message}"), 503)
 }
 
+fn relay_read_cache(
+    env: &Env,
+) -> Result<
+    Option<(UpstashRedis<crate::cache::WorkerRedisRestTransport>, u32)>,
+    worker::Result<Response>,
+> {
+    let config = RelayReadCacheConfig::from_env(env).map_err(|err| {
+        openai_error_response(format!("invalid relay cache configuration: {err}"), 500)
+    })?;
+    let Some(ttl_seconds) = config.ttl_seconds else {
+        return Ok(None);
+    };
+
+    crate::cache::upstash_redis_from_env(env)
+        .map(|redis| redis.map(|redis| (redis, ttl_seconds)))
+        .map_err(|err| {
+            openai_error_response(format!("failed to initialize relay cache: {err}"), 500)
+        })
+}
+
 fn extract_api_key(req: &Request) -> Option<String> {
     let authorization = req.headers().get("authorization").ok().flatten();
     if let Some(value) = authorization {
@@ -377,6 +435,32 @@ fn extract_api_key(req: &Request) -> Option<String> {
 }
 
 async fn authenticate(
+    db: &D1Database,
+    env: &Env,
+    api_key: &str,
+    model: &str,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let Some((redis, ttl_seconds)) = relay_read_cache(env)? else {
+        return authenticate_from_d1(db, api_key, model, client_ip).await;
+    };
+    let cache_key = RelayCacheKeys::default().token_auth(api_key, model, client_ip);
+
+    match read_cached_authenticated_token(&redis, &cache_key).await {
+        Ok(Some(row)) => return validate_authenticated_token(db, row, model, client_ip).await,
+        Ok(None) => {}
+        Err(err) => worker::console_warn!("failed to read relay auth cache: {}", err),
+    }
+
+    let row = authenticate_from_d1(db, api_key, model, client_ip).await?;
+    if let Err(err) = write_cached_authenticated_token(&redis, &cache_key, &row, ttl_seconds).await
+    {
+        worker::console_warn!("failed to write relay auth cache: {}", err);
+    }
+    Ok(row)
+}
+
+async fn authenticate_from_d1(
     db: &D1Database,
     api_key: &str,
     model: &str,
@@ -417,6 +501,15 @@ async fn authenticate(
         .map_err(worker_error_response)?
         .ok_or_else(|| openai_error_response("invalid API key", 401))?;
 
+    validate_authenticated_token(db, row, model, client_ip).await
+}
+
+async fn validate_authenticated_token(
+    db: &D1Database,
+    row: AuthenticatedToken,
+    model: &str,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
     if row.token_status != 1 || row.user_status != 1 {
         return Err(openai_error_response("token or user is disabled", 403));
     }
@@ -447,6 +540,38 @@ async fn authenticate(
     Ok(row)
 }
 
+async fn read_cached_authenticated_token<C>(
+    cache: &C,
+    cache_key: &str,
+) -> ApiResult<Option<AuthenticatedToken>>
+where
+    C: KeyValueCache,
+{
+    let Some(value) = cache.get_string(cache_key).await? else {
+        return Ok(None);
+    };
+    let cached = serde_json::from_str::<CachedAuthenticatedToken>(&value).map_err(|err| {
+        ApiError::Internal(format!("failed to decode relay auth cache entry: {err}"))
+    })?;
+    Ok(cached.into_current())
+}
+
+async fn write_cached_authenticated_token<C>(
+    cache: &C,
+    cache_key: &str,
+    row: &AuthenticatedToken,
+    ttl_seconds: u32,
+) -> ApiResult<()>
+where
+    C: KeyValueCache,
+{
+    let value =
+        serde_json::to_string(&CachedAuthenticatedToken::new(row.clone())).map_err(|err| {
+            ApiError::Internal(format!("failed to encode relay auth cache entry: {err}"))
+        })?;
+    cache.put_string(cache_key, &value, Some(ttl_seconds)).await
+}
+
 async fn mark_token_status(db: &D1Database, token_id: i64, status: i32) {
     let args = [
         D1Type::Integer(status),
@@ -467,6 +592,30 @@ async fn mark_token_status(db: &D1Database, token_id: i64, status: i32) {
 
 async fn select_channel(
     db: &D1Database,
+    env: &Env,
+    model: &str,
+    group: &str,
+) -> Result<RelayChannel, worker::Result<Response>> {
+    let Some((redis, ttl_seconds)) = relay_read_cache(env)? else {
+        return select_channel_from_d1(db, model, group).await;
+    };
+    let cache_key = RelayCacheKeys::default().channel(group, model);
+
+    match read_cached_relay_channel(&redis, &cache_key).await {
+        Ok(Some(channel)) => return Ok(channel),
+        Ok(None) => {}
+        Err(err) => worker::console_warn!("failed to read relay channel cache: {}", err),
+    }
+
+    let channel = select_channel_from_d1(db, model, group).await?;
+    if let Err(err) = write_cached_relay_channel(&redis, &cache_key, &channel, ttl_seconds).await {
+        worker::console_warn!("failed to write relay channel cache: {}", err);
+    }
+    Ok(channel)
+}
+
+async fn select_channel_from_d1(
+    db: &D1Database,
     model: &str,
     group: &str,
 ) -> Result<RelayChannel, worker::Result<Response>> {
@@ -475,6 +624,35 @@ async fn select_channel(
     }
 
     select_channel_from_channel_csv(db, model, group).await
+}
+
+async fn read_cached_relay_channel<C>(cache: &C, cache_key: &str) -> ApiResult<Option<RelayChannel>>
+where
+    C: KeyValueCache,
+{
+    let Some(value) = cache.get_string(cache_key).await? else {
+        return Ok(None);
+    };
+    let cached = serde_json::from_str::<CachedRelayChannel>(&value).map_err(|err| {
+        ApiError::Internal(format!("failed to decode relay channel cache entry: {err}"))
+    })?;
+    Ok(cached.into_current())
+}
+
+async fn write_cached_relay_channel<C>(
+    cache: &C,
+    cache_key: &str,
+    channel: &RelayChannel,
+    ttl_seconds: u32,
+) -> ApiResult<()>
+where
+    C: KeyValueCache,
+{
+    let value =
+        serde_json::to_string(&CachedRelayChannel::new(channel.clone())).map_err(|err| {
+            ApiError::Internal(format!("failed to encode relay channel cache entry: {err}"))
+        })?;
+    cache.put_string(cache_key, &value, Some(ttl_seconds)).await
 }
 
 async fn select_channel_from_abilities(
@@ -841,5 +1019,25 @@ mod tests {
     fn parse_optional_limit_rejects_non_integer() {
         let err = parse_optional_limit(TOKEN_RATE_LIMIT_ENV, Some("many".to_string())).unwrap_err();
         assert!(err.contains(TOKEN_RATE_LIMIT_ENV));
+    }
+
+    #[test]
+    fn relay_read_cache_config_defaults_to_enabled() {
+        let config = RelayReadCacheConfig::from_raw(None).unwrap();
+        assert!(config.enabled());
+        assert_eq!(config.ttl_seconds, Some(DEFAULT_RELAY_CACHE_TTL_SECONDS));
+    }
+
+    #[test]
+    fn relay_read_cache_config_zero_disables_cache() {
+        let config = RelayReadCacheConfig::from_raw(Some("0".to_string())).unwrap();
+        assert!(!config.enabled());
+        assert_eq!(config.ttl_seconds, None);
+    }
+
+    #[test]
+    fn relay_read_cache_config_rejects_invalid_ttl() {
+        let err = RelayReadCacheConfig::from_raw(Some("fast".to_string())).unwrap_err();
+        assert!(err.contains(RELAY_CACHE_TTL_ENV));
     }
 }

@@ -41,6 +41,10 @@ impl StatusResponse {
                     name: "relay_rate_limit",
                     enabled: false,
                 },
+                RuntimeFeature {
+                    name: "relay_read_cache",
+                    enabled: false,
+                },
             ],
         }
     }

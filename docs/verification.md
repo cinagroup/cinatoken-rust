@@ -7,7 +7,7 @@ Last checked: 2026-06-19
 - `cargo fmt --all`
 - `cargo test --workspace --exclude cinatoken-worker`
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
-- `bun run check` with `CARGO_TARGET_DIR` set to local temp Cargo output.
+- `bun run check` from `C:\cinagroup\cinatoken-rust`.
 - `cargo test -p cinatoken-relay` covering OpenAI-compatible relay helpers,
   generalized `/v1/...` upstream URL generation, relay cache key normalization,
   token fingerprinting, and versioned token/channel cache wrappers.
@@ -40,8 +40,9 @@ Last checked: 2026-06-19
   decisions.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` covering the
   Worker Upstash Redis REST fetch transport and status feature detection.
-- `cargo test -p cinatoken-worker --lib` covering relay rate-limit configuration
-  parsing and invalid configuration rejection.
+- `cargo test -p cinatoken-worker --lib` covering relay rate-limit and
+  read-through cache TTL configuration parsing and invalid configuration
+  rejection.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus
@@ -54,10 +55,10 @@ Last checked: 2026-06-19
 
 ## Local Notes
 
-The workspace currently lives on `Z:`, a VirtualBox/shared-drive style path.
-Native Rust tests hit intermittent file-lock or path issues when Cargo writes
-incremental artifacts under the workspace. These checks passed after moving
-Cargo output to a local temp directory:
+The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
+VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
+checkout is used, move Cargo output to a local temp directory before running
+checks:
 
 ```powershell
 $env:CARGO_HTTP_TIMEOUT='120'
@@ -68,10 +69,6 @@ cargo test --workspace --exclude cinatoken-worker
 cargo check -p cinatoken-worker --target wasm32-unknown-unknown
 bun run check
 ```
-
-Run `bun run check` from a shell with the same environment; otherwise the script
-falls back to the workspace `target/` directory and may hit the same
-shared-drive file-lock or linker path issue.
 
 ## Still Pending
 

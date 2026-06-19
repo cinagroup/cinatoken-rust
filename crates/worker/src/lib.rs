@@ -29,6 +29,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 "relay_rate_limit",
                 relay::relay_rate_limit_configured(&ctx.env),
             );
+            set_feature(
+                &mut status,
+                "relay_read_cache",
+                relay::relay_read_cache_configured(&ctx.env),
+            );
             json_with_status(&status, 200)
         })
         .get("/v1/models", |_, _| {

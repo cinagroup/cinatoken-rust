@@ -15,12 +15,15 @@ The Worker:
   explicit zero values;
 - rejects `stream: true` on chat/completions/responses with `501`;
 - accepts API keys from `Authorization: Bearer ...` or `x-api-key`;
-- authenticates the token and user from D1;
+- authenticates the token and user through Upstash-backed read-through cache
+  with D1 fallback;
 - checks token status, user status, expiry, token quota presence, user quota
   presence, token model limits, and token IP allowlist;
 - marks expired or exhausted tokens in D1 on a best-effort basis;
-- selects the first enabled channel from `abilities` matching group and model,
-  ordered by ability priority, ability weight, channel priority, and channel ID;
+- selects the first enabled channel through Upstash-backed read-through cache
+  with D1 fallback;
+- on channel cache miss, uses `abilities` matching group and model, ordered by
+  ability priority, ability weight, channel priority, and channel ID;
 - falls back to channel CSV matching when no ability row exists;
 - limits relay candidates to OpenAI-compatible provider types
   `1, 20, 40, 42, 43, 48, 53`;
@@ -29,11 +32,11 @@ The Worker:
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
 - returns the upstream body, status, and content type to the client;
 - updates token `accessed_time`, increments user `request_count`, and writes a
-  zero-quota consume audit log with parsed usage token counts.
+  zero-quota consume audit log with parsed usage token counts;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
-  environment variables are configured.
-- defines relay cache key helpers and versioned token/channel cache record
-  wrappers for future read-through caching.
+  environment variables are configured;
+- caches validated token auth rows and selected relay channels in Upstash Redis
+  when Redis is configured and `RELAY_CACHE_TTL_SECONDS` is not `0`.
 
 ## D1 Data Requirements
 
@@ -68,8 +71,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - The audit log uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are not implemented yet.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
-- Token/channel read-through caching is not connected to relay lookups yet;
-  only the cache key and record schema foundation is in place.
+- Token/channel cache invalidation is TTL-based; explicit invalidation still
+  needs to be added when dashboard/admin mutation paths are ported.
 
 Full settlement should port the original billing expression flow before any
 real quota decrement:

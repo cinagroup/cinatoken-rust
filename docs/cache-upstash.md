@@ -27,9 +27,12 @@ Local development can use `.dev.vars`:
 ```text
 UPSTASH_REDIS_REST_URL=https://example.upstash.io
 UPSTASH_REDIS_REST_TOKEN=replace-with-real-token
+RELAY_CACHE_TTL_SECONDS=60
 ```
 
 `GET /api/status` reports `upstash_redis: true` when both values are present.
+`RELAY_CACHE_TTL_SECONDS` controls relay token/channel read-through cache TTL;
+it defaults to `60`, and `0` disables relay read-through caching.
 
 ## Relay Rate Limiting
 
@@ -91,8 +94,12 @@ Cloudflare secret handling.
 
 ## Current Boundary
 
-The cache layer is implemented and Worker-compatible, relay token/IP rate
-limiting is connected, and relay token/channel cache keys plus record schemas
-are defined. Auth/channel lookups still read directly from D1. The next
-integration step is to use `KeyValueCache` for token/channel read-through
-caching and invalidation.
+The cache layer is implemented and Worker-compatible. Relay token/IP rate
+limiting is connected, and relay token/channel read-through caching now uses
+`KeyValueCache` when Upstash Redis is configured and `RELAY_CACHE_TTL_SECONDS`
+is not `0`.
+
+Cache reads and writes are best-effort: Redis errors are logged as Worker
+warnings and the relay falls back to D1. D1 remains the source of truth. Cache
+invalidation is still TTL-based; explicit invalidation should be added when the
+admin/dashboard mutation paths are ported.

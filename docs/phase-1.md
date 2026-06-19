@@ -25,7 +25,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.
 - Optional Upstash-backed relay token/IP rate limiting.
-- Relay cache key helpers and versioned token/channel cache record wrappers.
+- Relay cache key helpers, versioned token/channel cache record wrappers, and
+  Upstash-backed read-through caching.
 - Migration CLI `dev-seed` command for local D1 seed SQL.
 - Initial D1 schema for users, tokens, channels, abilities, options, and logs.
 

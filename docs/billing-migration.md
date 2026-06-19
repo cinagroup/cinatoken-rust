@@ -85,7 +85,9 @@ behaviors:
 - broader Go/Rust golden parity tests for expression edge cases;
 - request-rule handling for expressions stored with `|||`;
 - tokenizer/media parity for request-time token estimation;
-- streaming reserve and settlement once full stream usage is available;
+- Worker-side streaming consumption/reconciliation, using the shared SSE usage
+  parser now available in `crates/relay`;
+- streaming reserve and settlement once full stream usage is wired;
 - matched tier metadata injection for usage-log display.
 
 ## Compatibility Tests
@@ -107,6 +109,8 @@ The Rust tests cover the most important Go-compatible arithmetic:
   snapshots, and settlement deltas against frozen snapshots;
 - Worker tiered reserve metadata, fallback metadata, and refund metadata for
   non-streaming pre-consume paths;
+- OpenAI-compatible SSE usage parsing for final streaming usage chunks, CRLF
+  streams, invalid events, `[DONE]`, and nested response usage metadata;
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - refund versus additional-consumption settlement deltas.

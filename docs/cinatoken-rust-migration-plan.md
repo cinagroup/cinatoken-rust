@@ -1305,14 +1305,17 @@ Relay：
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and
   non-streaming D1 pre-consume reserve/delta settlement for
   tiered-expression responses.
+- OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
+  crate, including final streaming usage chunks, `[DONE]`, CRLF streams, and
+  nested response usage metadata.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
   relay using the original request body and a lightweight prompt/completion
   token estimate, reserves estimated wallet/token quota for non-streaming
   requests, then settles successful usage against that frozen snapshot.
 - Remaining Phase 3 billing work: tokenizer/media parity for request-time token
-  estimation, streaming usage reconciliation after full stream consumption,
-  streaming reserve/settlement, and broader Go/Rust golden billing parity
-  tests.
+  estimation, Worker-side streaming usage reconciliation after full stream
+  consumption, streaming reserve/settlement, and broader Go/Rust golden billing
+  parity tests.
 
 ## 20. 最终交付形态
 

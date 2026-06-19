@@ -10,7 +10,8 @@ Last checked: 2026-06-19
 - `bun run check` from `C:\cinagroup\cinatoken-rust`.
 - `cargo test -p cinatoken-relay` covering OpenAI-compatible relay helpers,
   generalized `/v1/...` upstream URL generation, relay cache key normalization,
-  token fingerprinting, and versioned token/channel cache wrappers.
+  token fingerprinting, JSON/SSE usage parsing, and versioned token/channel
+  cache wrappers.
 - `cargo test -p cinatoken-migration` covering `dev-seed` SQL generation.
 - `cargo test -p cinatoken-migration` covering source repository inspection
   argument parsing and local SQLite candidate discovery.

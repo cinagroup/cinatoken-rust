@@ -36,6 +36,8 @@ The Worker:
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
 - returns the upstream body, status, and content type to the client;
 - returns upstream chat completion streams without buffering the full response;
+- parses OpenAI-compatible usage metadata from JSON responses and has a shared
+  SSE `data:` event parser ready for streaming reconciliation;
 - updates token `accessed_time`, increments user `request_count`, and writes
   consume audit logs with parsed usage token counts;
 - reads Go-compatible `billing_setting.billing_mode`,
@@ -94,7 +96,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 ## Deliberate Limitations
 
 - Streaming is only implemented for chat completion passthrough.
-- Streaming usage reconciliation is not implemented yet.
+- Streaming usage parsing is implemented in the shared relay crate, but Worker
+  stream consumption/reconciliation is not wired yet.
 - Tiered pre-consume reserve is currently implemented for non-streaming
   OpenAI-compatible requests only; streaming remains pending until usage
   reconciliation is implemented.

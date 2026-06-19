@@ -116,20 +116,67 @@ pub fn usage_summary_from_body(body: &str) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
     };
-    let Some(usage) = value.get("usage") else {
-        return UsageSummary::default();
-    };
+    usage_summary_from_value(&value).unwrap_or_default()
+}
+
+pub fn usage_summary_from_sse_stream(body: &str) -> UsageSummary {
+    let mut latest = UsageSummary::default();
+    let mut data_lines = Vec::new();
+
+    for line in body.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            if let Some(summary) = usage_summary_from_sse_data_lines(&data_lines) {
+                latest = summary;
+            }
+            data_lines.clear();
+            continue;
+        }
+
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start());
+        }
+    }
+
+    if let Some(summary) = usage_summary_from_sse_data_lines(&data_lines) {
+        latest = summary;
+    }
+
+    latest
+}
+
+fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
+    let usage = value.get("usage").or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("usage"))
+    })?;
 
     let prompt_tokens = first_i32_field(usage, &["prompt_tokens", "input_tokens"]);
     let completion_tokens = first_i32_field(usage, &["completion_tokens", "output_tokens"]);
     let total_tokens = first_i32_field(usage, &["total_tokens"])
         .max(prompt_tokens.saturating_add(completion_tokens));
 
-    UsageSummary {
+    Some(UsageSummary {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+    })
+}
+
+fn usage_summary_from_sse_data_lines(data_lines: &[&str]) -> Option<UsageSummary> {
+    if data_lines.is_empty() {
+        return None;
     }
+
+    let payload = data_lines.join("\n");
+    let payload = payload.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return None;
+    }
+
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    usage_summary_from_value(&value)
 }
 
 pub fn clamp_i64_to_i32(value: i64) -> i32 {
@@ -251,6 +298,76 @@ mod tests {
             UsageSummary {
                 prompt_tokens: 7,
                 completion_tokens: 3,
+                total_tokens: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_body_supports_nested_response_usage() {
+        assert_eq!(
+            usage_summary_from_body(
+                r#"{"response":{"usage":{"input_tokens":9,"output_tokens":4}}}"#
+            ),
+            UsageSummary {
+                prompt_tokens: 9,
+                completion_tokens: 4,
+                total_tokens: 13,
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_sse_stream_extracts_final_usage_chunk() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 7,
+                completion_tokens: 5,
+                total_tokens: 12,
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_sse_stream_uses_last_usage_event() {
+        let body = concat!(
+            "data: {\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}\n\n",
+            "data: {\"usage\":{\"input_tokens\":5,\"output_tokens\":8}}\n\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 5,
+                completion_tokens: 8,
+                total_tokens: 13,
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_sse_stream_ignores_invalid_events_and_crlf() {
+        let body = concat!(
+            ": keepalive\r\n\r\n",
+            "event: completion.chunk\r\n",
+            "data: not-json\r\n\r\n",
+            "data: {\"response\":{\"usage\":{\"input_tokens\":4,\r\n",
+            "data: \"output_tokens\":6}}}\r\n\r\n",
+            "data: [DONE]\r\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 4,
+                completion_tokens: 6,
                 total_tokens: 10,
             }
         );

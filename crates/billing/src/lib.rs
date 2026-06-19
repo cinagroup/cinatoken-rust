@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 mod expression;
+mod tiered;
 
 pub use expression::{
     run_billing_expr, run_billing_expr_with_request, BillingExprError, ExprRun, RequestInput,
     TraceResult,
+};
+pub use tiered::{
+    compute_tiered_quota, compute_tiered_quota_with_request, estimate_tiered_billing_snapshot,
+    estimate_tiered_billing_snapshot_with_request, TieredBillingResult, TieredBillingSnapshot,
 };
 
 pub const DEFAULT_QUOTA_PER_UNIT: f64 = 500_000.0;

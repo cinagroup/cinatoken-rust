@@ -36,6 +36,15 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 - `RequestInput`, `TraceResult`, and `ExprRun` for passing request probes and
   carrying matched-tier metadata.
 - `BillingSnapshot` for freezing estimated inputs before settlement.
+- `TieredBillingSnapshot`, `TieredBillingResult`,
+  `estimate_tiered_billing_snapshot()`, and `compute_tiered_quota()` for the
+  pure Rust pre-consume/post-consume tiered settlement boundary:
+  - freezes expression string, v1 version, group ratio, estimated tokens,
+    estimated cost, estimated tier, and estimated quota;
+  - re-runs the frozen expression against actual token params;
+  - applies `quota = exprOutput / 1_000_000 * QuotaPerUnit * groupRatio`;
+  - reports matched tier, tier crossing, final quota, refund quota, and
+    additional quota.
 
 ## Boundary
 
@@ -48,7 +57,8 @@ and verifies these remaining Go billing behaviors:
 - expression compile/cache metadata and validation;
 - broader Go/Rust golden parity tests for expression edge cases;
 - request-rule handling for expressions stored with `|||`;
-- group ratio application;
+- Worker relay wiring for quota pre-consume, final settlement, quota mutation,
+  and error fallback;
 - matched tier metadata injection for usage-log display.
 
 ## Compatibility Tests
@@ -63,6 +73,9 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - expression execution for simple flat prices, conditional tiers, math helpers,
   multimodal variables, request `param()`/`header()` probes, missing-field `nil`
   handling, and time helper ranges;
+- tiered pre-consume snapshots, group-ratio application, actual-use
+  settlement, refund/additional deltas, request-probe preservation, and
+  crossed-tier detection;
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - refund versus additional-consumption settlement deltas.

@@ -48,10 +48,14 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 
 ## Boundary
 
-The Worker now reads Go-compatible D1 billing options. For successful
-non-streaming OpenAI-compatible tiered-expression responses with usage
-metadata, it computes final tiered quota after the upstream response and applies
-the D1 quota mutation:
+The Worker now reads Go-compatible D1 billing options. For a model configured
+with tiered-expression billing, it freezes a request-time preflight snapshot
+before upstream relay using the original request body, request probes, group
+ratio, and a lightweight prompt/completion token estimate.
+
+For successful non-streaming OpenAI-compatible tiered-expression responses with
+usage metadata, it settles final tiered quota against that frozen snapshot and
+applies the D1 quota mutation:
 
 - decrement `users.quota`;
 - increment `users.used_quota` and `users.request_count`;
@@ -70,7 +74,8 @@ behaviors:
 - expression compile/cache metadata and validation;
 - broader Go/Rust golden parity tests for expression edge cases;
 - request-rule handling for expressions stored with `|||`;
-- request-time token estimation and pre-consume reserve before upstream relay;
+- tokenizer/media parity for request-time token estimation;
+- formal pre-consume reserve before upstream relay and settlement adjustment;
 - matched tier metadata injection for usage-log display.
 
 ## Compatibility Tests
@@ -88,6 +93,8 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - tiered pre-consume snapshots, group-ratio application, actual-use
   settlement, refund/additional deltas, request-probe preservation, and
   crossed-tier detection;
+- Worker request-body token estimation, request-time tiered preflight
+  snapshots, and settlement deltas against frozen snapshots;
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - refund versus additional-consumption settlement deltas.

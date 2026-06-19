@@ -194,6 +194,21 @@ async fn openai_compatible_endpoint(
         }
     };
 
+    let tiered_billing_preflight = match prepare_tiered_billing_preflight(
+        &db,
+        &model,
+        &group,
+        &request_body,
+        &billing_request_input,
+    )
+    .await
+    {
+        Ok(preflight) => preflight,
+        Err(err) => {
+            return openai_error_response(format!("tiered billing preflight failed: {err}"), 500);
+        }
+    };
+
     let mut upstream_body = request_body;
     apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
 
@@ -223,6 +238,7 @@ async fn openai_compatible_endpoint(
         client_ip,
         request_id,
         billing_request_input,
+        tiered_billing_preflight,
     };
 
     if should_relay_stream {
@@ -806,6 +822,7 @@ struct RelayAuditContext {
     client_ip: Option<String>,
     request_id: Option<String>,
     billing_request_input: RequestInput,
+    tiered_billing_preflight: Option<TieredBillingSnapshot>,
 }
 
 async fn record_relay_audit(
@@ -834,39 +851,51 @@ async fn record_relay_audit(
     let mut quota = 0;
     let mut billing_applied = false;
     if !is_stream && upstream_status < 400 && usage.total_tokens > 0 {
-        match tiered_billing_settlement(db, model, group, usage, &audit.billing_request_input).await
-        {
-            Ok(Some(outcome)) => {
-                let final_quota = outcome.final_quota;
-                match crate::d1_repositories::apply_relay_quota_usage(
-                    db,
-                    auth.user_id,
-                    auth.token_id,
-                    channel.id,
-                    final_quota,
-                    now,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        quota = final_quota;
-                        billing_applied = true;
-                        set_json_bool(&mut other, "billing_pending", false);
-                        let metadata =
-                            tiered_billing_metadata(outcome.snapshot, outcome.result, false, true);
-                        set_json_value(&mut other, "tiered_billing", metadata);
-                    }
-                    Err(err) => {
-                        let metadata =
-                            tiered_billing_metadata(outcome.snapshot, outcome.result, true, false);
-                        set_json_value(&mut other, "tiered_billing_shadow", metadata);
-                        set_json_string(&mut other, "tiered_billing_shadow_error", err.to_string());
+        if let Some(snapshot) = audit.tiered_billing_preflight.as_ref() {
+            match tiered_billing_settlement(snapshot, usage, &audit.billing_request_input) {
+                Ok(outcome) => {
+                    let final_quota = outcome.final_quota;
+                    match crate::d1_repositories::apply_relay_quota_usage(
+                        db,
+                        auth.user_id,
+                        auth.token_id,
+                        channel.id,
+                        final_quota,
+                        now,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            quota = final_quota;
+                            billing_applied = true;
+                            set_json_bool(&mut other, "billing_pending", false);
+                            let metadata = tiered_billing_metadata(
+                                outcome.snapshot,
+                                outcome.result,
+                                false,
+                                true,
+                            );
+                            set_json_value(&mut other, "tiered_billing", metadata);
+                        }
+                        Err(err) => {
+                            let metadata = tiered_billing_metadata(
+                                outcome.snapshot,
+                                outcome.result,
+                                true,
+                                false,
+                            );
+                            set_json_value(&mut other, "tiered_billing_shadow", metadata);
+                            set_json_string(
+                                &mut other,
+                                "tiered_billing_shadow_error",
+                                err.to_string(),
+                            );
+                        }
                     }
                 }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                set_json_string(&mut other, "tiered_billing_shadow_error", err.to_string());
+                Err(err) => {
+                    set_json_string(&mut other, "tiered_billing_shadow_error", err);
+                }
             }
         }
     }
@@ -911,45 +940,47 @@ struct TieredBillingOutcome {
     result: TieredBillingResult,
 }
 
-async fn tiered_billing_settlement(
+async fn prepare_tiered_billing_preflight(
     db: &D1Database,
     model: &str,
     group: &str,
-    usage: &UsageSummary,
+    request_body: &Value,
     request: &RequestInput,
-) -> worker::Result<Option<TieredBillingOutcome>> {
+) -> worker::Result<Option<TieredBillingSnapshot>> {
     let Some(expr) = crate::d1_repositories::tiered_billing_expr_for_model(db, model).await? else {
         return Ok(None);
     };
     let group_ratio = crate::d1_repositories::group_ratio_for_group(db, group).await?;
-    tiered_billing_outcome(model, &expr, group_ratio, usage, request.clone())
+    tiered_billing_preflight_snapshot(model, &expr, group_ratio, request_body, request.clone())
         .map(Some)
         .map_err(worker::Error::RustError)
 }
 
-fn tiered_billing_outcome(
+fn tiered_billing_preflight_snapshot(
     model: &str,
     expr: &str,
     group_ratio: f64,
-    usage: &UsageSummary,
+    request_body: &Value,
     request: RequestInput,
+) -> Result<TieredBillingSnapshot, String> {
+    let params = token_params_from_request(request_body);
+    estimate_tiered_billing_snapshot_with_request(model, expr, params, group_ratio, request)
+        .map_err(|err| format!("failed to estimate tiered billing: {err}"))
+}
+
+fn tiered_billing_settlement(
+    snapshot: &TieredBillingSnapshot,
+    usage: &UsageSummary,
+    request: &RequestInput,
 ) -> Result<TieredBillingOutcome, String> {
     let params = token_params_from_usage(usage);
-    let snapshot = estimate_tiered_billing_snapshot_with_request(
-        model,
-        expr,
-        params,
-        group_ratio,
-        request.clone(),
-    )
-    .map_err(|err| format!("failed to estimate tiered billing: {err}"))?;
-    let result = compute_tiered_quota_with_request(&snapshot, params, request)
+    let result = compute_tiered_quota_with_request(snapshot, params, request.clone())
         .map_err(|err| format!("failed to compute tiered billing: {err}"))?;
     let final_quota = result.settlement.final_quota.0;
 
     Ok(TieredBillingOutcome {
         final_quota,
-        snapshot,
+        snapshot: snapshot.clone(),
         result,
     })
 }
@@ -966,6 +997,11 @@ fn tiered_billing_metadata(
         "applied": applied,
         "expr_version": snapshot.expr_version,
         "group_ratio": snapshot.group_ratio,
+        "estimated_prompt_tokens": snapshot.estimated_prompt_tokens,
+        "estimated_completion_tokens": snapshot.estimated_completion_tokens,
+        "estimated_expression_cost": snapshot.estimated_expression_cost,
+        "estimated_quota_before_group": snapshot.estimated_quota_before_group,
+        "estimated_quota_after_group": snapshot.estimated_quota_after_group.0,
         "estimated_tier": snapshot.estimated_tier,
         "matched_tier": result.matched_tier,
         "crossed_tier": result.crossed_tier,
@@ -992,6 +1028,173 @@ fn set_json_value(value: &mut Value, key: &str, item: Value) {
     if let Some(object) = value.as_object_mut() {
         object.insert(key.to_string(), item);
     }
+}
+
+fn token_params_from_request(body: &Value) -> TokenParams {
+    let prompt = estimate_prompt_tokens_from_request(body) as f64;
+    TokenParams {
+        p: prompt,
+        c: estimate_completion_tokens_from_request(body) as f64,
+        len: prompt,
+        ..TokenParams::default()
+    }
+}
+
+fn estimate_prompt_tokens_from_request(body: &Value) -> i64 {
+    let mut chars = 0usize;
+
+    for key in [
+        "prompt",
+        "input",
+        "instruction",
+        "instructions",
+        "prefix",
+        "suffix",
+    ] {
+        if let Some(value) = body.get(key) {
+            collect_prompt_text_chars(value, &mut chars);
+        }
+    }
+
+    let mut structural_tokens = 0i64;
+    if let Some(messages) = body.get("messages").and_then(Value::as_array) {
+        structural_tokens = structural_tokens.saturating_add(3);
+        structural_tokens =
+            structural_tokens.saturating_add(saturating_usize_to_i64(messages.len()) * 3);
+        for message in messages {
+            if let Some(role) = message.get("role").and_then(Value::as_str) {
+                add_text_chars(&mut chars, role);
+            }
+            if let Some(name) = message.get("name").and_then(Value::as_str) {
+                add_text_chars(&mut chars, name);
+                structural_tokens = structural_tokens.saturating_add(3);
+            }
+            if let Some(content) = message.get("content") {
+                collect_prompt_text_chars(content, &mut chars);
+            }
+        }
+    }
+
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        structural_tokens =
+            structural_tokens.saturating_add(saturating_usize_to_i64(tools.len()) * 8);
+        for tool in tools {
+            collect_tool_text_chars(tool, &mut chars);
+        }
+    }
+
+    estimate_tokens_from_chars(chars).saturating_add(structural_tokens)
+}
+
+fn estimate_completion_tokens_from_request(body: &Value) -> i64 {
+    [
+        "max_completion_tokens",
+        "max_output_tokens",
+        "max_tokens",
+        "max_tokens_to_sample",
+        "max_new_tokens",
+    ]
+    .into_iter()
+    .filter_map(|key| body.get(key).and_then(value_to_non_negative_i64))
+    .max()
+    .unwrap_or(0)
+}
+
+fn collect_prompt_text_chars(value: &Value, chars: &mut usize) {
+    match value {
+        Value::String(text) => add_text_chars(chars, text),
+        Value::Array(items) => {
+            for item in items {
+                collect_prompt_text_chars(item, chars);
+            }
+        }
+        Value::Object(object) => {
+            let mut matched_prompt_field = false;
+            for key in [
+                "text",
+                "input_text",
+                "content",
+                "prompt",
+                "instruction",
+                "instructions",
+                "prefix",
+                "suffix",
+            ] {
+                if let Some(value) = object.get(key) {
+                    matched_prompt_field = true;
+                    collect_prompt_text_chars(value, chars);
+                }
+            }
+            if !matched_prompt_field {
+                for (key, value) in object {
+                    if should_skip_prompt_text_key(key) {
+                        continue;
+                    }
+                    collect_prompt_text_chars(value, chars);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_tool_text_chars(value: &Value, chars: &mut usize) {
+    match value {
+        Value::String(text) => add_text_chars(chars, text),
+        Value::Array(items) => {
+            for item in items {
+                collect_tool_text_chars(item, chars);
+            }
+        }
+        Value::Object(object) => {
+            for key in ["name", "description", "parameters"] {
+                if let Some(value) = object.get(key) {
+                    collect_tool_text_chars(value, chars);
+                }
+            }
+            if let Some(function) = object.get("function") {
+                collect_tool_text_chars(function, chars);
+            }
+        }
+        Value::Number(_) | Value::Bool(_) => {
+            add_text_chars(chars, &value.to_string());
+        }
+        Value::Null => {}
+    }
+}
+
+fn should_skip_prompt_text_key(key: &str) -> bool {
+    matches!(
+        key,
+        "type" | "role" | "image_url" | "url" | "file_id" | "file_data" | "b64_json"
+    )
+}
+
+fn add_text_chars(total: &mut usize, text: &str) {
+    *total = total.saturating_add(text.chars().count());
+}
+
+fn estimate_tokens_from_chars(chars: usize) -> i64 {
+    let chars = saturating_usize_to_i64(chars);
+    chars.saturating_add(3) / 4
+}
+
+fn saturating_usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn value_to_non_negative_i64(value: &Value) -> Option<i64> {
+    if let Some(value) = value.as_i64() {
+        return Some(value.max(0));
+    }
+    if let Some(value) = value.as_u64() {
+        return Some(i64::try_from(value).unwrap_or(i64::MAX));
+    }
+    let value = value.as_f64()?;
+    if !value.is_finite() {
+        return None;
+    }
+    Some(value.max(0.0).floor().min(i64::MAX as f64) as i64)
 }
 
 fn token_params_from_usage(usage: &UsageSummary) -> TokenParams {
@@ -1185,17 +1388,62 @@ mod tests {
     }
 
     #[test]
-    fn tiered_billing_outcome_applies_request_probe_and_group_ratio() {
-        let outcome = tiered_billing_outcome(
+    fn request_prompt_estimate_counts_chat_content_parts() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "name": "ann",
+                    "content": [
+                        {"type": "text", "text": "abcdefgh"},
+                        {"type": "input_text", "text": "ijkl"}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": "mnopqrst"
+                }
+            ]
+        });
+
+        assert_eq!(estimate_prompt_tokens_from_request(&body), 21);
+    }
+
+    #[test]
+    fn request_completion_estimate_uses_largest_known_limit() {
+        let body = json!({
+            "max_tokens": 10,
+            "max_completion_tokens": 24,
+            "max_output_tokens": 20
+        });
+
+        assert_eq!(estimate_completion_tokens_from_request(&body), 24);
+    }
+
+    #[test]
+    fn tiered_billing_settlement_uses_frozen_preflight_snapshot() {
+        let request_body = json!({
+            "prompt": "x".repeat(4000),
+            "max_completion_tokens": 100,
+            "service_tier": "fast"
+        });
+        let request = RequestInput::from_json_body(request_body.clone());
+        let snapshot = tiered_billing_preflight_snapshot(
             "gpt-test",
             r#"param("service_tier") == "fast" ? tier("fast", p * 4 + c * 20) : tier("normal", p * 2 + c * 10)"#,
             1.5,
+            &request_body,
+            request.clone(),
+        )
+        .unwrap();
+        let outcome = tiered_billing_settlement(
+            &snapshot,
             &UsageSummary {
                 prompt_tokens: 1_000,
                 completion_tokens: 500,
                 total_tokens: 1_500,
             },
-            RequestInput::from_json_body(json!({"service_tier": "fast"})),
+            &request,
         )
         .unwrap();
         let metadata = tiered_billing_metadata(outcome.snapshot, outcome.result, true, false);
@@ -1203,9 +1451,14 @@ mod tests {
         assert_eq!(metadata["billing_mode"], "tiered_expr");
         assert_eq!(metadata["shadow_only"], true);
         assert_eq!(metadata["applied"], false);
+        assert_eq!(metadata["estimated_prompt_tokens"], 1_000);
+        assert_eq!(metadata["estimated_completion_tokens"], 100);
+        assert_eq!(metadata["estimated_quota_after_group"], 4_500);
         assert_eq!(metadata["matched_tier"], "fast");
         assert_eq!(metadata["group_ratio"], 1.5);
         assert_eq!(metadata["quota_before_group"], 7_000.0);
         assert_eq!(metadata["quota_after_group"], 10_500);
+        assert_eq!(metadata["settlement"]["final_quota"], 10_500);
+        assert_eq!(metadata["settlement"]["additional_quota"], 6_000);
     }
 }

@@ -1293,6 +1293,26 @@ Relay：
 12. 将 `web/default` 构建到 Pages staging。
 13. 用现有前端跑通登录、token、channel、chat、log 最小闭环。
 
+## 19.1 Current Execution Status (2026-06-19)
+
+- Rust workspace, Worker entrypoint, D1 core schema, migration CLI, cache
+  abstractions, Upstash Redis client, relay auth, channel selection, model
+  mapping, OpenAI-compatible relay endpoints, streaming chat passthrough,
+  read-through token/channel cache, and relay token/IP rate limits are now in
+  place.
+- Tiered billing expression foundations are in place: expression execution,
+  request `param()`/`header()` probes, tier trace capture, group-ratio
+  snapshots, refund/additional settlement deltas, D1 billing option lookup, and
+  non-streaming D1 quota mutation for successful tiered-expression responses.
+- The Worker now freezes a tiered billing preflight snapshot before upstream
+  relay using the original request body and a lightweight prompt/completion
+  token estimate, then settles successful non-streaming usage against that
+  frozen snapshot.
+- Remaining Phase 3 billing work: formal pre-consume reserve mutation before
+  upstream relay, tokenizer/media parity for request-time token estimation,
+  streaming usage reconciliation after full stream consumption, and broader
+  Go/Rust golden billing parity tests.
+
 ## 20. 最终交付形态
 
 最终 `cinatoken-rust` 应具备：

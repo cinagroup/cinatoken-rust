@@ -44,12 +44,18 @@ The Worker:
   tiered-expression preflight snapshot from the original request body,
   request probes, group ratio, and a lightweight prompt/completion token
   estimate;
+- for non-streaming tiered-expression requests, reserves the estimated
+  wallet/token quota before upstream relay and refunds it if upstream forwarding
+  fails or no billable usage is returned;
 - refreshes cached token quota state from D1 before auth validation so quota
   mutation is not hidden by read-through cache TTLs;
 - for successful non-streaming tiered-expression responses with usage metadata,
-  settles final tiered quota against the frozen preflight snapshot, decrements
-  user/token quota, increments user/token/channel usage counters, and records
-  metadata under `other.tiered_billing`;
+  settles final tiered quota against the frozen preflight snapshot, applies
+  only the delta from pre-consumed quota, increments user/channel usage
+  counters, and records metadata under `other.tiered_billing`;
+- if post-response tiered expression evaluation fails after a successful
+  reserve, falls back to the pre-consumed quota and records
+  `other.tiered_billing_fallback`;
 - if tiered quota mutation cannot be applied, keeps the audit log pending and
   records the computed result under `other.tiered_billing_shadow` plus an error;
 - writes a zero-quota pending audit log for streaming chat completions via
@@ -89,9 +95,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 
 - Streaming is only implemented for chat completion passthrough.
 - Streaming usage reconciliation is not implemented yet.
-- Formal pre-consume reserve mutation is not implemented yet; tiered
-  expression state is frozen before upstream relay, but the D1 quota mutation
-  is still post-response only for non-streaming responses with usage metadata.
+- Tiered pre-consume reserve is currently implemented for non-streaming
+  OpenAI-compatible requests only; streaming remains pending until usage
+  reconciliation is implemented.
 - Request-time token estimation is currently lightweight JSON-body text
   estimation and max-token extraction, not tokenizer/media parity.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
@@ -103,7 +109,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 Full settlement still needs to complete the remaining request-time side of the
 original billing expression flow:
 
-- formal pre-consume reserve mutation and refund/additional adjustment;
+- streaming pre-consume reserve plus refund/additional adjustment after full
+  stream usage is known;
 - tokenizer/media parity for the preflight token estimate;
 - token normalization based on expression variables;
 - log display metadata for matched tier and expression details.

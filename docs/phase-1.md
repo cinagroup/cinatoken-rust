@@ -37,8 +37,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Worker-side request-time tiered-expression preflight snapshots with
   lightweight prompt/completion token estimates, frozen request probes, and
   post-response settlement against the frozen snapshot.
-- Cached-auth quota-state refresh plus post-response D1 quota mutation for
-  successful non-streaming tiered-expression responses.
+- Cached-auth quota-state refresh plus request-time D1 reserve, failed-request
+  refund, and post-response delta settlement for successful non-streaming
+  tiered-expression responses.
 - Cache traits for string KV, expiring counters, and rate limiting.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.
@@ -50,12 +51,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 
 ## Next
 
-- Add formal pre-consume reserve mutation before upstream relay for tiered
-  billing snapshots. The Worker now freezes request-time snapshots, but still
-  applies the D1 quota mutation after successful non-streaming responses.
 - Add billing expression compile/cache metadata and broader Go/Rust golden
   parity tests.
 - Replace the lightweight Worker request-token estimate with tokenizer/media
   parity against the Go `TokenCountMeta` path.
-- Reconcile streaming usage metadata after full stream consumption.
+- Reconcile streaming usage metadata after full stream consumption, then extend
+  tiered pre-consume reserve to streaming paths.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

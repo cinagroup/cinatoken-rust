@@ -321,24 +321,115 @@ pub async fn apply_relay_quota_usage(
     Ok(())
 }
 
+pub async fn reserve_relay_quota(
+    db: &D1Database,
+    user_id: i64,
+    token_id: i64,
+    quota: i64,
+    accessed_time: i64,
+) -> worker::Result<()> {
+    let quota = quota_i32(quota)?;
+    if quota == 0 {
+        touch_token(db, token_id, accessed_time).await?;
+        return Ok(());
+    }
+
+    let results = db
+        .batch(vec![
+            reserve_user_quota_statement(db, user_id, quota)?,
+            debit_token_quota_usage_statement(db, token_id, quota, accessed_time)?,
+        ])
+        .await?;
+    require_batch_change(&results, 0, "user quota is not enough")?;
+    require_batch_change(&results, 1, "token quota is not enough")
+}
+
+pub async fn refund_reserved_relay_quota(
+    db: &D1Database,
+    user_id: i64,
+    token_id: i64,
+    quota: i64,
+    accessed_time: i64,
+) -> worker::Result<()> {
+    let quota = quota_i32(quota)?;
+    if quota == 0 {
+        touch_token(db, token_id, accessed_time).await?;
+        return Ok(());
+    }
+
+    let results = db
+        .batch(vec![
+            credit_user_quota_statement(db, user_id, quota)?,
+            credit_token_quota_usage_statement(db, token_id, quota, accessed_time)?,
+        ])
+        .await?;
+    require_batch_change(&results, 0, "user no longer exists")?;
+    require_batch_change(&results, 1, "token no longer exists")
+}
+
+pub async fn settle_reserved_relay_quota_usage(
+    db: &D1Database,
+    user_id: i64,
+    token_id: i64,
+    channel_id: i64,
+    pre_consumed_quota: i64,
+    final_quota: i64,
+    accessed_time: i64,
+) -> worker::Result<()> {
+    let pre_consumed_quota = quota_i32(pre_consumed_quota)?;
+    let final_quota = quota_i32(final_quota)?;
+    let delta = final_quota.saturating_sub(pre_consumed_quota);
+
+    let mut statements = Vec::new();
+    if delta > 0 {
+        statements.push(reserve_user_quota_statement(db, user_id, delta)?);
+        statements.push(debit_token_quota_usage_statement(
+            db,
+            token_id,
+            delta,
+            accessed_time,
+        )?);
+    } else if delta < 0 {
+        let refund = delta.saturating_abs();
+        statements.push(credit_user_quota_statement(db, user_id, refund)?);
+        statements.push(credit_token_quota_usage_statement(
+            db,
+            token_id,
+            refund,
+            accessed_time,
+        )?);
+    } else {
+        statements.push(touch_token_statement(db, token_id, accessed_time)?);
+    }
+    statements.push(increment_user_used_quota_and_request_count_statement(
+        db,
+        user_id,
+        final_quota,
+    )?);
+    statements.push(increment_channel_used_quota_statement(
+        db,
+        channel_id,
+        final_quota,
+    )?);
+
+    let results = db.batch(statements).await?;
+    let offset = if delta == 0 { 1 } else { 2 };
+    if delta != 0 {
+        require_batch_change(&results, 0, "user quota settlement failed")?;
+        require_batch_change(&results, 1, "token quota settlement failed")?;
+    } else {
+        require_batch_change(&results, 0, "token no longer exists")?;
+    }
+    require_batch_change(&results, offset, "user no longer exists")?;
+    require_batch_change(&results, offset + 1, "relay channel no longer exists")
+}
+
 async fn debit_user_quota_usage_and_request_count(
     db: &D1Database,
     user_id: i64,
     quota: i32,
 ) -> worker::Result<()> {
-    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
-    let result = db
-        .prepare(
-            r#"
-            UPDATE users
-            SET quota = quota - ?1,
-                used_quota = used_quota + ?1,
-                request_count = request_count + 1
-            WHERE id = ?2
-              AND quota >= ?1
-            "#,
-        )
-        .bind_refs(&args)?
+    let result = debit_user_quota_usage_and_request_count_statement(db, user_id, quota)?
         .run()
         .await?;
     require_one_change(result, "user quota is not enough")
@@ -371,23 +462,7 @@ async fn debit_token_quota_usage(
     quota: i32,
     accessed_time: i64,
 ) -> worker::Result<()> {
-    let args = [
-        D1Type::Integer(quota),
-        D1Type::Integer(d1_i32(accessed_time)),
-        D1Type::Integer(d1_i32(token_id)),
-    ];
-    let result = db
-        .prepare(
-            r#"
-            UPDATE tokens
-            SET remain_quota = remain_quota - ?1,
-                used_quota = used_quota + ?1,
-                accessed_time = ?2
-            WHERE id = ?3
-              AND (unlimited_quota != 0 OR remain_quota >= ?1)
-            "#,
-        )
-        .bind_refs(&args)?
+    let result = debit_token_quota_usage_statement(db, token_id, quota, accessed_time)?
         .run()
         .await?;
     require_one_change(result, "token quota is not enough")
@@ -399,6 +474,116 @@ async fn credit_token_quota_usage(
     quota: i32,
     accessed_time: i64,
 ) -> worker::Result<()> {
+    credit_token_quota_usage_statement(db, token_id, quota, accessed_time)?
+        .run()
+        .await?;
+    Ok(())
+}
+
+async fn increment_channel_used_quota(
+    db: &D1Database,
+    channel_id: i64,
+    quota: i32,
+) -> worker::Result<()> {
+    let result = increment_channel_used_quota_statement(db, channel_id, quota)?
+        .run()
+        .await?;
+    require_one_change(result, "relay channel no longer exists")
+}
+
+fn reserve_user_quota_statement(
+    db: &D1Database,
+    user_id: i64,
+    quota: i32,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    db.prepare(
+        r#"
+        UPDATE users
+        SET quota = quota - ?1
+        WHERE id = ?2
+          AND quota >= ?1
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn credit_user_quota_statement(
+    db: &D1Database,
+    user_id: i64,
+    quota: i32,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    db.prepare("UPDATE users SET quota = quota + ?1 WHERE id = ?2")
+        .bind_refs(&args)
+}
+
+fn increment_user_used_quota_and_request_count_statement(
+    db: &D1Database,
+    user_id: i64,
+    quota: i32,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    db.prepare(
+        r#"
+        UPDATE users
+        SET used_quota = used_quota + ?1,
+            request_count = request_count + 1
+        WHERE id = ?2
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn debit_user_quota_usage_and_request_count_statement(
+    db: &D1Database,
+    user_id: i64,
+    quota: i32,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    db.prepare(
+        r#"
+        UPDATE users
+        SET quota = quota - ?1,
+            used_quota = used_quota + ?1,
+            request_count = request_count + 1
+        WHERE id = ?2
+          AND quota >= ?1
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn debit_token_quota_usage_statement(
+    db: &D1Database,
+    token_id: i64,
+    quota: i32,
+    accessed_time: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(accessed_time)),
+        D1Type::Integer(d1_i32(token_id)),
+    ];
+    db.prepare(
+        r#"
+        UPDATE tokens
+        SET remain_quota = remain_quota - ?1,
+            used_quota = used_quota + ?1,
+            accessed_time = ?2
+        WHERE id = ?3
+          AND (unlimited_quota != 0 OR remain_quota >= ?1)
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn credit_token_quota_usage_statement(
+    db: &D1Database,
+    token_id: i64,
+    quota: i32,
+    accessed_time: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
     let args = [
         D1Type::Integer(quota),
         D1Type::Integer(d1_i32(accessed_time)),
@@ -413,27 +598,47 @@ async fn credit_token_quota_usage(
         WHERE id = ?3
         "#,
     )
-    .bind_refs(&args)?
-    .run()
-    .await?;
-    Ok(())
+    .bind_refs(&args)
 }
 
-async fn increment_channel_used_quota(
+fn increment_channel_used_quota_statement(
     db: &D1Database,
     channel_id: i64,
     quota: i32,
-) -> worker::Result<()> {
+) -> worker::Result<worker::D1PreparedStatement> {
     let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(channel_id))];
-    let result = db
-        .prepare("UPDATE channels SET used_quota = used_quota + ?1 WHERE id = ?2")
-        .bind_refs(&args)?
-        .run()
-        .await?;
-    require_one_change(result, "relay channel no longer exists")
+    db.prepare("UPDATE channels SET used_quota = used_quota + ?1 WHERE id = ?2")
+        .bind_refs(&args)
+}
+
+fn touch_token_statement(
+    db: &D1Database,
+    token_id: i64,
+    accessed_time: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Integer(d1_i32(accessed_time)),
+        D1Type::Integer(d1_i32(token_id)),
+    ];
+    db.prepare("UPDATE tokens SET accessed_time = ?1 WHERE id = ?2")
+        .bind_refs(&args)
 }
 
 fn require_one_change(result: D1Result, message: &str) -> worker::Result<()> {
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    if changes == 1 {
+        Ok(())
+    } else {
+        Err(worker::Error::RustError(message.to_string()))
+    }
+}
+
+fn require_batch_change(results: &[D1Result], index: usize, message: &str) -> worker::Result<()> {
+    let Some(result) = results.get(index) else {
+        return Err(worker::Error::RustError(format!(
+            "missing D1 batch result at index {index}"
+        )));
+    };
     let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
     if changes == 1 {
         Ok(())

@@ -1303,15 +1303,16 @@ Relay：
 - Tiered billing expression foundations are in place: expression execution,
   request `param()`/`header()` probes, tier trace capture, group-ratio
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and
-  non-streaming D1 quota mutation for successful tiered-expression responses.
+  non-streaming D1 pre-consume reserve/delta settlement for
+  tiered-expression responses.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
   relay using the original request body and a lightweight prompt/completion
-  token estimate, then settles successful non-streaming usage against that
-  frozen snapshot.
-- Remaining Phase 3 billing work: formal pre-consume reserve mutation before
-  upstream relay, tokenizer/media parity for request-time token estimation,
-  streaming usage reconciliation after full stream consumption, and broader
-  Go/Rust golden billing parity tests.
+  token estimate, reserves estimated wallet/token quota for non-streaming
+  requests, then settles successful usage against that frozen snapshot.
+- Remaining Phase 3 billing work: tokenizer/media parity for request-time token
+  estimation, streaming usage reconciliation after full stream consumption,
+  streaming reserve/settlement, and broader Go/Rust golden billing parity
+  tests.
 
 ## 20. 最终交付形态
 

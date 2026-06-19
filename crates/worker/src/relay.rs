@@ -208,6 +208,19 @@ async fn openai_compatible_endpoint(
             return openai_error_response(format!("tiered billing preflight failed: {err}"), 500);
         }
     };
+    let mut tiered_billing_preflight = tiered_billing_preflight;
+    if !should_relay_stream {
+        if let Some(preflight) = tiered_billing_preflight.as_mut() {
+            if let Err(err) =
+                reserve_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+            {
+                return openai_error_response(
+                    format!("tiered billing reserve failed: {err}"),
+                    quota_mutation_error_status(&err),
+                );
+            }
+        }
+    }
 
     let mut upstream_body = request_body;
     apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
@@ -217,21 +230,38 @@ async fn openai_compatible_endpoint(
         channel.base_url.as_deref(),
         endpoint.upstream_path,
     );
-    let upstream_response =
-        match forward_openai_compatible(&upstream_url, &upstream_key, &channel, &upstream_body)
-            .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                return json_with_status(
-                    &ErrorBody::bad_request(format!(
-                        "upstream request failed for channel {} ({}): {err}",
-                        channel.id, channel.name
-                    )),
-                    502,
-                );
+    let upstream_response = match forward_openai_compatible(
+        &upstream_url,
+        &upstream_key,
+        &channel,
+        &upstream_body,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            if let Some(preflight) = tiered_billing_preflight.as_ref() {
+                if let Err(refund_err) =
+                    refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+                {
+                    return openai_error_response(
+                            format!(
+                                "upstream request failed for channel {} ({}): {err}; tiered billing reserve refund failed: {refund_err}",
+                                channel.id, channel.name
+                            ),
+                            500,
+                        );
+                }
             }
-        };
+            return json_with_status(
+                &ErrorBody::bad_request(format!(
+                    "upstream request failed for channel {} ({}): {err}",
+                    channel.id, channel.name
+                )),
+                502,
+            );
+        }
+    };
 
     let audit = RelayAuditContext {
         started_at,
@@ -822,7 +852,7 @@ struct RelayAuditContext {
     client_ip: Option<String>,
     request_id: Option<String>,
     billing_request_input: RequestInput,
-    tiered_billing_preflight: Option<TieredBillingSnapshot>,
+    tiered_billing_preflight: Option<TieredBillingPreflight>,
 }
 
 async fn record_relay_audit(
@@ -850,27 +880,47 @@ async fn record_relay_audit(
     });
     let mut quota = 0;
     let mut billing_applied = false;
-    if !is_stream && upstream_status < 400 && usage.total_tokens > 0 {
-        if let Some(snapshot) = audit.tiered_billing_preflight.as_ref() {
-            match tiered_billing_settlement(snapshot, usage, &audit.billing_request_input) {
+    let mut billing_resolved = false;
+    if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
+        if !is_stream && upstream_status < 400 && usage.total_tokens > 0 {
+            match tiered_billing_settlement(
+                &preflight.snapshot,
+                usage,
+                &audit.billing_request_input,
+            ) {
                 Ok(outcome) => {
                     let final_quota = outcome.final_quota;
-                    match crate::d1_repositories::apply_relay_quota_usage(
-                        db,
-                        auth.user_id,
-                        auth.token_id,
-                        channel.id,
-                        final_quota,
-                        now,
-                    )
-                    .await
-                    {
+                    let quota_result = if preflight.reserve_applied {
+                        crate::d1_repositories::settle_reserved_relay_quota_usage(
+                            db,
+                            auth.user_id,
+                            auth.token_id,
+                            channel.id,
+                            preflight.pre_consumed_quota,
+                            final_quota,
+                            now,
+                        )
+                        .await
+                    } else {
+                        crate::d1_repositories::apply_relay_quota_usage(
+                            db,
+                            auth.user_id,
+                            auth.token_id,
+                            channel.id,
+                            final_quota,
+                            now,
+                        )
+                        .await
+                    };
+                    match quota_result {
                         Ok(()) => {
                             quota = final_quota;
                             billing_applied = true;
+                            billing_resolved = true;
                             set_json_bool(&mut other, "billing_pending", false);
                             let metadata = tiered_billing_metadata(
                                 outcome.snapshot,
+                                preflight.pre_consumed_quota,
                                 outcome.result,
                                 false,
                                 true,
@@ -880,6 +930,7 @@ async fn record_relay_audit(
                         Err(err) => {
                             let metadata = tiered_billing_metadata(
                                 outcome.snapshot,
+                                preflight.pre_consumed_quota,
                                 outcome.result,
                                 true,
                                 false,
@@ -894,7 +945,62 @@ async fn record_relay_audit(
                     }
                 }
                 Err(err) => {
-                    set_json_string(&mut other, "tiered_billing_shadow_error", err);
+                    if preflight.reserve_applied {
+                        match crate::d1_repositories::settle_reserved_relay_quota_usage(
+                            db,
+                            auth.user_id,
+                            auth.token_id,
+                            channel.id,
+                            preflight.pre_consumed_quota,
+                            preflight.pre_consumed_quota,
+                            now,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                quota = preflight.pre_consumed_quota;
+                                billing_applied = true;
+                                billing_resolved = true;
+                                set_json_bool(&mut other, "billing_pending", false);
+                                set_json_value(
+                                    &mut other,
+                                    "tiered_billing_fallback",
+                                    tiered_billing_fallback_metadata(preflight, err, true),
+                                );
+                            }
+                            Err(settle_err) => {
+                                set_json_string(
+                                    &mut other,
+                                    "tiered_billing_shadow_error",
+                                    format!("{err}; fallback settle failed: {settle_err}"),
+                                );
+                            }
+                        }
+                    } else {
+                        set_json_string(&mut other, "tiered_billing_shadow_error", err);
+                    }
+                }
+            }
+        } else if preflight.reserve_applied {
+            match refund_tiered_billing_preflight(db, auth, preflight, now).await {
+                Ok(()) => {
+                    billing_resolved = true;
+                    set_json_bool(&mut other, "billing_pending", false);
+                    set_json_value(
+                        &mut other,
+                        "tiered_billing_refund",
+                        tiered_billing_refund_metadata(
+                            preflight,
+                            refund_reason(upstream_status, usage, is_stream),
+                        ),
+                    );
+                }
+                Err(err) => {
+                    set_json_string(
+                        &mut other,
+                        "tiered_billing_shadow_error",
+                        format!("failed to refund reserved tiered quota: {err}"),
+                    );
                 }
             }
         }
@@ -928,6 +1034,8 @@ async fn record_relay_audit(
     let action = if is_stream { "streamed" } else { "forwarded" };
     let content = if billing_applied {
         format!("Rust relay {action} {endpoint_path}; tiered quota {quota}")
+    } else if billing_resolved {
+        format!("Rust relay {action} {endpoint_path}; quota resolved without charge")
     } else {
         format!("Rust relay {action} {endpoint_path}; quota settlement pending")
     };
@@ -940,13 +1048,20 @@ struct TieredBillingOutcome {
     result: TieredBillingResult,
 }
 
+#[derive(Clone)]
+struct TieredBillingPreflight {
+    snapshot: TieredBillingSnapshot,
+    pre_consumed_quota: i64,
+    reserve_applied: bool,
+}
+
 async fn prepare_tiered_billing_preflight(
     db: &D1Database,
     model: &str,
     group: &str,
     request_body: &Value,
     request: &RequestInput,
-) -> worker::Result<Option<TieredBillingSnapshot>> {
+) -> worker::Result<Option<TieredBillingPreflight>> {
     let Some(expr) = crate::d1_repositories::tiered_billing_expr_for_model(db, model).await? else {
         return Ok(None);
     };
@@ -962,10 +1077,56 @@ fn tiered_billing_preflight_snapshot(
     group_ratio: f64,
     request_body: &Value,
     request: RequestInput,
-) -> Result<TieredBillingSnapshot, String> {
+) -> Result<TieredBillingPreflight, String> {
     let params = token_params_from_request(request_body);
-    estimate_tiered_billing_snapshot_with_request(model, expr, params, group_ratio, request)
-        .map_err(|err| format!("failed to estimate tiered billing: {err}"))
+    let snapshot =
+        estimate_tiered_billing_snapshot_with_request(model, expr, params, group_ratio, request)
+            .map_err(|err| format!("failed to estimate tiered billing: {err}"))?;
+    Ok(TieredBillingPreflight {
+        pre_consumed_quota: snapshot.estimated_quota_after_group.0.max(0),
+        snapshot,
+        reserve_applied: false,
+    })
+}
+
+async fn reserve_tiered_billing_preflight(
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    preflight: &mut TieredBillingPreflight,
+    now: i64,
+) -> worker::Result<()> {
+    if preflight.pre_consumed_quota == 0 {
+        return Ok(());
+    }
+    crate::d1_repositories::reserve_relay_quota(
+        db,
+        auth.user_id,
+        auth.token_id,
+        preflight.pre_consumed_quota,
+        now,
+    )
+    .await?;
+    preflight.reserve_applied = true;
+    Ok(())
+}
+
+async fn refund_tiered_billing_preflight(
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    preflight: &TieredBillingPreflight,
+    now: i64,
+) -> worker::Result<()> {
+    if !preflight.reserve_applied || preflight.pre_consumed_quota == 0 {
+        return Ok(());
+    }
+    crate::d1_repositories::refund_reserved_relay_quota(
+        db,
+        auth.user_id,
+        auth.token_id,
+        preflight.pre_consumed_quota,
+        now,
+    )
+    .await
 }
 
 fn tiered_billing_settlement(
@@ -987,6 +1148,7 @@ fn tiered_billing_settlement(
 
 fn tiered_billing_metadata(
     snapshot: TieredBillingSnapshot,
+    pre_consumed_quota: i64,
     result: TieredBillingResult,
     shadow_only: bool,
     applied: bool,
@@ -997,6 +1159,7 @@ fn tiered_billing_metadata(
         "applied": applied,
         "expr_version": snapshot.expr_version,
         "group_ratio": snapshot.group_ratio,
+        "pre_consumed_quota": pre_consumed_quota,
         "estimated_prompt_tokens": snapshot.estimated_prompt_tokens,
         "estimated_completion_tokens": snapshot.estimated_completion_tokens,
         "estimated_expression_cost": snapshot.estimated_expression_cost,
@@ -1014,6 +1177,48 @@ fn tiered_billing_metadata(
             "additional_quota": result.settlement.additional_quota.0,
         }
     })
+}
+
+fn tiered_billing_fallback_metadata(
+    preflight: &TieredBillingPreflight,
+    error: String,
+    applied: bool,
+) -> Value {
+    json!({
+        "billing_mode": preflight.snapshot.billing_mode,
+        "applied": applied,
+        "fallback_to_pre_consumed": true,
+        "pre_consumed_quota": preflight.pre_consumed_quota,
+        "estimated_tier": preflight.snapshot.estimated_tier,
+        "estimated_quota_after_group": preflight.snapshot.estimated_quota_after_group.0,
+        "error": error,
+    })
+}
+
+fn tiered_billing_refund_metadata(
+    preflight: &TieredBillingPreflight,
+    reason: &'static str,
+) -> Value {
+    json!({
+        "billing_mode": preflight.snapshot.billing_mode,
+        "refunded": true,
+        "pre_consumed_quota": preflight.pre_consumed_quota,
+        "estimated_tier": preflight.snapshot.estimated_tier,
+        "estimated_quota_after_group": preflight.snapshot.estimated_quota_after_group.0,
+        "reason": reason,
+    })
+}
+
+fn refund_reason(upstream_status: u16, usage: &UsageSummary, is_stream: bool) -> &'static str {
+    if is_stream {
+        "streaming_usage_reconciliation_pending"
+    } else if upstream_status >= 400 {
+        "upstream_error"
+    } else if usage.total_tokens <= 0 {
+        "missing_usage"
+    } else {
+        "not_billable"
+    }
 }
 
 fn set_json_bool(value: &mut Value, key: &str, item: bool) {
@@ -1261,6 +1466,15 @@ fn worker_error_response(err: worker::Error) -> worker::Result<Response> {
     )
 }
 
+fn quota_mutation_error_status(err: &worker::Error) -> u16 {
+    let message = err.to_string().to_ascii_lowercase();
+    if message.contains("quota") && message.contains("not enough") {
+        403
+    } else {
+        500
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1428,7 +1642,7 @@ mod tests {
             "service_tier": "fast"
         });
         let request = RequestInput::from_json_body(request_body.clone());
-        let snapshot = tiered_billing_preflight_snapshot(
+        let preflight = tiered_billing_preflight_snapshot(
             "gpt-test",
             r#"param("service_tier") == "fast" ? tier("fast", p * 4 + c * 20) : tier("normal", p * 2 + c * 10)"#,
             1.5,
@@ -1437,7 +1651,7 @@ mod tests {
         )
         .unwrap();
         let outcome = tiered_billing_settlement(
-            &snapshot,
+            &preflight.snapshot,
             &UsageSummary {
                 prompt_tokens: 1_000,
                 completion_tokens: 500,
@@ -1446,11 +1660,18 @@ mod tests {
             &request,
         )
         .unwrap();
-        let metadata = tiered_billing_metadata(outcome.snapshot, outcome.result, true, false);
+        let metadata = tiered_billing_metadata(
+            outcome.snapshot,
+            preflight.pre_consumed_quota,
+            outcome.result,
+            true,
+            false,
+        );
 
         assert_eq!(metadata["billing_mode"], "tiered_expr");
         assert_eq!(metadata["shadow_only"], true);
         assert_eq!(metadata["applied"], false);
+        assert_eq!(metadata["pre_consumed_quota"], 4_500);
         assert_eq!(metadata["estimated_prompt_tokens"], 1_000);
         assert_eq!(metadata["estimated_completion_tokens"], 100);
         assert_eq!(metadata["estimated_quota_after_group"], 4_500);
@@ -1460,5 +1681,31 @@ mod tests {
         assert_eq!(metadata["quota_after_group"], 10_500);
         assert_eq!(metadata["settlement"]["final_quota"], 10_500);
         assert_eq!(metadata["settlement"]["additional_quota"], 6_000);
+    }
+
+    #[test]
+    fn tiered_billing_fallback_and_refund_metadata_include_reserved_quota() {
+        let request_body = json!({
+            "prompt": "x".repeat(4000),
+            "max_completion_tokens": 100
+        });
+        let preflight = tiered_billing_preflight_snapshot(
+            "gpt-test",
+            r#"tier("base", p * 4 + c * 20)"#,
+            1.5,
+            &request_body,
+            RequestInput::from_json_body(request_body.clone()),
+        )
+        .unwrap();
+
+        let fallback =
+            tiered_billing_fallback_metadata(&preflight, "settlement failed".to_string(), true);
+        assert_eq!(fallback["fallback_to_pre_consumed"], true);
+        assert_eq!(fallback["pre_consumed_quota"], 4_500);
+
+        let refund = tiered_billing_refund_metadata(&preflight, "missing_usage");
+        assert_eq!(refund["refunded"], true);
+        assert_eq!(refund["pre_consumed_quota"], 4_500);
+        assert_eq!(refund["reason"], "missing_usage");
     }
 }

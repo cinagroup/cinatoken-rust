@@ -7,9 +7,10 @@ use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
     apply_model_mapping, csv_contains, first_channel_key, ip_allowlist_matches, upstream_v1_url,
     usage_summary_from_body, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
-    UsageSummary,
+    SseUsageAccumulator, UsageSummary,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use wasm_bindgen::JsValue;
@@ -819,9 +820,16 @@ async fn complete_streaming_relay_response(
         .flatten()
         .unwrap_or_else(|| "text/event-stream".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    let mut audit_response = upstream.cloned()?;
 
     context.wait_until(async move {
-        let usage = UsageSummary::default();
+        let usage = match streaming_usage_summary(&mut audit_response).await {
+            Ok(usage) => usage,
+            Err(err) => {
+                worker::console_error!("failed to parse streaming relay usage: {}", err);
+                UsageSummary::default()
+            }
+        };
         if let Err(err) = record_relay_audit(
             &db,
             &auth,
@@ -844,6 +852,17 @@ async fn complete_streaming_relay_response(
     upstream.headers_mut().set("content-type", &content_type)?;
     set_cors_headers(&mut upstream)?;
     Ok(upstream)
+}
+
+async fn streaming_usage_summary(upstream: &mut Response) -> worker::Result<UsageSummary> {
+    let mut stream = upstream.stream()?;
+    let mut accumulator = SseUsageAccumulator::default();
+
+    while let Some(chunk) = stream.next().await {
+        accumulator.push_chunk(&chunk?);
+    }
+
+    Ok(accumulator.finish())
 }
 
 #[derive(Clone)]
@@ -882,7 +901,7 @@ async fn record_relay_audit(
     let mut billing_applied = false;
     let mut billing_resolved = false;
     if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
-        if !is_stream && upstream_status < 400 && usage.total_tokens > 0 {
+        if upstream_status < 400 && usage.total_tokens > 0 {
             match tiered_billing_settlement(
                 &preflight.snapshot,
                 usage,
@@ -1210,11 +1229,12 @@ fn tiered_billing_refund_metadata(
 }
 
 fn refund_reason(upstream_status: u16, usage: &UsageSummary, is_stream: bool) -> &'static str {
-    if is_stream {
-        "streaming_usage_reconciliation_pending"
-    } else if upstream_status >= 400 {
+    if upstream_status >= 400 {
         "upstream_error"
     } else if usage.total_tokens <= 0 {
+        if is_stream {
+            return "missing_stream_usage";
+        }
         "missing_usage"
     } else {
         "not_billable"
@@ -1707,5 +1727,17 @@ mod tests {
         assert_eq!(refund["refunded"], true);
         assert_eq!(refund["pre_consumed_quota"], 4_500);
         assert_eq!(refund["reason"], "missing_usage");
+    }
+
+    #[test]
+    fn refund_reason_distinguishes_missing_stream_usage() {
+        assert_eq!(
+            refund_reason(200, &UsageSummary::default(), true),
+            "missing_stream_usage"
+        );
+        assert_eq!(
+            refund_reason(200, &UsageSummary::default(), false),
+            "missing_usage"
+        );
     }
 }

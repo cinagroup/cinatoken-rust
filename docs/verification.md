@@ -10,8 +10,8 @@ Last checked: 2026-06-19
 - `bun run check` from `C:\cinagroup\cinatoken-rust`.
 - `cargo test -p cinatoken-relay` covering OpenAI-compatible relay helpers,
   generalized `/v1/...` upstream URL generation, relay cache key normalization,
-  token fingerprinting, JSON/SSE usage parsing, and versioned token/channel
-  cache wrappers.
+  token fingerprinting, JSON/SSE usage parsing, split streaming byte chunks,
+  and versioned token/channel cache wrappers.
 - `cargo test -p cinatoken-migration` covering `dev-seed` SQL generation.
 - `cargo test -p cinatoken-migration` covering source repository inspection
   argument parsing and local SQLite candidate discovery.
@@ -55,6 +55,8 @@ Last checked: 2026-06-19
 - `cargo test -p cinatoken-worker --lib` covering non-streaming tiered reserve
   fallback/refund metadata and compiling the D1 repository pre-consume quota
   mutation paths.
+- `cargo test -p cinatoken-worker --lib` covering streaming missing-usage
+  refund reason metadata and compiling the Worker streaming audit path.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus

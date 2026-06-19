@@ -1312,10 +1312,13 @@ Relay：
   relay using the original request body and a lightweight prompt/completion
   token estimate, reserves estimated wallet/token quota for non-streaming
   requests, then settles successful usage against that frozen snapshot.
+- Streaming chat passthrough now tees the upstream response and consumes an
+  audit branch with incremental SSE usage parsing in `wait_until`; successful
+  tiered streaming responses settle actual quota after full stream usage is
+  known, without streaming pre-consume reserve yet.
 - Remaining Phase 3 billing work: tokenizer/media parity for request-time token
-  estimation, Worker-side streaming usage reconciliation after full stream
-  consumption, streaming reserve/settlement, and broader Go/Rust golden billing
-  parity tests.
+  estimation, streaming pre-consume reserve/refund/additional adjustment, and
+  broader Go/Rust golden billing parity tests.
 
 ## 20. 最终交付形态
 

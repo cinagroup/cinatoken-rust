@@ -10,7 +10,8 @@ pub use cache::{
 pub use openai_compatible::{
     apply_model_mapping, clamp_i64_to_i32, csv_contains, first_channel_key, ip_allowlist_matches,
     is_openai_compatible_channel_type, upstream_chat_url, upstream_v1_url, usage_summary_from_body,
-    usage_summary_from_sse_stream, UsageSummary, OPENAI_COMPATIBLE_CHANNEL_TYPES,
+    usage_summary_from_sse_stream, SseUsageAccumulator, UsageSummary,
+    OPENAI_COMPATIBLE_CHANNEL_TYPES,
 };
 
 #[derive(Debug, Clone)]

@@ -18,6 +18,7 @@ cinatoken-core = { path = "../core" }
 cinatoken-relay = { path = "../relay" }
 cinatoken-storage = { path = "../storage" }
 console_error_panic_hook = "0.1"
+futures-util = { version = "0.3", default-features = false }
 js-sys = "0.3"
 serde.workspace = true
 serde_json.workspace = true

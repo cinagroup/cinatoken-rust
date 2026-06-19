@@ -120,29 +120,61 @@ pub fn usage_summary_from_body(body: &str) -> UsageSummary {
 }
 
 pub fn usage_summary_from_sse_stream(body: &str) -> UsageSummary {
-    let mut latest = UsageSummary::default();
-    let mut data_lines = Vec::new();
+    let mut accumulator = SseUsageAccumulator::default();
+    accumulator.push_chunk(body.as_bytes());
+    accumulator.finish()
+}
 
-    for line in body.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.trim().is_empty() {
-            if let Some(summary) = usage_summary_from_sse_data_lines(&data_lines) {
-                latest = summary;
+#[derive(Debug, Default)]
+pub struct SseUsageAccumulator {
+    latest: UsageSummary,
+    pending_line: Vec<u8>,
+    data_lines: Vec<String>,
+}
+
+impl SseUsageAccumulator {
+    pub fn push_chunk(&mut self, chunk: &[u8]) {
+        self.pending_line.extend_from_slice(chunk);
+
+        while let Some(newline) = self.pending_line.iter().position(|byte| *byte == b'\n') {
+            let mut line = self.pending_line.drain(..=newline).collect::<Vec<_>>();
+            if line.last() == Some(&b'\n') {
+                line.pop();
             }
-            data_lines.clear();
-            continue;
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            self.push_line(&line);
+        }
+    }
+
+    pub fn finish(mut self) -> UsageSummary {
+        if !self.pending_line.is_empty() {
+            let line = std::mem::take(&mut self.pending_line);
+            self.push_line(&line);
+        }
+        self.flush_event();
+        self.latest
+    }
+
+    fn push_line(&mut self, line: &[u8]) {
+        let line = String::from_utf8_lossy(line);
+        if line.trim().is_empty() {
+            self.flush_event();
+            return;
         }
 
         if let Some(data) = line.strip_prefix("data:") {
-            data_lines.push(data.trim_start());
+            self.data_lines.push(data.trim_start().to_string());
         }
     }
 
-    if let Some(summary) = usage_summary_from_sse_data_lines(&data_lines) {
-        latest = summary;
+    fn flush_event(&mut self) {
+        if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines) {
+            self.latest = summary;
+        }
+        self.data_lines.clear();
     }
-
-    latest
 }
 
 fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
@@ -164,7 +196,7 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
     })
 }
 
-fn usage_summary_from_sse_data_lines(data_lines: &[&str]) -> Option<UsageSummary> {
+fn usage_summary_from_sse_data_lines(data_lines: &[String]) -> Option<UsageSummary> {
     if data_lines.is_empty() {
         return None;
     }
@@ -369,6 +401,24 @@ mod tests {
                 prompt_tokens: 4,
                 completion_tokens: 6,
                 total_tokens: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn sse_usage_accumulator_handles_split_byte_chunks() {
+        let mut accumulator = SseUsageAccumulator::default();
+        accumulator.push_chunk(b"data: {\"usage\":{\"prompt_to");
+        accumulator.push_chunk(b"kens\":11,\"completion_tokens\":");
+        accumulator.push_chunk(b"4,\"total_tokens\":15}}\r\n\r\n");
+        accumulator.push_chunk(b"data: [DONE]\r\n");
+
+        assert_eq!(
+            accumulator.finish(),
+            UsageSummary {
+                prompt_tokens: 11,
+                completion_tokens: 4,
+                total_tokens: 15,
             }
         );
     }

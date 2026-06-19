@@ -172,6 +172,7 @@ dependencies = [
  "cinatoken-relay",
  "cinatoken-storage",
  "console_error_panic_hook",
+ "futures-util",
  "js-sys",
  "serde",
  "serde_json",

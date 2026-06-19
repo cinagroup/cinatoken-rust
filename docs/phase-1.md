@@ -41,8 +41,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Cached-auth quota-state refresh plus request-time D1 reserve, failed-request
   refund, and post-response delta settlement for successful non-streaming
   tiered-expression responses.
-- OpenAI-compatible SSE usage parser foundation for future streaming
-  reconciliation after the Worker consumes a full upstream stream.
+- Worker-side streaming usage reconciliation for chat passthrough via response
+  tee, incremental SSE usage parsing, and `wait_until` audit recording.
 - Cache traits for string KV, expiring counters, and rate limiting.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.
@@ -58,6 +58,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   parity tests.
 - Replace the lightweight Worker request-token estimate with tokenizer/media
   parity against the Go `TokenCountMeta` path.
-- Wire Worker-side full-stream usage reconciliation into streaming chat
-  passthrough, then extend tiered pre-consume reserve to streaming paths.
+- Extend tiered pre-consume reserve/refund/additional adjustment to streaming
+  paths now that full-stream usage reconciliation is wired.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

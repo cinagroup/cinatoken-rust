@@ -36,8 +36,10 @@ The Worker:
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
 - returns the upstream body, status, and content type to the client;
 - returns upstream chat completion streams without buffering the full response;
-- parses OpenAI-compatible usage metadata from JSON responses and has a shared
-  SSE `data:` event parser ready for streaming reconciliation;
+- parses OpenAI-compatible usage metadata from JSON responses and streaming
+  SSE `data:` events;
+- tees streaming chat responses so `wait_until` can consume an audit branch
+  incrementally without blocking the client stream;
 - updates token `accessed_time`, increments user `request_count`, and writes
   consume audit logs with parsed usage token counts;
 - reads Go-compatible `billing_setting.billing_mode`,
@@ -55,13 +57,16 @@ The Worker:
   settles final tiered quota against the frozen preflight snapshot, applies
   only the delta from pre-consumed quota, increments user/channel usage
   counters, and records metadata under `other.tiered_billing`;
+- for successful streaming tiered-expression responses with usage metadata,
+  settles final tiered quota after the full stream is consumed; streaming
+  pre-consume reserve is not wired yet;
 - if post-response tiered expression evaluation fails after a successful
   reserve, falls back to the pre-consumed quota and records
   `other.tiered_billing_fallback`;
 - if tiered quota mutation cannot be applied, keeps the audit log pending and
   records the computed result under `other.tiered_billing_shadow` plus an error;
-- writes a zero-quota pending audit log for streaming chat completions via
-  `wait_until`; stream token usage is not reconciled yet;
+- writes streaming chat completion audit logs via `wait_until` after the audit
+  stream branch is consumed;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis
@@ -96,11 +101,11 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 ## Deliberate Limitations
 
 - Streaming is only implemented for chat completion passthrough.
-- Streaming usage parsing is implemented in the shared relay crate, but Worker
-  stream consumption/reconciliation is not wired yet.
+- Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
+  chunks, but live upstream SSE coverage is still pending.
 - Tiered pre-consume reserve is currently implemented for non-streaming
-  OpenAI-compatible requests only; streaming remains pending until usage
-  reconciliation is implemented.
+  OpenAI-compatible requests only; streaming currently settles after full
+  stream usage is known.
 - Request-time token estimation is currently lightweight JSON-body text
   estimation and max-token extraction, not tokenizer/media parity.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
@@ -112,8 +117,7 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 Full settlement still needs to complete the remaining request-time side of the
 original billing expression flow:
 
-- streaming pre-consume reserve plus refund/additional adjustment after full
-  stream usage is known;
+- streaming pre-consume reserve plus refund/additional adjustment;
 - tokenizer/media parity for the preflight token estimate;
 - token normalization based on expression variables;
 - log display metadata for matched tier and expression details.

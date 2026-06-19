@@ -51,14 +51,20 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 This is not wired into Worker quota mutation yet. The Worker still records
 `quota = 0` audit logs with `other.billing_pending = true`.
 
+The Worker now reads Go-compatible D1 billing options and, for non-streaming
+OpenAI-compatible responses with usage metadata, records tiered expression
+shadow results under `other.tiered_billing_shadow`. Shadow results include
+matched tier, expression cost, group ratio, and computed quota, but they do not
+decrement user or token quota.
+
 Do not decrement user or token quota from the Worker until the migration ports
 and verifies these remaining Go billing behaviors:
 
 - expression compile/cache metadata and validation;
 - broader Go/Rust golden parity tests for expression edge cases;
 - request-rule handling for expressions stored with `|||`;
-- Worker relay wiring for quota pre-consume, final settlement, quota mutation,
-  and error fallback;
+- Worker relay wiring for formal quota pre-consume, final mutation, and error
+  fallback;
 - matched tier metadata injection for usage-log display.
 
 ## Compatibility Tests

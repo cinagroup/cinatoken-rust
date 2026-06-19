@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 async-trait.workspace = true
 cinatoken-api = { path = "../api" }
+cinatoken-billing = { path = "../billing" }
 cinatoken-cache = { path = "../cache" }
 cinatoken-core = { path = "../core" }
 cinatoken-relay = { path = "../relay" }

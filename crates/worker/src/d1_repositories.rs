@@ -2,7 +2,21 @@ use cinatoken_relay::{
     clamp_i64_to_i32 as d1_i32, csv_contains, is_openai_compatible_channel_type,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
 use worker::{D1Database, D1Type};
+
+const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
+const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
+const GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_ratio";
+const LEGACY_GROUP_RATIO_OPTION_KEY: &str = "GroupRatio";
+const BILLING_MODE_TIERED_EXPR: &str = "tiered_expr";
+
+#[derive(Debug, Deserialize)]
+struct OptionValueRow {
+    value: String,
+}
 
 pub async fn authenticate_token(
     db: &D1Database,
@@ -209,4 +223,142 @@ pub async fn insert_relay_audit_log(
     .run()
     .await?;
     Ok(())
+}
+
+pub async fn tiered_billing_expr_for_model(
+    db: &D1Database,
+    model: &str,
+) -> worker::Result<Option<String>> {
+    let billing_mode = option_value(db, BILLING_MODE_OPTION_KEY).await?;
+    let billing_expr = option_value(db, BILLING_EXPR_OPTION_KEY).await?;
+    resolve_tiered_billing_expr_for_model(model, billing_mode.as_deref(), billing_expr.as_deref())
+}
+
+pub async fn group_ratio_for_group(db: &D1Database, group: &str) -> worker::Result<f64> {
+    if let Some(raw) = option_value(db, GROUP_RATIO_OPTION_KEY).await? {
+        if let Some(ratio) = resolve_group_ratio(group, &raw)? {
+            return Ok(ratio);
+        }
+    }
+    if let Some(raw) = option_value(db, LEGACY_GROUP_RATIO_OPTION_KEY).await? {
+        if let Some(ratio) = resolve_group_ratio(group, &raw)? {
+            return Ok(ratio);
+        }
+    }
+    Ok(1.0)
+}
+
+async fn option_value(db: &D1Database, key: &str) -> worker::Result<Option<String>> {
+    let key_arg = D1Type::Text(key);
+    db.prepare(r#"SELECT value FROM options WHERE "key" = ?1 LIMIT 1"#)
+        .bind_refs(&key_arg)?
+        .first::<OptionValueRow>(None)
+        .await
+        .map(|row| row.map(|row| row.value))
+}
+
+fn resolve_tiered_billing_expr_for_model(
+    model: &str,
+    billing_mode: Option<&str>,
+    billing_expr: Option<&str>,
+) -> worker::Result<Option<String>> {
+    let modes = parse_string_map_option(BILLING_MODE_OPTION_KEY, billing_mode)?;
+    if modes.get(model).map(String::as_str).map(str::trim) != Some(BILLING_MODE_TIERED_EXPR) {
+        return Ok(None);
+    }
+
+    let expressions = parse_string_map_option(BILLING_EXPR_OPTION_KEY, billing_expr)?;
+    Ok(expressions
+        .get(model)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|expr| !expr.is_empty())
+        .map(str::to_string))
+}
+
+fn parse_string_map_option(
+    key: &str,
+    raw: Option<&str>,
+) -> worker::Result<HashMap<String, String>> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(HashMap::new());
+    };
+    serde_json::from_str::<HashMap<String, String>>(raw).map_err(|err| {
+        worker::Error::RustError(format!("option {key} must be a JSON string map: {err}"))
+    })
+}
+
+fn resolve_group_ratio(group: &str, raw: &str) -> worker::Result<Option<f64>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let values = serde_json::from_str::<HashMap<String, Value>>(raw).map_err(|err| {
+        worker::Error::RustError(format!("group ratio option must be a JSON object: {err}"))
+    })?;
+    let Some(value) = values.get(group) else {
+        return Ok(None);
+    };
+    let ratio = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        .ok_or_else(|| {
+            worker::Error::RustError(format!("group ratio for {group} must be numeric"))
+        })?;
+    Ok(Some(ratio.max(0.0)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_tiered_billing_expr_from_go_option_maps() {
+        let expr = resolve_tiered_billing_expr_for_model(
+            "gpt-test",
+            Some(r#"{"gpt-test":"tiered_expr","other":"ratio"}"#),
+            Some(r#"{"gpt-test":" tier(\"base\", p * 2 + c * 10) "}"#),
+        )
+        .unwrap();
+
+        assert_eq!(expr.as_deref(), Some(r#"tier("base", p * 2 + c * 10)"#));
+    }
+
+    #[test]
+    fn ignores_non_tiered_or_missing_billing_expr() {
+        assert_eq!(
+            resolve_tiered_billing_expr_for_model(
+                "gpt-test",
+                Some(r#"{"gpt-test":"ratio"}"#),
+                Some(r#"{"gpt-test":"tier(\"base\", p)"}"#),
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_tiered_billing_expr_for_model(
+                "gpt-test",
+                Some(r#"{"gpt-test":"tiered_expr"}"#),
+                Some(r#"{"gpt-test":"   "}"#),
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn resolves_group_ratio_from_numeric_or_string_values() {
+        assert_eq!(
+            resolve_group_ratio("vip", r#"{"default":1,"vip":1.5}"#).unwrap(),
+            Some(1.5)
+        );
+        assert_eq!(
+            resolve_group_ratio("vip", r#"{"vip":"2.25"}"#).unwrap(),
+            Some(2.25)
+        );
+        assert_eq!(
+            resolve_group_ratio("missing", r#"{"vip":2}"#).unwrap(),
+            None
+        );
+    }
 }

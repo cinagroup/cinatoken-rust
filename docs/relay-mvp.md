@@ -38,6 +38,11 @@ The Worker:
 - returns upstream chat completion streams without buffering the full response;
 - updates token `accessed_time`, increments user `request_count`, and writes a
   zero-quota consume audit log with parsed usage token counts;
+- reads Go-compatible `billing_setting.billing_mode`,
+  `billing_setting.billing_expr`, and group-ratio options from D1 `options`;
+- for non-streaming tiered-expression models, records shadow tiered settlement
+  metadata under `other.tiered_billing_shadow` while leaving real quota
+  deduction disabled;
 - writes a zero-quota pending audit log for streaming chat completions via
   `wait_until`; stream token usage is not reconciled yet;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
@@ -76,7 +81,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - Streaming is only implemented for chat completion passthrough.
 - Streaming usage reconciliation is not implemented yet.
 - Formal pre-consume and post-consume quota settlement is not implemented yet.
-- The audit log uses `quota = 0` and `other.billing_pending = true`.
+- The audit log uses `quota = 0` and `other.billing_pending = true`; tiered
+  expression results are shadow metadata only.
 - Provider-specific request transforms are not implemented yet.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
 - Token/channel cache invalidation is TTL-based; explicit invalidation still

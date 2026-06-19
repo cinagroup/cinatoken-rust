@@ -166,6 +166,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "cinatoken-api",
+ "cinatoken-billing",
  "cinatoken-cache",
  "cinatoken-core",
  "cinatoken-relay",

@@ -1,3 +1,7 @@
+use cinatoken_billing::{
+    compute_tiered_quota_with_request, estimate_tiered_billing_snapshot_with_request, RequestInput,
+    TokenParams,
+};
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
@@ -7,6 +11,7 @@ use cinatoken_relay::{
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use wasm_bindgen::JsValue;
 use worker::{Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
@@ -133,6 +138,7 @@ async fn openai_compatible_endpoint(
             );
         }
     };
+    let billing_request_input = billing_request_input(&req, &request_body);
 
     if let Some(feature) = endpoint.stream_not_implemented(&request_body) {
         return json_with_status(&ErrorBody::not_implemented(feature), 501);
@@ -216,6 +222,7 @@ async fn openai_compatible_endpoint(
         started_at,
         client_ip,
         request_id,
+        billing_request_input,
     };
 
     if should_relay_stream {
@@ -789,6 +796,7 @@ struct RelayAuditContext {
     started_at: i64,
     client_ip: Option<String>,
     request_id: Option<String>,
+    billing_request_input: RequestInput,
 }
 
 async fn record_relay_audit(
@@ -809,14 +817,17 @@ async fn record_relay_audit(
     crate::d1_repositories::increment_user_request_count(db, auth.user_id).await?;
 
     let use_time = now.saturating_sub(audit.started_at);
-    let other_json = json!({
+    let mut other = json!({
         "billing_pending": true,
         "relay_runtime": "cloudflare_worker_rust",
         "endpoint": endpoint_path,
         "upstream_status": upstream_status,
         "total_tokens": usage.total_tokens,
-    })
-    .to_string();
+    });
+    if !is_stream {
+        attach_tiered_billing_shadow(db, model, group, usage, audit, &mut other).await;
+    }
+    let other_json = other.to_string();
     let empty = "";
     let audit_log = RelayAuditLog {
         user_id: auth.user_id,
@@ -840,6 +851,102 @@ async fn record_relay_audit(
     let action = if is_stream { "streamed" } else { "forwarded" };
     let content = format!("Rust relay {action} {endpoint_path}; quota settlement pending");
     crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
+}
+
+async fn attach_tiered_billing_shadow(
+    db: &D1Database,
+    model: &str,
+    group: &str,
+    usage: &UsageSummary,
+    audit: &RelayAuditContext,
+    other: &mut Value,
+) {
+    let Some(object) = other.as_object_mut() else {
+        return;
+    };
+    match tiered_billing_shadow(db, model, group, usage, &audit.billing_request_input).await {
+        Ok(Some(shadow)) => {
+            object.insert("tiered_billing_shadow".to_string(), shadow);
+        }
+        Ok(None) => {}
+        Err(err) => {
+            object.insert(
+                "tiered_billing_shadow_error".to_string(),
+                Value::String(err.to_string()),
+            );
+        }
+    }
+}
+
+async fn tiered_billing_shadow(
+    db: &D1Database,
+    model: &str,
+    group: &str,
+    usage: &UsageSummary,
+    request: &RequestInput,
+) -> worker::Result<Option<Value>> {
+    let Some(expr) = crate::d1_repositories::tiered_billing_expr_for_model(db, model).await? else {
+        return Ok(None);
+    };
+    let group_ratio = crate::d1_repositories::group_ratio_for_group(db, group).await?;
+    tiered_billing_shadow_metadata(model, &expr, group_ratio, usage, request.clone())
+        .map(Some)
+        .map_err(worker::Error::RustError)
+}
+
+fn tiered_billing_shadow_metadata(
+    model: &str,
+    expr: &str,
+    group_ratio: f64,
+    usage: &UsageSummary,
+    request: RequestInput,
+) -> Result<Value, String> {
+    let params = token_params_from_usage(usage);
+    let snapshot = estimate_tiered_billing_snapshot_with_request(
+        model,
+        expr,
+        params,
+        group_ratio,
+        request.clone(),
+    )
+    .map_err(|err| format!("failed to estimate tiered billing: {err}"))?;
+    let result = compute_tiered_quota_with_request(&snapshot, params, request)
+        .map_err(|err| format!("failed to compute tiered billing: {err}"))?;
+
+    Ok(json!({
+        "billing_mode": snapshot.billing_mode,
+        "shadow_only": true,
+        "expr_version": snapshot.expr_version,
+        "group_ratio": snapshot.group_ratio,
+        "estimated_tier": snapshot.estimated_tier,
+        "matched_tier": result.matched_tier,
+        "crossed_tier": result.crossed_tier,
+        "expression_cost": result.actual_expression_cost,
+        "quota_before_group": result.actual_quota_before_group,
+        "quota_after_group": result.actual_quota_after_group.0,
+        "settlement": {
+            "final_quota": result.settlement.final_quota.0,
+            "refund_quota": result.settlement.refund_quota.0,
+            "additional_quota": result.settlement.additional_quota.0,
+        }
+    }))
+}
+
+fn token_params_from_usage(usage: &UsageSummary) -> TokenParams {
+    let prompt = f64::from(usage.prompt_tokens.max(0));
+    TokenParams {
+        p: prompt,
+        c: f64::from(usage.completion_tokens.max(0)),
+        len: prompt,
+        ..TokenParams::default()
+    }
+}
+
+fn billing_request_input(req: &Request, body: &Value) -> RequestInput {
+    RequestInput {
+        headers: req.headers().entries().collect::<HashMap<_, _>>(),
+        body: Some(body.clone()),
+    }
 }
 
 fn client_ip(req: &Request) -> Option<String> {
@@ -1000,5 +1107,41 @@ mod tests {
     fn relay_read_cache_config_rejects_invalid_ttl() {
         let err = RelayReadCacheConfig::from_raw(Some("fast".to_string())).unwrap_err();
         assert!(err.contains(RELAY_CACHE_TTL_ENV));
+    }
+
+    #[test]
+    fn usage_summary_converts_to_basic_token_params() {
+        let params = token_params_from_usage(&UsageSummary {
+            prompt_tokens: 1_000,
+            completion_tokens: 500,
+            total_tokens: 1_500,
+        });
+
+        assert_eq!(params.p, 1_000.0);
+        assert_eq!(params.c, 500.0);
+        assert_eq!(params.len, 1_000.0);
+    }
+
+    #[test]
+    fn tiered_shadow_metadata_applies_request_probe_and_group_ratio() {
+        let metadata = tiered_billing_shadow_metadata(
+            "gpt-test",
+            r#"param("service_tier") == "fast" ? tier("fast", p * 4 + c * 20) : tier("normal", p * 2 + c * 10)"#,
+            1.5,
+            &UsageSummary {
+                prompt_tokens: 1_000,
+                completion_tokens: 500,
+                total_tokens: 1_500,
+            },
+            RequestInput::from_json_body(json!({"service_tier": "fast"})),
+        )
+        .unwrap();
+
+        assert_eq!(metadata["billing_mode"], "tiered_expr");
+        assert_eq!(metadata["shadow_only"], true);
+        assert_eq!(metadata["matched_tier"], "fast");
+        assert_eq!(metadata["group_ratio"], 1.5);
+        assert_eq!(metadata["quota_before_group"], 7_000.0);
+        assert_eq!(metadata["quota_after_group"], 10_500);
     }
 }

@@ -7,6 +7,8 @@ This module owns Worker-specific storage operations:
 - token and user authentication row lookup;
 - best-effort token status updates for expired or exhausted tokens;
 - OpenAI-compatible channel selection from `abilities` first, then channel CSV fallback;
+- billing option lookup for Go-compatible `billing_setting.*` maps and group
+  ratio maps;
 - token access-time updates;
 - user request-count increments;
 - relay audit log insertion.

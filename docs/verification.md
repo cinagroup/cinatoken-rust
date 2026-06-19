@@ -1,15 +1,16 @@
 # Verification
 
-Last checked: 2026-06-18
+Last checked: 2026-06-19
 
 ## Passed
 
 - `cargo fmt --all`
 - `cargo test --workspace --exclude cinatoken-worker`
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
-- `bun run check`
+- `bun run check` with `CARGO_TARGET_DIR` set to local temp Cargo output.
 - `cargo test -p cinatoken-relay` covering OpenAI-compatible relay helpers,
-  including generalized `/v1/...` upstream URL generation.
+  generalized `/v1/...` upstream URL generation, relay cache key normalization,
+  token fingerprinting, and versioned token/channel cache wrappers.
 - `cargo test -p cinatoken-migration` covering `dev-seed` SQL generation.
 - `cargo test -p cinatoken-migration` covering source repository inspection
   argument parsing and local SQLite candidate discovery.
@@ -65,7 +66,12 @@ $env:CARGO_INCREMENTAL='0'
 $env:CARGO_TARGET_DIR="$env:LOCALAPPDATA\Temp\cinatoken-rust-target"
 cargo test --workspace --exclude cinatoken-worker
 cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check
 ```
+
+Run `bun run check` from a shell with the same environment; otherwise the script
+falls back to the workspace `target/` directory and may hit the same
+shared-drive file-lock or linker path issue.
 
 ## Still Pending
 

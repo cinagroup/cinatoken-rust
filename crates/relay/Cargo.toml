@@ -9,6 +9,6 @@ rust-version.workspace = true
 [dependencies]
 async-trait.workspace = true
 cinatoken-core = { path = "../core" }
+cinatoken-storage = { path = "../storage" }
 serde.workspace = true
 serde_json.workspace = true
-

@@ -72,9 +72,27 @@ Expiring counters use the Upstash transaction endpoint `/multi-exec`:
 This keeps increment and TTL update together for rate limiting and quota-cache
 bookkeeping.
 
+## Relay Cache Records
+
+`cinatoken-relay` owns stable cache key helpers and versioned payload wrappers
+for token/channel read-through caching.
+
+- Token auth cache keys use `relay:auth:{fingerprint}:{model}:{client_ip}` so
+  raw client API keys are not stored in Redis key names while model/IP-scoped
+  auth decisions remain isolated.
+- Channel cache keys use `relay:channel:{group}:{model}` with normalized
+  lowercase components.
+- Cached token and channel records include `schema_version`; readers reject
+  future schema versions instead of silently accepting incompatible data.
+
+The token fingerprint is deterministic key hygiene, not a cryptographic proof.
+Redis contents and transport secrecy still depend on the Upstash REST token and
+Cloudflare secret handling.
+
 ## Current Boundary
 
-The cache layer is implemented and Worker-compatible, but relay auth/channel
-lookups still read directly from D1. The next integration step is to use
-`KeyValueCache` for token/channel read-through caching and `RateLimiter` for
-token/IP throttling.
+The cache layer is implemented and Worker-compatible, relay token/IP rate
+limiting is connected, and relay token/channel cache keys plus record schemas
+are defined. Auth/channel lookups still read directly from D1. The next
+integration step is to use `KeyValueCache` for token/channel read-through
+caching and invalidation.

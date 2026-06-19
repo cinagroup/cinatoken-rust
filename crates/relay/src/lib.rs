@@ -1,7 +1,12 @@
 use async_trait::async_trait;
 use cinatoken_core::{ApiResult, ChatCompletionRequest};
 
+pub mod cache;
 pub mod openai_compatible;
+pub use cache::{
+    scoped_key, token_fingerprint, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
+    RELAY_CACHE_SCHEMA_VERSION,
+};
 pub use openai_compatible::{
     apply_model_mapping, clamp_i64_to_i32, csv_contains, first_channel_key, ip_allowlist_matches,
     is_openai_compatible_channel_type, upstream_chat_url, upstream_v1_url, usage_summary_from_body,

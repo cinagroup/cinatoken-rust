@@ -32,6 +32,8 @@ The Worker:
   zero-quota consume audit log with parsed usage token counts.
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured.
+- defines relay cache key helpers and versioned token/channel cache record
+  wrappers for future read-through caching.
 
 ## D1 Data Requirements
 
@@ -66,7 +68,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - The audit log uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are not implemented yet.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
-- Cache acceleration is not connected to token/channel relay lookups yet.
+- Token/channel read-through caching is not connected to relay lookups yet;
+  only the cache key and record schema foundation is in place.
 
 Full settlement should port the original billing expression flow before any
 real quota decrement:

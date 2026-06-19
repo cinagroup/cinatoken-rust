@@ -7,7 +7,7 @@ pub struct UserQuota {
     pub quota: i64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct AuthenticatedToken {
     pub token_id: i64,
     pub user_id: i64,
@@ -44,7 +44,7 @@ impl AuthenticatedToken {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RelayChannel {
     pub id: i64,
     pub channel_type: i32,

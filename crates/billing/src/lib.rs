@@ -126,13 +126,77 @@ impl BillingExprVariables {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BillingExprParts {
+    pub billing_expr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_rule_expr: Option<String>,
+}
+
+pub fn split_billing_expr_request_rule(expr: &str) -> BillingExprParts {
+    let (billing_expr, request_rule_expr) = split_billing_expr_request_rule_slices(expr);
+    BillingExprParts {
+        billing_expr: billing_expr.to_string(),
+        request_rule_expr: request_rule_expr.map(str::to_string),
+    }
+}
+
 pub fn parse_expr_version(expr: &str) -> (u32, &str) {
-    let expr = expr.trim();
+    let (expr, _) = split_billing_expr_request_rule_slices(expr);
     if let Some(body) = expr.strip_prefix("v1:") {
         (1, body)
     } else {
         (DEFAULT_EXPR_VERSION, expr)
     }
+}
+
+fn split_billing_expr_request_rule_slices(expr: &str) -> (&str, Option<&str>) {
+    let expr = expr.trim();
+    let Some(index) = find_request_rule_separator(expr) else {
+        return (expr, None);
+    };
+    let billing_expr = expr[..index].trim();
+    let request_rule_expr = expr[index + 3..].trim();
+    (
+        billing_expr,
+        (!request_rule_expr.is_empty()).then_some(request_rule_expr),
+    )
+}
+
+fn find_request_rule_separator(expr: &str) -> Option<usize> {
+    let bytes = expr.as_bytes();
+    let mut index = 0;
+    let mut quote = None;
+    let mut raw_quote = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(quote_byte) = quote {
+            if !raw_quote && byte == b'\\' {
+                index = (index + 2).min(bytes.len());
+                continue;
+            }
+            if byte == quote_byte {
+                quote = None;
+                raw_quote = false;
+            }
+            index += 1;
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'`' => {
+                quote = Some(byte);
+                raw_quote = true;
+            }
+            b'|' if bytes[index..].starts_with(b"|||") => return Some(index),
+            _ => {}
+        }
+        index += 1;
+    }
+
+    None
 }
 
 pub fn detect_billing_expr_variables(expr: &str) -> BillingExprVariables {
@@ -355,6 +419,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn split_billing_expr_request_rule_handles_separator_and_quotes() {
+        assert_eq!(
+            split_billing_expr_request_rule(r#" tier("base", p) ||| (header("x") != "" ? 2 : 1) "#),
+            BillingExprParts {
+                billing_expr: r#"tier("base", p)"#.to_string(),
+                request_rule_expr: Some(r#"(header("x") != "" ? 2 : 1)"#.to_string()),
+            }
+        );
+        assert_eq!(
+            split_billing_expr_request_rule(r#"tier("base|||name", p) ||| "#),
+            BillingExprParts {
+                billing_expr: r#"tier("base|||name", p)"#.to_string(),
+                request_rule_expr: None,
+            }
+        );
+        assert_eq!(
+            split_billing_expr_request_rule(r#"`|||` == "x" ? p : c"#),
+            BillingExprParts {
+                billing_expr: r#"`|||` == "x" ? p : c"#.to_string(),
+                request_rule_expr: None,
+            }
+        );
+    }
+
+    #[test]
     fn parse_expr_version_accepts_v1_prefix_and_defaults_to_v1() {
         assert_eq!(
             parse_expr_version("v1:tier(\"base\", p)"),
@@ -363,6 +452,10 @@ mod tests {
         assert_eq!(
             parse_expr_version(" tier(\"base\", p) "),
             (DEFAULT_EXPR_VERSION, "tier(\"base\", p)")
+        );
+        assert_eq!(
+            parse_expr_version(r#"v1:tier("base", p)|||(header("x") != "" ? 2 : 1)"#),
+            (1, r#"tier("base", p)"#)
         );
     }
 
@@ -392,6 +485,17 @@ mod tests {
         assert!(!vars.cr);
         assert!(!vars.img);
         assert!(!vars.ao);
+    }
+
+    #[test]
+    fn detect_billing_expr_variables_ignores_request_rules_after_separator() {
+        let vars = detect_billing_expr_variables(
+            r#"tier("base", p * 2 + c * 10)|||(param("use_cache") == true ? cr : 1)"#,
+        );
+
+        assert!(vars.p);
+        assert!(vars.c);
+        assert!(!vars.cr);
     }
 
     #[test]

@@ -1190,6 +1190,7 @@ fn tiered_billing_metadata(
         "shadow_only": shadow_only,
         "applied": applied,
         "expr_version": snapshot.expr_version,
+        "has_request_rule": snapshot.request_rule_expr.is_some(),
         "group_ratio": snapshot.group_ratio,
         "pre_consumed_quota": pre_consumed_quota,
         "estimated_prompt_tokens": snapshot.estimated_prompt_tokens,
@@ -1220,6 +1221,7 @@ fn tiered_billing_fallback_metadata(
         "billing_mode": preflight.snapshot.billing_mode,
         "applied": applied,
         "fallback_to_pre_consumed": true,
+        "has_request_rule": preflight.snapshot.request_rule_expr.is_some(),
         "pre_consumed_quota": preflight.pre_consumed_quota,
         "estimated_tier": preflight.snapshot.estimated_tier,
         "estimated_quota_after_group": preflight.snapshot.estimated_quota_after_group.0,
@@ -1234,6 +1236,7 @@ fn tiered_billing_refund_metadata(
     json!({
         "billing_mode": preflight.snapshot.billing_mode,
         "refunded": true,
+        "has_request_rule": preflight.snapshot.request_rule_expr.is_some(),
         "pre_consumed_quota": preflight.pre_consumed_quota,
         "estimated_tier": preflight.snapshot.estimated_tier,
         "estimated_quota_after_group": preflight.snapshot.estimated_quota_after_group.0,
@@ -1704,6 +1707,7 @@ mod tests {
         assert_eq!(metadata["billing_mode"], "tiered_expr");
         assert_eq!(metadata["shadow_only"], true);
         assert_eq!(metadata["applied"], false);
+        assert_eq!(metadata["has_request_rule"], false);
         assert_eq!(metadata["pre_consumed_quota"], 4_500);
         assert_eq!(metadata["estimated_prompt_tokens"], 1_000);
         assert_eq!(metadata["estimated_completion_tokens"], 100);
@@ -1724,7 +1728,7 @@ mod tests {
         });
         let preflight = tiered_billing_preflight_snapshot(
             "gpt-test",
-            r#"tier("base", p * 4 + c * 20)"#,
+            r#"tier("base", p * 4 + c * 20)|||(param("service_tier") == "fast" ? 2 : 1)"#,
             1.5,
             &request_body,
             RequestInput::from_json_body(request_body.clone()),
@@ -1734,10 +1738,12 @@ mod tests {
         let fallback =
             tiered_billing_fallback_metadata(&preflight, "settlement failed".to_string(), true);
         assert_eq!(fallback["fallback_to_pre_consumed"], true);
+        assert_eq!(fallback["has_request_rule"], true);
         assert_eq!(fallback["pre_consumed_quota"], 4_500);
 
         let refund = tiered_billing_refund_metadata(&preflight, "missing_usage");
         assert_eq!(refund["refunded"], true);
+        assert_eq!(refund["has_request_rule"], true);
         assert_eq!(refund["pre_consumed_quota"], 4_500);
         assert_eq!(refund["reason"], "missing_usage");
     }

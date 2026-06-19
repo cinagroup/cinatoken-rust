@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
-use crate::{parse_expr_version, TokenParams};
+use crate::{parse_expr_version, split_billing_expr_request_rule, TokenParams};
 
 #[derive(Debug, Error, PartialEq)]
 pub enum BillingExprError {
@@ -63,6 +63,23 @@ pub fn run_billing_expr(expr: &str, params: TokenParams) -> Result<ExprRun, Bill
 }
 
 pub fn run_billing_expr_with_request(
+    expr: &str,
+    params: TokenParams,
+    request: RequestInput,
+) -> Result<ExprRun, BillingExprError> {
+    let parts = split_billing_expr_request_rule(expr);
+    let base_run = run_billing_expr_part(&parts.billing_expr, params, request.clone())?;
+    let Some(request_rule_expr) = parts.request_rule_expr else {
+        return Ok(base_run);
+    };
+    let multiplier_run = run_billing_expr_part(&request_rule_expr, params, request)?;
+    Ok(ExprRun {
+        cost: base_run.cost * multiplier_run.cost,
+        trace: base_run.trace,
+    })
+}
+
+fn run_billing_expr_part(
     expr: &str,
     params: TokenParams,
     request: RequestInput,
@@ -1266,6 +1283,39 @@ mod tests {
         .expect("expression should run");
 
         assert_eq!(output.cost, 900.0);
+    }
+
+    #[test]
+    fn applies_request_rule_multiplier_after_separator() {
+        let expr = r#"
+            tier("base", p * 2 + c * 10)
+            |||
+            (param("service_tier") == "fast" ? 3 : 1)
+        "#;
+        let params = TokenParams {
+            p: 100.0,
+            c: 10.0,
+            ..TokenParams::default()
+        };
+
+        let fast = run_billing_expr_with_request(
+            expr,
+            params,
+            RequestInput::from_json_body(json!({"service_tier": "fast"})),
+        )
+        .expect("expression should run");
+        assert_eq!(fast.cost, 900.0);
+        assert_eq!(fast.trace.matched_tier, "base");
+        assert_eq!(fast.trace.cost, 300.0);
+
+        let normal = run_billing_expr_with_request(
+            expr,
+            params,
+            RequestInput::from_json_body(json!({"service_tier": "normal"})),
+        )
+        .expect("expression should run");
+        assert_eq!(normal.cost, 300.0);
+        assert_eq!(normal.trace.matched_tier, "base");
     }
 
     #[test]

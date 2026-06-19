@@ -1305,6 +1305,10 @@ Relay：
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and
   D1 pre-consume reserve/delta settlement for OpenAI-compatible
   tiered-expression responses.
+- Billing expressions stored as `billing_expr|||request_rule_expr` are now
+  split and applied in Rust billing preflight/settlement, with Worker audit
+  metadata marking the presence of request rules without logging full rule
+  bodies.
 - OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
   crate, including final streaming usage chunks, `[DONE]`, CRLF streams, and
   nested response usage metadata.

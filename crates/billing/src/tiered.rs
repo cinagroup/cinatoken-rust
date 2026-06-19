@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     expression_cost_to_quota, parse_expr_version, quota_round, run_billing_expr_with_request,
-    settle, BillingExprError, BillingSettlement, Quota, RequestInput, TokenParams,
-    DEFAULT_QUOTA_PER_UNIT,
+    settle, split_billing_expr_request_rule, BillingExprError, BillingSettlement, Quota,
+    RequestInput, TokenParams, DEFAULT_QUOTA_PER_UNIT,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -11,6 +11,8 @@ pub struct TieredBillingSnapshot {
     pub billing_mode: String,
     pub model_name: String,
     pub expr_string: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_rule_expr: Option<String>,
     pub expr_version: u32,
     pub group_ratio: f64,
     pub quota_per_unit: f64,
@@ -55,6 +57,7 @@ pub fn estimate_tiered_billing_snapshot_with_request(
     request: RequestInput,
 ) -> Result<TieredBillingSnapshot, BillingExprError> {
     let expr_string = expr_string.into();
+    let request_rule_expr = split_billing_expr_request_rule(&expr_string).request_rule_expr;
     let (expr_version, _) = parse_expr_version(&expr_string);
     let run = run_billing_expr_with_request(&expr_string, estimated_params, request)?;
     let estimated_quota_before_group =
@@ -66,6 +69,7 @@ pub fn estimate_tiered_billing_snapshot_with_request(
         billing_mode: "tiered_expr".to_string(),
         model_name: model_name.into(),
         expr_string,
+        request_rule_expr,
         expr_version,
         group_ratio,
         quota_per_unit: DEFAULT_QUOTA_PER_UNIT,
@@ -131,6 +135,8 @@ mod tests {
     const FLAT_EXPR: &str = r#"tier("default", p * 2 + c * 10)"#;
     const TIER_EXPR: &str = r#"p <= 200000 ? tier("standard", p * 1.5 + c * 7.5) : tier("long_context", p * 3 + c * 11.25)"#;
     const PROBE_EXPR: &str = r#"param("service_tier") == "fast" ? tier("fast", p * 4 + c * 20) : tier("normal", p * 2 + c * 10)"#;
+    const REQUEST_RULE_EXPR: &str =
+        r#"tier("base", p * 2 + c * 10)|||(param("service_tier") == "fast" ? 3 : 1)"#;
 
     fn params(p: f64, c: f64) -> TokenParams {
         TokenParams {
@@ -243,6 +249,33 @@ mod tests {
             .expect("settlement");
         assert_eq!(result.matched_tier, "fast");
         assert_eq!(result.actual_quota_after_group, Quota(7_000));
+        assert!(!result.crossed_tier);
+    }
+
+    #[test]
+    fn tiered_snapshot_and_settlement_apply_request_rule_separator() {
+        let request = RequestInput::from_json_body(json!({"service_tier": "fast"}));
+        let snapshot = estimate_tiered_billing_snapshot_with_request(
+            "probe-test",
+            REQUEST_RULE_EXPR,
+            params(1_000.0, 500.0),
+            1.0,
+            request.clone(),
+        )
+        .expect("snapshot should build");
+
+        assert_eq!(
+            snapshot.request_rule_expr.as_deref(),
+            Some(r#"(param("service_tier") == "fast" ? 3 : 1)"#)
+        );
+        assert_eq!(snapshot.estimated_tier, "base");
+        assert_eq!(snapshot.estimated_expression_cost, 21_000.0);
+        assert_eq!(snapshot.estimated_quota_after_group, Quota(10_500));
+
+        let result = compute_tiered_quota_with_request(&snapshot, params(1_000.0, 500.0), request)
+            .expect("settlement");
+        assert_eq!(result.matched_tier, "base");
+        assert_eq!(result.actual_quota_after_group, Quota(10_500));
         assert!(!result.crossed_tier);
     }
 

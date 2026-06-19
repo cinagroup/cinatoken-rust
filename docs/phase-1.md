@@ -27,7 +27,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   and pre-consume settlement deltas.
 - Pure Rust billing expression execution foundation with `tier()`,
   conditionals, math helpers, request `param()`/`header()` probes, `has()`,
-  time helpers, multimodal variables, and trace capture.
+  time helpers, multimodal variables, trace capture, and `|||` request-rule
+  multiplier handling.
 - Pure Rust tiered billing snapshot and settlement helpers that freeze
   pre-consume expression state, apply group ratio, detect tier crossing, and
   compute final/refund/additional quota deltas.
@@ -41,6 +42,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Cached-auth quota-state refresh plus request-time D1 reserve, failed-request
   refund, and post-response delta settlement for successful tiered-expression
   responses, including streaming chat after full-stream usage reconciliation.
+- Worker-side tiered billing metadata now marks whether a frozen expression
+  carried a request-rule multiplier without logging the full rule body.
 - Worker-side streaming usage reconciliation for chat passthrough via response
   tee, incremental SSE usage parsing, and `wait_until` audit recording.
 - Cache traits for string KV, expiring counters, and rate limiting.

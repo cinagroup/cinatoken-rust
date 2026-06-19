@@ -33,6 +33,9 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
   - `tier()` trace capture, `max`, `min`, `abs`, `ceil`, and `floor`;
   - request-aware `param()`, `header()`, and `has()`;
   - UTC-first time helpers with common Asia time zone offsets.
+- `split_billing_expr_request_rule()` and request-rule multiplier execution for
+  expressions stored as `billing_expr|||request_rule_expr`, preserving the base
+  tier trace while applying the request-aware multiplier to the final cost.
 - `RequestInput`, `TraceResult`, and `ExprRun` for passing request probes and
   carrying matched-tier metadata.
 - `BillingSnapshot` for freezing estimated inputs before settlement.
@@ -86,7 +89,6 @@ verifies these remaining Go billing behaviors:
 
 - expression compile/cache metadata and validation;
 - broader Go/Rust golden parity tests for expression edge cases;
-- request-rule handling for expressions stored with `|||`;
 - tokenizer/media parity for request-time token estimation;
 - matched tier metadata injection for usage-log display.
 
@@ -101,10 +103,10 @@ The Rust tests cover the most important Go-compatible arithmetic:
   literals;
 - expression execution for simple flat prices, conditional tiers, math helpers,
   multimodal variables, request `param()`/`header()` probes, missing-field `nil`
-  handling, and time helper ranges;
+  handling, `|||` request-rule multipliers, and time helper ranges;
 - tiered pre-consume snapshots, group-ratio application, actual-use
-  settlement, refund/additional deltas, request-probe preservation, and
-  crossed-tier detection;
+  settlement, refund/additional deltas, request-probe preservation,
+  `|||` request-rule preservation, and crossed-tier detection;
 - Worker request-body token estimation, request-time tiered preflight
   snapshots, and settlement deltas against frozen snapshots;
 - Worker tiered reserve metadata, fallback metadata, and refund metadata for

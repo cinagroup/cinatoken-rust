@@ -11,16 +11,17 @@ This repository starts with a Worker MVP:
 - `POST /v1/responses`
 - `POST /v1/embeddings`
 
-The relay endpoints now perform a first OpenAI-compatible non-stream proxy:
+The relay endpoints now perform a first OpenAI-compatible proxy:
 
 - authenticates `Authorization: Bearer ...` or `x-api-key` against D1 tokens;
 - enforces token/user status, expiry, quota presence, model limits, and IP allowlist;
 - selects an enabled OpenAI-compatible channel from D1;
 - applies model mapping and forwards the original JSON body upstream;
+- streams `POST /v1/chat/completions` when `stream: true`;
 - records token access, request count, and a zero-quota audit log for the call.
 
-Streaming chat and final quota settlement are intentionally still pending. See
-`docs/relay-mvp.md` for the exact boundary.
+Final quota settlement and stream usage reconciliation are intentionally still
+pending. See `docs/relay-mvp.md` for the exact boundary.
 
 ## Layout
 

@@ -5,14 +5,14 @@ mod relay;
 use worker::{event, Context, Env, Method, Request, Response, Result, Router};
 
 #[event(fetch)]
-pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
     if req.method() == Method::Options {
         return empty_cors_response();
     }
 
-    Router::new()
+    Router::with_data(ctx)
         .get("/api/status", |_, ctx| {
             let environment = ctx
                 .var("ENVIRONMENT")
@@ -41,7 +41,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             json_with_status(&cinatoken_api::models(), 200)
         })
         .post_async("/v1/chat/completions", |req, ctx| async move {
-            relay::chat_completions(req, ctx.env).await
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::chat_completions(req, env, event_ctx).await
         })
         .post_async("/v1/completions", |req, ctx| async move {
             relay::completions(req, ctx.env).await

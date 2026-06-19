@@ -42,8 +42,8 @@ Last checked: 2026-06-19
   Worker Upstash Redis REST fetch transport and status feature detection.
 - `cargo test -p cinatoken-worker --lib` covering relay rate-limit and
   read-through cache TTL configuration parsing and invalid configuration
-  rejection; also validates the Worker crate after D1 SQL was moved behind
-  repository functions.
+  rejection, chat streaming relay gating, and the Worker crate after D1 SQL was
+  moved behind repository functions.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus
@@ -80,5 +80,7 @@ bun run check
   process. The same schema and seed SQL pass SQLite execution.
 - `wrangler dev` has not been run end-to-end with a real D1 database binding.
 - No live upstream provider request has been executed yet.
+- Streaming chat completion passthrough has compile/unit coverage only; it has
+  not been exercised against a live upstream SSE response yet.
 - No source SQLite file or SQL DSN is available in the current shell, so real
   source row counts have not been captured yet.

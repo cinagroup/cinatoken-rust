@@ -8,7 +8,7 @@ use cinatoken_relay::{
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde_json::{json, Value};
 use wasm_bindgen::JsValue;
-use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
+use worker::{Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
 use crate::{json_with_status, set_cors_headers};
 
@@ -25,17 +25,42 @@ const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 struct OpenAiCompatibleEndpoint {
     display_name: &'static str,
     upstream_path: &'static str,
+    supports_streaming: bool,
     stream_not_implemented_feature: Option<&'static str>,
 }
 
-pub async fn chat_completions(req: Request, env: Env) -> worker::Result<Response> {
+impl OpenAiCompatibleEndpoint {
+    fn requested_stream(body: &Value) -> bool {
+        body.get("stream").and_then(Value::as_bool).unwrap_or(false)
+    }
+
+    fn stream_not_implemented(self, body: &Value) -> Option<&'static str> {
+        if Self::requested_stream(body) && !self.supports_streaming {
+            self.stream_not_implemented_feature
+        } else {
+            None
+        }
+    }
+
+    fn should_relay_stream(self, body: &Value) -> bool {
+        self.supports_streaming && Self::requested_stream(body)
+    }
+}
+
+pub async fn chat_completions(
+    req: Request,
+    env: Env,
+    context: Context,
+) -> worker::Result<Response> {
     openai_compatible_endpoint(
         req,
         env,
+        Some(context),
         OpenAiCompatibleEndpoint {
             display_name: "chat completions",
             upstream_path: "chat/completions",
-            stream_not_implemented_feature: Some("streaming chat completions relay"),
+            supports_streaming: true,
+            stream_not_implemented_feature: None,
         },
     )
     .await
@@ -45,9 +70,11 @@ pub async fn embeddings(req: Request, env: Env) -> worker::Result<Response> {
     openai_compatible_endpoint(
         req,
         env,
+        None,
         OpenAiCompatibleEndpoint {
             display_name: "embeddings",
             upstream_path: "embeddings",
+            supports_streaming: false,
             stream_not_implemented_feature: None,
         },
     )
@@ -58,9 +85,11 @@ pub async fn completions(req: Request, env: Env) -> worker::Result<Response> {
     openai_compatible_endpoint(
         req,
         env,
+        None,
         OpenAiCompatibleEndpoint {
             display_name: "completions",
             upstream_path: "completions",
+            supports_streaming: false,
             stream_not_implemented_feature: Some("streaming completions relay"),
         },
     )
@@ -71,9 +100,11 @@ pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
     openai_compatible_endpoint(
         req,
         env,
+        None,
         OpenAiCompatibleEndpoint {
             display_name: "responses",
             upstream_path: "responses",
+            supports_streaming: false,
             stream_not_implemented_feature: Some("streaming responses relay"),
         },
     )
@@ -83,6 +114,7 @@ pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
 async fn openai_compatible_endpoint(
     mut req: Request,
     env: Env,
+    context: Option<Context>,
     endpoint: OpenAiCompatibleEndpoint,
 ) -> worker::Result<Response> {
     let started_at = unix_timestamp();
@@ -102,17 +134,10 @@ async fn openai_compatible_endpoint(
         }
     };
 
-    if endpoint.stream_not_implemented_feature.is_some()
-        && request_body
-            .get("stream")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    {
-        return json_with_status(
-            &ErrorBody::not_implemented(endpoint.stream_not_implemented_feature.unwrap()),
-            501,
-        );
+    if let Some(feature) = endpoint.stream_not_implemented(&request_body) {
+        return json_with_status(&ErrorBody::not_implemented(feature), 501);
     }
+    let should_relay_stream = endpoint.should_relay_stream(&request_body);
 
     let model = match request_body.get("model").and_then(Value::as_str) {
         Some(model) if !model.trim().is_empty() => model.trim().to_string(),
@@ -139,12 +164,13 @@ async fn openai_compatible_endpoint(
         Ok(auth) => auth,
         Err(response) => return response,
     };
+    let group = auth.effective_group().to_string();
 
     if let Err(response) = enforce_relay_rate_limits(&env, &auth, client_ip.as_deref()).await {
         return response;
     }
 
-    let channel = match select_channel(&db, &env, &model, auth.effective_group()).await {
+    let channel = match select_channel(&db, &env, &model, &group).await {
         Ok(channel) => channel,
         Err(response) => return response,
     };
@@ -186,19 +212,39 @@ async fn openai_compatible_endpoint(
             }
         };
 
+    let audit = RelayAuditContext {
+        started_at,
+        client_ip,
+        request_id,
+    };
+
+    if should_relay_stream {
+        let Some(context) = context else {
+            return openai_error_response("streaming relay context is unavailable", 500);
+        };
+        return complete_streaming_relay_response(
+            upstream_response,
+            db,
+            context,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint.upstream_path,
+            audit,
+        )
+        .await;
+    }
+
     complete_relay_response(
         upstream_response,
         &db,
         &auth,
         &channel,
         &model,
-        auth.effective_group(),
+        &group,
         endpoint.upstream_path,
-        RelayAuditContext {
-            started_at,
-            client_ip: client_ip.as_deref(),
-            request_id: request_id.as_deref(),
-        },
+        &audit,
     )
     .await
 }
@@ -655,7 +701,7 @@ async fn complete_relay_response(
     model: &str,
     group: &str,
     endpoint_path: &str,
-    audit: RelayAuditContext<'_>,
+    audit: &RelayAuditContext,
 ) -> worker::Result<Response> {
     let status = upstream.status_code();
     let content_type = upstream
@@ -677,12 +723,9 @@ async fn complete_relay_response(
         endpoint_path,
         status,
         &usage,
-        RelayAuditContext {
-            started_at: audit.started_at,
-            client_ip: audit.client_ip,
-            request_id: audit.request_id,
-        },
+        audit,
         upstream_request_id.as_deref(),
+        false,
     )
     .await
     {
@@ -695,11 +738,57 @@ async fn complete_relay_response(
     Ok(response)
 }
 
-#[derive(Clone, Copy)]
-struct RelayAuditContext<'a> {
+async fn complete_streaming_relay_response(
+    mut upstream: Response,
+    db: D1Database,
+    context: Context,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: &'static str,
+    audit: RelayAuditContext,
+) -> worker::Result<Response> {
+    let status = upstream.status_code();
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "text/event-stream".to_string());
+    let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+
+    context.wait_until(async move {
+        let usage = UsageSummary::default();
+        if let Err(err) = record_relay_audit(
+            &db,
+            &auth,
+            &channel,
+            &model,
+            &group,
+            endpoint_path,
+            status,
+            &usage,
+            &audit,
+            upstream_request_id.as_deref(),
+            true,
+        )
+        .await
+        {
+            worker::console_error!("failed to record streaming relay audit: {}", err);
+        }
+    });
+
+    upstream.headers_mut().set("content-type", &content_type)?;
+    set_cors_headers(&mut upstream)?;
+    Ok(upstream)
+}
+
+#[derive(Clone)]
+struct RelayAuditContext {
     started_at: i64,
-    client_ip: Option<&'a str>,
-    request_id: Option<&'a str>,
+    client_ip: Option<String>,
+    request_id: Option<String>,
 }
 
 async fn record_relay_audit(
@@ -711,8 +800,9 @@ async fn record_relay_audit(
     endpoint_path: &str,
     upstream_status: u16,
     usage: &UsageSummary,
-    audit: RelayAuditContext<'_>,
+    audit: &RelayAuditContext,
     upstream_request_id: Option<&str>,
+    is_stream: bool,
 ) -> worker::Result<()> {
     let now = unix_timestamp();
     crate::d1_repositories::touch_token(db, auth.token_id, now).await?;
@@ -740,14 +830,15 @@ async fn record_relay_audit(
         completion_tokens: usage.completion_tokens,
         quota: 0,
         use_time_seconds: use_time,
-        is_stream: false,
-        ip: audit.client_ip.unwrap_or(empty),
-        request_id: audit.request_id.unwrap_or(empty),
+        is_stream,
+        ip: audit.client_ip.as_deref().unwrap_or(empty),
+        request_id: audit.request_id.as_deref().unwrap_or(empty),
         upstream_request_id: upstream_request_id.unwrap_or(empty),
         other: &other_json,
     };
 
-    let content = format!("Rust relay forwarded {endpoint_path}; quota settlement pending");
+    let action = if is_stream { "streamed" } else { "forwarded" };
+    let content = format!("Rust relay {action} {endpoint_path}; quota settlement pending");
     crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
 }
 
@@ -801,6 +892,49 @@ fn worker_error_response(err: worker::Error) -> worker::Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn endpoint(
+        supports_streaming: bool,
+        feature: Option<&'static str>,
+    ) -> OpenAiCompatibleEndpoint {
+        OpenAiCompatibleEndpoint {
+            display_name: "test",
+            upstream_path: "test",
+            supports_streaming,
+            stream_not_implemented_feature: feature,
+        }
+    }
+
+    #[test]
+    fn streaming_supported_endpoint_relays_requested_stream() {
+        let endpoint = endpoint(true, None);
+        let body = json!({"model": "gpt-test", "stream": true});
+
+        assert!(endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
+    fn streaming_unsupported_endpoint_reports_feature_when_configured() {
+        let endpoint = endpoint(false, Some("streaming test relay"));
+        let body = json!({"model": "gpt-test", "stream": true});
+
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(
+            endpoint.stream_not_implemented(&body),
+            Some("streaming test relay")
+        );
+    }
+
+    #[test]
+    fn streaming_false_uses_non_streaming_path() {
+        let endpoint = endpoint(true, None);
+        let body = json!({"model": "gpt-test", "stream": false});
+
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
 
     #[test]
     fn rate_limit_config_defaults_to_disabled() {

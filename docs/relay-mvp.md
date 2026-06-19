@@ -2,18 +2,22 @@
 
 ## Implemented
 
-These endpoints currently support non-stream OpenAI-compatible requests:
+These endpoints currently support OpenAI-compatible requests:
 
 - `POST /v1/chat/completions`
 - `POST /v1/completions`
 - `POST /v1/responses`
 - `POST /v1/embeddings`
 
+`POST /v1/chat/completions` also supports streaming passthrough when the request
+body includes `stream: true`. The other endpoints remain non-streaming in this
+MVP.
+
 The Worker:
 
 - parses the request body as `serde_json::Value`, preserving unknown fields and
   explicit zero values;
-- rejects `stream: true` on chat/completions/responses with `501`;
+- rejects `stream: true` on completions/responses with `501`;
 - accepts API keys from `Authorization: Bearer ...` or `x-api-key`;
 - authenticates the token and user through Upstash-backed read-through cache
   with D1 fallback;
@@ -31,8 +35,11 @@ The Worker:
   upstream model;
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
 - returns the upstream body, status, and content type to the client;
+- returns upstream chat completion streams without buffering the full response;
 - updates token `accessed_time`, increments user `request_count`, and writes a
   zero-quota consume audit log with parsed usage token counts;
+- writes a zero-quota pending audit log for streaming chat completions via
+  `wait_until`; stream token usage is not reconciled yet;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis
@@ -66,7 +73,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 
 ## Deliberate Limitations
 
-- Streaming is not implemented yet.
+- Streaming is only implemented for chat completion passthrough.
+- Streaming usage reconciliation is not implemented yet.
 - Formal pre-consume and post-consume quota settlement is not implemented yet.
 - The audit log uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are not implemented yet.

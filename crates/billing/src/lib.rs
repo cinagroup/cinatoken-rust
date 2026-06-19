@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+mod expression;
+
+pub use expression::{
+    run_billing_expr, run_billing_expr_with_request, BillingExprError, ExprRun, RequestInput,
+    TraceResult,
+};
+
 pub const DEFAULT_QUOTA_PER_UNIT: f64 = 500_000.0;
 pub const DEFAULT_EXPR_VERSION: u32 = 1;
 

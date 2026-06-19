@@ -24,6 +24,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Pure Rust billing primitives for quota rounding, price conversion,
   expression version parsing, variable detection, tiered token normalization,
   and pre-consume settlement deltas.
+- Pure Rust billing expression execution foundation with `tier()`,
+  conditionals, math helpers, request `param()`/`header()` probes, `has()`,
+  time helpers, multimodal variables, and trace capture.
 - Shared storage-layer record types for authenticated tokens, relay channels, and relay audit logs.
 - Worker-side D1 repository boundary for auth, channel selection, token updates, user counters, and relay audit logs.
 - Cache traits for string KV, expiring counters, and rate limiting.
@@ -38,6 +41,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 ## Next
 
 - Implement full quota pre-consume and post-consume settlement.
-- Port the billing expression evaluator and request-aware helpers.
+- Add billing expression compile/cache metadata, Go/Rust golden parity tests,
+  and Worker quota wiring.
 - Reconcile streaming usage metadata after full stream consumption.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

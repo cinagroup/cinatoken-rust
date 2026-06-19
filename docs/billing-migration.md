@@ -24,6 +24,17 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 
 - `flat_text_quota()` for prompt/completion price calculations.
 - `settle()` for pre-consume versus actual-use delta reporting.
+- `run_billing_expr()` and `run_billing_expr_with_request()` for the first Rust
+  expression execution foundation:
+  - arithmetic, comparisons, logical operators, ternary conditionals, and
+    parentheses;
+  - billing variables `p`, `c`, `len`, `cr`, `cc`, `cc1h`, `img`, `img_o`,
+    `ai`, and `ao`;
+  - `tier()` trace capture, `max`, `min`, `abs`, `ceil`, and `floor`;
+  - request-aware `param()`, `header()`, and `has()`;
+  - UTC-first time helpers with common Asia time zone offsets.
+- `RequestInput`, `TraceResult`, and `ExprRun` for passing request probes and
+  carrying matched-tier metadata.
 - `BillingSnapshot` for freezing estimated inputs before settlement.
 
 ## Boundary
@@ -31,13 +42,12 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 This is not wired into Worker quota mutation yet. The Worker still records
 `quota = 0` audit logs with `other.billing_pending = true`.
 
-Do not decrement user or token quota from the Worker until the full migration
-ports these Go billing behaviors:
+Do not decrement user or token quota from the Worker until the migration ports
+and verifies these remaining Go billing behaviors:
 
-- expression compile/cache and validation;
-- full expression evaluation with `tier()`, `param()`, `header()`, math helpers,
-  and time helpers;
-- request-aware expression helpers such as `param()` and `header()`;
+- expression compile/cache metadata and validation;
+- broader Go/Rust golden parity tests for expression edge cases;
+- request-rule handling for expressions stored with `|||`;
 - group ratio application;
 - matched tier metadata injection for usage-log display.
 
@@ -50,6 +60,9 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - prompt/completion flat price calculation;
 - expression version parsing and variable detection while ignoring string
   literals;
+- expression execution for simple flat prices, conditional tiers, math helpers,
+  multimodal variables, request `param()`/`header()` probes, missing-field `nil`
+  handling, and time helper ranges;
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - refund versus additional-consumption settlement deltas.

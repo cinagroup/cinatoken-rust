@@ -32,8 +32,9 @@ Last checked: 2026-06-19
   with `python tools/verify_sqlite.py --seed <generated.sql>`.
 - Smoke-tested `bun run verify:migration -- --input <export.json> --sql
   <generated.sql>` against a generated export and D1 SQL pair.
-- `cargo test -p cinatoken-billing` covering quota conversion and settlement
-  primitives.
+- `cargo test -p cinatoken-billing` covering quota conversion, settlement
+  primitives, billing expression version/variable detection, and GPT/OpenAI
+  versus Claude token normalization.
 - `cargo test -p cinatoken-storage` covering shared storage record helpers.
 - `cargo test -p cinatoken-cache` covering Upstash REST command encoding,
   response/error parsing, `/multi-exec` expiring counters, and rate limiter

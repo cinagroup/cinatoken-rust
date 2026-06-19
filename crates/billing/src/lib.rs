@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_QUOTA_PER_UNIT: f64 = 500_000.0;
+pub const DEFAULT_EXPR_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Quota(pub i64);
@@ -27,6 +28,232 @@ impl TokenUsage {
     pub fn total_tokens(self) -> i64 {
         self.prompt_tokens.saturating_add(self.completion_tokens)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct TokenParams {
+    pub p: f64,
+    pub c: f64,
+    pub len: f64,
+    pub cr: f64,
+    pub cc: f64,
+    pub cc1h: f64,
+    pub img: f64,
+    pub img_o: f64,
+    pub ai: f64,
+    pub ao: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum UsageSemantic {
+    #[default]
+    OpenAi,
+    Anthropic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TieredTokenUsage {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cached_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub claude_cache_creation_5m_tokens: i64,
+    pub claude_cache_creation_1h_tokens: i64,
+    pub image_input_tokens: i64,
+    pub image_output_tokens: i64,
+    pub audio_input_tokens: i64,
+    pub audio_output_tokens: i64,
+    pub usage_semantic: UsageSemantic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BillingExprVariables {
+    pub p: bool,
+    pub c: bool,
+    pub len: bool,
+    pub cr: bool,
+    pub cc: bool,
+    pub cc1h: bool,
+    pub img: bool,
+    pub img_o: bool,
+    pub ai: bool,
+    pub ao: bool,
+}
+
+impl BillingExprVariables {
+    pub fn contains(self, name: &str) -> bool {
+        match name {
+            "p" => self.p,
+            "c" => self.c,
+            "len" => self.len,
+            "cr" => self.cr,
+            "cc" => self.cc,
+            "cc1h" => self.cc1h,
+            "img" => self.img,
+            "img_o" => self.img_o,
+            "ai" => self.ai,
+            "ao" => self.ao,
+            _ => false,
+        }
+    }
+
+    fn mark(&mut self, name: &str) {
+        match name {
+            "p" => self.p = true,
+            "c" => self.c = true,
+            "len" => self.len = true,
+            "cr" => self.cr = true,
+            "cc" => self.cc = true,
+            "cc1h" => self.cc1h = true,
+            "img" => self.img = true,
+            "img_o" => self.img_o = true,
+            "ai" => self.ai = true,
+            "ao" => self.ao = true,
+            _ => {}
+        }
+    }
+}
+
+pub fn parse_expr_version(expr: &str) -> (u32, &str) {
+    let expr = expr.trim();
+    if let Some(body) = expr.strip_prefix("v1:") {
+        (1, body)
+    } else {
+        (DEFAULT_EXPR_VERSION, expr)
+    }
+}
+
+pub fn detect_billing_expr_variables(expr: &str) -> BillingExprVariables {
+    let (_, body) = parse_expr_version(expr);
+    let bytes = body.as_bytes();
+    let mut vars = BillingExprVariables::default();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'"' || byte == b'\'' {
+            index = skip_quoted(bytes, index, byte);
+            continue;
+        }
+        if byte == b'`' {
+            index = skip_raw_quoted(bytes, index);
+            continue;
+        }
+        if is_identifier_start(byte) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_identifier_continue(bytes[index]) {
+                index += 1;
+            }
+            if let Some(identifier) = body.get(start..index) {
+                vars.mark(identifier);
+            }
+            continue;
+        }
+        index += 1;
+    }
+
+    vars
+}
+
+pub fn build_tiered_token_params(
+    usage: TieredTokenUsage,
+    is_claude_usage_semantic: bool,
+    used_vars: BillingExprVariables,
+) -> TokenParams {
+    let mut p = usage.prompt_tokens as f64;
+    let mut c = usage.completion_tokens as f64;
+    let cr = usage.cached_tokens as f64;
+    let img = usage.image_input_tokens as f64;
+    let ai = usage.audio_input_tokens as f64;
+    let img_o = usage.image_output_tokens as f64;
+    let ao = usage.audio_output_tokens as f64;
+
+    let (cc, cc1h) = if usage.usage_semantic == UsageSemantic::Anthropic {
+        (
+            usage.claude_cache_creation_5m_tokens as f64,
+            usage.claude_cache_creation_1h_tokens as f64,
+        )
+    } else {
+        (usage.cache_creation_tokens as f64, 0.0)
+    };
+
+    let len = if is_claude_usage_semantic {
+        p + cr + cc + cc1h
+    } else {
+        p
+    };
+
+    if !is_claude_usage_semantic {
+        if used_vars.cr {
+            p -= cr;
+        }
+        if used_vars.cc {
+            p -= cc;
+        }
+        if used_vars.cc1h {
+            p -= cc1h;
+        }
+        if used_vars.img {
+            p -= img;
+        }
+        if used_vars.ai {
+            p -= ai;
+        }
+        if used_vars.img_o {
+            c -= img_o;
+        }
+        if used_vars.ao {
+            c -= ao;
+        }
+    }
+
+    TokenParams {
+        p: p.max(0.0),
+        c: c.max(0.0),
+        len,
+        cr,
+        cc,
+        cc1h,
+        img,
+        img_o,
+        ai,
+        ao,
+    }
+}
+
+fn skip_quoted(bytes: &[u8], mut index: usize, quote: u8) -> usize {
+    index += 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index = (index + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[index] == quote {
+            return index + 1;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn skip_raw_quoted(bytes: &[u8], mut index: usize) -> usize {
+    index += 1;
+    while index < bytes.len() {
+        if bytes[index] == b'`' {
+            return index + 1;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn is_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_identifier_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 pub fn settle(pre_consumed: Quota, actual: Quota) -> BillingSettlement {
@@ -116,6 +343,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_expr_version_accepts_v1_prefix_and_defaults_to_v1() {
+        assert_eq!(
+            parse_expr_version("v1:tier(\"base\", p)"),
+            (1, "tier(\"base\", p)")
+        );
+        assert_eq!(
+            parse_expr_version(" tier(\"base\", p) "),
+            (DEFAULT_EXPR_VERSION, "tier(\"base\", p)")
+        );
+    }
+
+    #[test]
+    fn detect_billing_expr_variables_finds_known_identifiers_only() {
+        let vars = detect_billing_expr_variables(
+            r#"v1:tier("cr is a tier name", p * 2 + c * 10 + cr * 0.2 + img_o * 3 + ao)"#,
+        );
+
+        assert!(vars.p);
+        assert!(vars.c);
+        assert!(vars.cr);
+        assert!(vars.img_o);
+        assert!(vars.ao);
+        assert!(!vars.cc);
+        assert!(!vars.img);
+        assert!(!vars.contains("tier"));
+    }
+
+    #[test]
+    fn detect_billing_expr_variables_ignores_strings_and_partial_names() {
+        let vars = detect_billing_expr_variables(
+            r#"param("messages.#.cr") == "img" ? tier("audio ao", crunch * 2) : p"#,
+        );
+
+        assert!(vars.p);
+        assert!(!vars.cr);
+        assert!(!vars.img);
+        assert!(!vars.ao);
+    }
+
+    #[test]
     fn quota_round_matches_go_half_away_from_zero_cases() {
         let cases = [
             (0.0, 0),
@@ -157,6 +424,111 @@ mod tests {
             flat_text_quota(usage, 1.5, 7.5, DEFAULT_QUOTA_PER_UNIT, 1.0),
             Quota(93_750)
         );
+    }
+
+    #[test]
+    fn tiered_token_params_gpt_subtracts_cache_only_when_used() {
+        let usage = TieredTokenUsage {
+            prompt_tokens: 1_000,
+            completion_tokens: 500,
+            cached_tokens: 200,
+            ..TieredTokenUsage::default()
+        };
+
+        let with_cache = build_tiered_token_params(
+            usage,
+            false,
+            detect_billing_expr_variables(r#"tier("base", p * 2.5 + c * 15 + cr * 0.25)"#),
+        );
+        assert_eq!(with_cache.p, 800.0);
+        assert_eq!(with_cache.c, 500.0);
+        assert_eq!(with_cache.len, 1_000.0);
+        assert_eq!(with_cache.cr, 200.0);
+
+        let without_cache = build_tiered_token_params(
+            usage,
+            false,
+            detect_billing_expr_variables(r#"tier("base", p * 2.5 + c * 15)"#),
+        );
+        assert_eq!(without_cache.p, 1_000.0);
+        assert_eq!(without_cache.cr, 200.0);
+    }
+
+    #[test]
+    fn tiered_token_params_gpt_subtracts_image_and_audio_when_used() {
+        let usage = TieredTokenUsage {
+            prompt_tokens: 1_000,
+            completion_tokens: 600,
+            image_input_tokens: 200,
+            audio_input_tokens: 100,
+            image_output_tokens: 50,
+            audio_output_tokens: 75,
+            ..TieredTokenUsage::default()
+        };
+
+        let params = build_tiered_token_params(
+            usage,
+            false,
+            detect_billing_expr_variables(
+                r#"tier("base", p * 2 + c * 10 + img * 2.5 + ai * 3 + img_o * 4 + ao * 5)"#,
+            ),
+        );
+
+        assert_eq!(params.p, 700.0);
+        assert_eq!(params.c, 475.0);
+        assert_eq!(params.img, 200.0);
+        assert_eq!(params.ai, 100.0);
+        assert_eq!(params.img_o, 50.0);
+        assert_eq!(params.ao, 75.0);
+    }
+
+    #[test]
+    fn tiered_token_params_claude_keeps_text_tokens_and_expands_len() {
+        let usage = TieredTokenUsage {
+            prompt_tokens: 5_000,
+            completion_tokens: 2_000,
+            cached_tokens: 3_000,
+            claude_cache_creation_5m_tokens: 1_000,
+            claude_cache_creation_1h_tokens: 500,
+            usage_semantic: UsageSemantic::Anthropic,
+            ..TieredTokenUsage::default()
+        };
+
+        let params = build_tiered_token_params(
+            usage,
+            true,
+            detect_billing_expr_variables(
+                r#"tier("base", p * 3 + c * 15 + cr * 0.3 + cc * 3.75 + cc1h * 6)"#,
+            ),
+        );
+
+        assert_eq!(params.p, 5_000.0);
+        assert_eq!(params.c, 2_000.0);
+        assert_eq!(params.len, 9_500.0);
+        assert_eq!(params.cr, 3_000.0);
+        assert_eq!(params.cc, 1_000.0);
+        assert_eq!(params.cc1h, 500.0);
+    }
+
+    #[test]
+    fn tiered_token_params_clamps_reduced_prompt_and_completion_to_zero() {
+        let usage = TieredTokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            cached_tokens: 120,
+            audio_output_tokens: 75,
+            ..TieredTokenUsage::default()
+        };
+
+        let params = build_tiered_token_params(
+            usage,
+            false,
+            detect_billing_expr_variables(r#"tier("base", p + cr + c + ao)"#),
+        );
+
+        assert_eq!(params.p, 0.0);
+        assert_eq!(params.c, 0.0);
+        assert_eq!(params.len, 100.0);
     }
 
     #[test]

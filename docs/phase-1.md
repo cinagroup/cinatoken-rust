@@ -21,7 +21,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Token access update, user request-count update, and zero-quota consume audit logs.
 - Streaming chat completion passthrough with pending zero-quota stream audit logs.
 - Pure Rust relay helper tests for model mapping, IP allowlists, key selection, usage parsing, and URL normalization.
-- Pure Rust billing primitives for quota rounding, price conversion, and pre-consume settlement deltas.
+- Pure Rust billing primitives for quota rounding, price conversion,
+  expression version parsing, variable detection, tiered token normalization,
+  and pre-consume settlement deltas.
 - Shared storage-layer record types for authenticated tokens, relay channels, and relay audit logs.
 - Worker-side D1 repository boundary for auth, channel selection, token updates, user counters, and relay audit logs.
 - Cache traits for string KV, expiring counters, and rate limiting.
@@ -36,6 +38,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 ## Next
 
 - Implement full quota pre-consume and post-consume settlement.
-- Port the billing expression evaluator and token normalization rules.
+- Port the billing expression evaluator and request-aware helpers.
 - Reconcile streaming usage metadata after full stream consumption.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

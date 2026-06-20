@@ -1297,9 +1297,9 @@ Relay：
 
 - Rust workspace, Worker entrypoint, D1 core schema, migration CLI, cache
   abstractions, Upstash Redis client, relay auth, channel selection, model
-  mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay
-  with streaming passthrough, read-through token/channel cache, and relay
-  token/IP rate limits are now in place.
+  mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay,
+  native Gemini generateContent/streamGenerateContent relay, read-through
+  token/channel cache, and relay token/IP rate limits are now in place.
 - Tiered billing expression foundations are in place: expression execution,
   request `param()`/`header()` probes, tier trace capture, group-ratio
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and
@@ -1317,21 +1317,21 @@ Relay：
   quota conversion, request probes, and used-variable detection.
 - OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
   crate, including cached/cache-creation token details, Anthropic cache
-  semantics, Anthropic streaming usage events, image/audio input/output token
-  details, final streaming usage chunks, `[DONE]`, CRLF streams, and nested
-  response usage metadata.
+  semantics, Anthropic streaming usage events, Gemini `usageMetadata`,
+  image/audio input/output token details, final streaming usage chunks,
+  `[DONE]`, CRLF streams, and nested response usage metadata.
 - Channel selection and channel read-through cache keys now include endpoint
-  provider family, so OpenAI-compatible and native Anthropic routes do not
-  reuse each other's selected channels for the same group/model.
+  provider family, so OpenAI-compatible, native Anthropic, and native Gemini
+  routes do not reuse each other's selected channels for the same group/model.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
   relay using the original request body, prompt/completion token estimates, and
   visible request-body media fallback counts, reserves estimated wallet/token
   quota for tiered requests, then settles successful usage against that frozen
   snapshot.
-- Streaming chat and Anthropic Messages passthrough now tee the upstream
-  response and consume an audit branch with incremental SSE usage parsing in
-  `wait_until`; successful tiered streaming responses settle reserved quota
-  after full stream usage is known.
+- Streaming chat, Anthropic Messages, and native Gemini passthrough now tee the
+  upstream response and consume an audit branch with incremental SSE usage
+  parsing in `wait_until`; successful tiered streaming responses settle
+  reserved quota after full stream usage is known.
 - Actual tiered-expression settlement now rebuilds token parameters from
   upstream usage details and the frozen expression's variable usage, avoiding
   double-counting cached/image/audio sub-categories in `p` or `c`.

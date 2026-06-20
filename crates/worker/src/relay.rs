@@ -6,10 +6,12 @@ use cinatoken_billing::{
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
-    apply_model_mapping, csv_contains, first_channel_key, ip_allowlist_matches,
-    upstream_anthropic_messages_url, upstream_v1_url, usage_summary_from_anthropic_body,
-    usage_summary_from_body, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
-    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
+    apply_model_mapping, csv_contains, first_channel_key, ip_allowlist_matches, mapped_model_name,
+    upstream_anthropic_messages_url, upstream_gemini_native_url, upstream_v1_url,
+    usage_summary_from_anthropic_body, usage_summary_from_body, usage_summary_from_gemini_body,
+    CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath, RelayCacheKeys,
+    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, GEMINI_CHANNEL_TYPES,
+    OPENAI_COMPATIBLE_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -33,50 +35,60 @@ const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
 const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
 const ESTIMATED_FILE_INPUT_TOKENS: i64 = 4_096;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RelayProviderKind {
     OpenAiCompatible,
     AnthropicMessages,
+    GeminiNative,
 }
 
-#[derive(Clone, Copy)]
 struct RelayEndpoint {
     display_name: &'static str,
     cache_family: &'static str,
-    upstream_path: &'static str,
+    upstream_path: String,
+    upstream_query: Option<String>,
+    gemini_route: Option<GeminiNativePath>,
     provider: RelayProviderKind,
     supported_channel_types: &'static [i32],
     supports_streaming: bool,
+    force_streaming: bool,
     stream_not_implemented_feature: Option<&'static str>,
 }
 
 impl RelayEndpoint {
-    fn requested_stream(body: &Value) -> bool {
-        body.get("stream").and_then(Value::as_bool).unwrap_or(false)
+    fn requested_stream(&self, body: &Value) -> bool {
+        self.force_streaming || body.get("stream").and_then(Value::as_bool).unwrap_or(false)
     }
 
-    fn stream_not_implemented(self, body: &Value) -> Option<&'static str> {
-        if Self::requested_stream(body) && !self.supports_streaming {
+    fn stream_not_implemented(&self, body: &Value) -> Option<&'static str> {
+        if self.requested_stream(body) && !self.supports_streaming {
             self.stream_not_implemented_feature
         } else {
             None
         }
     }
 
-    fn should_relay_stream(self, body: &Value) -> bool {
-        self.supports_streaming && Self::requested_stream(body)
+    fn should_relay_stream(&self, body: &Value) -> bool {
+        self.supports_streaming && self.requested_stream(body)
     }
 
-    fn upstream_url(self, channel: &RelayChannel) -> String {
+    fn upstream_url(&self, channel: &RelayChannel) -> String {
         match self.provider {
             RelayProviderKind::OpenAiCompatible => upstream_v1_url(
                 channel.channel_type,
                 channel.base_url.as_deref(),
-                self.upstream_path,
+                &self.upstream_path,
             ),
             RelayProviderKind::AnthropicMessages => {
                 upstream_anthropic_messages_url(channel.base_url.as_deref())
             }
+            RelayProviderKind::GeminiNative => upstream_gemini_native_url(
+                channel.base_url.as_deref(),
+                self.gemini_route
+                    .as_ref()
+                    .expect("Gemini native endpoint must carry parsed route"),
+                self.upstream_query.as_deref(),
+            ),
         }
     }
 }
@@ -93,12 +105,16 @@ pub async fn chat_completions(
         RelayEndpoint {
             display_name: "chat completions",
             cache_family: "openai_compatible",
-            upstream_path: "chat/completions",
+            upstream_path: "chat/completions".to_string(),
+            upstream_query: None,
+            gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
+            force_streaming: false,
             stream_not_implemented_feature: None,
         },
+        None,
     )
     .await
 }
@@ -111,12 +127,16 @@ pub async fn embeddings(req: Request, env: Env) -> worker::Result<Response> {
         RelayEndpoint {
             display_name: "embeddings",
             cache_family: "openai_compatible",
-            upstream_path: "embeddings",
+            upstream_path: "embeddings".to_string(),
+            upstream_query: None,
+            gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
+            force_streaming: false,
             stream_not_implemented_feature: None,
         },
+        None,
     )
     .await
 }
@@ -129,12 +149,16 @@ pub async fn completions(req: Request, env: Env) -> worker::Result<Response> {
         RelayEndpoint {
             display_name: "completions",
             cache_family: "openai_compatible",
-            upstream_path: "completions",
+            upstream_path: "completions".to_string(),
+            upstream_query: None,
+            gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
+            force_streaming: false,
             stream_not_implemented_feature: Some("streaming completions relay"),
         },
+        None,
     )
     .await
 }
@@ -147,12 +171,16 @@ pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
         RelayEndpoint {
             display_name: "responses",
             cache_family: "openai_compatible",
-            upstream_path: "responses",
+            upstream_path: "responses".to_string(),
+            upstream_query: None,
+            gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
+            force_streaming: false,
             stream_not_implemented_feature: Some("streaming responses relay"),
         },
+        None,
     )
     .await
 }
@@ -169,12 +197,50 @@ pub async fn anthropic_messages(
         RelayEndpoint {
             display_name: "Anthropic messages",
             cache_family: "anthropic",
-            upstream_path: "messages",
+            upstream_path: "messages".to_string(),
+            upstream_query: None,
+            gemini_route: None,
             provider: RelayProviderKind::AnthropicMessages,
             supported_channel_types: ANTHROPIC_CHANNEL_TYPES,
             supports_streaming: true,
+            force_streaming: false,
             stream_not_implemented_feature: None,
         },
+        None,
+    )
+    .await
+}
+
+pub async fn gemini_native(
+    req: Request,
+    env: Env,
+    context: Context,
+    route: GeminiNativePath,
+) -> worker::Result<Response> {
+    if !route.is_supported_generate_content() {
+        return json_with_status(
+            &ErrorBody::not_implemented(format!("Gemini native action {}", route.action)),
+            501,
+        );
+    }
+    let query = req.url()?.query().map(str::to_string);
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "Gemini native generateContent",
+            cache_family: "gemini",
+            upstream_path: route.upstream_path(),
+            upstream_query: query,
+            gemini_route: Some(route.clone()),
+            provider: RelayProviderKind::GeminiNative,
+            supported_channel_types: GEMINI_CHANNEL_TYPES,
+            supports_streaming: true,
+            force_streaming: route.is_stream_generate_content(),
+            stream_not_implemented_feature: None,
+        },
+        Some(route.model),
     )
     .await
 }
@@ -183,7 +249,8 @@ async fn relay_endpoint(
     mut req: Request,
     env: Env,
     context: Option<Context>,
-    endpoint: RelayEndpoint,
+    mut endpoint: RelayEndpoint,
+    model_override: Option<String>,
 ) -> worker::Result<Response> {
     let started_at = unix_timestamp();
     let client_ip = client_ip(&req);
@@ -212,7 +279,12 @@ async fn relay_endpoint(
         return openai_error_response("streaming relay context is unavailable", 500);
     }
 
-    let model = match request_body.get("model").and_then(Value::as_str) {
+    let model = match model_override.or_else(|| {
+        request_body
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }) {
         Some(model) if !model.trim().is_empty() => model.trim().to_string(),
         _ => {
             return json_with_status(
@@ -298,6 +370,14 @@ async fn relay_endpoint(
 
     let mut upstream_body = request_body;
     apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
+    if endpoint.provider == RelayProviderKind::GeminiNative {
+        if let Some(mapped_model) = mapped_model_name(&model, channel.model_mapping.as_deref()) {
+            if let Some(route) = endpoint.gemini_route.as_mut() {
+                route.model = mapped_model;
+                endpoint.upstream_path = route.upstream_path();
+            }
+        }
+    }
 
     let upstream_url = endpoint.upstream_url(&channel);
     let upstream_response = match forward_relay_request(
@@ -353,7 +433,7 @@ async fn relay_endpoint(
             channel,
             model,
             group,
-            endpoint.upstream_path,
+            endpoint.upstream_path.clone(),
             endpoint.provider,
             audit,
         )
@@ -367,7 +447,7 @@ async fn relay_endpoint(
         &channel,
         &model,
         &group,
-        endpoint.upstream_path,
+        &endpoint.upstream_path,
         endpoint.provider,
         &audit,
     )
@@ -602,6 +682,8 @@ fn extract_api_key(req: &Request) -> Option<String> {
         .flatten()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| request_header(req, "x-goog-api-key"))
+        .or_else(|| request_query_param(req, "key"))
 }
 
 async fn authenticate(
@@ -831,6 +913,7 @@ async fn forward_relay_request(
         RelayProviderKind::AnthropicMessages => {
             forward_anthropic_messages(url, upstream_key, body, provider_headers).await
         }
+        RelayProviderKind::GeminiNative => forward_gemini_native(url, upstream_key, body).await,
     }
 }
 
@@ -896,6 +979,24 @@ async fn forward_anthropic_messages(
     Fetch::Request(outbound).send().await
 }
 
+async fn forward_gemini_native(
+    url: &str,
+    upstream_key: &str,
+    body: &Value,
+) -> worker::Result<Response> {
+    let body = serde_json::to_string(body)?;
+    let mut headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("x-goog-api-key", upstream_key)?;
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body)));
+    let outbound = Request::new_with_init(url, &init)?;
+    Fetch::Request(outbound).send().await
+}
+
 async fn complete_relay_response(
     mut upstream: Response,
     db: &D1Database,
@@ -919,6 +1020,7 @@ async fn complete_relay_response(
     let usage = match provider {
         RelayProviderKind::OpenAiCompatible => usage_summary_from_body(&body),
         RelayProviderKind::AnthropicMessages => usage_summary_from_anthropic_body(&body),
+        RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(&body),
     };
 
     if let Err(err) = record_relay_audit(
@@ -953,7 +1055,7 @@ async fn complete_streaming_relay_response(
     channel: RelayChannel,
     model: String,
     group: String,
-    endpoint_path: &'static str,
+    endpoint_path: String,
     provider: RelayProviderKind,
     audit: RelayAuditContext,
 ) -> worker::Result<Response> {
@@ -995,7 +1097,7 @@ async fn complete_streaming_relay_response(
             &channel,
             &model,
             &group,
-            endpoint_path,
+            &endpoint_path,
             status,
             &usage,
             &audit,
@@ -1021,6 +1123,7 @@ async fn streaming_usage_summary(
     let mut accumulator = match provider {
         RelayProviderKind::OpenAiCompatible => SseUsageAccumulator::default(),
         RelayProviderKind::AnthropicMessages => SseUsageAccumulator::anthropic(),
+        RelayProviderKind::GeminiNative => SseUsageAccumulator::gemini(),
     };
 
     while let Some(chunk) = stream.next().await {
@@ -1894,6 +1997,14 @@ fn request_header(req: &Request, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn request_query_param(req: &Request, name: &str) -> Option<String> {
+    let url = req.url().ok()?;
+    url.query_pairs()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn response_header(response: &Response, names: &[&str]) -> Option<String> {
     response_or_request_header(|name| response.headers().get(name).ok().flatten(), names)
 }
@@ -1942,10 +2053,13 @@ mod tests {
         RelayEndpoint {
             display_name: "test",
             cache_family: "test",
-            upstream_path: "test",
+            upstream_path: "test".to_string(),
+            upstream_query: None,
+            gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming,
+            force_streaming: false,
             stream_not_implemented_feature: feature,
         }
     }
@@ -1985,13 +2099,41 @@ mod tests {
         let endpoint = RelayEndpoint {
             display_name: "Anthropic messages",
             cache_family: "anthropic",
-            upstream_path: "messages",
+            upstream_path: "messages".to_string(),
+            upstream_query: None,
+            gemini_route: None,
             provider: RelayProviderKind::AnthropicMessages,
             supported_channel_types: ANTHROPIC_CHANNEL_TYPES,
             supports_streaming: true,
+            force_streaming: false,
             stream_not_implemented_feature: None,
         };
         let body = json!({"model": "claude-test", "stream": true});
+
+        assert!(endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
+    fn gemini_native_endpoint_forces_streaming_from_path_action() {
+        let route = GeminiNativePath {
+            api_version: "v1beta".to_string(),
+            model: "gemini-test".to_string(),
+            action: "streamGenerateContent".to_string(),
+        };
+        let endpoint = RelayEndpoint {
+            display_name: "Gemini native generateContent",
+            cache_family: "gemini",
+            upstream_path: route.upstream_path(),
+            upstream_query: None,
+            gemini_route: Some(route),
+            provider: RelayProviderKind::GeminiNative,
+            supported_channel_types: GEMINI_CHANNEL_TYPES,
+            supports_streaming: true,
+            force_streaming: true,
+            stream_not_implemented_feature: None,
+        };
+        let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
 
         assert!(endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);

@@ -12,6 +12,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         return empty_cors_response();
     }
 
+    if req.method() == Method::Post {
+        if let Some(route) = cinatoken_relay::parse_gemini_native_path(&req.path()) {
+            return relay::gemini_native(req, env, ctx, route).await;
+        }
+    }
+
     Router::with_data(ctx)
         .get("/api/status", |_, ctx| {
             let environment = ctx
@@ -80,7 +86,7 @@ pub(crate) fn set_cors_headers(response: &mut Response) -> Result<()> {
     headers.set("Access-Control-Allow-Origin", "*")?;
     headers.set(
         "Access-Control-Allow-Headers",
-        "authorization,content-type,x-api-key,anthropic-version,anthropic-beta",
+        "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,anthropic-beta",
     )?;
     headers.set(
         "Access-Control-Allow-Methods",

@@ -13,8 +13,16 @@ The Worker also supports native Anthropic Messages requests:
 
 - `POST /v1/messages`
 
+The Worker also supports native Gemini generate content requests:
+
+- `POST /v1beta/models/{model}:generateContent`
+- `POST /v1beta/models/{model}:streamGenerateContent`
+- `POST /v1/models/{model}:generateContent`
+- `POST /v1/models/{model}:streamGenerateContent`
+
 `POST /v1/chat/completions` and native `POST /v1/messages` also support
-streaming passthrough when the request body includes `stream: true`.
+streaming passthrough when the request body includes `stream: true`. Native
+Gemini `streamGenerateContent` paths stream with upstream `alt=sse`.
 Completions, responses, and embeddings remain non-streaming in this MVP.
 
 The Worker:
@@ -22,7 +30,8 @@ The Worker:
 - parses the request body as `serde_json::Value`, preserving unknown fields and
   explicit zero values;
 - rejects `stream: true` on completions/responses with `501`;
-- accepts API keys from `Authorization: Bearer ...` or `x-api-key`;
+- accepts API keys from `Authorization: Bearer ...`, `x-api-key`,
+  `x-goog-api-key`, or native Gemini `key` query parameters;
 - authenticates the token and user through Upstash-backed read-through cache
   with D1 fallback;
 - checks token status, user status, expiry, token quota presence, user quota
@@ -37,22 +46,28 @@ The Worker:
   `1, 20, 40, 42, 43, 48, 53`;
 - limits Anthropic Messages relay candidates to native Anthropic provider type
   `14`;
+- limits native Gemini relay candidates to Gemini provider type `24`;
 - applies `model_mapping` when it is a JSON object from source model to
-  upstream model;
+  upstream model, including native Gemini path models;
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
 - forwards native Anthropic Messages requests with `x-api-key`,
   `anthropic-version`, and optional `anthropic-beta` headers;
+- forwards native Gemini requests with `x-goog-api-key` and strips downstream
+  `key` query parameters before calling the upstream provider;
 - returns the upstream body, status, and content type to the client;
-- returns upstream chat completion and Anthropic Messages streams without
-  buffering the full response;
+- returns upstream chat completion, Anthropic Messages, and native Gemini
+  streams without buffering the full response;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
   SSE `data:` events, including cached/cache-creation and image/audio
   input/output token details;
 - parses Anthropic Messages usage metadata, including streaming
   `message_start`/`message_delta` SSE events, with Claude cache-read and
   cache-creation token semantics for tiered settlement;
-- tees streaming chat and Anthropic Messages responses so `wait_until` can
-  consume an audit branch incrementally without blocking the client stream;
+- parses Gemini `usageMetadata` from JSON responses and native SSE `data:`
+  chunks, including cached, image, and audio token details;
+- tees streaming chat, Anthropic Messages, and native Gemini responses so
+  `wait_until` can consume an audit branch incrementally without blocking the
+  client stream;
 - updates token `accessed_time`, increments user `request_count`, and writes
   consume audit logs with parsed usage token counts;
 - reads Go-compatible `billing_setting.billing_mode`,
@@ -77,8 +92,8 @@ The Worker:
   `other.tiered_billing_fallback`;
 - if tiered quota mutation cannot be applied, keeps the audit log pending and
   records the computed result under `other.tiered_billing_shadow` plus an error;
-- writes streaming chat completion and Anthropic Messages audit logs via
-  `wait_until` after the audit stream branch is consumed;
+- writes streaming chat completion, Anthropic Messages, and native Gemini audit
+  logs via `wait_until` after the audit stream branch is consumed;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis
@@ -95,7 +110,8 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
 - a `channels` row with `status = 1`, a supported `type`, non-empty `"key"`,
   matching `"group"`, and either empty `models` or a CSV entry for the
   requested model. OpenAI-compatible endpoints currently support types
-  `1, 20, 40, 42, 43, 48, 53`; `/v1/messages` currently supports type `14`.
+  `1, 20, 40, 42, 43, 48, 53`; `/v1/messages` currently supports type `14`;
+  native Gemini generate-content endpoints currently support type `24`.
 - preferably an `abilities` row with matching `group_name`, `model`,
   `channel_id`, and `enabled = 1`.
 
@@ -116,9 +132,12 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 
 - Anthropic Messages relay is native-format only; OpenAI-to-Claude request
   conversion is still pending.
+- Native Gemini relay currently supports generateContent and
+  streamGenerateContent passthrough only; OpenAI-to-Gemini request conversion,
+  native embeddings, and image/video task paths are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
-  chunks and Anthropic Messages cumulative usage events, but live upstream SSE
-  coverage is still pending.
+  chunks, Anthropic Messages cumulative usage events, and Gemini
+  `usageMetadata` chunks, but live upstream SSE coverage is still pending.
 - Streaming tiered reserve is applied before the upstream call, but live
   upstream SSE reserve/refund/delta behavior still needs end-to-end coverage.
 - Request-time token estimation currently covers JSON-body text, max-token

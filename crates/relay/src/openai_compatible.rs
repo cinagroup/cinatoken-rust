@@ -13,6 +13,8 @@ pub const OPENAI_COMPATIBLE_CHANNEL_TYPES: &[i32] = &[
 ];
 pub const CHANNEL_TYPE_ANTHROPIC: i32 = 14;
 pub const ANTHROPIC_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_ANTHROPIC];
+pub const CHANNEL_TYPE_GEMINI: i32 = 24;
+pub const GEMINI_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_GEMINI];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct UsageSummary {
@@ -36,6 +38,10 @@ pub fn is_openai_compatible_channel_type(channel_type: i32) -> bool {
 
 pub fn is_anthropic_channel_type(channel_type: i32) -> bool {
     channel_type_supported(channel_type, ANTHROPIC_CHANNEL_TYPES)
+}
+
+pub fn is_gemini_channel_type(channel_type: i32) -> bool {
+    channel_type_supported(channel_type, GEMINI_CHANNEL_TYPES)
 }
 
 pub fn channel_type_supported(channel_type: i32, supported_channel_types: &[i32]) -> bool {
@@ -117,6 +123,68 @@ pub fn upstream_anthropic_messages_url(base_url: Option<&str>) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeminiNativePath {
+    pub api_version: String,
+    pub model: String,
+    pub action: String,
+}
+
+impl GeminiNativePath {
+    pub fn is_stream_generate_content(&self) -> bool {
+        self.action.eq_ignore_ascii_case("streamGenerateContent")
+    }
+
+    pub fn is_generate_content(&self) -> bool {
+        self.action.eq_ignore_ascii_case("generateContent")
+    }
+
+    pub fn is_supported_generate_content(&self) -> bool {
+        self.is_generate_content() || self.is_stream_generate_content()
+    }
+
+    pub fn upstream_path(&self) -> String {
+        format!("{}/models/{}:{}", self.api_version, self.model, self.action)
+    }
+}
+
+pub fn parse_gemini_native_path(path: &str) -> Option<GeminiNativePath> {
+    let path = path.trim();
+    let (api_version, rest) = path
+        .strip_prefix("/v1beta/models/")
+        .map(|rest| ("v1beta", rest))
+        .or_else(|| path.strip_prefix("/v1/models/").map(|rest| ("v1", rest)))?;
+    let (model, action) = rest.split_once(':')?;
+    let model = model.trim();
+    let action = action.trim();
+    if model.is_empty() || action.is_empty() || action.contains('/') {
+        return None;
+    }
+    Some(GeminiNativePath {
+        api_version: api_version.to_string(),
+        model: model.to_string(),
+        action: action.to_string(),
+    })
+}
+
+pub fn upstream_gemini_native_url(
+    base_url: Option<&str>,
+    route: &GeminiNativePath,
+    query: Option<&str>,
+) -> String {
+    let base = base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default_base_url(CHANNEL_TYPE_GEMINI));
+    let mut url = format!("{}/{}", base.trim_end_matches('/'), route.upstream_path());
+    let query = gemini_upstream_query(query, route.is_stream_generate_content());
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query);
+    }
+    url
+}
+
 pub fn default_base_url(channel_type: i32) -> &'static str {
     match channel_type {
         20 => "https://openrouter.ai/api",
@@ -125,23 +193,26 @@ pub fn default_base_url(channel_type: i32) -> &'static str {
         43 => "https://api.deepseek.com",
         48 => "https://api.x.ai",
         53 => "https://llm.submodel.ai",
+        24 => "https://generativelanguage.googleapis.com",
         _ => "https://api.openai.com",
     }
 }
 
 pub fn apply_model_mapping(body: &mut Value, model: &str, mapping: Option<&str>) {
-    let Some(mapping) = mapping.map(str::trim).filter(|value| !value.is_empty()) else {
-        return;
-    };
-    let Ok(map) = serde_json::from_str::<HashMap<String, String>>(mapping) else {
-        return;
-    };
-    let Some(mapped_model) = map.get(model).filter(|value| !value.trim().is_empty()) else {
+    let Some(mapped_model) = mapped_model_name(model, mapping) else {
         return;
     };
     if let Some(obj) = body.as_object_mut() {
-        obj.insert("model".to_string(), Value::String(mapped_model.clone()));
+        obj.insert("model".to_string(), Value::String(mapped_model));
     }
+}
+
+pub fn mapped_model_name(model: &str, mapping: Option<&str>) -> Option<String> {
+    let mapping = mapping.map(str::trim).filter(|value| !value.is_empty())?;
+    let map = serde_json::from_str::<HashMap<String, String>>(mapping).ok()?;
+    map.get(model)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub fn usage_summary_from_body(body: &str) -> UsageSummary {
@@ -172,18 +243,38 @@ pub fn usage_summary_from_anthropic_sse_stream(body: &str) -> UsageSummary {
     accumulator.finish()
 }
 
+pub fn usage_summary_from_gemini_body(body: &str) -> UsageSummary {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return UsageSummary::default();
+    };
+    usage_summary_from_gemini_value(&value).unwrap_or_default()
+}
+
+pub fn usage_summary_from_gemini_sse_stream(body: &str) -> UsageSummary {
+    let mut accumulator = SseUsageAccumulator::gemini();
+    accumulator.push_chunk(body.as_bytes());
+    accumulator.finish()
+}
+
 #[derive(Debug, Default)]
 pub struct SseUsageAccumulator {
     latest: UsageSummary,
     pending_line: Vec<u8>,
     data_lines: Vec<String>,
-    anthropic_semantics: bool,
+    mode: SseUsageMode,
 }
 
 impl SseUsageAccumulator {
     pub fn anthropic() -> Self {
         Self {
-            anthropic_semantics: true,
+            mode: SseUsageMode::Anthropic,
+            ..Self::default()
+        }
+    }
+
+    pub fn gemini() -> Self {
+        Self {
+            mode: SseUsageMode::Gemini,
             ..Self::default()
         }
     }
@@ -225,17 +316,33 @@ impl SseUsageAccumulator {
     }
 
     fn flush_event(&mut self) {
-        if let Some(summary) =
-            usage_summary_from_sse_data_lines(&self.data_lines, self.anthropic_semantics)
-        {
-            self.latest = if self.anthropic_semantics {
-                merge_anthropic_stream_usage(self.latest, summary)
-            } else {
-                summary
-            };
+        match self.mode {
+            SseUsageMode::OpenAi => {
+                if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, false) {
+                    self.latest = summary;
+                }
+            }
+            SseUsageMode::Anthropic => {
+                if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, true) {
+                    self.latest = merge_anthropic_stream_usage(self.latest, summary);
+                }
+            }
+            SseUsageMode::Gemini => {
+                if let Some(summary) = usage_summary_from_gemini_sse_data_lines(&self.data_lines) {
+                    self.latest = summary;
+                }
+            }
         }
         self.data_lines.clear();
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum SseUsageMode {
+    #[default]
+    OpenAi,
+    Anthropic,
+    Gemini,
 }
 
 fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
@@ -344,6 +451,36 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
     })
 }
 
+fn usage_summary_from_gemini_value(value: &Value) -> Option<UsageSummary> {
+    let metadata = value.get("usageMetadata")?;
+    let prompt_tokens = first_i32_field(metadata, &["promptTokenCount"])
+        .saturating_add(first_i32_field(metadata, &["toolUsePromptTokenCount"]));
+    let mut completion_tokens = first_i32_field(metadata, &["candidatesTokenCount"])
+        .saturating_add(first_i32_field(metadata, &["thoughtsTokenCount"]));
+    let mut total_tokens = first_i32_field(metadata, &["totalTokenCount"])
+        .max(prompt_tokens.saturating_add(completion_tokens));
+    if completion_tokens <= 0 && total_tokens > prompt_tokens {
+        completion_tokens = total_tokens.saturating_sub(prompt_tokens);
+    }
+    total_tokens = total_tokens.max(prompt_tokens.saturating_add(completion_tokens));
+
+    let (image_input_tokens, audio_input_tokens) = gemini_input_modality_tokens(metadata);
+    let (image_output_tokens, audio_output_tokens) =
+        gemini_modality_tokens(metadata.get("candidatesTokensDetails"));
+
+    Some(UsageSummary {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens: first_i32_field(metadata, &["cachedContentTokenCount"]),
+        image_input_tokens,
+        image_output_tokens,
+        audio_input_tokens,
+        audio_output_tokens,
+        ..UsageSummary::default()
+    })
+}
+
 fn usage_summary_from_sse_data_lines(
     data_lines: &[String],
     anthropic_semantics: bool,
@@ -365,6 +502,22 @@ fn usage_summary_from_sse_data_lines(
     } else {
         usage
     })
+}
+
+fn usage_summary_from_gemini_sse_data_lines(data_lines: &[String]) -> Option<UsageSummary> {
+    if data_lines.is_empty() {
+        return None;
+    }
+
+    let payload = data_lines.join("\n");
+    let payload = payload.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return None;
+    }
+
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    let usage = usage_summary_from_gemini_value(&value)?;
+    usage_has_tokens(&usage).then_some(usage)
 }
 
 fn mark_anthropic_usage_semantic(mut usage: UsageSummary) -> UsageSummary {
@@ -468,6 +621,57 @@ fn value_to_i64(value: &Value) -> Option<i64> {
         .or_else(|| value.as_f64().map(|value| value.round() as i64))
 }
 
+fn gemini_upstream_query(query: Option<&str>, force_alt_sse: bool) -> String {
+    let mut params = Vec::new();
+    if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+        for param in query
+            .split('&')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let name = param.split_once('=').map(|(name, _)| name).unwrap_or(param);
+            if name.eq_ignore_ascii_case("key") || name.eq_ignore_ascii_case("alt") {
+                continue;
+            }
+            params.push(param.to_string());
+        }
+    }
+    if force_alt_sse {
+        params.push("alt=sse".to_string());
+    }
+    params.join("&")
+}
+
+fn gemini_input_modality_tokens(metadata: &Value) -> (i32, i32) {
+    let prompt = gemini_modality_tokens(metadata.get("promptTokensDetails"));
+    let tool = gemini_modality_tokens(metadata.get("toolUsePromptTokensDetails"));
+    (
+        prompt.0.saturating_add(tool.0),
+        prompt.1.saturating_add(tool.1),
+    )
+}
+
+fn gemini_modality_tokens(details: Option<&Value>) -> (i32, i32) {
+    let Some(details) = details.and_then(Value::as_array) else {
+        return (0, 0);
+    };
+    let mut image_tokens = 0_i32;
+    let mut audio_tokens = 0_i32;
+    for detail in details {
+        let modality = detail
+            .get("modality")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let token_count = first_i32_field(detail, &["tokenCount"]);
+        if modality.eq_ignore_ascii_case("IMAGE") {
+            image_tokens = image_tokens.saturating_add(token_count);
+        } else if modality.eq_ignore_ascii_case("AUDIO") {
+            audio_tokens = audio_tokens.saturating_add(token_count);
+        }
+    }
+    (image_tokens, audio_tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,10 +756,58 @@ mod tests {
     }
 
     #[test]
+    fn parse_gemini_native_path_extracts_model_action_and_version() {
+        assert_eq!(
+            parse_gemini_native_path("/v1beta/models/gemini-2.0-flash:generateContent"),
+            Some(GeminiNativePath {
+                api_version: "v1beta".to_string(),
+                model: "gemini-2.0-flash".to_string(),
+                action: "generateContent".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_gemini_native_path("/v1/models/gemini-2.5-pro:streamGenerateContent")
+                .unwrap()
+                .upstream_path(),
+            "v1/models/gemini-2.5-pro:streamGenerateContent"
+        );
+        assert!(parse_gemini_native_path("/v1beta/models/gemini-2.0-flash").is_none());
+        assert!(
+            !parse_gemini_native_path("/v1beta/models/gemini-2.0-flash:embedContent")
+                .unwrap()
+                .is_supported_generate_content()
+        );
+    }
+
+    #[test]
+    fn upstream_gemini_native_url_normalizes_base_and_query() {
+        let route =
+            parse_gemini_native_path("/v1beta/models/gemini-2.0-flash:generateContent").unwrap();
+        assert_eq!(
+            upstream_gemini_native_url(None, &route, Some("key=client-secret&timeout=30s")),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?timeout=30s"
+        );
+
+        let stream =
+            parse_gemini_native_path("/v1beta/models/gemini-2.0-flash:streamGenerateContent")
+                .unwrap();
+        assert_eq!(
+            upstream_gemini_native_url(
+                Some("https://example.test/gemini/"),
+                &stream,
+                Some("alt=json&foo=bar"),
+            ),
+            "https://example.test/gemini/v1beta/models/gemini-2.0-flash:streamGenerateContent?foo=bar&alt=sse"
+        );
+    }
+
+    #[test]
     fn channel_type_helpers_recognize_supported_families() {
         assert!(is_anthropic_channel_type(CHANNEL_TYPE_ANTHROPIC));
+        assert!(is_gemini_channel_type(CHANNEL_TYPE_GEMINI));
         assert!(is_openai_compatible_channel_type(1));
         assert!(channel_type_supported(14, ANTHROPIC_CHANNEL_TYPES));
+        assert!(channel_type_supported(24, GEMINI_CHANNEL_TYPES));
         assert!(!channel_type_supported(14, OPENAI_COMPATIBLE_CHANNEL_TYPES));
     }
 
@@ -573,6 +825,14 @@ mod tests {
 
         apply_model_mapping(&mut body, "missing", Some(r#"{"missing":""}"#));
         assert_eq!(body["model"], "upstream-model");
+        assert_eq!(
+            mapped_model_name("gpt-4o", Some(r#"{"gpt-4o":" upstream-model "}"#)).as_deref(),
+            Some("upstream-model")
+        );
+        assert_eq!(
+            mapped_model_name("missing", Some(r#"{"missing":""}"#)),
+            None
+        );
     }
 
     #[test]
@@ -735,6 +995,46 @@ mod tests {
     }
 
     #[test]
+    fn usage_summary_from_gemini_body_extracts_usage_metadata() {
+        assert_eq!(
+            usage_summary_from_gemini_body(
+                r#"{
+                    "usageMetadata": {
+                        "promptTokenCount": 100,
+                        "toolUsePromptTokenCount": 20,
+                        "candidatesTokenCount": 30,
+                        "thoughtsTokenCount": 7,
+                        "totalTokenCount": 157,
+                        "cachedContentTokenCount": 11,
+                        "promptTokensDetails": [
+                            {"modality": "IMAGE", "tokenCount": 40},
+                            {"modality": "AUDIO", "tokenCount": 12}
+                        ],
+                        "toolUsePromptTokensDetails": [
+                            {"modality": "AUDIO", "tokenCount": 3}
+                        ],
+                        "candidatesTokensDetails": [
+                            {"modality": "IMAGE", "tokenCount": 5},
+                            {"modality": "AUDIO", "tokenCount": 6}
+                        ]
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 120,
+                completion_tokens: 37,
+                total_tokens: 157,
+                cached_tokens: 11,
+                image_input_tokens: 40,
+                audio_input_tokens: 15,
+                image_output_tokens: 5,
+                audio_output_tokens: 6,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
     fn usage_summary_from_anthropic_sse_stream_merges_cumulative_events() {
         let body = concat!(
             "event: message_start\n",
@@ -758,6 +1058,25 @@ mod tests {
                 claude_cache_creation_5m_tokens: 2,
                 claude_cache_creation_1h_tokens: 3,
                 is_anthropic_usage_semantic: true,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_gemini_sse_stream_uses_latest_usage_metadata() {
+        let body = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":2,\"totalTokenCount\":12}}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" there\"}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15,\"cachedContentTokenCount\":3}}\n\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_gemini_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cached_tokens: 3,
                 ..UsageSummary::default()
             }
         );

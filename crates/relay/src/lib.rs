@@ -9,11 +9,14 @@ pub use cache::{
 };
 pub use openai_compatible::{
     apply_model_mapping, channel_type_supported, clamp_i64_to_i32, csv_contains, first_channel_key,
-    ip_allowlist_matches, is_anthropic_channel_type, is_openai_compatible_channel_type,
-    upstream_anthropic_messages_url, upstream_chat_url, upstream_v1_url,
-    usage_summary_from_anthropic_body, usage_summary_from_anthropic_sse_stream,
-    usage_summary_from_body, usage_summary_from_sse_stream, SseUsageAccumulator, UsageSummary,
-    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ANTHROPIC, OPENAI_COMPATIBLE_CHANNEL_TYPES,
+    ip_allowlist_matches, is_anthropic_channel_type, is_gemini_channel_type,
+    is_openai_compatible_channel_type, mapped_model_name, parse_gemini_native_path,
+    upstream_anthropic_messages_url, upstream_chat_url, upstream_gemini_native_url,
+    upstream_v1_url, usage_summary_from_anthropic_body, usage_summary_from_anthropic_sse_stream,
+    usage_summary_from_body, usage_summary_from_gemini_body, usage_summary_from_gemini_sse_stream,
+    usage_summary_from_sse_stream, GeminiNativePath, SseUsageAccumulator, UsageSummary,
+    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI, GEMINI_CHANNEL_TYPES,
+    OPENAI_COMPATIBLE_CHANNEL_TYPES,
 };
 
 #[derive(Debug, Clone)]

@@ -52,6 +52,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   responses, including streaming chat after full-stream usage reconciliation.
 - Worker-side tiered billing metadata now marks whether a frozen expression
   carried a request-rule multiplier without logging the full rule body.
+- Successful Worker-side tiered-expression audit logs now include Go-compatible
+  top-level usage-log display fields: `billing_mode`, base-expression
+  `expr_b64`, and `matched_tier`.
 - Worker-side streaming usage reconciliation for chat passthrough via response
   tee, incremental SSE usage parsing, and `wait_until` audit recording.
 - First Go/Rust billing parity fixtures for multi-condition expressions,

@@ -83,7 +83,13 @@ only the delta from pre-consumed quota:
   `tokens.remain_quota`, and `tokens.used_quota` by the settlement delta;
 - after upstream or full stream consumption: increment `users.used_quota`,
   `users.request_count`, and `channels.used_quota` by the final quota;
-- write the final log `quota` and `other.tiered_billing` metadata.
+- write the final log `quota`, `other.tiered_billing` metadata, and
+  Go-compatible top-level usage-log display fields `billing_mode`, `expr_b64`,
+  and `matched_tier`.
+
+`expr_b64` contains the base billing expression only. The Worker continues to
+record request-rule presence as metadata without writing the request-rule body
+into logs.
 
 If upstream forwarding fails or a response has no billable usage, the Worker
 refunds the reserved wallet/token quota and records
@@ -101,8 +107,7 @@ verifies these remaining Go billing behaviors:
 
 - broader Go/Rust golden parity tests for expression edge cases;
 - exact tokenizer counts plus image dimension and audio duration parity for
-  request-time token estimation;
-- matched tier metadata injection for usage-log display.
+  request-time token estimation.
 
 ## Compatibility Tests
 
@@ -126,6 +131,9 @@ The Rust tests cover the most important Go-compatible arithmetic:
   and settlement deltas against frozen snapshots;
 - Worker tiered reserve metadata, fallback metadata, and refund metadata for
   pre-consume paths;
+- Worker tiered usage-log display metadata, including Go-compatible base64
+  expression encoding and matched-tier injection without logging request-rule
+  bodies;
 - OpenAI-compatible JSON/SSE usage parsing for cached/cache-creation and
   image/audio token details, final streaming usage chunks, CRLF streams,
   invalid events, split byte chunks, `[DONE]`, and nested response usage

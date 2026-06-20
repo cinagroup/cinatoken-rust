@@ -1,7 +1,7 @@
 use cinatoken_billing::{
     build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
-    estimate_tiered_billing_snapshot_with_request, RequestInput, TieredBillingResult,
-    TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
+    estimate_tiered_billing_snapshot_with_request, split_billing_expr_request_rule, RequestInput,
+    TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
@@ -955,6 +955,11 @@ async fn record_relay_audit(
                             billing_applied = true;
                             billing_resolved = true;
                             set_json_bool(&mut other, "billing_pending", false);
+                            apply_tiered_log_display_metadata(
+                                &mut other,
+                                &outcome.snapshot,
+                                Some(&outcome.result),
+                            );
                             let metadata = tiered_billing_metadata(
                                 outcome.snapshot,
                                 preflight.pre_consumed_quota,
@@ -1216,6 +1221,50 @@ fn tiered_billing_metadata(
             "additional_quota": result.settlement.additional_quota.0,
         }
     })
+}
+
+fn apply_tiered_log_display_metadata(
+    other: &mut Value,
+    snapshot: &TieredBillingSnapshot,
+    result: Option<&TieredBillingResult>,
+) {
+    set_json_string(other, "billing_mode", snapshot.billing_mode.clone());
+    let parts = split_billing_expr_request_rule(&snapshot.expr_string);
+    set_json_string(
+        other,
+        "expr_b64",
+        base64_standard_encode(&parts.billing_expr),
+    );
+    if let Some(result) = result {
+        set_json_string(other, "matched_tier", result.matched_tier.clone());
+    }
+}
+
+fn base64_standard_encode(input: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let bytes = input.as_bytes();
+    let mut encoded = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or_default() as u32;
+        let b2 = chunk.get(2).copied().unwrap_or_default() as u32;
+        let bits = (b0 << 16) | (b1 << 8) | b2;
+
+        encoded.push(TABLE[((bits >> 18) & 0x3f) as usize] as char);
+        encoded.push(TABLE[((bits >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(TABLE[((bits >> 6) & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(bits & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 fn tiered_billing_fallback_metadata(
@@ -2057,6 +2106,60 @@ mod tests {
         assert_eq!(metadata["quota_after_group"], 10_500);
         assert_eq!(metadata["settlement"]["final_quota"], 10_500);
         assert_eq!(metadata["settlement"]["additional_quota"], 6_000);
+    }
+
+    #[test]
+    fn base64_standard_encode_matches_go_std_encoding() {
+        assert_eq!(base64_standard_encode(""), "");
+        assert_eq!(base64_standard_encode("f"), "Zg==");
+        assert_eq!(base64_standard_encode("fo"), "Zm8=");
+        assert_eq!(base64_standard_encode("foo"), "Zm9v");
+        assert_eq!(base64_standard_encode("hello"), "aGVsbG8=");
+    }
+
+    #[test]
+    fn tiered_log_display_metadata_encodes_base_expression_without_request_rule() {
+        let request_body = json!({
+            "prompt": "x".repeat(4000),
+            "max_completion_tokens": 100,
+            "service_tier": "fast"
+        });
+        let request = RequestInput::from_json_body(request_body.clone());
+        let preflight = tiered_billing_preflight_snapshot(
+            "gpt-test",
+            r#"tier("base", p + c)|||(param("service_tier") == "fast" ? 2 : 1)"#,
+            1.0,
+            &request_body,
+            request.clone(),
+        )
+        .unwrap();
+        let outcome = tiered_billing_settlement(
+            &preflight.snapshot,
+            &UsageSummary {
+                prompt_tokens: 1_000,
+                completion_tokens: 500,
+                total_tokens: 1_500,
+                ..UsageSummary::default()
+            },
+            &request,
+        )
+        .unwrap();
+        let mut other = json!({});
+
+        apply_tiered_log_display_metadata(&mut other, &outcome.snapshot, Some(&outcome.result));
+
+        assert_eq!(other["billing_mode"], "tiered_expr");
+        assert_eq!(other["matched_tier"], "base");
+        assert_eq!(
+            other["expr_b64"],
+            base64_standard_encode(r#"tier("base", p + c)"#)
+        );
+        assert_ne!(
+            other["expr_b64"],
+            base64_standard_encode(
+                r#"tier("base", p + c)|||(param("service_tier") == "fast" ? 2 : 1)"#
+            )
+        );
     }
 
     #[test]

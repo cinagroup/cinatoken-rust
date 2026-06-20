@@ -58,6 +58,9 @@ Last checked: 2026-06-20
 - `cargo test -p cinatoken-worker --lib` covering tiered reserve
   fallback/refund metadata and compiling the D1 repository pre-consume quota
   mutation paths.
+- `cargo test -p cinatoken-worker --lib` covering tiered usage-log display
+  metadata, Go-compatible base64 expression encoding, and matched-tier
+  injection.
 - `cargo test -p cinatoken-worker --lib` covering streaming missing-usage
   refund reason metadata and compiling the Worker streaming audit/reserve path.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`

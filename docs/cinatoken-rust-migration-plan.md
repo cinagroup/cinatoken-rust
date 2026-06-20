@@ -1331,6 +1331,9 @@ Relay：
 - Actual tiered-expression settlement now rebuilds token parameters from
   upstream usage details and the frozen expression's variable usage, avoiding
   double-counting cached/image/audio sub-categories in `p` or `c`.
+- Successful tiered-expression audit logs now include top-level usage-log
+  display fields for `billing_mode`, base-expression `expr_b64`, and
+  `matched_tier`, while request-rule bodies remain out of log metadata.
 - Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.

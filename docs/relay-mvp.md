@@ -58,7 +58,8 @@ The Worker:
   tiered quota against the frozen preflight snapshot, normalizes actual token
   parameters according to the frozen expression's variable usage, applies only
   the delta from pre-consumed quota, increments user/channel usage counters,
-  and records metadata under `other.tiered_billing`;
+  records metadata under `other.tiered_billing`, and adds top-level
+  usage-log display fields `billing_mode`, `expr_b64`, and `matched_tier`;
 - if post-response tiered expression evaluation fails after a successful
   reserve, falls back to the pre-consumed quota and records
   `other.tiered_billing_fallback`;
@@ -117,5 +118,4 @@ Full settlement still needs to complete the remaining request-time side of the
 original billing expression flow:
 
 - exact tokenizer counts plus image dimension/audio duration parity for the
-  preflight token estimate;
-- log display metadata for matched tier and expression details.
+  preflight token estimate.

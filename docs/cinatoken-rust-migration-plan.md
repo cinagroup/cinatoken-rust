@@ -1312,6 +1312,9 @@ Relay：
 - Rust billing snapshots now freeze Go-compatible expression hash metadata and
   run compile-style validation before tiered pre-consume, including inactive
   branches and request-rule expressions.
+- The first Go/Rust billing golden parity fixtures now cover multi-condition
+  expressions, cache split pricing, `len` tier conditions, ratio-equivalent
+  quota conversion, request probes, and used-variable detection.
 - OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
   crate, including final streaming usage chunks, `[DONE]`, CRLF streams, and
   nested response usage metadata.
@@ -1324,7 +1327,7 @@ Relay：
   tiered streaming responses settle reserved quota after full stream usage is
   known.
 - Remaining Phase 3 billing work: tokenizer/media parity for request-time token
-  estimation and broader Go/Rust golden billing parity tests.
+  estimation and continued Go/Rust golden billing parity expansion.
 
 ## 20. 最终交付形态
 

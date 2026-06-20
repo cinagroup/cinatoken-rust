@@ -47,6 +47,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   carried a request-rule multiplier without logging the full rule body.
 - Worker-side streaming usage reconciliation for chat passthrough via response
   tee, incremental SSE usage parsing, and `wait_until` audit recording.
+- First Go/Rust billing parity fixtures for multi-condition expressions,
+  cache split pricing, `len` tiering, ratio-equivalent quota conversion,
+  request probes, and used-variable detection.
 - Cache traits for string KV, expiring counters, and rate limiting.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.
@@ -58,7 +61,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 
 ## Next
 
-- Add broader Go/Rust golden parity tests for billing expression edge cases.
+- Continue broadening Go/Rust golden parity tests for billing expression edge
+  cases.
 - Replace the lightweight Worker request-token estimate with tokenizer/media
   parity against the Go `TokenCountMeta` path.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

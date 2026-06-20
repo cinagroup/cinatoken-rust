@@ -51,11 +51,11 @@ Last checked: 2026-06-20
   Worker Upstash Redis REST fetch transport and status feature detection.
 - `cargo test -p cinatoken-worker --lib` covering relay rate-limit and
   read-through cache TTL configuration parsing and invalid configuration
-  rejection, chat, Anthropic, and native Gemini streaming relay gating, D1
-  provider-family channel filters, native Gemini embedding/count non-stream
-  action gating, D1 billing option parsing, tiered settlement metadata, D1
-  quota mutation guardrails, and the Worker crate after D1 SQL was moved behind
-  repository functions.
+  rejection, chat/completions, Anthropic, and native Gemini streaming relay
+  gating, D1 provider-family channel filters, native Gemini embedding/count
+  non-stream action gating, D1 billing option parsing, tiered settlement
+  metadata, D1 quota mutation guardrails, and the Worker crate after D1 SQL was
+  moved behind repository functions.
 - `cargo test -p cinatoken-worker --lib` covering Worker request-body token
   estimation, max-token extraction, request-time tiered billing preflight
   snapshots, usage-detail token normalization, and settlement deltas against
@@ -69,7 +69,8 @@ Last checked: 2026-06-20
   metadata, Go-compatible base64 expression encoding, and matched-tier
   injection.
 - `cargo test -p cinatoken-worker --lib` covering streaming missing-usage
-  refund reason metadata and compiling the Worker streaming audit/reserve path.
+  refund reason metadata and compiling the Worker streaming audit/reserve path
+  for chat, completions, Anthropic, and native Gemini.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus
@@ -106,8 +107,8 @@ bun run check
   process. The same schema and seed SQL pass SQLite execution.
 - `wrangler dev` has not been run end-to-end with a real D1 database binding.
 - No live upstream provider request has been executed yet.
-- Streaming chat completion, Anthropic Messages, and native Gemini passthrough
-  have compile/unit coverage only; they have not been exercised against live
-  upstream SSE responses yet.
+- Streaming chat completion, completion, Anthropic Messages, and native Gemini
+  passthrough have compile/unit coverage only; they have not been exercised
+  against live upstream SSE responses yet.
 - No source SQLite file or SQL DSN is available in the current shell, so real
   source row counts have not been captured yet.

@@ -67,7 +67,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             relay::anthropic_messages(req, env, event_ctx).await
         })
         .post_async("/v1/embeddings", |req, ctx| async move {
-            relay::embeddings(req, ctx.env).await
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::embeddings(req, env, event_ctx).await
         })
         .post_async("/v1/images/generations", |req, ctx| async move {
             let env = ctx.env;

@@ -81,6 +81,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   image generations, Anthropic Messages, and native Gemini passthrough via
   response tee, incremental SSE usage parsing, and `wait_until` audit
   recording.
+- Worker-side non-stream relay audit now uses a cloned upstream response branch
+  in `wait_until` when a Worker `Context` is available, so the client path can
+  return the original upstream response stream without buffering it first.
 - First Go/Rust billing parity fixtures for multi-condition expressions,
   Claude tier boundaries, cache split pricing, `len` tiering,
   ratio-equivalent quota conversion, nested/array/missing request probes,

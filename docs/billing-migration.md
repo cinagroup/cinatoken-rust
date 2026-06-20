@@ -73,6 +73,10 @@ upstream. For streaming chat completions, completions, responses, image
 generations, Anthropic Messages, and native Gemini streams, it tees the
 upstream response, streams one branch to the client, and consumes the audit
 branch in `wait_until` with an incremental SSE usage parser.
+For non-streaming relays with a Worker `Context`, it returns the original
+upstream response to the client and consumes a cloned audit branch in
+`wait_until` for usage parsing and post-response settlement; if response clone
+initialization fails, it falls back to the buffered response path.
 
 For successful tiered-expression responses with usage metadata, including
 nested cached/cache-creation and image/audio token details, it rebuilds actual
@@ -82,9 +86,10 @@ pre-consumed quota:
 
 - before upstream: decrement `users.quota`, decrement `tokens.remain_quota`,
   and increment `tokens.used_quota` by the estimated quota;
-- after upstream or full stream consumption: refund or additionally debit `users.quota`,
-  `tokens.remain_quota`, and `tokens.used_quota` by the settlement delta;
-- after upstream or full stream consumption: increment `users.used_quota`,
+- after upstream branch or full stream consumption: refund or additionally
+  debit `users.quota`, `tokens.remain_quota`, and `tokens.used_quota` by the
+  settlement delta;
+- after upstream branch or full stream consumption: increment `users.used_quota`,
   `users.request_count`, and `channels.used_quota` by the final quota;
 - write the final log `quota`, `other.tiered_billing` metadata, and
   Go-compatible top-level usage-log display fields `billing_mode`, `expr_b64`,

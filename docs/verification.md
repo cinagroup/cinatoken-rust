@@ -70,9 +70,12 @@ Last checked: 2026-06-20
 - `cargo test -p cinatoken-worker --lib` covering tiered usage-log display
   metadata, Go-compatible base64 expression encoding, and matched-tier
   injection.
+- `cargo test -p cinatoken-worker --lib` compiling the non-stream cloned
+  upstream audit branch and buffered fallback path.
 - `cargo test -p cinatoken-worker --lib` covering streaming missing-usage
   refund reason metadata and compiling the Worker streaming audit/reserve path
-  for chat, completions, responses, Anthropic, and native Gemini.
+  for chat, completions, responses, image generation, Anthropic, and native
+  Gemini.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus

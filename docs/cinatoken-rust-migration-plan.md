@@ -1336,6 +1336,9 @@ Relay：
   consume an audit branch with incremental SSE usage parsing in `wait_until`;
   successful tiered streaming responses settle reserved quota after full stream
   usage is known.
+- Non-stream relays with a Worker `Context` now return the original upstream
+  response stream to the client and consume a cloned audit branch in
+  `wait_until`; clone failures fall back to the buffered relay response path.
 - Actual tiered-expression settlement now rebuilds token parameters from
   upstream usage details and the frozen expression's variable usage, avoiding
   double-counting cached/image/audio sub-categories in `p` or `c`.

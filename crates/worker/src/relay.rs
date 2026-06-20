@@ -119,11 +119,11 @@ pub async fn chat_completions(
     .await
 }
 
-pub async fn embeddings(req: Request, env: Env) -> worker::Result<Response> {
+pub async fn embeddings(req: Request, env: Env, context: Context) -> worker::Result<Response> {
     relay_endpoint(
         req,
         env,
-        None,
+        Some(context),
         RelayEndpoint {
             display_name: "embeddings",
             cache_family: "openai_compatible",
@@ -469,14 +469,15 @@ async fn relay_endpoint(
 
     complete_relay_response(
         upstream_response,
-        &db,
-        &auth,
-        &channel,
-        &model,
-        &group,
-        &endpoint.upstream_path,
+        db,
+        context,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint.upstream_path.clone(),
         endpoint.provider,
-        &audit,
+        audit,
     )
     .await
 }
@@ -1026,6 +1027,95 @@ async fn forward_gemini_native(
 
 async fn complete_relay_response(
     mut upstream: Response,
+    db: D1Database,
+    context: Option<Context>,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    provider: RelayProviderKind,
+    audit: RelayAuditContext,
+) -> worker::Result<Response> {
+    let status = upstream.status_code();
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "application/json".to_string());
+    let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    if let Some(context) = context {
+        let mut audit_response = match upstream.cloned() {
+            Ok(response) => response,
+            Err(err) => {
+                worker::console_error!(
+                    "failed to initialize non-streaming audit branch: {}; falling back to buffered relay response",
+                    err
+                );
+                return complete_buffered_relay_response(
+                    upstream,
+                    &db,
+                    &auth,
+                    &channel,
+                    &model,
+                    &group,
+                    &endpoint_path,
+                    provider,
+                    &audit,
+                )
+                .await;
+            }
+        };
+
+        context.wait_until(async move {
+            let usage = match response_usage_summary(&mut audit_response, provider).await {
+                Ok(usage) => usage,
+                Err(err) => {
+                    worker::console_error!("failed to parse non-streaming relay usage: {}", err);
+                    UsageSummary::default()
+                }
+            };
+            if let Err(err) = record_relay_audit(
+                &db,
+                &auth,
+                &channel,
+                &model,
+                &group,
+                &endpoint_path,
+                status,
+                &usage,
+                &audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!("failed to record relay audit: {}", err);
+            }
+        });
+
+        upstream.headers_mut().set("content-type", &content_type)?;
+        set_cors_headers(&mut upstream)?;
+        return Ok(upstream);
+    }
+
+    complete_buffered_relay_response(
+        upstream,
+        &db,
+        &auth,
+        &channel,
+        &model,
+        &group,
+        &endpoint_path,
+        provider,
+        &audit,
+    )
+    .await
+}
+
+async fn complete_buffered_relay_response(
+    mut upstream: Response,
     db: &D1Database,
     auth: &AuthenticatedToken,
     channel: &RelayChannel,
@@ -1044,11 +1134,7 @@ async fn complete_relay_response(
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
     let body = upstream.text().await?;
-    let usage = match provider {
-        RelayProviderKind::OpenAiCompatible => usage_summary_from_body(&body),
-        RelayProviderKind::AnthropicMessages => usage_summary_from_anthropic_body(&body),
-        RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(&body),
-    };
+    let usage = usage_summary_for_provider(&body, provider);
 
     if let Err(err) = record_relay_audit(
         db,
@@ -1072,6 +1158,22 @@ async fn complete_relay_response(
     response.headers_mut().set("content-type", &content_type)?;
     set_cors_headers(&mut response)?;
     Ok(response)
+}
+
+async fn response_usage_summary(
+    response: &mut Response,
+    provider: RelayProviderKind,
+) -> worker::Result<UsageSummary> {
+    let body = response.text().await?;
+    Ok(usage_summary_for_provider(&body, provider))
+}
+
+fn usage_summary_for_provider(body: &str, provider: RelayProviderKind) -> UsageSummary {
+    match provider {
+        RelayProviderKind::OpenAiCompatible => usage_summary_from_body(body),
+        RelayProviderKind::AnthropicMessages => usage_summary_from_anthropic_body(body),
+        RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(body),
+    }
 }
 
 async fn complete_streaming_relay_response(

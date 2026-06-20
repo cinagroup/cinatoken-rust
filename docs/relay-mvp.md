@@ -64,6 +64,8 @@ The Worker:
 - forwards native Gemini requests with `x-goog-api-key` and strips downstream
   `key` query parameters before calling the upstream provider;
 - returns the upstream body, status, and content type to the client;
+- for non-streaming relays with a Worker `Context`, returns the upstream
+  response directly and consumes a cloned audit branch in `wait_until`;
 - returns upstream chat completion, completion, response, image generation,
   Anthropic Messages, and native Gemini streams without buffering the full
   response;
@@ -106,6 +108,9 @@ The Worker:
 - writes streaming chat completion, completion, response, image generation,
   Anthropic Messages, and native Gemini audit logs via `wait_until` after the
   audit stream branch is consumed;
+- writes non-streaming chat completion, completion, response, embedding, image
+  generation, Anthropic Messages, and native Gemini audit logs via
+  `wait_until` when the Worker can clone the upstream response;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis

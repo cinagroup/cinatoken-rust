@@ -141,11 +141,15 @@ pub async fn embeddings(req: Request, env: Env) -> worker::Result<Response> {
     .await
 }
 
-pub async fn image_generations(req: Request, env: Env) -> worker::Result<Response> {
+pub async fn image_generations(
+    req: Request,
+    env: Env,
+    context: Context,
+) -> worker::Result<Response> {
     relay_endpoint(
         req,
         env,
-        None,
+        Some(context),
         RelayEndpoint {
             display_name: "image generations",
             cache_family: "openai_compatible",
@@ -154,7 +158,7 @@ pub async fn image_generations(req: Request, env: Env) -> worker::Result<Respons
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
-            supports_streaming: false,
+            supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
         },
@@ -2178,7 +2182,7 @@ mod tests {
     }
 
     #[test]
-    fn image_generations_endpoint_stays_non_streaming() {
+    fn image_generations_endpoint_allows_streaming() {
         let endpoint = RelayEndpoint {
             display_name: "image generations",
             cache_family: "openai_compatible",
@@ -2187,13 +2191,13 @@ mod tests {
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
-            supports_streaming: false,
+            supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
         };
-        let body = json!({"model": "gpt-image-1", "prompt": "hello"});
+        let body = json!({"model": "gpt-image-1", "prompt": "hello", "stream": true});
 
-        assert!(!endpoint.should_relay_stream(&body));
+        assert!(endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
         assert_eq!(
             endpoint.upstream_url(&RelayChannel {

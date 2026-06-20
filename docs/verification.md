@@ -52,8 +52,8 @@ Last checked: 2026-06-20
   Worker Upstash Redis REST fetch transport and status feature detection.
 - `cargo test -p cinatoken-worker --lib` covering relay rate-limit and
   read-through cache TTL configuration parsing and invalid configuration
-  rejection, chat/completions/responses, non-stream image generation,
-  Anthropic, and native Gemini streaming relay gating, D1 provider-family
+  rejection, chat/completions/responses/image generation, Anthropic, and
+  native Gemini streaming relay gating, D1 provider-family
   channel filters, native Gemini embedding/count non-stream action gating, D1
   billing option parsing, tiered settlement metadata, D1 quota mutation
   guardrails, and the Worker crate after D1 SQL was moved behind repository
@@ -109,8 +109,8 @@ bun run check
   process. The same schema and seed SQL pass SQLite execution.
 - `wrangler dev` has not been run end-to-end with a real D1 database binding.
 - No live upstream provider request has been executed yet.
-- Streaming chat completion, completion, response, Anthropic Messages, and
-  native Gemini passthrough have compile/unit coverage only; they have not been
-  exercised against live upstream SSE responses yet.
+- Streaming chat completion, completion, response, image generation, Anthropic
+  Messages, and native Gemini passthrough have compile/unit coverage only; they
+  have not been exercised against live upstream SSE responses yet.
 - No source SQLite file or SQL DSN is available in the current shell, so real
   source row counts have not been captured yet.

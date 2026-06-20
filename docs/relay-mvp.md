@@ -28,16 +28,16 @@ The Worker also supports native Gemini generate content and embedding requests:
 - `POST /v1/models/{model}:countTokens`
 
 `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/responses`,
-and native `POST /v1/messages` also support streaming passthrough when the
-request body includes `stream: true`. Native Gemini `streamGenerateContent`
-paths stream with upstream `alt=sse`. Image generation and embeddings remain
-non-streaming in this MVP.
+`POST /v1/images/generations`, and native `POST /v1/messages` also support
+streaming passthrough when the request body includes `stream: true`. Native
+Gemini `streamGenerateContent` paths stream with upstream `alt=sse`.
+Embeddings remain non-streaming in this MVP.
 
 The Worker:
 
 - parses the request body as `serde_json::Value`, preserving unknown fields and
   explicit zero values;
-- keeps image generation and embeddings non-streaming in this MVP;
+- keeps embeddings non-streaming in this MVP;
 - accepts API keys from `Authorization: Bearer ...`, `x-api-key`,
   `x-goog-api-key`, or native Gemini `key` query parameters;
 - authenticates the token and user through Upstash-backed read-through cache
@@ -64,8 +64,9 @@ The Worker:
 - forwards native Gemini requests with `x-goog-api-key` and strips downstream
   `key` query parameters before calling the upstream provider;
 - returns the upstream body, status, and content type to the client;
-- returns upstream chat completion, completion, response, Anthropic Messages,
-  and native Gemini streams without buffering the full response;
+- returns upstream chat completion, completion, response, image generation,
+  Anthropic Messages, and native Gemini streams without buffering the full
+  response;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
   SSE `data:` events, including cached/cache-creation, GPT image generation
   output image tokens, and image/audio input/output token details;
@@ -75,9 +76,9 @@ The Worker:
 - parses Gemini `usageMetadata` from JSON responses and native SSE `data:`
   chunks, plus Gemini `countTokens` `totalTokens` responses, including cached,
   image, and audio token details;
-- tees streaming chat completion, completion, response, Anthropic Messages, and
-  native Gemini responses so `wait_until` can consume an audit branch
-  incrementally without blocking the client stream;
+- tees streaming chat completion, completion, response, image generation,
+  Anthropic Messages, and native Gemini responses so `wait_until` can consume
+  an audit branch incrementally without blocking the client stream;
 - updates token `accessed_time`, increments user `request_count`, and writes
   consume audit logs with parsed usage token counts;
 - reads Go-compatible `billing_setting.billing_mode`,
@@ -102,9 +103,9 @@ The Worker:
   `other.tiered_billing_fallback`;
 - if tiered quota mutation cannot be applied, keeps the audit log pending and
   records the computed result under `other.tiered_billing_shadow` plus an error;
-- writes streaming chat completion, completion, response, Anthropic Messages,
-  and native Gemini audit logs via `wait_until` after the audit stream branch
-  is consumed;
+- writes streaming chat completion, completion, response, image generation,
+  Anthropic Messages, and native Gemini audit logs via `wait_until` after the
+  audit stream branch is consumed;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis
@@ -149,8 +150,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   passthrough;
   OpenAI-to-Gemini request conversion, asyncBatchEmbedContent, and image/video
   task paths are still pending.
-- OpenAI-compatible image generation is JSON passthrough only; image edits,
-  image streaming, and provider-specific image transforms are still pending.
+- OpenAI-compatible image generation supports JSON and SSE passthrough; image
+  edits and provider-specific image transforms are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, Anthropic Messages cumulative usage events, and Gemini
   `usageMetadata` chunks, but live upstream SSE coverage is still pending.

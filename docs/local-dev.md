@@ -143,3 +143,14 @@ Invoke-RestMethod `
   -ContentType 'application/json' `
   -Body '{"model":"gpt-image-1","prompt":"a tiny migration milestone badge","size":"1024x1024"}'
 ```
+
+For GPT image streaming, pass through the upstream SSE stream:
+
+```powershell
+Invoke-WebRequest `
+  -Method Post `
+  -Uri http://127.0.0.1:8787/v1/images/generations `
+  -Headers @{ Authorization = 'Bearer ct-dev-key' } `
+  -ContentType 'application/json' `
+  -Body '{"model":"gpt-image-1","prompt":"a tiny migration milestone badge","stream":true,"partial_images":1}'
+```

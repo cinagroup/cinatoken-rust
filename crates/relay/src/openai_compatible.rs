@@ -469,11 +469,14 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         &["prompt_tokens_details", "input_tokens_details"],
         &["audio_tokens"],
     );
-    let mut image_output_tokens = nested_i32_field(
-        usage,
-        &["completion_tokens_details", "output_tokens_details"],
-        &["image_tokens"],
-    );
+    let mut image_output_tokens = first_non_zero_i32(&[
+        nested_i32_field(
+            usage,
+            &["completion_tokens_details", "output_tokens_details"],
+            &["image_tokens"],
+        ),
+        nested_i32_field(usage, &["output_tokens_details"], &["image_tokens"]),
+    ]);
     if image_output_tokens <= 0 && is_image_generation_usage_value(value) {
         image_output_tokens = first_i32_field(usage, &["output_tokens"]);
     }
@@ -1050,6 +1053,10 @@ mod tests {
                             "text_tokens": 50
                         },
                         "output_tokens": 120,
+                        "output_tokens_details": {
+                            "image_tokens": 115,
+                            "text_tokens": 5
+                        },
                         "total_tokens": 200
                     }
                 }"#
@@ -1059,7 +1066,7 @@ mod tests {
                 completion_tokens: 120,
                 total_tokens: 200,
                 image_input_tokens: 30,
-                image_output_tokens: 120,
+                image_output_tokens: 115,
                 ..UsageSummary::default()
             }
         );

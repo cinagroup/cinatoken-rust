@@ -46,8 +46,8 @@ The Worker:
   `billing_setting.billing_expr`, and group-ratio options from D1 `options`;
 - before forwarding successful candidates upstream, builds a request-time
   tiered-expression preflight snapshot from the original request body,
-  request probes, group ratio, and a lightweight prompt/completion token
-  estimate;
+  request probes, group ratio, a prompt/completion token estimate, and visible
+  request-body media fallback counts;
 - for tiered-expression requests, reserves the estimated wallet/token quota
   before upstream relay and refunds it if upstream forwarding fails or no
   billable usage is returned;
@@ -102,8 +102,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   chunks, but live upstream SSE coverage is still pending.
 - Streaming tiered reserve is applied before the upstream call, but live
   upstream SSE reserve/refund/delta behavior still needs end-to-end coverage.
-- Request-time token estimation is currently lightweight JSON-body text
-  estimation and max-token extraction, not tokenizer/media parity.
+- Request-time token estimation currently covers JSON-body text, max-token
+  extraction, and visible media fallback counts. Exact tokenizer counts plus
+  image dimension/audio duration parity are still pending.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are not implemented yet.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
@@ -113,6 +114,7 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 Full settlement still needs to complete the remaining request-time side of the
 original billing expression flow:
 
-- tokenizer/media parity for the preflight token estimate;
+- exact tokenizer counts plus image dimension/audio duration parity for the
+  preflight token estimate;
 - token normalization based on expression variables;
 - log display metadata for matched tier and expression details.

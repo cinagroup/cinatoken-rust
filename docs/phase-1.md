@@ -38,8 +38,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Worker-side D1 billing option lookup and non-streaming tiered-expression
   shadow settlement metadata in audit logs.
 - Worker-side request-time tiered-expression preflight snapshots with
-  lightweight prompt/completion token estimates, frozen request probes, and
-  post-response settlement against the frozen snapshot.
+  prompt/completion token estimates, visible request-body media fallback
+  counts, frozen request probes, and post-response settlement against the
+  frozen snapshot.
 - Cached-auth quota-state refresh plus request-time D1 reserve, failed-request
   refund, and post-response delta settlement for successful tiered-expression
   responses, including streaming chat after full-stream usage reconciliation.
@@ -65,6 +66,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
-- Replace the lightweight Worker request-token estimate with tokenizer/media
-  parity against the Go `TokenCountMeta` path.
+- Continue replacing the Worker request-token estimate with Go `TokenCountMeta`
+  parity, especially exact tokenizer counts plus image dimension and audio
+  duration media counts.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

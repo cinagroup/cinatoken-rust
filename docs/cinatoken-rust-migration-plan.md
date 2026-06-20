@@ -1319,15 +1319,17 @@ Relay：
   crate, including final streaming usage chunks, `[DONE]`, CRLF streams, and
   nested response usage metadata.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
-  relay using the original request body and a lightweight prompt/completion
-  token estimate, reserves estimated wallet/token quota for tiered requests,
-  then settles successful usage against that frozen snapshot.
+  relay using the original request body, prompt/completion token estimates, and
+  visible request-body media fallback counts, reserves estimated wallet/token
+  quota for tiered requests, then settles successful usage against that frozen
+  snapshot.
 - Streaming chat passthrough now tees the upstream response and consumes an
   audit branch with incremental SSE usage parsing in `wait_until`; successful
   tiered streaming responses settle reserved quota after full stream usage is
   known.
-- Remaining Phase 3 billing work: tokenizer/media parity for request-time token
-  estimation and continued Go/Rust golden billing parity expansion.
+- Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
+  and audio duration parity for request-time token estimation, and continued
+  Go/Rust golden billing parity expansion.
 
 ## 20. 最终交付形态
 

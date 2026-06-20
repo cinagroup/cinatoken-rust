@@ -26,6 +26,10 @@ const IP_RATE_LIMIT_ENV: &str = "RELAY_IP_RATE_LIMIT_PER_WINDOW";
 const RATE_LIMIT_WINDOW_ENV: &str = "RELAY_RATE_LIMIT_WINDOW_SECONDS";
 const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
+const ESTIMATED_IMAGE_INPUT_TOKENS: i64 = 520;
+const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
+const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
+const ESTIMATED_FILE_INPUT_TOKENS: i64 = 4_096;
 
 #[derive(Clone, Copy)]
 struct OpenAiCompatibleEndpoint {
@@ -1275,21 +1279,59 @@ fn set_json_value(value: &mut Value, key: &str, item: Value) {
 }
 
 fn token_params_from_request(body: &Value) -> TokenParams {
-    let prompt = estimate_prompt_tokens_from_request(body) as f64;
+    let estimate = request_token_estimate_from_body(body);
+    let prompt = estimate.prompt_tokens() as f64;
     TokenParams {
         p: prompt,
-        c: estimate_completion_tokens_from_request(body) as f64,
+        c: estimate.completion_tokens as f64,
         len: prompt,
         ..TokenParams::default()
     }
 }
 
+#[cfg(test)]
 fn estimate_prompt_tokens_from_request(body: &Value) -> i64 {
+    request_token_estimate_from_body(body).prompt_tokens()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RequestTokenEstimate {
+    text_prompt_tokens: i64,
+    image_input_tokens: i64,
+    audio_input_tokens: i64,
+    video_input_tokens: i64,
+    file_input_tokens: i64,
+    completion_tokens: i64,
+}
+
+impl RequestTokenEstimate {
+    fn prompt_tokens(self) -> i64 {
+        self.text_prompt_tokens
+            .saturating_add(self.image_input_tokens)
+            .saturating_add(self.audio_input_tokens)
+            .saturating_add(self.video_input_tokens)
+            .saturating_add(self.file_input_tokens)
+    }
+}
+
+fn request_token_estimate_from_body(body: &Value) -> RequestTokenEstimate {
+    let mut estimate = RequestTokenEstimate {
+        text_prompt_tokens: estimate_text_prompt_tokens_from_request(body),
+        completion_tokens: estimate_completion_tokens_from_request(body),
+        ..RequestTokenEstimate::default()
+    };
+    collect_media_token_estimate(body, &mut estimate);
+    estimate
+}
+
+fn estimate_text_prompt_tokens_from_request(body: &Value) -> i64 {
     let mut chars = 0usize;
 
     for key in [
         "prompt",
         "input",
+        "contents",
+        "system",
         "instruction",
         "instructions",
         "prefix",
@@ -1328,6 +1370,138 @@ fn estimate_prompt_tokens_from_request(body: &Value) -> i64 {
     }
 
     estimate_tokens_from_chars(chars).saturating_add(structural_tokens)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestMediaKind {
+    Image,
+    Audio,
+    Video,
+    File,
+}
+
+fn collect_media_token_estimate(value: &Value, estimate: &mut RequestTokenEstimate) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_media_token_estimate(item, estimate);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(kind) = request_media_kind_from_object(object) {
+                add_media_token_estimate(kind, estimate);
+                return;
+            }
+            for value in object.values() {
+                collect_media_token_estimate(value, estimate);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn request_media_kind_from_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<RequestMediaKind> {
+    if let Some(kind) = object
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(request_media_kind_from_type)
+    {
+        return Some(kind);
+    }
+
+    for key in ["inline_data", "inlineData", "file_data", "fileData"] {
+        if let Some(kind) = object
+            .get(key)
+            .and_then(Value::as_object)
+            .and_then(request_media_kind_from_mime_object)
+        {
+            return Some(kind);
+        }
+    }
+
+    if object.contains_key("image_url") || object.contains_key("imageUrl") {
+        return Some(RequestMediaKind::Image);
+    }
+    if object.contains_key("input_audio") || object.contains_key("inputAudio") {
+        return Some(RequestMediaKind::Audio);
+    }
+    if object.contains_key("video_url") || object.contains_key("videoUrl") {
+        return Some(RequestMediaKind::Video);
+    }
+    if object.contains_key("file")
+        || object.contains_key("file_url")
+        || object.contains_key("fileUrl")
+        || object.contains_key("file_id")
+        || object.contains_key("fileId")
+    {
+        return Some(RequestMediaKind::File);
+    }
+
+    request_media_kind_from_mime_object(object)
+}
+
+fn request_media_kind_from_mime_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<RequestMediaKind> {
+    object
+        .get("mime_type")
+        .or_else(|| object.get("mimeType"))
+        .or_else(|| object.get("media_type"))
+        .or_else(|| object.get("mediaType"))
+        .and_then(Value::as_str)
+        .and_then(request_media_kind_from_mime)
+}
+
+fn request_media_kind_from_type(raw_type: &str) -> Option<RequestMediaKind> {
+    match raw_type.trim().to_ascii_lowercase().as_str() {
+        "image" | "image_url" | "input_image" => Some(RequestMediaKind::Image),
+        "audio" | "input_audio" => Some(RequestMediaKind::Audio),
+        "video" | "video_url" | "input_video" => Some(RequestMediaKind::Video),
+        "file" | "input_file" | "document" => Some(RequestMediaKind::File),
+        _ => None,
+    }
+}
+
+fn request_media_kind_from_mime(mime: &str) -> Option<RequestMediaKind> {
+    let mime = mime.trim().to_ascii_lowercase();
+    if mime.starts_with("image/") {
+        Some(RequestMediaKind::Image)
+    } else if mime.starts_with("audio/") {
+        Some(RequestMediaKind::Audio)
+    } else if mime.starts_with("video/") {
+        Some(RequestMediaKind::Video)
+    } else if !mime.is_empty() {
+        Some(RequestMediaKind::File)
+    } else {
+        None
+    }
+}
+
+fn add_media_token_estimate(kind: RequestMediaKind, estimate: &mut RequestTokenEstimate) {
+    match kind {
+        RequestMediaKind::Image => {
+            estimate.image_input_tokens = estimate
+                .image_input_tokens
+                .saturating_add(ESTIMATED_IMAGE_INPUT_TOKENS);
+        }
+        RequestMediaKind::Audio => {
+            estimate.audio_input_tokens = estimate
+                .audio_input_tokens
+                .saturating_add(ESTIMATED_AUDIO_INPUT_TOKENS);
+        }
+        RequestMediaKind::Video => {
+            estimate.video_input_tokens = estimate
+                .video_input_tokens
+                .saturating_add(ESTIMATED_VIDEO_INPUT_TOKENS);
+        }
+        RequestMediaKind::File => {
+            estimate.file_input_tokens = estimate
+                .file_input_tokens
+                .saturating_add(ESTIMATED_FILE_INPUT_TOKENS);
+        }
+    }
 }
 
 fn estimate_completion_tokens_from_request(body: &Value) -> i64 {
@@ -1410,7 +1584,31 @@ fn collect_tool_text_chars(value: &Value, chars: &mut usize) {
 fn should_skip_prompt_text_key(key: &str) -> bool {
     matches!(
         key,
-        "type" | "role" | "image_url" | "url" | "file_id" | "file_data" | "b64_json"
+        "type"
+            | "role"
+            | "image"
+            | "image_url"
+            | "imageUrl"
+            | "input_audio"
+            | "inputAudio"
+            | "audio"
+            | "video"
+            | "video_url"
+            | "videoUrl"
+            | "input_video"
+            | "inputVideo"
+            | "inline_data"
+            | "inlineData"
+            | "url"
+            | "file"
+            | "file_id"
+            | "fileId"
+            | "file_url"
+            | "fileUrl"
+            | "file_data"
+            | "fileData"
+            | "b64_json"
+            | "data"
     )
 }
 
@@ -1660,6 +1858,75 @@ mod tests {
         });
 
         assert_eq!(estimate_prompt_tokens_from_request(&body), 21);
+    }
+
+    #[test]
+    fn request_prompt_estimate_counts_media_parts_without_base64_text() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "abcdefgh"},
+                        {"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}},
+                        {"type": "input_audio", "input_audio": {"data": "A".repeat(4096), "format": "wav"}},
+                        {"type": "file", "file": {"file_data": "B".repeat(4096)}}
+                    ]
+                }
+            ]
+        });
+
+        let estimate = request_token_estimate_from_body(&body);
+
+        assert_eq!(estimate.text_prompt_tokens, 9);
+        assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
+        assert_eq!(estimate.audio_input_tokens, ESTIMATED_AUDIO_INPUT_TOKENS);
+        assert_eq!(estimate.file_input_tokens, ESTIMATED_FILE_INPUT_TOKENS);
+        assert_eq!(estimate.video_input_tokens, 0);
+        assert_eq!(
+            estimate.prompt_tokens(),
+            9 + ESTIMATED_IMAGE_INPUT_TOKENS
+                + ESTIMATED_AUDIO_INPUT_TOKENS
+                + ESTIMATED_FILE_INPUT_TOKENS
+        );
+
+        let params = token_params_from_request(&body);
+        assert_eq!(params.p, estimate.prompt_tokens() as f64);
+        assert_eq!(params.len, estimate.prompt_tokens() as f64);
+        assert_eq!(params.img, 0.0);
+        assert_eq!(params.ai, 0.0);
+    }
+
+    #[test]
+    fn request_prompt_estimate_counts_gemini_inline_media_by_mime() {
+        let body = json!({
+            "contents": [
+                {
+                    "parts": [
+                        {"text": "abcdefgh"},
+                        {"inline_data": {"mime_type": "image/png", "data": "A".repeat(1024)}},
+                        {"inlineData": {"mimeType": "audio/wav", "data": "B".repeat(1024)}},
+                        {"inline_data": {"mime_type": "video/mp4", "data": "C".repeat(1024)}},
+                        {"file_data": {"mime_type": "application/pdf", "file_uri": "https://example.test/doc.pdf"}}
+                    ]
+                }
+            ]
+        });
+
+        let estimate = request_token_estimate_from_body(&body);
+
+        assert_eq!(estimate.text_prompt_tokens, 2);
+        assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
+        assert_eq!(estimate.audio_input_tokens, ESTIMATED_AUDIO_INPUT_TOKENS);
+        assert_eq!(estimate.video_input_tokens, ESTIMATED_VIDEO_INPUT_TOKENS);
+        assert_eq!(estimate.file_input_tokens, ESTIMATED_FILE_INPUT_TOKENS);
+        assert_eq!(
+            estimate.prompt_tokens(),
+            2 + ESTIMATED_IMAGE_INPUT_TOKENS
+                + ESTIMATED_AUDIO_INPUT_TOKENS
+                + ESTIMATED_VIDEO_INPUT_TOKENS
+                + ESTIMATED_FILE_INPUT_TOKENS
+        );
     }
 
     #[test]

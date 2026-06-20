@@ -63,7 +63,8 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 The Worker now reads Go-compatible D1 billing options. For a model configured
 with tiered-expression billing, it freezes a request-time preflight snapshot
 before upstream relay using the original request body, request probes, group
-ratio, and a lightweight prompt/completion token estimate. For
+ratio, a prompt/completion token estimate, and visible request-body media
+fallback counts. For
 OpenAI-compatible tiered requests, including streaming chat completions, it
 reserves the estimated wallet/token quota before forwarding upstream. For
 streaming chat completions, it tees the upstream response, streams one branch
@@ -97,7 +98,8 @@ post-response/post-stream delta settlement until the migration ports and
 verifies these remaining Go billing behaviors:
 
 - broader Go/Rust golden parity tests for expression edge cases;
-- tokenizer/media parity for request-time token estimation;
+- exact tokenizer counts plus image dimension and audio duration parity for
+  request-time token estimation;
 - matched tier metadata injection for usage-log display.
 
 ## Compatibility Tests
@@ -118,7 +120,8 @@ The Rust tests cover the most important Go-compatible arithmetic:
   settlement, refund/additional deltas, request-probe preservation,
   `|||` request-rule preservation, and crossed-tier detection;
 - Worker request-body token estimation, request-time tiered preflight
-  snapshots, and settlement deltas against frozen snapshots;
+  snapshots, visible media fallback counts, and settlement deltas against
+  frozen snapshots;
 - Worker tiered reserve metadata, fallback metadata, and refund metadata for
   pre-consume paths;
 - OpenAI-compatible SSE usage parsing for final streaming usage chunks, CRLF

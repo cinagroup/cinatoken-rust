@@ -14,8 +14,9 @@ Last checked: 2026-06-20
   cache key normalization, token fingerprinting, JSON/SSE usage parsing,
   nested usage token details, Anthropic cache usage details, Anthropic
   streaming `message_start`/`message_delta` usage merging, Gemini
-  generate and embedding `usageMetadata` parsing, split streaming byte chunks,
-  and versioned token/channel cache wrappers.
+  generate and embedding `usageMetadata` parsing, Gemini `countTokens`
+  `totalTokens` parsing, split streaming byte chunks, and versioned
+  token/channel cache wrappers.
 - `cargo test -p cinatoken-migration` covering `dev-seed` SQL generation.
 - `cargo test -p cinatoken-migration` covering source repository inspection
   argument parsing and local SQLite candidate discovery.
@@ -51,10 +52,10 @@ Last checked: 2026-06-20
 - `cargo test -p cinatoken-worker --lib` covering relay rate-limit and
   read-through cache TTL configuration parsing and invalid configuration
   rejection, chat, Anthropic, and native Gemini streaming relay gating, D1
-  provider-family channel filters, native Gemini non-stream action gating, D1
-  billing option parsing, tiered settlement metadata, D1 quota mutation
-  guardrails, and the Worker crate after D1 SQL was moved behind repository
-  functions.
+  provider-family channel filters, native Gemini embedding/count non-stream
+  action gating, D1 billing option parsing, tiered settlement metadata, D1
+  quota mutation guardrails, and the Worker crate after D1 SQL was moved behind
+  repository functions.
 - `cargo test -p cinatoken-worker --lib` covering Worker request-body token
   estimation, max-token extraction, request-time tiered billing preflight
   snapshots, usage-detail token normalization, and settlement deltas against

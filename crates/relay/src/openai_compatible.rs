@@ -147,6 +147,10 @@ impl GeminiNativePath {
         self.action.eq_ignore_ascii_case("batchEmbedContents")
     }
 
+    pub fn is_count_tokens(&self) -> bool {
+        self.action.eq_ignore_ascii_case("countTokens")
+    }
+
     pub fn is_supported_generate_content(&self) -> bool {
         self.is_generate_content() || self.is_stream_generate_content()
     }
@@ -155,6 +159,7 @@ impl GeminiNativePath {
         self.is_supported_generate_content()
             || self.is_embed_content()
             || self.is_batch_embed_contents()
+            || self.is_count_tokens()
     }
 
     pub fn upstream_path(&self) -> String {
@@ -496,7 +501,13 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
 }
 
 fn usage_summary_from_gemini_value(value: &Value) -> Option<UsageSummary> {
-    let metadata = value.get("usageMetadata")?;
+    let Some(metadata) = value.get("usageMetadata") else {
+        return usage_summary_from_gemini_count_tokens_value(value);
+    };
+    usage_summary_from_gemini_usage_metadata(metadata)
+}
+
+fn usage_summary_from_gemini_usage_metadata(metadata: &Value) -> Option<UsageSummary> {
     let prompt_tokens = first_i32_field(metadata, &["promptTokenCount"])
         .saturating_add(first_i32_field(metadata, &["toolUsePromptTokenCount"]));
     let mut completion_tokens = first_i32_field(metadata, &["candidatesTokenCount"])
@@ -521,6 +532,23 @@ fn usage_summary_from_gemini_value(value: &Value) -> Option<UsageSummary> {
         image_output_tokens,
         audio_input_tokens,
         audio_output_tokens,
+        ..UsageSummary::default()
+    })
+}
+
+fn usage_summary_from_gemini_count_tokens_value(value: &Value) -> Option<UsageSummary> {
+    let total_tokens = first_i32_field_value(value, &["totalTokens"])?;
+    let cached_tokens = first_i32_field(value, &["cachedContentTokenCount"]);
+    let (image_input_tokens, audio_input_tokens) =
+        gemini_modality_tokens(value.get("promptTokensDetails"));
+
+    Some(UsageSummary {
+        prompt_tokens: total_tokens,
+        completion_tokens: 0,
+        total_tokens,
+        cached_tokens,
+        image_input_tokens,
+        audio_input_tokens,
         ..UsageSummary::default()
     })
 }
@@ -826,6 +854,11 @@ mod tests {
                 .unwrap();
         assert!(batch.is_batch_embed_contents());
         assert!(batch.is_supported_native_passthrough());
+
+        let count =
+            parse_gemini_native_path("/v1beta/models/gemini-2.0-flash:countTokens").unwrap();
+        assert!(count.is_count_tokens());
+        assert!(count.is_supported_native_passthrough());
     }
 
     #[test]
@@ -854,6 +887,13 @@ mod tests {
         assert_eq!(
             upstream_gemini_native_url(None, &embed, Some("key=client-secret&alt=json")),
             "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+        );
+
+        let count =
+            parse_gemini_native_path("/v1beta/models/gemini-2.0-flash:countTokens").unwrap();
+        assert_eq!(
+            upstream_gemini_native_url(None, &count, Some("key=client-secret&timeout=30s")),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:countTokens?timeout=30s"
         );
     }
 
@@ -1131,6 +1171,31 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 0,
                 total_tokens: 7,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_gemini_count_tokens_body_extracts_token_count() {
+        assert_eq!(
+            usage_summary_from_gemini_body(
+                r#"{
+                    "totalTokens": 42,
+                    "cachedContentTokenCount": 12,
+                    "promptTokensDetails": [
+                        {"modality": "IMAGE", "tokenCount": 20},
+                        {"modality": "AUDIO", "tokenCount": 5}
+                    ]
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 42,
+                completion_tokens: 0,
+                total_tokens: 42,
+                cached_tokens: 12,
+                image_input_tokens: 20,
+                audio_input_tokens: 5,
                 ..UsageSummary::default()
             }
         );

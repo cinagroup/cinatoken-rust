@@ -2166,6 +2166,31 @@ mod tests {
     }
 
     #[test]
+    fn gemini_native_count_tokens_endpoint_stays_non_streaming() {
+        let route = GeminiNativePath {
+            api_version: "v1beta".to_string(),
+            model: "gemini-test".to_string(),
+            action: "countTokens".to_string(),
+        };
+        let endpoint = RelayEndpoint {
+            display_name: "Gemini native",
+            cache_family: "gemini",
+            upstream_path: route.upstream_path(),
+            upstream_query: None,
+            gemini_route: Some(route),
+            provider: RelayProviderKind::GeminiNative,
+            supported_channel_types: GEMINI_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: Some("streaming Gemini native action"),
+        };
+        let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
+
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
     fn gemini_native_non_stream_action_rejects_stream_body_flag() {
         let endpoint = RelayEndpoint {
             display_name: "Gemini native",

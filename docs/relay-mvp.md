@@ -19,10 +19,12 @@ The Worker also supports native Gemini generate content and embedding requests:
 - `POST /v1beta/models/{model}:streamGenerateContent`
 - `POST /v1beta/models/{model}:embedContent`
 - `POST /v1beta/models/{model}:batchEmbedContents`
+- `POST /v1beta/models/{model}:countTokens`
 - `POST /v1/models/{model}:generateContent`
 - `POST /v1/models/{model}:streamGenerateContent`
 - `POST /v1/models/{model}:embedContent`
 - `POST /v1/models/{model}:batchEmbedContents`
+- `POST /v1/models/{model}:countTokens`
 
 `POST /v1/chat/completions` and native `POST /v1/messages` also support
 streaming passthrough when the request body includes `stream: true`. Native
@@ -69,7 +71,8 @@ The Worker:
   `message_start`/`message_delta` SSE events, with Claude cache-read and
   cache-creation token semantics for tiered settlement;
 - parses Gemini `usageMetadata` from JSON responses and native SSE `data:`
-  chunks, including cached, image, and audio token details;
+  chunks, plus Gemini `countTokens` `totalTokens` responses, including cached,
+  image, and audio token details;
 - tees streaming chat, Anthropic Messages, and native Gemini responses so
   `wait_until` can consume an audit branch incrementally without blocking the
   client stream;
@@ -116,8 +119,8 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
   matching `"group"`, and either empty `models` or a CSV entry for the
   requested model. OpenAI-compatible endpoints currently support types
   `1, 20, 40, 42, 43, 48, 53`; `/v1/messages` currently supports type `14`;
-  native Gemini generate-content and embedding endpoints currently support type
-  `24`.
+  native Gemini generate-content, embedding, and token-count endpoints
+  currently support type `24`.
 - preferably an `abilities` row with matching `group_name`, `model`,
   `channel_id`, and `enabled = 1`.
 
@@ -139,7 +142,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - Anthropic Messages relay is native-format only; OpenAI-to-Claude request
   conversion is still pending.
 - Native Gemini relay currently supports generateContent,
-  streamGenerateContent, embedContent, and batchEmbedContents passthrough;
+  streamGenerateContent, embedContent, batchEmbedContents, and countTokens
+  passthrough;
   OpenAI-to-Gemini request conversion, asyncBatchEmbedContent, and image/video
   task paths are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage

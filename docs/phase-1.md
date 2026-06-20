@@ -21,12 +21,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - `POST /v1beta/models/{model}:embedContent` and
   `POST /v1beta/models/{model}:batchEmbedContents` native Gemini embedding
   relay MVP for native Gemini channel type `24`, with `/v1/...` aliases.
+- `POST /v1beta/models/{model}:countTokens` native Gemini token-count relay
+  MVP for native Gemini channel type `24`, with `/v1/...` aliases.
 - D1 token authentication with status, expiry, quota-presence, model-limit, and IP allowlist checks.
 - Best-effort D1 token status update for expired and exhausted tokens.
 - D1 channel selection for OpenAI-compatible provider types.
 - D1 channel selection can now filter by endpoint provider family, including
   Anthropic-only selection for `/v1/messages` and Gemini-only selection for
-  native Gemini generate-content and embedding endpoints.
+  native Gemini generate-content, embedding, and token-count endpoints.
 - Ability-first channel selection with channel CSV fallback.
 - Model mapping before upstream forwarding.
 - Token access update, user request-count update, and zero-quota consume audit logs.
@@ -37,8 +39,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - OpenAI-compatible JSON/SSE usage parsing extracts cached/cache-creation,
   Anthropic cache, and image/audio input/output token details for billing
   settlement.
-- Native Gemini JSON/SSE usage parsing extracts `usageMetadata`, cached
-  content, and image/audio token details for billing settlement.
+- Native Gemini JSON/SSE usage parsing extracts `usageMetadata`, `countTokens`
+  totals, cached content, and image/audio token details for billing settlement.
 - Pure Rust billing primitives for quota rounding, price conversion,
   expression version parsing, Go-compatible expression hashing, compile-style
   metadata validation, variable detection, tiered token normalization, and

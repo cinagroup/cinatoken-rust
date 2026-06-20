@@ -9,6 +9,15 @@
 - `parse_expr_version()` with `v1:` support and v1 as the default version.
 - `detect_billing_expr_variables()` for the billing variables that drive
   token normalization.
+- `expr_hash_string()` and `compile_billing_expr_metadata()` for Go-compatible
+  expression cache metadata:
+  - SHA-256 hex hashes over the exact stored expression string, matching Go
+    `ExprHashString()`;
+  - compile-style validation that parses the base expression and `|||`
+    request-rule multiplier, then rejects unknown variables/functions and bad
+    function arity before pre-consume quota mutation;
+  - metadata for expression version, base expression, request-rule expression,
+    and billing variable usage.
 - `build_tiered_token_params()` for GPT/OpenAI versus Claude token
   normalization:
   - GPT/OpenAI semantics subtract cache/image/audio sub-categories from `p`
@@ -42,8 +51,8 @@ quota = expression_cost / 1_000_000 * QuotaPerUnit * groupRatio
 - `TieredBillingSnapshot`, `TieredBillingResult`,
   `estimate_tiered_billing_snapshot()`, and `compute_tiered_quota()` for the
   pure Rust pre-consume/post-consume tiered settlement boundary:
-  - freezes expression string, v1 version, group ratio, estimated tokens,
-    estimated cost, estimated tier, and estimated quota;
+  - freezes expression string, expression hash, v1 version, group ratio,
+    estimated tokens, estimated cost, estimated tier, and estimated quota;
   - re-runs the frozen expression against actual token params;
   - applies `quota = exprOutput / 1_000_000 * QuotaPerUnit * groupRatio`;
   - reports matched tier, tier crossing, final quota, refund quota, and
@@ -87,7 +96,6 @@ Do not expand Worker quota mutation beyond tiered pre-consume reserve and
 post-response/post-stream delta settlement until the migration ports and
 verifies these remaining Go billing behaviors:
 
-- expression compile/cache metadata and validation;
 - broader Go/Rust golden parity tests for expression edge cases;
 - tokenizer/media parity for request-time token estimation;
 - matched tier metadata injection for usage-log display.
@@ -101,6 +109,8 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - prompt/completion flat price calculation;
 - expression version parsing and variable detection while ignoring string
   literals;
+- Go-compatible SHA-256 expression hashing, compile metadata, and compile-style
+  validation for inactive branches and request-rule expressions;
 - expression execution for simple flat prices, conditional tiers, math helpers,
   multimodal variables, request `param()`/`header()` probes, missing-field `nil`
   handling, `|||` request-rule multipliers, and time helper ranges;

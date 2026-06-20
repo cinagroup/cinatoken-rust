@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    expression_cost_to_quota, parse_expr_version, quota_round, run_billing_expr_with_request,
-    settle, split_billing_expr_request_rule, BillingExprError, BillingSettlement, Quota,
+    compile_billing_expr_metadata, expression_cost_to_quota, quota_round,
+    run_billing_expr_with_request, settle, BillingExprError, BillingSettlement, Quota,
     RequestInput, TokenParams, DEFAULT_QUOTA_PER_UNIT,
 };
 
@@ -11,6 +11,7 @@ pub struct TieredBillingSnapshot {
     pub billing_mode: String,
     pub model_name: String,
     pub expr_string: String,
+    pub expr_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_rule_expr: Option<String>,
     pub expr_version: u32,
@@ -57,8 +58,7 @@ pub fn estimate_tiered_billing_snapshot_with_request(
     request: RequestInput,
 ) -> Result<TieredBillingSnapshot, BillingExprError> {
     let expr_string = expr_string.into();
-    let request_rule_expr = split_billing_expr_request_rule(&expr_string).request_rule_expr;
-    let (expr_version, _) = parse_expr_version(&expr_string);
+    let metadata = compile_billing_expr_metadata(&expr_string)?;
     let run = run_billing_expr_with_request(&expr_string, estimated_params, request)?;
     let estimated_quota_before_group =
         expression_cost_to_quota_before_group(run.cost, DEFAULT_QUOTA_PER_UNIT);
@@ -69,8 +69,9 @@ pub fn estimate_tiered_billing_snapshot_with_request(
         billing_mode: "tiered_expr".to_string(),
         model_name: model_name.into(),
         expr_string,
-        request_rule_expr,
-        expr_version,
+        expr_hash: metadata.expr_hash,
+        request_rule_expr: metadata.request_rule_expr,
+        expr_version: metadata.expr_version,
         group_ratio,
         quota_per_unit: DEFAULT_QUOTA_PER_UNIT,
         estimated_prompt_tokens: quota_round(estimated_params.p),
@@ -155,6 +156,7 @@ mod tests {
 
         assert_eq!(snapshot.billing_mode, "tiered_expr");
         assert_eq!(snapshot.model_name, "gpt-test");
+        assert_eq!(snapshot.expr_hash, crate::expr_hash_string(FLAT_EXPR));
         assert_eq!(snapshot.expr_version, 1);
         assert_eq!(snapshot.estimated_prompt_tokens, 1_000);
         assert_eq!(snapshot.estimated_completion_tokens, 500);
@@ -267,6 +269,10 @@ mod tests {
         assert_eq!(
             snapshot.request_rule_expr.as_deref(),
             Some(r#"(param("service_tier") == "fast" ? 3 : 1)"#)
+        );
+        assert_eq!(
+            snapshot.expr_hash,
+            crate::expr_hash_string(REQUEST_RULE_EXPR)
         );
         assert_eq!(snapshot.estimated_tier, "base");
         assert_eq!(snapshot.estimated_expression_cost, 21_000.0);

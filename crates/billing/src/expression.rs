@@ -62,6 +62,15 @@ pub fn run_billing_expr(expr: &str, params: TokenParams) -> Result<ExprRun, Bill
     run_billing_expr_with_request(expr, params, RequestInput::default())
 }
 
+pub fn validate_billing_expr(expr: &str) -> Result<(), BillingExprError> {
+    let parts = split_billing_expr_request_rule(expr);
+    validate_billing_expr_part(&parts.billing_expr)?;
+    if let Some(request_rule_expr) = parts.request_rule_expr {
+        validate_billing_expr_part(&request_rule_expr)?;
+    }
+    Ok(())
+}
+
 pub fn run_billing_expr_with_request(
     expr: &str,
     params: TokenParams,
@@ -94,6 +103,59 @@ fn run_billing_expr_part(
         cost,
         trace: evaluator.trace,
     })
+}
+
+fn validate_billing_expr_part(expr: &str) -> Result<(), BillingExprError> {
+    let (_, body) = parse_expr_version(expr);
+    let tokens = Lexer::new(body).lex()?;
+    let ast = Parser::new(tokens).parse()?;
+    validate_expr_ast(&ast)
+}
+
+fn validate_expr_ast(expr: &Expr) -> Result<(), BillingExprError> {
+    match expr {
+        Expr::Number(_) | Expr::String(_) | Expr::Bool(_) | Expr::Null => Ok(()),
+        Expr::Variable(name) => {
+            if known_variable(name) {
+                Ok(())
+            } else {
+                Err(BillingExprError::Parse(format!(
+                    "unknown identifier {name:?}"
+                )))
+            }
+        }
+        Expr::Unary { expr, .. } => validate_expr_ast(expr),
+        Expr::Binary { left, right, .. } => {
+            validate_expr_ast(left)?;
+            validate_expr_ast(right)
+        }
+        Expr::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            validate_expr_ast(condition)?;
+            validate_expr_ast(then_branch)?;
+            validate_expr_ast(else_branch)
+        }
+        Expr::Call { name, args } => {
+            let Some(expected) = known_function_arg_count(name) else {
+                return Err(BillingExprError::Parse(format!(
+                    "unknown function {name:?}"
+                )));
+            };
+            if args.len() != expected {
+                return Err(BillingExprError::Parse(format!(
+                    "{name} expects {expected} argument(s), got {}",
+                    args.len()
+                )));
+            }
+            for arg in args {
+                validate_expr_ast(arg)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -822,11 +884,12 @@ impl Evaluator {
             "img_o" => self.params.img_o,
             "ai" => self.params.ai,
             "ao" => self.params.ao,
-            _ => {
+            _ if !known_variable(name) => {
                 return Err(BillingExprError::Runtime(format!(
                     "unknown identifier {name:?}"
                 )));
             }
+            _ => unreachable!("known variable table and evaluator match arms diverged"),
         };
         Ok(ExprValue::Number(number))
     }
@@ -939,9 +1002,10 @@ impl Evaluator {
             "abs" => self.numeric_unary_function(name, args, f64::abs),
             "ceil" => self.numeric_unary_function(name, args, f64::ceil),
             "floor" => self.numeric_unary_function(name, args, f64::floor),
-            _ => Err(BillingExprError::Runtime(format!(
-                "unknown function {name:?}"
-            ))),
+            _ if known_function_arg_count(name).is_none() => Err(BillingExprError::Runtime(
+                format!("unknown function {name:?}"),
+            )),
+            _ => unreachable!("known function table and evaluator match arms diverged"),
         }
     }
 
@@ -1139,6 +1203,23 @@ fn is_identifier_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
+fn known_variable(name: &str) -> bool {
+    matches!(
+        name,
+        "p" | "c" | "len" | "cr" | "cc" | "cc1h" | "img" | "img_o" | "ai" | "ao"
+    )
+}
+
+fn known_function_arg_count(name: &str) -> Option<usize> {
+    match name {
+        "tier" => Some(2),
+        "param" | "header" | "hour" | "minute" | "weekday" | "month" | "day" | "abs" | "ceil"
+        | "floor" => Some(1),
+        "has" | "max" | "min" => Some(2),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1316,6 +1397,29 @@ mod tests {
         .expect("expression should run");
         assert_eq!(normal.cost, 300.0);
         assert_eq!(normal.trace.matched_tier, "base");
+    }
+
+    #[test]
+    fn validates_expression_and_request_rule_without_running_branches() {
+        validate_billing_expr(
+            r#"tier("base", p * 2 + c * 10)|||(param("service_tier") == "fast" ? 3 : 1)"#,
+        )
+        .expect("expression should validate");
+
+        let inactive_branch_error = validate_billing_expr("true ? p : missing_var")
+            .expect_err("unknown vars should fail validation");
+        assert!(inactive_branch_error
+            .to_string()
+            .contains("unknown identifier"));
+
+        let rule_error =
+            validate_billing_expr(r#"tier("base", p)|||(unknown_rule(header("x")) ? 2 : 1)"#)
+                .expect_err("unknown request-rule functions should fail validation");
+        assert!(rule_error.to_string().contains("unknown function"));
+
+        let arg_error = validate_billing_expr(r#"tier("base", p, c)"#)
+            .expect_err("bad function arity should fail validation");
+        assert!(arg_error.to_string().contains("expects 2 argument"));
     }
 
     #[test]

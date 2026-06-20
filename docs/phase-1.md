@@ -23,15 +23,16 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Pure Rust relay helper tests for model mapping, IP allowlists, key
   selection, JSON/SSE usage parsing, and URL normalization.
 - Pure Rust billing primitives for quota rounding, price conversion,
-  expression version parsing, variable detection, tiered token normalization,
-  and pre-consume settlement deltas.
+  expression version parsing, Go-compatible expression hashing, compile-style
+  metadata validation, variable detection, tiered token normalization, and
+  pre-consume settlement deltas.
 - Pure Rust billing expression execution foundation with `tier()`,
   conditionals, math helpers, request `param()`/`header()` probes, `has()`,
   time helpers, multimodal variables, trace capture, and `|||` request-rule
   multiplier handling.
 - Pure Rust tiered billing snapshot and settlement helpers that freeze
-  pre-consume expression state, apply group ratio, detect tier crossing, and
-  compute final/refund/additional quota deltas.
+  pre-consume expression state including expression hash, apply group ratio,
+  detect tier crossing, and compute final/refund/additional quota deltas.
 - Shared storage-layer record types for authenticated tokens, relay channels, and relay audit logs.
 - Worker-side D1 repository boundary for auth, channel selection, token updates, user counters, and relay audit logs.
 - Worker-side D1 billing option lookup and non-streaming tiered-expression
@@ -57,8 +58,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 
 ## Next
 
-- Add billing expression compile/cache metadata and broader Go/Rust golden
-  parity tests.
+- Add broader Go/Rust golden parity tests for billing expression edge cases.
 - Replace the lightweight Worker request-token estimate with tokenizer/media
   parity against the Go `TokenCountMeta` path.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

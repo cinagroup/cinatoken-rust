@@ -1189,6 +1189,7 @@ fn tiered_billing_metadata(
         "billing_mode": snapshot.billing_mode,
         "shadow_only": shadow_only,
         "applied": applied,
+        "expr_hash": snapshot.expr_hash,
         "expr_version": snapshot.expr_version,
         "has_request_rule": snapshot.request_rule_expr.is_some(),
         "group_ratio": snapshot.group_ratio,
@@ -1221,6 +1222,7 @@ fn tiered_billing_fallback_metadata(
         "billing_mode": preflight.snapshot.billing_mode,
         "applied": applied,
         "fallback_to_pre_consumed": true,
+        "expr_hash": preflight.snapshot.expr_hash,
         "has_request_rule": preflight.snapshot.request_rule_expr.is_some(),
         "pre_consumed_quota": preflight.pre_consumed_quota,
         "estimated_tier": preflight.snapshot.estimated_tier,
@@ -1236,6 +1238,7 @@ fn tiered_billing_refund_metadata(
     json!({
         "billing_mode": preflight.snapshot.billing_mode,
         "refunded": true,
+        "expr_hash": preflight.snapshot.expr_hash,
         "has_request_rule": preflight.snapshot.request_rule_expr.is_some(),
         "pre_consumed_quota": preflight.pre_consumed_quota,
         "estimated_tier": preflight.snapshot.estimated_tier,
@@ -1707,6 +1710,7 @@ mod tests {
         assert_eq!(metadata["billing_mode"], "tiered_expr");
         assert_eq!(metadata["shadow_only"], true);
         assert_eq!(metadata["applied"], false);
+        assert_eq!(metadata["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(metadata["has_request_rule"], false);
         assert_eq!(metadata["pre_consumed_quota"], 4_500);
         assert_eq!(metadata["estimated_prompt_tokens"], 1_000);
@@ -1738,11 +1742,13 @@ mod tests {
         let fallback =
             tiered_billing_fallback_metadata(&preflight, "settlement failed".to_string(), true);
         assert_eq!(fallback["fallback_to_pre_consumed"], true);
+        assert_eq!(fallback["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(fallback["has_request_rule"], true);
         assert_eq!(fallback["pre_consumed_quota"], 4_500);
 
         let refund = tiered_billing_refund_metadata(&preflight, "missing_usage");
         assert_eq!(refund["refunded"], true);
+        assert_eq!(refund["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(refund["has_request_rule"], true);
         assert_eq!(refund["pre_consumed_quota"], 4_500);
         assert_eq!(refund["reason"], "missing_usage");

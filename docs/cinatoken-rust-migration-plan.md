@@ -1309,6 +1309,9 @@ Relay：
   split and applied in Rust billing preflight/settlement, with Worker audit
   metadata marking the presence of request rules without logging full rule
   bodies.
+- Rust billing snapshots now freeze Go-compatible expression hash metadata and
+  run compile-style validation before tiered pre-consume, including inactive
+  branches and request-rule expressions.
 - OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
   crate, including final streaming usage chunks, `[DONE]`, CRLF streams, and
   nested response usage metadata.

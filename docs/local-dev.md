@@ -132,3 +132,14 @@ Invoke-RestMethod `
   -ContentType 'application/json' `
   -Body '{"model":"gpt-4o-mini","input":"hello"}'
 ```
+
+Image generation is also JSON passthrough on the same relay path:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8787/v1/images/generations `
+  -Headers @{ Authorization = 'Bearer ct-dev-key' } `
+  -ContentType 'application/json' `
+  -Body '{"model":"gpt-image-1","prompt":"a tiny migration milestone badge","size":"1024x1024"}'
+```

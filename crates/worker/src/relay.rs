@@ -141,6 +141,28 @@ pub async fn embeddings(req: Request, env: Env) -> worker::Result<Response> {
     .await
 }
 
+pub async fn image_generations(req: Request, env: Env) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        None,
+        RelayEndpoint {
+            display_name: "image generations",
+            cache_family: "openai_compatible",
+            upstream_path: "images/generations".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+        },
+        None,
+    )
+    .await
+}
+
 pub async fn completions(req: Request, env: Env, context: Context) -> worker::Result<Response> {
     relay_endpoint(
         req,
@@ -2153,6 +2175,40 @@ mod tests {
 
         assert!(endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
+    fn image_generations_endpoint_stays_non_streaming() {
+        let endpoint = RelayEndpoint {
+            display_name: "image generations",
+            cache_family: "openai_compatible",
+            upstream_path: "images/generations".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+        };
+        let body = json!({"model": "gpt-image-1", "prompt": "hello"});
+
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+        assert_eq!(
+            endpoint.upstream_url(&RelayChannel {
+                id: 1,
+                name: "openai".to_string(),
+                channel_type: 1,
+                key: "sk-test".to_string(),
+                base_url: None,
+                models: "gpt-image-1".to_string(),
+                channel_group: "default".to_string(),
+                model_mapping: None,
+                openai_organization: None,
+            }),
+            "https://api.openai.com/v1/images/generations"
+        );
     }
 
     #[test]

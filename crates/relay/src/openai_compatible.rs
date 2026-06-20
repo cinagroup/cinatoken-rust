@@ -469,11 +469,14 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         &["prompt_tokens_details", "input_tokens_details"],
         &["audio_tokens"],
     );
-    let image_output_tokens = nested_i32_field(
+    let mut image_output_tokens = nested_i32_field(
         usage,
         &["completion_tokens_details", "output_tokens_details"],
         &["image_tokens"],
     );
+    if image_output_tokens <= 0 && is_image_generation_usage_value(value) {
+        image_output_tokens = first_i32_field(usage, &["output_tokens"]);
+    }
     let audio_output_tokens = nested_i32_field(
         usage,
         &["completion_tokens_details", "output_tokens_details"],
@@ -498,6 +501,23 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         audio_output_tokens,
         is_anthropic_usage_semantic,
     })
+}
+
+fn is_image_generation_usage_value(value: &Value) -> bool {
+    let has_completed_event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|value| {
+            matches!(value, "image_generation.completed" | "image_edit.completed")
+        });
+    let has_images_response_usage = value.get("data").is_some_and(Value::is_array)
+        && value
+            .get("usage")
+            .and_then(|usage| usage.get("input_tokens_details"))
+            .and_then(|details| details.get("image_tokens"))
+            .is_some();
+
+    has_completed_event_type || has_images_response_usage
 }
 
 fn usage_summary_from_gemini_value(value: &Value) -> Option<UsageSummary> {
@@ -1011,6 +1031,55 @@ mod tests {
                 image_output_tokens: 40,
                 audio_input_tokens: 80,
                 audio_output_tokens: 60,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_body_extracts_image_generation_usage() {
+        assert_eq!(
+            usage_summary_from_body(
+                r#"{
+                    "created": 1713833628,
+                    "data": [{"b64_json": "base64-image"}],
+                    "usage": {
+                        "input_tokens": 80,
+                        "input_tokens_details": {
+                            "image_tokens": 30,
+                            "text_tokens": 50
+                        },
+                        "output_tokens": 120,
+                        "total_tokens": 200
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 80,
+                completion_tokens: 120,
+                total_tokens: 200,
+                image_input_tokens: 30,
+                image_output_tokens: 120,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_sse_stream_extracts_image_generation_completed_usage() {
+        let body = concat!(
+            "event: image_generation.completed\n",
+            "data: {\"type\":\"image_generation.completed\",\"usage\":{\"input_tokens\":70,\"input_tokens_details\":{\"image_tokens\":25,\"text_tokens\":45},\"output_tokens\":110,\"total_tokens\":180}}\n\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 70,
+                completion_tokens: 110,
+                total_tokens: 180,
+                image_input_tokens: 25,
+                image_output_tokens: 110,
                 ..UsageSummary::default()
             }
         );

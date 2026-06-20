@@ -8,6 +8,7 @@ These endpoints currently support OpenAI-compatible requests:
 - `POST /v1/completions`
 - `POST /v1/responses`
 - `POST /v1/embeddings`
+- `POST /v1/images/generations`
 
 The Worker also supports native Anthropic Messages requests:
 
@@ -29,14 +30,14 @@ The Worker also supports native Gemini generate content and embedding requests:
 `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/responses`,
 and native `POST /v1/messages` also support streaming passthrough when the
 request body includes `stream: true`. Native Gemini `streamGenerateContent`
-paths stream with upstream `alt=sse`. Embeddings remain non-streaming in this
-MVP.
+paths stream with upstream `alt=sse`. Image generation and embeddings remain
+non-streaming in this MVP.
 
 The Worker:
 
 - parses the request body as `serde_json::Value`, preserving unknown fields and
   explicit zero values;
-- keeps embeddings non-streaming in this MVP;
+- keeps image generation and embeddings non-streaming in this MVP;
 - accepts API keys from `Authorization: Bearer ...`, `x-api-key`,
   `x-goog-api-key`, or native Gemini `key` query parameters;
 - authenticates the token and user through Upstash-backed read-through cache
@@ -66,8 +67,8 @@ The Worker:
 - returns upstream chat completion, completion, response, Anthropic Messages,
   and native Gemini streams without buffering the full response;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
-  SSE `data:` events, including cached/cache-creation and image/audio
-  input/output token details;
+  SSE `data:` events, including cached/cache-creation, GPT image generation
+  output image tokens, and image/audio input/output token details;
 - parses Anthropic Messages usage metadata, including streaming
   `message_start`/`message_delta` SSE events, with Claude cache-read and
   cache-creation token semantics for tiered settlement;
@@ -119,10 +120,10 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
   `remain_quota` unless `unlimited_quota = 1`, and a valid `user_id`;
 - a `channels` row with `status = 1`, a supported `type`, non-empty `"key"`,
   matching `"group"`, and either empty `models` or a CSV entry for the
-  requested model. OpenAI-compatible endpoints currently support types
-  `1, 20, 40, 42, 43, 48, 53`; `/v1/messages` currently supports type `14`;
-  native Gemini generate-content, embedding, and token-count endpoints
-  currently support type `24`.
+  requested model. OpenAI-compatible endpoints, including image generation,
+  currently support types `1, 20, 40, 42, 43, 48, 53`; `/v1/messages`
+  currently supports type `14`; native Gemini generate-content, embedding, and
+  token-count endpoints currently support type `24`.
 - preferably an `abilities` row with matching `group_name`, `model`,
   `channel_id`, and `enabled = 1`.
 
@@ -148,6 +149,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   passthrough;
   OpenAI-to-Gemini request conversion, asyncBatchEmbedContent, and image/video
   task paths are still pending.
+- OpenAI-compatible image generation is JSON passthrough only; image edits,
+  image streaming, and provider-specific image transforms are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, Anthropic Messages cumulative usage events, and Gemini
   `usageMetadata` chunks, but live upstream SSE coverage is still pending.

@@ -12,9 +12,9 @@ Last checked: 2026-06-20
   generalized `/v1/...` upstream URL generation, Anthropic Messages URL
   generation, native Gemini path parsing and upstream URL generation, relay
   cache key normalization, token fingerprinting, JSON/SSE usage parsing,
-  Responses `response.completed` usage parsing, nested usage token details,
-  Anthropic cache usage details, Anthropic streaming `message_start`/
-  `message_delta` usage merging, Gemini
+  Responses `response.completed` usage parsing, GPT image generation usage
+  parsing, nested usage token details, Anthropic cache usage details,
+  Anthropic streaming `message_start`/`message_delta` usage merging, Gemini
   generate and embedding `usageMetadata` parsing, Gemini `countTokens`
   `totalTokens` parsing, split streaming byte chunks, and versioned
   token/channel cache wrappers.
@@ -52,11 +52,12 @@ Last checked: 2026-06-20
   Worker Upstash Redis REST fetch transport and status feature detection.
 - `cargo test -p cinatoken-worker --lib` covering relay rate-limit and
   read-through cache TTL configuration parsing and invalid configuration
-  rejection, chat/completions/responses, Anthropic, and native Gemini streaming
-  relay gating, D1 provider-family channel filters, native Gemini embedding/count
-  non-stream action gating, D1 billing option parsing, tiered settlement
-  metadata, D1 quota mutation guardrails, and the Worker crate after D1 SQL was
-  moved behind repository functions.
+  rejection, chat/completions/responses, non-stream image generation,
+  Anthropic, and native Gemini streaming relay gating, D1 provider-family
+  channel filters, native Gemini embedding/count non-stream action gating, D1
+  billing option parsing, tiered settlement metadata, D1 quota mutation
+  guardrails, and the Worker crate after D1 SQL was moved behind repository
+  functions.
 - `cargo test -p cinatoken-worker --lib` covering Worker request-body token
   estimation, max-token extraction, request-time tiered billing preflight
   snapshots, usage-detail token normalization, and settlement deltas against

@@ -15,6 +15,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - `POST /v1/responses` OpenAI-compatible relay MVP, including streaming
   passthrough for `stream: true`.
 - `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP.
+- `POST /v1/images/generations` non-stream OpenAI-compatible relay MVP.
 - `POST /v1/messages` native Anthropic Messages relay MVP for native Anthropic
   channel type `14`, including streaming passthrough for `stream: true`.
 - `POST /v1beta/models/{model}:generateContent` and
@@ -39,8 +40,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Pure Rust relay helper tests for model mapping, IP allowlists, key
   selection, JSON/SSE usage parsing, and URL normalization.
 - OpenAI-compatible JSON/SSE usage parsing extracts cached/cache-creation,
-  Anthropic cache, and image/audio input/output token details for billing
-  settlement.
+  Anthropic cache, GPT image generation output image tokens, and image/audio
+  input/output token details for billing settlement.
 - Native Gemini JSON/SSE usage parsing extracts `usageMetadata`, `countTokens`
   totals, cached content, and image/audio token details for billing settlement.
 - Pure Rust billing primitives for quota rounding, price conversion,

@@ -137,11 +137,11 @@ The Rust tests cover the most important Go-compatible arithmetic:
   expression encoding and matched-tier injection without logging request-rule
   bodies;
 - OpenAI-compatible JSON/SSE usage parsing plus native Anthropic and Gemini
-  usage parsing for cached/cache-creation and image/audio token details, final
-  streaming usage chunks, CRLF streams, invalid events, split byte chunks,
-  `[DONE]`, nested response usage metadata, Gemini generate
-  `usageMetadata`, Gemini embedding `usageMetadata`, and Gemini countTokens
-  `totalTokens`;
+  usage parsing for cached/cache-creation and image/audio token details, GPT
+  image generation output image tokens, final streaming usage chunks, CRLF
+  streams, invalid events, split byte chunks, `[DONE]`, nested response usage
+  metadata, Gemini generate `usageMetadata`, Gemini embedding `usageMetadata`,
+  and Gemini countTokens `totalTokens`;
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - Go/Rust golden parity fixtures for GLM-style multi-condition division,

@@ -69,6 +69,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/v1/embeddings", |req, ctx| async move {
             relay::embeddings(req, ctx.env).await
         })
+        .post_async("/v1/images/generations", |req, ctx| async move {
+            relay::image_generations(req, ctx.env).await
+        })
         .run(req, env)
         .await
 }

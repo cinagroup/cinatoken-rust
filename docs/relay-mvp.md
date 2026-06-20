@@ -37,7 +37,8 @@ The Worker:
 - returns the upstream body, status, and content type to the client;
 - returns upstream chat completion streams without buffering the full response;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
-  SSE `data:` events;
+  SSE `data:` events, including cached/cache-creation and image/audio
+  input/output token details;
 - tees streaming chat responses so `wait_until` can consume an audit branch
   incrementally without blocking the client stream;
 - updates token `accessed_time`, increments user `request_count`, and writes
@@ -54,9 +55,10 @@ The Worker:
 - refreshes cached token quota state from D1 before auth validation so quota
   mutation is not hidden by read-through cache TTLs;
 - for successful tiered-expression responses with usage metadata, settles final
-  tiered quota against the frozen preflight snapshot, applies only the delta
-  from pre-consumed quota, increments user/channel usage counters, and records
-  metadata under `other.tiered_billing`;
+  tiered quota against the frozen preflight snapshot, normalizes actual token
+  parameters according to the frozen expression's variable usage, applies only
+  the delta from pre-consumed quota, increments user/channel usage counters,
+  and records metadata under `other.tiered_billing`;
 - if post-response tiered expression evaluation fails after a successful
   reserve, falls back to the pre-consumed quota and records
   `other.tiered_billing_fallback`;
@@ -116,5 +118,4 @@ original billing expression flow:
 
 - exact tokenizer counts plus image dimension/audio duration parity for the
   preflight token estimate;
-- token normalization based on expression variables;
 - log display metadata for matched tier and expression details.

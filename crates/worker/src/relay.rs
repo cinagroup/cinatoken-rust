@@ -1,6 +1,7 @@
 use cinatoken_billing::{
-    compute_tiered_quota_with_request, estimate_tiered_billing_snapshot_with_request, RequestInput,
-    TieredBillingResult, TieredBillingSnapshot, TokenParams,
+    build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
+    estimate_tiered_billing_snapshot_with_request, RequestInput, TieredBillingResult,
+    TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
@@ -1170,7 +1171,7 @@ fn tiered_billing_settlement(
     usage: &UsageSummary,
     request: &RequestInput,
 ) -> Result<TieredBillingOutcome, String> {
-    let params = token_params_from_usage(usage);
+    let params = token_params_from_usage(snapshot, usage);
     let result = compute_tiered_quota_with_request(snapshot, params, request.clone())
         .map_err(|err| format!("failed to compute tiered billing: {err}"))?;
     let final_quota = result.settlement.final_quota.0;
@@ -1639,14 +1640,29 @@ fn value_to_non_negative_i64(value: &Value) -> Option<i64> {
     Some(value.max(0.0).floor().min(i64::MAX as f64) as i64)
 }
 
-fn token_params_from_usage(usage: &UsageSummary) -> TokenParams {
-    let prompt = f64::from(usage.prompt_tokens.max(0));
-    TokenParams {
-        p: prompt,
-        c: f64::from(usage.completion_tokens.max(0)),
-        len: prompt,
-        ..TokenParams::default()
-    }
+fn token_params_from_usage(snapshot: &TieredBillingSnapshot, usage: &UsageSummary) -> TokenParams {
+    let tiered_usage = TieredTokenUsage {
+        prompt_tokens: i64::from(usage.prompt_tokens.max(0)),
+        completion_tokens: i64::from(usage.completion_tokens.max(0)),
+        cached_tokens: i64::from(usage.cached_tokens.max(0)),
+        cache_creation_tokens: i64::from(usage.cache_creation_tokens.max(0)),
+        claude_cache_creation_5m_tokens: i64::from(usage.claude_cache_creation_5m_tokens.max(0)),
+        claude_cache_creation_1h_tokens: i64::from(usage.claude_cache_creation_1h_tokens.max(0)),
+        image_input_tokens: i64::from(usage.image_input_tokens.max(0)),
+        image_output_tokens: i64::from(usage.image_output_tokens.max(0)),
+        audio_input_tokens: i64::from(usage.audio_input_tokens.max(0)),
+        audio_output_tokens: i64::from(usage.audio_output_tokens.max(0)),
+        usage_semantic: if usage.is_anthropic_usage_semantic {
+            UsageSemantic::Anthropic
+        } else {
+            UsageSemantic::OpenAi
+        },
+    };
+    build_tiered_token_params(
+        tiered_usage,
+        usage.is_anthropic_usage_semantic,
+        detect_billing_expr_variables(&snapshot.expr_string),
+    )
 }
 
 fn billing_request_input(req: &Request, body: &Value) -> RequestInput {
@@ -1827,11 +1843,24 @@ mod tests {
 
     #[test]
     fn usage_summary_converts_to_basic_token_params() {
-        let params = token_params_from_usage(&UsageSummary {
-            prompt_tokens: 1_000,
-            completion_tokens: 500,
-            total_tokens: 1_500,
-        });
+        let snapshot = tiered_billing_preflight_snapshot(
+            "gpt-test",
+            r#"tier("base", p + c)"#,
+            1.0,
+            &json!({}),
+            RequestInput::default(),
+        )
+        .unwrap()
+        .snapshot;
+        let params = token_params_from_usage(
+            &snapshot,
+            &UsageSummary {
+                prompt_tokens: 1_000,
+                completion_tokens: 500,
+                total_tokens: 1_500,
+                ..UsageSummary::default()
+            },
+        );
 
         assert_eq!(params.p, 1_000.0);
         assert_eq!(params.c, 500.0);
@@ -1941,6 +1970,44 @@ mod tests {
     }
 
     #[test]
+    fn tiered_billing_settlement_normalizes_usage_details_for_expression_variables() {
+        let request_body = json!({
+            "prompt": "x".repeat(4000),
+            "max_completion_tokens": 100
+        });
+        let request = RequestInput::from_json_body(request_body.clone());
+        let preflight = tiered_billing_preflight_snapshot(
+            "gpt-test",
+            r#"tier("detail", p * 2 + c * 10 + cr * 0.5 + img * 3 + ao * 20)"#,
+            1.0,
+            &request_body,
+            request.clone(),
+        )
+        .unwrap();
+        let usage = UsageSummary {
+            prompt_tokens: 1_000,
+            completion_tokens: 600,
+            total_tokens: 1_600,
+            cached_tokens: 200,
+            image_input_tokens: 100,
+            audio_output_tokens: 50,
+            ..UsageSummary::default()
+        };
+
+        let params = token_params_from_usage(&preflight.snapshot, &usage);
+        assert_eq!(params.p, 700.0);
+        assert_eq!(params.c, 550.0);
+        assert_eq!(params.len, 1_000.0);
+        assert_eq!(params.cr, 200.0);
+        assert_eq!(params.img, 100.0);
+        assert_eq!(params.ao, 50.0);
+
+        let outcome = tiered_billing_settlement(&preflight.snapshot, &usage, &request).unwrap();
+        assert_eq!(outcome.result.actual_expression_cost, 8_300.0);
+        assert_eq!(outcome.final_quota, 4_150);
+    }
+
+    #[test]
     fn tiered_billing_settlement_uses_frozen_preflight_snapshot() {
         let request_body = json!({
             "prompt": "x".repeat(4000),
@@ -1962,6 +2029,7 @@ mod tests {
                 prompt_tokens: 1_000,
                 completion_tokens: 500,
                 total_tokens: 1_500,
+                ..UsageSummary::default()
             },
             &request,
         )

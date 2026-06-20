@@ -72,8 +72,10 @@ to the client, and consumes the audit branch in `wait_until` with an
 incremental SSE usage parser.
 
 For successful OpenAI-compatible tiered-expression responses with usage
-metadata, it settles final tiered quota against that frozen snapshot and
-applies only the delta from pre-consumed quota:
+metadata, including nested cached/cache-creation and image/audio token details,
+it rebuilds actual token parameters from the frozen expression's variable
+usage, settles final tiered quota against that frozen snapshot, and applies
+only the delta from pre-consumed quota:
 
 - before upstream: decrement `users.quota`, decrement `tokens.remain_quota`,
   and increment `tokens.used_quota` by the estimated quota;
@@ -120,13 +122,14 @@ The Rust tests cover the most important Go-compatible arithmetic:
   settlement, refund/additional deltas, request-probe preservation,
   `|||` request-rule preservation, and crossed-tier detection;
 - Worker request-body token estimation, request-time tiered preflight
-  snapshots, visible media fallback counts, and settlement deltas against
-  frozen snapshots;
+  snapshots, visible media fallback counts, usage-detail token normalization,
+  and settlement deltas against frozen snapshots;
 - Worker tiered reserve metadata, fallback metadata, and refund metadata for
   pre-consume paths;
-- OpenAI-compatible SSE usage parsing for final streaming usage chunks, CRLF
-  streams, invalid events, split byte chunks, `[DONE]`, and nested response
-  usage metadata;
+- OpenAI-compatible JSON/SSE usage parsing for cached/cache-creation and
+  image/audio token details, final streaming usage chunks, CRLF streams,
+  invalid events, split byte chunks, `[DONE]`, and nested response usage
+  metadata;
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - Go/Rust golden parity fixtures for GLM-style multi-condition division,

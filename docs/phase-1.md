@@ -22,6 +22,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Streaming chat completion passthrough with pending zero-quota stream audit logs.
 - Pure Rust relay helper tests for model mapping, IP allowlists, key
   selection, JSON/SSE usage parsing, and URL normalization.
+- OpenAI-compatible JSON/SSE usage parsing extracts cached/cache-creation,
+  Anthropic cache, and image/audio input/output token details for billing
+  settlement.
 - Pure Rust billing primitives for quota rounding, price conversion,
   expression version parsing, Go-compatible expression hashing, compile-style
   metadata validation, variable detection, tiered token normalization, and
@@ -41,6 +44,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   prompt/completion token estimates, visible request-body media fallback
   counts, frozen request probes, and post-response settlement against the
   frozen snapshot.
+- Worker-side tiered-expression settlement rebuilds actual token parameters
+  from upstream usage details and the frozen expression's variable usage, so
+  cached/image/audio sub-categories are not double-counted in `p` or `c`.
 - Cached-auth quota-state refresh plus request-time D1 reserve, failed-request
   refund, and post-response delta settlement for successful tiered-expression
   responses, including streaming chat after full-stream usage reconciliation.

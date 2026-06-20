@@ -10,8 +10,8 @@ Last checked: 2026-06-20
 - `bun run check` from `C:\cinagroup\cinatoken-rust`.
 - `cargo test -p cinatoken-relay` covering OpenAI-compatible relay helpers,
   generalized `/v1/...` upstream URL generation, relay cache key normalization,
-  token fingerprinting, JSON/SSE usage parsing, split streaming byte chunks,
-  and versioned token/channel cache wrappers.
+  token fingerprinting, JSON/SSE usage parsing, nested usage token details,
+  split streaming byte chunks, and versioned token/channel cache wrappers.
 - `cargo test -p cinatoken-migration` covering `dev-seed` SQL generation.
 - `cargo test -p cinatoken-migration` covering source repository inspection
   argument parsing and local SQLite candidate discovery.
@@ -51,7 +51,8 @@ Last checked: 2026-06-20
   D1 SQL was moved behind repository functions.
 - `cargo test -p cinatoken-worker --lib` covering Worker request-body token
   estimation, max-token extraction, request-time tiered billing preflight
-  snapshots, and settlement deltas against frozen snapshots.
+  snapshots, usage-detail token normalization, and settlement deltas against
+  frozen snapshots.
 - `cargo test -p cinatoken-worker --lib` covering visible request-body media
   fallback counts for OpenAI-style and Gemini-style token preflight estimates.
 - `cargo test -p cinatoken-worker --lib` covering tiered reserve

@@ -17,6 +17,15 @@ pub struct UsageSummary {
     pub prompt_tokens: i32,
     pub completion_tokens: i32,
     pub total_tokens: i32,
+    pub cached_tokens: i32,
+    pub cache_creation_tokens: i32,
+    pub claude_cache_creation_5m_tokens: i32,
+    pub claude_cache_creation_1h_tokens: i32,
+    pub image_input_tokens: i32,
+    pub image_output_tokens: i32,
+    pub audio_input_tokens: i32,
+    pub audio_output_tokens: i32,
+    pub is_anthropic_usage_semantic: bool,
 }
 
 pub fn is_openai_compatible_channel_type(channel_type: i32) -> bool {
@@ -188,11 +197,71 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
     let completion_tokens = first_i32_field(usage, &["completion_tokens", "output_tokens"]);
     let total_tokens = first_i32_field(usage, &["total_tokens"])
         .max(prompt_tokens.saturating_add(completion_tokens));
+    let cached_tokens = first_non_zero_i32(&[
+        nested_i32_field(
+            usage,
+            &["prompt_tokens_details", "input_tokens_details"],
+            &["cached_tokens"],
+        ),
+        first_i32_field(usage, &["prompt_cache_hit_tokens"]),
+    ]);
+    let cache_creation_tokens = nested_i32_field(
+        usage,
+        &["prompt_tokens_details", "input_tokens_details"],
+        &["cached_creation_tokens"],
+    );
+    let claude_cache_creation_5m_tokens = first_i32_field(
+        usage,
+        &[
+            "claude_cache_creation_5_m_tokens",
+            "claude_cache_creation_5m_tokens",
+        ],
+    );
+    let claude_cache_creation_1h_tokens = first_i32_field(
+        usage,
+        &[
+            "claude_cache_creation_1_h_tokens",
+            "claude_cache_creation_1h_tokens",
+        ],
+    );
+    let image_input_tokens = nested_i32_field(
+        usage,
+        &["prompt_tokens_details", "input_tokens_details"],
+        &["image_tokens"],
+    );
+    let audio_input_tokens = nested_i32_field(
+        usage,
+        &["prompt_tokens_details", "input_tokens_details"],
+        &["audio_tokens"],
+    );
+    let image_output_tokens = nested_i32_field(
+        usage,
+        &["completion_tokens_details", "output_tokens_details"],
+        &["image_tokens"],
+    );
+    let audio_output_tokens = nested_i32_field(
+        usage,
+        &["completion_tokens_details", "output_tokens_details"],
+        &["audio_tokens"],
+    );
+    let is_anthropic_usage_semantic = usage
+        .get("usage_semantic")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("anthropic"));
 
     Some(UsageSummary {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        cached_tokens,
+        cache_creation_tokens,
+        claude_cache_creation_5m_tokens,
+        claude_cache_creation_1h_tokens,
+        image_input_tokens,
+        image_output_tokens,
+        audio_input_tokens,
+        audio_output_tokens,
+        is_anthropic_usage_semantic,
     })
 }
 
@@ -216,10 +285,29 @@ pub fn clamp_i64_to_i32(value: i64) -> i32 {
 }
 
 fn first_i32_field(value: &Value, names: &[&str]) -> i32 {
+    first_i32_field_value(value, names).unwrap_or_default()
+}
+
+fn first_i32_field_value(value: &Value, names: &[&str]) -> Option<i32> {
     names
         .iter()
         .find_map(|name| value.get(*name).and_then(value_to_i64))
         .map(clamp_i64_to_i32)
+}
+
+fn nested_i32_field(value: &Value, object_names: &[&str], field_names: &[&str]) -> i32 {
+    object_names
+        .iter()
+        .filter_map(|object_name| value.get(*object_name))
+        .find_map(|object| first_i32_field_value(object, field_names))
+        .unwrap_or_default()
+}
+
+fn first_non_zero_i32(values: &[i32]) -> i32 {
+    values
+        .iter()
+        .copied()
+        .find(|value| *value != 0)
         .unwrap_or_default()
 }
 
@@ -323,6 +411,7 @@ mod tests {
                 prompt_tokens: 12,
                 completion_tokens: 5,
                 total_tokens: 17,
+                ..UsageSummary::default()
             }
         );
         assert_eq!(
@@ -331,6 +420,71 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 3,
                 total_tokens: 10,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_body_extracts_token_details() {
+        assert_eq!(
+            usage_summary_from_body(
+                r#"{
+                    "usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 600,
+                        "prompt_tokens_details": {
+                            "cached_tokens": 200,
+                            "cached_creation_tokens": 30,
+                            "image_tokens": 120,
+                            "audio_tokens": 80
+                        },
+                        "completion_tokens_details": {
+                            "image_tokens": 40,
+                            "audio_tokens": 60
+                        }
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 1_000,
+                completion_tokens: 600,
+                total_tokens: 1_600,
+                cached_tokens: 200,
+                cache_creation_tokens: 30,
+                image_input_tokens: 120,
+                image_output_tokens: 40,
+                audio_input_tokens: 80,
+                audio_output_tokens: 60,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_body_extracts_anthropic_cache_details() {
+        assert_eq!(
+            usage_summary_from_body(
+                r#"{
+                    "usage": {
+                        "input_tokens": 500,
+                        "output_tokens": 25,
+                        "usage_semantic": "anthropic",
+                        "input_tokens_details": {"cached_tokens": 100},
+                        "claude_cache_creation_5_m_tokens": 30,
+                        "claude_cache_creation_1_h_tokens": 20
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 500,
+                completion_tokens: 25,
+                total_tokens: 525,
+                cached_tokens: 100,
+                claude_cache_creation_5m_tokens: 30,
+                claude_cache_creation_1h_tokens: 20,
+                is_anthropic_usage_semantic: true,
+                ..UsageSummary::default()
             }
         );
     }
@@ -345,6 +499,7 @@ mod tests {
                 prompt_tokens: 9,
                 completion_tokens: 4,
                 total_tokens: 13,
+                ..UsageSummary::default()
             }
         );
     }
@@ -363,6 +518,7 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 5,
                 total_tokens: 12,
+                ..UsageSummary::default()
             }
         );
     }
@@ -380,6 +536,7 @@ mod tests {
                 prompt_tokens: 5,
                 completion_tokens: 8,
                 total_tokens: 13,
+                ..UsageSummary::default()
             }
         );
     }
@@ -401,6 +558,7 @@ mod tests {
                 prompt_tokens: 4,
                 completion_tokens: 6,
                 total_tokens: 10,
+                ..UsageSummary::default()
             }
         );
     }
@@ -419,6 +577,7 @@ mod tests {
                 prompt_tokens: 11,
                 completion_tokens: 4,
                 total_tokens: 15,
+                ..UsageSummary::default()
             }
         );
     }

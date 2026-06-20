@@ -1293,7 +1293,7 @@ Relay：
 12. 将 `web/default` 构建到 Pages staging。
 13. 用现有前端跑通登录、token、channel、chat、log 最小闭环。
 
-## 19.1 Current Execution Status (2026-06-19)
+## 19.1 Current Execution Status (2026-06-20)
 
 - Rust workspace, Worker entrypoint, D1 core schema, migration CLI, cache
   abstractions, Upstash Redis client, relay auth, channel selection, model
@@ -1316,8 +1316,9 @@ Relay：
   expressions, cache split pricing, `len` tier conditions, ratio-equivalent
   quota conversion, request probes, and used-variable detection.
 - OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
-  crate, including final streaming usage chunks, `[DONE]`, CRLF streams, and
-  nested response usage metadata.
+  crate, including cached/cache-creation token details, Anthropic cache
+  semantics, image/audio input/output token details, final streaming usage
+  chunks, `[DONE]`, CRLF streams, and nested response usage metadata.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
   relay using the original request body, prompt/completion token estimates, and
   visible request-body media fallback counts, reserves estimated wallet/token
@@ -1327,6 +1328,9 @@ Relay：
   audit branch with incremental SSE usage parsing in `wait_until`; successful
   tiered streaming responses settle reserved quota after full stream usage is
   known.
+- Actual tiered-expression settlement now rebuilds token parameters from
+  upstream usage details and the frozen expression's variable usage, avoiding
+  double-counting cached/image/audio sub-categories in `p` or `c`.
 - Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.

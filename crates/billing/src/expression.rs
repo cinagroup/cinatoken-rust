@@ -1173,7 +1173,14 @@ fn time_parts(timezone: &str) -> TimeParts {
 fn timezone_offset_seconds(timezone: &str) -> i64 {
     match timezone.trim() {
         "Asia/Shanghai" | "Asia/Singapore" | "Asia/Hong_Kong" | "Asia/Taipei" => 8 * 3_600,
+        "Asia/Tokyo" | "Asia/Seoul" => 9 * 3_600,
+        "Australia/Sydney" => 10 * 3_600,
+        "Europe/Berlin" => 3_600,
+        "America/New_York" => -5 * 3_600,
+        "America/Chicago" => -6 * 3_600,
+        "America/Los_Angeles" => -8 * 3_600,
         "UTC" | "Etc/UTC" | "GMT" | "" => 0,
+        "Europe/London" => 0,
         _ => 0,
     }
 }

@@ -162,6 +162,37 @@ fn go_request_probe_multiple_rules_multiply() {
 }
 
 #[test]
+fn go_time_helpers_accept_common_frontend_timezones() {
+    let expr = r#"
+        tier("default", p)
+        * (hour("America/New_York") >= 0 && hour("America/New_York") < 24 ? 1 : 999)
+        * (hour("America/Los_Angeles") >= 0 && hour("America/Los_Angeles") < 24 ? 1 : 999)
+        * (hour("America/Chicago") >= 0 && hour("America/Chicago") < 24 ? 1 : 999)
+        * (hour("Europe/London") >= 0 && hour("Europe/London") < 24 ? 1 : 999)
+        * (hour("Europe/Berlin") >= 0 && hour("Europe/Berlin") < 24 ? 1 : 999)
+        * (hour("Asia/Tokyo") >= 0 && hour("Asia/Tokyo") < 24 ? 1 : 999)
+        * (hour("Asia/Seoul") >= 0 && hour("Asia/Seoul") < 24 ? 1 : 999)
+        * (hour("Australia/Sydney") >= 0 && hour("Australia/Sydney") < 24 ? 1 : 999)
+        * (minute("UTC") >= 0 && minute("UTC") < 60 ? 1 : 999)
+        * (weekday("UTC") >= 0 && weekday("UTC") <= 6 ? 1 : 999)
+        * (month("Asia/Shanghai") >= 1 && month("Asia/Shanghai") <= 12 ? 1 : 999)
+        * (day("Asia/Shanghai") >= 1 && day("Asia/Shanghai") <= 31 ? 1 : 999)
+    "#;
+
+    let run = run_billing_expr(
+        expr,
+        TokenParams {
+            p: 500.0,
+            ..TokenParams::default()
+        },
+    )
+    .expect("common timezone expression should run");
+
+    assert_close(run.cost, 500.0);
+    assert_eq!(run.trace.matched_tier, "default");
+}
+
+#[test]
 fn go_used_vars_parity_for_token_normalization() {
     let vars = detect_billing_expr_variables(
         r#"tier("base", p * 2.5 + c * 15 + cr * 0.25 + img * 2 + ao * 50)"#,

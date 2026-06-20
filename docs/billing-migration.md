@@ -129,5 +129,6 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - Go/Rust golden parity fixtures for GLM-style multi-condition division,
   Claude cache split expressions, legacy cache-field ignoring, `len` tier
   conditions after cache subtraction, ratio-equivalent quota conversion,
-  request probe multipliers, and used-variable detection;
+  request probe multipliers, common frontend time zones for time helpers, and
+  used-variable detection;
 - refund versus additional-consumption settlement deltas.

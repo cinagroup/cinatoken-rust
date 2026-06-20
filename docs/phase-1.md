@@ -49,7 +49,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   tee, incremental SSE usage parsing, and `wait_until` audit recording.
 - First Go/Rust billing parity fixtures for multi-condition expressions,
   cache split pricing, `len` tiering, ratio-equivalent quota conversion,
-  request probes, and used-variable detection.
+  request probes, common frontend time zones, and used-variable detection.
 - Cache traits for string KV, expiring counters, and rate limiting.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.

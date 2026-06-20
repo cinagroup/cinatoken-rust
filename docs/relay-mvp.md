@@ -13,16 +13,15 @@ The Worker also supports native Anthropic Messages requests:
 
 - `POST /v1/messages`
 
-`POST /v1/chat/completions` also supports streaming passthrough when the request
-body includes `stream: true`. The other endpoints remain non-streaming in this
-MVP.
+`POST /v1/chat/completions` and native `POST /v1/messages` also support
+streaming passthrough when the request body includes `stream: true`.
+Completions, responses, and embeddings remain non-streaming in this MVP.
 
 The Worker:
 
 - parses the request body as `serde_json::Value`, preserving unknown fields and
   explicit zero values;
-- rejects `stream: true` on completions/responses and Anthropic messages with
-  `501`;
+- rejects `stream: true` on completions/responses with `501`;
 - accepts API keys from `Authorization: Bearer ...` or `x-api-key`;
 - authenticates the token and user through Upstash-backed read-through cache
   with D1 fallback;
@@ -44,14 +43,16 @@ The Worker:
 - forwards native Anthropic Messages requests with `x-api-key`,
   `anthropic-version`, and optional `anthropic-beta` headers;
 - returns the upstream body, status, and content type to the client;
-- returns upstream chat completion streams without buffering the full response;
+- returns upstream chat completion and Anthropic Messages streams without
+  buffering the full response;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
   SSE `data:` events, including cached/cache-creation and image/audio
   input/output token details;
-- parses Anthropic Messages usage metadata with Claude cache-read and
+- parses Anthropic Messages usage metadata, including streaming
+  `message_start`/`message_delta` SSE events, with Claude cache-read and
   cache-creation token semantics for tiered settlement;
-- tees streaming chat responses so `wait_until` can consume an audit branch
-  incrementally without blocking the client stream;
+- tees streaming chat and Anthropic Messages responses so `wait_until` can
+  consume an audit branch incrementally without blocking the client stream;
 - updates token `accessed_time`, increments user `request_count`, and writes
   consume audit logs with parsed usage token counts;
 - reads Go-compatible `billing_setting.billing_mode`,
@@ -76,8 +77,8 @@ The Worker:
   `other.tiered_billing_fallback`;
 - if tiered quota mutation cannot be applied, keeps the audit log pending and
   records the computed result under `other.tiered_billing_shadow` plus an error;
-- writes streaming chat completion audit logs via `wait_until` after the audit
-  stream branch is consumed;
+- writes streaming chat completion and Anthropic Messages audit logs via
+  `wait_until` after the audit stream branch is consumed;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis
@@ -113,11 +114,11 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 
 ## Deliberate Limitations
 
-- Streaming is only implemented for chat completion passthrough.
-- Anthropic Messages relay is currently non-streaming and native-format only;
-  OpenAI-to-Claude request conversion is still pending.
+- Anthropic Messages relay is native-format only; OpenAI-to-Claude request
+  conversion is still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
-  chunks, but live upstream SSE coverage is still pending.
+  chunks and Anthropic Messages cumulative usage events, but live upstream SSE
+  coverage is still pending.
 - Streaming tiered reserve is applied before the upstream call, but live
   upstream SSE reserve/refund/delta behavior still needs end-to-end coverage.
 - Request-time token estimation currently covers JSON-body text, max-token

@@ -52,7 +52,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             relay::responses(req, ctx.env).await
         })
         .post_async("/v1/messages", |req, ctx| async move {
-            relay::anthropic_messages(req, ctx.env).await
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::anthropic_messages(req, env, event_ctx).await
         })
         .post_async("/v1/embeddings", |req, ctx| async move {
             relay::embeddings(req, ctx.env).await

@@ -157,19 +157,23 @@ pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
     .await
 }
 
-pub async fn anthropic_messages(req: Request, env: Env) -> worker::Result<Response> {
+pub async fn anthropic_messages(
+    req: Request,
+    env: Env,
+    context: Context,
+) -> worker::Result<Response> {
     relay_endpoint(
         req,
         env,
-        None,
+        Some(context),
         RelayEndpoint {
             display_name: "Anthropic messages",
             cache_family: "anthropic",
             upstream_path: "messages",
             provider: RelayProviderKind::AnthropicMessages,
             supported_channel_types: ANTHROPIC_CHANNEL_TYPES,
-            supports_streaming: false,
-            stream_not_implemented_feature: Some("streaming Anthropic messages relay"),
+            supports_streaming: true,
+            stream_not_implemented_feature: None,
         },
     )
     .await
@@ -350,6 +354,7 @@ async fn relay_endpoint(
             model,
             group,
             endpoint.upstream_path,
+            endpoint.provider,
             audit,
         )
         .await;
@@ -949,6 +954,7 @@ async fn complete_streaming_relay_response(
     model: String,
     group: String,
     endpoint_path: &'static str,
+    provider: RelayProviderKind,
     audit: RelayAuditContext,
 ) -> worker::Result<Response> {
     let status = upstream.status_code();
@@ -976,7 +982,7 @@ async fn complete_streaming_relay_response(
     };
 
     context.wait_until(async move {
-        let usage = match streaming_usage_summary(&mut audit_response).await {
+        let usage = match streaming_usage_summary(&mut audit_response, provider).await {
             Ok(usage) => usage,
             Err(err) => {
                 worker::console_error!("failed to parse streaming relay usage: {}", err);
@@ -1007,9 +1013,15 @@ async fn complete_streaming_relay_response(
     Ok(upstream)
 }
 
-async fn streaming_usage_summary(upstream: &mut Response) -> worker::Result<UsageSummary> {
+async fn streaming_usage_summary(
+    upstream: &mut Response,
+    provider: RelayProviderKind,
+) -> worker::Result<UsageSummary> {
     let mut stream = upstream.stream()?;
-    let mut accumulator = SseUsageAccumulator::default();
+    let mut accumulator = match provider {
+        RelayProviderKind::OpenAiCompatible => SseUsageAccumulator::default(),
+        RelayProviderKind::AnthropicMessages => SseUsageAccumulator::anthropic(),
+    };
 
     while let Some(chunk) = stream.next().await {
         accumulator.push_chunk(&chunk?);
@@ -1965,6 +1977,23 @@ mod tests {
         let body = json!({"model": "gpt-test", "stream": false});
 
         assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
+    fn anthropic_messages_endpoint_allows_streaming() {
+        let endpoint = RelayEndpoint {
+            display_name: "Anthropic messages",
+            cache_family: "anthropic",
+            upstream_path: "messages",
+            provider: RelayProviderKind::AnthropicMessages,
+            supported_channel_types: ANTHROPIC_CHANNEL_TYPES,
+            supports_streaming: true,
+            stream_not_implemented_feature: None,
+        };
+        let body = json!({"model": "claude-test", "stream": true});
+
+        assert!(endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
     }
 

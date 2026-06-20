@@ -155,15 +155,19 @@ pub fn usage_summary_from_anthropic_body(body: &str) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
     };
-    let mut usage = usage_summary_from_value(&value).unwrap_or_default();
-    if usage.total_tokens > 0 || usage.prompt_tokens > 0 || usage.completion_tokens > 0 {
-        usage.is_anthropic_usage_semantic = true;
-    }
-    usage
+    usage_summary_from_value(&value)
+        .map(mark_anthropic_usage_semantic)
+        .unwrap_or_default()
 }
 
 pub fn usage_summary_from_sse_stream(body: &str) -> UsageSummary {
     let mut accumulator = SseUsageAccumulator::default();
+    accumulator.push_chunk(body.as_bytes());
+    accumulator.finish()
+}
+
+pub fn usage_summary_from_anthropic_sse_stream(body: &str) -> UsageSummary {
+    let mut accumulator = SseUsageAccumulator::anthropic();
     accumulator.push_chunk(body.as_bytes());
     accumulator.finish()
 }
@@ -173,9 +177,17 @@ pub struct SseUsageAccumulator {
     latest: UsageSummary,
     pending_line: Vec<u8>,
     data_lines: Vec<String>,
+    anthropic_semantics: bool,
 }
 
 impl SseUsageAccumulator {
+    pub fn anthropic() -> Self {
+        Self {
+            anthropic_semantics: true,
+            ..Self::default()
+        }
+    }
+
     pub fn push_chunk(&mut self, chunk: &[u8]) {
         self.pending_line.extend_from_slice(chunk);
 
@@ -213,19 +225,32 @@ impl SseUsageAccumulator {
     }
 
     fn flush_event(&mut self) {
-        if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines) {
-            self.latest = summary;
+        if let Some(summary) =
+            usage_summary_from_sse_data_lines(&self.data_lines, self.anthropic_semantics)
+        {
+            self.latest = if self.anthropic_semantics {
+                merge_anthropic_stream_usage(self.latest, summary)
+            } else {
+                summary
+            };
         }
         self.data_lines.clear();
     }
 }
 
 fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
-    let usage = value.get("usage").or_else(|| {
-        value
-            .get("response")
-            .and_then(|response| response.get("usage"))
-    })?;
+    let usage = value
+        .get("usage")
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+        })
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(|message| message.get("usage"))
+        })?;
 
     let prompt_tokens = first_i32_field(usage, &["prompt_tokens", "input_tokens"]);
     let completion_tokens = first_i32_field(usage, &["completion_tokens", "output_tokens"]);
@@ -319,7 +344,10 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
     })
 }
 
-fn usage_summary_from_sse_data_lines(data_lines: &[String]) -> Option<UsageSummary> {
+fn usage_summary_from_sse_data_lines(
+    data_lines: &[String],
+    anthropic_semantics: bool,
+) -> Option<UsageSummary> {
     if data_lines.is_empty() {
         return None;
     }
@@ -331,7 +359,75 @@ fn usage_summary_from_sse_data_lines(data_lines: &[String]) -> Option<UsageSumma
     }
 
     let value = serde_json::from_str::<Value>(payload).ok()?;
-    usage_summary_from_value(&value)
+    let usage = usage_summary_from_value(&value)?;
+    Some(if anthropic_semantics {
+        mark_anthropic_usage_semantic(usage)
+    } else {
+        usage
+    })
+}
+
+fn mark_anthropic_usage_semantic(mut usage: UsageSummary) -> UsageSummary {
+    if usage_has_tokens(&usage) {
+        usage.is_anthropic_usage_semantic = true;
+    }
+    usage
+}
+
+fn merge_anthropic_stream_usage(mut current: UsageSummary, event: UsageSummary) -> UsageSummary {
+    if event.prompt_tokens > 0 {
+        current.prompt_tokens = event.prompt_tokens;
+    }
+    if event.completion_tokens > 0 {
+        current.completion_tokens = event.completion_tokens;
+    }
+    if event.cached_tokens > 0 {
+        current.cached_tokens = event.cached_tokens;
+    }
+    if event.cache_creation_tokens > 0 {
+        current.cache_creation_tokens = event.cache_creation_tokens;
+    }
+    if event.claude_cache_creation_5m_tokens > 0 {
+        current.claude_cache_creation_5m_tokens = event.claude_cache_creation_5m_tokens;
+    }
+    if event.claude_cache_creation_1h_tokens > 0 {
+        current.claude_cache_creation_1h_tokens = event.claude_cache_creation_1h_tokens;
+    }
+    if event.image_input_tokens > 0 {
+        current.image_input_tokens = event.image_input_tokens;
+    }
+    if event.image_output_tokens > 0 {
+        current.image_output_tokens = event.image_output_tokens;
+    }
+    if event.audio_input_tokens > 0 {
+        current.audio_input_tokens = event.audio_input_tokens;
+    }
+    if event.audio_output_tokens > 0 {
+        current.audio_output_tokens = event.audio_output_tokens;
+    }
+
+    current.total_tokens = current
+        .prompt_tokens
+        .saturating_add(current.completion_tokens)
+        .max(event.total_tokens);
+    if usage_has_tokens(&current) || event.is_anthropic_usage_semantic {
+        current.is_anthropic_usage_semantic = true;
+    }
+    current
+}
+
+fn usage_has_tokens(usage: &UsageSummary) -> bool {
+    usage.total_tokens > 0
+        || usage.prompt_tokens > 0
+        || usage.completion_tokens > 0
+        || usage.cached_tokens > 0
+        || usage.cache_creation_tokens > 0
+        || usage.claude_cache_creation_5m_tokens > 0
+        || usage.claude_cache_creation_1h_tokens > 0
+        || usage.image_input_tokens > 0
+        || usage.image_output_tokens > 0
+        || usage.audio_input_tokens > 0
+        || usage.audio_output_tokens > 0
 }
 
 pub fn clamp_i64_to_i32(value: i64) -> i32 {
@@ -598,6 +694,32 @@ mod tests {
     }
 
     #[test]
+    fn usage_summary_from_anthropic_body_supports_message_usage() {
+        assert_eq!(
+            usage_summary_from_anthropic_body(
+                r#"{
+                    "type": "message_start",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 72,
+                            "cache_read_input_tokens": 12,
+                            "output_tokens": 1
+                        }
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 72,
+                completion_tokens: 1,
+                total_tokens: 73,
+                cached_tokens: 12,
+                is_anthropic_usage_semantic: true,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
     fn usage_summary_from_body_supports_nested_response_usage() {
         assert_eq!(
             usage_summary_from_body(
@@ -607,6 +729,35 @@ mod tests {
                 prompt_tokens: 9,
                 completion_tokens: 4,
                 total_tokens: 13,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_anthropic_sse_stream_merges_cumulative_events() {
+        let body = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_read_input_tokens\":5,\"cache_creation\":{\"ephemeral_5m_input_tokens\":2,\"ephemeral_1h_input_tokens\":3},\"output_tokens\":1}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_anthropic_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 25,
+                completion_tokens: 15,
+                total_tokens: 40,
+                cached_tokens: 5,
+                cache_creation_tokens: 5,
+                claude_cache_creation_5m_tokens: 2,
+                claude_cache_creation_1h_tokens: 3,
+                is_anthropic_usage_semantic: true,
                 ..UsageSummary::default()
             }
         );
@@ -666,6 +817,26 @@ mod tests {
                 prompt_tokens: 4,
                 completion_tokens: 6,
                 total_tokens: 10,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn anthropic_sse_usage_accumulator_handles_split_chunks() {
+        let mut accumulator = SseUsageAccumulator::anthropic();
+        accumulator.push_chunk(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":8");
+        accumulator.push_chunk(b",\"output_tokens\":1}}}\n\nevent: message_delta\n");
+        accumulator
+            .push_chunk(b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":6}}\n\n");
+
+        assert_eq!(
+            accumulator.finish(),
+            UsageSummary {
+                prompt_tokens: 8,
+                completion_tokens: 6,
+                total_tokens: 14,
+                is_anthropic_usage_semantic: true,
                 ..UsageSummary::default()
             }
         );

@@ -64,18 +64,18 @@ The Worker now reads Go-compatible D1 billing options. For a model configured
 with tiered-expression billing, it freezes a request-time preflight snapshot
 before upstream relay using the original request body, request probes, group
 ratio, a prompt/completion token estimate, and visible request-body media
-fallback counts. For
-OpenAI-compatible tiered requests, including streaming chat completions, it
-reserves the estimated wallet/token quota before forwarding upstream. For
-streaming chat completions, it tees the upstream response, streams one branch
-to the client, and consumes the audit branch in `wait_until` with an
+fallback counts. For OpenAI-compatible and native Anthropic tiered requests,
+including streaming chat completions and Anthropic Messages, it reserves the
+estimated wallet/token quota before forwarding upstream. For streaming chat
+completions and Anthropic Messages, it tees the upstream response, streams one
+branch to the client, and consumes the audit branch in `wait_until` with an
 incremental SSE usage parser.
 
-For successful OpenAI-compatible tiered-expression responses with usage
-metadata, including nested cached/cache-creation and image/audio token details,
-it rebuilds actual token parameters from the frozen expression's variable
-usage, settles final tiered quota against that frozen snapshot, and applies
-only the delta from pre-consumed quota:
+For successful tiered-expression responses with usage metadata, including
+nested cached/cache-creation and image/audio token details, it rebuilds actual
+token parameters from the frozen expression's variable usage, settles final
+tiered quota against that frozen snapshot, and applies only the delta from
+pre-consumed quota:
 
 - before upstream: decrement `users.quota`, decrement `tokens.remain_quota`,
   and increment `tokens.used_quota` by the estimated quota;

@@ -62,6 +62,30 @@ fn go_glm_multicondition_expression_with_division() {
 }
 
 #[test]
+fn go_claude_tier_boundary_cases() {
+    let expr = r#"p <= 200000 ? tier("standard", p * 1.5 + c * 7.5) : tier("long_context", p * 3.0 + c * 11.25)"#;
+
+    for (p, c, expected_cost, expected_tier) in [
+        (100_000.0, 5_000.0, 187_500.0, "standard"),
+        (300_000.0, 10_000.0, 1_012_500.0, "long_context"),
+        (200_000.0, 1_000.0, 307_500.0, "standard"),
+    ] {
+        let run = run_billing_expr(
+            expr,
+            TokenParams {
+                p,
+                c,
+                ..TokenParams::default()
+            },
+        )
+        .expect("claude tier expression should run");
+
+        assert_close(run.cost, expected_cost);
+        assert_eq!(run.trace.matched_tier, expected_tier);
+    }
+}
+
+#[test]
 fn go_claude_cache_split_and_legacy_expression_parity() {
     let cache_split_expr =
         r#"tier("default", p * 1.5 + c * 7.5 + cr * 0.15 + cc * 2.0 + cc1h * 3.0)"#;
@@ -162,6 +186,41 @@ fn go_request_probe_multiple_rules_multiply() {
 }
 
 #[test]
+fn go_request_probe_nested_array_and_missing_paths() {
+    let nested = run_billing_expr_with_request(
+        r#"p * (param("stream_options.fast_mode") == true ? 1.5 : 1.0)"#,
+        TokenParams {
+            p: 100.0,
+            ..TokenParams::default()
+        },
+        RequestInput::from_json_body(json!({"stream_options": {"fast_mode": true}})),
+    )
+    .expect("nested bool request probe should run");
+    assert_close(nested.cost, 150.0);
+
+    let array = run_billing_expr_with_request(
+        r#"p * (param("messages.#") > 20 ? 1.2 : 1.0)"#,
+        TokenParams {
+            p: 100.0,
+            ..TokenParams::default()
+        },
+        RequestInput::from_json_body(json!({
+            "messages": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+        })),
+    )
+    .expect("array length request probe should run");
+    assert_close(array.cost, 120.0);
+
+    let missing = run_billing_expr_with_request(
+        r#"param("missing.value") == nil ? 2 : 1"#,
+        TokenParams::default(),
+        RequestInput::from_json_body(json!({"service_tier": "standard"})),
+    )
+    .expect("missing request probe should return nil");
+    assert_close(missing.cost, 2.0);
+}
+
+#[test]
 fn go_time_helpers_accept_common_frontend_timezones() {
     let expr = r#"
         tier("default", p)
@@ -190,6 +249,46 @@ fn go_time_helpers_accept_common_frontend_timezones() {
 
     assert_close(run.cost, 500.0);
     assert_eq!(run.trace.matched_tier, "default");
+}
+
+#[test]
+fn go_math_and_multimodal_variable_helpers() {
+    let math = run_billing_expr(
+        r#"max(p, c) * 0.5 + min(p, c) * 0.1 + abs(-2) + ceil(p / 1000) * 0.5 + floor(c / 100)"#,
+        TokenParams {
+            p: 1_500.0,
+            c: 500.0,
+            ..TokenParams::default()
+        },
+    )
+    .expect("math helper expression should run");
+    assert_close(math.cost, 808.0);
+    assert_eq!(math.trace.matched_tier, "");
+
+    let multimodal = run_billing_expr(
+        r#"tier("base", p * 1 + img * 3 + ai * 5 + ao * 10)"#,
+        TokenParams {
+            p: 100.0,
+            img: 50.0,
+            ai: 20.0,
+            ao: 10.0,
+            ..TokenParams::default()
+        },
+    )
+    .expect("multimodal expression should run");
+    assert_close(multimodal.cost, 450.0);
+    assert_eq!(multimodal.trace.matched_tier, "base");
+
+    let zero_multimodal = run_billing_expr(
+        r#"tier("base", p * 2 + img * 5 + ai * 50 + ao * 100)"#,
+        TokenParams {
+            p: 1_000.0,
+            ..TokenParams::default()
+        },
+    )
+    .expect("zero multimodal expression should run");
+    assert_close(zero_multimodal.cost, 2_000.0);
+    assert_eq!(zero_multimodal.trace.matched_tier, "base");
 }
 
 #[test]

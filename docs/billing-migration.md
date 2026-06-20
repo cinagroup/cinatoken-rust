@@ -127,8 +127,9 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - Go/Rust golden parity fixtures for GLM-style multi-condition division,
-  Claude cache split expressions, legacy cache-field ignoring, `len` tier
-  conditions after cache subtraction, ratio-equivalent quota conversion,
-  request probe multipliers, common frontend time zones for time helpers, and
-  used-variable detection;
+  Claude tier boundaries, Claude cache split expressions, legacy cache-field
+  ignoring, `len` tier conditions after cache subtraction, ratio-equivalent
+  quota conversion, nested/array/missing request probes, request probe
+  multipliers, common frontend time zones for time helpers, math helpers,
+  multimodal variables, and used-variable detection;
 - refund versus additional-consumption settlement deltas.

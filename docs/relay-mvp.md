@@ -13,12 +13,16 @@ The Worker also supports native Anthropic Messages requests:
 
 - `POST /v1/messages`
 
-The Worker also supports native Gemini generate content requests:
+The Worker also supports native Gemini generate content and embedding requests:
 
 - `POST /v1beta/models/{model}:generateContent`
 - `POST /v1beta/models/{model}:streamGenerateContent`
+- `POST /v1beta/models/{model}:embedContent`
+- `POST /v1beta/models/{model}:batchEmbedContents`
 - `POST /v1/models/{model}:generateContent`
 - `POST /v1/models/{model}:streamGenerateContent`
+- `POST /v1/models/{model}:embedContent`
+- `POST /v1/models/{model}:batchEmbedContents`
 
 `POST /v1/chat/completions` and native `POST /v1/messages` also support
 streaming passthrough when the request body includes `stream: true`. Native
@@ -48,7 +52,8 @@ The Worker:
   `14`;
 - limits native Gemini relay candidates to Gemini provider type `24`;
 - applies `model_mapping` when it is a JSON object from source model to
-  upstream model, including native Gemini path models;
+  upstream model, including native Gemini path models and nested Gemini
+  request-body `model` fields such as batch embedding requests;
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
 - forwards native Anthropic Messages requests with `x-api-key`,
   `anthropic-version`, and optional `anthropic-beta` headers;
@@ -111,7 +116,8 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
   matching `"group"`, and either empty `models` or a CSV entry for the
   requested model. OpenAI-compatible endpoints currently support types
   `1, 20, 40, 42, 43, 48, 53`; `/v1/messages` currently supports type `14`;
-  native Gemini generate-content endpoints currently support type `24`.
+  native Gemini generate-content and embedding endpoints currently support type
+  `24`.
 - preferably an `abilities` row with matching `group_name`, `model`,
   `channel_id`, and `enabled = 1`.
 
@@ -132,9 +138,10 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 
 - Anthropic Messages relay is native-format only; OpenAI-to-Claude request
   conversion is still pending.
-- Native Gemini relay currently supports generateContent and
-  streamGenerateContent passthrough only; OpenAI-to-Gemini request conversion,
-  native embeddings, and image/video task paths are still pending.
+- Native Gemini relay currently supports generateContent,
+  streamGenerateContent, embedContent, and batchEmbedContents passthrough;
+  OpenAI-to-Gemini request conversion, asyncBatchEmbedContent, and image/video
+  task paths are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, Anthropic Messages cumulative usage events, and Gemini
   `usageMetadata` chunks, but live upstream SSE coverage is still pending.

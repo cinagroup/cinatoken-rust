@@ -1298,8 +1298,9 @@ Relay：
 - Rust workspace, Worker entrypoint, D1 core schema, migration CLI, cache
   abstractions, Upstash Redis client, relay auth, channel selection, model
   mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay,
-  native Gemini generateContent/streamGenerateContent relay, read-through
-  token/channel cache, and relay token/IP rate limits are now in place.
+  native Gemini generateContent, streamGenerateContent, embedContent, and
+  batchEmbedContents relay, read-through token/channel cache, and relay token/IP
+  rate limits are now in place.
 - Tiered billing expression foundations are in place: expression execution,
   request `param()`/`header()` probes, tier trace capture, group-ratio
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and
@@ -1317,9 +1318,9 @@ Relay：
   quota conversion, request probes, and used-variable detection.
 - OpenAI-compatible JSON and SSE usage parsing is now shared in the relay
   crate, including cached/cache-creation token details, Anthropic cache
-  semantics, Anthropic streaming usage events, Gemini `usageMetadata`,
-  image/audio input/output token details, final streaming usage chunks,
-  `[DONE]`, CRLF streams, and nested response usage metadata.
+  semantics, Anthropic streaming usage events, Gemini generate and embedding
+  `usageMetadata`, image/audio input/output token details, final streaming
+  usage chunks, `[DONE]`, CRLF streams, and nested response usage metadata.
 - Channel selection and channel read-through cache keys now include endpoint
   provider family, so OpenAI-compatible, native Anthropic, and native Gemini
   routes do not reuse each other's selected channels for the same group/model.

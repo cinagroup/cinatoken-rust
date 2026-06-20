@@ -6,12 +6,12 @@ use cinatoken_billing::{
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
-    apply_model_mapping, csv_contains, first_channel_key, ip_allowlist_matches, mapped_model_name,
-    upstream_anthropic_messages_url, upstream_gemini_native_url, upstream_v1_url,
-    usage_summary_from_anthropic_body, usage_summary_from_body, usage_summary_from_gemini_body,
-    CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath, RelayCacheKeys,
-    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, GEMINI_CHANNEL_TYPES,
-    OPENAI_COMPATIBLE_CHANNEL_TYPES,
+    apply_gemini_native_model_mapping, apply_model_mapping, csv_contains, first_channel_key,
+    ip_allowlist_matches, mapped_model_name, upstream_anthropic_messages_url,
+    upstream_gemini_native_url, upstream_v1_url, usage_summary_from_anthropic_body,
+    usage_summary_from_body, usage_summary_from_gemini_body, CachedAuthenticatedToken,
+    CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
+    ANTHROPIC_CHANNEL_TYPES, GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -217,7 +217,7 @@ pub async fn gemini_native(
     context: Context,
     route: GeminiNativePath,
 ) -> worker::Result<Response> {
-    if !route.is_supported_generate_content() {
+    if !route.is_supported_native_passthrough() {
         return json_with_status(
             &ErrorBody::not_implemented(format!("Gemini native action {}", route.action)),
             501,
@@ -229,16 +229,16 @@ pub async fn gemini_native(
         env,
         Some(context),
         RelayEndpoint {
-            display_name: "Gemini native generateContent",
+            display_name: "Gemini native",
             cache_family: "gemini",
             upstream_path: route.upstream_path(),
             upstream_query: query,
             gemini_route: Some(route.clone()),
             provider: RelayProviderKind::GeminiNative,
             supported_channel_types: GEMINI_CHANNEL_TYPES,
-            supports_streaming: true,
+            supports_streaming: route.is_stream_generate_content(),
             force_streaming: route.is_stream_generate_content(),
-            stream_not_implemented_feature: None,
+            stream_not_implemented_feature: Some("streaming Gemini native action"),
         },
         Some(route.model),
     )
@@ -372,6 +372,7 @@ async fn relay_endpoint(
     apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
     if endpoint.provider == RelayProviderKind::GeminiNative {
         if let Some(mapped_model) = mapped_model_name(&model, channel.model_mapping.as_deref()) {
+            apply_gemini_native_model_mapping(&mut upstream_body, &model, &mapped_model);
             if let Some(route) = endpoint.gemini_route.as_mut() {
                 route.model = mapped_model;
                 endpoint.upstream_path = route.upstream_path();
@@ -2137,6 +2138,57 @@ mod tests {
 
         assert!(endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
+    fn gemini_native_embedding_endpoint_stays_non_streaming() {
+        let route = GeminiNativePath {
+            api_version: "v1beta".to_string(),
+            model: "text-embedding-004".to_string(),
+            action: "embedContent".to_string(),
+        };
+        let endpoint = RelayEndpoint {
+            display_name: "Gemini native",
+            cache_family: "gemini",
+            upstream_path: route.upstream_path(),
+            upstream_query: None,
+            gemini_route: Some(route),
+            provider: RelayProviderKind::GeminiNative,
+            supported_channel_types: GEMINI_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: Some("streaming Gemini native action"),
+        };
+        let body = json!({"content": {"parts": [{"text": "hello"}]}});
+
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
+    fn gemini_native_non_stream_action_rejects_stream_body_flag() {
+        let endpoint = RelayEndpoint {
+            display_name: "Gemini native",
+            cache_family: "gemini",
+            upstream_path: "v1beta/models/gemini-test:generateContent".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::GeminiNative,
+            supported_channel_types: GEMINI_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: Some("streaming Gemini native action"),
+        };
+        let body = json!({
+            "stream": true,
+            "contents": [{"parts": [{"text": "hello"}]}]
+        });
+
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(
+            endpoint.stream_not_implemented(&body),
+            Some("streaming Gemini native action")
+        );
     }
 
     #[test]

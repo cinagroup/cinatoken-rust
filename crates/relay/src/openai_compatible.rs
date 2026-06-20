@@ -139,8 +139,22 @@ impl GeminiNativePath {
         self.action.eq_ignore_ascii_case("generateContent")
     }
 
+    pub fn is_embed_content(&self) -> bool {
+        self.action.eq_ignore_ascii_case("embedContent")
+    }
+
+    pub fn is_batch_embed_contents(&self) -> bool {
+        self.action.eq_ignore_ascii_case("batchEmbedContents")
+    }
+
     pub fn is_supported_generate_content(&self) -> bool {
         self.is_generate_content() || self.is_stream_generate_content()
+    }
+
+    pub fn is_supported_native_passthrough(&self) -> bool {
+        self.is_supported_generate_content()
+            || self.is_embed_content()
+            || self.is_batch_embed_contents()
     }
 
     pub fn upstream_path(&self) -> String {
@@ -207,12 +221,42 @@ pub fn apply_model_mapping(body: &mut Value, model: &str, mapping: Option<&str>)
     }
 }
 
+pub fn apply_gemini_native_model_mapping(body: &mut Value, model: &str, mapped_model: &str) {
+    if model.trim().is_empty() || mapped_model.trim().is_empty() || model == mapped_model {
+        return;
+    }
+    apply_gemini_native_model_value_mapping(body, model, mapped_model);
+}
+
 pub fn mapped_model_name(model: &str, mapping: Option<&str>) -> Option<String> {
     let mapping = mapping.map(str::trim).filter(|value| !value.is_empty())?;
     let map = serde_json::from_str::<HashMap<String, String>>(mapping).ok()?;
     map.get(model)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn apply_gemini_native_model_value_mapping(value: &mut Value, model: &str, mapped_model: &str) {
+    match value {
+        Value::Object(obj) => {
+            if let Some(Value::String(body_model)) = obj.get_mut("model") {
+                if body_model == model {
+                    *body_model = mapped_model.to_string();
+                } else if body_model == &format!("models/{model}") {
+                    *body_model = format!("models/{mapped_model}");
+                }
+            }
+            for nested in obj.values_mut() {
+                apply_gemini_native_model_value_mapping(nested, model, mapped_model);
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                apply_gemini_native_model_value_mapping(nested, model, mapped_model);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn usage_summary_from_body(body: &str) -> UsageSummary {
@@ -772,11 +816,16 @@ mod tests {
             "v1/models/gemini-2.5-pro:streamGenerateContent"
         );
         assert!(parse_gemini_native_path("/v1beta/models/gemini-2.0-flash").is_none());
-        assert!(
-            !parse_gemini_native_path("/v1beta/models/gemini-2.0-flash:embedContent")
-                .unwrap()
-                .is_supported_generate_content()
-        );
+        let embed =
+            parse_gemini_native_path("/v1beta/models/text-embedding-004:embedContent").unwrap();
+        assert!(embed.is_embed_content());
+        assert!(embed.is_supported_native_passthrough());
+
+        let batch =
+            parse_gemini_native_path("/v1beta/models/text-embedding-004:batchEmbedContents")
+                .unwrap();
+        assert!(batch.is_batch_embed_contents());
+        assert!(batch.is_supported_native_passthrough());
     }
 
     #[test]
@@ -798,6 +847,13 @@ mod tests {
                 Some("alt=json&foo=bar"),
             ),
             "https://example.test/gemini/v1beta/models/gemini-2.0-flash:streamGenerateContent?foo=bar&alt=sse"
+        );
+
+        let embed =
+            parse_gemini_native_path("/v1beta/models/text-embedding-004:embedContent").unwrap();
+        assert_eq!(
+            upstream_gemini_native_url(None, &embed, Some("key=client-secret&alt=json")),
+            "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
         );
     }
 
@@ -833,6 +889,31 @@ mod tests {
             mapped_model_name("missing", Some(r#"{"missing":""}"#)),
             None
         );
+    }
+
+    #[test]
+    fn apply_gemini_native_model_mapping_rewrites_nested_model_fields() {
+        let mut body = json!({
+            "requests": [
+                {
+                    "model": "models/text-embedding-004",
+                    "content": {"parts": [{"text": "hello"}]}
+                },
+                {
+                    "model": "text-embedding-004",
+                    "content": {"parts": [{"text": "world"}]}
+                }
+            ],
+            "metadata": {
+                "model": "other-model"
+            }
+        });
+
+        apply_gemini_native_model_mapping(&mut body, "text-embedding-004", "gemini-embedding-exp");
+
+        assert_eq!(body["requests"][0]["model"], "models/gemini-embedding-exp");
+        assert_eq!(body["requests"][1]["model"], "gemini-embedding-exp");
+        assert_eq!(body["metadata"]["model"], "other-model");
     }
 
     #[test]
@@ -1029,6 +1110,27 @@ mod tests {
                 audio_input_tokens: 15,
                 image_output_tokens: 5,
                 audio_output_tokens: 6,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_gemini_embedding_body_extracts_usage_metadata() {
+        assert_eq!(
+            usage_summary_from_gemini_body(
+                r#"{
+                    "embedding": {"values": [0.1, 0.2]},
+                    "usageMetadata": {
+                        "promptTokenCount": 7,
+                        "totalTokenCount": 7
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 7,
+                completion_tokens: 0,
+                total_tokens: 7,
                 ..UsageSummary::default()
             }
         );

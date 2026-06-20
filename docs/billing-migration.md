@@ -65,12 +65,12 @@ with tiered-expression billing, it freezes a request-time preflight snapshot
 before upstream relay using the original request body, request probes, group
 ratio, a prompt/completion token estimate, and visible request-body media
 fallback counts. For OpenAI-compatible, native Anthropic, and native Gemini
-tiered requests, including streaming chat completions, Anthropic Messages, and
-Gemini streamGenerateContent, it reserves the estimated wallet/token quota
-before forwarding upstream. For streaming chat completions, Anthropic Messages,
-and native Gemini streams, it tees the upstream response, streams one branch to
-the client, and consumes the audit branch in `wait_until` with an incremental
-SSE usage parser.
+tiered requests, including streaming chat completions, Anthropic Messages,
+Gemini generateContent, Gemini streamGenerateContent, and Gemini embedding
+requests, it reserves the estimated wallet/token quota before forwarding
+upstream. For streaming chat completions, Anthropic Messages, and native Gemini
+streams, it tees the upstream response, streams one branch to the client, and
+consumes the audit branch in `wait_until` with an incremental SSE usage parser.
 
 For successful tiered-expression responses with usage metadata, including
 nested cached/cache-creation and image/audio token details, it rebuilds actual
@@ -138,7 +138,8 @@ The Rust tests cover the most important Go-compatible arithmetic:
 - OpenAI-compatible JSON/SSE usage parsing plus native Anthropic and Gemini
   usage parsing for cached/cache-creation and image/audio token details, final
   streaming usage chunks, CRLF streams, invalid events, split byte chunks,
-  `[DONE]`, nested response usage metadata, and Gemini `usageMetadata`;
+  `[DONE]`, nested response usage metadata, Gemini generate
+  `usageMetadata`, and Gemini embedding `usageMetadata`;
 - GPT/OpenAI and Claude tiered token normalization, including `len`,
   cache/image/audio input tokens, and image/audio output tokens;
 - Go/Rust golden parity fixtures for GLM-style multi-condition division,

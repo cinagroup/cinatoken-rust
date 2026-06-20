@@ -18,12 +18,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - `POST /v1beta/models/{model}:generateContent` and
   `POST /v1beta/models/{model}:streamGenerateContent` native Gemini relay MVP
   for native Gemini channel type `24`, with `/v1/...` aliases.
+- `POST /v1beta/models/{model}:embedContent` and
+  `POST /v1beta/models/{model}:batchEmbedContents` native Gemini embedding
+  relay MVP for native Gemini channel type `24`, with `/v1/...` aliases.
 - D1 token authentication with status, expiry, quota-presence, model-limit, and IP allowlist checks.
 - Best-effort D1 token status update for expired and exhausted tokens.
 - D1 channel selection for OpenAI-compatible provider types.
 - D1 channel selection can now filter by endpoint provider family, including
   Anthropic-only selection for `/v1/messages` and Gemini-only selection for
-  native Gemini generate-content endpoints.
+  native Gemini generate-content and embedding endpoints.
 - Ability-first channel selection with channel CSV fallback.
 - Model mapping before upstream forwarding.
 - Token access update, user request-count update, and zero-quota consume audit logs.

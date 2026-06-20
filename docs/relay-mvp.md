@@ -26,17 +26,17 @@ The Worker also supports native Gemini generate content and embedding requests:
 - `POST /v1/models/{model}:batchEmbedContents`
 - `POST /v1/models/{model}:countTokens`
 
-`POST /v1/chat/completions`, `POST /v1/completions`, and native
-`POST /v1/messages` also support streaming passthrough when the request body
-includes `stream: true`. Native Gemini `streamGenerateContent` paths stream
-with upstream `alt=sse`. Responses and embeddings remain non-streaming in this
+`POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/responses`,
+and native `POST /v1/messages` also support streaming passthrough when the
+request body includes `stream: true`. Native Gemini `streamGenerateContent`
+paths stream with upstream `alt=sse`. Embeddings remain non-streaming in this
 MVP.
 
 The Worker:
 
 - parses the request body as `serde_json::Value`, preserving unknown fields and
   explicit zero values;
-- rejects `stream: true` on responses with `501`;
+- keeps embeddings non-streaming in this MVP;
 - accepts API keys from `Authorization: Bearer ...`, `x-api-key`,
   `x-goog-api-key`, or native Gemini `key` query parameters;
 - authenticates the token and user through Upstash-backed read-through cache
@@ -63,8 +63,8 @@ The Worker:
 - forwards native Gemini requests with `x-goog-api-key` and strips downstream
   `key` query parameters before calling the upstream provider;
 - returns the upstream body, status, and content type to the client;
-- returns upstream chat completion, completion, Anthropic Messages, and native
-  Gemini streams without buffering the full response;
+- returns upstream chat completion, completion, response, Anthropic Messages,
+  and native Gemini streams without buffering the full response;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
   SSE `data:` events, including cached/cache-creation and image/audio
   input/output token details;
@@ -74,9 +74,9 @@ The Worker:
 - parses Gemini `usageMetadata` from JSON responses and native SSE `data:`
   chunks, plus Gemini `countTokens` `totalTokens` responses, including cached,
   image, and audio token details;
-- tees streaming chat completion, completion, Anthropic Messages, and native
-  Gemini responses so `wait_until` can consume an audit branch incrementally
-  without blocking the client stream;
+- tees streaming chat completion, completion, response, Anthropic Messages, and
+  native Gemini responses so `wait_until` can consume an audit branch
+  incrementally without blocking the client stream;
 - updates token `accessed_time`, increments user `request_count`, and writes
   consume audit logs with parsed usage token counts;
 - reads Go-compatible `billing_setting.billing_mode`,
@@ -101,8 +101,9 @@ The Worker:
   `other.tiered_billing_fallback`;
 - if tiered quota mutation cannot be applied, keeps the audit log pending and
   records the computed result under `other.tiered_billing_shadow` plus an error;
-- writes streaming chat completion, completion, Anthropic Messages, and native
-  Gemini audit logs via `wait_until` after the audit stream branch is consumed;
+- writes streaming chat completion, completion, response, Anthropic Messages,
+  and native Gemini audit logs via `wait_until` after the audit stream branch
+  is consumed;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis

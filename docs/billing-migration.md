@@ -65,13 +65,13 @@ with tiered-expression billing, it freezes a request-time preflight snapshot
 before upstream relay using the original request body, request probes, group
 ratio, a prompt/completion token estimate, and visible request-body media
 fallback counts. For OpenAI-compatible, native Anthropic, and native Gemini
-tiered requests, including streaming chat/completion requests, Anthropic
-Messages, Gemini generateContent, Gemini streamGenerateContent, Gemini
-embedding requests, and Gemini countTokens requests, it reserves the estimated
-wallet/token quota before forwarding upstream. For streaming chat completions,
-completions, Anthropic Messages, and native Gemini streams, it tees the
-upstream response, streams one branch to the client, and consumes the audit
-branch in `wait_until` with an incremental SSE usage parser.
+tiered requests, including streaming chat, completion, and response requests,
+Anthropic Messages, Gemini generateContent, Gemini streamGenerateContent,
+Gemini embedding requests, and Gemini countTokens requests, it reserves the
+estimated wallet/token quota before forwarding upstream. For streaming chat
+completions, completions, responses, Anthropic Messages, and native Gemini
+streams, it tees the upstream response, streams one branch to the client, and
+consumes the audit branch in `wait_until` with an incremental SSE usage parser.
 
 For successful tiered-expression responses with usage metadata, including
 nested cached/cache-creation and image/audio token details, it rebuilds actual

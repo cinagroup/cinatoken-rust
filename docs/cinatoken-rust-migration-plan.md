@@ -1330,7 +1330,7 @@ Relay：
   visible request-body media fallback counts, reserves estimated wallet/token
   quota for tiered requests, then settles successful usage against that frozen
   snapshot.
-- Streaming chat, completions, Anthropic Messages, and native Gemini
+- Streaming chat, completions, responses, Anthropic Messages, and native Gemini
   passthrough now tee the upstream response and consume an audit branch with
   incremental SSE usage parsing in `wait_until`; successful tiered streaming
   responses settle reserved quota after full stream usage is known.

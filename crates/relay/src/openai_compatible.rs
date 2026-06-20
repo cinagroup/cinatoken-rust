@@ -1269,6 +1269,27 @@ mod tests {
     }
 
     #[test]
+    fn usage_summary_from_sse_stream_extracts_responses_completed_usage() {
+        let body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":4,\"total_tokens\":13,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 9,
+                completion_tokens: 4,
+                total_tokens: 13,
+                cached_tokens: 3,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
     fn usage_summary_from_sse_stream_uses_last_usage_event() {
         let body = concat!(
             "data: {\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}\n\n",

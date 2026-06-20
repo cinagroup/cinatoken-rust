@@ -57,7 +57,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             relay::completions(req, env, event_ctx).await
         })
         .post_async("/v1/responses", |req, ctx| async move {
-            relay::responses(req, ctx.env).await
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::responses(req, env, event_ctx).await
         })
         .post_async("/v1/messages", |req, ctx| async move {
             let env = ctx.env;

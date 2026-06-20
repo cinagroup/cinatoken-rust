@@ -12,7 +12,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   passthrough for `stream: true`.
 - `POST /v1/completions` OpenAI-compatible relay MVP, including streaming
   passthrough for `stream: true`.
-- `POST /v1/responses` non-stream OpenAI-compatible relay MVP.
+- `POST /v1/responses` OpenAI-compatible relay MVP, including streaming
+  passthrough for `stream: true`.
 - `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP.
 - `POST /v1/messages` native Anthropic Messages relay MVP for native Anthropic
   channel type `14`, including streaming passthrough for `stream: true`.
@@ -33,8 +34,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Ability-first channel selection with channel CSV fallback.
 - Model mapping before upstream forwarding.
 - Token access update, user request-count update, and zero-quota consume audit logs.
-- Streaming chat completion, completion, and Anthropic Messages passthrough
-  with pending zero-quota stream audit logs.
+- Streaming chat completion, completion, response, and Anthropic Messages
+  passthrough with pending zero-quota stream audit logs.
 - Pure Rust relay helper tests for model mapping, IP allowlists, key
   selection, JSON/SSE usage parsing, and URL normalization.
 - OpenAI-compatible JSON/SSE usage parsing extracts cached/cache-creation,
@@ -66,16 +67,16 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   cached/image/audio sub-categories are not double-counted in `p` or `c`.
 - Cached-auth quota-state refresh plus request-time D1 reserve, failed-request
   refund, and post-response delta settlement for successful tiered-expression
-  responses, including streaming chat, completions, Anthropic Messages, and
-  native Gemini after full-stream usage reconciliation.
+  responses, including streaming chat, completions, responses, Anthropic
+  Messages, and native Gemini after full-stream usage reconciliation.
 - Worker-side tiered billing metadata now marks whether a frozen expression
   carried a request-rule multiplier without logging the full rule body.
 - Successful Worker-side tiered-expression audit logs now include Go-compatible
   top-level usage-log display fields: `billing_mode`, base-expression
   `expr_b64`, and `matched_tier`.
-- Worker-side streaming usage reconciliation for chat, completions, Anthropic
-  Messages, and native Gemini passthrough via response tee, incremental SSE
-  usage parsing, and `wait_until` audit recording.
+- Worker-side streaming usage reconciliation for chat, completions, responses,
+  Anthropic Messages, and native Gemini passthrough via response tee,
+  incremental SSE usage parsing, and `wait_until` audit recording.
 - First Go/Rust billing parity fixtures for multi-condition expressions,
   Claude tier boundaries, cache split pricing, `len` tiering,
   ratio-equivalent quota conversion, nested/array/missing request probes,

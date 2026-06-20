@@ -163,11 +163,11 @@ pub async fn completions(req: Request, env: Env, context: Context) -> worker::Re
     .await
 }
 
-pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
+pub async fn responses(req: Request, env: Env, context: Context) -> worker::Result<Response> {
     relay_endpoint(
         req,
         env,
-        None,
+        Some(context),
         RelayEndpoint {
             display_name: "responses",
             cache_family: "openai_compatible",
@@ -176,9 +176,9 @@ pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
             supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
-            supports_streaming: false,
+            supports_streaming: true,
             force_streaming: false,
-            stream_not_implemented_feature: Some("streaming responses relay"),
+            stream_not_implemented_feature: None,
         },
         None,
     )
@@ -2130,6 +2130,26 @@ mod tests {
             stream_not_implemented_feature: None,
         };
         let body = json!({"model": "gpt-test", "prompt": "hello", "stream": true});
+
+        assert!(endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+    }
+
+    #[test]
+    fn responses_endpoint_allows_streaming() {
+        let endpoint = RelayEndpoint {
+            display_name: "responses",
+            cache_family: "openai_compatible",
+            upstream_path: "responses".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: true,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+        };
+        let body = json!({"model": "gpt-test", "input": "hello", "stream": true});
 
         assert!(endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);

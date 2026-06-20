@@ -9,8 +9,9 @@ Last checked: 2026-06-20
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
 - `bun run check` from `C:\cinagroup\cinatoken-rust`.
 - `cargo test -p cinatoken-relay` covering OpenAI-compatible relay helpers,
-  generalized `/v1/...` upstream URL generation, relay cache key normalization,
-  token fingerprinting, JSON/SSE usage parsing, nested usage token details,
+  generalized `/v1/...` upstream URL generation, Anthropic Messages URL
+  generation, relay cache key normalization, token fingerprinting, JSON/SSE
+  usage parsing, nested usage token details, Anthropic cache usage details,
   split streaming byte chunks, and versioned token/channel cache wrappers.
 - `cargo test -p cinatoken-migration` covering `dev-seed` SQL generation.
 - `cargo test -p cinatoken-migration` covering source repository inspection
@@ -46,9 +47,10 @@ Last checked: 2026-06-20
   Worker Upstash Redis REST fetch transport and status feature detection.
 - `cargo test -p cinatoken-worker --lib` covering relay rate-limit and
   read-through cache TTL configuration parsing and invalid configuration
-  rejection, chat streaming relay gating, D1 billing option parsing, tiered
-  settlement metadata, D1 quota mutation guardrails, and the Worker crate after
-  D1 SQL was moved behind repository functions.
+  rejection, chat streaming relay gating, D1 provider-family channel filters,
+  D1 billing option parsing, tiered settlement metadata, D1 quota mutation
+  guardrails, and the Worker crate after D1 SQL was moved behind repository
+  functions.
 - `cargo test -p cinatoken-worker --lib` covering Worker request-body token
   estimation, max-token extraction, request-time tiered billing preflight
   snapshots, usage-detail token normalization, and settlement deltas against

@@ -13,9 +13,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - `POST /v1/completions` non-stream OpenAI-compatible relay MVP.
 - `POST /v1/responses` non-stream OpenAI-compatible relay MVP.
 - `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP.
+- `POST /v1/messages` non-stream Anthropic Messages relay MVP for native
+  Anthropic channel type `14`.
 - D1 token authentication with status, expiry, quota-presence, model-limit, and IP allowlist checks.
 - Best-effort D1 token status update for expired and exhausted tokens.
 - D1 channel selection for OpenAI-compatible provider types.
+- D1 channel selection can now filter by endpoint provider family, including
+  Anthropic-only selection for `/v1/messages`.
 - Ability-first channel selection with channel CSV fallback.
 - Model mapping before upstream forwarding.
 - Token access update, user request-count update, and zero-quota consume audit logs.
@@ -68,6 +72,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Optional Upstash-backed relay token/IP rate limiting.
 - Relay cache key helpers, versioned token/channel cache record wrappers, and
   Upstash-backed read-through caching.
+- Relay channel cache keys include endpoint provider family to avoid
+  cross-provider channel reuse for the same group/model.
 - Migration CLI `dev-seed` command for local D1 seed SQL.
 - Initial D1 schema for users, tokens, channels, abilities, options, and logs.
 

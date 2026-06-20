@@ -11,6 +11,8 @@ pub const OPENAI_COMPATIBLE_CHANNEL_TYPES: &[i32] = &[
     48, // xAI
     53, // Submodel
 ];
+pub const CHANNEL_TYPE_ANTHROPIC: i32 = 14;
+pub const ANTHROPIC_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_ANTHROPIC];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct UsageSummary {
@@ -29,7 +31,15 @@ pub struct UsageSummary {
 }
 
 pub fn is_openai_compatible_channel_type(channel_type: i32) -> bool {
-    OPENAI_COMPATIBLE_CHANNEL_TYPES.contains(&channel_type)
+    channel_type_supported(channel_type, OPENAI_COMPATIBLE_CHANNEL_TYPES)
+}
+
+pub fn is_anthropic_channel_type(channel_type: i32) -> bool {
+    channel_type_supported(channel_type, ANTHROPIC_CHANNEL_TYPES)
+}
+
+pub fn channel_type_supported(channel_type: i32, supported_channel_types: &[i32]) -> bool {
+    supported_channel_types.contains(&channel_type)
 }
 
 pub fn csv_contains(csv: &str, needle: &str) -> bool {
@@ -94,6 +104,19 @@ pub fn upstream_v1_url(channel_type: i32, base_url: Option<&str>, endpoint_path:
     }
 }
 
+pub fn upstream_anthropic_messages_url(base_url: Option<&str>) -> String {
+    let base = base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://api.anthropic.com");
+    let base = base.trim_end_matches('/');
+    if base.ends_with("/v1") {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/v1/messages")
+    }
+}
+
 pub fn default_base_url(channel_type: i32) -> &'static str {
     match channel_type {
         20 => "https://openrouter.ai/api",
@@ -126,6 +149,17 @@ pub fn usage_summary_from_body(body: &str) -> UsageSummary {
         return UsageSummary::default();
     };
     usage_summary_from_value(&value).unwrap_or_default()
+}
+
+pub fn usage_summary_from_anthropic_body(body: &str) -> UsageSummary {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return UsageSummary::default();
+    };
+    let mut usage = usage_summary_from_value(&value).unwrap_or_default();
+    if usage.total_tokens > 0 || usage.prompt_tokens > 0 || usage.completion_tokens > 0 {
+        usage.is_anthropic_usage_semantic = true;
+    }
+    usage
 }
 
 pub fn usage_summary_from_sse_stream(body: &str) -> UsageSummary {
@@ -203,27 +237,47 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
             &["prompt_tokens_details", "input_tokens_details"],
             &["cached_tokens"],
         ),
+        first_i32_field(usage, &["cache_read_input_tokens"]),
         first_i32_field(usage, &["prompt_cache_hit_tokens"]),
     ]);
-    let cache_creation_tokens = nested_i32_field(
-        usage,
-        &["prompt_tokens_details", "input_tokens_details"],
-        &["cached_creation_tokens"],
-    );
+    let cache_creation_tokens = first_non_zero_i32(&[
+        nested_i32_field(
+            usage,
+            &["prompt_tokens_details", "input_tokens_details"],
+            &["cached_creation_tokens"],
+        ),
+        first_i32_field(usage, &["cache_creation_input_tokens"]),
+        nested_i32_field(usage, &["cache_creation"], &["ephemeral_5m_input_tokens"])
+            .saturating_add(nested_i32_field(
+                usage,
+                &["cache_creation"],
+                &["ephemeral_1h_input_tokens"],
+            )),
+    ]);
     let claude_cache_creation_5m_tokens = first_i32_field(
         usage,
         &[
             "claude_cache_creation_5_m_tokens",
             "claude_cache_creation_5m_tokens",
         ],
-    );
+    )
+    .max(nested_i32_field(
+        usage,
+        &["cache_creation"],
+        &["ephemeral_5m_input_tokens"],
+    ));
     let claude_cache_creation_1h_tokens = first_i32_field(
         usage,
         &[
             "claude_cache_creation_1_h_tokens",
             "claude_cache_creation_1h_tokens",
         ],
-    );
+    )
+    .max(nested_i32_field(
+        usage,
+        &["cache_creation"],
+        &["ephemeral_1h_input_tokens"],
+    ));
     let image_input_tokens = nested_i32_field(
         usage,
         &["prompt_tokens_details", "input_tokens_details"],
@@ -386,6 +440,30 @@ mod tests {
     }
 
     #[test]
+    fn upstream_anthropic_messages_url_normalizes_base_urls() {
+        assert_eq!(
+            upstream_anthropic_messages_url(None),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            upstream_anthropic_messages_url(Some("https://example.test/v1")),
+            "https://example.test/v1/messages"
+        );
+        assert_eq!(
+            upstream_anthropic_messages_url(Some("https://example.test/proxy/")),
+            "https://example.test/proxy/v1/messages"
+        );
+    }
+
+    #[test]
+    fn channel_type_helpers_recognize_supported_families() {
+        assert!(is_anthropic_channel_type(CHANNEL_TYPE_ANTHROPIC));
+        assert!(is_openai_compatible_channel_type(1));
+        assert!(channel_type_supported(14, ANTHROPIC_CHANNEL_TYPES));
+        assert!(!channel_type_supported(14, OPENAI_COMPATIBLE_CHANNEL_TYPES));
+    }
+
+    #[test]
     fn apply_model_mapping_only_rewrites_matching_model() {
         let mut body = json!({
             "model": "gpt-4o",
@@ -481,6 +559,36 @@ mod tests {
                 completion_tokens: 25,
                 total_tokens: 525,
                 cached_tokens: 100,
+                claude_cache_creation_5m_tokens: 30,
+                claude_cache_creation_1h_tokens: 20,
+                is_anthropic_usage_semantic: true,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_anthropic_body_marks_semantic_and_cache_details() {
+        assert_eq!(
+            usage_summary_from_anthropic_body(
+                r#"{
+                    "usage": {
+                        "input_tokens": 500,
+                        "cache_read_input_tokens": 120,
+                        "output_tokens": 25,
+                        "cache_creation": {
+                            "ephemeral_5m_input_tokens": 30,
+                            "ephemeral_1h_input_tokens": 20
+                        }
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 500,
+                completion_tokens: 25,
+                total_tokens: 525,
+                cached_tokens: 120,
+                cache_creation_tokens: 50,
                 claude_cache_creation_5m_tokens: 30,
                 claude_cache_creation_1h_tokens: 20,
                 is_anthropic_usage_semantic: true,

@@ -9,6 +9,10 @@ These endpoints currently support OpenAI-compatible requests:
 - `POST /v1/responses`
 - `POST /v1/embeddings`
 
+The Worker also supports native Anthropic Messages requests:
+
+- `POST /v1/messages`
+
 `POST /v1/chat/completions` also supports streaming passthrough when the request
 body includes `stream: true`. The other endpoints remain non-streaming in this
 MVP.
@@ -17,7 +21,8 @@ The Worker:
 
 - parses the request body as `serde_json::Value`, preserving unknown fields and
   explicit zero values;
-- rejects `stream: true` on completions/responses with `501`;
+- rejects `stream: true` on completions/responses and Anthropic messages with
+  `501`;
 - accepts API keys from `Authorization: Bearer ...` or `x-api-key`;
 - authenticates the token and user through Upstash-backed read-through cache
   with D1 fallback;
@@ -29,16 +34,22 @@ The Worker:
 - on channel cache miss, uses `abilities` matching group and model, ordered by
   ability priority, ability weight, channel priority, and channel ID;
 - falls back to channel CSV matching when no ability row exists;
-- limits relay candidates to OpenAI-compatible provider types
+- limits OpenAI-compatible relay candidates to provider types
   `1, 20, 40, 42, 43, 48, 53`;
+- limits Anthropic Messages relay candidates to native Anthropic provider type
+  `14`;
 - applies `model_mapping` when it is a JSON object from source model to
   upstream model;
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
+- forwards native Anthropic Messages requests with `x-api-key`,
+  `anthropic-version`, and optional `anthropic-beta` headers;
 - returns the upstream body, status, and content type to the client;
 - returns upstream chat completion streams without buffering the full response;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
   SSE `data:` events, including cached/cache-creation and image/audio
   input/output token details;
+- parses Anthropic Messages usage metadata with Claude cache-read and
+  cache-creation token semantics for tiered settlement;
 - tees streaming chat responses so `wait_until` can consume an audit branch
   incrementally without blocking the client stream;
 - updates token `accessed_time`, increments user `request_count`, and writes
@@ -70,7 +81,8 @@ The Worker:
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis
-  when Redis is configured and `RELAY_CACHE_TTL_SECONDS` is not `0`.
+  when Redis is configured and `RELAY_CACHE_TTL_SECONDS` is not `0`; channel
+  cache keys include endpoint provider family to avoid cross-provider reuse.
 
 ## D1 Data Requirements
 
@@ -79,9 +91,10 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
 - a `users` row with `status = 1` and positive `quota`;
 - a `tokens` row with `status = 1`, matching `"key"`, positive
   `remain_quota` unless `unlimited_quota = 1`, and a valid `user_id`;
-- a `channels` row with `status = 1`, an OpenAI-compatible `type`, non-empty
-  `"key"`, matching `"group"`, and either empty `models` or a CSV entry for the
-  requested model.
+- a `channels` row with `status = 1`, a supported `type`, non-empty `"key"`,
+  matching `"group"`, and either empty `models` or a CSV entry for the
+  requested model. OpenAI-compatible endpoints currently support types
+  `1, 20, 40, 42, 43, 48, 53`; `/v1/messages` currently supports type `14`.
 - preferably an `abilities` row with matching `group_name`, `model`,
   `channel_id`, and `enabled = 1`.
 
@@ -101,6 +114,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 ## Deliberate Limitations
 
 - Streaming is only implemented for chat completion passthrough.
+- Anthropic Messages relay is currently non-streaming and native-format only;
+  OpenAI-to-Claude request conversion is still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, but live upstream SSE coverage is still pending.
 - Streaming tiered reserve is applied before the upstream call, but live

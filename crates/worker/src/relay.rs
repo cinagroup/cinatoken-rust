@@ -6,9 +6,10 @@ use cinatoken_billing::{
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
-    apply_model_mapping, csv_contains, first_channel_key, ip_allowlist_matches, upstream_v1_url,
+    apply_model_mapping, csv_contains, first_channel_key, ip_allowlist_matches,
+    upstream_anthropic_messages_url, upstream_v1_url, usage_summary_from_anthropic_body,
     usage_summary_from_body, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
-    SseUsageAccumulator, UsageSummary,
+    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -33,14 +34,23 @@ const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
 const ESTIMATED_FILE_INPUT_TOKENS: i64 = 4_096;
 
 #[derive(Clone, Copy)]
-struct OpenAiCompatibleEndpoint {
+enum RelayProviderKind {
+    OpenAiCompatible,
+    AnthropicMessages,
+}
+
+#[derive(Clone, Copy)]
+struct RelayEndpoint {
     display_name: &'static str,
+    cache_family: &'static str,
     upstream_path: &'static str,
+    provider: RelayProviderKind,
+    supported_channel_types: &'static [i32],
     supports_streaming: bool,
     stream_not_implemented_feature: Option<&'static str>,
 }
 
-impl OpenAiCompatibleEndpoint {
+impl RelayEndpoint {
     fn requested_stream(body: &Value) -> bool {
         body.get("stream").and_then(Value::as_bool).unwrap_or(false)
     }
@@ -56,6 +66,19 @@ impl OpenAiCompatibleEndpoint {
     fn should_relay_stream(self, body: &Value) -> bool {
         self.supports_streaming && Self::requested_stream(body)
     }
+
+    fn upstream_url(self, channel: &RelayChannel) -> String {
+        match self.provider {
+            RelayProviderKind::OpenAiCompatible => upstream_v1_url(
+                channel.channel_type,
+                channel.base_url.as_deref(),
+                self.upstream_path,
+            ),
+            RelayProviderKind::AnthropicMessages => {
+                upstream_anthropic_messages_url(channel.base_url.as_deref())
+            }
+        }
+    }
 }
 
 pub async fn chat_completions(
@@ -63,13 +86,16 @@ pub async fn chat_completions(
     env: Env,
     context: Context,
 ) -> worker::Result<Response> {
-    openai_compatible_endpoint(
+    relay_endpoint(
         req,
         env,
         Some(context),
-        OpenAiCompatibleEndpoint {
+        RelayEndpoint {
             display_name: "chat completions",
+            cache_family: "openai_compatible",
             upstream_path: "chat/completions",
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             stream_not_implemented_feature: None,
         },
@@ -78,13 +104,16 @@ pub async fn chat_completions(
 }
 
 pub async fn embeddings(req: Request, env: Env) -> worker::Result<Response> {
-    openai_compatible_endpoint(
+    relay_endpoint(
         req,
         env,
         None,
-        OpenAiCompatibleEndpoint {
+        RelayEndpoint {
             display_name: "embeddings",
+            cache_family: "openai_compatible",
             upstream_path: "embeddings",
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             stream_not_implemented_feature: None,
         },
@@ -93,13 +122,16 @@ pub async fn embeddings(req: Request, env: Env) -> worker::Result<Response> {
 }
 
 pub async fn completions(req: Request, env: Env) -> worker::Result<Response> {
-    openai_compatible_endpoint(
+    relay_endpoint(
         req,
         env,
         None,
-        OpenAiCompatibleEndpoint {
+        RelayEndpoint {
             display_name: "completions",
+            cache_family: "openai_compatible",
             upstream_path: "completions",
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             stream_not_implemented_feature: Some("streaming completions relay"),
         },
@@ -108,13 +140,16 @@ pub async fn completions(req: Request, env: Env) -> worker::Result<Response> {
 }
 
 pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
-    openai_compatible_endpoint(
+    relay_endpoint(
         req,
         env,
         None,
-        OpenAiCompatibleEndpoint {
+        RelayEndpoint {
             display_name: "responses",
+            cache_family: "openai_compatible",
             upstream_path: "responses",
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             stream_not_implemented_feature: Some("streaming responses relay"),
         },
@@ -122,15 +157,34 @@ pub async fn responses(req: Request, env: Env) -> worker::Result<Response> {
     .await
 }
 
-async fn openai_compatible_endpoint(
+pub async fn anthropic_messages(req: Request, env: Env) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        None,
+        RelayEndpoint {
+            display_name: "Anthropic messages",
+            cache_family: "anthropic",
+            upstream_path: "messages",
+            provider: RelayProviderKind::AnthropicMessages,
+            supported_channel_types: ANTHROPIC_CHANNEL_TYPES,
+            supports_streaming: false,
+            stream_not_implemented_feature: Some("streaming Anthropic messages relay"),
+        },
+    )
+    .await
+}
+
+async fn relay_endpoint(
     mut req: Request,
     env: Env,
     context: Option<Context>,
-    endpoint: OpenAiCompatibleEndpoint,
+    endpoint: RelayEndpoint,
 ) -> worker::Result<Response> {
     let started_at = unix_timestamp();
     let client_ip = client_ip(&req);
     let request_id = request_id(&req);
+    let provider_headers = RelayProviderHeaders::from_request(&req);
 
     let request_body = match req.json::<Value>().await {
         Ok(body) => body,
@@ -185,7 +239,16 @@ async fn openai_compatible_endpoint(
         return response;
     }
 
-    let channel = match select_channel(&db, &env, &model, &group).await {
+    let channel = match select_channel(
+        &db,
+        &env,
+        &model,
+        &group,
+        endpoint.cache_family,
+        endpoint.supported_channel_types,
+    )
+    .await
+    {
         Ok(channel) => channel,
         Err(response) => return response,
     };
@@ -232,16 +295,14 @@ async fn openai_compatible_endpoint(
     let mut upstream_body = request_body;
     apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
 
-    let upstream_url = upstream_v1_url(
-        channel.channel_type,
-        channel.base_url.as_deref(),
-        endpoint.upstream_path,
-    );
-    let upstream_response = match forward_openai_compatible(
+    let upstream_url = endpoint.upstream_url(&channel);
+    let upstream_response = match forward_relay_request(
+        endpoint.provider,
         &upstream_url,
         &upstream_key,
         &channel,
         &upstream_body,
+        &provider_headers,
     )
     .await
     {
@@ -302,6 +363,7 @@ async fn openai_compatible_endpoint(
         &model,
         &group,
         endpoint.upstream_path,
+        endpoint.provider,
         &audit,
     )
     .await
@@ -667,11 +729,13 @@ async fn select_channel(
     env: &Env,
     model: &str,
     group: &str,
+    cache_family: &str,
+    supported_channel_types: &[i32],
 ) -> Result<RelayChannel, worker::Result<Response>> {
     let Some((redis, ttl_seconds)) = relay_read_cache(env)? else {
-        return select_channel_from_d1(db, model, group).await;
+        return select_channel_from_d1(db, model, group, supported_channel_types).await;
     };
-    let cache_key = RelayCacheKeys::default().channel(group, model);
+    let cache_key = RelayCacheKeys::default().channel(cache_family, group, model);
 
     match read_cached_relay_channel(&redis, &cache_key).await {
         Ok(Some(channel)) => return Ok(channel),
@@ -679,7 +743,7 @@ async fn select_channel(
         Err(err) => worker::console_warn!("failed to read relay channel cache: {}", err),
     }
 
-    let channel = select_channel_from_d1(db, model, group).await?;
+    let channel = select_channel_from_d1(db, model, group, supported_channel_types).await?;
     if let Err(err) = write_cached_relay_channel(&redis, &cache_key, &channel, ttl_seconds).await {
         worker::console_warn!("failed to write relay channel cache: {}", err);
     }
@@ -690,15 +754,14 @@ async fn select_channel_from_d1(
     db: &D1Database,
     model: &str,
     group: &str,
+    supported_channel_types: &[i32],
 ) -> Result<RelayChannel, worker::Result<Response>> {
-    crate::d1_repositories::select_openai_compatible_channel(db, model, group)
+    crate::d1_repositories::select_relay_channel(db, model, group, supported_channel_types)
         .await
         .map_err(worker_error_response)?
         .ok_or_else(|| {
             openai_error_response(
-                format!(
-                    "no enabled OpenAI-compatible channel or ability for model {model} in group {group}"
-                ),
+                format!("no enabled relay channel or ability for model {model} in group {group}"),
                 503,
             )
         })
@@ -733,6 +796,39 @@ where
     cache.put_string(cache_key, &value, Some(ttl_seconds)).await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelayProviderHeaders {
+    anthropic_version: Option<String>,
+    anthropic_beta: Option<String>,
+}
+
+impl RelayProviderHeaders {
+    fn from_request(req: &Request) -> Self {
+        Self {
+            anthropic_version: request_header(req, "anthropic-version"),
+            anthropic_beta: request_header(req, "anthropic-beta"),
+        }
+    }
+}
+
+async fn forward_relay_request(
+    provider: RelayProviderKind,
+    url: &str,
+    upstream_key: &str,
+    channel: &RelayChannel,
+    body: &Value,
+    provider_headers: &RelayProviderHeaders,
+) -> worker::Result<Response> {
+    match provider {
+        RelayProviderKind::OpenAiCompatible => {
+            forward_openai_compatible(url, upstream_key, channel, body).await
+        }
+        RelayProviderKind::AnthropicMessages => {
+            forward_anthropic_messages(url, upstream_key, body, provider_headers).await
+        }
+    }
+}
+
 async fn forward_openai_compatible(
     url: &str,
     upstream_key: &str,
@@ -760,6 +856,41 @@ async fn forward_openai_compatible(
     Fetch::Request(outbound).send().await
 }
 
+async fn forward_anthropic_messages(
+    url: &str,
+    upstream_key: &str,
+    body: &Value,
+    provider_headers: &RelayProviderHeaders,
+) -> worker::Result<Response> {
+    let body = serde_json::to_string(body)?;
+    let mut headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("x-api-key", upstream_key)?;
+    headers.set(
+        "anthropic-version",
+        provider_headers
+            .anthropic_version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("2023-06-01"),
+    )?;
+    if let Some(beta) = provider_headers
+        .anthropic_beta
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        headers.set("anthropic-beta", beta)?;
+    }
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body)));
+    let outbound = Request::new_with_init(url, &init)?;
+    Fetch::Request(outbound).send().await
+}
+
 async fn complete_relay_response(
     mut upstream: Response,
     db: &D1Database,
@@ -768,6 +899,7 @@ async fn complete_relay_response(
     model: &str,
     group: &str,
     endpoint_path: &str,
+    provider: RelayProviderKind,
     audit: &RelayAuditContext,
 ) -> worker::Result<Response> {
     let status = upstream.status_code();
@@ -779,7 +911,10 @@ async fn complete_relay_response(
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
     let body = upstream.text().await?;
-    let usage = usage_summary_from_body(&body);
+    let usage = match provider {
+        RelayProviderKind::OpenAiCompatible => usage_summary_from_body(&body),
+        RelayProviderKind::AnthropicMessages => usage_summary_from_anthropic_body(&body),
+    };
 
     if let Err(err) = record_relay_audit(
         db,
@@ -1738,6 +1873,15 @@ fn request_id(req: &Request) -> Option<String> {
     )
 }
 
+fn request_header(req: &Request, name: &str) -> Option<String> {
+    req.headers()
+        .get(name)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn response_header(response: &Response, names: &[&str]) -> Option<String> {
     response_or_request_header(|name| response.headers().get(name).ok().flatten(), names)
 }
@@ -1782,13 +1926,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn endpoint(
-        supports_streaming: bool,
-        feature: Option<&'static str>,
-    ) -> OpenAiCompatibleEndpoint {
-        OpenAiCompatibleEndpoint {
+    fn endpoint(supports_streaming: bool, feature: Option<&'static str>) -> RelayEndpoint {
+        RelayEndpoint {
             display_name: "test",
+            cache_family: "test",
             upstream_path: "test",
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming,
             stream_not_implemented_feature: feature,
         }

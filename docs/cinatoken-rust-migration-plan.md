@@ -1297,9 +1297,9 @@ Relay：
 
 - Rust workspace, Worker entrypoint, D1 core schema, migration CLI, cache
   abstractions, Upstash Redis client, relay auth, channel selection, model
-  mapping, OpenAI-compatible relay endpoints, streaming chat passthrough,
-  read-through token/channel cache, and relay token/IP rate limits are now in
-  place.
+  mapping, OpenAI-compatible relay endpoints, native non-streaming Anthropic
+  Messages relay, streaming chat passthrough, read-through token/channel cache,
+  and relay token/IP rate limits are now in place.
 - Tiered billing expression foundations are in place: expression execution,
   request `param()`/`header()` probes, tier trace capture, group-ratio
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and
@@ -1319,6 +1319,9 @@ Relay：
   crate, including cached/cache-creation token details, Anthropic cache
   semantics, image/audio input/output token details, final streaming usage
   chunks, `[DONE]`, CRLF streams, and nested response usage metadata.
+- Channel selection and channel read-through cache keys now include endpoint
+  provider family, so OpenAI-compatible and native Anthropic routes do not
+  reuse each other's selected channels for the same group/model.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
   relay using the original request body, prompt/completion token estimates, and
   visible request-body media fallback counts, reserves estimated wallet/token

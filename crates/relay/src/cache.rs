@@ -29,10 +29,15 @@ impl RelayCacheKeys {
         )
     }
 
-    pub fn channel(&self, group: &str, model: &str) -> String {
+    pub fn channel(&self, endpoint_family: &str, group: &str, model: &str) -> String {
         scoped_key(
             &self.prefix,
-            &["channel", &stable_part(group), &stable_part(model)],
+            &[
+                "channel",
+                &stable_part(endpoint_family),
+                &stable_part(group),
+                &stable_part(model),
+            ],
         )
     }
 }
@@ -139,8 +144,8 @@ mod tests {
     fn cache_keys_normalize_group_and_model() {
         let keys = RelayCacheKeys::new("relay:");
         assert_eq!(
-            keys.channel(" Default:Tier ", " GPT-4O "),
-            "relay:channel:default_tier:gpt-4o"
+            keys.channel(" OpenAI:Compatible ", " Default:Tier ", " GPT-4O "),
+            "relay:channel:openai_compatible:default_tier:gpt-4o"
         );
     }
 

@@ -1,6 +1,4 @@
-use cinatoken_relay::{
-    clamp_i64_to_i32 as d1_i32, csv_contains, is_openai_compatible_channel_type,
-};
+use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_contains};
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde::Deserialize;
 use serde_json::Value;
@@ -125,28 +123,33 @@ pub async fn mark_token_status(
     Ok(())
 }
 
-pub async fn select_openai_compatible_channel(
+pub async fn select_relay_channel(
     db: &D1Database,
     model: &str,
     group: &str,
+    supported_channel_types: &[i32],
 ) -> worker::Result<Option<RelayChannel>> {
-    if let Some(channel) = select_channel_from_abilities(db, model, group).await? {
+    if let Some(channel) =
+        select_channel_from_abilities(db, model, group, supported_channel_types).await?
+    {
         return Ok(Some(channel));
     }
 
-    select_channel_from_channel_csv(db, model, group).await
+    select_channel_from_channel_csv(db, model, group, supported_channel_types).await
 }
 
 async fn select_channel_from_abilities(
     db: &D1Database,
     model: &str,
     group: &str,
+    supported_channel_types: &[i32],
 ) -> worker::Result<Option<RelayChannel>> {
     let group_arg = D1Type::Text(group);
     let model_arg = D1Type::Text(model);
     let args = [group_arg, model_arg];
+    let channel_type_filter = channel_type_filter_sql(supported_channel_types)?;
     let rows = db
-        .prepare(
+        .prepare(&format!(
             r#"
             SELECT
               c.id,
@@ -164,26 +167,30 @@ async fn select_channel_from_abilities(
               AND a.model = ?2
               AND a.enabled = 1
               AND c.status = 1
-              AND c.type IN (1, 20, 40, 42, 43, 48, 53)
+              AND c.type IN ({channel_type_filter})
             ORDER BY a.priority DESC, a.weight DESC, c.priority DESC, c.id ASC
             LIMIT 50
-            "#,
-        )
+            "#
+        ))
         .bind_refs(&args)?
         .all()
         .await?
         .results::<RelayChannel>()?;
 
-    Ok(rows.into_iter().next())
+    Ok(rows
+        .into_iter()
+        .find(|channel| channel_type_supported(channel.channel_type, supported_channel_types)))
 }
 
 async fn select_channel_from_channel_csv(
     db: &D1Database,
     model: &str,
     group: &str,
+    supported_channel_types: &[i32],
 ) -> worker::Result<Option<RelayChannel>> {
+    let channel_type_filter = channel_type_filter_sql(supported_channel_types)?;
     let rows = db
-        .prepare(
+        .prepare(&format!(
             r#"
             SELECT
               id,
@@ -197,20 +204,33 @@ async fn select_channel_from_channel_csv(
               openai_organization
             FROM channels
             WHERE status = 1
-              AND type IN (1, 20, 40, 42, 43, 48, 53)
+              AND type IN ({channel_type_filter})
             ORDER BY priority DESC, id ASC
             LIMIT 50
-            "#,
-        )
+            "#
+        ))
         .all()
         .await?
         .results::<RelayChannel>()?;
 
     Ok(rows.into_iter().find(|channel| {
-        is_openai_compatible_channel_type(channel.channel_type)
+        channel_type_supported(channel.channel_type, supported_channel_types)
             && csv_contains(&channel.channel_group, group)
             && (channel.models.trim().is_empty() || csv_contains(&channel.models, model))
     }))
+}
+
+fn channel_type_filter_sql(supported_channel_types: &[i32]) -> worker::Result<String> {
+    if supported_channel_types.is_empty() {
+        return Err(worker::Error::RustError(
+            "supported channel type list cannot be empty".to_string(),
+        ));
+    }
+    Ok(supported_channel_types
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(", "))
 }
 
 pub async fn touch_token(db: &D1Database, token_id: i64, accessed_time: i64) -> worker::Result<()> {
@@ -793,6 +813,12 @@ mod tests {
             resolve_group_ratio("missing", r#"{"vip":2}"#).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn channel_type_filter_sql_accepts_internal_type_lists_only() {
+        assert_eq!(channel_type_filter_sql(&[1, 20, 53]).unwrap(), "1, 20, 53");
+        assert!(channel_type_filter_sql(&[]).is_err());
     }
 
     #[test]

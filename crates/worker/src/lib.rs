@@ -51,6 +51,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/v1/responses", |req, ctx| async move {
             relay::responses(req, ctx.env).await
         })
+        .post_async("/v1/messages", |req, ctx| async move {
+            relay::anthropic_messages(req, ctx.env).await
+        })
         .post_async("/v1/embeddings", |req, ctx| async move {
             relay::embeddings(req, ctx.env).await
         })
@@ -75,7 +78,7 @@ pub(crate) fn set_cors_headers(response: &mut Response) -> Result<()> {
     headers.set("Access-Control-Allow-Origin", "*")?;
     headers.set(
         "Access-Control-Allow-Headers",
-        "authorization,content-type,x-api-key",
+        "authorization,content-type,x-api-key,anthropic-version,anthropic-beta",
     )?;
     headers.set(
         "Access-Control-Allow-Methods",

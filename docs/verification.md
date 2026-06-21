@@ -87,6 +87,9 @@ Last checked: 2026-06-21
   refund reason metadata and compiling the Worker streaming audit/reserve path
   for chat, completions, responses, image generation, Anthropic, and native
   Gemini.
+- `cargo test -p cinatoken-worker --lib` covering relay JSON request-body
+  limit configuration, invalid limit rejection, invalid JSON reporting, and
+  payload-too-large errors before parsing.
 - No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
@@ -97,6 +100,10 @@ Last checked: 2026-06-21
 - `rustc --version`: `rustc 1.96.0 (ac68faa20 2026-05-25)`
 - `bun --version`: `1.3.14`
 - `wrangler --version`: `4.101.0`
+- Added local Cloudflare preflight scripts:
+  `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
+  `bun run check:cf:startup` for `wrangler check startup` over a dry-run
+  deploy.
 
 ## Local Notes
 
@@ -118,7 +125,11 @@ bun run check
 ## Still Pending
 
 - `worker-build` installation previously exceeded the local command timeout.
-  Install it with `bun run install:worker-build`, then run `bun run dev`.
+  Install it with `bun run install:worker-build`, then run `bun run dev` and
+  the Cloudflare preflight scripts.
+- `bun run check:cf:dry-run` and `bun run check:cf:startup` currently reach
+  Wrangler's custom build step but fail on this machine because `worker-build`
+  is not installed.
 - `wrangler d1 migrations apply cinatoken-rust-db --local` currently fails on
   this Windows/shared-drive machine with `write EOF` from Wrangler's local D1
   process. The same schema and seed SQL pass SQLite execution.

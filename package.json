@@ -14,6 +14,8 @@
     "build:worker": "cd crates/worker && worker-build --release",
     "check": "cargo fmt --all --check && cargo test --workspace --exclude cinatoken-worker && cargo check -p cinatoken-worker --target wasm32-unknown-unknown",
     "check:worker": "cargo check -p cinatoken-worker --target wasm32-unknown-unknown",
+    "check:cf:dry-run": "wrangler deploy --dry-run --outdir .wrangler/dry-run --minify",
+    "check:cf:startup": "wrangler check startup --args=\"--dry-run --minify\"",
     "verify:sqlite": "python tools/verify_sqlite.py",
     "fmt": "cargo fmt --all"
   },

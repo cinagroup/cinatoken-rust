@@ -31,7 +31,9 @@ const TOKEN_RATE_LIMIT_ENV: &str = "RELAY_TOKEN_RATE_LIMIT_PER_WINDOW";
 const IP_RATE_LIMIT_ENV: &str = "RELAY_IP_RATE_LIMIT_PER_WINDOW";
 const RATE_LIMIT_WINDOW_ENV: &str = "RELAY_RATE_LIMIT_WINDOW_SECONDS";
 const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
+const RELAY_JSON_BODY_LIMIT_ENV: &str = "RELAY_JSON_BODY_LIMIT_BYTES";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
+const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const ESTIMATED_IMAGE_INPUT_TOKENS: i64 = 520;
 const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
 const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
@@ -349,18 +351,27 @@ async fn relay_endpoint(
     let request_id = request_id(&req);
     let provider_headers = RelayProviderHeaders::from_request(&req);
 
-    let request_body = match req.json::<Value>().await {
-        Ok(body) => body,
+    let json_body_config = match RelayJsonBodyConfig::from_env(&env) {
+        Ok(config) => config,
         Err(err) => {
-            return json_with_status(
-                &ErrorBody::bad_request(format!(
-                    "invalid {} request body: {err}",
-                    endpoint.display_name
-                )),
-                400,
+            return openai_error_response(
+                format!("invalid relay JSON body configuration: {err}"),
+                500,
             );
         }
     };
+    let request_body =
+        match read_relay_json_body(&mut req, endpoint.display_name, json_body_config.max_bytes)
+            .await
+        {
+            Ok(body) => body,
+            Err(err) => {
+                return json_with_status(
+                    &ErrorBody::bad_request(err.message(endpoint.display_name)),
+                    err.status_code(),
+                );
+            }
+        };
     if let Some(validate) = endpoint.request_validator {
         if let Some(message) = validate(&request_body) {
             return json_with_status(&ErrorBody::bad_request(message), 400);
@@ -708,6 +719,33 @@ impl RelayReadCacheConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelayJsonBodyConfig {
+    max_bytes: usize,
+}
+
+impl RelayJsonBodyConfig {
+    fn from_env(env: &Env) -> Result<Self, String> {
+        Self::from_raw(optional_env_var(env, RELAY_JSON_BODY_LIMIT_ENV))
+    }
+
+    fn from_raw(max_bytes: Option<String>) -> Result<Self, String> {
+        let max_bytes = match max_bytes.as_deref().map(str::trim) {
+            Some("") | None => DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES,
+            Some(raw) => raw
+                .parse::<usize>()
+                .map_err(|_| format!("{RELAY_JSON_BODY_LIMIT_ENV} must be a positive integer"))?,
+        };
+        if max_bytes == 0 {
+            return Err(format!(
+                "{RELAY_JSON_BODY_LIMIT_ENV} must be greater than 0"
+            ));
+        }
+
+        Ok(Self { max_bytes })
+    }
+}
+
 fn optional_env_var(env: &Env, name: &str) -> Option<String> {
     env.var(name)
         .ok()
@@ -728,6 +766,119 @@ fn parse_optional_limit(name: &str, value: Option<String>) -> Result<Option<u32>
         .parse::<u32>()
         .map_err(|_| format!("{name} must be a non-negative integer"))?;
     Ok((parsed > 0).then_some(parsed))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayJsonBodyError {
+    InvalidContentLength(String),
+    TooLarge {
+        actual_bytes: Option<usize>,
+        max_bytes: usize,
+    },
+    Read(String),
+    Parse(String),
+}
+
+impl RelayJsonBodyError {
+    fn status_code(&self) -> u16 {
+        match self {
+            Self::TooLarge { .. } => 413,
+            Self::InvalidContentLength(_) | Self::Read(_) | Self::Parse(_) => 400,
+        }
+    }
+
+    fn message(&self, endpoint: &str) -> String {
+        match self {
+            Self::InvalidContentLength(err) => {
+                format!("invalid {endpoint} request content-length: {err}")
+            }
+            Self::TooLarge {
+                actual_bytes,
+                max_bytes,
+            } => match actual_bytes {
+                Some(actual_bytes) => format!(
+                    "{endpoint} JSON request body is too large: {actual_bytes} bytes exceeds {max_bytes} byte limit"
+                ),
+                None => format!(
+                    "{endpoint} JSON request body is too large: exceeds {max_bytes} byte limit"
+                ),
+            },
+            Self::Read(err) => format!("failed to read {endpoint} request body: {err}"),
+            Self::Parse(err) => format!("invalid {endpoint} request body: {err}"),
+        }
+    }
+}
+
+async fn read_relay_json_body(
+    req: &mut Request,
+    _endpoint: &str,
+    max_bytes: usize,
+) -> Result<Value, RelayJsonBodyError> {
+    let content_length = request_content_length(req)?;
+    if let Some(content_length) = content_length {
+        if content_length > max_bytes {
+            return Err(RelayJsonBodyError::TooLarge {
+                actual_bytes: Some(content_length),
+                max_bytes,
+            });
+        }
+    }
+
+    let mut stream = req
+        .stream()
+        .map_err(|err| RelayJsonBodyError::Read(err.to_string()))?;
+    let mut bytes = Vec::with_capacity(
+        content_length
+            .map(|content_length| content_length.min(max_bytes))
+            .unwrap_or_default(),
+    );
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| RelayJsonBodyError::Read(err.to_string()))?;
+        let next_len =
+            bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or(RelayJsonBodyError::TooLarge {
+                    actual_bytes: None,
+                    max_bytes,
+                })?;
+        if next_len > max_bytes {
+            return Err(RelayJsonBodyError::TooLarge {
+                actual_bytes: Some(next_len),
+                max_bytes,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    parse_relay_json_bytes(&bytes, max_bytes)
+}
+
+fn request_content_length(req: &Request) -> Result<Option<usize>, RelayJsonBodyError> {
+    let Some(raw) = req
+        .headers()
+        .get("content-length")
+        .map_err(|err| RelayJsonBodyError::InvalidContentLength(err.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<usize>().map(Some).map_err(|_| {
+        RelayJsonBodyError::InvalidContentLength("must be a non-negative integer".to_string())
+    })
+}
+
+fn parse_relay_json_bytes(bytes: &[u8], max_bytes: usize) -> Result<Value, RelayJsonBodyError> {
+    if bytes.len() > max_bytes {
+        return Err(RelayJsonBodyError::TooLarge {
+            actual_bytes: Some(bytes.len()),
+            max_bytes,
+        });
+    }
+    serde_json::from_slice::<Value>(bytes).map_err(|err| RelayJsonBodyError::Parse(err.to_string()))
 }
 
 fn rate_limited_response(message: &str, window_seconds: u32) -> worker::Result<Response> {
@@ -3080,6 +3231,72 @@ mod tests {
     fn relay_read_cache_config_rejects_invalid_ttl() {
         let err = RelayReadCacheConfig::from_raw(Some("fast".to_string())).unwrap_err();
         assert!(err.contains(RELAY_CACHE_TTL_ENV));
+    }
+
+    #[test]
+    fn relay_json_body_config_defaults_to_bounded_payloads() {
+        let config = RelayJsonBodyConfig::from_raw(None).unwrap();
+        assert_eq!(config.max_bytes, DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn relay_json_body_config_accepts_positive_limit() {
+        let config = RelayJsonBodyConfig::from_raw(Some("1024".to_string())).unwrap();
+        assert_eq!(config.max_bytes, 1024);
+    }
+
+    #[test]
+    fn relay_json_body_config_rejects_zero_and_invalid_limits() {
+        assert_eq!(
+            RelayJsonBodyConfig::from_raw(Some("0".to_string())).unwrap_err(),
+            "RELAY_JSON_BODY_LIMIT_BYTES must be greater than 0"
+        );
+        assert_eq!(
+            RelayJsonBodyConfig::from_raw(Some("huge".to_string())).unwrap_err(),
+            "RELAY_JSON_BODY_LIMIT_BYTES must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn relay_json_body_error_reports_payload_too_large() {
+        let err = RelayJsonBodyError::TooLarge {
+            actual_bytes: Some(17),
+            max_bytes: 16,
+        };
+
+        assert_eq!(err.status_code(), 413);
+        assert_eq!(
+            err.message("chat completions"),
+            "chat completions JSON request body is too large: 17 bytes exceeds 16 byte limit"
+        );
+    }
+
+    #[test]
+    fn parse_relay_json_bytes_enforces_size_limit() {
+        assert_eq!(
+            parse_relay_json_bytes(br#"{"model":"gpt-test"}"#, 64).unwrap()["model"],
+            json!("gpt-test")
+        );
+
+        let err = parse_relay_json_bytes(br#"{"model":"gpt-test"}"#, 4).unwrap_err();
+        assert_eq!(
+            err,
+            RelayJsonBodyError::TooLarge {
+                actual_bytes: Some(20),
+                max_bytes: 4
+            }
+        );
+        assert_eq!(err.status_code(), 413);
+    }
+
+    #[test]
+    fn parse_relay_json_bytes_reports_invalid_json() {
+        let err = parse_relay_json_bytes(br#"{"model":"gpt-test""#, 64).unwrap_err();
+
+        assert_eq!(err.status_code(), 400);
+        assert!(err
+            .message("chat completions")
+            .contains("invalid chat completions request body"));
     }
 
     #[test]

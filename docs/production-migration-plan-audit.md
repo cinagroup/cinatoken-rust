@@ -4,6 +4,11 @@ Date: 2026-06-21
 
 Audited revision: `b826076`
 
+Follow-up implementation note: after this audit, the Rust migration added a
+bounded relay JSON body reader, Workers observability config, and local
+Wrangler preflight scripts. Raw, multipart, and pass-through stream request
+body support remains part of Phase 3.
+
 Scope: pause feature implementation and define the production-grade migration
 plan for moving `github:cinagroup/cinatoken` to `cinatoken-rust`, including a
 best-practices audit of the current Rust/Cloudflare Worker state.
@@ -38,15 +43,17 @@ production migration. The current codebase is strongest in these areas:
 
 The production blockers are not mysterious, but they are important:
 
-- Production Cloudflare configuration is still a development placeholder.
+- Production Cloudflare configuration is still a development placeholder,
+  though Workers observability is now enabled in the base local config.
 - Live Worker, D1, Redis, upstream SSE, and provider smoke tests have not been
   completed.
 - Queue/R2/KV bindings exist in configuration but are not used by Worker code.
 - Multipart/raw-body relay, exact tokenizer/media estimation, non-tiered
   billing, retry/auto-ban/health scoring, admin APIs, payments, async tasks,
   OAuth/Passkey/2FA, and frontend migration remain open.
-- Some current paths intentionally buffer JSON responses. That is acceptable
-  only when bounded; production migration must preserve streaming for
+- Current JSON request bodies are now explicitly bounded before parsing, and
+  some response paths intentionally buffer JSON responses. Buffering remains
+  acceptable only when bounded; production migration must preserve streaming for
   unbounded bodies and must gate any provider-specific response rewrite by
   payload limits.
 
@@ -87,12 +94,14 @@ Implemented production-relevant foundation:
 
 Known incomplete areas:
 
-- `wrangler.toml` uses development vars, placeholder D1/KV IDs, no
-  observability block, and TOML rather than JSONC.
+- `wrangler.toml` uses development vars, placeholder D1/KV IDs, and TOML
+  rather than JSONC; the base config now has an observability block, but
+  staging/prod sampling policy still needs to be set deliberately.
 - The `LOG_QUEUE`, `TASK_QUEUE`, `FILE_BUCKET`, `CACHE_KV`, and `CONFIG_KV`
   bindings are declared but currently unused by Worker code.
-- Worker relay parses all current request bodies with `req.json::<Value>()`,
-  which blocks multipart/raw-body endpoints until the body layer is split.
+- Worker relay still treats current relay endpoints as JSON-only. The JSON body
+  is now read through an explicit size-limited stream reader, but
+  multipart/raw-body endpoints remain blocked until the body layer is split.
 - No live provider smoke, no live SSE verification, and no production D1 or
   Wrangler dev end-to-end result is recorded.
 - Source database row counts/hashes for a real deployment have not been
@@ -107,7 +116,9 @@ Evidence:
 - `wrangler.toml:9-12` sets `ENVIRONMENT = "development"`,
   `FRONTEND_BASE_URL = "http://localhost:3000"`, and an empty `AI_GATEWAY_ID`.
 - `wrangler.toml:14-25` uses zero placeholder D1/KV IDs.
-- `wrangler.toml` has no `observability` block.
+- `wrangler.toml` now enables Workers observability in the base config, but
+  production/staging environments still need explicit real bindings and
+  sampling policy.
 - Cloudflare recommends current compatibility dates, secrets via Wrangler, and
   Workers Logs/Traces before production.
 
@@ -123,7 +134,7 @@ Production requirement:
 - Add production/staging bindings with real IDs.
 - Store secrets only through `wrangler secret put` or the chosen secret-store
   flow.
-- Enable Workers Logs/Traces with explicit sampling rates.
+- Enable Workers Logs/Traces with explicit staging/prod sampling rates.
 - Run `wrangler types` after every binding change and check generated binding
   types into the appropriate generated file policy.
 
@@ -153,15 +164,16 @@ Production requirement:
 
 Evidence:
 
-- `crates/worker/src/relay.rs:352` parses every current relay request as JSON.
-- `docs/relay-mvp.md` already marks audio transcription/translation multipart
-  paths as pending.
+- Current relay endpoints are JSON-only and parse into `serde_json::Value`
+  after a bounded body read.
+- `docs/relay-mvp.md` marks audio transcription/translation multipart paths
+  as pending.
 
 Impact:
 
 Adding `/v1/audio/transcriptions`, `/v1/audio/translations`, file uploads,
-image edits, or provider-specific multipart APIs on top of the current helper
-would force buffering or incorrect content-type handling.
+image edits, or provider-specific multipart APIs on top of the current JSON
+helper would force buffering or incorrect content-type handling.
 
 Production requirement:
 
@@ -449,7 +461,9 @@ Goal: turn MVP relay into a robust production gateway.
 
 Deliverables:
 
-- Shared request body layer for JSON/raw/multipart/stream.
+- Shared request body layer for JSON/raw/multipart/stream. The JSON path now
+  has an explicit size limit; raw, multipart, and pass-through stream modes
+  still need to be introduced before upload endpoints.
 - Bounded buffering policy per endpoint.
 - Streaming audit parser for all streaming routes with live SSE smoke.
 - Retry, fallback, status-code mapping, channel health, auto-ban, and

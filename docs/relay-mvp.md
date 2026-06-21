@@ -37,8 +37,10 @@ Embeddings and rerank remain non-streaming in this MVP.
 
 The Worker:
 
-- parses the request body as `serde_json::Value`, preserving unknown fields and
-  explicit zero values;
+- reads JSON request bodies through a bounded stream-reader before parsing them
+  as `serde_json::Value`, preserving unknown fields and explicit zero values;
+- defaults the relay JSON body limit to 4 MiB and allows operators to override
+  it with `RELAY_JSON_BODY_LIMIT_BYTES`; values must be positive integers;
 - keeps embeddings non-streaming in this MVP;
 - accepts API keys from `Authorization: Bearer ...`, `x-api-key`,
   `x-goog-api-key`, or native Gemini `key` query parameters;
@@ -179,6 +181,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - OpenAI-compatible audio speech supports JSON request passthrough and
   unparsed audio/SSE response passthrough; audio transcription and translation
   multipart paths are still pending.
+- The current relay body layer is JSON-only with a bounded buffer. Raw,
+  multipart, and pass-through stream request bodies still need a shared body
+  abstraction before file upload endpoints are added.
 - Rerank support currently covers Jina JSON passthrough and Cohere JSON
   request/response adaptation. Other provider-specific rerank transforms plus
   live upstream coverage are still pending.

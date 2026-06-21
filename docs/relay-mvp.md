@@ -170,9 +170,10 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - OpenAI-compatible audio speech supports JSON request passthrough and
   unparsed audio/SSE response passthrough; audio transcription and translation
   multipart paths are still pending.
-- Rerank support is currently Jina JSON passthrough only. Cohere and other
-  provider-specific rerank transforms, response usage normalization, and live
-  upstream coverage are still pending.
+- Rerank support is currently Jina JSON passthrough only. Jina `usage.total_tokens`
+  and Cohere `meta.billed_units` usage shapes are normalized for audit and
+  settlement, but Cohere and other provider-specific request/response
+  transforms plus live upstream coverage are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, Anthropic Messages cumulative usage events, and Gemini
   `usageMetadata` chunks, but live upstream SSE coverage is still pending.

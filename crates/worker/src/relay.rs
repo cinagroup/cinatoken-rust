@@ -10,10 +10,10 @@ use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, csv_contains, first_channel_key,
     ip_allowlist_matches, mapped_model_name, upstream_anthropic_messages_url,
     upstream_gemini_native_url, upstream_v1_url, usage_summary_from_anthropic_body,
-    usage_summary_from_body, usage_summary_from_gemini_body, CachedAuthenticatedToken,
-    CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
-    ANTHROPIC_CHANNEL_TYPES, GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
-    RERANK_CHANNEL_TYPES,
+    usage_summary_from_body, usage_summary_from_gemini_body, usage_summary_from_rerank_body,
+    CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath, RelayCacheKeys,
+    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, GEMINI_CHANNEL_TYPES,
+    OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -1186,7 +1186,9 @@ async fn complete_relay_response(
         };
 
         context.wait_until(async move {
-            let usage = match response_usage_summary(&mut audit_response, provider).await {
+            let usage = match response_usage_summary(&mut audit_response, provider, &endpoint_path)
+                .await
+            {
                 Ok(usage) => usage,
                 Err(err) => {
                     worker::console_error!("failed to parse non-streaming relay usage: {}", err);
@@ -1251,7 +1253,7 @@ async fn complete_buffered_relay_response(
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
     let body = upstream.text().await?;
-    let usage = usage_summary_for_provider(&body, provider);
+    let usage = usage_summary_for_provider(&body, provider, endpoint_path);
 
     if let Err(err) = record_relay_audit(
         db,
@@ -1280,13 +1282,21 @@ async fn complete_buffered_relay_response(
 async fn response_usage_summary(
     response: &mut Response,
     provider: RelayProviderKind,
+    endpoint_path: &str,
 ) -> worker::Result<UsageSummary> {
     let body = response.text().await?;
-    Ok(usage_summary_for_provider(&body, provider))
+    Ok(usage_summary_for_provider(&body, provider, endpoint_path))
 }
 
-fn usage_summary_for_provider(body: &str, provider: RelayProviderKind) -> UsageSummary {
+fn usage_summary_for_provider(
+    body: &str,
+    provider: RelayProviderKind,
+    endpoint_path: &str,
+) -> UsageSummary {
     match provider {
+        RelayProviderKind::OpenAiCompatible if endpoint_path == "rerank" => {
+            usage_summary_from_rerank_body(body)
+        }
         RelayProviderKind::OpenAiCompatible => usage_summary_from_body(body),
         RelayProviderKind::AnthropicMessages => usage_summary_from_anthropic_body(body),
         RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(body),
@@ -2793,6 +2803,46 @@ mod tests {
         assert_eq!(params.p, 1_000.0);
         assert_eq!(params.c, 500.0);
         assert_eq!(params.len, 1_000.0);
+    }
+
+    #[test]
+    fn rerank_endpoint_uses_rerank_usage_parser() {
+        assert_eq!(
+            usage_summary_for_provider(
+                r#"{"usage":{"total_tokens":21}}"#,
+                RelayProviderKind::OpenAiCompatible,
+                "rerank"
+            ),
+            UsageSummary {
+                prompt_tokens: 21,
+                total_tokens: 21,
+                ..UsageSummary::default()
+            }
+        );
+        assert_eq!(
+            usage_summary_for_provider(
+                r#"{"meta":{"billed_units":{"input_tokens":34,"output_tokens":2}}}"#,
+                RelayProviderKind::OpenAiCompatible,
+                "rerank"
+            ),
+            UsageSummary {
+                prompt_tokens: 34,
+                completion_tokens: 2,
+                total_tokens: 36,
+                ..UsageSummary::default()
+            }
+        );
+        assert_eq!(
+            usage_summary_for_provider(
+                r#"{"usage":{"total_tokens":21}}"#,
+                RelayProviderKind::OpenAiCompatible,
+                "chat/completions"
+            ),
+            UsageSummary {
+                total_tokens: 21,
+                ..UsageSummary::default()
+            }
+        );
     }
 
     #[test]

@@ -1350,7 +1350,9 @@ Relay：
   `matched_tier`, while request-rule bodies remain out of log metadata.
 - `/v1/rerank` now supports Jina channel type `38` as non-streaming JSON
   passthrough, with Go-compatible `query`/`documents` validation and
-  request-time token estimation from rerank `query` and `documents`.
+  request-time token estimation from rerank `query` and `documents`. Rerank
+  audit/settlement parsing also handles Jina total-token usage and Cohere
+  `meta.billed_units` shapes.
 - Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.

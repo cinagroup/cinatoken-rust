@@ -278,6 +278,16 @@ pub fn usage_summary_from_body(body: &str) -> UsageSummary {
     usage_summary_from_value(&value).unwrap_or_default()
 }
 
+pub fn usage_summary_from_rerank_body(body: &str) -> UsageSummary {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return UsageSummary::default();
+    };
+    usage_summary_from_cohere_rerank_value(&value)
+        .or_else(|| usage_summary_from_jina_rerank_value(&value))
+        .or_else(|| usage_summary_from_value(&value))
+        .unwrap_or_default()
+}
+
 pub fn usage_summary_from_anthropic_body(body: &str) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
@@ -510,6 +520,35 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         audio_input_tokens,
         audio_output_tokens,
         is_anthropic_usage_semantic,
+    })
+}
+
+fn usage_summary_from_jina_rerank_value(value: &Value) -> Option<UsageSummary> {
+    let usage = value.get("usage")?;
+    let total_tokens = first_i32_field(usage, &["total_tokens"]);
+    if total_tokens <= 0 {
+        return None;
+    }
+    Some(UsageSummary {
+        prompt_tokens: total_tokens,
+        total_tokens,
+        ..UsageSummary::default()
+    })
+}
+
+fn usage_summary_from_cohere_rerank_value(value: &Value) -> Option<UsageSummary> {
+    let billed_units = value.get("meta")?.get("billed_units")?;
+    let prompt_tokens = first_i32_field(billed_units, &["input_tokens"]);
+    let completion_tokens = first_i32_field(billed_units, &["output_tokens"]);
+    let total_tokens = prompt_tokens.saturating_add(completion_tokens);
+    if total_tokens <= 0 {
+        return None;
+    }
+    Some(UsageSummary {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        ..UsageSummary::default()
     })
 }
 
@@ -1034,12 +1073,23 @@ mod tests {
     #[test]
     fn usage_summary_from_body_extracts_rerank_usage() {
         assert_eq!(
-            usage_summary_from_body(
-                r#"{"model":"jina-reranker-v2-base-multilingual","usage":{"input_tokens":21,"total_tokens":21}}"#
+            usage_summary_from_rerank_body(
+                r#"{"model":"jina-reranker-v2-base-multilingual","usage":{"total_tokens":21}}"#
             ),
             UsageSummary {
                 prompt_tokens: 21,
                 total_tokens: 21,
+                ..UsageSummary::default()
+            }
+        );
+        assert_eq!(
+            usage_summary_from_rerank_body(
+                r#"{"meta":{"billed_units":{"input_tokens":34,"output_tokens":2}}}"#
+            ),
+            UsageSummary {
+                prompt_tokens: 34,
+                completion_tokens: 2,
+                total_tokens: 36,
                 ..UsageSummary::default()
             }
         );

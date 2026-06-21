@@ -64,8 +64,8 @@ Last checked: 2026-06-21
   frozen snapshots.
 - `cargo test -p cinatoken-worker --lib` covering `/v1/rerank` endpoint
   metadata, Jina channel type `38`, local non-streaming rejection,
-  Go-compatible `query`/`documents` validation, and rerank request-token
-  estimates.
+  Go-compatible `query`/`documents` validation, rerank request-token
+  estimates, and endpoint-specific Jina/Cohere rerank usage parsing.
 - `cargo test -p cinatoken-worker --lib` covering visible request-body media
   fallback counts for OpenAI-style and Gemini-style token preflight estimates,
   including request-time `img`/`ai` normalization when expressions reference

@@ -934,6 +934,7 @@ impl RelayBodyReadError {
 
 #[derive(Debug, PartialEq, Eq)]
 enum RelayJsonBodyError {
+    ContentType(RelayContentTypeError),
     Read(RelayBodyReadError),
     Parse(String),
 }
@@ -947,6 +948,7 @@ impl From<RelayBodyReadError> for RelayJsonBodyError {
 impl RelayJsonBodyError {
     fn status_code(&self) -> u16 {
         match self {
+            Self::ContentType(err) => err.status_code(),
             Self::Read(err) => err.status_code(),
             Self::Parse(_) => 400,
         }
@@ -954,6 +956,7 @@ impl RelayJsonBodyError {
 
     fn message(&self, endpoint: &str) -> String {
         match self {
+            Self::ContentType(err) => err.message(endpoint, "JSON"),
             Self::Read(err) => err.message(endpoint, "JSON"),
             Self::Parse(err) => format!("invalid {endpoint} request body: {err}"),
         }
@@ -965,9 +968,78 @@ async fn read_relay_json_body(
     _endpoint: &str,
     max_bytes: usize,
 ) -> Result<Value, RelayJsonBodyError> {
+    validate_json_request_content_type(req).map_err(RelayJsonBodyError::ContentType)?;
     let bytes = read_bounded_relay_request_bytes(req, max_bytes).await?;
 
     parse_relay_json_bytes(&bytes, max_bytes)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayContentTypeError {
+    Header(String),
+    Unsupported {
+        actual: String,
+        expected: &'static str,
+    },
+}
+
+impl RelayContentTypeError {
+    fn status_code(&self) -> u16 {
+        match self {
+            Self::Header(_) => 400,
+            Self::Unsupported { .. } => 415,
+        }
+    }
+
+    fn message(&self, endpoint: &str, body_kind: &str) -> String {
+        match self {
+            Self::Header(err) => {
+                format!("invalid {endpoint} request content-type header: {err}")
+            }
+            Self::Unsupported { actual, expected } => format!(
+                "unsupported {endpoint} {body_kind} request body content-type: {actual}; expected {expected}"
+            ),
+        }
+    }
+}
+
+fn validate_json_request_content_type(req: &Request) -> Result<(), RelayContentTypeError> {
+    let Some(content_type) = request_content_type(req)? else {
+        return Ok(());
+    };
+    if is_json_content_type(&content_type) {
+        return Ok(());
+    }
+    Err(RelayContentTypeError::Unsupported {
+        actual: content_type,
+        expected: "application/json or application/*+json",
+    })
+}
+
+fn request_content_type(req: &Request) -> Result<Option<String>, RelayContentTypeError> {
+    let Some(raw) = req
+        .headers()
+        .get("content-type")
+        .map_err(|err| RelayContentTypeError::Header(err.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(raw.to_string()))
+}
+
+fn is_json_content_type(content_type: &str) -> bool {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    media_type == "application/json"
+        || (media_type.starts_with("application/") && media_type.ends_with("+json"))
 }
 
 async fn read_bounded_relay_request_bytes(
@@ -3805,6 +3877,31 @@ mod tests {
         assert_eq!(
             err.message("chat completions"),
             "chat completions JSON request body is too large: 17 bytes exceeds 16 byte limit"
+        );
+    }
+
+    #[test]
+    fn json_request_content_type_accepts_json_media_types() {
+        assert!(is_json_content_type("application/json"));
+        assert!(is_json_content_type("application/json; charset=utf-8"));
+        assert!(is_json_content_type("Application/Problem+JSON"));
+
+        assert!(!is_json_content_type("text/plain"));
+        assert!(!is_json_content_type("multipart/form-data; boundary=test"));
+        assert!(!is_json_content_type("application/octet-stream"));
+    }
+
+    #[test]
+    fn relay_json_body_error_reports_unsupported_content_type() {
+        let err = RelayJsonBodyError::ContentType(RelayContentTypeError::Unsupported {
+            actual: "multipart/form-data; boundary=test".to_string(),
+            expected: "application/json or application/*+json",
+        });
+
+        assert_eq!(err.status_code(), 415);
+        assert_eq!(
+            err.message("chat completions"),
+            "unsupported chat completions JSON request body content-type: multipart/form-data; boundary=test; expected application/json or application/*+json"
         );
     }
 

@@ -103,6 +103,9 @@ Last checked: 2026-06-22
 - `cargo test -p cinatoken-worker --lib` covering the shared bounded relay
   request-byte reader error mapping used by the JSON body parser and future
   raw/multipart body modes.
+- `cargo test -p cinatoken-worker --lib` covering JSON relay request
+  `Content-Type` policy, including JSON media types and explicit multipart or
+  octet-stream rejection before body reads.
 - No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.

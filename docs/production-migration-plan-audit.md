@@ -171,14 +171,17 @@ Evidence:
   validation, and billing request-input snapshots.
 - The underlying request byte reader already applies content-length prechecks
   and stream over-limit guardrails that raw/multipart modes can reuse.
+- JSON relay mode rejects explicit non-JSON `Content-Type` values before
+  reading the body, preventing multipart uploads from accidentally entering the
+  JSON reader.
 - `docs/relay-mvp.md` marks audio transcription/translation multipart paths
   as pending.
 
 Impact:
 
 Adding `/v1/audio/transcriptions`, `/v1/audio/translations`, file uploads,
-image edits, or provider-specific multipart APIs on top of the current JSON
-helper would force buffering or incorrect content-type handling.
+image edits, or provider-specific multipart APIs without dedicated body modes
+would still force buffering or incorrect upstream content-type forwarding.
 
 Production requirement:
 

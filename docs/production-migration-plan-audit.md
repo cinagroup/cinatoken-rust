@@ -166,9 +166,11 @@ Production requirement:
 Evidence:
 
 - Current relay endpoints are explicitly JSON-only and parse into
-  `serde_json::Value` after a bounded body read.
+  `serde_json::Value` after a shared bounded byte read.
 - The relay preparation stage now centralizes JSON bounded reads, endpoint
   validation, and billing request-input snapshots.
+- The underlying request byte reader already applies content-length prechecks
+  and stream over-limit guardrails that raw/multipart modes can reuse.
 - `docs/relay-mvp.md` marks audio transcription/translation multipart paths
   as pending.
 
@@ -184,7 +186,7 @@ Production requirement:
   `JsonBody`, `RawBody`, `MultipartBody`, and `PassThroughStream`.
 - Bound all buffered bodies by endpoint-specific limits.
 - Preserve downstream content type and upstream streaming behavior.
-- Add tests for large body rejection and streaming pass-through.
+- Add mode-specific tests for large body rejection and streaming pass-through.
 
 ### P1: Some Response Paths Buffer Bodies And Need Endpoint-Specific Bounds
 

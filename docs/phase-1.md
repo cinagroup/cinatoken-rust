@@ -97,8 +97,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   transformation now use bounded response-body reads with endpoint-specific
   defaults and an optional `RELAY_JSON_RESPONSE_LIMIT_BYTES` global override.
 - Worker relay endpoint metadata now carries an explicit JSON request-body
-  mode; the JSON preparation stage owns bounded reads, validation, and the
-  billing request-input snapshot for current relay endpoints.
+  mode; the JSON preparation stage owns bounded byte reads, validation, and
+  the billing request-input snapshot for current relay endpoints.
+- Relay request-body reading now has a shared bounded byte reader underneath
+  the JSON parser, so future raw and multipart modes can reuse the same
+  content-length precheck and stream over-limit guardrails.
 - First Go/Rust billing parity fixtures for multi-condition expressions,
   Claude tier boundaries, cache split pricing, `len` tiering,
   ratio-equivalent quota conversion, nested/array/missing request probes,
@@ -125,7 +128,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Extend the explicit request-body mode foundation with multipart/raw/stream
   modes before adding `/v1/audio/transcriptions` and
   `/v1/audio/translations`; the current JSON relay path must not buffer
-  unbounded file uploads.
+  unbounded file uploads. The shared bounded byte reader is in place; the next
+  step is mode-specific content-type handling and upstream forwarding.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

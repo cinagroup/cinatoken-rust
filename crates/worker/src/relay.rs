@@ -894,25 +894,24 @@ fn parse_optional_limit(name: &str, value: Option<String>) -> Result<Option<u32>
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RelayJsonBodyError {
+enum RelayBodyReadError {
     InvalidContentLength(String),
     TooLarge {
         actual_bytes: Option<usize>,
         max_bytes: usize,
     },
     Read(String),
-    Parse(String),
 }
 
-impl RelayJsonBodyError {
+impl RelayBodyReadError {
     fn status_code(&self) -> u16 {
         match self {
             Self::TooLarge { .. } => 413,
-            Self::InvalidContentLength(_) | Self::Read(_) | Self::Parse(_) => 400,
+            Self::InvalidContentLength(_) | Self::Read(_) => 400,
         }
     }
 
-    fn message(&self, endpoint: &str) -> String {
+    fn message(&self, endpoint: &str, body_kind: &str) -> String {
         match self {
             Self::InvalidContentLength(err) => {
                 format!("invalid {endpoint} request content-length: {err}")
@@ -922,13 +921,40 @@ impl RelayJsonBodyError {
                 max_bytes,
             } => match actual_bytes {
                 Some(actual_bytes) => format!(
-                    "{endpoint} JSON request body is too large: {actual_bytes} bytes exceeds {max_bytes} byte limit"
+                    "{endpoint} {body_kind} request body is too large: {actual_bytes} bytes exceeds {max_bytes} byte limit"
                 ),
                 None => format!(
-                    "{endpoint} JSON request body is too large: exceeds {max_bytes} byte limit"
+                    "{endpoint} {body_kind} request body is too large: exceeds {max_bytes} byte limit"
                 ),
             },
             Self::Read(err) => format!("failed to read {endpoint} request body: {err}"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayJsonBodyError {
+    Read(RelayBodyReadError),
+    Parse(String),
+}
+
+impl From<RelayBodyReadError> for RelayJsonBodyError {
+    fn from(err: RelayBodyReadError) -> Self {
+        Self::Read(err)
+    }
+}
+
+impl RelayJsonBodyError {
+    fn status_code(&self) -> u16 {
+        match self {
+            Self::Read(err) => err.status_code(),
+            Self::Parse(_) => 400,
+        }
+    }
+
+    fn message(&self, endpoint: &str) -> String {
+        match self {
+            Self::Read(err) => err.message(endpoint, "JSON"),
             Self::Parse(err) => format!("invalid {endpoint} request body: {err}"),
         }
     }
@@ -939,10 +965,19 @@ async fn read_relay_json_body(
     _endpoint: &str,
     max_bytes: usize,
 ) -> Result<Value, RelayJsonBodyError> {
+    let bytes = read_bounded_relay_request_bytes(req, max_bytes).await?;
+
+    parse_relay_json_bytes(&bytes, max_bytes)
+}
+
+async fn read_bounded_relay_request_bytes(
+    req: &mut Request,
+    max_bytes: usize,
+) -> Result<Vec<u8>, RelayBodyReadError> {
     let content_length = request_content_length(req)?;
     if let Some(content_length) = content_length {
         if content_length > max_bytes {
-            return Err(RelayJsonBodyError::TooLarge {
+            return Err(RelayBodyReadError::TooLarge {
                 actual_bytes: Some(content_length),
                 max_bytes,
             });
@@ -951,24 +986,24 @@ async fn read_relay_json_body(
 
     let mut stream = req
         .stream()
-        .map_err(|err| RelayJsonBodyError::Read(err.to_string()))?;
+        .map_err(|err| RelayBodyReadError::Read(err.to_string()))?;
     let mut bytes = Vec::with_capacity(
         content_length
             .map(|content_length| content_length.min(max_bytes))
             .unwrap_or_default(),
     );
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| RelayJsonBodyError::Read(err.to_string()))?;
+        let chunk = chunk.map_err(|err| RelayBodyReadError::Read(err.to_string()))?;
         let next_len =
             bytes
                 .len()
                 .checked_add(chunk.len())
-                .ok_or(RelayJsonBodyError::TooLarge {
+                .ok_or(RelayBodyReadError::TooLarge {
                     actual_bytes: None,
                     max_bytes,
                 })?;
         if next_len > max_bytes {
-            return Err(RelayJsonBodyError::TooLarge {
+            return Err(RelayBodyReadError::TooLarge {
                 actual_bytes: Some(next_len),
                 max_bytes,
             });
@@ -976,14 +1011,14 @@ async fn read_relay_json_body(
         bytes.extend_from_slice(&chunk);
     }
 
-    parse_relay_json_bytes(&bytes, max_bytes)
+    Ok(bytes)
 }
 
-fn request_content_length(req: &Request) -> Result<Option<usize>, RelayJsonBodyError> {
+fn request_content_length(req: &Request) -> Result<Option<usize>, RelayBodyReadError> {
     let Some(raw) = req
         .headers()
         .get("content-length")
-        .map_err(|err| RelayJsonBodyError::InvalidContentLength(err.to_string()))?
+        .map_err(|err| RelayBodyReadError::InvalidContentLength(err.to_string()))?
     else {
         return Ok(None);
     };
@@ -991,15 +1026,16 @@ fn request_content_length(req: &Request) -> Result<Option<usize>, RelayJsonBodyE
     if raw.is_empty() {
         return Ok(None);
     }
-    parse_content_length_value(raw).map_err(RelayJsonBodyError::InvalidContentLength)
+    parse_content_length_value(raw).map_err(RelayBodyReadError::InvalidContentLength)
 }
 
 fn parse_relay_json_bytes(bytes: &[u8], max_bytes: usize) -> Result<Value, RelayJsonBodyError> {
     if bytes.len() > max_bytes {
-        return Err(RelayJsonBodyError::TooLarge {
+        return Err(RelayBodyReadError::TooLarge {
             actual_bytes: Some(bytes.len()),
             max_bytes,
-        });
+        }
+        .into());
     }
     serde_json::from_slice::<Value>(bytes).map_err(|err| RelayJsonBodyError::Parse(err.to_string()))
 }
@@ -3741,11 +3777,29 @@ mod tests {
     }
 
     #[test]
-    fn relay_json_body_error_reports_payload_too_large() {
-        let err = RelayJsonBodyError::TooLarge {
+    fn relay_body_read_error_reports_payload_too_large() {
+        let err = RelayBodyReadError::TooLarge {
             actual_bytes: Some(17),
             max_bytes: 16,
         };
+
+        assert_eq!(err.status_code(), 413);
+        assert_eq!(
+            err.message("chat completions", "JSON"),
+            "chat completions JSON request body is too large: 17 bytes exceeds 16 byte limit"
+        );
+        assert_eq!(
+            err.message("audio transcriptions", "multipart"),
+            "audio transcriptions multipart request body is too large: 17 bytes exceeds 16 byte limit"
+        );
+    }
+
+    #[test]
+    fn relay_json_body_error_delegates_read_errors() {
+        let err = RelayJsonBodyError::from(RelayBodyReadError::TooLarge {
+            actual_bytes: Some(17),
+            max_bytes: 16,
+        });
 
         assert_eq!(err.status_code(), 413);
         assert_eq!(
@@ -3764,10 +3818,10 @@ mod tests {
         let err = parse_relay_json_bytes(br#"{"model":"gpt-test"}"#, 4).unwrap_err();
         assert_eq!(
             err,
-            RelayJsonBodyError::TooLarge {
+            RelayJsonBodyError::Read(RelayBodyReadError::TooLarge {
                 actual_bytes: Some(20),
                 max_bytes: 4
-            }
+            })
         );
         assert_eq!(err.status_code(), 413);
     }

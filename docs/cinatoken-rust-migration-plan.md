@@ -1361,10 +1361,10 @@ Production-readiness audit and go/no-go gates are tracked in
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.
 - Next relay/API candidate from the migration plan: the relay now has an
-  explicit JSON request-body mode and shared JSON preparation boundary; extend
-  this into multipart/raw-body modes before `/v1/audio/transcriptions` and
-  `/v1/audio/translations`. Provider-specific rerank transforms beyond
-  Jina/Cohere remain pending.
+  explicit JSON request-body mode, shared JSON preparation boundary, and
+  reusable bounded request-byte reader; extend this into multipart/raw-body
+  modes before `/v1/audio/transcriptions` and `/v1/audio/translations`.
+  Provider-specific rerank transforms beyond Jina/Cohere remain pending.
 
 ## 20. 最终交付形态
 

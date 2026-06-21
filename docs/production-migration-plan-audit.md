@@ -52,10 +52,10 @@ The production blockers are not mysterious, but they are important:
   billing, retry/auto-ban/health scoring, admin APIs, payments, async tasks,
   OAuth/Passkey/2FA, and frontend migration remain open.
 - Current JSON request bodies and non-stream JSON response audit/transform
-  reads are now explicitly bounded. Buffering remains acceptable only when
-  bounded; production migration must preserve streaming for unbounded bodies
-  and must gate any provider-specific response rewrite by endpoint-specific
-  payload limits.
+  reads are now explicitly bounded, with endpoint-specific defaults for current
+  JSON relays. Buffering remains acceptable only when bounded; production
+  migration must preserve streaming for unbounded bodies and must gate any new
+  provider-specific response rewrite by endpoint-specific payload limits.
 
 Production direction: keep the current Worker as the high-frequency relay and
 auth/billing edge, but treat D1 as source of truth, Upstash Redis as hot
@@ -188,15 +188,16 @@ Production requirement:
 Evidence:
 
 - Cohere rerank response transformation, fallback non-stream responses, and
-  cloned non-stream audit responses now use a bounded JSON response reader.
+  cloned non-stream audit responses now use a bounded JSON response reader with
+  endpoint-specific defaults for current JSON relay families.
 - `crates/worker/src/cache.rs:34` buffers Upstash REST responses, which are
   expected to be small JSON.
 
 Impact:
 
 Cloudflare best practices are clear: large or unknown request/response bodies
-should stream. The global JSON response guardrail prevents accidental
-unbounded reads, but provider-specific response transforms still need tighter
+should stream. The JSON response guardrails prevent accidental unbounded reads,
+but future provider-specific response transforms still need explicit
 endpoint-level limits and live upstream validation.
 
 Production requirement:

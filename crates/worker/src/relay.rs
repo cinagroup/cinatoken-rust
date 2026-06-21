@@ -38,6 +38,10 @@ const RELAY_JSON_RESPONSE_LIMIT_ENV: &str = "RELAY_JSON_RESPONSE_LIMIT_BYTES";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+const EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+const IMAGE_JSON_RESPONSE_LIMIT_BYTES: usize = 24 * 1024 * 1024;
+const RERANK_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const GEMINI_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const ESTIMATED_IMAGE_INPUT_TOKENS: i64 = 520;
 const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
 const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
@@ -99,6 +103,19 @@ impl RelayEndpoint {
                     .expect("Gemini native endpoint must carry parsed route"),
                 self.upstream_query.as_deref(),
             ),
+        }
+    }
+
+    fn default_json_response_limit_bytes(&self) -> usize {
+        match self.provider {
+            RelayProviderKind::GeminiNative => GEMINI_JSON_RESPONSE_LIMIT_BYTES,
+            RelayProviderKind::OpenAiCompatible => match self.upstream_path.as_str() {
+                "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
+                "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
+                "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
+                _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+            },
+            RelayProviderKind::AnthropicMessages => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
         }
     }
 }
@@ -563,6 +580,7 @@ async fn relay_endpoint(
         .await;
     }
 
+    let max_json_response_bytes = json_response_config.max_bytes_for(&endpoint);
     complete_relay_response(
         upstream_response,
         db,
@@ -574,7 +592,7 @@ async fn relay_endpoint(
         endpoint.upstream_path.clone(),
         endpoint.provider,
         endpoint.parse_non_stream_usage,
-        json_response_config.max_bytes,
+        max_json_response_bytes,
         audit,
     )
     .await
@@ -755,7 +773,7 @@ impl RelayJsonBodyConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RelayJsonResponseConfig {
-    max_bytes: usize,
+    max_bytes_override: Option<usize>,
 }
 
 impl RelayJsonResponseConfig {
@@ -764,12 +782,20 @@ impl RelayJsonResponseConfig {
     }
 
     fn from_raw(max_bytes: Option<String>) -> Result<Self, String> {
-        let max_bytes = parse_positive_usize_env(
-            RELAY_JSON_RESPONSE_LIMIT_ENV,
-            max_bytes,
-            DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
-        )?;
-        Ok(Self { max_bytes })
+        let max_bytes_override = match max_bytes.as_deref().map(str::trim) {
+            Some("") | None => None,
+            Some(raw) => Some(parse_positive_usize_env(
+                RELAY_JSON_RESPONSE_LIMIT_ENV,
+                Some(raw.to_string()),
+                0,
+            )?),
+        };
+        Ok(Self { max_bytes_override })
+    }
+
+    fn max_bytes_for(&self, endpoint: &RelayEndpoint) -> usize {
+        self.max_bytes_override
+            .unwrap_or_else(|| endpoint.default_json_response_limit_bytes())
     }
 }
 
@@ -3581,13 +3607,21 @@ mod tests {
     #[test]
     fn relay_json_response_config_defaults_to_bounded_payloads() {
         let config = RelayJsonResponseConfig::from_raw(None).unwrap();
-        assert_eq!(config.max_bytes, DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES);
+        assert_eq!(config.max_bytes_override, None);
+        assert_eq!(
+            config.max_bytes_for(&endpoint(false, None)),
+            DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES
+        );
     }
 
     #[test]
-    fn relay_json_response_config_accepts_positive_limit() {
+    fn relay_json_response_config_accepts_global_override() {
         let config = RelayJsonResponseConfig::from_raw(Some("2048".to_string())).unwrap();
-        assert_eq!(config.max_bytes, 2048);
+        assert_eq!(config.max_bytes_override, Some(2048));
+
+        let mut endpoint = endpoint(false, None);
+        endpoint.upstream_path = "embeddings".to_string();
+        assert_eq!(config.max_bytes_for(&endpoint), 2048);
     }
 
     #[test]
@@ -3599,6 +3633,37 @@ mod tests {
         assert_eq!(
             RelayJsonResponseConfig::from_raw(Some("huge".to_string())).unwrap_err(),
             "RELAY_JSON_RESPONSE_LIMIT_BYTES must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn relay_json_response_config_uses_endpoint_defaults_without_override() {
+        let config = RelayJsonResponseConfig::from_raw(None).unwrap();
+
+        let mut endpoint = endpoint(false, None);
+        endpoint.upstream_path = "embeddings".to_string();
+        assert_eq!(
+            config.max_bytes_for(&endpoint),
+            EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES
+        );
+
+        endpoint.upstream_path = "images/generations".to_string();
+        assert_eq!(
+            config.max_bytes_for(&endpoint),
+            IMAGE_JSON_RESPONSE_LIMIT_BYTES
+        );
+
+        endpoint.upstream_path = "rerank".to_string();
+        assert_eq!(
+            config.max_bytes_for(&endpoint),
+            RERANK_JSON_RESPONSE_LIMIT_BYTES
+        );
+
+        endpoint.provider = RelayProviderKind::GeminiNative;
+        endpoint.cache_family = "gemini";
+        assert_eq!(
+            config.max_bytes_for(&endpoint),
+            GEMINI_JSON_RESPONSE_LIMIT_BYTES
         );
     }
 

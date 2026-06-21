@@ -94,8 +94,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Worker-side non-stream relay endpoints can opt out of response-body usage
   parsing, used by audio speech to preserve binary/audio-event passthrough.
 - Worker-side non-stream JSON response usage parsing and Cohere rerank
-  transformation now use bounded response-body reads, configurable through
-  `RELAY_JSON_RESPONSE_LIMIT_BYTES`.
+  transformation now use bounded response-body reads with endpoint-specific
+  defaults and an optional `RELAY_JSON_RESPONSE_LIMIT_BYTES` global override.
 - First Go/Rust billing parity fixtures for multi-condition expressions,
   Claude tier boundaries, cache split pricing, `len` tiering,
   ratio-equivalent quota conversion, nested/array/missing request probes,
@@ -122,6 +122,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Design the shared multipart/raw-body relay core before adding
   `/v1/audio/transcriptions` and `/v1/audio/translations`; the current JSON
   relay path must not buffer unbounded file uploads.
-- Define endpoint-specific response buffering limits before adding broader
-  provider-specific response transforms.
+- Continue defining explicit response buffering limits as each broader
+  provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

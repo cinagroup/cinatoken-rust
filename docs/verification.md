@@ -1,6 +1,6 @@
 # Verification
 
-Last checked: 2026-06-21
+Last checked: 2026-06-22
 
 ## Passed
 
@@ -94,6 +94,9 @@ Last checked: 2026-06-21
   limit configuration, fixed-body over-limit classification, and stream
   over-limit consumed-body classification for non-stream audit/transform
   guardrails.
+- `cargo test -p cinatoken-worker --lib` covering endpoint-specific JSON
+  response buffer defaults for embeddings, image generation, rerank, and
+  native Gemini, plus the `RELAY_JSON_RESPONSE_LIMIT_BYTES` global override.
 - No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.

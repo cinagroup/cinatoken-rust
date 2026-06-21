@@ -11,6 +11,8 @@ pub const OPENAI_COMPATIBLE_CHANNEL_TYPES: &[i32] = &[
     48, // xAI
     53, // Submodel
 ];
+pub const CHANNEL_TYPE_JINA: i32 = 38;
+pub const RERANK_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_JINA];
 pub const CHANNEL_TYPE_ANTHROPIC: i32 = 14;
 pub const ANTHROPIC_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_ANTHROPIC];
 pub const CHANNEL_TYPE_GEMINI: i32 = 24;
@@ -34,6 +36,10 @@ pub struct UsageSummary {
 
 pub fn is_openai_compatible_channel_type(channel_type: i32) -> bool {
     channel_type_supported(channel_type, OPENAI_COMPATIBLE_CHANNEL_TYPES)
+}
+
+pub fn is_rerank_channel_type(channel_type: i32) -> bool {
+    channel_type_supported(channel_type, RERANK_CHANNEL_TYPES)
 }
 
 pub fn is_anthropic_channel_type(channel_type: i32) -> bool {
@@ -212,6 +218,7 @@ pub fn default_base_url(channel_type: i32) -> &'static str {
         43 => "https://api.deepseek.com",
         48 => "https://api.x.ai",
         53 => "https://llm.submodel.ai",
+        CHANNEL_TYPE_JINA => "https://api.jina.ai",
         24 => "https://generativelanguage.googleapis.com",
         _ => "https://api.openai.com",
     }
@@ -829,8 +836,20 @@ mod tests {
             "https://api.openai.com/v1/embeddings"
         );
         assert_eq!(
+            upstream_v1_url(CHANNEL_TYPE_JINA, None, "rerank"),
+            "https://api.jina.ai/v1/rerank"
+        );
+        assert_eq!(
             upstream_v1_url(1, Some("https://example.test/v1/"), "embeddings"),
             "https://example.test/v1/embeddings"
+        );
+        assert_eq!(
+            upstream_v1_url(
+                CHANNEL_TYPE_JINA,
+                Some("https://rerank.example/v1/"),
+                "/rerank"
+            ),
+            "https://rerank.example/v1/rerank"
         );
     }
 
@@ -924,10 +943,19 @@ mod tests {
     fn channel_type_helpers_recognize_supported_families() {
         assert!(is_anthropic_channel_type(CHANNEL_TYPE_ANTHROPIC));
         assert!(is_gemini_channel_type(CHANNEL_TYPE_GEMINI));
+        assert!(is_rerank_channel_type(CHANNEL_TYPE_JINA));
         assert!(is_openai_compatible_channel_type(1));
         assert!(channel_type_supported(14, ANTHROPIC_CHANNEL_TYPES));
         assert!(channel_type_supported(24, GEMINI_CHANNEL_TYPES));
+        assert!(channel_type_supported(
+            CHANNEL_TYPE_JINA,
+            RERANK_CHANNEL_TYPES
+        ));
         assert!(!channel_type_supported(14, OPENAI_COMPATIBLE_CHANNEL_TYPES));
+        assert!(!channel_type_supported(
+            CHANNEL_TYPE_JINA,
+            OPENAI_COMPATIBLE_CHANNEL_TYPES
+        ));
     }
 
     #[test]
@@ -998,6 +1026,20 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 3,
                 total_tokens: 10,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_body_extracts_rerank_usage() {
+        assert_eq!(
+            usage_summary_from_body(
+                r#"{"model":"jina-reranker-v2-base-multilingual","usage":{"input_tokens":21,"total_tokens":21}}"#
+            ),
+            UsageSummary {
+                prompt_tokens: 21,
+                total_tokens: 21,
                 ..UsageSummary::default()
             }
         );

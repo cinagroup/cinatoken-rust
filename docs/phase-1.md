@@ -15,6 +15,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - `POST /v1/responses` OpenAI-compatible relay MVP, including streaming
   passthrough for `stream: true`.
 - `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP.
+- `POST /v1/rerank` non-stream Jina rerank JSON relay MVP for channel type
+  `38`, including Go-compatible `query`/`documents` request validation.
 - `POST /v1/images/generations` OpenAI-compatible relay MVP, including
   streaming passthrough for `stream: true`.
 - `POST /v1/audio/speech` OpenAI-compatible relay MVP for JSON request
@@ -111,8 +113,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`
   parity, especially exact tokenizer counts plus image dimension and audio
   duration media counts.
-- Add `/v1/rerank` JSON passthrough after confirming Go-compatible provider
-  channel type coverage.
 - Design the shared multipart/raw-body relay core before adding
   `/v1/audio/transcriptions` and `/v1/audio/translations`; the current JSON
   relay path must not buffer unbounded file uploads.

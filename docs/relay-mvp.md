@@ -8,6 +8,7 @@ These endpoints currently support OpenAI-compatible requests:
 - `POST /v1/completions`
 - `POST /v1/responses`
 - `POST /v1/embeddings`
+- `POST /v1/rerank`
 - `POST /v1/images/generations`
 - `POST /v1/audio/speech`
 
@@ -32,7 +33,7 @@ The Worker also supports native Gemini generate content and embedding requests:
 `POST /v1/images/generations`, and native `POST /v1/messages` also support
 streaming passthrough when the request body includes `stream: true`. Native
 Gemini `streamGenerateContent` paths stream with upstream `alt=sse`.
-Embeddings remain non-streaming in this MVP.
+Embeddings and rerank remain non-streaming in this MVP.
 
 The Worker:
 
@@ -53,6 +54,7 @@ The Worker:
 - falls back to channel CSV matching when no ability row exists;
 - limits OpenAI-compatible relay candidates to provider types
   `1, 20, 40, 42, 43, 48, 53`;
+- limits `/v1/rerank` relay candidates to Jina provider type `38`;
 - limits Anthropic Messages relay candidates to native Anthropic provider type
   `14`;
 - limits native Gemini relay candidates to Gemini provider type `24`;
@@ -60,6 +62,8 @@ The Worker:
   upstream model, including native Gemini path models and nested Gemini
   request-body `model` fields such as batch embedding requests;
 - forwards the original JSON body to the matching upstream `/v1/...` endpoint;
+- validates `/v1/rerank` JSON requests with Go-compatible `query` and
+  non-empty `documents` checks before forwarding to Jina `/v1/rerank`;
 - forwards native Anthropic Messages requests with `x-api-key`,
   `anthropic-version`, and optional `anthropic-beta` headers;
 - forwards native Gemini requests with `x-goog-api-key` and strips downstream
@@ -112,9 +116,10 @@ The Worker:
 - writes streaming chat completion, completion, response, image generation,
   Anthropic Messages, and native Gemini audit logs via `wait_until` after the
   audit stream branch is consumed;
-- writes non-streaming chat completion, completion, response, embedding, image
-  generation, audio speech, Anthropic Messages, and native Gemini audit logs
-  via `wait_until` when the Worker can clone the upstream response;
+- writes non-streaming chat completion, completion, response, embedding,
+  rerank, image generation, audio speech, Anthropic Messages, and native
+  Gemini audit logs via `wait_until` when the Worker can clone the upstream
+  response;
 - optionally enforces token/IP rate limits when Upstash Redis and relay limit
   environment variables are configured;
 - caches validated token auth rows and selected relay channels in Upstash Redis
@@ -132,8 +137,9 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
   matching `"group"`, and either empty `models` or a CSV entry for the
   requested model. OpenAI-compatible endpoints, including image generation and
   audio speech, currently support types `1, 20, 40, 42, 43, 48, 53`;
-  `/v1/messages` currently supports type `14`; native Gemini generate-content,
-  embedding, and token-count endpoints currently support type `24`.
+  `/v1/rerank` currently supports Jina type `38`; `/v1/messages` currently
+  supports type `14`; native Gemini generate-content, embedding, and
+  token-count endpoints currently support type `24`.
 - preferably an `abilities` row with matching `group_name`, `model`,
   `channel_id`, and `enabled = 1`.
 
@@ -164,6 +170,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - OpenAI-compatible audio speech supports JSON request passthrough and
   unparsed audio/SSE response passthrough; audio transcription and translation
   multipart paths are still pending.
+- Rerank support is currently Jina JSON passthrough only. Cohere and other
+  provider-specific rerank transforms, response usage normalization, and live
+  upstream coverage are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, Anthropic Messages cumulative usage events, and Gemini
   `usageMetadata` chunks, but live upstream SSE coverage is still pending.
@@ -184,7 +193,5 @@ original billing expression flow:
 
 - exact tokenizer counts plus image dimension/audio duration parity for the
   preflight token estimate.
-- `/v1/rerank` JSON passthrough is the next low-risk relay surface once
-  provider channel type coverage is confirmed.
 - Audio transcription/translation need a shared multipart/raw-body relay path
   with bounded or streaming upload handling before implementation.

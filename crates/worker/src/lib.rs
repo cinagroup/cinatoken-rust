@@ -71,6 +71,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let event_ctx = ctx.data;
             relay::embeddings(req, env, event_ctx).await
         })
+        .post_async("/v1/rerank", |req, ctx| async move {
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::rerank(req, env, event_ctx).await
+        })
         .post_async("/v1/images/generations", |req, ctx| async move {
             let env = ctx.env;
             let event_ctx = ctx.data;

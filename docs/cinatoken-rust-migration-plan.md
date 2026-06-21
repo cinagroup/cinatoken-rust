@@ -1299,7 +1299,8 @@ Relay：
   abstractions, Upstash Redis client, relay auth, channel selection, model
   mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay,
   OpenAI-compatible image generation JSON/SSE relay, OpenAI-compatible audio
-  speech relay, native Gemini generateContent, streamGenerateContent,
+  speech relay, Jina `/v1/rerank` JSON relay, native Gemini generateContent,
+  streamGenerateContent,
   embedContent, and batchEmbedContents relay, native Gemini countTokens relay,
   read-through token/channel cache, and relay token/IP rate limits are now in
   place.
@@ -1347,13 +1348,16 @@ Relay：
 - Successful tiered-expression audit logs now include top-level usage-log
   display fields for `billing_mode`, base-expression `expr_b64`, and
   `matched_tier`, while request-rule bodies remain out of log metadata.
+- `/v1/rerank` now supports Jina channel type `38` as non-streaming JSON
+  passthrough, with Go-compatible `query`/`documents` validation and
+  request-time token estimation from rerank `query` and `documents`.
 - Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.
-- Next relay/API candidates from the migration plan: `/v1/rerank` JSON
-  passthrough after confirming provider type coverage, and a shared
+- Next relay/API candidate from the migration plan: a shared
   multipart/raw-body relay core before `/v1/audio/transcriptions` and
-  `/v1/audio/translations`.
+  `/v1/audio/translations`; provider-specific rerank transforms such as Cohere
+  remain pending.
 
 ## 20. 最终交付形态
 

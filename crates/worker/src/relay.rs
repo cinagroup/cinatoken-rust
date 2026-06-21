@@ -13,6 +13,7 @@ use cinatoken_relay::{
     usage_summary_from_body, usage_summary_from_gemini_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
     ANTHROPIC_CHANNEL_TYPES, GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
+    RERANK_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -55,6 +56,7 @@ struct RelayEndpoint {
     force_streaming: bool,
     stream_not_implemented_feature: Option<&'static str>,
     parse_non_stream_usage: bool,
+    request_validator: Option<fn(&Value) -> Option<&'static str>>,
 }
 
 impl RelayEndpoint {
@@ -116,6 +118,7 @@ pub async fn chat_completions(
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         },
         None,
     )
@@ -139,6 +142,31 @@ pub async fn embeddings(req: Request, env: Env, context: Context) -> worker::Res
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
+        },
+        None,
+    )
+    .await
+}
+
+pub async fn rerank(req: Request, env: Env, context: Context) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "rerank",
+            cache_family: "rerank",
+            upstream_path: "rerank".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: RERANK_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: Some("streaming rerank relay"),
+            parse_non_stream_usage: true,
+            request_validator: Some(validate_rerank_request),
         },
         None,
     )
@@ -166,6 +194,7 @@ pub async fn image_generations(
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         },
         None,
     )
@@ -189,6 +218,7 @@ pub async fn audio_speech(req: Request, env: Env, context: Context) -> worker::R
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: false,
+            request_validator: None,
         },
         None,
     )
@@ -212,6 +242,7 @@ pub async fn completions(req: Request, env: Env, context: Context) -> worker::Re
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         },
         None,
     )
@@ -235,6 +266,7 @@ pub async fn responses(req: Request, env: Env, context: Context) -> worker::Resu
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         },
         None,
     )
@@ -262,6 +294,7 @@ pub async fn anthropic_messages(
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         },
         None,
     )
@@ -297,6 +330,7 @@ pub async fn gemini_native(
             force_streaming: route.is_stream_generate_content(),
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_validator: None,
         },
         Some(route.model),
     )
@@ -327,6 +361,11 @@ async fn relay_endpoint(
             );
         }
     };
+    if let Some(validate) = endpoint.request_validator {
+        if let Some(message) = validate(&request_body) {
+            return json_with_status(&ErrorBody::bad_request(message), 400);
+        }
+    }
     let billing_request_input = billing_request_input(&req, &request_body);
 
     if let Some(feature) = endpoint.stream_not_implemented(&request_body) {
@@ -1802,6 +1841,27 @@ fn token_params_from_request(body: &Value, used_vars: BillingExprVariables) -> T
     )
 }
 
+fn validate_rerank_request(body: &Value) -> Option<&'static str> {
+    if body
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Some("rerank request body must include a non-empty query");
+    }
+    if body
+        .get("documents")
+        .and_then(Value::as_array)
+        .filter(|documents| !documents.is_empty())
+        .is_none()
+    {
+        return Some("rerank request body must include non-empty documents");
+    }
+    None
+}
+
 #[cfg(test)]
 fn estimate_prompt_tokens_from_request(body: &Value) -> i64 {
     request_token_estimate_from_body(body).prompt_tokens()
@@ -1847,6 +1907,8 @@ fn estimate_text_prompt_tokens_from_request(body: &Value) -> i64 {
         "system",
         "instruction",
         "instructions",
+        "query",
+        "documents",
         "prefix",
         "suffix",
     ] {
@@ -2275,6 +2337,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: feature,
             parse_non_stream_usage: true,
+            request_validator: None,
         }
     }
 
@@ -2322,6 +2385,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({"model": "claude-test", "stream": true});
 
@@ -2343,6 +2407,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({"model": "gpt-test", "prompt": "hello", "stream": true});
 
@@ -2364,6 +2429,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({"model": "gpt-test", "input": "hello", "stream": true});
 
@@ -2385,6 +2451,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({"model": "gpt-image-1", "prompt": "hello", "stream": true});
 
@@ -2420,6 +2487,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: false,
+            request_validator: None,
         };
         let body = json!({
             "model": "gpt-4o-mini-tts",
@@ -2448,6 +2516,85 @@ mod tests {
     }
 
     #[test]
+    fn rerank_endpoint_uses_jina_channel_family() {
+        let endpoint = RelayEndpoint {
+            display_name: "rerank",
+            cache_family: "rerank",
+            upstream_path: "rerank".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: RERANK_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: Some("streaming rerank relay"),
+            parse_non_stream_usage: true,
+            request_validator: Some(validate_rerank_request),
+        };
+        let body = json!({
+            "model": "jina-reranker-v2-base-multilingual",
+            "query": "rust relay",
+            "documents": ["doc one", "doc two"],
+            "top_n": 2,
+            "return_documents": true
+        });
+
+        assert_eq!(endpoint.cache_family, "rerank");
+        assert_eq!(endpoint.supported_channel_types, RERANK_CHANNEL_TYPES);
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+        assert!(endpoint.parse_non_stream_usage);
+        assert_eq!((endpoint.request_validator.unwrap())(&body), None);
+        assert_eq!(
+            endpoint.stream_not_implemented(&json!({
+                "model": "jina-reranker-v2-base-multilingual",
+                "query": "rust relay",
+                "documents": ["doc one"],
+                "stream": true
+            })),
+            Some("streaming rerank relay")
+        );
+        assert_eq!(
+            endpoint.upstream_url(&RelayChannel {
+                id: 38,
+                name: "jina".to_string(),
+                channel_type: 38,
+                key: "jina-test".to_string(),
+                base_url: None,
+                models: "jina-reranker-v2-base-multilingual".to_string(),
+                channel_group: "default".to_string(),
+                model_mapping: None,
+                openai_organization: None,
+            }),
+            "https://api.jina.ai/v1/rerank"
+        );
+    }
+
+    #[test]
+    fn rerank_request_validation_requires_query_and_documents() {
+        assert_eq!(
+            validate_rerank_request(&json!({"documents": ["doc"]})),
+            Some("rerank request body must include a non-empty query")
+        );
+        assert_eq!(
+            validate_rerank_request(&json!({"query": "   ", "documents": ["doc"]})),
+            Some("rerank request body must include a non-empty query")
+        );
+        assert_eq!(
+            validate_rerank_request(&json!({"query": "rust"})),
+            Some("rerank request body must include non-empty documents")
+        );
+        assert_eq!(
+            validate_rerank_request(&json!({"query": "rust", "documents": []})),
+            Some("rerank request body must include non-empty documents")
+        );
+        assert_eq!(
+            validate_rerank_request(&json!({"query": "rust", "documents": ["doc"]})),
+            None
+        );
+    }
+
+    #[test]
     fn gemini_native_endpoint_forces_streaming_from_path_action() {
         let route = GeminiNativePath {
             api_version: "v1beta".to_string(),
@@ -2466,6 +2613,7 @@ mod tests {
             force_streaming: true,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
 
@@ -2492,6 +2640,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({"content": {"parts": [{"text": "hello"}]}});
 
@@ -2518,6 +2667,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
 
@@ -2539,6 +2689,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_validator: None,
         };
         let body = json!({
             "stream": true,
@@ -2717,6 +2868,18 @@ mod tests {
         assert_eq!(detail_params.len, estimate.prompt_tokens() as f64);
         assert_eq!(detail_params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
         assert_eq!(detail_params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
+    }
+
+    #[test]
+    fn request_prompt_estimate_counts_rerank_query_and_documents() {
+        let body = json!({
+            "model": "jina-reranker-v2-base-multilingual",
+            "query": "abcdefgh",
+            "documents": ["ijklmnop", "qrst"],
+            "top_n": 2
+        });
+
+        assert_eq!(estimate_prompt_tokens_from_request(&body), 5);
     }
 
     #[test]

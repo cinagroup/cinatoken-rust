@@ -1295,6 +1295,9 @@ Relay：
 
 ## 19.1 Current Execution Status (2026-06-20)
 
+Production-readiness audit and go/no-go gates are tracked in
+`docs/production-migration-plan-audit.md`.
+
 - Rust workspace, Worker entrypoint, D1 core schema, migration CLI, cache
   abstractions, Upstash Redis client, relay auth, channel selection, model
   mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay,

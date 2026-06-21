@@ -1,6 +1,6 @@
 # Verification
 
-Last checked: 2026-06-20
+Last checked: 2026-06-21
 
 ## Passed
 
@@ -63,7 +63,9 @@ Last checked: 2026-06-20
   snapshots, usage-detail token normalization, and settlement deltas against
   frozen snapshots.
 - `cargo test -p cinatoken-worker --lib` covering visible request-body media
-  fallback counts for OpenAI-style and Gemini-style token preflight estimates.
+  fallback counts for OpenAI-style and Gemini-style token preflight estimates,
+  including request-time `img`/`ai` normalization when expressions reference
+  those variables.
 - `cargo test -p cinatoken-worker --lib` covering tiered reserve
   fallback/refund metadata and compiling the D1 repository pre-consume quota
   mutation paths.

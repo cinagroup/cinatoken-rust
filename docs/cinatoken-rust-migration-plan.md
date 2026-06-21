@@ -1329,9 +1329,10 @@ Relay：
   routes do not reuse each other's selected channels for the same group/model.
 - The Worker now freezes a tiered billing preflight snapshot before upstream
   relay using the original request body, prompt/completion token estimates, and
-  visible request-body media fallback counts, reserves estimated wallet/token
-  quota for tiered requests, then settles successful usage against that frozen
-  snapshot.
+  visible request-body media fallback counts, applies Go-compatible
+  request-time `img`/`ai` expression-variable normalization, reserves estimated
+  wallet/token quota for tiered requests, then settles successful usage against
+  that frozen snapshot.
 - Streaming chat, completions, responses, image generations, Anthropic
   Messages, and native Gemini passthrough now tee the upstream response and
   consume an audit branch with incremental SSE usage parsing in `wait_until`;
@@ -1349,6 +1350,10 @@ Relay：
 - Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.
+- Next relay/API candidates from the migration plan: `/v1/rerank` JSON
+  passthrough after confirming provider type coverage, and a shared
+  multipart/raw-body relay core before `/v1/audio/transcriptions` and
+  `/v1/audio/translations`.
 
 ## 20. 最终交付形态
 

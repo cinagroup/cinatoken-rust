@@ -64,8 +64,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   shadow settlement metadata in audit logs.
 - Worker-side request-time tiered-expression preflight snapshots with
   prompt/completion token estimates, visible request-body media fallback
-  counts, frozen request probes, and post-response settlement against the
-  frozen snapshot.
+  counts, expression-variable-aware `img`/`ai` normalization, frozen request
+  probes, and post-response settlement against the frozen snapshot.
 - Worker-side tiered-expression settlement rebuilds actual token parameters
   from upstream usage details and the frozen expression's variable usage, so
   cached/image/audio sub-categories are not double-counted in `p` or `c`.
@@ -111,4 +111,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`
   parity, especially exact tokenizer counts plus image dimension and audio
   duration media counts.
+- Add `/v1/rerank` JSON passthrough after confirming Go-compatible provider
+  channel type coverage.
+- Design the shared multipart/raw-body relay core before adding
+  `/v1/audio/transcriptions` and `/v1/audio/translations`; the current JSON
+  relay path must not buffer unbounded file uploads.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

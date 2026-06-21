@@ -64,9 +64,13 @@ The Worker now reads Go-compatible D1 billing options. For a model configured
 with tiered-expression billing, it freezes a request-time preflight snapshot
 before upstream relay using the original request body, request probes, group
 ratio, a prompt/completion token estimate, and visible request-body media
-fallback counts. For OpenAI-compatible, native Anthropic, and native Gemini
-tiered requests, including streaming chat, completion, response, and image
-generation requests, Anthropic Messages, Gemini generateContent, Gemini
+fallback counts. The request-time estimate now uses the same expression
+variable normalization as settlement: visible image/audio fallback counts
+populate `img` and `ai`, and they are removed from `p` only when the billing
+expression references those variables; `len` remains the full estimated input
+length. For OpenAI-compatible, native Anthropic, and native Gemini tiered
+requests, including streaming chat, completion, response, and image generation
+requests, Anthropic Messages, Gemini generateContent, Gemini
 streamGenerateContent, Gemini embedding requests, and Gemini countTokens
 requests, it reserves the estimated wallet/token quota before forwarding
 upstream. For streaming chat completions, completions, responses, image
@@ -138,8 +142,9 @@ The Rust tests cover the most important Go-compatible arithmetic:
   settlement, refund/additional deltas, request-probe preservation,
   `|||` request-rule preservation, and crossed-tier detection;
 - Worker request-body token estimation, request-time tiered preflight
-  snapshots, visible media fallback counts, usage-detail token normalization,
-  and settlement deltas against frozen snapshots;
+  snapshots, visible media fallback counts, Go-compatible request-time
+  image/audio variable normalization, usage-detail token normalization, and
+  settlement deltas against frozen snapshots;
 - Worker tiered reserve metadata, fallback metadata, and refund metadata for
   pre-consume paths;
 - Worker tiered usage-log display metadata, including Go-compatible base64

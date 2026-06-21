@@ -1,7 +1,8 @@
 use cinatoken_billing::{
     build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
-    estimate_tiered_billing_snapshot_with_request, split_billing_expr_request_rule, RequestInput,
-    TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
+    estimate_tiered_billing_snapshot_with_request, split_billing_expr_request_rule,
+    BillingExprVariables, RequestInput, TieredBillingResult, TieredBillingSnapshot,
+    TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
@@ -1576,7 +1577,8 @@ fn tiered_billing_preflight_snapshot(
     request_body: &Value,
     request: RequestInput,
 ) -> Result<TieredBillingPreflight, String> {
-    let params = token_params_from_request(request_body);
+    let used_vars = detect_billing_expr_variables(expr);
+    let params = token_params_from_request(request_body, used_vars);
     let snapshot =
         estimate_tiered_billing_snapshot_with_request(model, expr, params, group_ratio, request)
             .map_err(|err| format!("failed to estimate tiered billing: {err}"))?;
@@ -1784,15 +1786,20 @@ fn set_json_value(value: &mut Value, key: &str, item: Value) {
     }
 }
 
-fn token_params_from_request(body: &Value) -> TokenParams {
+fn token_params_from_request(body: &Value, used_vars: BillingExprVariables) -> TokenParams {
     let estimate = request_token_estimate_from_body(body);
-    let prompt = estimate.prompt_tokens() as f64;
-    TokenParams {
-        p: prompt,
-        c: estimate.completion_tokens as f64,
-        len: prompt,
-        ..TokenParams::default()
-    }
+    build_tiered_token_params(
+        TieredTokenUsage {
+            prompt_tokens: estimate.prompt_tokens(),
+            completion_tokens: estimate.completion_tokens,
+            image_input_tokens: estimate.image_input_tokens,
+            audio_input_tokens: estimate.audio_input_tokens,
+            usage_semantic: UsageSemantic::OpenAi,
+            ..TieredTokenUsage::default()
+        },
+        false,
+        used_vars,
+    )
 }
 
 #[cfg(test)]
@@ -2689,11 +2696,27 @@ mod tests {
                 + ESTIMATED_FILE_INPUT_TOKENS
         );
 
-        let params = token_params_from_request(&body);
+        let params = token_params_from_request(&body, BillingExprVariables::default());
         assert_eq!(params.p, estimate.prompt_tokens() as f64);
         assert_eq!(params.len, estimate.prompt_tokens() as f64);
-        assert_eq!(params.img, 0.0);
-        assert_eq!(params.ai, 0.0);
+        assert_eq!(params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
+        assert_eq!(params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
+
+        let detail_params = token_params_from_request(
+            &body,
+            BillingExprVariables {
+                img: true,
+                ai: true,
+                ..BillingExprVariables::default()
+            },
+        );
+        assert_eq!(
+            detail_params.p,
+            (estimate.text_prompt_tokens + estimate.file_input_tokens) as f64
+        );
+        assert_eq!(detail_params.len, estimate.prompt_tokens() as f64);
+        assert_eq!(detail_params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
+        assert_eq!(detail_params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
     }
 
     #[test]
@@ -2775,6 +2798,65 @@ mod tests {
         let outcome = tiered_billing_settlement(&preflight.snapshot, &usage, &request).unwrap();
         assert_eq!(outcome.result.actual_expression_cost, 8_300.0);
         assert_eq!(outcome.final_quota, 4_150);
+    }
+
+    #[test]
+    fn tiered_billing_preflight_normalizes_request_media_for_expression_variables() {
+        let request_body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "abcdefgh"},
+                        {"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}},
+                        {"type": "input_audio", "input_audio": {"data": "A".repeat(4096), "format": "wav"}}
+                    ]
+                }
+            ],
+            "max_completion_tokens": 100
+        });
+        let request = RequestInput::from_json_body(request_body.clone());
+        let preflight = tiered_billing_preflight_snapshot(
+            "gpt-test",
+            r#"tier("detail", p * 2 + c * 10 + img * 3 + ai * 4)"#,
+            1.0,
+            &request_body,
+            request,
+        )
+        .unwrap();
+
+        let estimated_text_prompt = 9.0;
+        let estimated_prompt = estimated_text_prompt
+            + ESTIMATED_IMAGE_INPUT_TOKENS as f64
+            + ESTIMATED_AUDIO_INPUT_TOKENS as f64;
+        let estimated_cost = (estimated_text_prompt * 2.0)
+            + (100.0 * 10.0)
+            + (ESTIMATED_IMAGE_INPUT_TOKENS as f64 * 3.0)
+            + (ESTIMATED_AUDIO_INPUT_TOKENS as f64 * 4.0);
+
+        assert_eq!(
+            preflight.snapshot.estimated_prompt_tokens,
+            estimated_text_prompt as i64
+        );
+        assert_eq!(preflight.snapshot.estimated_completion_tokens, 100);
+        assert_eq!(preflight.snapshot.estimated_expression_cost, estimated_cost);
+        assert_eq!(
+            preflight.pre_consumed_quota,
+            (estimated_cost / 1_000_000.0 * 500_000.0) as i64
+        );
+
+        let params = token_params_from_request(
+            &request_body,
+            BillingExprVariables {
+                img: true,
+                ai: true,
+                ..BillingExprVariables::default()
+            },
+        );
+        assert_eq!(params.p, estimated_text_prompt);
+        assert_eq!(params.len, estimated_prompt);
+        assert_eq!(params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
+        assert_eq!(params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
     }
 
     #[test]

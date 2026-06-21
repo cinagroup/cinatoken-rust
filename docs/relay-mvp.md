@@ -91,7 +91,8 @@ The Worker:
 - before forwarding successful candidates upstream, builds a request-time
   tiered-expression preflight snapshot from the original request body,
   request probes, group ratio, a prompt/completion token estimate, and visible
-  request-body media fallback counts;
+  request-body media fallback counts, then normalizes request-time
+  image/audio variables the same way settlement does;
 - for tiered-expression requests, reserves the estimated wallet/token quota
   before upstream relay and refunds it if upstream forwarding fails or no
   billable usage is returned;
@@ -169,8 +170,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - Streaming tiered reserve is applied before the upstream call, but live
   upstream SSE reserve/refund/delta behavior still needs end-to-end coverage.
 - Request-time token estimation currently covers JSON-body text, max-token
-  extraction, and visible media fallback counts. Exact tokenizer counts plus
-  image dimension/audio duration parity are still pending.
+  extraction, visible media fallback counts, and Go-compatible request-time
+  `img`/`ai` normalization. Exact tokenizer counts plus image dimension/audio
+  duration parity are still pending.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are not implemented yet.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
@@ -182,3 +184,7 @@ original billing expression flow:
 
 - exact tokenizer counts plus image dimension/audio duration parity for the
   preflight token estimate.
+- `/v1/rerank` JSON passthrough is the next low-risk relay surface once
+  provider channel type coverage is confirmed.
+- Audio transcription/translation need a shared multipart/raw-body relay path
+  with bounded or streaming upload handling before implementation.

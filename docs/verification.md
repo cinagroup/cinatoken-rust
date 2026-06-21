@@ -90,6 +90,10 @@ Last checked: 2026-06-21
 - `cargo test -p cinatoken-worker --lib` covering relay JSON request-body
   limit configuration, invalid limit rejection, invalid JSON reporting, and
   payload-too-large errors before parsing.
+- `cargo test -p cinatoken-worker --lib` covering relay JSON response-body
+  limit configuration, fixed-body over-limit classification, and stream
+  over-limit consumed-body classification for non-stream audit/transform
+  guardrails.
 - No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
@@ -100,6 +104,8 @@ Last checked: 2026-06-21
 - `rustc --version`: `rustc 1.96.0 (ac68faa20 2026-05-25)`
 - `bun --version`: `1.3.14`
 - `wrangler --version`: `4.101.0`
+- Fetched latest `@cloudflare/workers-types` with `npm pack`; observed version
+  `4.20260621.1`.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

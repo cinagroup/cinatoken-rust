@@ -41,6 +41,9 @@ The Worker:
   as `serde_json::Value`, preserving unknown fields and explicit zero values;
 - defaults the relay JSON body limit to 4 MiB and allows operators to override
   it with `RELAY_JSON_BODY_LIMIT_BYTES`; values must be positive integers;
+- reads non-streaming JSON response bodies for audit parsing and Cohere rerank
+  transformation through a bounded reader; the default limit is 4 MiB and can
+  be overridden with `RELAY_JSON_RESPONSE_LIMIT_BYTES`;
 - keeps embeddings non-streaming in this MVP;
 - accepts API keys from `Authorization: Bearer ...`, `x-api-key`,
   `x-goog-api-key`, or native Gemini `key` query parameters;
@@ -187,6 +190,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - Rerank support currently covers Jina JSON passthrough and Cohere JSON
   request/response adaptation. Other provider-specific rerank transforms plus
   live upstream coverage are still pending.
+- The current buffered response limit is a global JSON guardrail. Endpoint- and
+  provider-specific response size policies still need to be defined before
+  broader transform coverage.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, Anthropic Messages cumulative usage events, and Gemini
   `usageMetadata` chunks, but live upstream SSE coverage is still pending.

@@ -5,9 +5,9 @@ Date: 2026-06-21
 Audited revision: `b826076`
 
 Follow-up implementation note: after this audit, the Rust migration added a
-bounded relay JSON body reader, Workers observability config, and local
-Wrangler preflight scripts. Raw, multipart, and pass-through stream request
-body support remains part of Phase 3.
+bounded relay JSON body reader, bounded non-stream JSON response readers,
+Workers observability config, and local Wrangler preflight scripts. Raw,
+multipart, and pass-through stream request body support remains part of Phase 3.
 
 Scope: pause feature implementation and define the production-grade migration
 plan for moving `github:cinagroup/cinatoken` to `cinatoken-rust`, including a
@@ -51,10 +51,10 @@ The production blockers are not mysterious, but they are important:
 - Multipart/raw-body relay, exact tokenizer/media estimation, non-tiered
   billing, retry/auto-ban/health scoring, admin APIs, payments, async tasks,
   OAuth/Passkey/2FA, and frontend migration remain open.
-- Current JSON request bodies are now explicitly bounded before parsing, and
-  some response paths intentionally buffer JSON responses. Buffering remains
-  acceptable only when bounded; production migration must preserve streaming for
-  unbounded bodies and must gate any provider-specific response rewrite by
+- Current JSON request bodies and non-stream JSON response audit/transform
+  reads are now explicitly bounded. Buffering remains acceptable only when
+  bounded; production migration must preserve streaming for unbounded bodies
+  and must gate any provider-specific response rewrite by endpoint-specific
   payload limits.
 
 Production direction: keep the current Worker as the high-frequency relay and
@@ -183,31 +183,28 @@ Production requirement:
 - Preserve downstream content type and upstream streaming behavior.
 - Add tests for large body rejection and streaming pass-through.
 
-### P1: Some Response Paths Buffer Bodies And Need Explicit Bounds
+### P1: Some Response Paths Buffer Bodies And Need Endpoint-Specific Bounds
 
 Evidence:
 
-- `crates/worker/src/relay.rs:1274` buffers Cohere rerank response for
-  provider-specific transformation.
-- `crates/worker/src/relay.rs:1351` buffers fallback non-stream responses.
-- `crates/worker/src/relay.rs:1383` buffers cloned audit responses for
-  non-stream usage parsing.
+- Cohere rerank response transformation, fallback non-stream responses, and
+  cloned non-stream audit responses now use a bounded JSON response reader.
 - `crates/worker/src/cache.rs:34` buffers Upstash REST responses, which are
   expected to be small JSON.
 
 Impact:
 
 Cloudflare best practices are clear: large or unknown request/response bodies
-should stream. Current buffering is acceptable for known small JSON, but
-provider-specific response transforms become unsafe if the provider can return
-large embedded documents or files.
+should stream. The global JSON response guardrail prevents accidental
+unbounded reads, but provider-specific response transforms still need tighter
+endpoint-level limits and live upstream validation.
 
 Production requirement:
 
-- Classify each `response.text()` by expected maximum size.
+- Classify each buffered response path by expected maximum size.
 - Keep Upstash JSON buffering, because it is bounded.
 - Keep non-stream usage audit buffering only for JSON endpoints with an
-  explicit max-size policy.
+  explicit endpoint max-size policy.
 - Before expanding Cohere/rerank/provider transforms, add payload-size guards
   or move to streaming passthrough plus async audit branch.
 

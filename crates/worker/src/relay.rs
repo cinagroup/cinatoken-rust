@@ -20,7 +20,9 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use wasm_bindgen::JsValue;
-use worker::{Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
+use worker::{
+    Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response, ResponseBody,
+};
 
 use crate::{json_with_status, set_cors_headers};
 
@@ -32,8 +34,10 @@ const IP_RATE_LIMIT_ENV: &str = "RELAY_IP_RATE_LIMIT_PER_WINDOW";
 const RATE_LIMIT_WINDOW_ENV: &str = "RELAY_RATE_LIMIT_WINDOW_SECONDS";
 const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
 const RELAY_JSON_BODY_LIMIT_ENV: &str = "RELAY_JSON_BODY_LIMIT_BYTES";
+const RELAY_JSON_RESPONSE_LIMIT_ENV: &str = "RELAY_JSON_RESPONSE_LIMIT_BYTES";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const ESTIMATED_IMAGE_INPUT_TOKENS: i64 = 520;
 const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
 const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
@@ -360,6 +364,15 @@ async fn relay_endpoint(
             );
         }
     };
+    let json_response_config = match RelayJsonResponseConfig::from_env(&env) {
+        Ok(config) => config,
+        Err(err) => {
+            return openai_error_response(
+                format!("invalid relay JSON response configuration: {err}"),
+                500,
+            );
+        }
+    };
     let request_body =
         match read_relay_json_body(&mut req, endpoint.display_name, json_body_config.max_bytes)
             .await
@@ -561,6 +574,7 @@ async fn relay_endpoint(
         endpoint.upstream_path.clone(),
         endpoint.provider,
         endpoint.parse_non_stream_usage,
+        json_response_config.max_bytes,
         audit,
     )
     .await
@@ -730,18 +744,31 @@ impl RelayJsonBodyConfig {
     }
 
     fn from_raw(max_bytes: Option<String>) -> Result<Self, String> {
-        let max_bytes = match max_bytes.as_deref().map(str::trim) {
-            Some("") | None => DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES,
-            Some(raw) => raw
-                .parse::<usize>()
-                .map_err(|_| format!("{RELAY_JSON_BODY_LIMIT_ENV} must be a positive integer"))?,
-        };
-        if max_bytes == 0 {
-            return Err(format!(
-                "{RELAY_JSON_BODY_LIMIT_ENV} must be greater than 0"
-            ));
-        }
+        let max_bytes = parse_positive_usize_env(
+            RELAY_JSON_BODY_LIMIT_ENV,
+            max_bytes,
+            DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES,
+        )?;
+        Ok(Self { max_bytes })
+    }
+}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelayJsonResponseConfig {
+    max_bytes: usize,
+}
+
+impl RelayJsonResponseConfig {
+    fn from_env(env: &Env) -> Result<Self, String> {
+        Self::from_raw(optional_env_var(env, RELAY_JSON_RESPONSE_LIMIT_ENV))
+    }
+
+    fn from_raw(max_bytes: Option<String>) -> Result<Self, String> {
+        let max_bytes = parse_positive_usize_env(
+            RELAY_JSON_RESPONSE_LIMIT_ENV,
+            max_bytes,
+            DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+        )?;
         Ok(Self { max_bytes })
     }
 }
@@ -752,6 +779,23 @@ fn optional_env_var(env: &Env, name: &str) -> Option<String> {
         .map(|value| value.to_string())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn parse_positive_usize_env(
+    name: &str,
+    value: Option<String>,
+    default_value: usize,
+) -> Result<usize, String> {
+    let parsed = match value.as_deref().map(str::trim) {
+        Some("") | None => default_value,
+        Some(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| format!("{name} must be a positive integer"))?,
+    };
+    if parsed == 0 {
+        return Err(format!("{name} must be greater than 0"));
+    }
+    Ok(parsed)
 }
 
 fn parse_optional_limit(name: &str, value: Option<String>) -> Result<Option<u32>, String> {
@@ -866,9 +910,7 @@ fn request_content_length(req: &Request) -> Result<Option<usize>, RelayJsonBodyE
     if raw.is_empty() {
         return Ok(None);
     }
-    raw.parse::<usize>().map(Some).map_err(|_| {
-        RelayJsonBodyError::InvalidContentLength("must be a non-negative integer".to_string())
-    })
+    parse_content_length_value(raw).map_err(RelayJsonBodyError::InvalidContentLength)
 }
 
 fn parse_relay_json_bytes(bytes: &[u8], max_bytes: usize) -> Result<Value, RelayJsonBodyError> {
@@ -879,6 +921,137 @@ fn parse_relay_json_bytes(bytes: &[u8], max_bytes: usize) -> Result<Value, Relay
         });
     }
     serde_json::from_slice::<Value>(bytes).map_err(|err| RelayJsonBodyError::Parse(err.to_string()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayBufferedTextError {
+    InvalidContentLength(String),
+    TooLarge {
+        actual_bytes: Option<usize>,
+        max_bytes: usize,
+        body_consumed: bool,
+    },
+    Read(String),
+    Decode(String),
+}
+
+impl RelayBufferedTextError {
+    fn body_consumed(&self) -> bool {
+        match self {
+            Self::InvalidContentLength(_) => false,
+            Self::TooLarge { body_consumed, .. } => *body_consumed,
+            Self::Read(_) | Self::Decode(_) => true,
+        }
+    }
+
+    fn message(&self, label: &str) -> String {
+        match self {
+            Self::InvalidContentLength(err) => {
+                format!("invalid {label} content-length: {err}")
+            }
+            Self::TooLarge {
+                actual_bytes,
+                max_bytes,
+                ..
+            } => match actual_bytes {
+                Some(actual_bytes) => format!(
+                    "{label} is too large: {actual_bytes} bytes exceeds {max_bytes} byte limit"
+                ),
+                None => format!("{label} is too large: exceeds {max_bytes} byte limit"),
+            },
+            Self::Read(err) => format!("failed to read {label}: {err}"),
+            Self::Decode(err) => format!("failed to decode {label} as UTF-8: {err}"),
+        }
+    }
+}
+
+async fn read_response_text_limited(
+    response: &mut Response,
+    max_bytes: usize,
+) -> Result<String, RelayBufferedTextError> {
+    if let Some(content_length) = response_content_length(response)? {
+        if content_length > max_bytes {
+            return Err(RelayBufferedTextError::TooLarge {
+                actual_bytes: Some(content_length),
+                max_bytes,
+                body_consumed: false,
+            });
+        }
+    }
+
+    match response.body() {
+        ResponseBody::Empty => Ok(String::new()),
+        ResponseBody::Body(bytes) => decode_limited_text_bytes(bytes, max_bytes, false),
+        ResponseBody::Stream(_) => read_response_stream_text_limited(response, max_bytes).await,
+    }
+}
+
+async fn read_response_stream_text_limited(
+    response: &mut Response,
+    max_bytes: usize,
+) -> Result<String, RelayBufferedTextError> {
+    let mut stream = response
+        .stream()
+        .map_err(|err| RelayBufferedTextError::Read(err.to_string()))?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| RelayBufferedTextError::Read(err.to_string()))?;
+        let next_len =
+            bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or(RelayBufferedTextError::TooLarge {
+                    actual_bytes: None,
+                    max_bytes,
+                    body_consumed: true,
+                })?;
+        if next_len > max_bytes {
+            return Err(RelayBufferedTextError::TooLarge {
+                actual_bytes: Some(next_len),
+                max_bytes,
+                body_consumed: true,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    decode_limited_text_bytes(&bytes, max_bytes, true)
+}
+
+fn decode_limited_text_bytes(
+    bytes: &[u8],
+    max_bytes: usize,
+    body_consumed: bool,
+) -> Result<String, RelayBufferedTextError> {
+    if bytes.len() > max_bytes {
+        return Err(RelayBufferedTextError::TooLarge {
+            actual_bytes: Some(bytes.len()),
+            max_bytes,
+            body_consumed,
+        });
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|err| RelayBufferedTextError::Decode(err.to_string()))
+}
+
+fn response_content_length(response: &Response) -> Result<Option<usize>, RelayBufferedTextError> {
+    let Some(raw) = response
+        .headers()
+        .get("content-length")
+        .map_err(|err| RelayBufferedTextError::InvalidContentLength(err.to_string()))?
+    else {
+        return Ok(None);
+    };
+    parse_content_length_value(&raw).map_err(RelayBufferedTextError::InvalidContentLength)
+}
+
+fn parse_content_length_value(raw: &str) -> Result<Option<usize>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<usize>()
+        .map(Some)
+        .map_err(|_| "must be a non-negative integer".to_string())
 }
 
 fn rate_limited_response(message: &str, window_seconds: u32) -> worker::Result<Response> {
@@ -1260,6 +1433,7 @@ async fn complete_relay_response(
     endpoint_path: String,
     provider: RelayProviderKind,
     parse_usage: bool,
+    max_json_response_bytes: usize,
     audit: RelayAuditContext,
 ) -> worker::Result<Response> {
     let status = upstream.status_code();
@@ -1283,6 +1457,8 @@ async fn complete_relay_response(
             audit,
             status,
             upstream_request_id,
+            content_type,
+            max_json_response_bytes,
         )
         .await;
     }
@@ -1348,14 +1524,20 @@ async fn complete_relay_response(
                     &endpoint_path,
                     provider,
                     &audit,
+                    max_json_response_bytes,
                 )
                 .await;
             }
         };
 
         context.wait_until(async move {
-            let usage = match response_usage_summary(&mut audit_response, provider, &endpoint_path)
-                .await
+            let usage = match response_usage_summary(
+                &mut audit_response,
+                provider,
+                &endpoint_path,
+                max_json_response_bytes,
+            )
+            .await
             {
                 Ok(usage) => usage,
                 Err(err) => {
@@ -1397,8 +1579,69 @@ async fn complete_relay_response(
         &endpoint_path,
         provider,
         &audit,
+        max_json_response_bytes,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_passthrough_relay_response_with_usage(
+    mut upstream: Response,
+    db: D1Database,
+    context: Option<Context>,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    status: u16,
+    content_type: String,
+    usage: UsageSummary,
+    audit: RelayAuditContext,
+    upstream_request_id: Option<String>,
+    log_label: &'static str,
+) -> worker::Result<Response> {
+    if let Some(context) = context {
+        context.wait_until(async move {
+            if let Err(err) = record_relay_audit(
+                &db,
+                &auth,
+                &channel,
+                &model,
+                &group,
+                &endpoint_path,
+                status,
+                &usage,
+                &audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!("failed to record {} audit: {}", log_label, err);
+            }
+        });
+    } else if let Err(err) = record_relay_audit(
+        &db,
+        &auth,
+        &channel,
+        &model,
+        &group,
+        &endpoint_path,
+        status,
+        &usage,
+        &audit,
+        upstream_request_id.as_deref(),
+        false,
+    )
+    .await
+    {
+        worker::console_error!("failed to record {} audit: {}", log_label, err);
+    }
+
+    upstream.headers_mut().set("content-type", &content_type)?;
+    set_cors_headers(&mut upstream)?;
+    Ok(upstream)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1414,6 +1657,8 @@ async fn complete_cohere_rerank_response(
     audit: RelayAuditContext,
     status: u16,
     upstream_request_id: Option<String>,
+    content_type: String,
+    max_json_response_bytes: usize,
 ) -> worker::Result<Response> {
     let fallback_prompt_tokens = audit
         .billing_request_input
@@ -1422,7 +1667,41 @@ async fn complete_cohere_rerank_response(
         .map(request_token_estimate_from_body)
         .map(RequestTokenEstimate::prompt_tokens)
         .unwrap_or_default();
-    let body = upstream.text().await?;
+    let body = match read_response_text_limited(&mut upstream, max_json_response_bytes).await {
+        Ok(body) => body,
+        Err(err) if !err.body_consumed() => {
+            worker::console_error!(
+                "skipping Cohere rerank response transform: {}",
+                err.message("Cohere rerank response body")
+            );
+            return complete_passthrough_relay_response_with_usage(
+                upstream,
+                db,
+                context,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                status,
+                content_type,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "Cohere rerank",
+            )
+            .await;
+        }
+        Err(err) => {
+            return openai_error_response(
+                format!(
+                    "failed to read Cohere rerank response: {}",
+                    err.message("Cohere rerank response body")
+                ),
+                502,
+            );
+        }
+    };
     let (body, usage) = match transform_cohere_rerank_response_body(&body, fallback_prompt_tokens) {
         Ok(transformed) => transformed,
         Err(err) => {
@@ -1490,6 +1769,7 @@ async fn complete_buffered_relay_response(
     endpoint_path: &str,
     provider: RelayProviderKind,
     audit: &RelayAuditContext,
+    max_json_response_bytes: usize,
 ) -> worker::Result<Response> {
     let status = upstream.status_code();
     let content_type = upstream
@@ -1499,7 +1779,45 @@ async fn complete_buffered_relay_response(
         .flatten()
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
-    let body = upstream.text().await?;
+    let body = match read_response_text_limited(&mut upstream, max_json_response_bytes).await {
+        Ok(body) => body,
+        Err(err) if !err.body_consumed() => {
+            worker::console_error!(
+                "skipping buffered relay usage parsing: {}",
+                err.message("relay response body")
+            );
+            if let Err(err) = record_relay_audit(
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                status,
+                &UsageSummary::default(),
+                audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!("failed to record relay audit: {}", err);
+            }
+
+            upstream.headers_mut().set("content-type", &content_type)?;
+            set_cors_headers(&mut upstream)?;
+            return Ok(upstream);
+        }
+        Err(err) => {
+            return openai_error_response(
+                format!(
+                    "failed to read relay response: {}",
+                    err.message("relay response body")
+                ),
+                502,
+            );
+        }
+    };
     let usage = usage_summary_for_provider(&body, provider, endpoint_path);
 
     if let Err(err) = record_relay_audit(
@@ -1530,8 +1848,11 @@ async fn response_usage_summary(
     response: &mut Response,
     provider: RelayProviderKind,
     endpoint_path: &str,
+    max_json_response_bytes: usize,
 ) -> worker::Result<UsageSummary> {
-    let body = response.text().await?;
+    let body = read_response_text_limited(response, max_json_response_bytes)
+        .await
+        .map_err(|err| worker::Error::RustError(err.message("relay response body")))?;
     Ok(usage_summary_for_provider(&body, provider, endpoint_path))
 }
 
@@ -3258,6 +3579,30 @@ mod tests {
     }
 
     #[test]
+    fn relay_json_response_config_defaults_to_bounded_payloads() {
+        let config = RelayJsonResponseConfig::from_raw(None).unwrap();
+        assert_eq!(config.max_bytes, DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn relay_json_response_config_accepts_positive_limit() {
+        let config = RelayJsonResponseConfig::from_raw(Some("2048".to_string())).unwrap();
+        assert_eq!(config.max_bytes, 2048);
+    }
+
+    #[test]
+    fn relay_json_response_config_rejects_zero_and_invalid_limits() {
+        assert_eq!(
+            RelayJsonResponseConfig::from_raw(Some("0".to_string())).unwrap_err(),
+            "RELAY_JSON_RESPONSE_LIMIT_BYTES must be greater than 0"
+        );
+        assert_eq!(
+            RelayJsonResponseConfig::from_raw(Some("huge".to_string())).unwrap_err(),
+            "RELAY_JSON_RESPONSE_LIMIT_BYTES must be a positive integer"
+        );
+    }
+
+    #[test]
     fn relay_json_body_error_reports_payload_too_large() {
         let err = RelayJsonBodyError::TooLarge {
             actual_bytes: Some(17),
@@ -3297,6 +3642,40 @@ mod tests {
         assert!(err
             .message("chat completions")
             .contains("invalid chat completions request body"));
+    }
+
+    #[test]
+    fn decode_limited_text_bytes_enforces_size_limit_without_consuming_fixed_body() {
+        assert_eq!(
+            decode_limited_text_bytes(br#"{"ok":true}"#, 32, false).unwrap(),
+            r#"{"ok":true}"#
+        );
+
+        let err = decode_limited_text_bytes(br#"{"ok":true}"#, 4, false).unwrap_err();
+        assert_eq!(
+            err,
+            RelayBufferedTextError::TooLarge {
+                actual_bytes: Some(11),
+                max_bytes: 4,
+                body_consumed: false
+            }
+        );
+        assert!(!err.body_consumed());
+    }
+
+    #[test]
+    fn relay_buffered_text_error_marks_stream_limit_as_consumed() {
+        let err = RelayBufferedTextError::TooLarge {
+            actual_bytes: Some(17),
+            max_bytes: 16,
+            body_consumed: true,
+        };
+
+        assert!(err.body_consumed());
+        assert_eq!(
+            err.message("relay response body"),
+            "relay response body is too large: 17 bytes exceeds 16 byte limit"
+        );
     }
 
     #[test]

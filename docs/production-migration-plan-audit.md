@@ -99,9 +99,10 @@ Known incomplete areas:
   staging/prod sampling policy still needs to be set deliberately.
 - The `LOG_QUEUE`, `TASK_QUEUE`, `FILE_BUCKET`, `CACHE_KV`, and `CONFIG_KV`
   bindings are declared but currently unused by Worker code.
-- Worker relay still treats current relay endpoints as JSON-only. The JSON body
-  is now read through an explicit size-limited stream reader, but
-  multipart/raw-body endpoints remain blocked until the body layer is split.
+- Worker relay now marks current relay endpoints as explicit JSON-only body
+  mode. The JSON body is read through a size-limited stream reader, but
+  multipart/raw-body endpoints remain blocked until dedicated body modes are
+  implemented.
 - No live provider smoke, no live SSE verification, and no production D1 or
   Wrangler dev end-to-end result is recorded.
 - Source database row counts/hashes for a real deployment have not been
@@ -164,8 +165,10 @@ Production requirement:
 
 Evidence:
 
-- Current relay endpoints are JSON-only and parse into `serde_json::Value`
-  after a bounded body read.
+- Current relay endpoints are explicitly JSON-only and parse into
+  `serde_json::Value` after a bounded body read.
+- The relay preparation stage now centralizes JSON bounded reads, endpoint
+  validation, and billing request-input snapshots.
 - `docs/relay-mvp.md` marks audio transcription/translation multipart paths
   as pending.
 
@@ -177,7 +180,7 @@ helper would force buffering or incorrect content-type handling.
 
 Production requirement:
 
-- Introduce a shared body abstraction before new upload endpoints:
+- Extend the request body mode abstraction before new upload endpoints:
   `JsonBody`, `RawBody`, `MultipartBody`, and `PassThroughStream`.
 - Bound all buffered bodies by endpoint-specific limits.
 - Preserve downstream content type and upstream streaming behavior.

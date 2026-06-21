@@ -1360,9 +1360,10 @@ Production-readiness audit and go/no-go gates are tracked in
 - Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.
-- Next relay/API candidate from the migration plan: a shared
-  multipart/raw-body relay core before `/v1/audio/transcriptions` and
-  `/v1/audio/translations`; provider-specific rerank transforms beyond
+- Next relay/API candidate from the migration plan: the relay now has an
+  explicit JSON request-body mode and shared JSON preparation boundary; extend
+  this into multipart/raw-body modes before `/v1/audio/transcriptions` and
+  `/v1/audio/translations`. Provider-specific rerank transforms beyond
   Jina/Cohere remain pending.
 
 ## 20. 最终交付形态

@@ -54,6 +54,11 @@ enum RelayProviderKind {
     GeminiNative,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RelayRequestBodyMode {
+    Json,
+}
+
 struct RelayEndpoint {
     display_name: &'static str,
     cache_family: &'static str,
@@ -66,10 +71,15 @@ struct RelayEndpoint {
     force_streaming: bool,
     stream_not_implemented_feature: Option<&'static str>,
     parse_non_stream_usage: bool,
+    request_body_mode: RelayRequestBodyMode,
     request_validator: Option<fn(&Value) -> Option<&'static str>>,
 }
 
 impl RelayEndpoint {
+    fn expects_json_request_body(&self) -> bool {
+        self.request_body_mode == RelayRequestBodyMode::Json
+    }
+
     fn requested_stream(&self, body: &Value) -> bool {
         self.force_streaming || body.get("stream").and_then(Value::as_bool).unwrap_or(false)
     }
@@ -141,6 +151,7 @@ pub async fn chat_completions(
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         None,
@@ -165,6 +176,7 @@ pub async fn embeddings(req: Request, env: Env, context: Context) -> worker::Res
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         None,
@@ -189,6 +201,7 @@ pub async fn rerank(req: Request, env: Env, context: Context) -> worker::Result<
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming rerank relay"),
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: Some(validate_rerank_request),
         },
         None,
@@ -217,6 +230,7 @@ pub async fn image_generations(
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         None,
@@ -241,6 +255,7 @@ pub async fn audio_speech(req: Request, env: Env, context: Context) -> worker::R
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: false,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         None,
@@ -265,6 +280,7 @@ pub async fn completions(req: Request, env: Env, context: Context) -> worker::Re
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         None,
@@ -289,6 +305,7 @@ pub async fn responses(req: Request, env: Env, context: Context) -> worker::Resu
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         None,
@@ -317,6 +334,7 @@ pub async fn anthropic_messages(
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         None,
@@ -353,6 +371,7 @@ pub async fn gemini_native(
             force_streaming: route.is_stream_generate_content(),
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         },
         Some(route.model),
@@ -390,24 +409,13 @@ async fn relay_endpoint(
             );
         }
     };
-    let request_body =
-        match read_relay_json_body(&mut req, endpoint.display_name, json_body_config.max_bytes)
-            .await
-        {
-            Ok(body) => body,
-            Err(err) => {
-                return json_with_status(
-                    &ErrorBody::bad_request(err.message(endpoint.display_name)),
-                    err.status_code(),
-                );
-            }
+    let prepared_request =
+        match prepare_relay_request(&mut req, &endpoint, json_body_config).await? {
+            Ok(prepared_request) => prepared_request,
+            Err(response) => return Ok(response),
         };
-    if let Some(validate) = endpoint.request_validator {
-        if let Some(message) = validate(&request_body) {
-            return json_with_status(&ErrorBody::bad_request(message), 400);
-        }
-    }
-    let billing_request_input = billing_request_input(&req, &request_body);
+    let request_body = prepared_request.body;
+    let billing_request_input = prepared_request.billing_request_input;
 
     if let Some(feature) = endpoint.stream_not_implemented(&request_body) {
         return json_with_status(&ErrorBody::not_implemented(feature), 501);
@@ -596,6 +604,53 @@ async fn relay_endpoint(
         audit,
     )
     .await
+}
+
+struct PreparedRelayRequest {
+    body: Value,
+    billing_request_input: RequestInput,
+}
+
+async fn prepare_relay_request(
+    req: &mut Request,
+    endpoint: &RelayEndpoint,
+    json_body_config: RelayJsonBodyConfig,
+) -> worker::Result<Result<PreparedRelayRequest, Response>> {
+    match endpoint.request_body_mode {
+        RelayRequestBodyMode::Json => {
+            prepare_json_relay_request(req, endpoint, json_body_config.max_bytes).await
+        }
+    }
+}
+
+async fn prepare_json_relay_request(
+    req: &mut Request,
+    endpoint: &RelayEndpoint,
+    max_bytes: usize,
+) -> worker::Result<Result<PreparedRelayRequest, Response>> {
+    debug_assert!(endpoint.expects_json_request_body());
+
+    let request_body = match read_relay_json_body(req, endpoint.display_name, max_bytes).await {
+        Ok(body) => body,
+        Err(err) => {
+            let response = json_with_status(
+                &ErrorBody::bad_request(err.message(endpoint.display_name)),
+                err.status_code(),
+            )?;
+            return Ok(Err(response));
+        }
+    };
+    if let Some(validate) = endpoint.request_validator {
+        if let Some(message) = validate(&request_body) {
+            let response = json_with_status(&ErrorBody::bad_request(message), 400)?;
+            return Ok(Err(response));
+        }
+    }
+
+    Ok(Ok(PreparedRelayRequest {
+        billing_request_input: billing_request_input(req, &request_body),
+        body: request_body,
+    }))
 }
 
 pub(crate) fn relay_rate_limit_configured(env: &Env) -> bool {
@@ -3040,6 +3095,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: feature,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         }
     }
@@ -3075,6 +3131,13 @@ mod tests {
     }
 
     #[test]
+    fn relay_endpoint_body_mode_is_explicitly_json() {
+        let endpoint = endpoint(true, None);
+
+        assert!(endpoint.expects_json_request_body());
+    }
+
+    #[test]
     fn anthropic_messages_endpoint_allows_streaming() {
         let endpoint = RelayEndpoint {
             display_name: "Anthropic messages",
@@ -3088,6 +3151,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({"model": "claude-test", "stream": true});
@@ -3110,6 +3174,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({"model": "gpt-test", "prompt": "hello", "stream": true});
@@ -3132,6 +3197,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({"model": "gpt-test", "input": "hello", "stream": true});
@@ -3154,6 +3220,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({"model": "gpt-image-1", "prompt": "hello", "stream": true});
@@ -3190,6 +3257,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: false,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({
@@ -3232,6 +3300,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming rerank relay"),
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: Some(validate_rerank_request),
         };
         let body = json!({
@@ -3424,6 +3493,7 @@ mod tests {
             force_streaming: true,
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
@@ -3451,6 +3521,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({"content": {"parts": [{"text": "hello"}]}});
@@ -3478,6 +3549,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
@@ -3500,6 +3572,7 @@ mod tests {
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
             parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         };
         let body = json!({

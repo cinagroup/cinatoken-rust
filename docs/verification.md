@@ -97,6 +97,9 @@ Last checked: 2026-06-22
 - `cargo test -p cinatoken-worker --lib` covering endpoint-specific JSON
   response buffer defaults for embeddings, image generation, rerank, and
   native Gemini, plus the `RELAY_JSON_RESPONSE_LIMIT_BYTES` global override.
+- `cargo test -p cinatoken-worker --lib` covering explicit JSON request-body
+  mode metadata for current relay endpoints and the shared JSON preparation
+  stage boundary.
 - No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.

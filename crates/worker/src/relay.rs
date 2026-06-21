@@ -7,13 +7,13 @@ use cinatoken_billing::{
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{ApiError, ApiResult, ErrorBody};
 use cinatoken_relay::{
-    apply_gemini_native_model_mapping, apply_model_mapping, csv_contains, first_channel_key,
-    ip_allowlist_matches, mapped_model_name, upstream_anthropic_messages_url,
+    apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
+    first_channel_key, ip_allowlist_matches, mapped_model_name, upstream_anthropic_messages_url,
     upstream_gemini_native_url, upstream_v1_url, usage_summary_from_anthropic_body,
     usage_summary_from_body, usage_summary_from_gemini_body, usage_summary_from_rerank_body,
     CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath, RelayCacheKeys,
-    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, GEMINI_CHANNEL_TYPES,
-    OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
+    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE,
+    GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -476,6 +476,7 @@ async fn relay_endpoint(
             }
         }
     }
+    apply_endpoint_request_transform(&mut upstream_body, &endpoint.upstream_path, &channel);
 
     let upstream_url = endpoint.upstream_url(&channel);
     let upstream_response = match forward_relay_request(
@@ -1118,6 +1119,22 @@ async fn complete_relay_response(
         .flatten()
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    if status == 200 && should_transform_cohere_rerank_response(&endpoint_path, &channel) {
+        return complete_cohere_rerank_response(
+            upstream,
+            db,
+            context,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            audit,
+            status,
+            upstream_request_id,
+        )
+        .await;
+    }
     if !parse_usage {
         if let Some(context) = context {
             context.wait_until(async move {
@@ -1231,6 +1248,85 @@ async fn complete_relay_response(
         &audit,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_cohere_rerank_response(
+    mut upstream: Response,
+    db: D1Database,
+    context: Option<Context>,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    audit: RelayAuditContext,
+    status: u16,
+    upstream_request_id: Option<String>,
+) -> worker::Result<Response> {
+    let fallback_prompt_tokens = audit
+        .billing_request_input
+        .body
+        .as_ref()
+        .map(request_token_estimate_from_body)
+        .map(RequestTokenEstimate::prompt_tokens)
+        .unwrap_or_default();
+    let body = upstream.text().await?;
+    let (body, usage) = match transform_cohere_rerank_response_body(&body, fallback_prompt_tokens) {
+        Ok(transformed) => transformed,
+        Err(err) => {
+            worker::console_error!("failed to transform Cohere rerank response: {}", err);
+            (
+                body.clone(),
+                usage_summary_for_provider(&body, RelayProviderKind::OpenAiCompatible, "rerank"),
+            )
+        }
+    };
+
+    if let Some(context) = context {
+        context.wait_until(async move {
+            if let Err(err) = record_relay_audit(
+                &db,
+                &auth,
+                &channel,
+                &model,
+                &group,
+                &endpoint_path,
+                status,
+                &usage,
+                &audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!("failed to record Cohere rerank audit: {}", err);
+            }
+        });
+    } else if let Err(err) = record_relay_audit(
+        &db,
+        &auth,
+        &channel,
+        &model,
+        &group,
+        &endpoint_path,
+        status,
+        &usage,
+        &audit,
+        upstream_request_id.as_deref(),
+        false,
+    )
+    .await
+    {
+        worker::console_error!("failed to record Cohere rerank audit: {}", err);
+    }
+
+    let mut response = Response::ok(body)?.with_status(status);
+    response
+        .headers_mut()
+        .set("content-type", "application/json")?;
+    set_cors_headers(&mut response)?;
+    Ok(response)
 }
 
 async fn complete_buffered_relay_response(
@@ -1869,7 +1965,102 @@ fn validate_rerank_request(body: &Value) -> Option<&'static str> {
     {
         return Some("rerank request body must include non-empty documents");
     }
+    if body
+        .get("top_n")
+        .is_some_and(|value| !value.is_null() && !value_is_integer_number(value))
+    {
+        return Some("rerank request top_n must be an integer");
+    }
     None
+}
+
+fn apply_endpoint_request_transform(body: &mut Value, endpoint_path: &str, channel: &RelayChannel) {
+    if endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE {
+        apply_cohere_rerank_request_transform(body);
+    }
+}
+
+fn should_transform_cohere_rerank_response(endpoint_path: &str, channel: &RelayChannel) -> bool {
+    endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE
+}
+
+fn apply_cohere_rerank_request_transform(body: &mut Value) {
+    let query = body
+        .get("query")
+        .cloned()
+        .unwrap_or(Value::String(String::new()));
+    let documents = body
+        .get("documents")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let model = body
+        .get("model")
+        .cloned()
+        .unwrap_or(Value::String(String::new()));
+    let top_n = body
+        .get("top_n")
+        .and_then(value_to_non_negative_i64)
+        .filter(|value| *value > 0)
+        .unwrap_or(1);
+
+    *body = json!({
+        "query": query,
+        "documents": documents,
+        "model": model,
+        "top_n": top_n,
+        "return_documents": true,
+    });
+}
+
+fn transform_cohere_rerank_response_body(
+    body: &str,
+    fallback_prompt_tokens: i64,
+) -> Result<(String, UsageSummary), serde_json::Error> {
+    let value = serde_json::from_str::<Value>(body)?;
+    let results = value
+        .get("results")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let usage = cohere_rerank_transform_usage(&value, fallback_prompt_tokens);
+
+    let response = json!({
+        "results": results,
+        "usage": {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }
+    });
+    serde_json::to_string(&response).map(|body| (body, usage))
+}
+
+fn cohere_rerank_transform_usage(value: &Value, fallback_prompt_tokens: i64) -> UsageSummary {
+    let billed_units = value.get("meta").and_then(|meta| meta.get("billed_units"));
+    let input_tokens = billed_units
+        .and_then(|usage| usage.get("input_tokens"))
+        .and_then(value_to_non_negative_i64)
+        .map(clamp_i64_to_i32)
+        .unwrap_or_default();
+    if input_tokens == 0 {
+        let prompt_tokens = clamp_i64_to_i32(fallback_prompt_tokens.max(0));
+        return UsageSummary {
+            prompt_tokens,
+            total_tokens: prompt_tokens,
+            ..UsageSummary::default()
+        };
+    }
+
+    let completion_tokens = billed_units
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(value_to_non_negative_i64)
+        .map(clamp_i64_to_i32)
+        .unwrap_or_default();
+    UsageSummary {
+        prompt_tokens: input_tokens,
+        completion_tokens,
+        total_tokens: input_tokens.saturating_add(completion_tokens),
+        ..UsageSummary::default()
+    }
 }
 
 #[cfg(test)]
@@ -2224,6 +2415,10 @@ fn value_to_non_negative_i64(value: &Value) -> Option<i64> {
     Some(value.max(0.0).floor().min(i64::MAX as f64) as i64)
 }
 
+fn value_is_integer_number(value: &Value) -> bool {
+    value.as_i64().is_some() || value.as_u64().is_some()
+}
+
 fn token_params_from_usage(snapshot: &TieredBillingSnapshot, usage: &UsageSummary) -> TokenParams {
     let tiered_usage = TieredTokenUsage {
         prompt_tokens: i64::from(usage.prompt_tokens.max(0)),
@@ -2526,7 +2721,7 @@ mod tests {
     }
 
     #[test]
-    fn rerank_endpoint_uses_jina_channel_family() {
+    fn rerank_endpoint_uses_rerank_channel_family() {
         let endpoint = RelayEndpoint {
             display_name: "rerank",
             cache_family: "rerank",
@@ -2578,6 +2773,20 @@ mod tests {
             }),
             "https://api.jina.ai/v1/rerank"
         );
+        assert_eq!(
+            endpoint.upstream_url(&RelayChannel {
+                id: 34,
+                name: "cohere".to_string(),
+                channel_type: CHANNEL_TYPE_COHERE,
+                key: "cohere-test".to_string(),
+                base_url: None,
+                models: "rerank-english-v3.0".to_string(),
+                channel_group: "default".to_string(),
+                model_mapping: None,
+                openai_organization: None,
+            }),
+            "https://api.cohere.ai/v1/rerank"
+        );
     }
 
     #[test]
@@ -2599,9 +2808,103 @@ mod tests {
             Some("rerank request body must include non-empty documents")
         );
         assert_eq!(
+            validate_rerank_request(&json!({
+                "query": "rust",
+                "documents": ["doc"],
+                "top_n": 2.5
+            })),
+            Some("rerank request top_n must be an integer")
+        );
+        assert_eq!(
+            validate_rerank_request(&json!({
+                "query": "rust",
+                "documents": ["doc"],
+                "top_n": null
+            })),
+            None
+        );
+        assert_eq!(
             validate_rerank_request(&json!({"query": "rust", "documents": ["doc"]})),
             None
         );
+    }
+
+    #[test]
+    fn cohere_rerank_request_transform_uses_go_compatible_shape() {
+        let channel = RelayChannel {
+            id: 34,
+            name: "cohere".to_string(),
+            channel_type: CHANNEL_TYPE_COHERE,
+            key: "cohere-test".to_string(),
+            base_url: None,
+            models: "rerank-english-v3.0".to_string(),
+            channel_group: "default".to_string(),
+            model_mapping: None,
+            openai_organization: None,
+        };
+        let mut body = json!({
+            "model": "rerank-english-v3.0",
+            "query": "rust relay",
+            "documents": ["doc one", {"text": "doc two"}],
+            "top_n": 2,
+            "return_documents": false,
+            "max_chunk_per_doc": 4,
+            "stream": false
+        });
+
+        apply_endpoint_request_transform(&mut body, "rerank", &channel);
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "rerank-english-v3.0",
+                "query": "rust relay",
+                "documents": ["doc one", {"text": "doc two"}],
+                "top_n": 2,
+                "return_documents": true
+            })
+        );
+    }
+
+    #[test]
+    fn cohere_rerank_request_transform_defaults_top_n_to_one() {
+        let mut body = json!({
+            "model": "rerank-english-v3.0",
+            "query": "rust relay",
+            "documents": ["doc one"],
+            "top_n": -1
+        });
+
+        apply_cohere_rerank_request_transform(&mut body);
+
+        assert_eq!(body["top_n"], json!(1));
+        assert_eq!(body["return_documents"], json!(true));
+    }
+
+    #[test]
+    fn non_cohere_rerank_request_transform_preserves_body() {
+        let channel = RelayChannel {
+            id: 38,
+            name: "jina".to_string(),
+            channel_type: 38,
+            key: "jina-test".to_string(),
+            base_url: None,
+            models: "jina-reranker-v2-base-multilingual".to_string(),
+            channel_group: "default".to_string(),
+            model_mapping: None,
+            openai_organization: None,
+        };
+        let mut body = json!({
+            "model": "jina-reranker-v2-base-multilingual",
+            "query": "rust relay",
+            "documents": ["doc one"],
+            "return_documents": false
+        });
+        let original = body.clone();
+
+        apply_endpoint_request_transform(&mut body, "rerank", &channel);
+
+        assert_eq!(body, original);
     }
 
     #[test]
@@ -2834,12 +3137,70 @@ mod tests {
         );
         assert_eq!(
             usage_summary_for_provider(
+                r#"{"meta":{"billed_units":{"search_units":1}}}"#,
+                RelayProviderKind::OpenAiCompatible,
+                "rerank"
+            ),
+            UsageSummary {
+                prompt_tokens: 1,
+                total_tokens: 1,
+                ..UsageSummary::default()
+            }
+        );
+        assert_eq!(
+            usage_summary_for_provider(
                 r#"{"usage":{"total_tokens":21}}"#,
                 RelayProviderKind::OpenAiCompatible,
                 "chat/completions"
             ),
             UsageSummary {
                 total_tokens: 21,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn cohere_rerank_response_transform_outputs_unified_usage() {
+        let (body, usage) = transform_cohere_rerank_response_body(
+            r#"{"results":[{"index":0,"relevance_score":0.99,"document":{"text":"doc"}}],"meta":{"billed_units":{"input_tokens":34,"output_tokens":2}}}"#,
+            0,
+        )
+        .expect("valid Cohere rerank response");
+        let value = serde_json::from_str::<Value>(&body).expect("transformed JSON");
+
+        assert_eq!(value["results"][0]["index"], json!(0));
+        assert_eq!(value["usage"]["prompt_tokens"], json!(34));
+        assert_eq!(value["usage"]["completion_tokens"], json!(2));
+        assert_eq!(value["usage"]["total_tokens"], json!(36));
+        assert_eq!(
+            usage,
+            UsageSummary {
+                prompt_tokens: 34,
+                completion_tokens: 2,
+                total_tokens: 36,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn cohere_rerank_response_transform_falls_back_to_request_estimate() {
+        let (body, usage) = transform_cohere_rerank_response_body(
+            r#"{"results":[{"index":0,"relevance_score":0.99}],"meta":{"billed_units":{"input_tokens":0,"output_tokens":9}}}"#,
+            17,
+        )
+        .expect("valid Cohere rerank response");
+        let value = serde_json::from_str::<Value>(&body).expect("transformed JSON");
+
+        assert_eq!(value["usage"]["prompt_tokens"], json!(17));
+        assert_eq!(value["usage"]["completion_tokens"], json!(0));
+        assert_eq!(value["usage"]["total_tokens"], json!(17));
+        assert_eq!(
+            usage,
+            UsageSummary {
+                prompt_tokens: 17,
+                total_tokens: 17,
                 ..UsageSummary::default()
             }
         );

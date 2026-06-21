@@ -17,8 +17,8 @@ pub use openai_compatible::{
     usage_summary_from_body, usage_summary_from_gemini_body, usage_summary_from_gemini_sse_stream,
     usage_summary_from_rerank_body, usage_summary_from_sse_stream, GeminiNativePath,
     SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ANTHROPIC,
-    CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA, GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
-    RERANK_CHANNEL_TYPES,
+    CHANNEL_TYPE_COHERE, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA, GEMINI_CHANNEL_TYPES,
+    OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
 };
 
 #[derive(Debug, Clone)]

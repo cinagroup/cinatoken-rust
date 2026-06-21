@@ -16,8 +16,9 @@ Last checked: 2026-06-21
   parsing, nested usage token details, Anthropic cache usage details,
   Anthropic streaming `message_start`/`message_delta` usage merging, Gemini
   generate and embedding `usageMetadata` parsing, Gemini `countTokens`
-  `totalTokens` parsing, Jina rerank URL/usage parsing, split streaming byte
-  chunks, and versioned token/channel cache wrappers.
+  `totalTokens` parsing, Jina/Cohere rerank URL and usage parsing including
+  Cohere `search_units`, split streaming byte chunks, and versioned
+  token/channel cache wrappers.
 - `cargo test -p cinatoken-migration` covering `dev-seed` SQL generation.
 - `cargo test -p cinatoken-migration` covering source repository inspection
   argument parsing and local SQLite candidate discovery.
@@ -63,9 +64,11 @@ Last checked: 2026-06-21
   snapshots, usage-detail token normalization, and settlement deltas against
   frozen snapshots.
 - `cargo test -p cinatoken-worker --lib` covering `/v1/rerank` endpoint
-  metadata, Jina channel type `38`, local non-streaming rejection,
-  Go-compatible `query`/`documents` validation, rerank request-token
-  estimates, and endpoint-specific Jina/Cohere rerank usage parsing.
+  metadata, Jina channel type `38`, Cohere channel type `34`, local
+  non-streaming rejection, Go-compatible `query`/`documents` and integer
+  `top_n` validation, Cohere rerank request adaptation, Cohere rerank response
+  transformation and request-estimate fallback, rerank request-token estimates, and
+  endpoint-specific Jina/Cohere rerank usage parsing.
 - `cargo test -p cinatoken-worker --lib` covering visible request-body media
   fallback counts for OpenAI-style and Gemini-style token preflight estimates,
   including request-time `img`/`ai` normalization when expressions reference
@@ -84,7 +87,7 @@ Last checked: 2026-06-21
   refund reason metadata and compiling the Worker streaming audit/reserve path
   for chat, completions, responses, image generation, Anthropic, and native
   Gemini.
-- No live `/v1/rerank` upstream request has been executed yet.
+- No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus

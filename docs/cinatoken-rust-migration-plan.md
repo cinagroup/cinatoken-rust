@@ -1299,8 +1299,8 @@ Relay：
   abstractions, Upstash Redis client, relay auth, channel selection, model
   mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay,
   OpenAI-compatible image generation JSON/SSE relay, OpenAI-compatible audio
-  speech relay, Jina `/v1/rerank` JSON relay, native Gemini generateContent,
-  streamGenerateContent,
+  speech relay, Jina `/v1/rerank` JSON relay, Cohere `/v1/rerank` JSON
+  request/response adapter, native Gemini generateContent, streamGenerateContent,
   embedContent, and batchEmbedContents relay, native Gemini countTokens relay,
   read-through token/channel cache, and relay token/IP rate limits are now in
   place.
@@ -1349,17 +1349,18 @@ Relay：
   display fields for `billing_mode`, base-expression `expr_b64`, and
   `matched_tier`, while request-rule bodies remain out of log metadata.
 - `/v1/rerank` now supports Jina channel type `38` as non-streaming JSON
-  passthrough, with Go-compatible `query`/`documents` validation and
-  request-time token estimation from rerank `query` and `documents`. Rerank
-  audit/settlement parsing also handles Jina total-token usage and Cohere
-  `meta.billed_units` shapes.
+  passthrough and Cohere channel type `34` with Go-compatible request/response
+  adaptation, including `query`/`documents` validation, request-time token
+  estimation from rerank `query` and `documents`, Cohere `top_n`/document
+  return normalization, and unified rerank usage parsing for Jina total-token
+  usage plus Cohere `meta.billed_units`.
 - Remaining Phase 3 billing work: exact tokenizer counts plus image dimension
   and audio duration parity for request-time token estimation, and continued
   Go/Rust golden billing parity expansion.
 - Next relay/API candidate from the migration plan: a shared
   multipart/raw-body relay core before `/v1/audio/transcriptions` and
-  `/v1/audio/translations`; provider-specific rerank transforms such as Cohere
-  remain pending.
+  `/v1/audio/translations`; provider-specific rerank transforms beyond
+  Jina/Cohere remain pending.
 
 ## 20. 最终交付形态
 

@@ -11,8 +11,9 @@ pub const OPENAI_COMPATIBLE_CHANNEL_TYPES: &[i32] = &[
     48, // xAI
     53, // Submodel
 ];
+pub const CHANNEL_TYPE_COHERE: i32 = 34;
 pub const CHANNEL_TYPE_JINA: i32 = 38;
-pub const RERANK_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_JINA];
+pub const RERANK_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_JINA, CHANNEL_TYPE_COHERE];
 pub const CHANNEL_TYPE_ANTHROPIC: i32 = 14;
 pub const ANTHROPIC_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_ANTHROPIC];
 pub const CHANNEL_TYPE_GEMINI: i32 = 24;
@@ -213,6 +214,7 @@ pub fn upstream_gemini_native_url(
 pub fn default_base_url(channel_type: i32) -> &'static str {
     match channel_type {
         20 => "https://openrouter.ai/api",
+        CHANNEL_TYPE_COHERE => "https://api.cohere.ai",
         40 => "https://api.siliconflow.cn",
         42 => "https://api.mistral.ai",
         43 => "https://api.deepseek.com",
@@ -541,15 +543,24 @@ fn usage_summary_from_cohere_rerank_value(value: &Value) -> Option<UsageSummary>
     let prompt_tokens = first_i32_field(billed_units, &["input_tokens"]);
     let completion_tokens = first_i32_field(billed_units, &["output_tokens"]);
     let total_tokens = prompt_tokens.saturating_add(completion_tokens);
-    if total_tokens <= 0 {
-        return None;
+    if total_tokens > 0 {
+        return Some(UsageSummary {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            ..UsageSummary::default()
+        });
     }
-    Some(UsageSummary {
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        ..UsageSummary::default()
-    })
+
+    let search_units = first_i32_field(billed_units, &["search_units"]);
+    if search_units > 0 {
+        return Some(UsageSummary {
+            prompt_tokens: search_units,
+            total_tokens: search_units,
+            ..UsageSummary::default()
+        });
+    }
+    None
 }
 
 fn is_image_generation_usage_value(value: &Value) -> bool {
@@ -879,6 +890,10 @@ mod tests {
             "https://api.jina.ai/v1/rerank"
         );
         assert_eq!(
+            upstream_v1_url(CHANNEL_TYPE_COHERE, None, "rerank"),
+            "https://api.cohere.ai/v1/rerank"
+        );
+        assert_eq!(
             upstream_v1_url(1, Some("https://example.test/v1/"), "embeddings"),
             "https://example.test/v1/embeddings"
         );
@@ -990,6 +1005,10 @@ mod tests {
             CHANNEL_TYPE_JINA,
             RERANK_CHANNEL_TYPES
         ));
+        assert!(channel_type_supported(
+            CHANNEL_TYPE_COHERE,
+            RERANK_CHANNEL_TYPES
+        ));
         assert!(!channel_type_supported(14, OPENAI_COMPATIBLE_CHANNEL_TYPES));
         assert!(!channel_type_supported(
             CHANNEL_TYPE_JINA,
@@ -1090,6 +1109,14 @@ mod tests {
                 prompt_tokens: 34,
                 completion_tokens: 2,
                 total_tokens: 36,
+                ..UsageSummary::default()
+            }
+        );
+        assert_eq!(
+            usage_summary_from_rerank_body(r#"{"meta":{"billed_units":{"search_units":1}}}"#),
+            UsageSummary {
+                prompt_tokens: 1,
+                total_tokens: 1,
                 ..UsageSummary::default()
             }
         );

@@ -54,16 +54,21 @@ The Worker:
 - falls back to channel CSV matching when no ability row exists;
 - limits OpenAI-compatible relay candidates to provider types
   `1, 20, 40, 42, 43, 48, 53`;
-- limits `/v1/rerank` relay candidates to Jina provider type `38`;
+- limits `/v1/rerank` relay candidates to Jina provider type `38` and
+  Cohere provider type `34`;
 - limits Anthropic Messages relay candidates to native Anthropic provider type
   `14`;
 - limits native Gemini relay candidates to Gemini provider type `24`;
 - applies `model_mapping` when it is a JSON object from source model to
   upstream model, including native Gemini path models and nested Gemini
   request-body `model` fields such as batch embedding requests;
-- forwards the original JSON body to the matching upstream `/v1/...` endpoint;
+- forwards the original JSON body to the matching upstream `/v1/...` endpoint
+  unless a provider-specific adapter is required;
 - validates `/v1/rerank` JSON requests with Go-compatible `query` and
-  non-empty `documents` checks before forwarding to Jina `/v1/rerank`;
+  non-empty `documents` checks before forwarding;
+- forwards Jina `/v1/rerank` requests as JSON passthrough and adapts Cohere
+  rerank requests to the Go-compatible upstream shape with `top_n >= 1` and
+  `return_documents = true`;
 - forwards native Anthropic Messages requests with `x-api-key`,
   `anthropic-version`, and optional `anthropic-beta` headers;
 - forwards native Gemini requests with `x-goog-api-key` and strips downstream
@@ -85,6 +90,9 @@ The Worker:
 - parses Gemini `usageMetadata` from JSON responses and native SSE `data:`
   chunks, plus Gemini `countTokens` `totalTokens` responses, including cached,
   image, and audio token details;
+- transforms successful Cohere rerank JSON responses into unified
+  `{results, usage}` responses and parses Cohere `meta.billed_units`
+  input/output tokens or `search_units` for audit and settlement;
 - tees streaming chat completion, completion, response, image generation,
   Anthropic Messages, and native Gemini responses so `wait_until` can consume
   an audit branch incrementally without blocking the client stream;
@@ -137,9 +145,10 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
   matching `"group"`, and either empty `models` or a CSV entry for the
   requested model. OpenAI-compatible endpoints, including image generation and
   audio speech, currently support types `1, 20, 40, 42, 43, 48, 53`;
-  `/v1/rerank` currently supports Jina type `38`; `/v1/messages` currently
-  supports type `14`; native Gemini generate-content, embedding, and
-  token-count endpoints currently support type `24`.
+  `/v1/rerank` currently supports Jina type `38` and Cohere type `34`;
+  `/v1/messages` currently supports type `14`; native Gemini
+  generate-content, embedding, and token-count endpoints currently support type
+  `24`.
 - preferably an `abilities` row with matching `group_name`, `model`,
   `channel_id`, and `enabled = 1`.
 
@@ -170,10 +179,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - OpenAI-compatible audio speech supports JSON request passthrough and
   unparsed audio/SSE response passthrough; audio transcription and translation
   multipart paths are still pending.
-- Rerank support is currently Jina JSON passthrough only. Jina `usage.total_tokens`
-  and Cohere `meta.billed_units` usage shapes are normalized for audit and
-  settlement, but Cohere and other provider-specific request/response
-  transforms plus live upstream coverage are still pending.
+- Rerank support currently covers Jina JSON passthrough and Cohere JSON
+  request/response adaptation. Other provider-specific rerank transforms plus
+  live upstream coverage are still pending.
 - Streaming usage reconciliation is wired for OpenAI-compatible SSE usage
   chunks, Anthropic Messages cumulative usage events, and Gemini
   `usageMetadata` chunks, but live upstream SSE coverage is still pending.
@@ -184,7 +192,7 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   `img`/`ai` normalization. Exact tokenizer counts plus image dimension/audio
   duration parity are still pending.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
-- Provider-specific request transforms are not implemented yet.
+- Provider-specific request transforms are implemented for Cohere rerank only.
 - Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
 - Token/channel cache invalidation is TTL-based; explicit invalidation still
   needs to be added when dashboard/admin mutation paths are ported.

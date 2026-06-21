@@ -15,8 +15,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - `POST /v1/responses` OpenAI-compatible relay MVP, including streaming
   passthrough for `stream: true`.
 - `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP.
-- `POST /v1/rerank` non-stream Jina rerank JSON relay MVP for channel type
-  `38`, including Go-compatible `query`/`documents` request validation.
+- `POST /v1/rerank` non-stream rerank JSON relay MVP for Jina channel type
+  `38` and Cohere channel type `34`, including Go-compatible
+  `query`/`documents` request validation and Cohere request/response
+  adaptation.
 - `POST /v1/images/generations` OpenAI-compatible relay MVP, including
   streaming passthrough for `stream: true`.
 - `POST /v1/audio/speech` OpenAI-compatible relay MVP for JSON request
@@ -35,8 +37,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Best-effort D1 token status update for expired and exhausted tokens.
 - D1 channel selection for OpenAI-compatible provider types.
 - D1 channel selection can now filter by endpoint provider family, including
-  Anthropic-only selection for `/v1/messages` and Gemini-only selection for
-  native Gemini generate-content, embedding, and token-count endpoints.
+  rerank-only selection for `/v1/rerank`, Anthropic-only selection for
+  `/v1/messages`, and Gemini-only selection for native Gemini generate-content,
+  embedding, and token-count endpoints.
 - Ability-first channel selection with channel CSV fallback.
 - Model mapping before upstream forwarding.
 - Token access update, user request-count update, and zero-quota consume audit logs.

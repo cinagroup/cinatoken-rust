@@ -53,6 +53,7 @@ struct RelayEndpoint {
     supports_streaming: bool,
     force_streaming: bool,
     stream_not_implemented_feature: Option<&'static str>,
+    parse_non_stream_usage: bool,
 }
 
 impl RelayEndpoint {
@@ -113,6 +114,7 @@ pub async fn chat_completions(
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         },
         None,
     )
@@ -135,6 +137,7 @@ pub async fn embeddings(req: Request, env: Env, context: Context) -> worker::Res
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         },
         None,
     )
@@ -161,6 +164,30 @@ pub async fn image_generations(
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+        },
+        None,
+    )
+    .await
+}
+
+pub async fn audio_speech(req: Request, env: Env, context: Context) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "audio speech",
+            cache_family: "openai_compatible",
+            upstream_path: "audio/speech".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: false,
         },
         None,
     )
@@ -183,6 +210,7 @@ pub async fn completions(req: Request, env: Env, context: Context) -> worker::Re
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         },
         None,
     )
@@ -205,6 +233,7 @@ pub async fn responses(req: Request, env: Env, context: Context) -> worker::Resu
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         },
         None,
     )
@@ -231,6 +260,7 @@ pub async fn anthropic_messages(
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         },
         None,
     )
@@ -265,6 +295,7 @@ pub async fn gemini_native(
             supports_streaming: route.is_stream_generate_content(),
             force_streaming: route.is_stream_generate_content(),
             stream_not_implemented_feature: Some("streaming Gemini native action"),
+            parse_non_stream_usage: true,
         },
         Some(route.model),
     )
@@ -477,6 +508,7 @@ async fn relay_endpoint(
         group,
         endpoint.upstream_path.clone(),
         endpoint.provider,
+        endpoint.parse_non_stream_usage,
         audit,
     )
     .await
@@ -1035,6 +1067,7 @@ async fn complete_relay_response(
     group: String,
     endpoint_path: String,
     provider: RelayProviderKind,
+    parse_usage: bool,
     audit: RelayAuditContext,
 ) -> worker::Result<Response> {
     let status = upstream.status_code();
@@ -1045,6 +1078,50 @@ async fn complete_relay_response(
         .flatten()
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    if !parse_usage {
+        if let Some(context) = context {
+            context.wait_until(async move {
+                if let Err(err) = record_relay_audit(
+                    &db,
+                    &auth,
+                    &channel,
+                    &model,
+                    &group,
+                    &endpoint_path,
+                    status,
+                    &UsageSummary::default(),
+                    &audit,
+                    upstream_request_id.as_deref(),
+                    false,
+                )
+                .await
+                {
+                    worker::console_error!("failed to record relay audit: {}", err);
+                }
+            });
+        } else if let Err(err) = record_relay_audit(
+            &db,
+            &auth,
+            &channel,
+            &model,
+            &group,
+            &endpoint_path,
+            status,
+            &UsageSummary::default(),
+            &audit,
+            upstream_request_id.as_deref(),
+            false,
+        )
+        .await
+        {
+            worker::console_error!("failed to record relay audit: {}", err);
+        }
+
+        upstream.headers_mut().set("content-type", &content_type)?;
+        set_cors_headers(&mut upstream)?;
+        return Ok(upstream);
+    }
+
     if let Some(context) = context {
         let mut audit_response = match upstream.cloned() {
             Ok(response) => response,
@@ -2190,6 +2267,7 @@ mod tests {
             supports_streaming,
             force_streaming: false,
             stream_not_implemented_feature: feature,
+            parse_non_stream_usage: true,
         }
     }
 
@@ -2236,6 +2314,7 @@ mod tests {
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         };
         let body = json!({"model": "claude-test", "stream": true});
 
@@ -2256,6 +2335,7 @@ mod tests {
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         };
         let body = json!({"model": "gpt-test", "prompt": "hello", "stream": true});
 
@@ -2276,6 +2356,7 @@ mod tests {
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         };
         let body = json!({"model": "gpt-test", "input": "hello", "stream": true});
 
@@ -2296,6 +2377,7 @@ mod tests {
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         };
         let body = json!({"model": "gpt-image-1", "prompt": "hello", "stream": true});
 
@@ -2318,6 +2400,47 @@ mod tests {
     }
 
     #[test]
+    fn audio_speech_endpoint_skips_non_stream_usage_parsing() {
+        let endpoint = RelayEndpoint {
+            display_name: "audio speech",
+            cache_family: "openai_compatible",
+            upstream_path: "audio/speech".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: false,
+        };
+        let body = json!({
+            "model": "gpt-4o-mini-tts",
+            "input": "hello",
+            "voice": "alloy",
+            "stream_format": "audio"
+        });
+
+        assert!(!endpoint.should_relay_stream(&body));
+        assert_eq!(endpoint.stream_not_implemented(&body), None);
+        assert!(!endpoint.parse_non_stream_usage);
+        assert_eq!(
+            endpoint.upstream_url(&RelayChannel {
+                id: 1,
+                name: "openai".to_string(),
+                channel_type: 1,
+                key: "sk-test".to_string(),
+                base_url: None,
+                models: "gpt-4o-mini-tts".to_string(),
+                channel_group: "default".to_string(),
+                model_mapping: None,
+                openai_organization: None,
+            }),
+            "https://api.openai.com/v1/audio/speech"
+        );
+    }
+
+    #[test]
     fn gemini_native_endpoint_forces_streaming_from_path_action() {
         let route = GeminiNativePath {
             api_version: "v1beta".to_string(),
@@ -2335,6 +2458,7 @@ mod tests {
             supports_streaming: true,
             force_streaming: true,
             stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
         };
         let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
 
@@ -2360,6 +2484,7 @@ mod tests {
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
+            parse_non_stream_usage: true,
         };
         let body = json!({"content": {"parts": [{"text": "hello"}]}});
 
@@ -2385,6 +2510,7 @@ mod tests {
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
+            parse_non_stream_usage: true,
         };
         let body = json!({"contents": [{"parts": [{"text": "hello"}]}]});
 
@@ -2405,6 +2531,7 @@ mod tests {
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
+            parse_non_stream_usage: true,
         };
         let body = json!({
             "stream": true,

@@ -1298,10 +1298,11 @@ Relay：
 - Rust workspace, Worker entrypoint, D1 core schema, migration CLI, cache
   abstractions, Upstash Redis client, relay auth, channel selection, model
   mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay,
-  OpenAI-compatible image generation JSON/SSE relay, native Gemini
-  generateContent, streamGenerateContent, embedContent, and batchEmbedContents
-  relay, native Gemini countTokens relay, read-through token/channel cache, and
-  relay token/IP rate limits are now in place.
+  OpenAI-compatible image generation JSON/SSE relay, OpenAI-compatible audio
+  speech relay, native Gemini generateContent, streamGenerateContent,
+  embedContent, and batchEmbedContents relay, native Gemini countTokens relay,
+  read-through token/channel cache, and relay token/IP rate limits are now in
+  place.
 - Tiered billing expression foundations are in place: expression execution,
   request `param()`/`header()` probes, tier trace capture, group-ratio
   snapshots, refund/additional settlement deltas, D1 billing option lookup, and

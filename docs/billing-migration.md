@@ -77,6 +77,9 @@ For non-streaming relays with a Worker `Context`, it returns the original
 upstream response to the client and consumes a cloned audit branch in
 `wait_until` for usage parsing and post-response settlement; if response clone
 initialization fails, it falls back to the buffered response path.
+For audio speech, the Worker does not parse the binary/audio-event response
+body for usage; it records default usage metadata and relies on the normal
+no-usage refund/pending behavior.
 
 For successful tiered-expression responses with usage metadata, including
 nested cached/cache-creation and image/audio token details, it rebuilds actual

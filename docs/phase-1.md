@@ -17,6 +17,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP.
 - `POST /v1/images/generations` OpenAI-compatible relay MVP, including
   streaming passthrough for `stream: true`.
+- `POST /v1/audio/speech` OpenAI-compatible relay MVP for JSON request
+  passthrough and unparsed audio/SSE response passthrough.
 - `POST /v1/messages` native Anthropic Messages relay MVP for native Anthropic
   channel type `14`, including streaming passthrough for `stream: true`.
 - `POST /v1beta/models/{model}:generateContent` and
@@ -84,6 +86,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Worker-side non-stream relay audit now uses a cloned upstream response branch
   in `wait_until` when a Worker `Context` is available, so the client path can
   return the original upstream response stream without buffering it first.
+- Worker-side non-stream relay endpoints can opt out of response-body usage
+  parsing, used by audio speech to preserve binary/audio-event passthrough.
 - First Go/Rust billing parity fixtures for multi-condition expressions,
   Claude tier boundaries, cache split pricing, `len` tiering,
   ratio-equivalent quota conversion, nested/array/missing request probes,

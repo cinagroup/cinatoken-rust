@@ -154,3 +154,15 @@ Invoke-WebRequest `
   -ContentType 'application/json' `
   -Body '{"model":"gpt-image-1","prompt":"a tiny migration milestone badge","stream":true,"partial_images":1}'
 ```
+
+Audio speech returns a binary audio response and should be saved by the client:
+
+```powershell
+Invoke-WebRequest `
+  -Method Post `
+  -Uri http://127.0.0.1:8787/v1/audio/speech `
+  -Headers @{ Authorization = 'Bearer ct-dev-key' } `
+  -ContentType 'application/json' `
+  -Body '{"model":"gpt-4o-mini-tts","input":"hello from the Rust relay","voice":"alloy"}' `
+  -OutFile speech.mp3
+```

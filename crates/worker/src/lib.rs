@@ -76,6 +76,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let event_ctx = ctx.data;
             relay::image_generations(req, env, event_ctx).await
         })
+        .post_async("/v1/audio/speech", |req, ctx| async move {
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::audio_speech(req, env, event_ctx).await
+        })
         .run(req, env)
         .await
 }

@@ -29,6 +29,8 @@ Read this file with:
   evidence.
 - `docs/observability-slo-security-runbook.md` for G6 logs, traces, SLOs,
   alert drills, redaction, WAF/rate-limit/CORS, and incident evidence.
+- `docs/admin-frontend-parity-runbook.md` for G5 admin API, frontend, auth,
+  session, operator CRUD, cache invalidation, and audit evidence.
 - `docs/staging-smoke-runbook.md` for the staging deploy and live smoke
   checklist before canary.
 - `docs/cutover-rollback-runbook.md` for traffic ramp, abort, rollback,
@@ -90,6 +92,12 @@ Cloudflare references were refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/observability/logs/workers-logs/>
 - Workers secrets:
   <https://developers.cloudflare.com/workers/configuration/secrets/>
+- Workers static assets:
+  <https://developers.cloudflare.com/workers/static-assets/>
+- Workers SPA routing:
+  <https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/>
+- Turnstile server-side validation:
+  <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>
 - Cloudflare WAF:
   <https://developers.cloudflare.com/waf/>
 - D1 limits:
@@ -130,7 +138,7 @@ Production rules for this migration:
 | G2 | Data dry run | D1 migrations cover production-critical tables | Source counts/hashes, staging import report, verification report, rollback export | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
-| G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | Login, token, channel, user, log, billing, and settings smoke | Operator cutover |
+| G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
 | G6 | Observability and security | SLO dashboards, alerts, WAF/rate limits, secret policy, and runbooks exist | G6 report from `docs/observability-slo-security-runbook.md`, logs/traces, alert drill, redaction smoke, incident template | Canary above internal traffic |
 | G7 | Canary | Rust Worker handles selected safe traffic with Go rollback ready | 1%/5%/25% reports, no unexplained billing deltas, rollback rehearsal | Full cutover |
 | G8 | Cutover | All P0 gates pass and freeze window is approved | Final checklist, backup/export, DNS/route plan, owner approval | Retiring Go/VPS |
@@ -147,7 +155,7 @@ Production rules for this migration:
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
 | Observability/SRE | Partial | Logs, traces, metrics, alerts, runbooks, and incident ownership | Dashboard and alert checklist |
 | Security/compliance | Partial | Secret isolation, CORS/WAF/rate limits, SSRF controls, admin audit, OAuth/webhook checks | Security checklist and smoke evidence |
-| Admin/frontend | Planned | Pages-deployed operator UI with auth, token, channel, billing, log, and settings flows | Staging Pages smoke |
+| Admin/frontend | Planned | Cloudflare-deployed operator UI with auth, token, channel, billing/log/settings flows, redaction, audit, and cache invalidation | Redacted G5 report from `docs/admin-frontend-parity-runbook.md` |
 | Async/tasks/payments | Planned | Queue/R2/Workflow-backed async processing and idempotent payment flows | Replay/idempotency tests |
 | Performance/cost | Planned | Load-tested SLOs and cost forecast | Mixed traffic load report |
 | Release/cutover | Planned | Canary, rollback, cutover, and decommission runbooks | Rehearsed cutover checklist |
@@ -417,23 +425,36 @@ Target:
 
 - Relay can go first, but operators must not need direct D1 edits for normal
   production work.
+- Scenario B requires a G5 report from
+  `docs/admin-frontend-parity-runbook.md` before Rust becomes the admin source
+  of truth.
 
 Required tasks:
 
-1. Build the Pages staging deployment using Bun.
-2. Migrate login/session flows, token management, channel management, model
+1. Choose the frontend deployment model: Worker static assets, Cloudflare
+   Pages plus Worker API, or a documented temporary Go-hosted defer path.
+2. Build the frontend staging deployment using Bun and record the source
+   commit, build command, artifact path, route fallback behavior, and API base
+   URL policy.
+3. Migrate login/session flows, token management, channel management, model
    mapping, log search, user/quota management, billing settings, and system
    settings.
-3. Add payment provider flows with webhook signature verification and idempotent
+4. Make sensitive admin mutations write audit events and invalidate token,
+   channel, model, group, option, and auth caches where relevant.
+5. Add payment provider flows with webhook signature verification and idempotent
    event storage.
-4. Move async task polling and generated artifacts to Queues/R2/Workflows as
+6. Move async task polling and generated artifacts to Queues/R2/Workflows as
    appropriate.
-5. Decide whether realtime/session-heavy flows use Durable Objects, a separate
+7. Decide whether realtime/session-heavy flows use Durable Objects, a separate
    Rust service, or stay on Go until later.
 
 Exit evidence:
 
 - Operator staging smoke passes without direct database edits.
+- Frontend build, static asset/Pages route fallback, and auth/session smoke
+  pass under the selected Cloudflare deployment model.
+- Token/channel/user/model/option mutations have audit and cache-invalidation
+  evidence.
 - Payment replay cannot double-credit.
 - Task retry cannot double-charge or lose artifacts.
 - Frontend build and route checks pass under Bun.
@@ -480,7 +501,8 @@ Use when the goal is to move high-frequency AI relay traffic first.
 Use when operators need to manage Rust production without direct D1 access.
 
 - Complete Scenario A.
-- Deploy Pages/admin staging.
+- Deploy the admin/frontend staging surface with the selected Cloudflare static
+  assets or Pages model.
 - Migrate token/channel/user/log/settings APIs.
 - Keep payment and long-tail async tasks on Go if not yet proven.
 - Promote after G5 passes.
@@ -547,6 +569,8 @@ Before G8 cutover, the repository or deployment runbook must contain:
 - Redacted data migration report from `docs/data-migration-runbook.md`.
 - Billing matrix with expression coverage, settlement mode, and shadow deltas.
 - Redacted billing parity report from `docs/billing-parity-runbook.md`.
+- Redacted G5 admin/frontend/auth report from
+  `docs/admin-frontend-parity-runbook.md`.
 - Cloudflare binding checklist for staging and production:
   `docs/cloudflare-production-config-checklist.md`.
 - Secret inventory without values and rotation owners.
@@ -579,3 +603,6 @@ Before G8 cutover, the repository or deployment runbook must contain:
 8. Use `docs/observability-slo-security-runbook.md` to define SLO thresholds,
    alert drills, redaction evidence, and security go/no-go before any customer
    canary.
+9. Use `docs/admin-frontend-parity-runbook.md` to produce the G5 admin,
+   frontend, auth/session, operator CRUD, cache invalidation, and audit report
+   before Scenario B.

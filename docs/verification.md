@@ -149,6 +149,9 @@ Last checked: 2026-06-22
   Workers Logs sampling and retention policy, SLO/abort thresholds, dashboard
   and alert matrices, security controls, staging alert drills, redaction checks,
   and incident templates.
+- Added `docs/admin-frontend-parity-runbook.md` for G5 admin API, frontend
+  deployment, auth/session strategy, operator CRUD smoke, cache invalidation,
+  admin audit, secret redaction, and Scenario B go/no-go evidence.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

@@ -3,7 +3,7 @@
 Date: 2026-06-22
 
 Status: first detailed smoke runbook for the Rust/Cloudflare staging
-environment. This runbook supports G1, G3, G4, G6, and G7 in
+environment. This runbook supports G1, G3, G4, G5, G6, and G7 in
 `docs/production-migration-execution-plan.md`.
 
 ## Purpose
@@ -17,7 +17,8 @@ Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
 `docs/route-provider-parity-runbook.md` before Phases 3 and 4,
 `docs/data-migration-runbook.md` before Phase 7,
 `docs/billing-parity-runbook.md` before Phase 5, and
-`docs/observability-slo-security-runbook.md` before Phase 8. Use
+`docs/admin-frontend-parity-runbook.md` before Phase 8, and
+`docs/observability-slo-security-runbook.md` before Phase 9. Use
 `docs/cutover-rollback-runbook.md` before any G7 canary.
 
 Do not use production secrets in staging. Do not paste secret values into this
@@ -286,7 +287,54 @@ Additional D1 behavior cases:
 | D1-004 | Settlement after success | Final quota delta correct |
 | D1-005 | D1 write failure simulation, if feasible | Customer-safe error or refund path |
 
-## Phase 8: Observability And Security Smoke
+## Phase 8: Admin, Frontend, And Auth Smoke
+
+Use `docs/admin-frontend-parity-runbook.md` for frontend deployment model,
+auth/session strategy, operator CRUD scope, cache invalidation, audit, and the
+redacted G5 report template.
+
+Frontend cases:
+
+| Case ID | Flow | Expected Evidence |
+| --- | --- | --- |
+| FRONTEND-001 | Build frontend with Bun | Source commit, command output, artifact path |
+| FRONTEND-002 | Hard-refresh SPA routes | `/dashboard`, `/channels`, `/keys`, `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`, and `/profile` route fallback works |
+| FRONTEND-003 | API base URL/CORS policy | Same-origin or approved cross-origin credential policy works |
+| FRONTEND-004 | Bundle redaction scan | No secret values in static assets; public config allowlist documented |
+
+Admin/auth cases:
+
+| Case ID | Flow | Expected Evidence |
+| --- | --- | --- |
+| ADMIN-001 | Login, current user, logout, expired session | Correct role, secure cookie policy, 401 after logout |
+| ADMIN-002 | Create/update/disable token and reveal key | Mutation works, reveal is audited, token cache invalidates |
+| ADMIN-003 | Create/update/disable channel and run test | Channel selection reflects change, secret is redacted, channel cache invalidates |
+| ADMIN-004 | Update model mapping or group config | Relay route uses new mapping after invalidation or documented TTL |
+| ADMIN-005 | Adjust user quota/status/role | Single D1 mutation, audit event, no double mutation |
+| ADMIN-006 | Search logs by token/channel/model/request ID | Recent request is queryable and redacted |
+| ADMIN-007 | Update safe system option | Readback works, audit event exists, config cache invalidates |
+| ADMIN-008 | Normal user attempts admin mutation | Correct rejection and no mutation |
+| ADMIN-009 | Disable a bad token/channel during relay smoke | New relay requests stop quickly or within documented TTL |
+
+Optional in-scope cases:
+
+| Case ID | Flow | Expected Evidence |
+| --- | --- | --- |
+| AUTH-ADMIN-001 | OAuth login/bind/unbind | State/callback validation and forced rebind/defer policy |
+| AUTH-ADMIN-002 | Passkey or 2FA login/reset | Credential handling or forced reset policy; admin reset audit |
+| PAY-ADMIN-001 | Subscription/payment admin action | Link to billing runbook evidence; no double-credit risk |
+
+Pass criteria:
+
+- Operators can complete P0 token, channel, user, log, and settings flows
+  without direct D1 edits.
+- Every sensitive mutation has actor/action/target/request ID audit evidence.
+- Secret-bearing responses use no-store behavior and redacted logs.
+- Token/channel/model/option changes invalidate caches or document a safe TTL.
+- Frontend routes and API calls work under the selected Cloudflare deployment
+  model.
+
+## Phase 9: Observability And Security Smoke
 
 Use `docs/observability-slo-security-runbook.md` for the log schema,
 sampling/retention policy, SLO thresholds, alert drill, redaction checks, and
@@ -316,7 +364,7 @@ Pass criteria:
   which upstream responded, and which quota mutation occurred.
 - Security-sensitive values are redacted.
 
-## Phase 9: Canary Rehearsal
+## Phase 10: Canary Rehearsal
 
 Before any customer canary:
 

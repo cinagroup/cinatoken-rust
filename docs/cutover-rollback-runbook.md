@@ -21,6 +21,7 @@ Read with:
 - `docs/data-migration-runbook.md`
 - `docs/billing-parity-runbook.md`
 - `docs/observability-slo-security-runbook.md`
+- `docs/admin-frontend-parity-runbook.md`
 - `docs/staging-smoke-runbook.md`
 - `docs/data-export.md`
 - `docs/verification.md`
@@ -65,6 +66,7 @@ Fill before every cutover scenario:
 | Usage/audit logs | Go/VPS plus Rust shadow logs | Both, with Rust marked by environment | Rust plus archive after G8 | Preserve both |
 | Payments/topups | Go/VPS | Go only until payment cutover | Rust only after G4/G5/G8 | Go/VPS with event reconciliation |
 | Auth/session/OAuth/Passkey/2FA | Go/VPS | Go unless Scenario B includes auth cutover | Rust or forced re-auth | Go/VPS |
+| Admin/frontend operator changes | Go/VPS | Go unless G5 report approves Rust admin | Rust after G5/G8 | Go/VPS with mutation reconciliation |
 | Async tasks/files | Go/VPS | Go until Queue/R2 task cutover | Rust after G7/G8 | Go/VPS plus task reconciliation |
 
 ## Scenario Selection
@@ -96,6 +98,9 @@ Default next scenario: Scenario A.
   from `docs/billing-parity-runbook.md`.
 - Confirm G6 SLO thresholds, alert drill evidence, redaction evidence, and
   incident template from `docs/observability-slo-security-runbook.md`.
+- For Scenario B or later, confirm frontend deploy model, auth/session
+  strategy, operator CRUD scope, cache invalidation, and audit evidence from
+  `docs/admin-frontend-parity-runbook.md`.
 - Define SLOs and abort thresholds.
 - Define customer/internal token group for canary.
 - Confirm rollback can stop Rust traffic without data loss.
@@ -123,10 +128,13 @@ git diff --check
   scope.
 - Produce or refresh the redacted G6 observability/SLO/security report for the
   selected scope.
+- Produce or refresh the redacted G5 admin/frontend/auth report for Scenario B
+  or later.
 - Rehearse rollback in staging.
 - Verify Cloudflare logs/traces/metrics and alert paths.
 - Verify no raw secrets appear in logs.
-- Verify admin can disable a bad token/channel or route.
+- Verify admin can disable a bad token/channel or route through the approved
+  source-of-truth system for the scenario.
 - Record known deviations and owner approval.
 
 ## T-1 Day Checklist

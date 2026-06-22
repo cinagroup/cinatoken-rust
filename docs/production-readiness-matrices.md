@@ -15,7 +15,9 @@ Detailed staging/prod Cloudflare binding, secret, and observability gates are
 tracked in `docs/cloudflare-production-config-checklist.md`. Traffic ramp,
 rollback, reconciliation, and decommission steps are tracked in
 `docs/cutover-rollback-runbook.md`. Executable G3 route/provider parity is
-tracked in `docs/route-provider-parity-runbook.md`.
+tracked in `docs/route-provider-parity-runbook.md`. Executable G5
+admin/frontend/auth parity is tracked in
+`docs/admin-frontend-parity-runbook.md`.
 
 Source inputs inspected for this revision:
 
@@ -23,6 +25,9 @@ Source inputs inspected for this revision:
 - `C:\cinagroup\cinatoken\router\video-router.go`
 - `C:\cinagroup\cinatoken\router\api-router.go`
 - `C:\cinagroup\cinatoken\router\dashboard.go`
+- `C:\cinagroup\cinatoken\router\web-router.go`
+- `C:\cinagroup\cinatoken\web\default\package.json`
+- `C:\cinagroup\cinatoken\web\default\src`
 - `C:\cinagroup\cinatoken\model\main.go`
 - `C:\cinagroup\cinatoken\constant\channel.go`
 - `C:\cinagroup\cinatoken\relay\channel`
@@ -50,6 +55,14 @@ Cloudflare references refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/configuration/versions-and-deployments/gradual-deployments/>
 - Rollbacks:
   <https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/>
+- Workers static assets:
+  <https://developers.cloudflare.com/workers/static-assets/>
+- Workers SPA routing:
+  <https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/>
+- Workers secrets:
+  <https://developers.cloudflare.com/workers/configuration/secrets/>
+- Turnstile server-side validation:
+  <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>
 
 ## Status Legend
 
@@ -97,7 +110,7 @@ required for G1-G8 decisions.
 | G2 | Table migration matrix | Partial | Run real source export/import/verify against staging D1. |
 | G3 | Relay route and provider matrices | Partial | Produce a redacted G3 report from `docs/route-provider-parity-runbook.md`. |
 | G4 | Billing matrix | Partial | Expand Go/Rust fixtures and run shadow settlement report. |
-| G5 | Admin/frontend route matrix | Planned | Deploy Pages/admin staging and smoke operator flows. |
+| G5 | Admin/frontend route, auth/session, operator CRUD, cache, and audit matrix | Planned | Produce a redacted G5 report from `docs/admin-frontend-parity-runbook.md`. |
 | G6 | Observability/security matrix | Partial | Prove logs, traces, alerts, WAF/rate limits, redaction, and runbooks. |
 | G7 | Canary matrix and rollback runbook | Planned | Rehearse rollback and run internal-token canary. |
 | G8 | Cutover evidence checklist | Planned | Capture final export, DNS/route plan, freeze window, and owner sign-off. |
@@ -113,7 +126,7 @@ controlled by `docs/route-provider-parity-runbook.md`.
 
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
-| Public status and setup: `/api/status`, `/api/setup`, static content endpoints | `api-router.go` | Partial: `/api/status` exists; setup/content not migrated | JSON/read-only | G1/G5 | Decide which public dashboard metadata must move before Scenario B. |
+| Public status and setup: `/api/status`, `/api/setup`, static content endpoints | `api-router.go`, `web-router.go`, `web/default` | Partial: `/api/status` exists; setup/content/frontend static routing not migrated | JSON/read-only/static assets | G1/G5 | Decide which public dashboard metadata and SPA route fallback must move before Scenario B. |
 | Relay model list: `GET /v1/models`, `GET /v1/models/:model` | `relay-router.go` | Partial: `GET /v1/models` exists; model retrieve is not complete | JSON | G3 | Add provider-aware retrieve/list parity and live smoke. |
 | Gemini model list: `GET /v1beta/models`, `/v1beta/openai/models` | `relay-router.go` | Planned | JSON | G3 | Add only if required for first customer canary. |
 | Playground: `POST /pg/chat/completions` | `relay-router.go` | Planned | JSON | G5 | Defer until admin/frontend staging exists. |
@@ -135,15 +148,38 @@ controlled by `docs/route-provider-parity-runbook.md`.
 | Suno: `/suno/submit/:action`, `/suno/fetch`, `/suno/fetch/:id` | `relay-router.go` | Planned | Async task | G7 | Queue/Workflow task design and idempotent polling. |
 | Video OpenAI-compatible: `/v1/videos`, `/v1/video/generations`, `/v1/videos/:id/remix` | `video-router.go` | Planned | Async task + binary content | G7 | Queue/R2 artifact plan and task billing replay tests. |
 | Kling/Jimeng video routes | `video-router.go` | Planned | Async task + provider conversion | G7 | Provider-specific conversion fixtures and task replay tests. |
-| Dashboard billing usage: `/dashboard/billing/*`, `/v1/dashboard/billing/*` | `dashboard.go` | Planned | Token-auth read-only | G5/G4 | Decide whether dashboard compatibility stays on Go during Scenario A. |
-| User auth/profile/payment/checkin/OAuth/Passkey/2FA | `api-router.go` | Planned | Session/JSON/security-sensitive | G5/G6 | Build auth/session strategy and forced re-auth policy if needed. |
-| Channel admin | `api-router.go` | Planned | Admin JSON + secret access | G5/G6 | D1 APIs, secret redaction, key reveal controls, admin audit. |
-| Token admin/user token management | `api-router.go` | Planned | User JSON + secret access | G5/G6 | D1 APIs, cache invalidation, key reveal controls. |
-| Logs, quota data, usage | `api-router.go` | Planned | Query/read-heavy | G5/G6 | Queue/R2/archive strategy and query indexes. |
-| Models, vendors, prefill groups | `api-router.go` | Planned | Admin JSON | G5 | D1 schema/import and operator UI smoke. |
+| Dashboard billing usage: `/dashboard/billing/*`, `/v1/dashboard/billing/*` | `dashboard.go`, `web/default/src/features/dashboard`, `web/default/src/features/pricing` | Planned | Token-auth read-only | G5/G4 | Decide whether dashboard compatibility stays on Go during Scenario A; use G5 report if moved. |
+| User auth/profile/payment/checkin/OAuth/Passkey/2FA | `api-router.go`, `web/default/src/features/auth`, `profile`, `wallet` | Planned | Session/JSON/security-sensitive | G5/G6 | Build auth/session strategy and forced re-auth/defer policy in `docs/admin-frontend-parity-runbook.md`. |
+| Channel admin | `api-router.go`, `web/default/src/features/channels` | Planned | Admin JSON + secret access | G5/G6 | D1 APIs, secret redaction, key reveal controls, cache invalidation, admin audit. |
+| Token admin/user token management | `api-router.go`, `web/default/src/features/keys` | Planned | User JSON + secret access | G5/G6 | D1 APIs, cache invalidation, key reveal controls, operator UI smoke. |
+| Logs, quota data, usage | `api-router.go`, `web/default/src/features/usage-logs` | Planned | Query/read-heavy | G5/G6 | Recent D1 query strategy, Queue/R2/archive strategy, redaction, query indexes. |
+| Models, vendors, prefill groups | `api-router.go`, `web/default/src/features/models`, `system-settings` | Planned | Admin JSON | G5 | D1 schema/import, model mapping cache invalidation, operator UI smoke. |
 | Redemptions, topups, subscriptions, payment webhooks | `api-router.go` | Planned | Payment/idempotent writes | G4/G5/G6 | Signature verification, replay tests, double-credit prevention. |
 | Custom OAuth provider management | `api-router.go` | Planned | Root-admin JSON + secrets | G5/G6 | SSRF validation, secret storage policy, admin audit. |
 | Performance, ratio sync, deployments/io.net | `api-router.go` | Planned | External API/ops | G7 | Keep on Go or move behind service/Workflow escape hatch. |
+
+## Admin, Frontend, And Auth Matrix
+
+Executable G5 evidence is tracked in
+`docs/admin-frontend-parity-runbook.md`. Keep this matrix conservative until a
+redacted G5 staging report exists.
+
+| Area | Source Evidence | Rust/Cloudflare Target | Current Status | Required Evidence |
+| --- | --- | --- | --- | --- |
+| Frontend build | `web/default/package.json`, `web/default/bun.lock` | Bun-driven typecheck/build with recorded source commit and artifact path | Planned | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run build` or documented equivalent |
+| Frontend hosting | `web-router.go`, `web/default/src/routes` | Worker static assets or Cloudflare Pages with SPA fallback and API route precedence | Planned | Hard-refresh smoke for `/dashboard`, `/channels`, `/keys`, `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`, and `/profile` |
+| API base URL and CORS | `web/default/src/lib/api.ts` | Same-origin API by default, or explicit Pages/API CORS and cookie domain policy | Planned | API base URL decision, credentialed CORS smoke, no localhost in production config |
+| Login/current user/logout | `api-router.go`, `features/auth/api.ts`, `lib/api.ts` | Rust session authority, secure cookies, role checks, or forced re-auth policy | Planned | Login/current-user/logout smoke and expired-session handling |
+| OAuth/Passkey/2FA | `api-router.go`, `features/auth`, `features/users` | Migrated securely or forced rebind/reset/defer | Planned | State/replay tests, credential import/reset decision, admin reset audit |
+| Token management | `api-router.go`, `features/keys/api.ts` | Token CRUD, reveal controls, status changes, cache invalidation | Planned | Operator smoke, reveal audit, token cache invalidation evidence |
+| Channel management | `api-router.go`, `features/channels/api.ts` | Channel CRUD/test/disable/copy, key reveal controls, cache invalidation | Planned | Operator smoke, channel selection update, secret redaction evidence |
+| User and quota management | `api-router.go`, `features/users/api.ts` | User list/search/detail/manage/quota/reset with audit | Planned | Atomic quota smoke, role/status smoke, audit row |
+| Logs and usage | `api-router.go`, `features/usage-logs` | Recent D1 searchable logs plus archive path | Planned | Request ID search, token/channel/model filters, no secret leakage |
+| Options/settings | `api-router.go`, `features/system-settings` | Typed settings update with audit and cache invalidation | Planned | Safe option update smoke and config-cache evidence |
+| Models/vendors/groups | `api-router.go`, `features/models` | Operator-visible model mapping and group/vendor config | Planned | Relay uses updated mapping after invalidation/TTL |
+| Payment/subscription surfaces | `api-router.go`, `features/subscriptions`, `features/wallet` | Deferred to Go or covered by G4/G6 evidence | Planned | Billing runbook link, webhook replay/idempotency evidence before Rust ownership |
+| Admin audit | Go audit/log behavior, Rust relay audit logs | Actor/action/target/request ID on every sensitive mutation | Planned | Redacted audit samples for token, channel, user, and option mutations |
+| Frontend bundle redaction | `web/default/dist` after build | Static assets contain public config only | Planned | Bundle scan for secret names/values and documented allowlist |
 
 ## Provider And Channel Matrix
 

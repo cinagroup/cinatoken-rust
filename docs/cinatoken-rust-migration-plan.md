@@ -1371,6 +1371,28 @@ and rollback evidence.
   `/v1/audio/transcriptions` and `/v1/audio/translations`. Provider-specific
   rerank transforms beyond Jina/Cohere remain pending.
 
+## Production Execution Cross-References
+
+This original migration plan remains the architecture baseline. The current
+production-grade execution details are split into focused runbooks:
+
+- `docs/production-migration-execution-plan.md` is the gate-driven source of
+  truth for production migration.
+- `docs/production-readiness-matrices.md` tracks route, provider, table,
+  Cloudflare binding, billing, G5 admin/frontend/auth, observability, security,
+  and SLO evidence.
+- `docs/data-migration-runbook.md` controls source export, D1 import, row/hash
+  verification, freeze, rollback, and reconciliation.
+- `docs/billing-parity-runbook.md` controls billing-expression parity, shadow
+  settlement, and paid cutover.
+- `docs/route-provider-parity-runbook.md` controls G3 relay/provider parity.
+- `docs/admin-frontend-parity-runbook.md` controls G5 frontend deployment,
+  auth/session strategy, operator CRUD, cache invalidation, and admin audit.
+- `docs/observability-slo-security-runbook.md` controls G6 logs, SLOs, alerts,
+  security checks, and incident evidence.
+- `docs/staging-smoke-runbook.md` and `docs/cutover-rollback-runbook.md`
+  control staging evidence, canary, abort, rollback, and decommission.
+
 ## 20. 最终交付形态
 
 最终 `cinatoken-rust` 应具备：

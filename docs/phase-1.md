@@ -148,6 +148,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Use `docs/observability-slo-security-runbook.md` for G6 log schema,
   sampling, alert drills, SLO thresholds, redaction, and security go/no-go
   evidence.
+- Use `docs/admin-frontend-parity-runbook.md` for G5 admin/frontend/auth
+  parity, operator CRUD smoke, cache invalidation, admin audit, and frontend
+  deployment evidence before Scenario B.
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`

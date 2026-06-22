@@ -2,7 +2,7 @@
 
 Date: 2026-06-22
 
-Status: production configuration checklist for G1 and G6 in
+Status: production configuration checklist for G1, G5, and G6 in
 `docs/production-migration-execution-plan.md`.
 
 ## Purpose
@@ -12,6 +12,7 @@ as a production-shaped Cloudflare deployment. It complements:
 
 - `docs/production-readiness-matrices.md`
 - `docs/observability-slo-security-runbook.md`
+- `docs/admin-frontend-parity-runbook.md`
 - `docs/staging-smoke-runbook.md`
 - `docs/cutover-rollback-runbook.md`
 
@@ -38,6 +39,12 @@ Cloudflare references refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/observability/logs/workers-logs/>
 - Workers secrets:
   <https://developers.cloudflare.com/workers/configuration/secrets/>
+- Workers static assets:
+  <https://developers.cloudflare.com/workers/static-assets/>
+- Workers SPA routing:
+  <https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/>
+- Turnstile server-side validation:
+  <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>
 - D1 Time Travel and backups:
   <https://developers.cloudflare.com/d1/reference/time-travel/>
 
@@ -113,6 +120,7 @@ These must be true for every deployable environment:
 | `LOG_QUEUE` | Optional | Real queue once queue producer is enabled | Real queue plus consumer/DLQ | Platform/SRE | Queue smoke, DLQ alert |
 | `TASK_QUEUE` | Optional | Real queue once async task flow is enabled | Real queue plus consumer/DLQ | Platform/Tasks | Queue smoke, replay test |
 | AI Gateway | Optional | Real ID or direct-provider decision | Real ID or direct-provider decision | Relay | Provider matrix decision |
+| Static assets or Pages | Optional | Required before G5 frontend smoke | Required before Scenario B/C frontend cutover | Frontend/Platform | SPA fallback, API route precedence, bundle redaction smoke |
 | Service bindings | Optional | Use for Worker-to-Worker calls if split | Same | Platform | Binding type and smoke |
 | Durable Objects | Optional | Required before realtime/session cutover | Required before realtime/session cutover | Platform | Migration entry and WebSocket smoke |
 | Workflows | Optional | Required before multi-step async cutover | Required before multi-step async cutover | Platform/Tasks | Workflow smoke and retry test |
@@ -137,6 +145,9 @@ Rules:
 - Use `.dev.vars` or `.env` only for local development and keep them ignored.
 - Do not commit `.dev.vars*`, `.env*`, exports, smoke payloads, or screenshots
   that contain secrets.
+- Frontend build-time configuration must contain only public values. Public
+  names such as a Turnstile site key are allowed; API keys, webhook secrets,
+  OAuth client secrets, session secrets, and provider keys are not.
 - Rotate any key that appears in logs or a smoke report.
 
 ## Observability Checklist
@@ -182,7 +193,9 @@ armed only when:
 6. Rollback target version and traffic stop method are documented.
 7. Worker version upload/deploy workflow is rehearsed in staging.
 8. G6 report from `docs/observability-slo-security-runbook.md` is approved.
-9. `docs/cutover-rollback-runbook.md` has named operators and abort criteria.
+9. G5 report from `docs/admin-frontend-parity-runbook.md` is approved before
+   Scenario B or later.
+10. `docs/cutover-rollback-runbook.md` has named operators and abort criteria.
 
 ## Config Review Checklist
 

@@ -31,6 +31,9 @@ Read this file with:
   alert drills, redaction, WAF/rate-limit/CORS, and incident evidence.
 - `docs/admin-frontend-parity-runbook.md` for G5 admin API, frontend, auth,
   session, operator CRUD, cache invalidation, and audit evidence.
+- `docs/performance-capacity-cost-runbook.md` for load profiles, D1/Redis/
+  Queue/R2 capacity, Worker limits, cost forecasts, and canary efficiency
+  evidence.
 - `docs/staging-smoke-runbook.md` for the staging deploy and live smoke
   checklist before canary.
 - `docs/cutover-rollback-runbook.md` for traffic ramp, abort, rollback,
@@ -98,6 +101,14 @@ Cloudflare references were refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/>
 - Turnstile server-side validation:
   <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>
+- Workers pricing:
+  <https://developers.cloudflare.com/workers/platform/pricing/>
+- D1 pricing:
+  <https://developers.cloudflare.com/d1/platform/pricing/>
+- Queues limits:
+  <https://developers.cloudflare.com/queues/platform/limits/>
+- R2 limits:
+  <https://developers.cloudflare.com/r2/platform/limits/>
 - Cloudflare WAF:
   <https://developers.cloudflare.com/waf/>
 - D1 limits:
@@ -157,7 +168,7 @@ Production rules for this migration:
 | Security/compliance | Partial | Secret isolation, CORS/WAF/rate limits, SSRF controls, admin audit, OAuth/webhook checks | Security checklist and smoke evidence |
 | Admin/frontend | Planned | Cloudflare-deployed operator UI with auth, token, channel, billing/log/settings flows, redaction, audit, and cache invalidation | Redacted G5 report from `docs/admin-frontend-parity-runbook.md` |
 | Async/tasks/payments | Planned | Queue/R2/Workflow-backed async processing and idempotent payment flows | Replay/idempotency tests |
-| Performance/cost | Planned | Load-tested SLOs and cost forecast | Mixed traffic load report |
+| Performance/cost | Planned | Load-tested SLOs, capacity budget, D1/Redis/Queue/R2 cost forecast, and bottleneck owners | Redacted report from `docs/performance-capacity-cost-runbook.md` |
 | Release/cutover | Planned | Canary, rollback, cutover, and decommission runbooks | Rehearsed cutover checklist |
 
 ## Platform And Cloudflare Plan
@@ -465,6 +476,9 @@ Target:
 
 - Rust/Cloudflare improves global availability without introducing hidden cost
   or latency regressions.
+- Performance, capacity, and cost evidence is produced through
+  `docs/performance-capacity-cost-runbook.md` before canary expansion and full
+  cutover.
 
 Required tasks:
 
@@ -472,15 +486,27 @@ Required tasks:
    auth/route overhead, upstream first-byte overhead, non-stream added latency,
    stream first-token overhead, D1 mutation latency, billing mismatch tolerance,
    and queue lag.
-2. Load-test mixed relay traffic with realistic model distribution.
-3. Validate Worker CPU, memory, subrequest, D1, Queue, R2, and Upstash usage.
-4. Forecast cost at current, 2x, and 5x traffic.
-5. Verify cache hit rates and rate-limit behavior under load.
+2. Capture Go/VPS or owner-approved inferred baseline by route family,
+   provider family, model, stream mode, and token group.
+3. Run load profiles LT-001 through LT-007 for Scenario A, LT-008 before
+   Scenario B, and LT-009 before async/task/media cutover.
+4. Validate Worker CPU, memory, resource-limit errors, subrequests, D1 rows
+   read/written, D1 query duration, Queue backlog, R2 operations, and Upstash
+   commands/errors.
+5. Forecast cost at current, 2x, and 5x traffic, including Worker requests and
+   CPU, D1 reads/writes/storage, Upstash commands, log volume, Queue/R2 usage,
+   and provider spend.
+6. Verify cache hit rates, rate-limit behavior, and Redis failure mode under
+   load.
+7. Assign owners to the top bottlenecks and mitigation paths before promotion.
 
 Exit evidence:
 
 - 500-concurrency mixed relay test, or an agreed production-shaped equivalent,
   passes SLOs.
+- D1 hot-path queries have bounded row reads and acceptable duration.
+- Upstash failure-mode test does not corrupt D1 source-of-truth state.
+- Soak or internal canary window shows no Worker resource-limit errors.
 - Cost forecast is approved before full cutover.
 - Top bottlenecks have owner and mitigation plan.
 
@@ -578,7 +604,8 @@ Before G8 cutover, the repository or deployment runbook must contain:
 - Security checklist.
 - Redacted G6 observability/SLO/security report from
   `docs/observability-slo-security-runbook.md`.
-- Load-test report.
+- Redacted performance/capacity/cost report from
+  `docs/performance-capacity-cost-runbook.md`.
 - Cutover and rollback runbook:
   `docs/cutover-rollback-runbook.md`.
 - Post-cutover monitoring checklist.
@@ -606,3 +633,6 @@ Before G8 cutover, the repository or deployment runbook must contain:
 9. Use `docs/admin-frontend-parity-runbook.md` to produce the G5 admin,
    frontend, auth/session, operator CRUD, cache invalidation, and audit report
    before Scenario B.
+10. Use `docs/performance-capacity-cost-runbook.md` to produce the
+    performance, capacity, and 1x/2x/5x cost forecast before canary expansion
+    and full cutover.

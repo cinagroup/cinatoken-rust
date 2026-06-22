@@ -22,6 +22,7 @@ Read with:
 - `docs/billing-parity-runbook.md`
 - `docs/observability-slo-security-runbook.md`
 - `docs/admin-frontend-parity-runbook.md`
+- `docs/performance-capacity-cost-runbook.md`
 - `docs/staging-smoke-runbook.md`
 - `docs/data-export.md`
 - `docs/verification.md`
@@ -101,6 +102,9 @@ Default next scenario: Scenario A.
 - For Scenario B or later, confirm frontend deploy model, auth/session
   strategy, operator CRUD scope, cache invalidation, and audit evidence from
   `docs/admin-frontend-parity-runbook.md`.
+- Confirm load profiles, D1/Upstash/Queue/R2 capacity evidence, bottleneck
+  owners, and current/2x/5x cost forecast from
+  `docs/performance-capacity-cost-runbook.md`.
 - Define SLOs and abort thresholds.
 - Define customer/internal token group for canary.
 - Confirm rollback can stop Rust traffic without data loss.
@@ -130,6 +134,8 @@ git diff --check
   selected scope.
 - Produce or refresh the redacted G5 admin/frontend/auth report for Scenario B
   or later.
+- Produce or refresh the redacted performance/capacity/cost report for the
+  selected scope.
 - Rehearse rollback in staging.
 - Verify Cloudflare logs/traces/metrics and alert paths.
 - Verify no raw secrets appear in logs.
@@ -226,6 +232,10 @@ Before increasing traffic:
 - Logs/traces and G6 alert sources remain available for the canary window.
 - D1 auth/reserve/settlement writes are healthy.
 - Upstash failures are within threshold.
+- Worker CPU/memory/resource-limit errors are absent for the selected scope.
+- D1 hot-path row reads and query durations stay within approved thresholds.
+- Cost forecast remains approved for current traffic and the next promotion
+  window.
 - Billing shadow or applied deltas are within threshold.
 - No raw secrets in logs.
 - No unhandled queue/DLQ backlog for enabled async paths.

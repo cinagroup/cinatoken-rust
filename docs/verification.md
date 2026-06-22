@@ -152,6 +152,9 @@ Last checked: 2026-06-22
 - Added `docs/admin-frontend-parity-runbook.md` for G5 admin API, frontend
   deployment, auth/session strategy, operator CRUD smoke, cache invalidation,
   admin audit, secret redaction, and Scenario B go/no-go evidence.
+- Added `docs/performance-capacity-cost-runbook.md` for performance load
+  profiles, Worker/D1/Upstash/Queue/R2 capacity checks, cost forecasting,
+  bottleneck ownership, and canary/full-cutover go/no-go evidence.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

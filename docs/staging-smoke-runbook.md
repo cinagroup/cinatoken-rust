@@ -18,7 +18,8 @@ Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
 `docs/data-migration-runbook.md` before Phase 7,
 `docs/billing-parity-runbook.md` before Phase 5, and
 `docs/admin-frontend-parity-runbook.md` before Phase 8, and
-`docs/observability-slo-security-runbook.md` before Phase 9. Use
+`docs/observability-slo-security-runbook.md` before Phase 9, and
+`docs/performance-capacity-cost-runbook.md` before Phase 10. Use
 `docs/cutover-rollback-runbook.md` before any G7 canary.
 
 Do not use production secrets in staging. Do not paste secret values into this
@@ -364,7 +365,42 @@ Pass criteria:
   which upstream responded, and which quota mutation occurred.
 - Security-sensitive values are redacted.
 
-## Phase 10: Canary Rehearsal
+## Phase 10: Performance, Capacity, And Cost Smoke
+
+Use `docs/performance-capacity-cost-runbook.md` for load profiles, metrics,
+D1/Upstash/Queue/R2 capacity checks, cost forecasts, and go/no-go rules.
+
+Minimum pre-canary cases:
+
+| Case ID | Flow | Expected Evidence |
+| --- | --- | --- |
+| PERF-001 | `/api/status` and route overhead load | Worker p95/p99, CPU, resource-limit errors, logs visible |
+| PERF-002 | Auth/channel cache warmup | cache hit ratio, D1 read reduction, Upstash latency/errors |
+| PERF-003 | Mixed non-stream relay load | p50/p95/p99, usage parsing, D1 rows read/written, quota settlement |
+| PERF-004 | Mixed SSE relay load | first-byte p95, stream completion, audit branch completion |
+| PERF-005 | Provider 429/5xx/timeout injection | error mapping, refund/fallback behavior, no retry storm |
+| PERF-006 | D1 write-pressure smoke | auth/reserve/settlement write health, no overloaded errors |
+| PERF-007 | Upstash timeout/error smoke | documented fail-open/fail-closed behavior, no D1 corruption |
+| PERF-008 | 1x/2x/5x cost forecast | approved forecast or documented blocker |
+
+Scenario-specific cases:
+
+| Case ID | Flow | Expected Evidence |
+| --- | --- | --- |
+| PERF-ADMIN-001 | Admin operations under relay background load | mutation latency, audit, cache invalidation, no secret leak |
+| PERF-ASYNC-001 | Queue/R2 task load, when implemented | backlog, retries, DLQ, R2 operation and artifact evidence |
+
+Pass criteria:
+
+- 500-concurrency mixed relay test, or an agreed production-shaped equivalent,
+  passes the selected SLOs.
+- No Worker CPU/memory/resource-limit errors appear.
+- D1 hot-path queries have bounded rows read and acceptable duration.
+- Upstash failure behavior matches the documented cache/rate-limit policy.
+- Logs remain available during load.
+- Cost forecast is approved for current, 2x, and 5x traffic.
+
+## Phase 11: Canary Rehearsal
 
 Before any customer canary:
 

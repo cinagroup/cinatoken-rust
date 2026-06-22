@@ -16,7 +16,8 @@ The current evidence matrices and staging smoke runbook live in
 Cloudflare config gates and cutover/rollback procedures live in
 `docs/cloudflare-production-config-checklist.md` and
 `docs/cutover-rollback-runbook.md`. Admin/frontend/auth G5 evidence lives in
-`docs/admin-frontend-parity-runbook.md`.
+`docs/admin-frontend-parity-runbook.md`. Performance, capacity, and cost
+evidence lives in `docs/performance-capacity-cost-runbook.md`.
 
 Scope: pause feature implementation and define the production-grade migration
 plan for moving `github:cinagroup/cinatoken` to `cinatoken-rust`, including a

@@ -13,6 +13,7 @@ as a production-shaped Cloudflare deployment. It complements:
 - `docs/production-readiness-matrices.md`
 - `docs/observability-slo-security-runbook.md`
 - `docs/admin-frontend-parity-runbook.md`
+- `docs/performance-capacity-cost-runbook.md`
 - `docs/staging-smoke-runbook.md`
 - `docs/cutover-rollback-runbook.md`
 
@@ -45,6 +46,10 @@ Cloudflare references refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/>
 - Turnstile server-side validation:
   <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>
+- Workers pricing:
+  <https://developers.cloudflare.com/workers/platform/pricing/>
+- D1 pricing:
+  <https://developers.cloudflare.com/d1/platform/pricing/>
 - D1 Time Travel and backups:
   <https://developers.cloudflare.com/d1/reference/time-travel/>
 
@@ -195,7 +200,10 @@ armed only when:
 8. G6 report from `docs/observability-slo-security-runbook.md` is approved.
 9. G5 report from `docs/admin-frontend-parity-runbook.md` is approved before
    Scenario B or later.
-10. `docs/cutover-rollback-runbook.md` has named operators and abort criteria.
+10. Performance/capacity/cost report from
+   `docs/performance-capacity-cost-runbook.md` is approved before broad canary
+   or full cutover.
+11. `docs/cutover-rollback-runbook.md` has named operators and abort criteria.
 
 ## Config Review Checklist
 

@@ -17,7 +17,8 @@ rollback, reconciliation, and decommission steps are tracked in
 `docs/cutover-rollback-runbook.md`. Executable G3 route/provider parity is
 tracked in `docs/route-provider-parity-runbook.md`. Executable G5
 admin/frontend/auth parity is tracked in
-`docs/admin-frontend-parity-runbook.md`.
+`docs/admin-frontend-parity-runbook.md`. Performance, capacity, and cost
+evidence is tracked in `docs/performance-capacity-cost-runbook.md`.
 
 Source inputs inspected for this revision:
 
@@ -63,6 +64,16 @@ Cloudflare references refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/configuration/secrets/>
 - Turnstile server-side validation:
   <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>
+- Workers pricing:
+  <https://developers.cloudflare.com/workers/platform/pricing/>
+- D1 pricing:
+  <https://developers.cloudflare.com/d1/platform/pricing/>
+- D1 limits:
+  <https://developers.cloudflare.com/d1/platform/limits/>
+- Queues limits:
+  <https://developers.cloudflare.com/queues/platform/limits/>
+- R2 limits:
+  <https://developers.cloudflare.com/r2/platform/limits/>
 
 ## Status Legend
 
@@ -112,8 +123,8 @@ required for G1-G8 decisions.
 | G4 | Billing matrix | Partial | Expand Go/Rust fixtures and run shadow settlement report. |
 | G5 | Admin/frontend route, auth/session, operator CRUD, cache, and audit matrix | Planned | Produce a redacted G5 report from `docs/admin-frontend-parity-runbook.md`. |
 | G6 | Observability/security matrix | Partial | Prove logs, traces, alerts, WAF/rate limits, redaction, and runbooks. |
-| G7 | Canary matrix and rollback runbook | Planned | Rehearse rollback and run internal-token canary. |
-| G8 | Cutover evidence checklist | Planned | Capture final export, DNS/route plan, freeze window, and owner sign-off. |
+| G7 | Canary matrix, rollback runbook, performance/capacity/cost report | Planned | Rehearse rollback, produce redacted performance/cost report, and run internal-token canary. |
+| G8 | Cutover evidence checklist | Planned | Capture final export, DNS/route plan, freeze window, owner sign-off, and approved 1x/2x/5x cost forecast. |
 | G9 | Decommission matrix | Planned | Post-cutover audit, cost report, and VPS decommission plan. |
 
 ## Route Readiness Matrix
@@ -294,6 +305,26 @@ Executable G6 evidence is tracked in
 
 Rollback and reconciliation procedures are tracked in
 `docs/cutover-rollback-runbook.md`.
+
+## Performance, Capacity, And Cost Matrix
+
+Executable performance and cost evidence is tracked in
+`docs/performance-capacity-cost-runbook.md`. This matrix supports G6, G7, G8,
+and G9 decisions.
+
+| Area | Required Production Evidence | Current Status |
+| --- | --- | --- |
+| Go/VPS baseline | Route/provider/model/stream latency, error rate, and request-count baseline or owner-approved inferred baseline | Planned |
+| Traffic mix | Current, staging, and canary traffic mix by route, provider, model, token group, and body-size class | Planned |
+| Load profiles | LT-001 through LT-007 for Scenario A; LT-008 before Scenario B; LT-009 before async/task/media cutover | Planned |
+| Mixed relay load | 500-concurrency or agreed production-shaped equivalent with JSON and SSE route families | Planned |
+| Worker resource limits | CPU, wall time, memory/resource-limit errors, subrequests, and outgoing connection evidence | Planned |
+| D1 capacity | Query duration, rows read/written, overloaded/query errors, index coverage, and hot-path row-read bounds | Planned |
+| Upstash capacity | Command count, latency, error rate, cache hit ratio, rate-limit denials, and failure-mode behavior | Planned |
+| Queue/R2 capacity | Queue backlog, retry/DLQ count, batch size, R2 operation count, artifact size, and retention policy | Planned |
+| Log/analytics cost | Workers Logs sampling, Logpush/Analytics Engine decision, retention path, and estimated monthly volume | Planned |
+| Cost forecast | Approved current, 2x, 5x, and incident-spike forecast across Worker, D1, Upstash, logs, Queue, R2, and providers | Planned |
+| Bottleneck ownership | Top bottlenecks have owner, mitigation, rollback path, and re-test profile | Planned |
 
 ## Update Rules
 

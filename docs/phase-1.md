@@ -151,6 +151,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Use `docs/admin-frontend-parity-runbook.md` for G5 admin/frontend/auth
   parity, operator CRUD smoke, cache invalidation, admin audit, and frontend
   deployment evidence before Scenario B.
+- Use `docs/performance-capacity-cost-runbook.md` for load profiles, D1/
+  Upstash/Queue/R2 capacity checks, Worker resource-limit evidence, and
+  1x/2x/5x cost forecasts before canary expansion or full cutover.
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`

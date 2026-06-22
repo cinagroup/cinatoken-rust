@@ -19,6 +19,7 @@ complements:
 - `docs/cutover-rollback-runbook.md`
 - `docs/data-migration-runbook.md`
 - `docs/billing-parity-runbook.md`
+- `docs/performance-capacity-cost-runbook.md`
 
 Official Cloudflare references checked on 2026-06-22:
 
@@ -30,6 +31,8 @@ Official Cloudflare references checked on 2026-06-22:
   <https://developers.cloudflare.com/workers/observability/>
 - Workers limits:
   <https://developers.cloudflare.com/workers/platform/limits/>
+- Workers pricing:
+  <https://developers.cloudflare.com/workers/platform/pricing/>
 - Workers secrets:
   <https://developers.cloudflare.com/workers/configuration/secrets/>
 - Cloudflare WAF:

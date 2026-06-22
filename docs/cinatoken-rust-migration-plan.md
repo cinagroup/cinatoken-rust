@@ -1390,6 +1390,9 @@ production-grade execution details are split into focused runbooks:
   auth/session strategy, operator CRUD, cache invalidation, and admin audit.
 - `docs/observability-slo-security-runbook.md` controls G6 logs, SLOs, alerts,
   security checks, and incident evidence.
+- `docs/performance-capacity-cost-runbook.md` controls load profiles,
+  Cloudflare capacity, D1/Upstash/Queue/R2 cost forecasts, and bottleneck
+  ownership.
 - `docs/staging-smoke-runbook.md` and `docs/cutover-rollback-runbook.md`
   control staging evidence, canary, abort, rollback, and decommission.
 

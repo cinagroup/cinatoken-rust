@@ -177,6 +177,9 @@ Evidence:
 - Request `Content-Type` checks now share a policy layer with tested JSON,
   multipart, and raw passthrough policies, though only JSON mode is wired to
   active endpoints.
+- Multipart, raw-bytes, and pass-through stream modes are defined with
+  metadata and guarded 501 handling, so accidental early endpoint wiring fails
+  closed instead of entering the JSON body path.
 - `docs/relay-mvp.md` marks audio transcription/translation multipart paths
   as pending.
 
@@ -188,7 +191,7 @@ would still force buffering or incorrect upstream content-type forwarding.
 
 Production requirement:
 
-- Extend the request body mode abstraction before new upload endpoints:
+- Implement the defined request body modes before new upload endpoints:
   `JsonBody`, `RawBody`, `MultipartBody`, and `PassThroughStream`.
 - Bound all buffered bodies by endpoint-specific limits.
 - Preserve downstream content type and upstream streaming behavior.

@@ -108,6 +108,9 @@ Last checked: 2026-06-22
   octet-stream rejection before body reads.
 - `cargo test -p cinatoken-worker --lib` covering the shared relay
   `Content-Type` policy layer for JSON, multipart, and raw passthrough modes.
+- `cargo test -p cinatoken-worker --lib` covering relay request body mode
+  metadata for JSON, multipart, raw-bytes, and pass-through stream modes plus
+  pending-mode guard metadata.
 - No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.

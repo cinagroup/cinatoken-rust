@@ -108,6 +108,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - The `Content-Type` preflight is now a reusable policy layer with tested JSON,
   multipart, and raw passthrough policies; current endpoints still bind only
   JSON mode.
+- Multipart, raw-bytes, and pass-through stream request-body modes now have
+  explicit metadata plus guarded 501 handling if selected before their
+  extraction/forwarding implementation is complete.
 - First Go/Rust billing parity fixtures for multi-condition expressions,
   Claude tier boundaries, cache split pricing, `len` tiering,
   ratio-equivalent quota conversion, nested/array/missing request probes,
@@ -134,9 +137,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Extend the explicit request-body mode foundation with multipart/raw/stream
   modes before adding `/v1/audio/transcriptions` and
   `/v1/audio/translations`; the current JSON relay path must not buffer
-  unbounded file uploads. Shared content-type policy and bounded byte reading
-  are in place; the next step is raw/multipart extraction and upstream
-  forwarding.
+  unbounded file uploads. Mode metadata, shared content-type policy, and
+  bounded byte reading are in place; the next step is raw/multipart extraction
+  and upstream forwarding.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

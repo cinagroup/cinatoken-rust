@@ -57,6 +57,38 @@ enum RelayProviderKind {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RelayRequestBodyMode {
     Json,
+    #[allow(dead_code)]
+    MultipartForm,
+    #[allow(dead_code)]
+    RawBytes,
+    #[allow(dead_code)]
+    PassThroughStream,
+}
+
+impl RelayRequestBodyMode {
+    fn body_kind(self) -> &'static str {
+        match self {
+            Self::Json => "JSON",
+            Self::MultipartForm => "multipart",
+            Self::RawBytes => "raw",
+            Self::PassThroughStream => "pass-through stream",
+        }
+    }
+
+    fn content_type_policy(self) -> RelayContentTypePolicy {
+        match self {
+            Self::Json => RelayContentTypePolicy::json(),
+            Self::MultipartForm => RelayContentTypePolicy::multipart(),
+            Self::RawBytes | Self::PassThroughStream => RelayContentTypePolicy::any(),
+        }
+    }
+
+    fn pending_feature(self) -> Option<String> {
+        match self {
+            Self::Json => None,
+            _ => Some(format!("{} relay request body mode", self.body_kind())),
+        }
+    }
 }
 
 struct RelayEndpoint {
@@ -620,6 +652,16 @@ async fn prepare_relay_request(
         RelayRequestBodyMode::Json => {
             prepare_json_relay_request(req, endpoint, json_body_config.max_bytes).await
         }
+        mode => {
+            let response = json_with_status(
+                &ErrorBody::not_implemented(
+                    mode.pending_feature()
+                        .expect("non-JSON body modes must declare pending feature"),
+                ),
+                501,
+            )?;
+            Ok(Err(response))
+        }
     }
 }
 
@@ -630,7 +672,14 @@ async fn prepare_json_relay_request(
 ) -> worker::Result<Result<PreparedRelayRequest, Response>> {
     debug_assert!(endpoint.expects_json_request_body());
 
-    let request_body = match read_relay_json_body(req, endpoint.display_name, max_bytes).await {
+    let request_body = match read_relay_json_body(
+        req,
+        endpoint.display_name,
+        endpoint.request_body_mode,
+        max_bytes,
+    )
+    .await
+    {
         Ok(body) => body,
         Err(err) => {
             let response = json_with_status(
@@ -966,9 +1015,11 @@ impl RelayJsonBodyError {
 async fn read_relay_json_body(
     req: &mut Request,
     _endpoint: &str,
+    body_mode: RelayRequestBodyMode,
     max_bytes: usize,
 ) -> Result<Value, RelayJsonBodyError> {
-    validate_request_content_type(req, RelayContentTypePolicy::json())
+    debug_assert!(body_mode == RelayRequestBodyMode::Json);
+    validate_request_content_type(req, body_mode.content_type_policy())
         .map_err(RelayJsonBodyError::ContentType)?;
     let bytes = read_bounded_relay_request_bytes(req, max_bytes).await?;
 
@@ -1035,7 +1086,6 @@ impl RelayContentTypePolicy {
         }
     }
 
-    #[cfg(test)]
     fn multipart() -> Self {
         Self {
             expected: "multipart/form-data",
@@ -1044,7 +1094,6 @@ impl RelayContentTypePolicy {
         }
     }
 
-    #[cfg(test)]
     fn any() -> Self {
         Self {
             expected: "any content-type",
@@ -1099,7 +1148,6 @@ fn is_json_content_type(content_type: &str) -> bool {
         || (media_type.starts_with("application/") && media_type.ends_with("+json"))
 }
 
-#[cfg(test)]
 fn is_multipart_content_type(content_type: &str) -> bool {
     media_type(content_type) == "multipart/form-data"
 }
@@ -3305,6 +3353,47 @@ mod tests {
         let endpoint = endpoint(true, None);
 
         assert!(endpoint.expects_json_request_body());
+        assert_eq!(endpoint.request_body_mode.body_kind(), "JSON");
+        assert_eq!(
+            endpoint.request_body_mode.pending_feature().as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn request_body_modes_expose_content_type_policy() {
+        assert!(RelayRequestBodyMode::Json
+            .content_type_policy()
+            .allows(Some("application/json")));
+        assert!(RelayRequestBodyMode::MultipartForm
+            .content_type_policy()
+            .allows(Some("multipart/form-data; boundary=test")));
+        assert!(RelayRequestBodyMode::RawBytes
+            .content_type_policy()
+            .allows(Some("application/octet-stream")));
+        assert!(RelayRequestBodyMode::PassThroughStream
+            .content_type_policy()
+            .allows(Some("audio/mpeg")));
+    }
+
+    #[test]
+    fn inactive_request_body_modes_are_marked_pending() {
+        assert_eq!(
+            RelayRequestBodyMode::MultipartForm
+                .pending_feature()
+                .as_deref(),
+            Some("multipart relay request body mode")
+        );
+        assert_eq!(
+            RelayRequestBodyMode::RawBytes.pending_feature().as_deref(),
+            Some("raw relay request body mode")
+        );
+        assert_eq!(
+            RelayRequestBodyMode::PassThroughStream
+                .pending_feature()
+                .as_deref(),
+            Some("pass-through stream relay request body mode")
+        );
     }
 
     #[test]

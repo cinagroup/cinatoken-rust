@@ -41,6 +41,9 @@ The Worker:
   reads those JSON bodies through a shared bounded request-byte reader before
   parsing them as `serde_json::Value`, preserving unknown fields and explicit
   zero values;
+- defines inactive multipart, raw-bytes, and pass-through stream request-body
+  modes with metadata and guarded 501 handling if they are wired before their
+  extraction/forwarding implementation is complete;
 - routes request `Content-Type` checks through a shared policy layer; JSON
   relay endpoints reject explicit non-JSON bodies before reading while still
   allowing absent `Content-Type` for OpenAI-compatible client tolerance;
@@ -193,8 +196,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   multipart paths are still pending.
 - The current relay body layer has an explicit JSON-only request-body mode
   backed by shared content-type policy and a bounded byte reader. Raw,
-  multipart, and pass-through stream request bodies still need dedicated body
-  modes before file upload endpoints are added.
+  multipart, and pass-through stream modes are defined but intentionally
+  inactive until extraction and upstream forwarding are implemented.
 - Rerank support currently covers Jina JSON passthrough and Cohere JSON
   request/response adaptation. Other provider-specific rerank transforms plus
   live upstream coverage are still pending.

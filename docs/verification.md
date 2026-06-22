@@ -141,6 +141,10 @@ Last checked: 2026-06-22
   `C:\cinagroup\cinatoken\pkg\billingexpr\expr.md`; it defines expression
   compatibility, golden fixtures, shadow settlement, billing gates, abort
   triggers, and redacted billing reports.
+- Added `docs/observability-slo-security-runbook.md` for G6 structured logs,
+  Workers Logs sampling and retention policy, SLO/abort thresholds, dashboard
+  and alert matrices, security controls, staging alert drills, redaction checks,
+  and incident templates.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

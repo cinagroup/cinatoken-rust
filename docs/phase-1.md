@@ -142,6 +142,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   D1 import verification, row-count/sample-hash checks, and rollback evidence.
 - Use `docs/billing-parity-runbook.md` for expression parity, shadow settlement
   thresholds, and paid settlement go/no-go evidence.
+- Use `docs/observability-slo-security-runbook.md` for G6 log schema,
+  sampling, alert drills, SLO thresholds, redaction, and security go/no-go
+  evidence.
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`

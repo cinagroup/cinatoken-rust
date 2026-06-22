@@ -229,11 +229,16 @@ settlement procedure is `docs/billing-parity-runbook.md`.
 
 ## Observability, Security, And SLO Matrix
 
+Executable G6 evidence is tracked in
+`docs/observability-slo-security-runbook.md`.
+
 | Area | Required Production Evidence | Current Status |
 | --- | --- | --- |
 | Structured logs | Request ID, user/token fingerprint, endpoint, model, channel, upstream status, latency, quota delta, billing mode | Partial |
 | Workers Logs/Traces | Staging and prod sampling policy; visible traces during smoke | Partial |
-| Alerts | 5xx, D1 failures, Redis failures, queue lag, billing mismatch, payment replay failures | Planned |
+| Sampling/retention | Environment-specific `head_sampling_rate`, trace sampling, and long-term audit retention decision | Planned |
+| Alerts | 5xx, D1 failures, Redis failures, queue lag, billing mismatch, payment replay failures, raw secret exposure | Planned |
+| Alert drills | At least one staging drill that proves alert source, owner, first action, and rollback action | Planned |
 | Redaction | No raw keys, bearer tokens, payment secrets, OAuth secrets, or full provider credentials in logs | Partial |
 | CORS/WAF/rate limits | Environment-specific allowlist and abuse protection | Planned |
 | SSRF controls | Any user-controlled URL fetch path is validated | Planned |

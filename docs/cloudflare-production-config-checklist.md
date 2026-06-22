@@ -11,6 +11,7 @@ This checklist defines what must be true before `cinatoken-rust` can be treated
 as a production-shaped Cloudflare deployment. It complements:
 
 - `docs/production-readiness-matrices.md`
+- `docs/observability-slo-security-runbook.md`
 - `docs/staging-smoke-runbook.md`
 - `docs/cutover-rollback-runbook.md`
 
@@ -33,8 +34,12 @@ Cloudflare references refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/configuration/versions-and-deployments/rollbacks/>
 - Workers observability:
   <https://developers.cloudflare.com/workers/observability/>
-- D1 backups and restoring:
-  <https://developers.cloudflare.com/d1/reference/backups-and-restoring/>
+- Workers Logs:
+  <https://developers.cloudflare.com/workers/observability/logs/workers-logs/>
+- Workers secrets:
+  <https://developers.cloudflare.com/workers/configuration/secrets/>
+- D1 Time Travel and backups:
+  <https://developers.cloudflare.com/d1/reference/time-travel/>
 
 ## Current Config Snapshot
 
@@ -136,6 +141,9 @@ Rules:
 
 ## Observability Checklist
 
+Detailed sampling, dashboard, alert, SLO, and redaction gates are tracked in
+`docs/observability-slo-security-runbook.md`.
+
 | Area | Staging Requirement | Production Requirement |
 | --- | --- | --- |
 | Logs | Logs visible for every smoke route | Sampling policy approved for traffic/cost |
@@ -173,7 +181,8 @@ armed only when:
 5. Production route/custom-domain plan is documented.
 6. Rollback target version and traffic stop method are documented.
 7. Worker version upload/deploy workflow is rehearsed in staging.
-8. `docs/cutover-rollback-runbook.md` has named operators and abort criteria.
+8. G6 report from `docs/observability-slo-security-runbook.md` is approved.
+9. `docs/cutover-rollback-runbook.md` has named operators and abort criteria.
 
 ## Config Review Checklist
 

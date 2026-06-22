@@ -24,6 +24,8 @@ Read this file with:
   sample-hash, freeze, rollback, and reconciliation control.
 - `docs/billing-parity-runbook.md` for billing-expression parity, shadow
   settlement, reserve/refund, and paid-cutover gates.
+- `docs/observability-slo-security-runbook.md` for G6 logs, traces, SLOs,
+  alert drills, redaction, WAF/rate-limit/CORS, and incident evidence.
 - `docs/staging-smoke-runbook.md` for the staging deploy and live smoke
   checklist before canary.
 - `docs/cutover-rollback-runbook.md` for traffic ramp, abort, rollback,
@@ -77,6 +79,12 @@ Cloudflare references were refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/platform/limits/>
 - Workers observability:
   <https://developers.cloudflare.com/workers/observability/>
+- Workers Logs:
+  <https://developers.cloudflare.com/workers/observability/logs/workers-logs/>
+- Workers secrets:
+  <https://developers.cloudflare.com/workers/configuration/secrets/>
+- Cloudflare WAF:
+  <https://developers.cloudflare.com/waf/>
 - D1 limits:
   <https://developers.cloudflare.com/d1/platform/limits/>
 - D1 import/export:
@@ -116,7 +124,7 @@ Production rules for this migration:
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | Non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | Login, token, channel, user, log, billing, and settings smoke | Operator cutover |
-| G6 | Observability and security | SLO dashboards, alerts, WAF/rate limits, secret policy, and runbooks exist | Logs/traces, alert screenshots, incident runbook, security checklist | Canary above internal traffic |
+| G6 | Observability and security | SLO dashboards, alerts, WAF/rate limits, secret policy, and runbooks exist | G6 report from `docs/observability-slo-security-runbook.md`, logs/traces, alert drill, redaction smoke, incident template | Canary above internal traffic |
 | G7 | Canary | Rust Worker handles selected safe traffic with Go rollback ready | 1%/5%/25% reports, no unexplained billing deltas, rollback rehearsal | Full cutover |
 | G8 | Cutover | All P0 gates pass and freeze window is approved | Final checklist, backup/export, DNS/route plan, owner approval | Retiring Go/VPS |
 | G9 | Post-cutover hardening | Rust is primary and stable for the agreed window | Post-cutover audit, cost report, cleanup plan | VPS decommission |
@@ -534,6 +542,8 @@ Before G8 cutover, the repository or deployment runbook must contain:
 - Secret inventory without values and rotation owners.
 - Observability dashboard and alert checklist.
 - Security checklist.
+- Redacted G6 observability/SLO/security report from
+  `docs/observability-slo-security-runbook.md`.
 - Load-test report.
 - Cutover and rollback runbook:
   `docs/cutover-rollback-runbook.md`.
@@ -554,4 +564,6 @@ Before G8 cutover, the repository or deployment runbook must contain:
    check, and rollback evidence.
 6. Use `docs/billing-parity-runbook.md` to expand golden fixtures and produce
    a redacted shadow settlement report before any paid settlement canary.
-7. Define SLO thresholds and rollback thresholds before any customer canary.
+7. Use `docs/observability-slo-security-runbook.md` to define SLO thresholds,
+   alert drills, redaction evidence, and security go/no-go before any customer
+   canary.

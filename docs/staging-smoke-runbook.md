@@ -16,6 +16,7 @@ or short report.
 Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
 `docs/data-migration-runbook.md` before Phase 7,
 `docs/billing-parity-runbook.md` before Phase 5, and
+`docs/observability-slo-security-runbook.md` before Phase 8. Use
 `docs/cutover-rollback-runbook.md` before any G7 canary.
 
 Do not use production secrets in staging. Do not paste secret values into this
@@ -278,6 +279,10 @@ Additional D1 behavior cases:
 | D1-005 | D1 write failure simulation, if feasible | Customer-safe error or refund path |
 
 ## Phase 8: Observability And Security Smoke
+
+Use `docs/observability-slo-security-runbook.md` for the log schema,
+sampling/retention policy, SLO thresholds, alert drill, redaction checks, and
+G6 report template.
 
 Observability cases:
 

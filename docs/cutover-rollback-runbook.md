@@ -19,6 +19,7 @@ Read with:
 - `docs/cloudflare-production-config-checklist.md`
 - `docs/data-migration-runbook.md`
 - `docs/billing-parity-runbook.md`
+- `docs/observability-slo-security-runbook.md`
 - `docs/staging-smoke-runbook.md`
 - `docs/data-export.md`
 - `docs/verification.md`
@@ -90,6 +91,8 @@ Default next scenario: Scenario A.
   rollback point from `docs/data-migration-runbook.md`.
 - Confirm billing mode, fixture coverage, shadow thresholds, and abort triggers
   from `docs/billing-parity-runbook.md`.
+- Confirm G6 SLO thresholds, alert drill evidence, redaction evidence, and
+  incident template from `docs/observability-slo-security-runbook.md`.
 - Define SLOs and abort thresholds.
 - Define customer/internal token group for canary.
 - Confirm rollback can stop Rust traffic without data loss.
@@ -113,6 +116,8 @@ git diff --check
 - Produce or refresh the redacted data migration report for the selected scope.
 - Produce or refresh the redacted billing parity/shadow report for the selected
   scope.
+- Produce or refresh the redacted G6 observability/SLO/security report for the
+  selected scope.
 - Rehearse rollback in staging.
 - Verify Cloudflare logs/traces/metrics and alert paths.
 - Verify no raw secrets appear in logs.
@@ -205,6 +210,7 @@ Before increasing traffic:
 - Upstream 4xx/5xx does not exceed Go/VPS baseline for the same provider.
 - p95 latency overhead is within threshold.
 - SSE first-byte overhead is within threshold.
+- Logs/traces and G6 alert sources remain available for the canary window.
 - D1 auth/reserve/settlement writes are healthy.
 - Upstash failures are within threshold.
 - Billing shadow or applied deltas are within threshold.

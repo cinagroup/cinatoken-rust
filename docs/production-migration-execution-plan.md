@@ -16,6 +16,10 @@ Read this file with:
 
 - `docs/cinatoken-rust-migration-plan.md` for the original target architecture.
 - `docs/production-migration-plan-audit.md` for risk findings and phase intent.
+- `docs/production-readiness-matrices.md` for route, provider, data, billing,
+  Cloudflare binding, observability, security, and SLO evidence tracking.
+- `docs/staging-smoke-runbook.md` for the staging deploy and live smoke
+  checklist before canary.
 - `docs/verification.md` for verified local and staging evidence.
 - `docs/phase-1.md` for current implementation status.
 
@@ -520,13 +524,13 @@ Before G8 cutover, the repository or deployment runbook must contain:
 
 ## Immediate Next Planning Milestones
 
-1. Produce the real Go source route matrix from `C:\cinagroup\cinatoken`.
-2. Produce the real source DB/table matrix, including counts and sensitive
+1. Keep `docs/production-readiness-matrices.md` current as route, provider,
+   table, billing, config, observability, security, and SLO evidence changes.
+2. Use `docs/staging-smoke-runbook.md` for the first real staging smoke and
+   copy only redacted evidence summaries back into `docs/verification.md`.
+3. Produce the real source DB/table matrix, including counts and sensitive
    columns when a production snapshot or DSN is available.
-3. Create the staging Cloudflare binding checklist and replace placeholder
+4. Create the staging Cloudflare binding checklist and replace placeholder
    resource IDs only after real resources exist.
-4. Write the first staging smoke runbook covering status, auth, non-stream
-   relay, SSE relay, billing reserve/refund/success, Upstash failure mode, and
-   D1 write failure mode.
 5. Expand the billing fixture plan before any new billing expression change.
 6. Define SLO thresholds and rollback thresholds before any customer canary.

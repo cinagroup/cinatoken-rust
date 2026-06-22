@@ -132,6 +132,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Keep `docs/production-migration-execution-plan.md` current as the production
   gate source of truth for platform, data, relay, billing, observability,
   security, canary, and rollback readiness.
+- Keep `docs/production-readiness-matrices.md` and
+  `docs/staging-smoke-runbook.md` current as production evidence and live smoke
+  requirements become more concrete.
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`

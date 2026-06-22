@@ -11,6 +11,8 @@ multipart, and pass-through stream request body support remains part of Phase 3.
 
 Execution source of truth: detailed gate, workstream, route, data, canary, and
 rollback plans now live in `docs/production-migration-execution-plan.md`.
+The current evidence matrices and staging smoke runbook live in
+`docs/production-readiness-matrices.md` and `docs/staging-smoke-runbook.md`.
 
 Scope: pause feature implementation and define the production-grade migration
 plan for moving `github:cinagroup/cinatoken` to `cinatoken-rust`, including a
@@ -747,12 +749,14 @@ Each workstream must maintain:
 
 1. Keep `docs/production-migration-execution-plan.md` updated as gate status
    changes.
-2. Produce the real route, provider, table, and billing matrices named by the
-   execution plan.
-3. Create a production configuration checklist for staging and prod bindings.
-4. Capture a real source database inventory: table counts, sizes, critical
+2. Keep `docs/production-readiness-matrices.md` updated as the real route,
+   provider, table, billing, config, and SLO evidence lands.
+3. Use `docs/staging-smoke-runbook.md` for the first real staging deploy and
+   live smoke report.
+4. Create a production configuration checklist for staging and prod bindings.
+5. Capture a real source database inventory: table counts, sizes, critical
    columns, and sensitive columns.
-5. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
+6. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
    billing-delta tolerance, and queue lag.
-6. Write the first cutover runbook: staging deploy, smoke tests, canary,
+7. Write the first cutover runbook: staging deploy, smoke tests, canary,
    rollback, and post-cutover monitoring.

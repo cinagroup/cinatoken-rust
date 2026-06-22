@@ -127,6 +127,10 @@ Last checked: 2026-06-22
   Workers best-practices, Workers limits, Workers observability, and D1 limits
   docs; detailed execution gates now live in
   `docs/production-migration-execution-plan.md`.
+- Added production readiness matrices and a staging smoke runbook, based on
+  source router/model/channel inspection and current Cloudflare Workers
+  best-practice, Wrangler config, compatibility date, observability, gradual
+  deployment, and rollback references.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

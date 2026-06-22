@@ -11,6 +11,11 @@ This file tracks the concrete evidence required to migrate from the Go/VPS
 deployment to the Rust/Cloudflare deployment. The execution plan defines gates;
 this file defines the matrices that those gates consume.
 
+Detailed staging/prod Cloudflare binding, secret, and observability gates are
+tracked in `docs/cloudflare-production-config-checklist.md`. Traffic ramp,
+rollback, reconciliation, and decommission steps are tracked in
+`docs/cutover-rollback-runbook.md`.
+
 Source inputs inspected for this revision:
 
 - `C:\cinagroup\cinatoken\router\relay-router.go`
@@ -199,6 +204,9 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | Payment/OAuth/Turnstile/JWT/session secrets | Go/VPS-owned today | Cloudflare secrets or forced re-auth/defer plan | Secret inventory without values. |
 | AI Gateway ID | Empty var | Real ID or direct-provider policy | Provider matrix records chosen path. |
 
+Detailed binding and secret ownership is tracked in
+`docs/cloudflare-production-config-checklist.md`.
+
 ## Billing And Quota Matrix
 
 Billing is a cutover blocker. Rust can relay traffic before it owns paid
@@ -231,6 +239,9 @@ settlement only if shadow mode proves deltas.
 | Rollback | DNS/route/feature rollback rehearsed; Rust state preserved for investigation | Planned |
 | SLOs | Auth overhead, first-byte overhead, stream duration, D1 write latency, error budget, queue lag, billing delta | Planned |
 | Load test | Mixed 500-concurrency or agreed production-shaped equivalent | Planned |
+
+Rollback and reconciliation procedures are tracked in
+`docs/cutover-rollback-runbook.md`.
 
 ## Update Rules
 

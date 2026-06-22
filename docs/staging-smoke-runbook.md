@@ -13,6 +13,9 @@ candidate before any customer canary. It is intentionally evidence-heavy: every
 step should leave a request ID, log entry, command output, dashboard screenshot,
 or short report.
 
+Use `docs/cloudflare-production-config-checklist.md` before Phase 1 and
+`docs/cutover-rollback-runbook.md` before any G7 canary.
+
 Do not use production secrets in staging. Do not paste secret values into this
 file or any smoke report.
 

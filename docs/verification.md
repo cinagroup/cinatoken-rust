@@ -131,6 +131,9 @@ Last checked: 2026-06-22
   source router/model/channel inspection and current Cloudflare Workers
   best-practice, Wrangler config, compatibility date, observability, gradual
   deployment, and rollback references.
+- Added Cloudflare production config and cutover/rollback runbooks, using
+  current Cloudflare Workers best-practice, Wrangler config, environments,
+  gradual deployment, rollback, observability, and D1 backup/restore references.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

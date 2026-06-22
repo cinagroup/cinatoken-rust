@@ -18,8 +18,12 @@ Read this file with:
 - `docs/production-migration-plan-audit.md` for risk findings and phase intent.
 - `docs/production-readiness-matrices.md` for route, provider, data, billing,
   Cloudflare binding, observability, security, and SLO evidence tracking.
+- `docs/cloudflare-production-config-checklist.md` for staging/prod bindings,
+  secrets, observability, environment separation, and config gates.
 - `docs/staging-smoke-runbook.md` for the staging deploy and live smoke
   checklist before canary.
+- `docs/cutover-rollback-runbook.md` for traffic ramp, abort, rollback,
+  reconciliation, full cutover, and post-cutover decommission.
 - `docs/verification.md` for verified local and staging evidence.
 - `docs/phase-1.md` for current implementation status.
 
@@ -513,24 +517,27 @@ Before G8 cutover, the repository or deployment runbook must contain:
 - Provider matrix with channel types, model mapping, fallback, and smoke status.
 - Table matrix with source counts, target counts, hashes, and rollback notes.
 - Billing matrix with expression coverage, settlement mode, and shadow deltas.
-- Cloudflare binding checklist for staging and production.
+- Cloudflare binding checklist for staging and production:
+  `docs/cloudflare-production-config-checklist.md`.
 - Secret inventory without values and rotation owners.
 - Observability dashboard and alert checklist.
 - Security checklist.
 - Load-test report.
-- Cutover runbook.
-- Rollback runbook.
+- Cutover and rollback runbook:
+  `docs/cutover-rollback-runbook.md`.
 - Post-cutover monitoring checklist.
 
 ## Immediate Next Planning Milestones
 
 1. Keep `docs/production-readiness-matrices.md` current as route, provider,
    table, billing, config, observability, security, and SLO evidence changes.
-2. Use `docs/staging-smoke-runbook.md` for the first real staging smoke and
+2. Use `docs/cloudflare-production-config-checklist.md` to replace
+   placeholder staging resource IDs only after real resources exist.
+3. Use `docs/staging-smoke-runbook.md` for the first real staging smoke and
    copy only redacted evidence summaries back into `docs/verification.md`.
-3. Produce the real source DB/table matrix, including counts and sensitive
+4. Use `docs/cutover-rollback-runbook.md` to rehearse rollback before any
+   customer canary.
+5. Produce the real source DB/table matrix, including counts and sensitive
    columns when a production snapshot or DSN is available.
-4. Create the staging Cloudflare binding checklist and replace placeholder
-   resource IDs only after real resources exist.
-5. Expand the billing fixture plan before any new billing expression change.
-6. Define SLO thresholds and rollback thresholds before any customer canary.
+6. Expand the billing fixture plan before any new billing expression change.
+7. Define SLO thresholds and rollback thresholds before any customer canary.

@@ -13,6 +13,9 @@ Execution source of truth: detailed gate, workstream, route, data, canary, and
 rollback plans now live in `docs/production-migration-execution-plan.md`.
 The current evidence matrices and staging smoke runbook live in
 `docs/production-readiness-matrices.md` and `docs/staging-smoke-runbook.md`.
+Cloudflare config gates and cutover/rollback procedures live in
+`docs/cloudflare-production-config-checklist.md` and
+`docs/cutover-rollback-runbook.md`.
 
 Scope: pause feature implementation and define the production-grade migration
 plan for moving `github:cinagroup/cinatoken` to `cinatoken-rust`, including a
@@ -751,12 +754,14 @@ Each workstream must maintain:
    changes.
 2. Keep `docs/production-readiness-matrices.md` updated as the real route,
    provider, table, billing, config, and SLO evidence lands.
-3. Use `docs/staging-smoke-runbook.md` for the first real staging deploy and
+3. Use `docs/cloudflare-production-config-checklist.md` to promote staging and
+   production config only after real bindings and secret ownership exist.
+4. Use `docs/staging-smoke-runbook.md` for the first real staging deploy and
    live smoke report.
-4. Create a production configuration checklist for staging and prod bindings.
-5. Capture a real source database inventory: table counts, sizes, critical
+5. Use `docs/cutover-rollback-runbook.md` to rehearse rollback before any
+   customer canary.
+6. Capture a real source database inventory: table counts, sizes, critical
    columns, and sensitive columns.
-6. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
+7. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
    billing-delta tolerance, and queue lag.
-7. Write the first cutover runbook: staging deploy, smoke tests, canary,
-   rollback, and post-cutover monitoring.
+8. Keep cutover evidence summaries redacted in `docs/verification.md`.

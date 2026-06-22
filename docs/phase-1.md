@@ -135,6 +135,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Keep `docs/production-readiness-matrices.md` and
   `docs/staging-smoke-runbook.md` current as production evidence and live smoke
   requirements become more concrete.
+- Use `docs/cloudflare-production-config-checklist.md` and
+  `docs/cutover-rollback-runbook.md` as the production config and traffic
+  cutover control documents before any customer canary.
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`

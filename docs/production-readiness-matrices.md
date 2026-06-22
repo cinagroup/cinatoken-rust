@@ -164,7 +164,8 @@ family rather than by channel number alone.
 Source `model/main.go` auto-migrates the following production-relevant models.
 Current Rust D1 coverage is intentionally smaller than the Go schema; do not
 cut over non-covered table families until the target schema and import/verify
-steps exist.
+steps exist. The executable data migration procedure is
+`docs/data-migration-runbook.md`.
 
 | Source Model/Table Family | Production Criticality | Current Rust Coverage | Required Migration Evidence |
 | --- | --- | --- | --- |
@@ -210,7 +211,8 @@ Detailed binding and secret ownership is tracked in
 ## Billing And Quota Matrix
 
 Billing is a cutover blocker. Rust can relay traffic before it owns paid
-settlement only if shadow mode proves deltas.
+settlement only if shadow mode proves deltas. The executable parity and shadow
+settlement procedure is `docs/billing-parity-runbook.md`.
 
 | Billing Area | Rust Status | Required Evidence |
 | --- | --- | --- |

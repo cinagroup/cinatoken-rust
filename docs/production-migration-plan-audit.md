@@ -760,8 +760,11 @@ Each workstream must maintain:
    live smoke report.
 5. Use `docs/cutover-rollback-runbook.md` to rehearse rollback before any
    customer canary.
-6. Capture a real source database inventory: table counts, sizes, critical
-   columns, and sensitive columns.
-7. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
+6. Use `docs/data-migration-runbook.md` to capture the real source database
+   inventory, D1 import evidence, row counts, sample hashes, freeze plan, and
+   rollback point.
+7. Use `docs/billing-parity-runbook.md` to expand golden fixtures and produce
+   redacted shadow settlement evidence before paid canary.
+8. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
    billing-delta tolerance, and queue lag.
-8. Keep cutover evidence summaries redacted in `docs/verification.md`.
+9. Keep cutover evidence summaries redacted in `docs/verification.md`.

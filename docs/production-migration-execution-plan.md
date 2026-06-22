@@ -20,6 +20,10 @@ Read this file with:
   Cloudflare binding, observability, security, and SLO evidence tracking.
 - `docs/cloudflare-production-config-checklist.md` for staging/prod bindings,
   secrets, observability, environment separation, and config gates.
+- `docs/data-migration-runbook.md` for source export, D1 import, row-count,
+  sample-hash, freeze, rollback, and reconciliation control.
+- `docs/billing-parity-runbook.md` for billing-expression parity, shadow
+  settlement, reserve/refund, and paid-cutover gates.
 - `docs/staging-smoke-runbook.md` for the staging deploy and live smoke
   checklist before canary.
 - `docs/cutover-rollback-runbook.md` for traffic ramp, abort, rollback,
@@ -75,6 +79,12 @@ Cloudflare references were refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/observability/>
 - D1 limits:
   <https://developers.cloudflare.com/d1/platform/limits/>
+- D1 import/export:
+  <https://developers.cloudflare.com/d1/best-practices/import-export-data/>
+- D1 migrations:
+  <https://developers.cloudflare.com/d1/reference/migrations/>
+- D1 Time Travel:
+  <https://developers.cloudflare.com/d1/reference/time-travel/>
 
 Production rules for this migration:
 
@@ -516,7 +526,9 @@ Before G8 cutover, the repository or deployment runbook must contain:
 - Route matrix with live smoke status.
 - Provider matrix with channel types, model mapping, fallback, and smoke status.
 - Table matrix with source counts, target counts, hashes, and rollback notes.
+- Redacted data migration report from `docs/data-migration-runbook.md`.
 - Billing matrix with expression coverage, settlement mode, and shadow deltas.
+- Redacted billing parity report from `docs/billing-parity-runbook.md`.
 - Cloudflare binding checklist for staging and production:
   `docs/cloudflare-production-config-checklist.md`.
 - Secret inventory without values and rotation owners.
@@ -537,7 +549,9 @@ Before G8 cutover, the repository or deployment runbook must contain:
    copy only redacted evidence summaries back into `docs/verification.md`.
 4. Use `docs/cutover-rollback-runbook.md` to rehearse rollback before any
    customer canary.
-5. Produce the real source DB/table matrix, including counts and sensitive
-   columns when a production snapshot or DSN is available.
-6. Expand the billing fixture plan before any new billing expression change.
+5. Use `docs/data-migration-runbook.md` for the first production-shaped source
+   inventory, export bundle, D1 SQL conversion, row-count check, sample-hash
+   check, and rollback evidence.
+6. Use `docs/billing-parity-runbook.md` to expand golden fixtures and produce
+   a redacted shadow settlement report before any paid settlement canary.
 7. Define SLO thresholds and rollback thresholds before any customer canary.

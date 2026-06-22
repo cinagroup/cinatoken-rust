@@ -138,6 +138,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Use `docs/cloudflare-production-config-checklist.md` and
   `docs/cutover-rollback-runbook.md` as the production config and traffic
   cutover control documents before any customer canary.
+- Use `docs/data-migration-runbook.md` for production-shaped source inventory,
+  D1 import verification, row-count/sample-hash checks, and rollback evidence.
+- Use `docs/billing-parity-runbook.md` for expression parity, shadow settlement
+  thresholds, and paid settlement go/no-go evidence.
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`

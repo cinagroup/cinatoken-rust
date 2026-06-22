@@ -13,7 +13,9 @@ candidate before any customer canary. It is intentionally evidence-heavy: every
 step should leave a request ID, log entry, command output, dashboard screenshot,
 or short report.
 
-Use `docs/cloudflare-production-config-checklist.md` before Phase 1 and
+Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
+`docs/data-migration-runbook.md` before Phase 7,
+`docs/billing-parity-runbook.md` before Phase 5, and
 `docs/cutover-rollback-runbook.md` before any G7 canary.
 
 Do not use production secrets in staging. Do not paste secret values into this
@@ -208,7 +210,9 @@ Pass criteria:
 
 ## Phase 5: Billing Shadow Smoke
 
-Run each successful relay smoke in shadow mode when available.
+Run each successful relay smoke in shadow mode when available. Use
+`docs/billing-parity-runbook.md` as the source for fixture coverage,
+correlation keys, thresholds, and redacted report fields.
 
 Record:
 
@@ -250,7 +254,9 @@ Pass criteria:
 ## Phase 7: Data And D1 Smoke
 
 Before customer canary, run a staging import from a non-production or approved
-production-shaped source export.
+production-shaped source export. Use `docs/data-migration-runbook.md` for the
+source inventory, artifact policy, import commands, row-count/sample-hash
+checks, freeze rules, and rollback point.
 
 Required evidence:
 

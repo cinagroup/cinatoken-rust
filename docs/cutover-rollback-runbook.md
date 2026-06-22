@@ -17,6 +17,8 @@ Read with:
 - `docs/production-migration-execution-plan.md`
 - `docs/production-readiness-matrices.md`
 - `docs/cloudflare-production-config-checklist.md`
+- `docs/data-migration-runbook.md`
+- `docs/billing-parity-runbook.md`
 - `docs/staging-smoke-runbook.md`
 - `docs/data-export.md`
 - `docs/verification.md`
@@ -84,6 +86,10 @@ Default next scenario: Scenario A.
 - Confirm `docs/production-readiness-matrices.md` rows for scope are `Partial`
   only because live customer canary is missing.
 - Confirm production Cloudflare config checklist is complete for scope.
+- Confirm data migration wave, write authority, row-count/hash strategy, and
+  rollback point from `docs/data-migration-runbook.md`.
+- Confirm billing mode, fixture coverage, shadow thresholds, and abort triggers
+  from `docs/billing-parity-runbook.md`.
 - Define SLOs and abort thresholds.
 - Define customer/internal token group for canary.
 - Confirm rollback can stop Rust traffic without data loss.
@@ -104,6 +110,9 @@ git diff --check
 
 - Re-run staging smoke for every route family in scope.
 - Capture source export or backup rehearsal for scope.
+- Produce or refresh the redacted data migration report for the selected scope.
+- Produce or refresh the redacted billing parity/shadow report for the selected
+  scope.
 - Rehearse rollback in staging.
 - Verify Cloudflare logs/traces/metrics and alert paths.
 - Verify no raw secrets appear in logs.
@@ -127,13 +136,15 @@ git diff --check
 1. Confirm go/no-go from every role.
 2. Capture final Go/VPS source backup/export for selected scope.
 3. Apply final D1 migration/import for selected scope.
-4. Warm caches for selected token/channel/model groups where applicable.
-5. Upload Worker version without sending customer traffic, if using Cloudflare
+4. Verify row counts and sample hashes for selected table families.
+5. Confirm billing shadow/apply mode and abort thresholds.
+6. Warm caches for selected token/channel/model groups where applicable.
+7. Upload Worker version without sending customer traffic, if using Cloudflare
    version deployments.
-6. Run production smoke against internal tokens.
-7. Start canary.
-8. Watch logs/traces/metrics continuously during the observation window.
-9. Record every promotion decision with timestamp, metrics, and approver.
+8. Run production smoke against internal tokens.
+9. Start canary.
+10. Watch logs/traces/metrics continuously during the observation window.
+11. Record every promotion decision with timestamp, metrics, and approver.
 
 ## Cloudflare Worker Version Canary
 

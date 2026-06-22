@@ -134,6 +134,13 @@ Last checked: 2026-06-22
 - Added Cloudflare production config and cutover/rollback runbooks, using
   current Cloudflare Workers best-practice, Wrangler config, environments,
   gradual deployment, rollback, observability, and D1 backup/restore references.
+- Added `docs/data-migration-runbook.md` for production source inventory, export
+  artifact policy, D1 import commands, row-count/sample-hash evidence,
+  freeze/delta handling, rollback, and redacted import reports.
+- Added `docs/billing-parity-runbook.md` after reading
+  `C:\cinagroup\cinatoken\pkg\billingexpr\expr.md`; it defines expression
+  compatibility, golden fixtures, shadow settlement, billing gates, abort
+  triggers, and redacted billing reports.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

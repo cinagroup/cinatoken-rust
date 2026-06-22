@@ -765,9 +765,11 @@ Each workstream must maintain:
    rollback point.
 7. Use `docs/billing-parity-runbook.md` to expand golden fixtures and produce
    redacted shadow settlement evidence before paid canary.
-8. Use `docs/observability-slo-security-runbook.md` to define SLOs, sampling,
+8. Use `docs/route-provider-parity-runbook.md` to produce a redacted G3
+   route/provider parity report for the first relay canary scope.
+9. Use `docs/observability-slo-security-runbook.md` to define SLOs, sampling,
    alert drills, redaction evidence, security controls, and incident templates
    before customer canary.
-9. Define load-test thresholds: auth/route overhead, stream first-byte overhead,
+10. Define load-test thresholds: auth/route overhead, stream first-byte overhead,
    error budget, billing-delta tolerance, and queue lag.
-10. Keep cutover evidence summaries redacted in `docs/verification.md`.
+11. Keep cutover evidence summaries redacted in `docs/verification.md`.

@@ -14,7 +14,8 @@ this file defines the matrices that those gates consume.
 Detailed staging/prod Cloudflare binding, secret, and observability gates are
 tracked in `docs/cloudflare-production-config-checklist.md`. Traffic ramp,
 rollback, reconciliation, and decommission steps are tracked in
-`docs/cutover-rollback-runbook.md`.
+`docs/cutover-rollback-runbook.md`. Executable G3 route/provider parity is
+tracked in `docs/route-provider-parity-runbook.md`.
 
 Source inputs inspected for this revision:
 
@@ -41,6 +42,10 @@ Cloudflare references refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/observability/>
 - Workers limits:
   <https://developers.cloudflare.com/workers/platform/limits/>
+- Workers Streams:
+  <https://developers.cloudflare.com/workers/runtime-apis/streams/>
+- Workers Fetch:
+  <https://developers.cloudflare.com/workers/runtime-apis/fetch/>
 - Gradual deployments:
   <https://developers.cloudflare.com/workers/configuration/versions-and-deployments/gradual-deployments/>
 - Rollbacks:
@@ -90,7 +95,7 @@ required for G1-G8 decisions.
 | G0 | Route, provider, table, secret, config inventory | Partial | Fill this file with real production row counts and environment inventory. |
 | G1 | Cloudflare binding/config checklist | Partial | Deploy staging Worker with real D1/KV/R2/Queue IDs and generated types. |
 | G2 | Table migration matrix | Partial | Run real source export/import/verify against staging D1. |
-| G3 | Relay route and provider matrices | Partial | Run live non-stream and SSE provider smoke tests. |
+| G3 | Relay route and provider matrices | Partial | Produce a redacted G3 report from `docs/route-provider-parity-runbook.md`. |
 | G4 | Billing matrix | Partial | Expand Go/Rust fixtures and run shadow settlement report. |
 | G5 | Admin/frontend route matrix | Planned | Deploy Pages/admin staging and smoke operator flows. |
 | G6 | Observability/security matrix | Partial | Prove logs, traces, alerts, WAF/rate limits, redaction, and runbooks. |
@@ -103,6 +108,8 @@ required for G1-G8 decisions.
 The first production migration should prefer Scenario A from the execution
 plan: relay-only beta. Admin, payments, async tasks, and long-tail media routes
 should not be cut over until their own rows are proven.
+Detailed route body-mode, provider-adapter, smoke, and rollback evidence is
+controlled by `docs/route-provider-parity-runbook.md`.
 
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -143,7 +150,9 @@ should not be cut over until their own rows are proven.
 Source channel constants currently span OpenAI-compatible text, native
 provider APIs, rerank, task/media providers, deployments, and special
 subscription-backed credentials. Rust production should cut over by provider
-family rather than by channel number alone.
+family rather than by channel number alone. Each provider family must have a
+G3 adapter report before canary, as defined in
+`docs/route-provider-parity-runbook.md`.
 
 | Provider Family | Source Channel Types | Rust Status | Required Evidence |
 | --- | --- | --- | --- |

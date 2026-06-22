@@ -14,6 +14,7 @@ step should leave a request ID, log entry, command output, dashboard screenshot,
 or short report.
 
 Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
+`docs/route-provider-parity-runbook.md` before Phases 3 and 4,
 `docs/data-migration-runbook.md` before Phase 7,
 `docs/billing-parity-runbook.md` before Phase 5, and
 `docs/observability-slo-security-runbook.md` before Phase 8. Use
@@ -171,6 +172,10 @@ Pass criteria:
 
 ## Phase 3: Non-Stream Relay Smoke
 
+Use `docs/route-provider-parity-runbook.md` for route/provider scope,
+body-mode policy, provider adapter evidence, live smoke fields, and failure
+mode cases.
+
 Minimum first-canary cases:
 
 | Case ID | Route | Provider Family | Expected Evidence |
@@ -191,6 +196,9 @@ Pass criteria:
 - Response body handling is bounded or streamed according to the route policy.
 
 ## Phase 4: SSE Relay Smoke
+
+Use `docs/route-provider-parity-runbook.md` for stream passthrough,
+audit-branch, usage parser, client disconnect, and missing-usage evidence.
 
 Minimum first-canary cases:
 

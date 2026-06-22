@@ -24,6 +24,9 @@ Read this file with:
   sample-hash, freeze, rollback, and reconciliation control.
 - `docs/billing-parity-runbook.md` for billing-expression parity, shadow
   settlement, reserve/refund, and paid-cutover gates.
+- `docs/route-provider-parity-runbook.md` for G3 route/provider coverage,
+  body modes, streaming behavior, usage parsing, error mapping, and smoke
+  evidence.
 - `docs/observability-slo-security-runbook.md` for G6 logs, traces, SLOs,
   alert drills, redaction, WAF/rate-limit/CORS, and incident evidence.
 - `docs/staging-smoke-runbook.md` for the staging deploy and live smoke
@@ -77,6 +80,10 @@ Cloudflare references were refreshed on 2026-06-22:
   <https://developers.cloudflare.com/workers/best-practices/workers-best-practices/>
 - Workers limits:
   <https://developers.cloudflare.com/workers/platform/limits/>
+- Workers Streams:
+  <https://developers.cloudflare.com/workers/runtime-apis/streams/>
+- Workers Fetch:
+  <https://developers.cloudflare.com/workers/runtime-apis/fetch/>
 - Workers observability:
   <https://developers.cloudflare.com/workers/observability/>
 - Workers Logs:
@@ -121,7 +128,7 @@ Production rules for this migration:
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
 | G1 | Cloudflare staging foundation | Staging Worker has real D1/KV/R2/Queue/Upstash/provider bindings | `wrangler deploy --env staging`, `/api/status`, generated binding types, logs visible | Live smoke and canary |
 | G2 | Data dry run | D1 migrations cover production-critical tables | Source counts/hashes, staging import report, verification report, rollback export | Any data cutover |
-| G3 | Relay parity | P0 relay routes are implemented and live-smoked | Non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
+| G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | Login, token, channel, user, log, billing, and settings smoke | Operator cutover |
 | G6 | Observability and security | SLO dashboards, alerts, WAF/rate limits, secret policy, and runbooks exist | G6 report from `docs/observability-slo-security-runbook.md`, logs/traces, alert drill, redaction smoke, incident template | Canary above internal traffic |
@@ -258,7 +265,8 @@ Route readiness:
 
 Required tasks:
 
-1. Produce a route matrix from the Go source with method, path, auth,
+1. Use `docs/route-provider-parity-runbook.md` to produce a route matrix from
+   the Go source with method, path, auth,
    request-body type, response type, streaming behavior, provider family, and
    production priority.
 2. Keep JSON endpoints on the bounded JSON body path.
@@ -533,6 +541,8 @@ Before G8 cutover, the repository or deployment runbook must contain:
 
 - Route matrix with live smoke status.
 - Provider matrix with channel types, model mapping, fallback, and smoke status.
+- Redacted G3 route/provider parity report from
+  `docs/route-provider-parity-runbook.md`.
 - Table matrix with source counts, target counts, hashes, and rollback notes.
 - Redacted data migration report from `docs/data-migration-runbook.md`.
 - Billing matrix with expression coverage, settlement mode, and shadow deltas.
@@ -564,6 +574,8 @@ Before G8 cutover, the repository or deployment runbook must contain:
    check, and rollback evidence.
 6. Use `docs/billing-parity-runbook.md` to expand golden fixtures and produce
    a redacted shadow settlement report before any paid settlement canary.
-7. Use `docs/observability-slo-security-runbook.md` to define SLO thresholds,
+7. Use `docs/route-provider-parity-runbook.md` to turn the current route and
+   provider matrix into a G3 smoke report before any relay canary.
+8. Use `docs/observability-slo-security-runbook.md` to define SLO thresholds,
    alert drills, redaction evidence, and security go/no-go before any customer
    canary.

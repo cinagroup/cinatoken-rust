@@ -1,5 +1,10 @@
 # Relay MVP
 
+Production route/provider parity evidence is tracked in
+`docs/route-provider-parity-runbook.md`. This file describes the current
+implementation shape; the runbook controls G3 smoke, body-mode, provider
+adapter, billing-shadow, and rollback evidence.
+
 ## Implemented
 
 These endpoints currently support OpenAI-compatible requests:

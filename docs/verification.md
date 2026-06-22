@@ -141,6 +141,10 @@ Last checked: 2026-06-22
   `C:\cinagroup\cinatoken\pkg\billingexpr\expr.md`; it defines expression
   compatibility, golden fixtures, shadow settlement, billing gates, abort
   triggers, and redacted billing reports.
+- Added `docs/route-provider-parity-runbook.md` for G3 route inventory,
+  provider adapter contracts, body-mode policy, JSON/SSE smoke, failure-mode
+  smoke, usage parser evidence, billing-shadow coupling, and redacted G3
+  reports.
 - Added `docs/observability-slo-security-runbook.md` for G6 structured logs,
   Workers Logs sampling and retention policy, SLO/abort thresholds, dashboard
   and alert matrices, security controls, staging alert drills, redaction checks,

@@ -17,6 +17,7 @@ Read with:
 - `docs/production-migration-execution-plan.md`
 - `docs/production-readiness-matrices.md`
 - `docs/cloudflare-production-config-checklist.md`
+- `docs/route-provider-parity-runbook.md`
 - `docs/data-migration-runbook.md`
 - `docs/billing-parity-runbook.md`
 - `docs/observability-slo-security-runbook.md`
@@ -86,6 +87,8 @@ Default next scenario: Scenario A.
   `docs/verification.md`.
 - Confirm `docs/production-readiness-matrices.md` rows for scope are `Partial`
   only because live customer canary is missing.
+- Confirm route/provider body modes, live smoke status, blocked routes, and
+  provider rollback choices from `docs/route-provider-parity-runbook.md`.
 - Confirm production Cloudflare config checklist is complete for scope.
 - Confirm data migration wave, write authority, row-count/hash strategy, and
   rollback point from `docs/data-migration-runbook.md`.
@@ -112,6 +115,8 @@ git diff --check
 ```
 
 - Re-run staging smoke for every route family in scope.
+- Produce or refresh the redacted G3 route/provider report for the selected
+  scope.
 - Capture source export or backup rehearsal for scope.
 - Produce or refresh the redacted data migration report for the selected scope.
 - Produce or refresh the redacted billing parity/shadow report for the selected

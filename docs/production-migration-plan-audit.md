@@ -174,6 +174,9 @@ Evidence:
 - JSON relay mode rejects explicit non-JSON `Content-Type` values before
   reading the body, preventing multipart uploads from accidentally entering the
   JSON reader.
+- Request `Content-Type` checks now share a policy layer with tested JSON,
+  multipart, and raw passthrough policies, though only JSON mode is wired to
+  active endpoints.
 - `docs/relay-mvp.md` marks audio transcription/translation multipart paths
   as pending.
 
@@ -189,7 +192,8 @@ Production requirement:
   `JsonBody`, `RawBody`, `MultipartBody`, and `PassThroughStream`.
 - Bound all buffered bodies by endpoint-specific limits.
 - Preserve downstream content type and upstream streaming behavior.
-- Add mode-specific tests for large body rejection and streaming pass-through.
+- Add mode-specific extraction tests for large body rejection and streaming
+  pass-through.
 
 ### P1: Some Response Paths Buffer Bodies And Need Endpoint-Specific Bounds
 

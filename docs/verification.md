@@ -106,6 +106,8 @@ Last checked: 2026-06-22
 - `cargo test -p cinatoken-worker --lib` covering JSON relay request
   `Content-Type` policy, including JSON media types and explicit multipart or
   octet-stream rejection before body reads.
+- `cargo test -p cinatoken-worker --lib` covering the shared relay
+  `Content-Type` policy layer for JSON, multipart, and raw passthrough modes.
 - No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.

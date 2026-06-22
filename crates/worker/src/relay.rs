@@ -968,7 +968,8 @@ async fn read_relay_json_body(
     _endpoint: &str,
     max_bytes: usize,
 ) -> Result<Value, RelayJsonBodyError> {
-    validate_json_request_content_type(req).map_err(RelayJsonBodyError::ContentType)?;
+    validate_request_content_type(req, RelayContentTypePolicy::json())
+        .map_err(RelayJsonBodyError::ContentType)?;
     let bytes = read_bounded_relay_request_bytes(req, max_bytes).await?;
 
     parse_relay_json_bytes(&bytes, max_bytes)
@@ -1003,19 +1004,6 @@ impl RelayContentTypeError {
     }
 }
 
-fn validate_json_request_content_type(req: &Request) -> Result<(), RelayContentTypeError> {
-    let Some(content_type) = request_content_type(req)? else {
-        return Ok(());
-    };
-    if is_json_content_type(&content_type) {
-        return Ok(());
-    }
-    Err(RelayContentTypeError::Unsupported {
-        actual: content_type,
-        expected: "application/json or application/*+json",
-    })
-}
-
 fn request_content_type(req: &Request) -> Result<Option<String>, RelayContentTypeError> {
     let Some(raw) = req
         .headers()
@@ -1031,15 +1019,89 @@ fn request_content_type(req: &Request) -> Result<Option<String>, RelayContentTyp
     Ok(Some(raw.to_string()))
 }
 
-fn is_json_content_type(content_type: &str) -> bool {
-    let media_type = content_type
+#[derive(Clone, Copy)]
+struct RelayContentTypePolicy {
+    expected: &'static str,
+    allow_absent: bool,
+    accepts: fn(&str) -> bool,
+}
+
+impl RelayContentTypePolicy {
+    fn json() -> Self {
+        Self {
+            expected: "application/json or application/*+json",
+            allow_absent: true,
+            accepts: is_json_content_type,
+        }
+    }
+
+    #[cfg(test)]
+    fn multipart() -> Self {
+        Self {
+            expected: "multipart/form-data",
+            allow_absent: false,
+            accepts: is_multipart_content_type,
+        }
+    }
+
+    #[cfg(test)]
+    fn any() -> Self {
+        Self {
+            expected: "any content-type",
+            allow_absent: true,
+            accepts: |_| true,
+        }
+    }
+
+    fn allows(&self, content_type: Option<&str>) -> bool {
+        match content_type {
+            Some(content_type) => (self.accepts)(content_type),
+            None => self.allow_absent,
+        }
+    }
+}
+
+fn validate_request_content_type(
+    req: &Request,
+    policy: RelayContentTypePolicy,
+) -> Result<(), RelayContentTypeError> {
+    let content_type = request_content_type(req)?;
+    validate_content_type_value(content_type.as_deref(), policy)
+}
+
+fn validate_content_type_value(
+    content_type: Option<&str>,
+    policy: RelayContentTypePolicy,
+) -> Result<(), RelayContentTypeError> {
+    if policy.allows(content_type) {
+        return Ok(());
+    }
+    Err(RelayContentTypeError::Unsupported {
+        actual: content_type
+            .map(str::to_string)
+            .unwrap_or_else(|| "<absent>".to_string()),
+        expected: policy.expected,
+    })
+}
+
+fn media_type(content_type: &str) -> String {
+    content_type
         .split(';')
         .next()
         .unwrap_or_default()
         .trim()
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
+
+fn is_json_content_type(content_type: &str) -> bool {
+    let media_type = media_type(content_type);
     media_type == "application/json"
         || (media_type.starts_with("application/") && media_type.ends_with("+json"))
+}
+
+#[cfg(test)]
+fn is_multipart_content_type(content_type: &str) -> bool {
+    media_type(content_type) == "multipart/form-data"
 }
 
 async fn read_bounded_relay_request_bytes(
@@ -3881,14 +3943,43 @@ mod tests {
     }
 
     #[test]
-    fn json_request_content_type_accepts_json_media_types() {
-        assert!(is_json_content_type("application/json"));
-        assert!(is_json_content_type("application/json; charset=utf-8"));
-        assert!(is_json_content_type("Application/Problem+JSON"));
+    fn content_type_policy_accepts_json_media_types() {
+        let policy = RelayContentTypePolicy::json();
 
-        assert!(!is_json_content_type("text/plain"));
-        assert!(!is_json_content_type("multipart/form-data; boundary=test"));
-        assert!(!is_json_content_type("application/octet-stream"));
+        assert!(policy.allows(None));
+        assert!(policy.allows(Some("application/json")));
+        assert!(policy.allows(Some("application/json; charset=utf-8")));
+        assert!(policy.allows(Some("Application/Problem+JSON")));
+
+        assert!(!policy.allows(Some("text/plain")));
+        assert!(!policy.allows(Some("multipart/form-data; boundary=test")));
+        assert!(!policy.allows(Some("application/octet-stream")));
+    }
+
+    #[test]
+    fn content_type_policy_accepts_multipart_only_when_explicit() {
+        let policy = RelayContentTypePolicy::multipart();
+
+        assert!(policy.allows(Some("multipart/form-data; boundary=test")));
+        assert!(!policy.allows(None));
+        assert!(!policy.allows(Some("application/json")));
+
+        let err = validate_content_type_value(None, policy).unwrap_err();
+        assert_eq!(err.status_code(), 415);
+        assert_eq!(
+            err.message("audio transcriptions", "multipart"),
+            "unsupported audio transcriptions multipart request body content-type: <absent>; expected multipart/form-data"
+        );
+    }
+
+    #[test]
+    fn content_type_policy_can_allow_raw_passthrough() {
+        let policy = RelayContentTypePolicy::any();
+
+        assert!(policy.allows(None));
+        assert!(policy.allows(Some("application/octet-stream")));
+        assert!(policy.allows(Some("audio/mpeg")));
+        assert!(policy.allows(Some("multipart/form-data; boundary=test")));
     }
 
     #[test]

@@ -41,9 +41,9 @@ The Worker:
   reads those JSON bodies through a shared bounded request-byte reader before
   parsing them as `serde_json::Value`, preserving unknown fields and explicit
   zero values;
-- rejects explicitly non-JSON request `Content-Type` values on JSON relay
-  endpoints before reading the body, while still allowing absent
-  `Content-Type` for OpenAI-compatible client tolerance;
+- routes request `Content-Type` checks through a shared policy layer; JSON
+  relay endpoints reject explicit non-JSON bodies before reading while still
+  allowing absent `Content-Type` for OpenAI-compatible client tolerance;
 - defaults the relay JSON body limit to 4 MiB and allows operators to override
   it with `RELAY_JSON_BODY_LIMIT_BYTES`; values must be positive integers;
 - reads non-streaming JSON response bodies for audit parsing and Cohere rerank
@@ -192,7 +192,7 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   unparsed audio/SSE response passthrough; audio transcription and translation
   multipart paths are still pending.
 - The current relay body layer has an explicit JSON-only request-body mode
-  backed by JSON content-type preflight and a shared bounded byte reader. Raw,
+  backed by shared content-type policy and a bounded byte reader. Raw,
   multipart, and pass-through stream request bodies still need dedicated body
   modes before file upload endpoints are added.
 - Rerank support currently covers Jina JSON passthrough and Cohere JSON

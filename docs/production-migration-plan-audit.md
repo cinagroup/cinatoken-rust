@@ -9,6 +9,9 @@ bounded relay JSON body reader, bounded non-stream JSON response readers,
 Workers observability config, and local Wrangler preflight scripts. Raw,
 multipart, and pass-through stream request body support remains part of Phase 3.
 
+Execution source of truth: detailed gate, workstream, route, data, canary, and
+rollback plans now live in `docs/production-migration-execution-plan.md`.
+
 Scope: pause feature implementation and define the production-grade migration
 plan for moving `github:cinagroup/cinatoken` to `cinatoken-rust`, including a
 best-practices audit of the current Rust/Cloudflare Worker state.
@@ -742,12 +745,14 @@ Each workstream must maintain:
 
 ## Next Recommended Non-Code Steps
 
-1. Replace the original high-level migration plan with a tracked matrix:
-   route matrix, provider matrix, table matrix, billing matrix.
-2. Create a production configuration checklist for staging and prod bindings.
-3. Capture a real source database inventory: table counts, sizes, critical
+1. Keep `docs/production-migration-execution-plan.md` updated as gate status
+   changes.
+2. Produce the real route, provider, table, and billing matrices named by the
+   execution plan.
+3. Create a production configuration checklist for staging and prod bindings.
+4. Capture a real source database inventory: table counts, sizes, critical
    columns, and sensitive columns.
-4. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
+5. Define SLOs: auth/route overhead, stream first-byte overhead, error budget,
    billing-delta tolerance, and queue lag.
-5. Write the first cutover runbook: staging deploy, smoke tests, canary,
+6. Write the first cutover runbook: staging deploy, smoke tests, canary,
    rollback, and post-cutover monitoring.

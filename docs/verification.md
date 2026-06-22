@@ -123,6 +123,10 @@ Last checked: 2026-06-22
 - `wrangler --version`: `4.101.0`
 - Fetched latest `@cloudflare/workers-types` with `npm pack`; observed version
   `4.20260621.1`.
+- Refreshed the production migration plan against current official Cloudflare
+  Workers best-practices, Workers limits, Workers observability, and D1 limits
+  docs; detailed execution gates now live in
+  `docs/production-migration-execution-plan.md`.
 - Added local Cloudflare preflight scripts:
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run

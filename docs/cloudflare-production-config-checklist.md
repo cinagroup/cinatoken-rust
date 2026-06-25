@@ -53,6 +53,25 @@ Cloudflare references refreshed on 2026-06-22:
 - D1 Time Travel and backups:
   <https://developers.cloudflare.com/d1/reference/time-travel/>
 
+Cloudflare references added 2026-06-25 (see migration-plan §21):
+
+- Workers Rate Limiting binding (GA 2025-09-19):
+  <https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/>
+- D1 global read replication / Sessions API:
+  <https://developers.cloudflare.com/d1/best-practices/read-replication/>
+- D1 limits (10 GB/db, 50k dbs/account):
+  <https://developers.cloudflare.com/d1/platform/limits/>
+- Durable Objects (incl. WebSocket Hibernation):
+  <https://developers.cloudflare.com/durable-objects/>
+- Cloudflare Containers (GA 2026-04-13):
+  <https://developers.cloudflare.com/containers/>
+- Cloudflare Workflows:
+  <https://developers.cloudflare.com/workflows/>
+- Secrets Store:
+  <https://developers.cloudflare.com/secrets-store/>
+- Smart Placement:
+  <https://developers.cloudflare.com/workers/configuration/smart-placement/>
+
 ## Current Config Snapshot
 
 Current `wrangler.toml` is development-shaped:
@@ -75,6 +94,43 @@ Production decision:
   preferred shape for newer Workers configuration and comments.
 - A TOML exception is acceptable only if the exact staging/prod config is
   validated with Wrangler, generated binding types, and dry-run/startup checks.
+
+## Environment Layout
+
+`wrangler.toml` now carries three explicit shapes:
+
+| Block | Worker name | Environment | Used by |
+| --- | --- | --- | --- |
+| Top level (no `[env.*]`) | `cinatoken-rust-api` | `development` | `wrangler dev`, local D1, smoke tests |
+| `[env.staging]` | `cinatoken-rust-api-staging` | `staging` | staging smoke, canary rehearsal |
+| `[env.production]` | `cinatoken-rust-api` | `production` | customer canary and full cutover |
+
+Placeholder binding IDs (`00000000-...` for dev, `REPLACE_WITH_STAGING_*` /
+`REPLACE_WITH_PRODUCTION_*` for staging/prod) are intentional and must be
+replaced before the corresponding deploy. Production deploy is gated by G8 in
+`docs/production-migration-execution-plan.md`.
+
+Promotion SOP:
+
+1. Create the real Cloudflare resources with `wrangler d1 create`,
+   `wrangler kv namespace create`, `wrangler r2 bucket create`,
+   `wrangler queues create`.
+2. Record the real IDs (database_id / namespace id / bucket name / queue name)
+   in the release operator's private notes — never in the repository.
+3. Replace the matching `REPLACE_WITH_*` placeholder in `wrangler.toml`. The
+   diff is the audit trail.
+4. Set secrets out of band:
+
+   ```powershell
+   wrangler secret put --env staging UPSTASH_REDIS_REST_URL
+   wrangler secret put --env staging UPSTASH_REDIS_REST_TOKEN
+   # provider keys, JWT/session, payment, OAuth, Turnstile as required by scope
+   ```
+
+5. Run the Cloudflare preflight scripts (`bun run check:cf:dry-run` and
+   `bun run check:cf:startup`) once `worker-build` is installed.
+6. Deploy with `wrangler deploy --env staging` (or `--env production`).
+7. Verify `/api/status` reports the expected `ENVIRONMENT` and feature flags.
 
 ## Environment Model
 
@@ -127,8 +183,33 @@ These must be true for every deployable environment:
 | AI Gateway | Optional | Real ID or direct-provider decision | Real ID or direct-provider decision | Relay | Provider matrix decision |
 | Static assets or Pages | Optional | Required before G5 frontend smoke | Required before Scenario B/C frontend cutover | Frontend/Platform | SPA fallback, API route precedence, bundle redaction smoke |
 | Service bindings | Optional | Use for Worker-to-Worker calls if split | Same | Platform | Binding type and smoke |
-| Durable Objects | Optional | Required before realtime/session cutover | Required before realtime/session cutover | Platform | Migration entry and WebSocket smoke |
+| Durable Objects | Optional | Required for hot atomic state + before realtime/session cutover | Same | Platform | Migration entry, contention smoke, WebSocket smoke |
+| Rate Limiting binding | Optional | Required once relay rate limits move off Upstash | Required before relay canary | Platform/Security | 429 telemetry via Analytics Engine, limit smoke |
 | Workflows | Optional | Required before multi-step async cutover | Required before multi-step async cutover | Platform/Tasks | Workflow smoke and retry test |
+| Containers | Optional | Required before any WASM-incompatible/long-running fallback path | Same | Platform | Container build, Worker->Container smoke |
+| Secrets Store | Optional | Recommended for shared provider/payment secrets | Recommended | Security/Platform | Store binding, rotation audit |
+
+## 2026-06-25 Native Primitive And Canary Updates
+
+These supersede earlier Upstash-first / Pages-first / VPS-fallback assumptions.
+Authoritative rationale: `docs/cinatoken-rust-migration-plan.md` §21.
+
+| Item | Requirement | Evidence |
+| --- | --- | --- |
+| Rate limiting | Workers Rate Limiting binding per environment; no `ct:rate:*` Upstash keys on the hot path | Binding config, 429 Analytics Engine data point |
+| Hot atomic state | Durable Object namespace for round-robin index, concurrency caps, channel breaker, locks | DO migration entry, contention smoke |
+| D1 reads | Sessions API enabled; read-your-writes bookmark on write-then-read admin paths | Replica read smoke, bookmark test |
+| D1 size | Per-db 10 GB budget tracked; logs/history archived to R2/Analytics Engine; sharding plan if approaching cap | Storage forecast, archive job |
+| Frontend | Workers Static Assets from the same Worker (one origin); no separate Pages project | `[assets]` config, SPA fallback smoke |
+| Native fallback | Cloudflare Containers (not VPS) for WASM-incompatible/long-running workloads | Container config, Worker->Container smoke |
+| Async/payments | Workflows for durable task/payment orchestration; Queues for log fan-in only | Workflow + queue smoke |
+| Canary | Workers gradual deployments (version %) + token-group gating; instant version rollback | Gradual-deploy config, rollback rehearsal |
+| Secrets sharing | Secrets Store for provider/payment secrets shared across Worker + Container | Store binding, rotation audit |
+| Compatibility date | Reviewed and bumped on a quarterly cadence, not only at prod deploy | Date review note in this file |
+
+Compatibility-date cadence: review `compatibility_date` every quarter (next due
+2026-09). Bump deliberately, re-run dry-run/startup checks, and record the date
+review note here rather than discovering drift at cutover.
 
 ## Secret Inventory
 

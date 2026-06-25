@@ -27,6 +27,50 @@ Read this file with:
 - `docs/route-provider-parity-runbook.md` for G3 route/provider coverage,
   body modes, streaming behavior, usage parsing, error mapping, and smoke
   evidence.
+- `docs/source-provider-channel-matrix.md` for the canonical, source-derived
+  channel-type -> APIType -> adapter mapping that the route/provider matrices
+  must agree with.
+- `docs/source-route-inventory.md` for the canonical, source-derived list of
+  every Go route with its auth class, handler, and parity findings.
+- `docs/source-d1-schema-parity.md` for P0-table field/index/PK parity against
+  the D1 migration and the proposed corrective migration.
+- `docs/source-billing-expr-parity.md` for the source-derived billing-expression
+  engine contract and the 56-test golden fixture gap map.
+- `docs/source-token-estimation-parity.md` for the source-derived request-time
+  token estimation (tiktoken, image algorithm, audio duration) that feeds
+  pre-consume reservation.
+- `docs/source-auth-session-parity.md` for the source-derived auth/session model
+  (session vs access-token, `New-Api-User`, relay token-key extraction, admin
+  channel pin, OAuth/2FA/Passkey enrollment) the Rust auth layer must match.
+- `docs/source-payment-idempotency-parity.md` for the source-derived payment
+  order model, per-provider quota formulas, and the two-layer webhook
+  idempotency design that prevents double-credit.
+- `docs/source-usage-parsing-parity.md` for the source-derived SSE/non-stream
+  usage extraction, missing-usage estimate fallback, and stream_options matrix
+  that feed settlement.
+- `docs/source-retry-autoban-parity.md` for the source-derived relay retry loop,
+  retryable-error classification, channel auto-ban (status + keyword, per-key),
+  and auto-recovery.
+- `docs/source-ssrf-parity.md` for the Go<->Rust SSRF/outbound-URL validation
+  parity, CIDR-table divergences, DNS-rebinding decision, and wiring gate.
+- `docs/source-task-lifecycle-parity.md` for the source-derived async media-task
+  submit/poll/settle lifecycle, three billing hooks, CAS idempotency, and the
+  Workflows/Queue/R2 Cloudflare mapping.
+- `docs/source-pricing-ratio-parity.md` for the source-derived non-tiered
+  (ratio/price) billing resolution — the default path and the current
+  `quota=0/billing_pending` cutover blocker.
+- `docs/source-security-middleware-parity.md` for the source-derived Turnstile,
+  secure-verification (step-up), and CORS middleware parity and the KV/DO
+  session-state requirement.
+- `docs/source-oauth-2fa-passkey-parity.md` for the source-derived OAuth state
+  (CSRF), TOTP 2FA, and WebAuthn/Passkey enrollment flows and their KV/DO
+  single-use state requirement.
+- `docs/parity-implementation-backlog.md` is the implementation companion: it
+  sequences all 15 source-parity checklists into gate/scenario-ordered phases
+  with dependencies and the hard-blocker short list.
+- `docs/source-channel-selection-parity.md` for the source-derived channel
+  selection algorithm (priority/weight/smoothing, affinity, auto cross-group
+  retry) that the Rust selector must match.
 - `docs/observability-slo-security-runbook.md` for G6 logs, traces, SLOs,
   alert drills, redaction, WAF/rate-limit/CORS, and incident evidence.
 - `docs/admin-frontend-parity-runbook.md` for G5 admin API, frontend, auth,
@@ -140,6 +184,39 @@ Production rules for this migration:
 - Run generated Worker binding type updates after every binding change.
 - Make every production change reversible with a rehearsed rollback path.
 
+### 2026-06-25 Platform Best-Practice Update
+
+Several Cloudflare capabilities GA'd in H1 2026 supersede earlier primitive
+choices in this plan. These are authoritative; see
+`docs/cinatoken-rust-migration-plan.md` §21 for full rationale. New anchors:
+
+- Workers Rate Limiting binding (GA 2025-09-19):
+  <https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/>
+- D1 global read replication / Sessions API:
+  <https://developers.cloudflare.com/d1/best-practices/read-replication/>
+- Cloudflare Containers + Sandboxes (GA 2026-04-13):
+  <https://developers.cloudflare.com/containers/>
+- Cloudflare Workflows (GA, durable execution):
+  <https://developers.cloudflare.com/workflows/>
+- Workers gradual deployments:
+  <https://developers.cloudflare.com/workers/configuration/versions-and-deployments/gradual-deployments/>
+
+Corrected production rules:
+
+- Rate limiting is a Workers-native Rate Limiting binding, not an Upstash REST
+  hot-path call. Keep the non-Cloudflare egress on the hot path at zero.
+- Hot atomic state (round-robin index, concurrency caps, channel breaker, locks)
+  is Durable Objects, not Upstash. Upstash is not a production hard dependency.
+- Read-heavy D1 access uses the Sessions API with read replicas and read-your-
+  writes bookmarks; write-then-read admin paths reuse the same session.
+- WASM-incompatible or long-running workloads (Passkey/WebAuthn, complex AWS/
+  Vertex/Tencent signing, Realtime WebSocket bridge, Codex/io.net, heavy
+  tokenizers) run in Cloudflare Containers, not a separate VPS.
+- Multi-step async (media task polling, payment reconciliation) uses Workflows
+  for durable, idempotent, replayable steps; Queues stay for high-volume fan-in.
+- Canary is driven primarily by Workers gradual deployments (version-percentage
+  split) plus token-group gating, not DNS swaps.
+
 ## Production Gates
 
 | Gate | Name | Opens When | Required Evidence | Blocks |
@@ -177,11 +254,24 @@ Target:
 
 - `wrangler.jsonc` or equivalent explicit environment config.
 - Separate staging and production Workers.
-- Separate staging and production D1 databases.
+- Separate staging and production D1 databases, with Sessions API read
+  replication enabled for read-heavy paths.
 - Separate staging and production KV namespaces, R2 buckets, and Queues.
-- Upstash staging/prod databases or logical prefixes with strict key
-  separation.
-- AI Gateway ID and direct-provider fallback policy documented per provider.
+- A Durable Object namespace per environment for hot atomic state (round-robin
+  index, concurrency caps, channel breaker, locks).
+- A Rate Limiting binding per environment for token/IP/route-family limits.
+- Workflows bindings for async task and payment reconciliation orchestration.
+- Frontend served as Workers Static Assets from the same Worker (single origin),
+  not a separate Pages project.
+- Cloudflare Containers for WASM-incompatible / long-running fallback workloads,
+  addressed from the Worker by binding/hostname.
+- Secrets Store for provider/payment secrets shared across Worker and Container,
+  with per-Worker `wrangler secret put` for Worker-only secrets.
+- Upstash retained only as a transitional cache, with staging/prod separation;
+  not a production hard dependency (see Cache plan).
+- AI Gateway ID and direct-provider fallback policy documented per provider;
+  prefer AI Gateway for upstream fallback/retry/cache/observability over
+  reimplementing them in the Worker hot path.
 - Generated Worker types committed or regenerated through a documented command.
 
 Required tasks:
@@ -343,27 +433,45 @@ Exit evidence:
 
 ## Cache, Rate Limit, And Consistency Plan
 
-Target:
+Target (revised 2026-06-25):
 
-- Upstash improves latency and load but never becomes the only source of
-  critical truth.
-- Cache keys are versioned, scoped by environment, and include provider family
-  where route behavior differs.
+- Hot-path primitives are Cloudflare-native first; the non-Cloudflare egress on
+  the relay hot path is zero.
+- Rate limiting uses the Workers Rate Limiting binding, not Upstash REST.
+- Atomic state (round-robin index, concurrency caps, channel breaker, locks)
+  uses Durable Objects.
+- Read-heavy token/channel/options access uses the D1 Sessions API with read
+  replicas; KV/Cache API holds derived config caches.
+- Upstash, if retained at all, is a transitional cache only and never the only
+  source of critical truth; cache keys are versioned, environment-scoped, and
+  include provider family where route behavior differs.
 
 Required tasks:
 
-1. Document all Redis key prefixes, TTLs, and invalidation triggers.
-2. Invalidate token/channel cache on admin mutations.
-3. Define outage behavior:
-   fail open only for non-critical cache reads, fail closed or degrade for
-   abuse/rate-limit controls where appropriate.
-4. Keep rate limits scoped by token, IP, route family, and environment.
-5. Add staging smoke for Upstash success, timeout, and error responses.
+1. Replace per-token/IP/route-family rate limits with the Rate Limiting binding;
+   retire the `ct:rate:*` Redis keys. Observe 429s via Workers Logs + an
+   Analytics Engine `rate_limited` data point (the binding is not in the
+   dashboard).
+2. Stand up a Durable Object namespace for round-robin index, concurrency caps,
+   and channel breaker state; DO single-threaded serialization replaces explicit
+   Upstash locks.
+3. Adopt D1 Sessions API for read paths and pass read-your-writes bookmarks so
+   admin mutations are immediately visible to the mutating session.
+4. Document all remaining cache key prefixes, TTLs, and invalidation triggers
+   (KV/DO), and invalidate token/channel cache on admin mutations.
+5. Define outage behavior: fail open only for non-critical cache reads; rate
+   limit / concurrency controls fail closed or degrade to a local approximation.
+6. Add staging smoke for Rate Limiting binding behavior, DO contention, and (if
+   Upstash is still present) Upstash success/timeout/error responses.
 
 Exit evidence:
 
+- Rate Limiting binding enforces limits with no added hot-path egress; 429
+  telemetry visible in Analytics Engine.
+- DO atomic-state paths are covered by tests or staging smoke under contention.
 - Cache invalidation is covered by tests or staging smoke.
-- Redis outage mode is documented and observed.
+- D1 Sessions API read-your-writes verified for a write-then-read admin path.
+- Any retained Upstash outage mode is documented and observed.
 - Rate-limit headers/errors are compatible with clients or explicitly
   documented as changed behavior.
 
@@ -453,11 +561,16 @@ Required tasks:
 4. Make sensitive admin mutations write audit events and invalidate token,
    channel, model, group, option, and auth caches where relevant.
 5. Add payment provider flows with webhook signature verification and idempotent
-   event storage.
-6. Move async task polling and generated artifacts to Queues/R2/Workflows as
-   appropriate.
-7. Decide whether realtime/session-heavy flows use Durable Objects, a separate
-   Rust service, or stay on Go until later.
+   event storage; use a Workflow per payment with `waitForEvent` for the webhook
+   so reconciliation is durable and replay-safe.
+6. Orchestrate async media task lifecycle (submit, upstream poll via
+   `step.sleep/sleepUntil`, R2 artifact storage, settlement/refund) with
+   Workflows for durable, idempotent, replayable steps; keep Queues for
+   high-volume log fan-in and Cron only for scheduled cleanup/reconciliation
+   triggers.
+7. Decide whether realtime/session-heavy flows use Durable Objects (with the
+   WebSocket Hibernation API for idle connections), a Cloudflare Container
+   running the native Rust bridge, or stay on Go until later.
 
 Exit evidence:
 
@@ -555,9 +668,18 @@ Use when Go/VPS can be retired.
 
 ## Canary And Rollback Plan
 
+Canary mechanism (revised 2026-06-25):
+
+- Primary control is Workers gradual deployments: split traffic between Worker
+  versions by percentage, with instant version rollback. This satisfies the
+  15-minute rollback requirement without DNS changes.
+- Secondary control is business-scoped gating: internal tokens, then selected
+  token/user groups, then route family. Use gating for who is exposed; use
+  gradual deployments for how much of a new version is live.
+
 Canary ramp:
 
-1. Internal tokens only.
+1. Internal tokens only (gating), new version at a low gradual-deployment %.
 2. 1% of selected low-risk relay traffic.
 3. 5% after one clean observation window.
 4. 25% after billing, latency, and error metrics remain within thresholds.
@@ -577,7 +699,9 @@ Candidate rollback triggers:
 
 Rollback actions:
 
-1. Stop new Rust traffic by route rule, DNS, token group, or feature flag.
+1. Stop new Rust traffic: roll the gradual deployment back to the previous
+   Worker version (fastest), and/or stop exposure by token group, route rule,
+   feature flag, or DNS.
 2. Keep Rust logs and D1 state immutable for investigation.
 3. Reconcile any Rust-applied quota/payment deltas back to Go.
 4. Rotate any secrets exposed during incident response.

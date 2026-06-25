@@ -68,10 +68,14 @@ The production blockers are not mysterious, but they are important:
   provider-specific response rewrite by endpoint-specific payload limits.
 
 Production direction: keep the current Worker as the high-frequency relay and
-auth/billing edge, but treat D1 as source of truth, Upstash Redis as hot
-counter/cache/lock layer, Queues as async write buffer, R2 as archival/blob
-storage, Durable Objects as realtime/session state, and optional native Rust
-services as escape hatches for long-running or runtime-incompatible workloads.
+auth/billing edge, but treat D1 as source of truth (Sessions API read replicas
+for read-heavy paths), the Workers Rate Limiting binding for limits, Durable
+Objects as the hot atomic counter/concurrency/lock and realtime/session layer,
+Queues as async write buffer, Workflows for durable multi-step task/payment
+orchestration, R2 as archival/blob storage, and Cloudflare Containers as the
+escape hatch for long-running or WASM-incompatible workloads. This revised
+direction (2026-06-25) removes Upstash and a separate VPS from the production
+hot path; see `docs/cinatoken-rust-migration-plan.md` §21.
 
 ## Audit Method
 
@@ -355,40 +359,54 @@ Production requirement:
 
 ## Target Production Architecture
 
+Target architecture revised 2026-06-25 to current Cloudflare-native primitives
+(see `docs/cinatoken-rust-migration-plan.md` §21):
+
 ```text
 Client SDKs / Admin Browser
         |
-Cloudflare DNS / CDN / WAF / Turnstile
+Cloudflare DNS / CDN / WAF / Turnstile / Rate Limiting binding
         |
-+---------------------+       +-------------------------+
-| Pages admin frontend|       | Rust Worker API Gateway |
-+---------------------+       +-------------------------+
-                                      |
-         +----------------------------+----------------------------+
-         |                            |                            |
-        D1                         Upstash                      Queues
- users/tokens/channels       rate limits/cache/locks       log/task/payment events
- options/billing/logs        hot token/channel rows         retry + DLQ
-         |                            |                            |
-         +----------------------------+----------------------------+
-                                      |
-                                     R2
-                          exports, archived logs, task outputs
-                                      |
-                         Durable Objects / Workflows
-                   realtime sessions, long-running orchestration
-                                      |
-                AI Gateway / Workers AI / External Providers
++-----------------------------------------------------------+
+| Rust Worker: Static Assets (admin UI, same origin) + API  |
++-----------------------------------------------------------+
+                          |
+   +----------------+-----+------------+------------------+
+   |                |                  |                  |
+  D1               KV / Cache      Durable Objects      Queues
+ (Sessions API   derived config   round-robin index    log fan-in
+  read replicas) token caches     concurrency/breaker  -> D1 batch + DLQ
+ users/tokens/                    locks/realtime
+ channels/billing                 (WebSocket Hibernation)
+   |                |                  |                  |
+   +----------------+--------+---------+------------------+
+                            |
+                           R2                 Workflows
+              exports, archived logs,   durable task lifecycle +
+              task outputs              payment reconciliation
+                            |
+            Cloudflare Containers (native Rust fallback:
+            Passkey, complex signing, realtime bridge, heavy tokenizers)
+                            |
+            AI Gateway / Workers AI / External Providers
 ```
 
 Production principles:
 
 - Stream unknown or large bodies; buffer only bounded JSON.
-- Use D1 bindings, not Cloudflare REST APIs, for D1 access.
-- Use Queues/Workflows for retriable background work.
+- Use D1 bindings (Sessions API for read-heavy paths), not Cloudflare REST APIs.
+- Rate limit with the Workers Rate Limiting binding; keep hot-path non-Cloudflare
+  egress at zero. Use Durable Objects for atomic state, not Upstash.
+- Use Queues for high-volume fan-in and Workflows for durable, idempotent
+  multi-step background work (tasks, payment reconciliation).
+- Run WASM-incompatible / long-running workloads in Cloudflare Containers, not a
+  separate VPS.
+- Serve the frontend as Workers Static Assets from the same Worker (one origin).
 - Keep billing/quota mutation idempotent and observable.
-- Keep secrets out of config/source.
-- Make every production change reversible.
+- Keep secrets out of config/source (Secrets Store for shared provider/payment
+  secrets).
+- Make every production change reversible (gradual deployments + version
+  rollback).
 
 ## Production Migration Phases
 

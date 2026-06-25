@@ -161,11 +161,18 @@ Create or document dashboards for:
 | Relay health | Request count, status classes, route family, provider family, model, p50/p95/p99 latency, stream duration. |
 | Provider health | Upstream status, upstream latency, provider 429/5xx, channel ID distribution, model mapping errors. |
 | D1 health | Auth read latency, reserve/write latency, write failures, overloaded/query errors, migration/import status. |
-| Cache/rate limit | Upstash latency/errors, token cache hit ratio, channel cache hit ratio, rate-limit denials by token/IP/route. |
+| Cache/rate limit | Rate Limiting binding denials by token/IP/route (Analytics Engine `rate_limited` data point + Workers Logs 429s), DO atomic-state contention/latency, token/channel cache hit ratio, any residual Upstash latency/errors. |
 | Billing health | Reserve count, refund count, additional debit count, pending billing, shadow delta distribution. |
 | Queue/R2/tasks | Queue backlog, DLQ count, retry count, artifact upload/read/delete failures. |
 | Security | Auth failures, WAF/rate-limit blocks, admin mutation audit, OAuth/webhook failures, secret scan events. |
 | Platform limits | CPU time, wall time, memory/limit errors, subrequests, outgoing connection failures, startup errors. |
+
+Update 2026-06-25: the Workers Rate Limiting binding is not visible in the
+Cloudflare dashboard. Rate-limit observability therefore requires an Analytics
+Engine binding: emit a `rate_limited` data point whenever `limit()` returns
+`success:false`, and correlate with 429s in Workers Logs. This is a prerequisite
+for the Cache/rate limit dashboard above. See
+`docs/cinatoken-rust-migration-plan.md` §21.1.
 
 ## Alert Matrix
 
@@ -196,8 +203,8 @@ G6 cannot pass until each selected-scope item has evidence.
 | Log redaction | Staging smoke proves raw bearer/provider/payment/OAuth/session secrets do not appear. |
 | Token comparison | Security-sensitive comparisons use timing-safe or hash-first comparison where applicable. |
 | WAF/rate limits | Staging/prod route policy documented and tested for abusive paths. |
-| CORS | Environment-specific allowlist documented and smoke-tested. |
-| SSRF | Any user-controlled URL fetch path has scheme, host, IP range, redirect, and size restrictions. |
+| CORS | Environment-specific allowlist documented and smoke-tested. Fail closed (no credentialed wildcard); SSE expose-headers kept. Turnstile + secure-verification (step-up) parity and the KV/DO session-state requirement in `docs/source-security-middleware-parity.md`. |
+| SSRF | Any user-controlled URL fetch path has scheme, host, IP range, redirect, and size restrictions. Go<->Rust parity, CIDR-table reconciliation, DNS-rebinding decision, and the per-endpoint wiring gate are in `docs/source-ssrf-parity.md`. |
 | OAuth | State, nonce, callback origin, and replay checks are tested before auth cutover. |
 | Payment webhooks | Signature verification, idempotency, and replay tests pass before payment cutover. |
 | Admin audit | Sensitive admin mutations record actor, action, target, request ID, and result. |

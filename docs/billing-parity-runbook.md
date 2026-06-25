@@ -60,11 +60,16 @@ the selected scope.
 
 ## Golden Fixture Matrix
 
+The source-grounded engine contract and a test-by-test map of the 56 Go
+`billingexpr` golden tests to these fixture families (with Rust coverage status
+and a prioritized gap checklist) is in `docs/source-billing-expr-parity.md`. Use
+it to decide which fixtures are still missing; this section defines the families.
+
 Add fixtures before enabling a billing behavior in production.
 
 | Fixture Family | Required Cases |
 | --- | --- |
-| Flat text pricing | Prompt-only, completion-only, mixed prompt/completion, zero usage. |
+| Flat text pricing (non-tiered) | Prompt-only, completion-only, mixed prompt/completion, zero usage. Per-call vs per-token, completion/cache/image/audio ratios, default-37.5 tri-state, free model — per `docs/source-pricing-ratio-parity.md`. |
 | Tiered expressions | Boundary below tier, at tier, above tier, crossed tier after actual usage. |
 | `len` semantics | Full context tiering, cache-heavy prompts, Claude long context. |
 | Cache categories | `cr`, `cc`, `cc1h`, expressions that do and do not reference cache variables. |

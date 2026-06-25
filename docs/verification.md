@@ -159,6 +159,215 @@ Last checked: 2026-06-22
   `bun run check:cf:dry-run` for `wrangler deploy --dry-run --minify` and
   `bun run check:cf:startup` for `wrangler check startup` over a dry-run
   deploy.
+- `wrangler.toml` now carries explicit `[env.staging]` and `[env.production]`
+  blocks with `REPLACE_WITH_*` placeholder binding IDs, environment-scoped
+  observability sampling (staging 1.0, production 0.1), and staging-suffixed
+  resource names. The top-level block still describes the local development
+  shape. See `docs/cloudflare-production-config-checklist.md` for the SOP.
+- `OPENAI_COMPATIBLE_CHANNEL_TYPES` now covers 12 providers: OpenAI(1),
+  Zhipu(16), OpenRouter(20), Moonshot(25), Perplexity(27), LingYiWanWu(31),
+  SiliconFlow(40), Mistral(42), DeepSeek(43), MokaAI(44), xAI(48),
+  Submodel(53). `default_base_url` returns each provider's documented
+  upstream root, and `upstream_v1_url` now honors any trailing `/v<digit>`
+  segment (including Zhipu's `/v4`) instead of always appending `/v1`.
+- Relay now walks the full ordered channel candidate list and retries against
+  the next candidate when an upstream returns a retryable status (Go-default
+  `AutomaticRetryStatusCodeRanges` minus 504/524) or fetch fails. Reserve is
+  applied once before the loop and refunded only when every attempt fails.
+  Channels that return the auto-disable status set (default `{401}`) are
+  marked disabled best-effort via `disable_channel_best_effort`, and a
+  Redis-backed rolling error counter auto-disables channels that exceed
+  `RELAY_CHANNEL_AUTOBAN_THRESHOLD` (default 5) within a 60s window.
+  `RELAY_RETRY_TIMES` controls the retry budget (default 0 = single attempt).
+- `crates/ssrf` ports the Go gateway's `common/ssrf_protection.go` validation
+  surface (HTTP/HTTPS only, port allowlist, private/loopback/metadata IPv4
+  and IPv6 CIDR table, domain allow/block lists, IP CIDR blocklist) behind a
+  `SsrfPolicy`/`SsrfPolicyBuilder` API. 14 unit tests cover the Go parity
+  cases. The module is standalone for now and is not wired into any Worker
+  route; see `docs/ssrf.md` for the boundary and the DNS-resolution
+  limitation.
+- `migrations/d1/0002_admin_tables.sql` adds the `vendors` and `models`
+  admin tables (mirroring Go `model/vendor_meta.go` and
+  `model/model_meta.go`) plus the `logs` indexes (`type`,
+  `(created_at, type)`, `token_name`, `channel_id`, `group`, `ip`,
+  `username`, `(model_name, username)`) that back the upcoming admin log
+  queries and the rpm/tpm stat. Verified via
+  `python tools/verify_sqlite.py --seed migrations/d1/0001_core.sql --seed
+  migrations/d1/0002_admin_tables.sql`.
+- The migration CLI now imports `vendors` and `models` as first-class D1
+  tables (`crates/migration/src/main.rs` `D1_IMPORT_TABLES`,
+  `VENDORS_D1_COLUMNS`, `MODELS_D1_COLUMNS`, and the importer spec).
+- `crates/session` implements the stateless HMAC-signed session cookie codec
+  used by the Rust Worker. Format is `base64url(payload_json).base64url(hmac_sha256(payload))`;
+  10 unit tests cover round-trip, tamper rejection, expiry, secret-length
+  enforcement, and cookie header formatting. See `docs/admin-frontend-parity-runbook.md`
+  for the "Forced re-auth on Rust" compatibility boundary (Go-issued cookies
+  are not portable to Rust).
+- `crates/auth` gained bcrypt password helpers (`hash_password` /
+  `verify_password`, Go-compatible PHB format), role/status constants
+  (`ROLE_COMMON_USER=1`, `ROLE_ADMIN_USER=10`, `ROLE_ROOT_USER=100`,
+  `USER_STATUS_ENABLED=1`, `USER_STATUS_DISABLED=2`), and `is_admin` /
+  `is_root` / `outranks` helpers.
+- Worker admin auth surface landed: `POST /api/user/login`, `POST
+  /api/user/logout`, `GET /api/user/self`, `GET /api/setup`, `POST
+  /api/setup`, plus `require_user_auth` / `require_admin_auth` /
+  `require_root_auth` middleware helpers in `crates/worker/src/admin.rs`.
+  Login verifies bcrypt against `users.password`, issues a signed `session`
+  cookie (`HttpOnly; SameSite=Strict; Secure`), and returns a Go-style
+  `{success, message, data}` envelope. Setup bootstraps the initial root
+  user when none exists.
+- `GET /api/status` now reports `session_auth: true` when `SESSION_SECRET`
+  is configured and at least 32 bytes long.
+- Frontend deploy pipeline is in place: `wrangler.toml` carries an
+  `[assets]` block (directory `apps/web/dist`, binding `ASSETS`,
+  `not_found_handling = "single-page-application"`) in dev/staging/production;
+  the Worker `fetch` handler routes non-API paths through
+  `env.assets("ASSETS")` so SPA client-side routes survive hard refresh;
+  `package.json` adds `build:web` and `build:all` scripts. The actual
+  frontend bundle build and end-to-end smoke are G1 staging steps.
+- Admin CRUD P0 routes landed (`crates/worker/src/admin_crud.rs`):
+  - Logs: `GET /api/log/`, `GET /api/log/stat`, `DELETE /api/log/`,
+    `GET /api/log/self`, `GET /api/log/self/stat` (admin + self paths, with
+    self logs stripping `channel_id` and `other` for safety). Deprecated
+    `/api/log/search` and `/api/log/self/search` return the Go-compatible
+    "deprecated" envelope.
+  - Options: `GET /api/option/` (root-only, sensitive keys filtered),
+    `PUT /api/option/` (root-only upsert).
+  - Tokens: `GET /api/token/`, `GET /api/token/search`, `GET /api/token/:id`,
+    `POST /api/token/:id/key` (reveal), `POST /api/token/`, `PUT /api/token/`,
+    `DELETE /api/token/:id`, `POST /api/token/batch` — all user-scoped
+    (ownership enforced), list/get responses mask keys, create generates a
+    `ct-<32 random>` key, and every mutation triggers
+    `invalidate_token_cache`.
+- Cache invalidation module (`crates/worker/src/cache_invalidation.rs`)
+  implements Upstash Redis SCAN + bulk DEL for `relay:auth:*`,
+  `relay:channel:*`, `relay:option:*`. Best-effort: failures fall back to TTL
+  with a `console_warn!`. 5 unit tests cover SCAN response parsing.
+- The migration CLI now accepts `midjourneys` as the unsupported-table
+  example and vendors/models as first-class import tables (covered by
+  `cargo test -p cinatoken-migration`).
+- Channel admin Tier 1 CRUD landed (`crates/worker/src/admin_channel.rs`):
+  `GET /api/channel/` (list with `type_counts` aggregation), `GET
+  /api/channel/search`, `GET /api/channel/:id`, `POST /api/channel/`
+  (create, single-mode only), `PUT /api/channel/`, `DELETE /api/channel/:id`,
+  `POST /api/channel/batch` (batch delete), `POST /api/channel/fix` (rebuild
+  the entire `abilities` table from `channels.models × channels.group`).
+  Every write operation keeps the `abilities` table in sync so the relay's
+  `select_channels_from_abilities` finds new/edited channels, and triggers
+  `invalidate_channel_cache` so the relay drops stale channel cache entries.
+  List/get responses never expose the upstream key (reveal is a separate
+  RootAuth route, Tier 2).
+- Channel + abilities D1 repository functions added in
+  `crates/worker/src/d1_repositories.rs`: `list_channels`, `search_channels`,
+  `count_channels`, `count_channels_by_type`, `find_channel_by_id`,
+  `create_channel`, `update_channel`, `delete_channel`,
+  `delete_channels_batch`, plus the load-bearing abilities sync helpers
+  `add_abilities_for_channel`, `update_abilities_for_channel`,
+  `delete_abilities_for_channel`, and `fix_abilities`.
+- User admin CRUD landed (`crates/worker/src/admin_user.rs`): `GET
+  /api/user/` (list), `GET /api/user/search`, `GET /api/user/:id`,
+  `POST /api/user/` (create with role clamp `new_role < caller_role`),
+  `PUT /api/user/` (edit username/display_name/group/remark/password),
+  `DELETE /api/user/:id` (soft delete + token cache invalidation), and
+  `POST /api/user/manage` (the 8-action switch: disable/enable/delete/
+  promote/demote/add_quota×{add,subtract,override}). Permission rules match
+  Go `canManageTargetRole`: promote is root-only; disable/delete/demote
+  block if target is root; delete requires strict `caller_role >
+  target_role`. Quota mutations use atomic SQL (`quota = quota + ?`).
+  Responses omit `password` (SQL-level) and `access_token` (handler-level).
+- User admin D1 repository functions: `list_users`, `search_users`,
+  `count_users`, `count_search_users`, `find_user_by_id_full`,
+  `find_user_role_status`, `create_user`, `edit_user`, `soft_delete_user`,
+  `set_user_status`, `set_user_role`, `increase_user_quota`,
+  `decrease_user_quota`, `override_user_quota`.
+- Non-tiered ("flat") billing landed. When a model has no `tiered_expr`
+  configured AND has a `ModelRatio` or `ModelPrice` option entry, the relay
+  now computes and applies quota via `crates/billing/src/flat.rs`
+  (`compute_flat_quota`), wired into `record_relay_audit` alongside the
+  existing tiered path. The formula mirrors Go's
+  `calculateTextQuotaSummary` core: `model_ratio × group_ratio` per-token,
+  with `completion_ratio` premium, OpenAI-vs-Anthropic cache semantic
+  branching, `model_price` fixed-price mode, zero-usage guard, and the
+  `ratio != 0 && quota <= 0 → 1` floor. Audit metadata records
+  `flat_billing: {quota, mode, model_ratio, completion_ratio, group_ratio,
+  cache_ratio}`. 11 unit tests cover the core cases.
+- Pricing config module (`crates/billing/src/pricing.rs`): loads
+  `ModelRatio`, `CompletionRatio`, `ModelPrice`, `CacheRatio`,
+  `group_ratio_setting.group_ratio`, `QuotaPerUnit` from D1 options as
+  JSON maps. Defaults: ratio 1.0, quota_per_unit 500_000. 6 unit tests.
+- Tokenizer crate (`crates/tokenizer`): char-class token estimator porting
+  Go's `service/token_estimator.go`. Per-family weights (OpenAI / Claude /
+  Gemini) with CJK / Latin / Number / Emoji / MathSymbol classification.
+  Used by the tiered billing preflight (via `token_params_from_request`)
+  for more accurate prompt-token estimates than the legacy char/4 heuristic.
+  10 unit tests. tiktoken BPE is intentionally NOT embedded (Worker bundle
+  size); settlement always prefers provider-reported usage.
+- D1 `option_values(db, keys)` batch reader added for the pricing options
+  round-trip.
+- Multipart/raw body relay mode landed. Three upload endpoints are now
+  wired and forward `multipart/form-data` bodies to the upstream verbatim:
+  `POST /v1/audio/transcriptions`, `POST /v1/audio/translations`,
+  `POST /v1/images/edits`. The `model` form field is extracted via a
+  lightweight boundary-split parser (`crates/relay/src/multipart.rs`,
+  `extract_multipart_field`) so the relay can authenticate, route, and bill
+  the request; the full multipart body is replayed to the upstream through
+  `forward_raw_openai_compatible` (raw bytes via `Uint8Array`, original
+  Content-Type with boundary preserved). Body limit for multipart
+  endpoints is 25 MiB. 9 unit tests cover boundary extraction, text-field
+  extraction, file-part skipping, and edge cases.
+- `RelayRequestBody` enum (`Json(Value)` / `Raw { bytes, content_type }`)
+  replaces the prior `Value`-only body shape, with `prepare_relay_request`
+  dispatching to `prepare_json_relay_request` or
+  `prepare_multipart_relay_request` based on the endpoint's
+  `request_body_mode`.
+- Three Chinese cloud AI providers added as OpenAI-compatible channel
+  types: Baidu Qianfan v2 (type 15, `https://qianfan.baidubce.com/v2`),
+  Ali DashScope compatible-mode (type 17,
+  `https://dashscope.aliyuncs.com/compatible-mode/v1`), and Zhipu v4
+  (type 26, `https://open.bigmodel.cn/api/paas/v4`). `OPENAI_COMPATIBLE_CHANNEL_TYPES`
+  now covers 15 providers. Baidu's native ERNIE API (OAuth token exchange +
+  per-model URL mapping) and Ali's native DashScope API
+  (`/api/v1/services/...` rerank/image) are deferred to a later batch.
+- Dashboard data endpoints landed (`crates/worker/src/admin_data.rs`):
+  `GET /api/data/` (admin quota trend by model, with optional username
+  filter), `GET /api/data/self` (user's own quota trend, 30-day cap),
+  `GET /api/data/users` (admin quota trend by user), and
+  `GET /api/usage/token/` (OpenAI-style token usage via Bearer token auth).
+  All trends are computed live from the `logs` table with hour-floored
+  `GROUP BY` (D1's `(created_at, type)` index makes this efficient). The
+  Go gateway's `quota_data` pre-aggregation table + flush job is deferred
+  (would require a Cloudflare Cron Trigger).
+- Stripe topup MVP landed (`crates/worker/src/admin_payment.rs` +
+  `crates/payments/src/lib.rs`): `POST /api/user/stripe/pay` creates a
+  Stripe Checkout Session and records a pending topup;
+  `POST /api/stripe/webhook` verifies the HMAC-SHA256 signature, completes
+  the topup atomically (status 0→1), credits quota, and records a
+  `payment_events` row for idempotency; `GET /api/user/topup` lists recent
+  topups. D1 migration 0003 adds the `topups` table. 8 unit tests cover
+  signature parsing, HMAC verification, and config defaults.
+  `type=3` (LogTypeManage) row into the `logs` table via
+  `insert_admin_audit_log` (`crates/worker/src/d1_repositories.rs`), with
+  the operator identity in `other.admin_info` and the action+params in
+  `other.op`. 12 explicit audit points cover: user create/update/delete/
+  manage (disable/enable/promote/demote/quota add/subtract/override),
+  channel create/update/delete/batch-delete, option update, log clear, and
+  token key reveal. Secret values (option values, token keys) are NEVER
+  recorded — only key names / token ids. Self-log queries strip `other` so
+  target users see the action but not the operator identity. Audit rows are
+  queryable via the existing `GET /api/log/?type=3` endpoint.
+- LOG_QUEUE producer+consumer landed for relay audit logs. The relay path
+  now sends `AuditLogEvent` messages to `LOG_QUEUE` (via
+  `env.queue("LOG_QUEUE").send(...)`) instead of doing a synchronous D1
+  INSERT inside `wait_until`. A new `#[event(queue)]` handler in
+  `crates/worker/src/lib.rs` drains batches of up to 100 messages (or every
+  5 seconds) and bulk-INSERTs them into D1 in a single `db.batch()` call.
+  On D1 failure the batch is retried (up to 3 times, then dead-letter
+  queue). Falls back to synchronous D1 INSERT when the queue binding is not
+  configured (local dev / `cargo test`). Admin audit logs remain
+  synchronous (low-frequency, not a bottleneck). `wrangler.toml` now
+  declares `[[queues.consumers]]` with `max_batch_size=100`,
+  `max_batch_timeout=5`, `max_retries=3`, and a DLQ in all three
+  environments.
 
 ## Local Notes
 

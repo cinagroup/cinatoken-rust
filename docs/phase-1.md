@@ -126,6 +126,76 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   cross-provider channel reuse for the same group/model.
 - Migration CLI `dev-seed` command for local D1 seed SQL.
 - Initial D1 schema for users, tokens, channels, abilities, options, and logs.
+- `wrangler.toml` now carries explicit `[env.staging]` and
+  `[env.production]` blocks with placeholder resource IDs and environment-
+  scoped observability sampling, ready for the first real staging deploy once
+  the placeholders are replaced.
+- OpenAI-compatible channel selection now recognizes 12 providers: OpenAI(1),
+  Zhipu(16), OpenRouter(20), Moonshot(25), Perplexity(27), LingYiWanWu(31),
+  SiliconFlow(40), Mistral(42), DeepSeek(43), MokaAI(44), xAI(48),
+  Submodel(53). `default_base_url` returns each provider's documented upstream
+  root, and `upstream_v1_url` honors any trailing `/v<digit>` segment
+  (including Zhipu's `/v4`) instead of always appending `/v1`.
+- Relay now walks the full ordered channel candidate list and retries against
+  the next candidate when the upstream returns a Go-default retryable status
+  (excluding 504/524) or fetch fails. `RELAY_RETRY_TIMES` (default 0) controls
+  the budget. Tiered reserve is applied once before the loop and refunded only
+  when every attempt fails.
+- Best-effort channel auto-disable: channels returning 401 are disabled
+  immediately via `disable_channel_best_effort`, and a 60s rolling Upstash
+  Redis error counter auto-disables channels exceeding
+  `RELAY_CHANNEL_AUTOBAN_THRESHOLD` (default 5).
+- `crates/ssrf` ports the Go gateway's `common/ssrf_protection.go` validation
+  surface (HTTP/HTTPS only, port allowlist, private/loopback/metadata IPv4
+  and IPv6 CIDR table, domain and IP CIDR allow/block lists) behind a
+  `SsrfPolicy`/`SsrfPolicyBuilder` API, with full Go-parity unit coverage.
+  Standalone for now; see `docs/ssrf.md` for the boundary.
+- D1 `migrations/d1/0002_admin_tables.sql` adds the `vendors` and `models`
+  admin tables and the `logs` indexes that back admin log/stat queries.
+- `crates/session` implements the stateless HMAC-signed session cookie codec
+  (base64url JSON payload + HMAC-SHA256 signature). 10 unit tests cover
+  round-trip, tamper/expiry rejection, and secret-length enforcement. Cookie
+  name is `session` and attributes are `HttpOnly; SameSite=Strict; Secure`,
+  matching the React dashboard's expectations.
+- `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
+  role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
+- Worker admin auth surface (`crates/worker/src/admin.rs`): `POST
+  /api/user/login`, `POST /api/user/logout`, `GET /api/user/self`,
+  `GET /api/setup`, `POST /api/setup`, plus `require_user_auth` /
+  `require_admin_auth` / `require_root_auth` middleware helpers for the next
+  G5 batch.
+- `GET /api/status` reports `session_auth: true` when `SESSION_SECRET` is
+  configured.
+- Frontend deploy pipeline: `wrangler.toml` `[assets]` block + Worker SPA
+  fallback (`is_static_asset_path` + `env.assets("ASSETS")`) + `build:web` /
+  `build:all` scripts. Same-origin deployment keeps the React dashboard's
+  cookie auth working without frontend changes.
+- Admin CRUD P0 surface (`crates/worker/src/admin_crud.rs`): admin + self log
+  list/stat/delete, root-only option list/update with sensitive-key
+  filtering, and user-scoped token CRUD with key masking, ownership
+  enforcement, `ct-`-prefixed random key generation, and cache invalidation
+  after every mutation.
+- Cache invalidation module (`crates/worker/src/cache_invalidation.rs`):
+  Upstash SCAN + DEL pattern-based invalidation for token/channel/option
+  caches, called by admin mutations; falls back to TTL on Redis errors.
+- Channel admin Tier 1 CRUD (`crates/worker/src/admin_channel.rs`):
+  list/search/get/create/update/delete/batch-delete/fix-abilities. Every
+  write keeps `abilities` in sync and invalidates the relay channel cache.
+  Create is single-mode only (batch/multi_to_single deferred). List/get
+  never expose the upstream key.
+- User admin CRUD (`crates/worker/src/admin_user.rs`): list/search/get/
+  create/edit/delete + `POST /api/user/manage` 8-action switch
+  (disable/enable/delete/promote/demote/quota add/subtract/override).
+  Permission tiers match Go; quota mutations are atomic SQL; DELETE is soft
+  delete with token cache invalidation.
+- Non-tiered billing (`crates/billing/src/flat.rs` + `pricing.rs`): models
+  without a `tiered_expr` but with a `ModelRatio`/`ModelPrice` option now
+  charge quota via the per-token or fixed-price formula, wired into
+  `record_relay_audit`. OpenAI-vs-Anthropic cache semantics, zero-usage
+  guard, and the `quota <= 0 → 1` floor all match Go.
+- Tokenizer crate (`crates/tokenizer`): char-class estimator (OpenAI /
+  Claude / Gemini family weights) used by the tiered preflight for prompt
+  sizing. Settlement still uses provider-reported usage.
 
 ## Next
 

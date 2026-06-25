@@ -147,9 +147,17 @@ Use waves so production traffic can move before long-tail tables are complete.
 | 0: Core dry-run | `users`, `tokens`, `channels`, `abilities`, `options`, `models`, `vendors`, `prefill_groups`, `setups` | Local schema verification and staging D1 database | Row counts, sample hashes, `/api/status`, auth rejection smoke |
 | 1: Relay beta | Wave 0 plus recent logs needed for operator traceability | Billing shadow fixtures and provider smoke plan | Relay JSON/SSE smoke, quota reserve/refund smoke, cache/rate-limit smoke |
 | 2: Admin core | Models, vendors, prefill groups, setup, logs, quota data | Admin API/schema and redaction tests | Operator CRUD smoke and audit log smoke |
-| 3: Billing/payment | Topups, redemptions, subscriptions, pre-consume records, payment events | Billing parity runbook pass and webhook idempotency | Paid canary with strict abort triggers |
-| 4: Auth/security | Passkey, OAuth, 2FA, checkin | Forced re-auth decision or secure migration plan | Auth/session smoke and support rollback plan |
-| 5: Async/media | Task, Midjourney, media artifacts, perf history | Queue/R2 design, retention, DLQ, replay tests | Async provider smoke and artifact cleanup evidence |
+| 3: Billing/payment | Topups, redemptions, subscriptions, pre-consume records, payment events | Billing parity runbook pass and webhook idempotency (order model + two-layer idempotency in `docs/source-payment-idempotency-parity.md`) | Paid canary with strict abort triggers |
+| 4: Auth/security | Passkey, OAuth, 2FA, checkin | Forced re-auth decision or secure migration plan (flow detail + forced re-enroll policy in `docs/source-oauth-2fa-passkey-parity.md`) | Auth/session smoke and support rollback plan |
+| 5: Async/media | Task, Midjourney, media artifacts, perf history | Queue/R2 design, retention, DLQ, replay tests (lifecycle + CAS idempotency in `docs/source-task-lifecycle-parity.md`) | Async provider smoke and artifact cleanup evidence |
+
+Schema parity prerequisite (2026-06-25): before Wave 0 import, resolve the
+field-level defects in `docs/source-d1-schema-parity.md`. In particular
+`abilities` must regain its `tag` column and `(group_name, model, channel_id)`
+uniqueness (verify dedup first), `users` needs its OAuth-id lookup indexes, and
+the `logs` admin-search index/strategy must be decided. The proposed
+`migrations/d1/0004_schema_parity.sql` lives in that doc; apply it to staging D1
+and re-run the row/hash verification below before treating Wave 0 as passed.
 
 ## Export And Convert
 

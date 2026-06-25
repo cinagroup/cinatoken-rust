@@ -84,9 +84,14 @@ platform limits are operational contracts, not static source code.
 - Stream unknown-size request and response bodies. Buffer only bounded JSON or
   small control-plane responses with route-specific limits.
 - D1 is source of truth for relational state, but high-volume logs and task
-  artifacts must not turn D1 into the only event sink.
-- Upstash Redis improves hot-path latency and abuse controls, but D1 remains
-  the correctness fallback for auth/channel/user state.
+  artifacts must not turn D1 into the only event sink. Read-heavy paths use the
+  D1 Sessions API with read replicas to cut global read latency and offload the
+  primary (see migration-plan §21.3).
+- (Revised 2026-06-25) Hot-path rate limiting uses the Workers Rate Limiting
+  binding (counters local to the isolate, no meaningful added latency, no
+  per-request egress), not Upstash REST. Atomic state uses Durable Objects. Any
+  residual Upstash use is a transitional cache only; D1 remains the correctness
+  fallback for auth/channel/user state (see migration-plan §21.1/§21.2).
 - No canary promotion may depend on metrics that are not visible during the
   observation window.
 - Cost approval must include current traffic, 2x traffic, and 5x traffic.
@@ -101,10 +106,15 @@ Record the current official value and observed staging value in every report.
 | Worker CPU | Paid plan default 30 seconds, configurable up to 5 minutes | Relay should stay far below default; CPU-heavy parsing/tokenization must be measured. |
 | HTTP duration | No hard duration while client remains connected | SSE can stream, but disconnect behavior and post-response work must be measured. |
 | `waitUntil()` | Extends post-response work up to 30 seconds | Audit/settlement branches must finish or fail observably within this window. |
-| D1 database size | Paid plan database limit is 10 GB | Logs/history cannot grow indefinitely in one D1 database. |
+| D1 database size | Paid plan database limit is 10 GB per database (50k dbs/account) | Cannot be raised; logs/history archive to R2/Analytics Engine, and approach the cap with a per-month/per-account sharding plan. |
+| D1 read replication | Sessions API routes reads to nearby replicas with read-your-writes bookmarks | Measure read-latency reduction and primary offload; verify write-then-read consistency. |
 | D1 query duration | Maximum SQL query duration is 30 seconds | Admin search/export queries must be indexed and paginated. |
 | D1 per-invocation queries | Paid plan permits more than Free but is still bounded | Count auth, channel, billing, audit, and admin query fan-out. |
 | D1 concurrency | Individual D1 databases process queries one at a time | Write-heavy quota/log paths need batching, short queries, and canary observation. |
+| Rate Limiting binding | Counters cached on the isolate machine; no meaningful added latency | Replaces Upstash rate-limit round-trips; measure 429 accuracy under burst. |
+| Durable Objects | Single-threaded per object; co-located storage | Round-robin/concurrency/breaker state; watch per-object contention and hot keys. |
+| Containers | Active-CPU pricing; scale to many instances; cold-start latency | Native fallback cost is per used CPU, not fixed VPS; measure cold start and concurrency. |
+| Smart Placement | Optional; moves compute toward backends | Evaluate only if D1/backend round-trips dominate; for streaming relay upstream latency usually dominates — A/B both placements. |
 | Queues message size | 128 KB | Queue messages carry metadata/pointers, not raw payloads. |
 | Queues throughput | Per-queue throughput is bounded | High-volume logs/tasks may need batching or multiple queue families. |
 | R2 object size | R2 is suitable for large objects | Use R2 for archives/artifacts; avoid hot concurrent writes to the same object key. |
@@ -225,9 +235,14 @@ only the approved summary.
 | D1 reads | rows read by auth/channel/log/admin queries | D1 meta/dashboard |
 | D1 writes | quota/log/admin writes, index write amplification | D1 meta/dashboard |
 | D1 storage | current + projected table/index size | D1 dashboard/import report |
+| D1 read replication | replica read share vs primary; included in D1 read pricing | D1 dashboard/read-replication docs |
 | Workers Logs/Logpush | sampled request logs delivered | Workers Logs/Logpush pricing |
-| Analytics Engine | data points and query count, if enabled | Analytics Engine pricing |
-| Upstash Redis | commands, bandwidth, storage, selected plan | Upstash dashboard/pricing |
+| Analytics Engine | data points (incl. `rate_limited`) and query count | Analytics Engine pricing |
+| Rate Limiting binding | included with Workers; replaces Upstash rate-limit commands | Workers pricing |
+| Durable Objects | requests + active duration + storage for atomic state | DO pricing |
+| Workflows | invocations + steps for task/payment orchestration | Workflows pricing |
+| Containers | active-CPU seconds + memory for native fallback (replaces VPS fixed cost) | Containers pricing |
+| Upstash Redis (if retained) | commands, bandwidth, storage — should drop sharply after rate limits move native | Upstash dashboard/pricing |
 | Queues | messages, batch size, retries, DLQ volume | Cloudflare dashboard/pricing |
 | R2 | stored GB, Class A/B operations, egress model | R2 dashboard/pricing |
 | Provider spend | upstream requests/tokens/media tasks | Provider dashboards |

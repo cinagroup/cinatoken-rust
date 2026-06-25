@@ -1,0 +1,115 @@
+# Source Security Middleware Parity (G6): Turnstile, Secure-Verification, CORS
+
+Date: 2026-06-25
+
+Status: canonical, source-derived parity for the three request-time security
+middlewares — Cloudflare Turnstile, secure-verification (step-up), and CORS.
+Completes the G6 security surface alongside `docs/source-ssrf-parity.md`. A
+central finding: all three write **mutable session state mid-request**, which the
+Rust immutable HMAC cookie (`crates/session`) cannot do — that state must move to
+KV/Durable Objects.
+
+## Source Of Truth
+
+- `middleware/turnstile-check.go` — `TurnstileCheck`.
+- `middleware/secure_verification.go` — `SecureVerificationRequired`,
+  `OptionalSecureVerification`, `ClearSecureVerification`.
+- `middleware/cors.go` — `CORS`, `PoweredBy`.
+- Rust: `crates/session`, `crates/worker/src/admin*.rs`.
+
+## Turnstile (`TurnstileCheck`)
+
+- Gated by `TurnstileCheckEnabled`.
+- **Session-cached**: if `session["turnstile"]` is set, skip (verified once per
+  session, not per request).
+- Else read `?turnstile` token (empty -> fail), POST to
+  `https://challenges.cloudflare.com/turnstile/v0/siteverify` with
+  `secret` (`TurnstileSecretKey`), `response`, `remoteip` (`ClientIP`).
+- On `success` -> `session["turnstile"]=true` + save.
+- Applied to: register, login, reset_password, email verification, checkin
+  (the public/critical routes in `docs/source-route-inventory.md`).
+
+## Secure Verification (`SecureVerificationRequired`) — step-up
+
+- Session keys: `secure_verified_at` (unix ts), `secure_verified_method`.
+- **Timeout 300s (5 min)**.
+- Requires a logged-in user (`id != 0`, else 401).
+- Missing ts -> 403 `VERIFICATION_REQUIRED`; wrong type -> 403
+  `VERIFICATION_INVALID` (+clear); `now - ts >= 300` -> 403
+  `VERIFICATION_EXPIRED` (+clear); else pass.
+- The verification itself is performed by `UniversalVerify` (`POST /api/verify`,
+  password/2FA/passkey re-auth) which writes `secure_verified_at`.
+- Applied to: channel key reveal (`POST /api/channel/:id/key`, stacked with
+  RootAuth + CriticalRateLimit + DisableCache — see
+  `docs/source-auth-session-parity.md`).
+- `OptionalSecureVerification` sets a `secure_verified` context flag without
+  blocking.
+
+## CORS (`CORS`)
+
+- Origins from `CORS_ORIGINS` env (comma-separated), else defaults
+  (`https://app.cinatoken.com`, `http://localhost:5173`).
+- `AllowCredentials=true`; methods GET/POST/PUT/DELETE/PATCH/OPTIONS; headers
+  `*`; expose `Content-Length, Cache-Control, X-Accel-Buffering, X-Request-Id`
+  (the last two for SSE).
+- Empty origin list -> `AllowAllOrigins=true` (fallback).
+
+## Parity-Critical Findings
+
+1. **Mutable session state vs immutable HMAC cookie.** `TurnstileCheck` and
+   `UniversalVerify` write to the session mid-request (`session.Set` + `Save`).
+   The Rust session is a signed, immutable cookie set at login. So the
+   **turnstile-passed flag and `secure_verified_at` timestamp must live in KV or
+   a Durable Object** (short TTL: 300s for secure-verification), keyed by session
+   or user id — not the cookie. Alternatively re-issue the cookie via `Set-Cookie`
+   on the response, but KV/DO is cleaner for short-TTL step-up state (§21.2).
+2. **Turnstile is once-per-session in Go.** Preserve the semantics: cache the
+   passed flag (KV/DO) so a user isn't re-challenged every critical action within
+   the session, or deliberately re-challenge per action and document the change.
+   Server-side `siteverify` via Worker `fetch`; secret from a Wrangler secret;
+   include `remoteip` = `CF-Connecting-IP`.
+3. **Secure-verification 5-min step-up must be preserved** for channel key reveal
+   (and any future secret reveal). Store `verified_at` in KV/DO with a 300s TTL;
+   `/api/verify` re-checks password/2FA/passkey before writing it. Keep the exact
+   error codes (`VERIFICATION_REQUIRED/INVALID/EXPIRED`) the frontend branches on.
+4. **CORS: `AllowCredentials=true` + `AllowAllOrigins` is invalid** and browsers
+   reject it. Do **not** replicate the empty-origins -> allow-all fallback as a
+   credentialed wildcard; **fail closed** to the configured allowlist per
+   environment (`CORS_ORIGINS` -> Worker var). Reflect a specific allowed origin,
+   never `*`, when credentials are sent.
+5. **Single-origin Static Assets reduces CORS scope** (§21.6): the admin UI is
+   same-origin, so admin-API CORS is largely unnecessary. CORS still matters for
+   relay endpoints called cross-origin by browser SDKs and any separated
+   frontend; keep the SSE expose-headers (`X-Accel-Buffering`, `X-Request-Id`).
+6. **`headers: ["*"]`** with credentials should be tightened to the actually-used
+   request headers in the Rust port (wildcard request headers + credentials is
+   also browser-restricted).
+
+## Rust Status And Checklist
+
+Per the matrices, Turnstile/CORS are `Planned`/`Partial` and secure-verification
+is implied by the channel-key-reveal route (not yet wired). Checklist:
+
+1. Implement Turnstile server-side `siteverify` in the Worker; store the
+   passed flag in KV/DO (session-scoped) to match once-per-session semantics;
+   secret via Wrangler.
+2. Implement secure-verification step-up: `/api/verify` re-auth writes a 300s
+   KV/DO entry; `SecureVerificationRequired` equivalent guards key-reveal with
+   the same error codes.
+3. Implement environment-scoped CORS from `CORS_ORIGINS`; fail closed (no
+   credentialed wildcard); keep SSE expose-headers; tighten allowed request
+   headers.
+4. Wire Turnstile to register/login/reset/email-verify/checkin and
+   secure-verification to channel key reveal.
+5. Add staging smoke: a Turnstile challenge pass/fail, a step-up
+   required/expired/valid cycle, and a credentialed cross-origin preflight.
+
+## Wire-In
+
+- `docs/source-auth-session-parity.md` (secure-verification is the step-up for
+  the admin pin / key-reveal routes; both rely on session/KV state).
+- `docs/observability-slo-security-runbook.md` G6 Turnstile/CORS/WAF rows and
+  `docs/production-readiness-matrices.md` (CORS/WAF, security rows) reference
+  this file.
+- Short-TTL verification/turnstile state follows migration-plan §21.2 (KV/DO);
+  same-origin CORS simplification follows §21.6.

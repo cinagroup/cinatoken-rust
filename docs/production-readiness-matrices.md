@@ -30,8 +30,15 @@ Source inputs inspected for this revision:
 - `C:\cinagroup\cinatoken\web\default\package.json`
 - `C:\cinagroup\cinatoken\web\default\src`
 - `C:\cinagroup\cinatoken\model\main.go`
+- `C:\cinagroup\cinatoken\model\{user,token,channel,ability,option,log}.go`
+- `migrations/d1/0001_core.sql`
 - `C:\cinagroup\cinatoken\constant\channel.go`
+- `C:\cinagroup\cinatoken\constant\api_type.go`
+- `C:\cinagroup\cinatoken\common\api_type.go`
+- `C:\cinagroup\cinatoken\relay\relay_adaptor.go`
 - `C:\cinagroup\cinatoken\relay\channel`
+- `C:\cinagroup\cinatoken\.env.example`
+- `C:\cinagroup\cinatoken\constant\env.go`
 - `wrangler.toml`
 - `crates/worker/src/lib.rs`
 - `crates/worker/src/relay.rs`
@@ -116,18 +123,23 @@ required for G1-G8 decisions.
 
 | Gate | Required Matrix Rows | Current Status | Next Evidence |
 | --- | --- | --- | --- |
-| G0 | Route, provider, table, secret, config inventory | Partial | Fill this file with real production row counts and environment inventory. |
+| G0 | Route, provider, table, secret, config inventory | Partial | Canonical route inventory (`docs/source-route-inventory.md`), provider/channel mapping (`docs/source-provider-channel-matrix.md`), and deployment env inventory (Environment And Config Inventory below) landed 2026-06-25. Remaining: real production per-table row counts and a redacted secret-name inventory from the production `options` table. |
 | G1 | Cloudflare binding/config checklist | Partial | Deploy staging Worker with real D1/KV/R2/Queue IDs and generated types. |
-| G2 | Table migration matrix | Partial | Run real source export/import/verify against staging D1. |
-| G3 | Relay route and provider matrices | Partial | Produce a redacted G3 report from `docs/route-provider-parity-runbook.md`. |
-| G4 | Billing matrix | Partial | Expand Go/Rust fixtures and run shadow settlement report. |
-| G5 | Admin/frontend route, auth/session, operator CRUD, cache, and audit matrix | Planned | Produce a redacted G5 report from `docs/admin-frontend-parity-runbook.md`. |
+| G2 | Table migration matrix | Partial | P0 field-level parity captured (`docs/source-d1-schema-parity.md`) with a proposed `0004_schema_parity.sql`. Remaining: apply corrective migration to staging D1, then run real source export/import/verify (row counts + hashes). |
+| G3 | Relay route and provider matrices | Partial | Route inventory, provider/channel mapping, and channel-selection algorithm captured (`docs/source-route-inventory.md`, `docs/source-provider-channel-matrix.md`, `docs/source-channel-selection-parity.md`). Remaining: weighted-random/affinity/cross-group-retry parity tests, retry/auto-ban/recovery parity (`docs/source-retry-autoban-parity.md`), and a redacted G3 report from `docs/route-provider-parity-runbook.md`. |
+| G4 | Billing matrix | Partial | Engine contract + 56-test golden gap map captured (`docs/source-billing-expr-parity.md`). Remaining: close priority gaps (rounding, non-tiered/flat, time helpers, image/audio, math, fuzz, gjson `param()`), then run shadow settlement report. |
+| G5 | Admin/frontend route, auth/session, operator CRUD, cache, and audit matrix | Partial | Auth/session mechanism parity captured (`docs/source-auth-session-parity.md`). Auth foundation landed (`/api/user/login`, `/api/user/logout`, `/api/user/self`, `/api/setup` via `crates/session` HMAC cookies). Operator CRUD (token/channel/user/log/option) and frontend deploy smoke still pending. Produce a redacted G5 report from `docs/admin-frontend-parity-runbook.md`. |
 | G6 | Observability/security matrix | Partial | Prove logs, traces, alerts, WAF/rate limits, redaction, and runbooks. |
 | G7 | Canary matrix, rollback runbook, performance/capacity/cost report | Planned | Rehearse rollback, produce redacted performance/cost report, and run internal-token canary. |
 | G8 | Cutover evidence checklist | Planned | Capture final export, DNS/route plan, freeze window, owner sign-off, and approved 1x/2x/5x cost forecast. |
 | G9 | Decommission matrix | Planned | Post-cutover audit, cost report, and VPS decommission plan. |
 
 ## Route Readiness Matrix
+
+The complete, source-derived route list (every method/path, auth class, handler,
+and parity finding) is `docs/source-route-inventory.md` (canonical). The matrix
+below is the gated status view; where they disagree on what routes exist, the
+inventory wins.
 
 The first production migration should prefer Scenario A from the execution
 plan: relay-only beta. Admin, payments, async tasks, and long-tail media routes
@@ -161,11 +173,11 @@ controlled by `docs/route-provider-parity-runbook.md`.
 | Kling/Jimeng video routes | `video-router.go` | Planned | Async task + provider conversion | G7 | Provider-specific conversion fixtures and task replay tests. |
 | Dashboard billing usage: `/dashboard/billing/*`, `/v1/dashboard/billing/*` | `dashboard.go`, `web/default/src/features/dashboard`, `web/default/src/features/pricing` | Planned | Token-auth read-only | G5/G4 | Decide whether dashboard compatibility stays on Go during Scenario A; use G5 report if moved. |
 | User auth/profile/payment/checkin/OAuth/Passkey/2FA | `api-router.go`, `web/default/src/features/auth`, `profile`, `wallet` | Planned | Session/JSON/security-sensitive | G5/G6 | Build auth/session strategy and forced re-auth/defer policy in `docs/admin-frontend-parity-runbook.md`. |
-| Channel admin | `api-router.go`, `web/default/src/features/channels` | Planned | Admin JSON + secret access | G5/G6 | D1 APIs, secret redaction, key reveal controls, cache invalidation, admin audit. |
-| Token admin/user token management | `api-router.go`, `web/default/src/features/keys` | Planned | User JSON + secret access | G5/G6 | D1 APIs, cache invalidation, key reveal controls, operator UI smoke. |
-| Logs, quota data, usage | `api-router.go`, `web/default/src/features/usage-logs` | Planned | Query/read-heavy | G5/G6 | Recent D1 query strategy, Queue/R2/archive strategy, redaction, query indexes. |
+| Channel admin | `api-router.go`, `web/default/src/features/channels` | Partial: Tier 1 CRUD implemented (list/search/get/create/update/delete/batch/fix-abilities with abilities sync + cache invalidation); key reveal, test, fetch_models, tag ops, multi-key, codex, ollama, upstream_updates deferred | Admin JSON + secret access | G5/G6 | D1 APIs, secret redaction, key reveal controls, cache invalidation, admin audit. |
+| Token admin/user token management | `api-router.go`, `web/default/src/features/keys` | Partial: list/search/get/create/update/delete/batch/reveal implemented, user-scoped with ownership checks, key masking, cache invalidation | User JSON + secret access | G5/G6 | D1 APIs, cache invalidation, key reveal controls, operator UI smoke. |
+| Logs, quota data, usage | `api-router.go`, `web/default/src/features/usage-logs` | Partial: admin + self log list/stat/delete implemented (`admin_crud.rs`); `/api/usage/*` and search routes still Planned | Query/read-heavy | G5/G6 | Recent D1 query strategy, Queue/R2/archive strategy, redaction, query indexes. |
 | Models, vendors, prefill groups | `api-router.go`, `web/default/src/features/models`, `system-settings` | Planned | Admin JSON | G5 | D1 schema/import, model mapping cache invalidation, operator UI smoke. |
-| Redemptions, topups, subscriptions, payment webhooks | `api-router.go` | Planned | Payment/idempotent writes | G4/G5/G6 | Signature verification, replay tests, double-credit prevention. |
+| Redemptions, topups, subscriptions, payment webhooks | `api-router.go` | Planned | Payment/idempotent writes | G4/G5/G6 | Signature verification, replay tests, double-credit prevention. Order model, per-provider quota formulas, and the two-layer idempotency design (event dedup + conditional `UPDATE WHERE status=0`) specified in `docs/source-payment-idempotency-parity.md`. |
 | Custom OAuth provider management | `api-router.go` | Planned | Root-admin JSON + secrets | G5/G6 | SSRF validation, secret storage policy, admin audit. |
 | Performance, ratio sync, deployments/io.net | `api-router.go` | Planned | External API/ops | G7 | Keep on Go or move behind service/Workflow escape hatch. |
 
@@ -178,21 +190,37 @@ redacted G5 staging report exists.
 | Area | Source Evidence | Rust/Cloudflare Target | Current Status | Required Evidence |
 | --- | --- | --- | --- | --- |
 | Frontend build | `web/default/package.json`, `web/default/bun.lock` | Bun-driven typecheck/build with recorded source commit and artifact path | Planned | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run build` or documented equivalent |
-| Frontend hosting | `web-router.go`, `web/default/src/routes` | Worker static assets or Cloudflare Pages with SPA fallback and API route precedence | Planned | Hard-refresh smoke for `/dashboard`, `/channels`, `/keys`, `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`, and `/profile` |
+| Frontend hosting | `web-router.go`, `web/default/src/routes` | Worker static assets or Cloudflare Pages with SPA fallback and API route precedence | Partial: `wrangler.toml` `[assets]` block + Worker `is_static_asset_path` fallback landed (`docs/frontend-deploy.md`); actual bundle build + hard-refresh smoke is G1 | Hard-refresh smoke for `/dashboard`, `/channels`, `/keys`, `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`, and `/profile` |
 | API base URL and CORS | `web/default/src/lib/api.ts` | Same-origin API by default, or explicit Pages/API CORS and cookie domain policy | Planned | API base URL decision, credentialed CORS smoke, no localhost in production config |
-| Login/current user/logout | `api-router.go`, `features/auth/api.ts`, `lib/api.ts` | Rust session authority, secure cookies, role checks, or forced re-auth policy | Planned | Login/current-user/logout smoke and expired-session handling |
-| OAuth/Passkey/2FA | `api-router.go`, `features/auth`, `features/users` | Migrated securely or forced rebind/reset/defer | Planned | State/replay tests, credential import/reset decision, admin reset audit |
+| Login/current user/logout | `api-router.go`, `features/auth/api.ts`, `lib/api.ts` | Rust session authority, secure cookies, role checks, or forced re-auth policy | Partial: `/api/user/login`, `/api/user/logout`, `/api/user/self` implemented with HMAC session cookies (`crates/session`); forced re-auth from Go is the documented policy. Mechanism parity (access-token fallback, `New-Api-User` header, `sk-<key>-<channelid>` admin pin, key extraction) specified in `docs/source-auth-session-parity.md` | Login/current-user/logout smoke and expired-session handling |
+| OAuth/Passkey/2FA | `api-router.go`, `features/auth`, `features/users` | Migrated securely or forced rebind/reset/defer | Planned | State/replay tests, credential import/reset decision, admin reset audit. Flow detail (OAuth CSRF state, TOTP, WebAuthn ceremonies) + KV/DO single-use state requirement in `docs/source-oauth-2fa-passkey-parity.md` |
 | Token management | `api-router.go`, `features/keys/api.ts` | Token CRUD, reveal controls, status changes, cache invalidation | Planned | Operator smoke, reveal audit, token cache invalidation evidence |
 | Channel management | `api-router.go`, `features/channels/api.ts` | Channel CRUD/test/disable/copy, key reveal controls, cache invalidation | Planned | Operator smoke, channel selection update, secret redaction evidence |
 | User and quota management | `api-router.go`, `features/users/api.ts` | User list/search/detail/manage/quota/reset with audit | Planned | Atomic quota smoke, role/status smoke, audit row |
 | Logs and usage | `api-router.go`, `features/usage-logs` | Recent D1 searchable logs plus archive path | Planned | Request ID search, token/channel/model filters, no secret leakage |
-| Options/settings | `api-router.go`, `features/system-settings` | Typed settings update with audit and cache invalidation | Planned | Safe option update smoke and config-cache evidence |
+| Options/settings | `api-router.go`, `features/system-settings` | Typed settings update with audit and cache invalidation | Partial: root-only list (sensitive filtered) + upsert implemented; per-key validation (OAuth/ratio/console_setting) and admin audit deferred | Safe option update smoke and config-cache evidence |
 | Models/vendors/groups | `api-router.go`, `features/models` | Operator-visible model mapping and group/vendor config | Planned | Relay uses updated mapping after invalidation/TTL |
-| Payment/subscription surfaces | `api-router.go`, `features/subscriptions`, `features/wallet` | Deferred to Go or covered by G4/G6 evidence | Planned | Billing runbook link, webhook replay/idempotency evidence before Rust ownership |
+| Payment/subscription surfaces | `api-router.go`, `features/subscriptions`, `features/wallet` | Deferred to Go or covered by G4/G6 evidence | Planned | Billing runbook link, webhook replay/idempotency evidence before Rust ownership (`docs/source-payment-idempotency-parity.md`) |
 | Admin audit | Go audit/log behavior, Rust relay audit logs | Actor/action/target/request ID on every sensitive mutation | Planned | Redacted audit samples for token, channel, user, and option mutations |
 | Frontend bundle redaction | `web/default/dist` after build | Static assets contain public config only | Planned | Bundle scan for secret names/values and documented allowlist |
 
 ## Provider And Channel Matrix
+
+Canonical, source-derived ground truth is
+`docs/source-provider-channel-matrix.md` (one row per channel type, resolved
+through `ChannelType2APIType` -> `GetAdaptor`). The family table below is a
+cutover-planning view; where it disagrees with the canonical matrix, the
+canonical matrix wins.
+
+Correction (2026-06-25): an earlier revision of this table over-broadened the
+"OpenAI-compatible" family and double-listed channel types 22, 23, 45, 46, 47
+across families. Only channel types served by the generic `openai.Adaptor`
+(1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47) are truly OpenAI-compatible at the code
+level. Types 16, 25, 27, 35, 40, 42-46, 48, 53 have dedicated Go adapters and
+need their own Rust adapters/fixtures even when OpenAI-shaped. Two source-level
+findings also apply: channel type 21 (AIProxyLibrary) returns a nil adapter in
+Go and must stay Unsupported/Deferred; channel type 25 (Moonshot) bridges to the
+Claude API and is not plain OpenAI-compatible.
 
 Source channel constants currently span OpenAI-compatible text, native
 provider APIs, rerank, task/media providers, deployments, and special
@@ -203,7 +231,8 @@ G3 adapter report before canary, as defined in
 
 | Provider Family | Source Channel Types | Rust Status | Required Evidence |
 | --- | --- | --- | --- |
-| OpenAI-compatible direct/custom/proxy families | 1, 3, 6-13, 20-23, 25, 27, 31, 40, 42-48, 53 and related adapters | Partial | URL mapping, header mapping, model mapping, usage parser, error mapping, live smoke per first-canary provider. |
+| OpenAI-compatible (generic `openai.Adaptor`) | 1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47 | Partial | URL mapping, header mapping, model mapping, usage parser, error mapping, live smoke per first-canary provider. Correction: the prior "12 first-party OpenAI-compatible" Rust filter incorrectly included dedicated-adapter types — Zhipu (16), Perplexity (27), SiliconFlow (40), Mistral (42), DeepSeek (43), MokaAI (44), xAI (48), Submodel (53) — and Moonshot (25), which bridges to the Claude API. Those are OpenAI-shaped but have their own Go adapters and must each get a Rust adapter + fixtures; they are not covered by the generic OpenAI-compatible path. Channel type 21 (AIProxyLibrary) returns a nil adapter in Go and stays Unsupported. See `docs/source-provider-channel-matrix.md`. |
+| Dedicated OpenAI-like text adapters | 27, 40, 42, 43, 44, 48, 53; 25 (Moonshot, Claude+OpenAI bridge) | Planned | Each has its own Go adapter; needs Rust adapter, URL/usage/error fixtures, and live smoke. Do not route through the generic OpenAI-compatible filter without parity proof. |
 | Anthropic native | 14 | Partial | Live Messages non-stream/SSE smoke, cache token usage parity, error mapping. |
 | Gemini native | 24 | Partial | Live generate/stream/embed/batch/count smoke, path alias parity, usageMetadata parity. |
 | Jina rerank | 38 | Partial | Live `/v1/rerank` smoke, request estimate, usage parser evidence. |
@@ -223,14 +252,22 @@ cut over non-covered table families until the target schema and import/verify
 steps exist. The executable data migration procedure is
 `docs/data-migration-runbook.md`.
 
+Field-level parity for the P0 tables (User, Token, Channel, Ability, Option, Log)
+against `migrations/d1/0001_core.sql` is in `docs/source-d1-schema-parity.md`. It
+records concrete defects to fix before G2 import: `abilities` dropped the `tag`
+column and the composite-key uniqueness and renamed `group`->`group_name`;
+`logs` is missing most admin-search indexes; and `users` is missing OAuth-id
+lookup indexes. A proposed `0004_schema_parity.sql` corrective migration is
+included there.
+
 | Source Model/Table Family | Production Criticality | Current Rust Coverage | Required Migration Evidence |
 | --- | --- | --- | --- |
 | `User` | P0 | Partial D1 core | Row count/hash, quota fields, role/status, group, OAuth IDs, stripe customer, deletion handling. |
 | `Token` | P0 | Partial D1 core | Key handling, quota fields, model limits, IP allowlist, token group, expiry/status, cache invalidation. |
 | `Channel` | P0 | Partial D1 core | Provider type, base URL, keys, models, groups, status, weight/priority, key encryption/redaction policy. |
-| `Ability` | P0 | Partial D1 core | Group/model/channel mapping, priority/weight/tag parity, provider-family filtering. |
+| `Ability` | P0 | Partial D1 core (divergent) | D1 dropped `tag`, dropped composite-key uniqueness, renamed `group`->`group_name`, and lacks priority/weight/tag indexes. Fix via `0004_schema_parity.sql` and verify dedup before import. See `docs/source-d1-schema-parity.md`. |
 | `Option` | P0 | Partial D1 core | Billing expressions, group ratios, rate limits, feature flags, security/payment settings. |
-| `Log` | P0/P1 | Partial relay audit logs | Recent queryable D1 logs plus Queue/R2 archive plan, request/upstream ID preservation. |
+| `Log` | P0/P1 | Partial relay audit logs | Recent queryable D1 logs plus Queue/R2 archive plan, request/upstream ID preservation. D1 is missing ~8 admin-search indexes (username/token_name/channel_id/token_id/group/ip + composites); add them (`0004_schema_parity.sql`) or move heavy search to Analytics Engine/R2. `channel_id` serializes as JSON `channel`. See `docs/source-d1-schema-parity.md`. |
 | `QuotaData` | P1 | Planned | Aggregation import or recomputation strategy, dashboard parity. |
 | `Model`, `Vendor`, `PrefillGroup`, `Setup` | P1 | Export-supported, D1/API incomplete | Admin schema, import, operator smoke, frontend display parity. |
 | `TopUp`, `Redemption` | P1 | Planned | Payment/accounting import, idempotency, double-credit prevention, refund/replay tests. |
@@ -238,8 +275,45 @@ steps exist. The executable data migration procedure is
 | `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | P1/P2 | Planned | Migrate securely or force re-auth/reset; secret/hash handling documented. |
 | `CustomOAuthProvider`, `UserOAuthBinding` | P1/P2 | Planned | Provider secret migration, SSRF checks, state replay protections, forced rebind option. |
 | `Checkin` | P2 | Planned | Decide whether history is imported or reset; quota award idempotency. |
-| `Midjourney`, `Task` | P2/G7 | Planned | Queue/R2 task state, provider polling, billing replay, artifact retention. |
+| `Midjourney`, `Task` | P2/G7 | Planned | Queue/R2 task state, provider polling, billing replay, artifact retention. Submit/poll/settle lifecycle, three billing hooks, CAS idempotency, and the Workflows/Queue/R2 mapping in `docs/source-task-lifecycle-parity.md`. |
 | `PerfMetric` | P2 | Planned | Decide whether to import historical metrics or start fresh with Workers logs/traces. |
+
+## Environment And Config Inventory
+
+Source: `C:\cinagroup\cinatoken\.env.example` and `constant/env.go` (G0 source
+inventory). This closes the G0 "environment inventory" row.
+
+Critical migration note: in cinatoken, **`.env`/`os.Getenv` carries only
+deployment-level bootstrap config. The bulk of runtime configuration and almost
+all integration secrets (JWT/session secret beyond `SESSION_SECRET`, provider
+keys, Stripe/Creem/Waffo/Epay keys and webhook secrets, OAuth client secrets,
+Turnstile keys, SMTP, ratios, feature flags) live in the DB `options` table**,
+managed from the admin UI. Therefore most config/secret migration is governed by
+the `Option` table row (P0) in the Data And Table Matrix, the
+`docs/cloudflare-production-config-checklist.md` secret inventory, and the
+Secrets Store decision in migration-plan §21.7 — not by env vars alone.
+
+Deployment env vars map to Cloudflare destinations as follows:
+
+| Env Group | Examples (Go) | Cloudflare Destination | Notes |
+| --- | --- | --- | --- |
+| Server/runtime | `PORT`, `HOSTNAME`, `NODE_TYPE` | Drop | Workers are stateless and multi-region; no port or master/slave node model. |
+| Frontend | `FRONTEND_BASE_URL` | Worker `[vars]` | Already present; same-origin Static Assets reduces its role. |
+| Debug/profiling | `ENABLE_PPROF`, `DEBUG`, `PYROSCOPE_*` | Drop | Replaced by Workers Logs/Traces/observability. |
+| Primary database | `SQL_DSN`, `SQLITE_PATH`, `SQL_MAX_*` | Drop | Replaced by the `DB` D1 binding (+ Sessions API). |
+| Log database | `LOG_SQL_DSN`, `ERROR_LOG_ENABLED` | Drop / Worker var | Logs go to Queue->D1 + R2/Analytics Engine. |
+| Cache/sync | `REDIS_CONN_STRING`, `MEMORY_CACHE_ENABLED`, `SYNC_FREQUENCY`, `CHANNEL_UPDATE_FREQUENCY`, `BATCH_UPDATE_*` | Replace | Rate limit -> Rate Limiting binding; atomic state -> DO; cache -> KV/D1 read replicas (§21.1/§21.2). The Go memory/sync/batch model does not map to per-isolate Workers. |
+| Relay behavior | `RELAY_TIMEOUT`, `RELAY_IDLE_CONN_TIMEOUT`, `STREAMING_TIMEOUT`, `GEMINI_VISION_MAX_IMAGE_NUM`, `MAX_REQUEST_BODY_MB`, `STREAM_SCANNER_MAX_BUFFER_MB`, `FORCE_STREAM_OPTION`, `AZURE_DEFAULT_API_VERSION` | Worker `[vars]` or `[limits]` | Map to relay config; body limits already enforced by bounded readers. |
+| Token/media accounting | `GET_MEDIA_TOKEN`, `GET_MEDIA_TOKEN_NOT_STREAM`, `COUNT_TOKEN` | Worker `[vars]` | Tie to billing token-estimation parity. |
+| TLS | `TLS_INSECURE_SKIP_VERIFY` | Drop | Worker `fetch` does not expose this; not portable. |
+| Security/redirect | `TRUSTED_REDIRECT_DOMAINS` | Worker `[vars]` | Feeds SSRF/redirect validation (`docs/ssrf.md`). |
+| Session | `SESSION_SECRET` | Worker secret / Secrets Store | Session cookie signing (`crates/session`). |
+| Provider tunables | `COHERE_SAFETY_SETTING`, `DIFY_DEBUG` | Worker `[vars]` | Provider-specific behavior flags. |
+| OAuth endpoints | `LINUX_DO_TOKEN_ENDPOINT`, `LINUX_DO_USER_ENDPOINT` | Worker `[vars]` | Non-secret endpoints; client secret is in `options`/Secrets Store. |
+| Tasks | `UPDATE_TASK`, `TASK_QUERY_LIMIT`, `TASK_TIMEOUT_MINUTES`, `TASK_PRICE_PATCHES` | Worker `[vars]` / Workflows config | Async task lifecycle moves to Workflows (§21.5). |
+
+Required G0 evidence still pending: real production row counts per table and a
+redacted secret-name inventory captured from the production `options` table.
 
 ## Cloudflare Binding And Secret Matrix
 
@@ -268,17 +342,19 @@ Detailed binding and secret ownership is tracked in
 
 Billing is a cutover blocker. Rust can relay traffic before it owns paid
 settlement only if shadow mode proves deltas. The executable parity and shadow
-settlement procedure is `docs/billing-parity-runbook.md`.
+settlement procedure is `docs/billing-parity-runbook.md`; the source-derived
+engine contract and 56-test golden gap map is
+`docs/source-billing-expr-parity.md`.
 
 | Billing Area | Rust Status | Required Evidence |
 | --- | --- | --- |
 | Tiered expression parser/executor | Partial | Golden fixtures across real production expressions. |
 | `billing_expr|||request_rule_expr` split | Partial | Go/Rust fixture coverage and metadata redaction evidence. |
-| Request-time token estimate | Partial | Go `TokenCountMeta` parity for tokenizer, image, audio, cache categories. |
-| Streaming usage reconciliation | Partial | Live SSE smoke with final usage and refund-on-missing-usage behavior. |
-| Non-stream usage reconciliation | Partial | Live JSON smoke for each first-canary provider. |
+| Request-time token estimate | Partial | Go `TokenCountMeta` parity for tokenizer (cl100k+o200k), OpenAI formatting overhead, model-specific image algorithm, audio duration, and media fallbacks — fully specified in `docs/source-token-estimation-parity.md`. |
+| Streaming usage reconciliation | Partial | Live SSE smoke with final usage and refund-on-missing-usage behavior. Final-chunk/audio-second-to-last extraction, `ValidUsage` gate, missing-usage estimate fallback, and stream_options matrix specified in `docs/source-usage-parsing-parity.md`. |
+| Non-stream usage reconciliation | Partial | Live JSON smoke for each first-canary provider. Usage parse + `ValidUsage`/estimate fallback per `docs/source-usage-parsing-parity.md`. |
 | Reserve/refund/additional settlement | Partial | Success, upstream error, timeout, client disconnect, missing usage tests. |
-| Non-tiered billing | Planned | Source-compatible settlement path and fixtures. |
+| Non-tiered billing | Planned | Source-compatible settlement path and fixtures. Full ratio/price resolution (per-call vs per-token, ratio set, default-37.5 tri-state, hardcoded completion table, options-backed cached maps) in `docs/source-pricing-ratio-parity.md`. |
 | Subscription/pre-consume records | Planned | Schema, import, idempotency, replay tests. |
 | Payment balance mutations | Planned | Webhook signature validation, idempotent event storage, double-credit prevention. |
 | Shadow billing report | Planned | Production-shaped request sample with agreed delta threshold. |
@@ -296,8 +372,8 @@ Executable G6 evidence is tracked in
 | Alerts | 5xx, D1 failures, Redis failures, queue lag, billing mismatch, payment replay failures, raw secret exposure | Planned |
 | Alert drills | At least one staging drill that proves alert source, owner, first action, and rollback action | Planned |
 | Redaction | No raw keys, bearer tokens, payment secrets, OAuth secrets, or full provider credentials in logs | Partial |
-| CORS/WAF/rate limits | Environment-specific allowlist and abuse protection | Planned |
-| SSRF controls | Any user-controlled URL fetch path is validated | Planned |
+| CORS/WAF/rate limits | Environment-specific allowlist and abuse protection | Planned: Turnstile/secure-verification/CORS parity + KV/DO session-state requirement in `docs/source-security-middleware-parity.md` |
+| SSRF controls | Any user-controlled URL fetch path is validated | Partial: `crates/ssrf` ported (not yet wired). CIDR-table divergences, DNS-rebinding decision, and wiring gate in `docs/source-ssrf-parity.md` |
 | Admin audit | Every sensitive admin mutation writes actor/action/target/request ID | Planned |
 | Rollback | DNS/route/feature rollback rehearsed; Rust state preserved for investigation | Planned |
 | SLOs | Auth overhead, first-byte overhead, stream duration, D1 write latency, error budget, queue lag, billing delta | Planned |

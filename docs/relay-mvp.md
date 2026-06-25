@@ -72,8 +72,19 @@ The Worker:
 - on channel cache miss, uses `abilities` matching group and model, ordered by
   ability priority, ability weight, channel priority, and channel ID;
 - falls back to channel CSV matching when no ability row exists;
+- walks the full ordered candidate list and retries against the next candidate
+  when an upstream returns a retryable status (Go-default
+  `AutomaticRetryStatusCodeRanges` minus 504/524) or fetch fails;
+  `RELAY_RETRY_TIMES` controls the retry budget (default 0 = single attempt,
+  matching the historical behavior);
+- when a channel returns the auto-disable status set (default `{401}`) or
+  exceeds `RELAY_CHANNEL_AUTOBAN_THRESHOLD` (default 5) rolling errors in a
+  60s Upstash Redis window, marks the channel auto-disabled best-effort via
+  `disable_channel_best_effort`;
 - limits OpenAI-compatible relay candidates to provider types
-  `1, 20, 40, 42, 43, 48, 53`;
+  `1, 16, 20, 25, 27, 31, 40, 42, 43, 44, 48, 53` (OpenAI, Zhipu, OpenRouter,
+  Moonshot, Perplexity, LingYiWanWu, SiliconFlow, Mistral, DeepSeek, MokaAI,
+  xAI, Submodel);
 - limits `/v1/rerank` relay candidates to Jina provider type `38` and
   Cohere provider type `34`;
 - limits Anthropic Messages relay candidates to native Anthropic provider type
@@ -195,14 +206,16 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   OpenAI-to-Gemini request conversion, asyncBatchEmbedContent, and image/video
   task paths are still pending.
 - OpenAI-compatible image generation supports JSON and SSE passthrough; image
-  edits and provider-specific image transforms are still pending.
+  edits are now wired via the multipart/raw-body relay path.
 - OpenAI-compatible audio speech supports JSON request passthrough and
   unparsed audio/SSE response passthrough; audio transcription and translation
-  multipart paths are still pending.
-- The current relay body layer has an explicit JSON-only request-body mode
-  backed by shared content-type policy and a bounded byte reader. Raw,
-  multipart, and pass-through stream modes are defined but intentionally
-  inactive until extraction and upstream forwarding are implemented.
+  are now wired via the multipart/raw-body relay path (model extracted from
+  the `model` form field; body forwarded verbatim with boundary preserved).
+- The current relay body layer supports JSON and multipart/form-data
+  request-body modes backed by shared content-type policy and a bounded byte
+  reader. Raw-bytes and pass-through stream modes are defined but
+  intentionally inactive (raw-bytes is available for future binary endpoints;
+  pass-through streaming is deferred).
 - Rerank support currently covers Jina JSON passthrough and Cohere JSON
   request/response adaptation. Other provider-specific rerank transforms plus
   live upstream coverage are still pending.
@@ -220,7 +233,15 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   duration parity are still pending.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
 - Provider-specific request transforms are implemented for Cohere rerank only.
-- Channel weighting, retry, auto-ban, and health scoring are not implemented yet.
+- Channel retry, fallback, and best-effort auto-disable are implemented (see
+  above), but channel weighting (weighted-random selection within a priority
+  tier) and live response-time-based health scoring are not implemented yet.
+  The current candidate list is purely priority-then-weight-ordered and the
+  retry loop walks it sequentially.
+- The retry/auto-ban policy uses the Go-default
+  `AutomaticRetryStatusCodeRanges` / `AutomaticDisableStatusCodeRanges` hard
+  coded. Operator-configurable status-code ranges (read from options like
+  billing expressions) are TODO with the admin option API.
 - Token/channel cache invalidation is TTL-based; explicit invalidation still
   needs to be added when dashboard/admin mutation paths are ported.
 
@@ -229,5 +250,8 @@ original billing expression flow:
 
 - exact tokenizer counts plus image dimension/audio duration parity for the
   preflight token estimate.
-- Audio transcription/translation need a shared multipart/raw-body relay path
-  with bounded or streaming upload handling before implementation.
+- Audio transcription/translation billing currently uses 0 tokens when the
+  upstream returns no `usage` block (whisper does not). A per-duration
+  estimator (1000 tokens/minute from mp3/wav duration) is the Go behavior
+  and remains to be ported; until then operators should configure a flat
+  `ModelPrice` for whisper models.

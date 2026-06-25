@@ -138,21 +138,22 @@ Rust 版需要优先保证这些表的字段、索引、默认值、时间戳和
 ```text
 Client / Admin Browser
         |
-Cloudflare CDN / WAF / Turnstile
+Cloudflare CDN / WAF / Turnstile / Rate Limiting binding
         |
-Cloudflare Pages: web/default static assets
-        |
-Rust Worker: API + Relay Gateway
+Rust Worker: Static Assets (web/default, 同源) + API + Relay Gateway
         |
 +-------------------+------------------+-------------------+
 |                   |                  |                   |
-D1                  KV                 Upstash Redis       R2
-users/channels      hot config         rate/concurrency    files/task outputs
-tokens/logs         token cache        locks/counters      backups/uploads
-billing/tasks
+D1 (Sessions API    KV                 Durable Objects     R2
+ + 读副本)          hot config         counters/locks       files/task outputs
+users/channels      token cache        concurrency/熔断     backups/uploads
+tokens/logs/billing
         |
-Queues / Cron / Durable Objects
-async logs, task polling, websocket/session state
+Queues / Cron / Workflows / Durable Objects
+async logs(Queue), task+payment 编排(Workflows), websocket/session(DO)
+
+注：限流改用 Workers 原生 Rate Limiting binding；native 兜底改用 Cloudflare
+Containers；前端用 Worker Static Assets。详见 §21（凡冲突以 §21 为准）。
         |
 Cloudflare AI Gateway / Workers AI / External Providers
 ```
@@ -1401,9 +1402,9 @@ production-grade execution details are split into focused runbooks:
 最终 `cinatoken-rust` 应具备：
 
 - 一套 Rust 代码库。
-- Worker 云原生部署。
-- Pages 前端部署。
-- D1/KV/R2/Upstash/Queues/Durable Objects 全资源绑定。
+- Worker 云原生部署（API + 同源 Static Assets 前端）。
+- D1（Sessions API 读副本）/KV/R2/Queues/Workflows/Durable Objects/Rate Limiting binding
+  全资源绑定；WASM 不兼容/长任务用 Cloudflare Containers 兜底。详见 §21。
 - 与当前 cinatoken 核心 API 兼容。
 - 主流 provider 等价迁移。
 - 完整 quota/billing/log/payment/task 链路。
@@ -1412,3 +1413,146 @@ production-grade execution details are split into focused runbooks:
 - 明确的长尾 provider coverage 文档。
 
 这份方案以附件中的 Cloudflare 全栈思路为基础，但针对 cinatoken 当前真实功能面做了分阶段与兼容边界设计。执行时应先迁移高频 Relay 与管理核心，再迁移计费支付与长尾任务，最后切换生产流量。
+
+## 21. 结合 2026 Cloudflare 平台的优化修正
+
+更新日期：2026-06-25
+
+本节是对前文（§3.3、§4.1、§7.2、§7.3、§7.9、§7.10、§7.11、§7.12、§9、§10、§14
+Phase 7、§16）的**平台级修正与升级**。本方案的多数 Cloudflare 引用锚定在
+2026-06-22，而 2026 上半年若干 GA 能力已经取代或显著优化了原有假设。**凡本节与前文
+冲突处，以本节为准。** 所有结论均基于已核实的当前平台事实（GA 日期见各条）。
+
+执行原则不变：核心优先、长尾分批、D1 为真相源、流式不缓冲、所有变更可回滚。本节只把
+"用什么 Cloudflare 原语实现"修正到 2026 的最佳实践。
+
+### 21.1 限流：从 Upstash REST 迁移到 Workers 原生 Rate Limiting binding（修正 §3.3/§7.2/§7.3）
+
+原方案在每个 relay 请求上把限流走 Upstash REST，意味着每个请求都有一次跨区域 REST 往返
+到单区域 Upstash，既加延迟又引入方案 §16 自己列为告警的外部失败模式。
+
+Workers 原生 Rate Limiting binding 已于 **2025-09-19 GA**：计数器缓存在运行 Worker 的
+同一台机器上、后端存储在同一 Cloudflare 机房内异步更新，官方明确"不引入任何有意义的延迟"。
+
+修正：
+
+- per-token / per-IP / per-route-family 限流改用 `[[ratelimit]]` binding（`namespace_id`
+  + `simple { limit, period }`），按 token 指纹 / `CF-Connecting-IP` / 路由族 / 环境分桶。
+- 限流计数**不再走 Upstash**。`ct:rate:{scope}:{window}` 这一类 Redis key 退役。
+- Rate Limiting binding 不在 Dashboard 直接可视，监控改为：Workers Logs 记录 429 +
+  Analytics Engine 自定义数据点（`limit()` 返回 `success:false` 时 emit `rate_limited`）。
+
+### 21.2 去 Upstash：热路径外部往返尽量换成 Cloudflare 原生（修正 §4.1/§7.3/§8.6）
+
+目标：**把热路径上的非 Cloudflare egress 降到零**。原方案把 counters / locks / cache /
+concurrency 全压在 Upstash；对全球分布的 Worker，每次 Upstash REST 都是到单区域的往返。
+原语映射修正如下：
+
+| 用途 | 原方案 | 修正后 |
+| --- | --- | --- |
+| 限流 | Upstash REST | Rate Limiting binding（§21.1） |
+| token/channel/options 读缓存 | Upstash 读穿透 | D1 Sessions API 读副本（§21.3）+ KV/Cache API |
+| 多 key 轮询 index | Upstash 计数 | Durable Object（单线程强一致、就近）|
+| 并发上限 / 熔断短期状态 | Upstash | Durable Object |
+| 分布式锁 | Upstash | Durable Object（DO 即天然临界区，多数场景无需显式锁）|
+| 短 TTL 状态（Passkey challenge 等）| Upstash | KV（短 TTL）或 DO |
+
+落地策略：
+
+- 新增 Durable Object 命名空间承载"全局原子状态"（轮询 index、并发计数、channel 熔断）。
+  DO 单线程串行化天然提供强一致，省掉 Upstash 显式锁。
+- §8.6 的 `ct:*` Redis key 命名表整体改写为 DO storage key / KV key；token 原文仍只用 hash。
+- **Upstash 不作为生产硬依赖**。若过渡期保留，必须：钉住其区域靠近 D1 primary 或改用
+  Upstash Global，并在 §11/§16 记录该跨网络依赖的失败降级（fail-open 仅限非关键缓存读，
+  限流/并发控制 fail-closed 或降级到本地近似）。
+
+### 21.3 D1：启用 Sessions API + 全球读副本，并明确 10GB/库上限的归档/分片策略（修正 §8）
+
+原方案把 D1 当作单区域 primary。但 relay 热路径是读密集的（token 鉴权、channel/ability/
+options 读取）。
+
+- **读复制（Sessions API，公测）**：把读路由到就近读副本，降低全球读延迟；同时用 session
+  bookmark 保证 read-your-writes 顺序一致——管理员改配置后立即可见。这直接缓解 §16 的
+  "D1 高频读写压力"。所有 Worker 内 D1 访问改为 `env.DB.withSession(bookmark)`，把 bookmark
+  随登录态/请求上下文传递。写后立即读的管理路径必须复用同一 session。
+- **10GB/库上限不可调**（Paid，已从 2GB 提升；账户级最多 50,000 库）。修正归档策略：
+  - D1 只存近期可查日志/任务；历史按月归档到 R2 + Analytics Engine（已与 §7.9 一致）。
+  - `logs` / `tasks` / `quota_data` 长期可能撑爆单库，预留**按月或按账户分库**的 schema 设计
+    （表名带分片后缀、查询层路由），利用账户级多库能力。
+- 备份/回滚：D1 **Time Travel**（30 天）即 cutover 的还原点，写入 §15 回滚清单。
+
+### 21.4 native 兜底：用 Cloudflare Containers 取代独立 VPS/native server（修正 §5/§6.2/§7.11/§7.12，provider 第四/五批）
+
+原方案把 native axum server 作为 WASM 不兼容 / 长任务的逃生舱，隐含独立 VPS 基础设施。
+**Cloudflare Containers + Sandboxes 已于 2026-04-13 GA**（Workers Paid，active-CPU 计费，
+可由 Worker 经 binding/hostname 就近调度，支持数千并发容器）。
+
+修正：
+
+- 同一个 `crates/server`（axum）二进制打包为 Container，由 Worker 转发调用，**全部留在
+  Cloudflare**——无需独立 VPS、独立 DNS、跨网络 egress。
+- 适合放 Container 的工作负载：WebAuthn/Passkey（§7.12）、AWS/Vertex/Tencent 复杂签名、
+  Realtime WebSocket 桥接（§7.11，配合 DO WebSocket Hibernation 管理空闲连接）、
+  Codex 订阅刷新 / io.net 部署管理、超大 tokenizer / CPU 密集转换。
+- VPS 仅作为 Containers 也不适用时的最后退路。原方案 §1 的"单一 Cloudflare 云原生"目标因此
+  得以保持。
+
+### 21.5 异步任务与支付：用 Workflows（持久化执行）编排，Queue 仅做高吞吐扇入（修正 §7.10/§7.13，Phase 7）
+
+**Cloudflare Workflows 已 GA**：持久化步骤、`step.sleep/sleepUntil`（用于轮询
+Midjourney/Suno/视频上游）、自动重试、`waitForEvent`（等 Stripe/Creem webhook）、状态持久化。
+这让"task retry 不重复扣费""payment replay 不重复入账"成为一等公民。
+
+修正分工：
+
+- **Queue**：高吞吐日志扇入 + 批量写 D1（§7.9 不变）。
+- **Workflows**：任务生命周期（submit → 轮询 → 落 R2 → 结算/退款）与支付对账的多步编排，
+  每步幂等、可重放、可观测。
+- **Cron Triggers**：仅保留定时清理/对账触发，轮询逻辑迁入 Workflows。
+
+### 21.6 前端：统一为 Workers Static Assets（单 Worker 同源），不再用独立 Pages（修正 §4.1/§9）
+
+实现（`wrangler.toml` 的 `[assets]` + `not_found_handling = "single-page-application"`）
+已经用 Workers Static Assets，但 §4.1 拓扑与 §9 仍写 Pages，属文档滞后。
+
+- 2026-03 起 Workers Static Assets 与 Pages 已**完全平价**，官方对新项目建议"skip Pages
+  entirely"；Secrets Store / Workflows / Containers / Durable Objects 均为 Workers-only。
+- 单 Worker（静态资源 + API 同源）**消除 Pages 与 API Worker 间的跨域 CORS 和跨站 cookie**，
+  简化 §7.2 登录态。
+- §4.1 拓扑中"Cloudflare Pages"一项更正为"Worker Static Assets（与 API 同一 Worker）"。
+
+### 21.7 增强项
+
+- **金丝雀用 Workers Gradual Deployments（版本级百分比）作为主手段**：原生百分比切流 +
+  秒级回滚，轻松满足 §15 的 15 分钟回滚。组合：版本风险用 gradual deployments，业务风险用
+  token-group 门控。替代 §15.1 中以 DNS 为主的灰度描述。
+- **Smart Placement 评估**：热路径与 D1 primary、（残留的）Upstash 多次 subrequest 往返时，
+  Smart Placement 可把 Worker 放到后端附近。对流式 relay 上游延迟通常主导，须两种摆放都压测
+  再定，默认不开。
+- **Secrets Store**：provider/payment key 在 Worker + Container 间共享、需集中轮换与审计时，
+  用账户级 Secrets Store 优于逐 Worker `wrangler secret put`。§11.1 密钥清单加"是否走
+  Secrets Store"一列。
+- **AI Gateway 多卸载少自造**（修正 §10.3）：provider fallback / retry / 缓存 / 限流 /
+  统一日志 / 成本统计交给 AI Gateway，Worker 只管业务路由（channel/group/billing），减少
+  热路径代码与 subrequest 数。
+- **tokenizer crate 的 bundle/CPU 预算**：精确 token 计数会撑大 Worker 包（Paid 压缩后 10MB
+  上限）并吃 CPU。大词表/merges 从 KV/R2 加载而非内嵌；设 `[limits] cpu_ms`；必要时把重
+  tokenize 卸到 Container（§21.4）。挂在 billing P1 下。
+
+### 21.8 文档一致性与小问题
+
+- 删除仓库根目录的 `nul` 文件（Windows `> nul` 重定向产物），并加入 `.gitignore`。
+- §4.1 拓扑图与 audit "Target Production Architecture" 图按 §21.1/§21.2/§21.4/§21.6 对齐。
+- `compatibility_date` 在 config checklist 中定季度 bump cadence，不要临到 prod 才 review。
+
+### 21.9 受影响 runbook
+
+本节落地到以下文档（均已同步更新，标注 2026-06-25）：
+
+- `docs/production-migration-execution-plan.md`：Best-Practice Anchors、Cache/Rate-Limit、
+  Async/Tasks、Canary、Platform 计划。
+- `docs/production-migration-plan-audit.md`：Target Production Architecture 图与原则。
+- `docs/cloudflare-production-config-checklist.md`：Binding 清单新增原生原语与 canary。
+- `docs/observability-slo-security-runbook.md`：原生限流可观测性（Analytics Engine）。
+- `docs/performance-capacity-cost-runbook.md`：读副本、原生限流、Containers active-CPU 成本。
+- `docs/cutover-rollback-runbook.md`：Gradual Deployments 切流/回滚。

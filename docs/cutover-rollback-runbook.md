@@ -172,7 +172,11 @@ git diff --check
 
 ## Cloudflare Worker Version Canary
 
-Use when canary is based on Worker code version.
+(Revised 2026-06-25) Worker gradual deployments are the primary canary control
+(version-percentage split with instant version rollback); business-scoped gating
+(token/user group, route family) is the secondary control for who is exposed.
+See `docs/cinatoken-rust-migration-plan.md` §21.7. Use this section when canary
+is based on Worker code version.
 
 Create a version without deploying traffic:
 
@@ -180,7 +184,8 @@ Create a version without deploying traffic:
 wrangler versions upload --env production
 ```
 
-Create or adjust split deployment:
+Create or adjust split deployment (assign the percentage of traffic to the new
+version vs the previous stable version):
 
 ```powershell
 wrangler versions deploy --env production

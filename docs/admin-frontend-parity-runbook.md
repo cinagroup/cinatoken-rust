@@ -34,6 +34,23 @@ Do not store production cookies, bearer tokens, provider keys, payment secrets,
 OAuth secrets, Turnstile secrets, screenshots with secrets, or raw database
 exports in this repository.
 
+## Cache Invalidation Policy
+
+Admin mutations that change rows the relay hot path caches must invalidate
+those caches so the next relay request sees the new state immediately rather
+than waiting for the TTL. The Worker implements this in
+`crates/worker/src/cache_invalidation.rs` using Upstash Redis SCAN + bulk DEL:
+
+| Mutation | Invalidation | Notes |
+| --- | --- | --- |
+| Token create / update / delete / reveal | `invalidate_token_cache` → `relay:auth:*` | Pattern clear (token cache keys include a fingerprint, not a user id); brief cache-miss storm mirrors the Go gateway. |
+| Channel create / update / delete / status (future) | `invalidate_channel_cache` → `relay:channel:*` | Helper exists; wired when channel CRUD lands. |
+| Option update | `invalidate_option_cache` → `relay:option:*` | Placeholder; options are not cached in the relay path today. |
+
+All invalidations are best-effort: if Upstash is not configured or SCAN/DEL
+fails, the helper logs a `console_warn!` and returns `Ok(())` so the mutation
+that triggered it is not rolled back. The TTL is the safety net.
+
 ## Current Inputs
 
 Source Go/backend inputs inspected for this runbook:
@@ -132,12 +149,12 @@ selected cutover scenario, while keeping deferred rows explicit.
 | Login/session | `/api/user/login`, `/api/user/login/2fa`, `/api/user/logout`, `/api/user/self` | P0 | Rust login/current-user/logout, or Go-owned session bridge with forced re-auth |
 | Register/password/OAuth start | `/api/user/register`, `/api/reset_password`, `/api/oauth/*` | P1/P2 | Defer unless public auth moves in Scenario B |
 | Passkey/2FA self-service | `/api/user/passkey/*`, `/api/user/2fa/*` | P1/P2 | Migrate only with secure credential import/reset plan |
-| User admin | `/api/user`, `/api/user/search`, `/api/user/manage`, binding reset routes | P0 | List/detail/create/update/status/quota/reset flows with audit |
-| Token/key admin | `/api/token`, `/api/token/search`, key reveal, batch delete | P0 | User-scoped token CRUD, reveal controls, cache invalidation |
-| Channel admin | `/api/channel`, test, key reveal, tags, balance, model fetch | P0 | Channel CRUD/test/disable/copy, secret redaction, cache invalidation |
-| Logs and usage | `/api/log`, `/api/log/search`, `/api/log/self`, `/api/usage/*` | P0/P1 | Recent searchable logs in D1; archive strategy for high volume |
+| User admin | `/api/user`, `/api/user/search`, `/api/user/manage`, binding reset routes | P0 | Partial: list/search/get/create/edit/delete + `POST /api/user/manage` 8-action switch (disable/enable/delete/promote/demote/quota add/subtract/override) implemented in `admin_user.rs`; permission tiers match Go, quota mutations atomic, DELETE soft-deletes with token cache invalidation; binding reset routes deferred (OAuth batch) |
+| Token/key admin | `/api/token`, `/api/token/search`, key reveal, batch delete | P0 | Implemented: list/search/get/create/update/delete/batch/reveal, all user-scoped with ownership checks, key masking on list/get, cache invalidation after mutations |
+| Channel admin | `/api/channel`, test, key reveal, tags, balance, model fetch | P0 | Partial: Tier 1 CRUD implemented (`admin_channel.rs`) — list/search/get/create/update/delete/batch-delete/fix-abilities with abilities sync + cache invalidation; create is single-mode only; key reveal, test, fetch_models, tag ops, multi-key, codex, ollama, upstream_updates deferred to Tier 2/3 |
+| Logs and usage | `/api/log`, `/api/log/search`, `/api/log/self`, `/api/usage/*` | P0/P1 | Logs: list/stat/delete (admin + self) implemented in `crates/worker/src/admin_crud.rs`; `/api/usage/*` still Planned |
 | Groups/models/vendors/prefill | `/api/group`, `/api/models`, `/api/vendors`, `/api/prefill_group` | P1 | Operator-visible config and model mapping parity |
-| Options/settings | `/api/option/*`, setup/system settings | P0/P1 | Read/update system settings with audit and cache invalidation |
+| Options/settings | `/api/option/*`, setup/system settings | P0/P1 | Option list (root-only, sensitive filtered) + update (root-only upsert) implemented; per-key validation (OAuth/ratio/console_setting) deferred to next batch |
 | Dashboard billing | `/dashboard/billing/*`, `/v1/dashboard/billing/*` | P1/G4 | Read-only billing dashboard or Go-owned until G4 evidence exists |
 | Subscriptions/payments | `/api/subscription/*`, payment callbacks | G4/G6 | Defer or migrate only with signature/idempotency/replay evidence |
 | Redemptions/topups | `/api/redemption`, topup/pay routes | G4/G6 | Defer or migrate with double-credit prevention |
@@ -187,6 +204,12 @@ must never be present.
 
 ## Auth And Session Strategy
 
+The source-derived auth/session mechanism (session vs access-token user auth, the
+`New-Api-User` double-submit header, relay token-key extraction, the
+`sk-<key>-<channelid>` admin pin, role model, and OAuth/2FA/Passkey enrollment) is
+specified in `docs/source-auth-session-parity.md`. Use it to resolve the
+decisions below.
+
 Pick exactly one strategy for each cutover scenario.
 
 | Strategy | Use When | Tradeoff | G5 Requirement |
@@ -196,6 +219,21 @@ Pick exactly one strategy for each cutover scenario.
 | Session import | Existing sessions should survive | Requires safe secret/key import and format parity | Import tests, session replay/expiry tests |
 | New Rust session authority | Rust owns admin/frontend auth | Clean target state | D1/session schema, cookie policy, CSRF/state, role tests |
 | Durable Object/session service | Realtime or high-write session state is needed | More moving parts | DO migration and WebSocket/session smoke |
+
+**Current Rust choice (2026-06-22):** New Rust session authority with forced
+re-auth on first Rust visit. The Worker issues stateless HMAC-signed cookies
+from `crates/session` (format: `base64url(payload_json).base64url(hmac_sha256(payload))`),
+signed with the `SESSION_SECRET` Wrangler secret. The Go gateway's gin-contrib
+cookie-store format (gob + AES) is **not** portable, so every existing browser
+session expires when traffic moves to Rust and users must sign in once. This
+is the documented G5 forced-re-auth policy. Cookie attributes are
+`HttpOnly; SameSite=Strict; Secure` (the `Secure` flag is a deliberate
+hardening over Go's `Secure: false`). The cookie name is still `session`, so
+the existing React dashboard reads and sends it unchanged.
+
+The `New-Api-User` header (Go's anti-CSRF measure) is **not** required on the
+Rust side: `SameSite=Strict` + `HttpOnly` + `Secure` cover the same threat.
+This is a documented difference from Go.
 
 Minimum session/cookie policy:
 

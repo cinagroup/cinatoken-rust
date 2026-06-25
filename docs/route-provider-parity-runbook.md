@@ -69,6 +69,13 @@ Record these facts in every route/provider parity report:
 
 ## Source Inventory
 
+The canonical, already-extracted route list is `docs/source-route-inventory.md`,
+the canonical channel-type -> adapter mapping is
+`docs/source-provider-channel-matrix.md`, and the canonical channel-selection
+algorithm (priority/weight/smoothing, affinity, auto cross-group retry) is
+`docs/source-channel-selection-parity.md`. Start from those; the commands below
+are for re-verifying or extending them against the live source.
+
 Before changing G3 status, inspect source route and provider code:
 
 ```powershell
@@ -131,15 +138,15 @@ Each provider family must have an adapter report before canary:
 
 | Area | Required Evidence |
 | --- | --- |
-| Channel selection | Source channel types, Rust provider-family filter, ability/group/model matching, fallback behavior. |
+| Channel selection | Source channel types, Rust provider-family filter, ability/group/model matching, fallback behavior. Priority/weight/smoothing, affinity, and auto cross-group retry parity per `docs/source-channel-selection-parity.md`. |
 | Credential handling | Which header/query/body field carries the upstream key, and proof it is redacted. |
 | URL mapping | Base URL normalization, path mapping, query preservation/removal, provider-specific aliases. |
 | Header mapping | Required upstream headers, forbidden downstream headers, content-type handling. |
 | Model mapping | Source model, mapped upstream model, nested request-body fields if applicable. |
 | Request transform | Passthrough or provider-specific transform with fixtures. |
 | Response transform | Passthrough, unified response transform, or binary/SSE pass-through policy. |
-| Usage parser | JSON/SSE usage fields, cached/cache-creation/image/audio/rerank units, no-usage behavior. |
-| Error mapping | Upstream 4xx/5xx shape, timeout, invalid credentials, rate limits, provider unavailable. |
+| Usage parser | JSON/SSE usage fields, cached/cache-creation/image/audio/rerank units, no-usage behavior. Final-chunk extraction, audio second-to-last chunk, `ValidUsage` gate, missing-usage estimate fallback, and the stream_options strip/forward/synthesize matrix per `docs/source-usage-parsing-parity.md`. |
+| Error mapping | Upstream 4xx/5xx shape, timeout, invalid credentials, rate limits, provider unavailable. Retry decision, auto-ban (status + keyword, per-key), and recovery per `docs/source-retry-autoban-parity.md`. |
 | Billing hook | Request estimate, frozen snapshot, actual usage, reserve/refund/additional delta. |
 | Observability | Request ID, upstream request ID, provider family, channel ID, model, latency, quota delta. |
 | Rollback | How to route the provider family back to Go/VPS or disable the channel group. |
@@ -184,11 +191,17 @@ For each route family:
 
 ## Provider Smoke Matrix
 
-Fill this matrix for every provider family in scope.
+Fill this matrix for every provider family in scope. Source channel-type
+assignments are de-duplicated in `docs/source-provider-channel-matrix.md`
+(canonical). Only channel types served by the generic `openai.Adaptor` belong to
+the OpenAI-compatible row; OpenAI-shaped types with dedicated Go adapters (e.g.
+40, 42, 43, 48, 53) and Moonshot (25, Claude bridge) need their own rows and
+fixtures.
 
 | Provider Family | Route Cases | Source Channel Types | Rust Status | Live Smoke | Billing Shadow | Rollback |
 | --- | --- | --- | --- | --- | --- | --- |
-| OpenAI-compatible | Chat JSON/SSE, completions JSON/SSE, responses JSON/SSE, embeddings, images, audio speech | 1, 20, 40, 42, 43, 48, 53 first; broader families later | Partial | TBD | TBD | Token/group/channel route back to Go. |
+| OpenAI-compatible (generic adapter) | Chat JSON/SSE, completions JSON/SSE, responses JSON/SSE, embeddings, images, audio speech | 1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47 | Partial | TBD | TBD | Token/group/channel route back to Go. |
+| Dedicated OpenAI-like adapters | Chat JSON/SSE, embeddings | 27, 40, 42, 43, 44, 48, 53; 25 (Claude+OpenAI bridge) | Planned | TBD | TBD | Per-adapter Rust group disable; route back to Go. |
 | Anthropic native | Messages JSON/SSE | 14 | Partial | TBD | TBD | Disable Anthropic Rust channel group. |
 | Gemini native | generate, stream, embed, batch embed, countTokens | 24 | Partial | TBD | TBD | Disable Gemini Rust channel group. |
 | Jina rerank | Rerank JSON | 38 | Partial | TBD | TBD | Disable rerank Rust group. |

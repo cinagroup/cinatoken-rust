@@ -128,8 +128,13 @@ container).
 
 ## Rust Status And Checklist
 
-Per the readiness matrices, request-time estimation is `Partial` with heuristic
-counts. Gaps to close for G4:
+Implementation status (verified 2026-06-25): `crates/tokenizer/src/lib.rs`
+implements the **heuristic** `EstimateToken` family dispatch (gemini/claude/
+openai) — intentionally approximate (±20-30% vs real BPE). **Real tiktoken
+(cl100k/o200k) is NOT implemented**; OpenAI models currently use the heuristic
+too (the crate comment defers real `tiktoken` to a native-server build). Image
+and audio token algorithms are not in the crate. So the OpenAI text path diverges
+from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
 
 1. Port `cl100k_base` + `o200k_base` tiktoken; golden-compare token counts for
    representative prompts vs Go (`tokenizer` crate already present).

@@ -122,9 +122,19 @@ not round, the credited quota.
 
 ## Rust Status And Checklist
 
-Per the matrices, payments/subscriptions are `Planned`. The schema
-(`topups`, `payment_events`, `subscription_orders`) and the idempotency design
-exist; the handlers do not. Checklist:
+Implementation status (verified 2026-06-25): `crates/payments/src/lib.rs` is a
+**Stripe foundation** — `parse_stripe_signature` + HMAC-SHA256 verify, the
+`STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300` window, the `PaymentEvent` +
+`was_processed`/`mark_processed` event-dedup trait, `StripeConfig` loaded from D1
+options, and `money_to_quota`. Two parity notes:
+- **`money_to_quota` uses `.round()`** (`money * unit_price * 500_000` rounded),
+  but Go truncates toward zero (`int(...)` / `decimal.IntPart()`). This is a real
+  divergence — fix to truncate to match Go.
+- Only Stripe is present; Creem/Waffo/Waffo-Pancake/Epay, the `topups` conditional
+  credit (`WHERE status=0`, rows-affected), subscriptions, and `ValidateRedirectURL`
+  are still pending.
+
+Checklist:
 
 1. Implement per-provider signature verification (Stripe HMAC, Creem, Waffo,
    Waffo-Pancake `:env`, Epay MD5) before any write.

@@ -119,8 +119,11 @@ The Go design is incompatible with the Worker model and must be re-shaped:
 
 ## Rust Status And Checklist
 
-Per the matrices, async tasks/media are `Planned`/G7 (D1 `tasks` table exists in
-`0001_core.sql`). Checklist:
+Implementation status (verified 2026-06-25): `crates/tasks/src/lib.rs` is an
+early **scaffold** (~43 lines) — the `TaskStatus` enum and a `TaskRepository`
+trait (`insert`/`update_status`/`get_by_public_id`). No orchestration, upstream
+polling, CAS settlement, refund, or Workflow wiring yet. The D1 `tasks` table
+exists in `0001_core.sql`. Checklist:
 
 1. Decide the orchestrator (Workflows recommended) and stand up one instance per
    task with durable poll/sleep/timeout.

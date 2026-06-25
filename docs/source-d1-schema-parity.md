@@ -11,7 +11,8 @@ must account for, plus a ready-to-apply corrective migration.
 ## Source Of Truth
 
 - Go models: `C:\cinagroup\cinatoken\model\{user,token,channel,ability,option,log}.go`.
-- D1 schema: `migrations/d1/0001_core.sql`.
+- D1 schema: `migrations/d1/0001_core.sql` **and** `0002_admin_tables.sql`
+  (0002 already adds most `logs` search indexes — see the corrected Finding 2).
 
 Scope: P0 tables only (User, Token, Channel, Ability, Option, Log). Channel/admin
 long-tail tables are tracked in the Data And Table Matrix, not here.
@@ -25,14 +26,14 @@ long-tail tables are tracked in the Data And Table Matrix, not here.
    (group, model, channel). Ability sync and tag-based channel filtering depend on
    both the uniqueness and the tag. This must be fixed before importing abilities.
 
-2. **P0 — `logs` is missing most search indexes.** Go declares indexes on
-   `username`, `token_name`, `channel_id`, `token_id`, `group`, `ip`, a composite
-   `(username, model_name)`, and `(created_at, type)`. D1 has only
-   `created_at+id`, `user_id+id`, `model_name`, `request_id`,
-   `upstream_request_id`. Admin log search filters by the missing columns, so on
-   D1 they become full scans on the highest-volume table. Either add the indexes
-   (corrective migration below) or move heavy log search off D1 to Analytics
-   Engine/R2 per migration-plan §21.3/§7.9 — decide explicitly.
+2. **P1 — `logs` is missing one search index (corrected 2026-06-25).** An earlier
+   revision analyzed only `0001_core.sql` and overstated this gap.
+   `0002_admin_tables.sql` already adds `idx_logs_{type,created_at_type,
+   token_name,channel_id,group,ip,username}` and the `(model_name, username)`
+   composite. The **only** genuinely-missing Go index is `token_id`
+   (`idx_logs_token_id`, added in `0004`). If heavy log search later moves to
+   Analytics Engine/R2 (§21.3/§7.9), these D1 indexes can be reconsidered for
+   write-amplification.
 
 3. **P0 — `users` is missing OAuth-id lookup indexes.** Go indexes
    `github_id`, `discord_id`, `oidc_id`, `wechat_id`, `telegram_id`,
@@ -112,67 +113,35 @@ No DeletedAt (hard delete) — OK.
 Go PK is `key`; D1 uses synthetic `id` + `"key" TEXT UNIQUE`. UNIQUE preserves
 lookup semantics. Acceptable; no change required.
 
-### logs (missing search indexes — see Finding 2)
+### logs (mostly covered by 0002 — see corrected Finding 2)
 
 | Go index | D1 state | Action |
 | --- | --- | --- |
-| `username` | missing | Add `idx_logs_username` |
-| `(username, model_name)` composite | missing | Add `idx_logs_username_model` |
-| `token_name` | missing | Add `idx_logs_token_name` |
-| `channel_id` (json `channel`) | missing | Add `idx_logs_channel_id`; Rust API emits `channel` |
-| `token_id` | missing | Add `idx_logs_token_id` |
-| `group` | missing | Add `idx_logs_group` |
-| `ip` | missing | Add `idx_logs_ip` |
-| `(created_at, type)` composite | missing | Add `idx_logs_created_at_type` |
+| `username`, `token_name`, `channel_id`, `group`, `ip`, `type` | **present (0002)** | none |
+| `(model_name, username)` composite | **present (0002)** `idx_logs_model_name_username` | none |
+| `(created_at, type)` composite | **present (0002)** | none |
+| `channel_id` (json `channel`) | present (0002) | Rust API must emit `channel` (json tag) |
+| `token_id` | missing | Add `idx_logs_token_id` (in `0004`) |
 | ChannelName (`gorm:"->"`) | not stored | Computed join; do not add column |
 
-## Recommended Corrective Migration (proposed, not yet applied)
+## Corrective Migration (`0004_schema_parity.sql`, created 2026-06-25)
 
-Append-only per migration-plan §8.4 (no edits to `0001_core.sql`). Two cautions
-before applying:
+The corrective migration now exists at `migrations/d1/0004_schema_parity.sql`
+(append-only per migration-plan §8.4; no edits to `0001`/`0002`). It adds only
+the genuinely-missing items: the `users` OAuth-id/admin-lookup indexes,
+`idx_tokens_name`, `idx_logs_token_id` (the one log index not already in `0002`),
+and the `abilities` `tag` column + `(group_name, model, channel_id)` UNIQUE +
+priority/weight/tag indexes.
 
-- The `abilities` UNIQUE constraint requires the imported data to already be
-  de-duplicated on `(group_name, model, channel_id)`; verify during the G2 dry
-  run before adding it. SQLite cannot add a table-level UNIQUE via `ALTER`, so
-  abilities needs a `CREATE UNIQUE INDEX` instead.
-- Confirm the log-search strategy (D1 indexes vs Analytics Engine/R2) before
-  committing the log indexes; they add write amplification on the hottest table.
+Cautions encoded in the file:
 
-```sql
--- migrations/d1/0004_schema_parity.sql (proposed)
-
--- users: OAuth-id and admin lookup indexes
-CREATE INDEX IF NOT EXISTS idx_users_github_id   ON users(github_id);
-CREATE INDEX IF NOT EXISTS idx_users_discord_id  ON users(discord_id);
-CREATE INDEX IF NOT EXISTS idx_users_oidc_id     ON users(oidc_id);
-CREATE INDEX IF NOT EXISTS idx_users_wechat_id   ON users(wechat_id);
-CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
-CREATE INDEX IF NOT EXISTS idx_users_linux_do_id ON users(linux_do_id);
-CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
-CREATE INDEX IF NOT EXISTS idx_users_inviter_id  ON users(inviter_id);
-CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users(stripe_customer);
-
--- tokens: name search
-CREATE INDEX IF NOT EXISTS idx_tokens_name ON tokens(name);
-
--- abilities: restore tag column, uniqueness, and selection indexes
-ALTER TABLE abilities ADD COLUMN tag TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_abilities_group_model_channel
-  ON abilities(group_name, model, channel_id);
-CREATE INDEX IF NOT EXISTS idx_abilities_priority ON abilities(priority);
-CREATE INDEX IF NOT EXISTS idx_abilities_weight   ON abilities(weight);
-CREATE INDEX IF NOT EXISTS idx_abilities_tag      ON abilities(tag);
-
--- logs: admin search indexes (only if D1 remains the search surface)
-CREATE INDEX IF NOT EXISTS idx_logs_username         ON logs(username);
-CREATE INDEX IF NOT EXISTS idx_logs_username_model   ON logs(username, model_name);
-CREATE INDEX IF NOT EXISTS idx_logs_token_name       ON logs(token_name);
-CREATE INDEX IF NOT EXISTS idx_logs_channel_id       ON logs(channel_id);
-CREATE INDEX IF NOT EXISTS idx_logs_token_id         ON logs(token_id);
-CREATE INDEX IF NOT EXISTS idx_logs_group            ON logs("group");
-CREATE INDEX IF NOT EXISTS idx_logs_ip               ON logs(ip);
-CREATE INDEX IF NOT EXISTS idx_logs_created_at_type  ON logs(created_at, type);
-```
+- The `abilities` UNIQUE index requires de-duplicated data; the migration runs a
+  `DELETE` that removes only true duplicates (keeping the lowest `id` per key) so
+  the UNIQUE index creation is safe. This restores the Go composite-PK invariant.
+- The `ALTER TABLE abilities ADD COLUMN tag` is not re-runnable (SQLite lacks
+  `ADD COLUMN IF NOT EXISTS`); rely on D1's tracked single-run migration flow.
+- Log search indexes are already in `0002`; if log search later moves to
+  Analytics Engine/R2 (§21.3/§7.9), revisit them for write-amplification.
 
 ## Cross-Check And Next Steps
 

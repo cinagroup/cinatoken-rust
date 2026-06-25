@@ -142,8 +142,11 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    `TokenTypeTextNumber` rune-count path.
 3. Port the OpenAI formatting overhead constants (8/3/3/3) gated on
    `RelayFormatOpenAI`.
-4. Port `getImageToken` exactly (model table, patch/tile, multipliers, caps,
-   flags); choose an image-dimension source (header parser).
+4. Port `getImageToken` exactly — **done** as the pure
+   `cinatoken_core::image_tokens::image_tokens` (model table, patch/tile,
+   multipliers, the 1536-cap scale-down, detail/media flags; 7 tests). Remaining:
+   choose an image-dimension source (lightweight PNG/JPEG/WebP/GIF header parser)
+   to feed it width/height, and wire it into the request estimator.
 5. Port audio duration formulas; choose a duration source (header parse / size
    estimate / Container).
 6. Port media fallback constants and the feature-flag gating.

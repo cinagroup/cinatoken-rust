@@ -126,9 +126,13 @@ Implementation status (verified 2026-06-25): `crates/worker/src/d1_repositories.
 select_channels_from_abilities` selects via **deterministic SQL ordering**
 (`ORDER BY a.priority DESC, a.weight DESC, c.priority DESC, c.id ASC LIMIT 50`).
 This is **not** the Go weighted-random-with-smoothing algorithm — it is a stable
-priority/weight ordering. So the smoothing/weighted-random and the
-exact-distribution parity below are **not yet implemented** (the spec above is
-the target). Affinity and auto cross-group retry parity are likewise pending.
+priority/weight ordering. The smoothing weighted-random math is now ported as a
+pure, RNG-injected, unit-tested function
+`cinatoken_core::channel_select::select_weighted` (priority-tier-by-`retry` +
+Go's two smoothing modes), **pending wiring** into `select_relay_channels`
+(fetch candidate priorities/weights, then call `select_weighted(.., retry, rng)`
+instead of taking the first ORDER BY row). Affinity and auto cross-group retry
+parity are still pending.
 
 The selection-specific parity gaps to close before relay canary:
 

@@ -137,6 +137,27 @@ Scenario C gate: G4 apply, G7 payments (no double-credit), paid canary clean.
 | 4.7 | Realtime `/v1/realtime` WebSocket (DO hibernation or Container bridge) | G7 | route-inventory / migration-plan §21.4 | 0.2 |
 | 4.8 | Long-tail providers needing complex signing/runtime → Cloudflare Containers (AWS/Vertex/Tencent, Codex, io.net) | G7 | provider-channel-matrix / migration-plan §21.4 | 4.4 |
 
+## Ready-To-Wire Core Primitives (built 2026-06-25)
+
+The hard-to-get-right Go algorithms are ported as pure, tested functions in
+`crates/core` (RNG/IO injected, 29 tests, dependency-free so they don't pull D1/
+Worker types into the math). Each needs **wiring** at the call site noted; the
+math is done.
+
+| Primitive | Ports (Go) | Wire into |
+| --- | --- | --- |
+| `core::model_name::format_matching_model_name` | `FormatMatchingModelName` | pricing, `select_relay_channels`, token model-limit |
+| `core::channel_select::select_weighted` | `GetRandomSatisfiedChannel` (priority + weighted-random + smoothing) | `d1_repositories::select_relay_channels` — fetch candidate priority/weight, call `select_weighted(.., retry, rng)` instead of taking the first ORDER BY row |
+| `core::completion_ratio::hardcoded_completion_ratio` | `getHardcodedCompletionModelRatio` (incl. the `gpt-3.5` dead-code quirk) | `billing/pricing.rs::completion_ratio` with Go precedence (authoritative > options map > soft default) |
+| `core::image_tokens::image_tokens` | `getImageToken` (patch/tile, 1536-cap, flags) | request token estimator (+ an image-dimension header parser to feed w/h) |
+| `core::request_tokens::{openai_chat_format_overhead, audio_*_tokens, media consts}` | `EstimateRequestToken`/`CountAudioToken*` pure parts | request token estimator (+ an audio-duration source) |
+
+Still pure-portable but **not yet done** (lower/contested value): real
+`cl100k`/`o200k` tiktoken BPE (bundle decision; `crates/tokenizer` has the
+heuristic), the non-OpenAI text heuristic (already in `crates/tokenizer`), and
+auto-ban error classification (`ShouldDisableChannel` — pre-empts the auto-ban
+divergence decision, so deferred).
+
 ## Cross-Cutting (every phase)
 
 - **Native-first**: rate limits → Rate Limiting binding; atomic state → DO; reads

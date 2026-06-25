@@ -126,11 +126,14 @@ multi-key ban are not evident. Checklist:
 
 1. Port the retry loop with `RetryTimes+1` attempts and the `retry`->selection
    mapping; record the `use_channel` chain in audit.
-2. Port `shouldRetry` rule order exactly, including `IsChannelError`,
-   `specific_channel_id`, non-HTTP, `IsAlwaysSkipRetryCode`, and
-   `ShouldRetryByStatusCode`.
-3. Port `ShouldDisableChannel` including status-code and keyword matching;
-   port the error taxonomy.
+2. `shouldRetry` rule order — **ported** as
+   `cinatoken_core::relay_policy::should_retry` (IsChannelError, skip-retry,
+   budget, specific-channel, 2xx, non-HTTP, always-skip, status policy). Supply
+   the error-taxonomy booleans + status predicate and wire into the retry loop.
+3. `ShouldDisableChannel` (status-code + case-insensitive keyword matching) —
+   **ported** as `core::relay_policy::should_disable_channel` (the Go-matching
+   immediate-disable policy; available if decision #1 chooses to match Go).
+   Still needs the error taxonomy (IsChannelError/IsSkipRetry) at the caller.
 4. Implement `DisableChannel` as an off-path (wait_until/Queue/DO) status write
    to `AutoDisabled`, multi-key aware, plus channel/ability cache invalidation
    and optional root notification.

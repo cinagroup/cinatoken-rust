@@ -140,16 +140,21 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    representative prompts vs Go (`tokenizer` crate already present).
 2. Port the non-OpenAI `EstimateTokenByModel` heuristic and the
    `TokenTypeTextNumber` rune-count path.
-3. Port the OpenAI formatting overhead constants (8/3/3/3) gated on
-   `RelayFormatOpenAI`.
+3. OpenAI formatting overhead (8/3/3/3) — **done** as
+   `cinatoken_core::request_tokens::openai_chat_format_overhead`; gate it on
+   `RelayFormatOpenAI` at the call site.
 4. Port `getImageToken` exactly — **done** as the pure
    `cinatoken_core::image_tokens::image_tokens` (model table, patch/tile,
    multipliers, the 1536-cap scale-down, detail/media flags; 7 tests). Remaining:
    choose an image-dimension source (lightweight PNG/JPEG/WebP/GIF header parser)
    to feed it width/height, and wire it into the request estimator.
-5. Port audio duration formulas; choose a duration source (header parse / size
+5. Audio duration formulas — **done** in `core::request_tokens`
+   (`audio_transcription_tokens`, `realtime_audio_{input,output}_tokens`, with
+   Go's round-vs-truncate). Remaining: a duration source (header parse / size
    estimate / Container).
-6. Port media fallback constants and the feature-flag gating.
+6. Media fallback constants — **done** (`core::request_tokens` consts:
+   `NON_OPENAI_IMAGE_TOKENS`/`AUDIO_FILE_TOKENS`/`VIDEO_FILE_TOKENS`/`FILE_TOKENS`);
+   wire the per-file-type selection + feature-flag gating.
 7. Add Go<->Rust golden fixtures for each of the above and wire into the billing
    shadow comparison.
 

@@ -121,9 +121,15 @@ per-call and per-token paths are **implemented and wired** in
 `crates/billing/src/{flat,pricing}.rs` + `crates/worker/src/relay.rs`. Confirmed
 gaps vs Go (the actual remaining work):
 
-- **No hardcoded completion-ratio table** — `pricing.rs::completion_ratio`
-  defaults to `1.0` (Go has `gpt-4o*→4`, `claude-*→5`, ...). The doc comment in
-  `pricing.rs` already flags this. (Finding edge-case #2.)
+- **Hardcoded completion-ratio table** — `pricing.rs::completion_ratio` defaults
+  to `1.0` with no table. The full Go table is now ported as a pure, tested
+  function `cinatoken_core::completion_ratio::hardcoded_completion_ratio`
+  (`gpt-4o*→4`, `claude-*→5`, gemini/command/ERNIE/llama branches, returning
+  `(ratio, authoritative)`), **pending wiring** into `completion_ratio` with Go's
+  precedence (authoritative-hardcoded > options-map > soft-default). Faithful-port
+  finding: Go's dedicated `gpt-3.5` block is **dead code** (the `gpt-` prefix
+  block returns `(2.0, false)` first), so every `gpt-3.5*` resolves to
+  `(2.0, false)` — the port preserves this; do not "fix" it without matching Go.
 - No cache-creation 5m/1h split (single `cache_ratio`); no `ToolCallSurcharge`;
   no `OtherRatios` (image `n` multiplier).
 - Image/audio tokens are **not** subtracted from the prompt base in flat mode

@@ -136,8 +136,11 @@ too (the crate comment defers real `tiktoken` to a native-server build). Image
 and audio token algorithms are not in the crate. So the OpenAI text path diverges
 from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
 
-1. Port `cl100k_base` + `o200k_base` tiktoken; golden-compare token counts for
-   representative prompts vs Go (`tokenizer` crate already present).
+1. Real `cl100k_base`/`o200k_base` tiktoken. The **BPE merge core** is ported as
+   pure `cinatoken_core::bpe::bpe_token_count` (ranks injected). Remaining I/O:
+   (a) load the mergeable-rank vocab from KV/R2 (do not embed ~1.7 MB, §21.7),
+   (b) the GPT pre-tokenization regex split per model. Then golden-compare total
+   counts vs Go (`crates/tokenizer` has the heuristic fallback for non-OpenAI).
 2. Port the non-OpenAI `EstimateTokenByModel` heuristic and the
    `TokenTypeTextNumber` rune-count path.
 3. OpenAI formatting overhead (8/3/3/3) — **done** as

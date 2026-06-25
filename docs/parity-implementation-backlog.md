@@ -152,10 +152,12 @@ math is done.
 | `core::image_tokens::image_tokens` | `getImageToken` (patch/tile, 1536-cap, flags) | request token estimator (+ an image-dimension header parser to feed w/h) |
 | `core::request_tokens::{openai_chat_format_overhead, audio_*_tokens, media consts}` | `EstimateRequestToken`/`CountAudioToken*` pure parts | request token estimator (+ an audio-duration source) |
 | `core::relay_policy::{should_retry, should_disable_channel}` | `shouldRetry` + `ShouldDisableChannel` | retry loop; disable is the Go-matching option for decision #1 |
+| `core::bpe::bpe_token_count` | tiktoken BPE merge core (ranks injected) | OpenAI text estimator, after pre-tokenization + vocab load |
 
-Still pure-portable but **not yet done**: real `cl100k`/`o200k` tiktoken BPE
-(bundle decision; `crates/tokenizer` has the heuristic) and the non-OpenAI text
-heuristic (already in `crates/tokenizer`).
+Remaining non-pure I/O (caller's job, not a pure port): the tiktoken **vocab
+load** (cl100k/o200k mergeable ranks from KV/R2, §21.7) and the GPT
+**pre-tokenization regex** split; the non-OpenAI text heuristic already lives in
+`crates/tokenizer`.
 
 ## Cross-Cutting (every phase)
 

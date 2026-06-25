@@ -1,3 +1,4 @@
+pub mod bpe;
 pub mod channel_select;
 pub mod completion_ratio;
 pub mod error;
@@ -9,6 +10,7 @@ pub mod request_tokens;
 pub mod response;
 pub mod status;
 
+pub use bpe::bpe_token_count;
 pub use channel_select::{select_weighted, Candidate};
 pub use completion_ratio::hardcoded_completion_ratio;
 pub use error::{ApiError, ApiResult};

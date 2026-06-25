@@ -25,10 +25,14 @@ be done + proven before the phase's traffic).
 These cause wrong charges, double-credit, or auth/selection failure — none may be
 deferred past their phase:
 
-1. **Non-tiered billing settlement** — Rust logs `quota=0/billing_pending` today;
-   the default billing path. `source-pricing-ratio-parity.md`. (G4, Scenario A)
-2. **Missing-usage SSE estimate fallback** — streams without usage settle to 0/
-   wrong. `source-usage-parsing-parity.md`. (G4, Scenario A)
+1. **Non-tiered billing settlement** — UPDATE 2026-06-25: **implemented** in
+   `crates/billing/src/flat.rs` (wired at `relay.rs:3200`); no longer a blocker.
+   Remaining gaps (hardcoded completion table, cache 5m/1h split, sub-category
+   subtraction, 37.5 default) are P2. `source-pricing-ratio-parity.md`.
+2. **Missing-usage SSE handling** — UPDATE 2026-06-25: Rust **refunds** on missing
+   usage (`relay.rs::refund_reason`) instead of Go's estimate-from-text-and-bill,
+   so it under-bills usage-less streams. Decision needed, not a build gap.
+   `source-usage-parsing-parity.md`. (G4, Scenario A)
 3. **CAS idempotency** for payments (conditional credit) and tasks (conditional
    status) — prevents double-credit/double-refund.
    `source-payment-idempotency-parity.md`, `source-task-lifecycle-parity.md`.

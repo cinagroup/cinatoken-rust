@@ -112,10 +112,15 @@ of what the client sees.
 
 ## Rust Status And Checklist
 
-Per the matrices, OpenAI-compatible JSON/SSE usage parsing is implemented
-(cached/cache-creation details, Anthropic/Gemini usage, final stream chunk,
-`[DONE]`, CRLF, nested response usage). Streaming/non-stream reconciliation is
-`Partial`. Gaps to close:
+Implementation status (verified 2026-06-25): usage parsing is implemented, but
+the **missing-usage behavior diverges from Go**. When `usage.total_tokens <= 0`,
+`crates/worker/src/relay.rs::refund_reason` classifies it `missing_usage` /
+`missing_stream_usage` and **refunds the reserved quota** (settles to 0). Go
+instead **estimates completion from the accumulated streamed text**
+(`ResponseText2Usage` + `toolCount*7`) and bills that. So Rust currently
+**under-bills** streams/responses that omit usage. Decide: match Go's
+estimate-and-bill, or keep refund-on-missing as an intentional (customer-friendly)
+divergence — and document it. Gaps to close:
 
 1. Implement the missing-usage estimate fallback (prompt-estimate +
    `EstimateTokenByModel` over streamed text + `toolCount*7`) and the

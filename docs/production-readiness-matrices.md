@@ -354,7 +354,7 @@ engine contract and 56-test golden gap map is
 | Streaming usage reconciliation | Partial | Live SSE smoke with final usage and refund-on-missing-usage behavior. Final-chunk/audio-second-to-last extraction, `ValidUsage` gate, missing-usage estimate fallback, and stream_options matrix specified in `docs/source-usage-parsing-parity.md`. |
 | Non-stream usage reconciliation | Partial | Live JSON smoke for each first-canary provider. Usage parse + `ValidUsage`/estimate fallback per `docs/source-usage-parsing-parity.md`. |
 | Reserve/refund/additional settlement | Partial | Success, upstream error, timeout, client disconnect, missing usage tests. |
-| Non-tiered billing | Planned | Source-compatible settlement path and fixtures. Full ratio/price resolution (per-call vs per-token, ratio set, default-37.5 tri-state, hardcoded completion table, options-backed cached maps) in `docs/source-pricing-ratio-parity.md`. |
+| Non-tiered billing | Partial (implemented) | Implemented + wired (`crates/billing/src/flat.rs` -> `relay.rs:3200`). Remaining gaps: hardcoded completion-ratio table (defaults to 1.0), cache 5m/1h split, sub-category subtraction, tool surcharge, OtherRatios, `37.5` model-ratio default. See `docs/source-pricing-ratio-parity.md`. |
 | Subscription/pre-consume records | Planned | Schema, import, idempotency, replay tests. |
 | Payment balance mutations | Planned | Webhook signature validation, idempotent event storage, double-credit prevention. |
 | Shadow billing report | Planned | Production-shaped request sample with agreed delta threshold. |

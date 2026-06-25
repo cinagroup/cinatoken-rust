@@ -92,10 +92,13 @@ porting; the variable set above is authoritative.)
 
 ## Parity-Critical Findings
 
-1. **This is the default path and a hard cutover blocker.** Most models are
-   ratio/price-billed, not tiered. Rust currently logs `quota=0/billing_pending`
-   for non-tiered; implementing this is required before any non-tiered model
-   settles on Rust.
+1. **This is the default path.** Most models are ratio/price-billed, not tiered.
+   Status correction (verified 2026-06-25): this path is **implemented and wired**
+   — `crates/billing/src/flat.rs::compute_flat_quota` (porting Go
+   `service/text_quota.go::calculateTextQuotaSummary`) is called from
+   `crates/worker/src/relay.rs:3200`, and `billing_pending` is cleared on
+   settlement. It is no longer a `quota=0` blocker; the remaining work is the
+   documented simplifications below, not the core path.
 2. **Ratio maps are options-backed and hot-read every request** (`modelRatioMap`,
    `modelPriceMap`, `completionRatioMap`, `cacheRatioMap`, `imageRatio`, audio,
    `groupRatio`). Cache them in CONFIG_KV / a Durable Object (§21.2) and
@@ -113,10 +116,26 @@ porting; the variable set above is authoritative.)
 
 ## Rust Status And Checklist
 
-Per the matrices, non-tiered settlement is the documented gap. Checklist:
+Implementation status (verified 2026-06-25 against the working tree): the
+per-call and per-token paths are **implemented and wired** in
+`crates/billing/src/{flat,pricing}.rs` + `crates/worker/src/relay.rs`. Confirmed
+gaps vs Go (the actual remaining work):
 
-1. Implement the three-way branch (per-call / tiered / per-token) keyed on
-   `GetModelPrice` and billing mode.
+- **No hardcoded completion-ratio table** — `pricing.rs::completion_ratio`
+  defaults to `1.0` (Go has `gpt-4o*→4`, `claude-*→5`, ...). The doc comment in
+  `pricing.rs` already flags this. (Finding edge-case #2.)
+- No cache-creation 5m/1h split (single `cache_ratio`); no `ToolCallSurcharge`;
+  no `OtherRatios` (image `n` multiplier).
+- Image/audio tokens are **not** subtracted from the prompt base in flat mode
+  (billed at prompt rate) — differs from the full sub-category formula above.
+- Verify the `model_ratio` unconfigured default matches Go's `37.5` +
+  self-use/`AcceptUnsetRatioModel` tri-state (not evidently present in
+  `pricing.rs`).
+
+Remaining checklist:
+
+1. Three-way branch (per-call / tiered / per-token) — done; verify the
+   `GetModelPrice`-vs-billing-mode keying matches Go.
 2. Port `FormatMatchingModelName`, the hardcoded completion-ratio table, compact-
    suffix and thinking-budget wildcards, and the default-37.5 tri-state.
 3. Load ratio/price/group maps from `options` into a cached, invalidated store

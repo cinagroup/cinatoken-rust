@@ -114,7 +114,15 @@ specific key, not the whole channel, in multi-key mode); notifies root user.
 
 ## Rust Status And Checklist
 
-Per the matrices, retry/auto-ban/health scoring is `Partial`/pending. Checklist:
+Implementation status (verified 2026-06-25): auto-ban is implemented in
+`crates/worker/src/relay.rs` but with a **different model than Go** — a
+failure-**threshold/window counter** (`channel_auto_ban_threshold` failures
+within `CHANNEL_AUTO_BAN_WINDOW_SECONDS = 60` → `disable_channel_best_effort`),
+rather than Go's immediate disable on error-classification
+(`ShouldDisableChannel`: channel-error / status-code / keyword). This is a
+deliberate divergence (more tolerant of transient errors) — decide whether to
+keep it or match Go, and document either way. The keyword-based ban and per-key
+multi-key ban are not evident. Checklist:
 
 1. Port the retry loop with `RetryTimes+1` attempts and the `retry`->selection
    mapping; record the `use_channel` chain in audit.

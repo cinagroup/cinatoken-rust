@@ -122,9 +122,15 @@ order.
 
 ## Rust Status And G3 Checklist
 
-Per the readiness matrices, Rust has channel selection, model mapping, and
-provider-family-scoped channel cache implemented (Partial). The selection-specific
-parity gaps to close before relay canary:
+Implementation status (verified 2026-06-25): `crates/worker/src/d1_repositories.rs::
+select_channels_from_abilities` selects via **deterministic SQL ordering**
+(`ORDER BY a.priority DESC, a.weight DESC, c.priority DESC, c.id ASC LIMIT 50`).
+This is **not** the Go weighted-random-with-smoothing algorithm — it is a stable
+priority/weight ordering. So the smoothing/weighted-random and the
+exact-distribution parity below are **not yet implemented** (the spec above is
+the target). Affinity and auto cross-group retry parity are likewise pending.
+
+The selection-specific parity gaps to close before relay canary:
 
 1. **Weighted-random + smoothing parity** — port `GetRandomSatisfiedChannel` with
    a seeded RNG and add a distribution test (e.g. chi-square over N draws) vs the

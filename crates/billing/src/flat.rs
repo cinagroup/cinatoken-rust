@@ -12,32 +12,43 @@
 //! quota = round(model_price * quota_per_unit * group_ratio)
 //! ```
 //!
-//! Per-token mode (default):
+//! Per-token mode (ports Go `calculateTextQuotaSummary`): each token
+//! sub-category is priced at its own ratio, then multiplied by
+//! `model_ratio * group_ratio`.
 //! ```text
-//! ratio            = model_ratio * group_ratio
-//! prompt_base      = prompt_tokens - cached_tokens            // OpenAI semantic
-//! prompt_base      = prompt_tokens                             // Anthropic semantic
-//! cached_contrib   = cached_tokens * cache_ratio
-//! completion_quota = completion_tokens * completion_ratio
-//! quota            = round((prompt_base + cached_contrib + completion_quota) * ratio)
+//! ratio              = model_ratio * group_ratio
+//! base_tokens        = prompt - cached - cache_creation - image   // OpenAI
+//! base_tokens        = prompt                                   // Anthropic
+//! cached_contrib     = cached * cache_ratio
+//! cache_create_contrib = cache_creation * cache_creation_ratio   // 5m/1h split
+//!                     // for Anthropic: remaining*5m + 5m_tokens*5m + 1h_tokens*1h
+//! image_contrib      = image * image_ratio
+//! completion_quota   = completion * completion_ratio
+//! prompt_quota       = base_tokens + cached_contrib + image_contrib + cache_create_contrib
+//! quota              = round((prompt_quota + completion_quota) * ratio)
 //! ```
 //!
 //! Guards (match Go):
 //! - `total_tokens == 0` → `quota = 0` (free; caller refunds any reserve).
 //! - `ratio != 0 && quota <= 0` → `quota = 1` (floor for billable models).
 //!
-//! ## Simplifications vs Go (deferred to a later batch)
+//! Rounding uses the shared `crate::quota_round` (half-away-from-zero, with
+//! saturating guards for NaN/out-of-i64), the same rounder the tiered path
+//! uses — Go mandates every billing path call `QuotaRound`.
 //!
-//! - No `cache_creation` 5m/1h split (single `cache_creation_ratio`).
-//! - No `ToolCallSurcharge` (web_search / file_search fixed fees).
+//! ## Simplifications vs Go (deferred)
+//!
+//! - No Gemini separate audio-input pricing
+//!   (`GetGeminiInputAudioPricePerMillionTokens`).
 //! - No `OtherRatios` (image "n" multiplier).
-//! - No hardcoded completion-ratio prefix table — operators configure
-//!   `CompletionRatio` explicitly; default 1.0.
-//! - Image / audio tokens are NOT subtracted from the prompt base; they are
-//!   billed at the prompt rate. The tiered path handles per-modality
-//!   pricing; for flat mode they ride along with prompt_tokens.
+//! - No `ToolCallSurcharge` (web_search / file_search fixed fees).
 
 use crate::pricing::PricingConfig;
+// Reuse the single canonical rounder (`crate::quota_round`, lib.rs) that the
+// tiered path uses — Go mandates every billing path call `QuotaRound`
+// (`int(math.Round)`) to avoid ±1 discrepancies. Do not reintroduce a
+// per-path rounding variant here.
+use crate::quota_round;
 
 /// Default cache-creation multiplier (matches Go default of 1.25). Exposed
 /// for future cache-creation billing; the current flat path only prices
@@ -222,19 +233,6 @@ pub fn compute_flat_quota(
         completion_ratio,
         group_ratio,
         cache_ratio,
-    }
-}
-
-/// Round a quota value to the nearest integer, rounding halves away from
-/// zero. Matches Go's `int(math.Round(...))` and the tiered path's
-/// `quota_round`.
-fn quota_round(value: f64) -> i64 {
-    if value >= 0.0 {
-        (value + 0.5) as i64
-    } else {
-        // Negative quotas should not occur in the flat path (guards floor
-        // to 0 or 1), but round symmetrically for safety.
-        -(((-value) + 0.5) as i64)
     }
 }
 
@@ -474,5 +472,29 @@ mod tests {
         };
         let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
         assert_eq!(result.quota, 2500);
+    }
+
+    #[test]
+    fn flat_path_rounds_half_away_from_zero_like_go_quota_round() {
+        // Lock the rounding parity: the flat path must round half-away-from-
+        // zero exactly like Go's QuotaRound (`int(math.Round)`), at the
+        // half-boundary. We construct a model_ratio + usage whose raw quota
+        // lands on a half-integer and assert the rounded result. gpt-4o has a
+        // hardcoded completion ratio of 4.0 and default model_ratio 1.25.
+        // prompt=0, completion=1, cr=4, mr=1.25, gr=1 → raw = (0 + 1*4) * 1.25
+        // = 5.0 (exact, sanity). To hit a .5 boundary use completion=1 with a
+        // ratio that yields a half: mr=1.5 (operator override), cr=1 (unknown
+        // model 'deepseek-chat' has cr=1): (0 + 1*1) * 1.5 = 1.5 → rounds to 2.
+        let config = config_with_model_ratio("deepseek-chat", 1.5);
+        let usage = simple_usage(0, 1);
+        let result = compute_flat_quota(&usage, "deepseek-chat", "default", &config);
+        assert_eq!(result.quota, 2, "1.5 must round half-away-from-zero to 2");
+
+        // A raw value of 0.5 → 1 (the smallest billable half). completion=1,
+        // mr=0.5: (0 + 1*1) * 0.5 = 0.5 → 1.
+        let config = config_with_model_ratio("deepseek-chat", 0.5);
+        let usage = simple_usage(0, 1);
+        let result = compute_flat_quota(&usage, "deepseek-chat", "default", &config);
+        assert_eq!(result.quota, 1, "0.5 must round half-away-from-zero to 1");
     }
 }

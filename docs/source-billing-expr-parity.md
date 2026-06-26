@@ -118,7 +118,7 @@ baseline; everything else is a gap.
 | `Len_{Standard,LongContext,BoundaryExact,BoundaryPlusOne,ZeroDefaults}` | 5 | len semantics | Partial |
 | `Cache{Present_*,Absent_*},MixedCacheFields*,BackwardCompat` | 6 | Cache categories | Partial |
 | `ComputeTieredQuota_{Basic,SameTier,WithCache,WithCacheCrossTier,BasicSettlement,WithGroupRatio,ZeroTokens,BoundaryTierCrossing}` | 8 | Settlement + group ratio + cross-tier | Partial |
-| `ComputeTieredQuota_RoundingEdge[Down]`, `QuotaRound` | 3 | Rounding (half-away-from-zero) | **Verify** |
+| `ComputeTieredQuota_RoundingEdge[Down]`, `QuotaRound` | 3 | Rounding (half-away-from-zero) | **Done** (unified `quota_round`, 2026-06-26) |
 | `RequestProbe*`, `HeaderProbeHelper`, `ParamProbe*`, `ProbeAffectsQuota` | 8 | Request probes / `|||` rules | Partial |
 | `MathHelpers`, `CeilFloor` | 2 | Math helpers | **Missing** |
 | `TimeFunctions_*` | 7 | Time helpers (tz, UTC fallback) | **Missing** |
@@ -131,12 +131,19 @@ baseline; everything else is a gap.
 
 Missing/verify first, since these block paid settlement:
 
-1. **Rounding parity** — port `QuotaRound`/`RoundingEdge[Down]` as Go↔Rust golden
-   fixtures; assert half-away-from-zero and single-round-at-group-step.
-2. **Non-tiered (flat) billing** — implement and fixture `SimpleExpr_NoTier`; Rust
-   currently logs `quota=0`/`billing_pending=true` for non-tiered. This is a hard
-   blocker for any non-tiered-priced model on Rust. The full non-tiered
-   ratio/price resolution is specified in `docs/source-pricing-ratio-parity.md`.
+1. **Rounding parity** — DONE 2026-06-26. The flat path now uses the single
+   canonical `quota_round` (`int(math.Round)`, half-away-from-zero, saturating
+   guards) shared with the tiered path; the divergent `+0.5`-truncation copy in
+   `flat.rs` was removed. Go's "every billing path MUST use QuotaRound" rule is
+   satisfied. Golden-fixture pinning (the `QuotaRound`/`RoundingEdge` Go test
+   vectors) is covered by `lib.rs::quota_round_matches_go_half_away_from_zero`
+   plus the flat-path integration assertion
+   `flat_path_rounds_half_away_from_zero_like_go_quota_round`.
+2. **Non-tiered (flat) billing** — DONE (2026-06-25..26). The flat path is
+   implemented in `flat.rs::compute_flat_quota` and wired at `relay.rs`; the
+   full ratio/price resolution + default-table base layer + sub-category
+   arithmetic are in `pricing.rs` (see `docs/source-pricing-ratio-parity.md`).
+   `quota=0/billing_pending` is cleared on settlement.
 3. **Time helpers** — `hour/minute/weekday/month/day` with tz, UTC fallback, and
    the night-discount/weekday/month-day patterns; use an injectable clock.
 4. **Image/audio variables** — `img`,`img_o`,`ai`,`ao` pricing plus no-double-

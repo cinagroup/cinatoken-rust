@@ -21,18 +21,28 @@ The Rust Stripe webhook has the two-layer idempotency shape but two real
    event-dedup early-return and the credit never runs.
 
 Fix: anchor idempotency on the conditional credit, make it atomic, demote event
-dedup to non-gating —
+dedup to non-gating. **A first cut keyed the credit on `(status=1 AND
+complete_time=?now)`; that double-credits on a same-second duplicate delivery**
+(unix `complete_time` is second-resolution, so two webhooks in the same second
+both match — confirmed in sqlite: credit went 1000 -> 2000). The shipped fix uses
+a dedicated `credited` flag set AFTER the credit, in the same atomic batch
+(migration `0005_topups_credited.sql`) —
 ```text
 batch:
   s1: UPDATE topups SET status=1, complete_time=?now WHERE trade_no=? AND status=0
-  s2: UPDATE users SET quota = quota + (SELECT amount FROM topups WHERE trade_no=?)
-        WHERE id = (SELECT user_id FROM topups WHERE trade_no=?)
-          AND EXISTS (SELECT 1 FROM topups WHERE trade_no=? AND status=1 AND complete_time=?now)
+  s2: UPDATE users SET quota = quota + COALESCE(
+        (SELECT amount FROM topups WHERE trade_no=? AND status=1 AND credited=0), 0)
+        WHERE id = (SELECT user_id FROM topups WHERE trade_no=? AND status=1 AND credited=0)
+  s3: UPDATE topups SET credited=1 WHERE trade_no=? AND status=1 AND credited=0
   return changes(s1) > 0
 ```
-Replay -> s1 no-ops and the `complete_time=?now` guard fails (no double-credit);
-transient failure -> topup stays status=0 and the retry credits exactly once.
-Verify against staging D1 (D1 batch logic is not unit-testable here).
+Replay (any timing) -> s1 no-ops and `credited=1` makes s2/s3 no-op (no
+double-credit, incl. same-second); transient failure -> topup stays status=0 and
+the retry credits exactly once. Relies only on intra-transaction visibility, not
+on `changes()` mid-batch (which would credit nobody if D1 doesn't expose it).
+The three idempotency scenarios (same-second replay, post-backfill late replay,
+failed-topup) are sqlite-verified; still confirm against staging D1 before paid
+cutover (D1 batch atomicity is not unit-testable here).
 
 Checkout (`stripe_pay`) also had:
 3. **Checkout created before the top-up row, with the row's error ignored**
@@ -40,12 +50,14 @@ Checkout (`stripe_pay`) also had:
 4. **Hardcoded `cinatoken.example` redirect URLs** -> customers land on a dead
    domain after paying.
 
-**Status: all four fixed in the working tree 2026-06-25** (uncommitted, in
-`admin_payment.rs` + `d1_repositories.rs`): atomic `complete_topup_and_credit`
-batch; event-dedup demoted to non-gating; top-up row created first with error
-handling; redirects built from `FRONTEND_BASE_URL` + `encode_uri_component`;
-fixed-width `trade_no` suffix. Worker tests + wasm green. **The atomic-batch
-credit still needs staging-D1 verification before paid cutover.**
+**Status: all four fixed + the same-second double-credit hardened (2026-06-26)**
+in `admin_payment.rs` + `d1_repositories.rs` + `migrations/d1/0005_topups_credited.sql`:
+atomic 3-statement `complete_topup_and_credit` batch with a `credited` anchor
+(same-second-replay safe); event-dedup demoted to non-gating; top-up row created
+first with error handling; redirects built from `FRONTEND_BASE_URL` +
+`encode_uri_component`; fixed-width `trade_no` suffix. Worker tests + wasm green;
+idempotency sqlite-verified. **Still confirm the batch on staging D1 before paid
+cutover.**
 
 ## Source Of Truth
 

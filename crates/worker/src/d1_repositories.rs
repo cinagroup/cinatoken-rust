@@ -3042,25 +3042,41 @@ pub async fn complete_topup_and_credit(
     now: i64,
 ) -> worker::Result<bool> {
     let args = [D1Type::Integer(d1_i32(now)), D1Type::Text(trade_no)];
+    // s1: compare-and-swap the order pending(0) -> success(1). The `status = 0`
+    // guard makes this an atomic CAS — only the first delivery flips it.
     let complete_stmt = db
         .prepare(
             "UPDATE topups SET status = 1, complete_time = ?1 WHERE trade_no = ?2 AND status = 0",
         )
         .bind_refs(&args)?;
+    // s2: credit the quota, gated on `credited = 0` (NOT a timestamp). Two
+    // webhook deliveries in the same unix second both satisfy a
+    // `complete_time = ?now` guard and would double-credit; the `credited` flag
+    // is the durable idempotency anchor that a same-second replay cannot beat.
     let credit_stmt = db
         .prepare(
             r#"
             UPDATE users
-            SET quota = quota + COALESCE((SELECT amount FROM topups WHERE trade_no = ?2), 0)
-            WHERE id = (SELECT user_id FROM topups WHERE trade_no = ?2)
-              AND EXISTS (
-                SELECT 1 FROM topups
-                WHERE trade_no = ?2 AND status = 1 AND complete_time = ?1
-              )
+            SET quota = quota + COALESCE(
+                (SELECT amount FROM topups WHERE trade_no = ?2 AND status = 1 AND credited = 0), 0)
+            WHERE id = (SELECT user_id FROM topups WHERE trade_no = ?2 AND status = 1 AND credited = 0)
             "#,
         )
         .bind_refs(&args)?;
-    let results = db.batch(vec![complete_stmt, credit_stmt]).await?;
+    // s3: set the `credited` anchor AFTER the credit, in the same atomic D1
+    // batch, so the credit is applied exactly once. A replay finds credited = 1
+    // and every statement no-ops. Relies only on intra-transaction visibility
+    // (s2 sees s1's flip; s3 sees credit done) — not on `changes()` semantics.
+    let mark_stmt = db
+        .prepare(
+            "UPDATE topups SET credited = 1 WHERE trade_no = ?2 AND status = 1 AND credited = 0",
+        )
+        .bind_refs(&args)?;
+    let results = db
+        .batch(vec![complete_stmt, credit_stmt, mark_stmt])
+        .await?;
+    // s1's affected-row count is the "completed this call" signal (lockstep
+    // with s3): 1 -> credited now, 0 -> already-completed replay no-op.
     let changes = match results.first() {
         Some(result) => result.meta()?.and_then(|m| m.changes).unwrap_or(0),
         None => 0,

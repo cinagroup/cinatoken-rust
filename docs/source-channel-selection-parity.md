@@ -125,14 +125,19 @@ order.
 Implementation status (verified 2026-06-25): `crates/worker/src/d1_repositories.rs::
 select_channels_from_abilities` selects via **deterministic SQL ordering**
 (`ORDER BY a.priority DESC, a.weight DESC, c.priority DESC, c.id ASC LIMIT 50`).
-This is **not** the Go weighted-random-with-smoothing algorithm — it is a stable
-priority/weight ordering. The smoothing weighted-random math is now ported as a
-pure, RNG-injected, unit-tested function
+`select_relay_channels` returns the ordered candidate pool;
 `cinatoken_core::channel_select::select_weighted` (priority-tier-by-`retry` +
-Go's two smoothing modes), **pending wiring** into `select_relay_channels`
-(fetch candidate priorities/weights, then call `select_weighted(.., retry, rng)`
-instead of taking the first ORDER BY row). Affinity and auto cross-group retry
-parity are still pending.
+Go's two smoothing modes) is **wired** into the relay retry loop
+(`crates/worker/src/relay.rs` ~`670`): each attempt builds `Candidate` from the
+row's `priority`/`weight`, picks via `select_weighted(meta, attempt_index, rng)`
+with a `js_sys::Math::random()`-based `[0,total)` RNG, and removes the pick from
+the pool. `RelayChannel` carries `priority`/`weight` (`crates/storage`).
+
+Benign divergence from Go (documented): the Rust pool **shrinks** each attempt
+(`pool.remove(pick)`), so a channel is never retried; Go re-selects from the full
+set each retry and *can* repeat the same channel. Rust's behavior spreads retries
+better within a tier. Affinity and auto cross-group retry parity are still
+pending.
 
 The selection-specific parity gaps to close before relay canary:
 

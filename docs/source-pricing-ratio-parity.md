@@ -123,7 +123,8 @@ gaps vs Go (the actual remaining work):
 
 - **Hardcoded completion-ratio table** — `pricing.rs::completion_ratio` now
   applies Go's exact precedence (verified 2026-06-26): the model name is run
-  through `format_matching_model_name`, then `/`-names are map-only; otherwise
+  through `format_matching_model_name`; a `/`-name returns ONLY on an options-
+  map hit (a miss falls through to the table, faithful to Go), then
   `cinatoken_core::hardcoded_completion_ratio` is consulted and its
   `authoritative` value wins over the options map, a non-authoritative value
   is a soft default the map can override, and fully-unknown models fall back to
@@ -134,13 +135,23 @@ gaps vs Go (the actual remaining work):
   `gpt-` prefix block returns `(2.0, false)` first), so every `gpt-3.5*`
   resolves to `(2.0, false)` — the port preserves this; do not "fix" it without
   matching Go.
+- **Default-table base layer + 37.5/self-use tri-state** — DONE 2026-06-26.
+  Go's `InitRatioSettings` seeds the operator ratio/price/completion maps with
+  hardcoded defaults as a base the operator `options` overrides per-entry.
+  `pricing.rs::{model_ratio,model_price,completion_ratio}` now consult
+  `cinatoken_core::default_ratios` (`defaultModelRatio` ~250 entries,
+  `defaultModelPrice`, `defaultCompletionRatio`) as a fallback beneath the
+  operator map; `with_self_use_mode(true)` reproduces Go's `37.5` unconfigured
+  default (`SelfUseModeEnabled`); `worker/relay.rs::has_pricing` now counts a
+  default-table model as priced so e.g. unconfigured `gpt-4o` bills at 1.25
+  instead of being treated as free. Still pending: `AcceptUnsetRatioModel`
+  per-user override + the `modelPriceNotConfigured` error outside self-use.
 - No cache-creation 5m/1h split (single `cache_ratio`); no `ToolCallSurcharge`;
-  no `OtherRatios` (image `n` multiplier).
+  no `OtherRatios` (image `n` multiplier). The cache/audio/image default tables
+  (`defaultCacheRatio`, `defaultAudioRatio`, ...) are NOT yet ported —
+  `cache_ratio` consults the operator map only.
 - Image/audio tokens are **not** subtracted from the prompt base in flat mode
   (billed at prompt rate) — differs from the full sub-category formula above.
-- Verify the `model_ratio` unconfigured default matches Go's `37.5` +
-  self-use/`AcceptUnsetRatioModel` tri-state (not evidently present in
-  `pricing.rs`).
 
 Remaining checklist:
 
@@ -148,10 +159,14 @@ Remaining checklist:
    `GetModelPrice`-vs-billing-mode keying matches Go.
 2. `FormatMatchingModelName` + the hardcoded completion-ratio table are wired
    (verified 2026-06-26) into `pricing.rs::completion_ratio` with Go's
-   authoritative > options-map > soft-default precedence. Still pending: the
-   compact-suffix (`CompactModelSuffix`) wildcard fallback, and the
-   default-`37.5` + self-use/`AcceptUnsetRatioModel` tri-state for
-   `model_ratio`.
+   authoritative > options-map > soft-default precedence. The default-table
+   base layer + 37.5/self-use tri-state are also wired (2026-06-26): the Go
+   `defaultModelRatio`/`Price`/`CompletionRatio` tables are ported as
+   `cinatoken_core::default_ratios` and consulted beneath the operator map,
+   and `with_self_use_mode` reproduces the unconfigured-37.5 path. Still
+   pending: the compact-suffix (`CompactModelSuffix`) wildcard fallback, the
+   `AcceptUnsetRatioModel` per-user override + `modelPriceNotConfigured`
+   error outside self-use, and the cache/audio/image default tables.
 3. Load ratio/price/group maps from `options` into a cached, invalidated store
    (CONFIG_KV/DO); refresh on admin option mutation.
 4. Implement the per-token settlement arithmetic with the full sub-category ratio

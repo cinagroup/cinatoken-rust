@@ -65,7 +65,10 @@ pub async fn stripe_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
         d1_repositories::create_topup(&db, claims.id, quota, amount, &trade_no, now).await
     {
         worker::console_error!("failed to record pending topup {trade_no}: {err}");
-        return Ok(envelope_error_response(500, "failed to record pending topup"));
+        return Ok(envelope_error_response(
+            500,
+            "failed to record pending topup",
+        ));
     }
 
     // Build redirect URLs from the configured frontend origin (never a

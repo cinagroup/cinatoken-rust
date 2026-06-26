@@ -27,8 +27,13 @@ deferred past their phase:
 
 1. **Non-tiered billing settlement** — UPDATE 2026-06-25: **implemented** in
    `crates/billing/src/flat.rs` (wired at `relay.rs:3200`); no longer a blocker.
-   Remaining gaps (hardcoded completion table, cache 5m/1h split, sub-category
-   subtraction, 37.5 default) are P2. `source-pricing-ratio-parity.md`.
+   UPDATE 2026-06-26: the Go default-table base layer (`defaultModelRatio`/
+   `Price`/`CompletionRatio` ported to `cinatoken_core::default_ratios`) and
+   the 37.5/self-use tri-state are wired into `pricing.rs`, so unconfigured-but-
+   known models (e.g. `gpt-4o` → 1.25) now bill correctly instead of being free.
+   Remaining P2 gaps: cache/audio/image default tables, compact-suffix
+   wildcard, `AcceptUnsetRatioModel` override + config-error path, cache 5m/1h
+   split, sub-category subtraction. `source-pricing-ratio-parity.md`.
 2. **Missing-usage SSE handling** — UPDATE 2026-06-25: Rust **refunds** on missing
    usage (`relay.rs::refund_reason`) instead of Go's estimate-from-text-and-bill,
    so it under-bills usage-less streams. Decision needed, not a build gap.

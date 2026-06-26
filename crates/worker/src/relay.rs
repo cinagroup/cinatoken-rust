@@ -6,7 +6,10 @@ use cinatoken_billing::{
     TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
-use cinatoken_core::{ApiError, ApiResult, Candidate, ErrorBody, select_weighted};
+use cinatoken_core::{
+    default_model_price, default_model_ratio, format_matching_model_name, select_weighted,
+    ApiError, ApiResult, Candidate, ErrorBody,
+};
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
     first_channel_key, ip_allowlist_matches, is_auto_disable_status, is_retryable_status,
@@ -665,7 +668,10 @@ async fn relay_endpoint(
         }
         let meta: Vec<Candidate> = pool
             .iter()
-            .map(|c| Candidate { priority: c.priority, weight: c.weight })
+            .map(|c| Candidate {
+                priority: c.priority,
+                weight: c.weight,
+            })
             .collect();
         let pick = match select_weighted(&meta, attempt_index, |total| {
             (js_sys::Math::random() * total as f64) as u64
@@ -3207,13 +3213,20 @@ async fn try_flat_billing(
         values[4].as_deref(), // quota per unit
     );
 
-    // If the model has neither a ratio entry nor a price entry, treat as
-    // unbilled (operator has not configured pricing for this model). This
-    // avoids charging default-ratio quota for models the operator intended
-    // to be free.
-    let has_pricing =
-        config.model_ratios.contains_key(model) || config.model_prices.contains_key(model);
+    // A model is "priced" (billable) if the operator configured a ratio or
+    // price for it OR it appears in Go's hardcoded default ratio/price tables
+    // (the base layer Go's InitRatioSettings seeds). Without this, an
+    // unconfigured-but-known model like gpt-4o (default ratio 1.25) would be
+    // treated as free. The name is normalized first because the default tables
+    // and model_ratio() both key on the normalized name.
+    let normalized = format_matching_model_name(model);
+    let has_pricing = config.model_ratios.contains_key(&normalized)
+        || config.model_prices.contains_key(&normalized)
+        || default_model_ratio(&normalized).is_some()
+        || default_model_price(&normalized).is_some();
     if !has_pricing {
+        // Truly unconfigured model: treat as unbilled (operator has not
+        // configured pricing and Go has no default for it).
         return Ok(None);
     }
 

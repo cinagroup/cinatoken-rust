@@ -426,13 +426,17 @@ pub async fn reserve_relay_quota(
             credit_user_quota_statement(db, user_id, quota)?
                 .run()
                 .await?;
-            Err(worker::Error::RustError("token quota is not enough".to_string()))
+            Err(worker::Error::RustError(
+                "token quota is not enough".to_string(),
+            ))
         }
         (false, true) => {
             credit_token_quota_usage_statement(db, token_id, quota, accessed_time)?
                 .run()
                 .await?;
-            Err(worker::Error::RustError("user quota is not enough".to_string()))
+            Err(worker::Error::RustError(
+                "user quota is not enough".to_string(),
+            ))
         }
         (false, false) => Err(worker::Error::RustError(
             "user quota is not enough".to_string(),

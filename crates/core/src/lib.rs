@@ -1,6 +1,7 @@
 pub mod bpe;
 pub mod channel_select;
 pub mod completion_ratio;
+pub mod default_ratios;
 pub mod error;
 pub mod image_tokens;
 pub mod model_name;
@@ -13,6 +14,7 @@ pub mod status;
 pub use bpe::bpe_token_count;
 pub use channel_select::{select_weighted, Candidate};
 pub use completion_ratio::hardcoded_completion_ratio;
+pub use default_ratios::{default_completion_ratio, default_model_price, default_model_ratio};
 pub use error::{ApiError, ApiResult};
 pub use image_tokens::{image_tokens, MediaTokenFlags};
 pub use model_name::format_matching_model_name;

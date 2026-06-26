@@ -21,6 +21,17 @@
 //!
 //! ## Implemented here
 //!
+//! - **Default-table base layer.** Go's `InitRatioSettings` seeds the operator
+//!   ratio/price maps with hardcoded defaults (`defaultModelRatio`,
+//!   `defaultModelPrice`, `defaultCompletionRatio`) as a base the operator's
+//!   `options` JSON overrides per-entry. [`PricingConfig::model_ratio`] /
+//!   [`PricingConfig::model_price`] / [`PricingConfig::completion_ratio`]
+//!   consult `cinatoken_core::default_ratios` as a fallback beneath the
+//!   operator map, so an unconfigured-but-known model (e.g. `gpt-4o` → 1.25)
+//!   bills correctly without an explicit operator entry.
+//! - **Self-use mode.** Go returns `37.5` for a model in neither map when
+//!   `SelfUseModeEnabled`; otherwise the caller treats it as unconfigured.
+//!   [`PricingConfig::with_self_use_mode`] reproduces this.
 //! - Hardcoded completion-ratio prefix table (`gpt-4o* → 4`, `claude-* → 5`,
 //!   ...) is wired into [`PricingConfig::completion_ratio`] via
 //!   `cinatoken_core::hardcoded_completion_ratio`, with Go's
@@ -29,12 +40,21 @@
 //!
 //! ## Not implemented here (deferred)
 //!
+//! - `CacheRatio` default table (`defaultCacheRatio`) — the operator map only
+//!   is consulted; default 1.0. (The cache/audio/image tables are the natural
+//!   next port; their settlement arithmetic is still simplified.)
 //! - `CacheCreation5mRatio` / `CacheCreation1hRatio` split. A single
 //!   `create_cache_ratio` is used instead.
+//! - Compact-suffix (`-openai-compact`) wildcard fallback for ratio/price.
+//! - `AcceptUnsetRatioModel` per-user override + the `modelPriceNotConfigured`
+//!   error path outside self-use.
 
 use std::collections::HashMap;
 
-use cinatoken_core::{format_matching_model_name, hardcoded_completion_ratio};
+use cinatoken_core::{
+    default_completion_ratio, default_model_price, default_model_ratio, format_matching_model_name,
+    hardcoded_completion_ratio,
+};
 
 use crate::DEFAULT_QUOTA_PER_UNIT;
 
@@ -48,6 +68,13 @@ pub struct PricingConfig {
     pub cache_ratios: HashMap<String, f64>,
     pub group_ratios: HashMap<String, f64>,
     pub quota_per_unit: f64,
+    /// Mirrors Go `operation_setting.SelfUseModeEnabled`. When true, a model
+    /// present in NEITHER the operator maps NOR the Go default tables resolves
+    /// its model ratio to `37.5` (Go's unconfigured default) instead of `1.0`.
+    /// Outside self-use, an unconfigured model is treated as not-configured by
+    /// the caller's `has_pricing` gate (matching Go's
+    /// `modelPriceNotConfiguredError` path). Set via [`Self::with_self_use_mode`].
+    pub self_use_mode: bool,
 }
 
 impl PricingConfig {
@@ -58,6 +85,13 @@ impl PricingConfig {
             quota_per_unit: DEFAULT_QUOTA_PER_UNIT,
             ..Default::default()
         }
+    }
+
+    /// Enable Go `SelfUseModeEnabled` semantics (unconfigured models bill at
+    /// the `37.5` default ratio). Builder-style; off by default.
+    pub fn with_self_use_mode(mut self, enabled: bool) -> Self {
+        self.self_use_mode = enabled;
+        self
     }
 
     /// Parse the raw JSON option strings into the config maps. Any malformed
@@ -96,40 +130,69 @@ impl PricingConfig {
         self
     }
 
-    /// Per-token prompt ratio for a model. Default 1.0 when unset.
+    /// Per-token prompt ratio for a model. Ports Go `GetModelRatio` precedence
+    /// (after `format_matching_model_name`):
+    /// 1. operator `ModelRatio` map hit;
+    /// 2. Go default-table hit (`defaultModelRatio`, the base layer Go's
+    ///    `InitRatioSettings` seeds);
+    /// 3. in self-use mode, the Go unconfigured default `37.5`; otherwise
+    ///    `1.0` (and the caller's `has_pricing` gate treats the model as
+    ///    unconfigured).
     pub fn model_ratio(&self, model: &str) -> f64 {
-        self.model_ratios.get(model).copied().unwrap_or(1.0)
+        let name = format_matching_model_name(model);
+        if let Some(ratio) = self.model_ratios.get(&name).copied() {
+            return ratio;
+        }
+        if let Some(ratio) = default_model_ratio(&name) {
+            return ratio;
+        }
+        if self.self_use_mode {
+            37.5
+        } else {
+            1.0
+        }
     }
 
     /// Completion-token ratio relative to prompt. Ports Go
     /// `GetCompletionRatio` precedence exactly (after
     /// `format_matching_model_name`):
-    /// 1. if the normalized name contains `/`, an options-map hit wins (and
-    ///    absent is `1.0`);
-    /// 2. `hardcoded_completion_ratio` — when `authoritative`, that value
-    ///    wins over the map;
+    /// 1. if the normalized name contains `/` AND an options-map hit exists,
+    ///    return it (a `/`-name with NO hit falls through to the table, per Go);
+    /// 2. `hardcoded_completion_ratio` — when `authoritative`, that value wins;
     /// 3. otherwise an options-map hit wins;
-    /// 4. otherwise the hardcoded value is a soft default.
+    /// 4. otherwise the Go default-completion map (`defaultCompletionRatio`);
+    /// 5. otherwise the non-authoritative hardcoded value (a soft default).
     pub fn completion_ratio(&self, model: &str) -> f64 {
         let name = format_matching_model_name(model);
         let map_hit = self.completion_ratios.get(&name).copied();
+        // Go: a `/`-name short-circuits ONLY on a map hit; a miss falls through
+        // to the hardcoded table (where no `/`-name matches a prefix, so the
+        // observable result is the 1.0 default, but the path is faithful).
         if name.contains('/') {
-            // Deployment/variant names (`org/model`) bypass the hardcoded
-            // table in Go; the operator's map is authoritative.
-            return map_hit.unwrap_or(1.0);
+            if let Some(ratio) = map_hit {
+                return ratio;
+            }
         }
         let (hardcoded, authoritative) = hardcoded_completion_ratio(&name);
         if authoritative {
             return hardcoded;
         }
-        // Non-authoritative: map hit wins, then the hardcoded soft default,
-        // then 1.0 for fully-unknown models.
-        map_hit.unwrap_or(if hardcoded != 1.0 { hardcoded } else { 1.0 })
+        // Non-authoritative: operator map, then the Go default-completion map,
+        // then the hardcoded soft default (1.0 for fully-unknown models).
+        map_hit
+            .or_else(|| default_completion_ratio(&name))
+            .unwrap_or(if hardcoded != 1.0 { hardcoded } else { 1.0 })
     }
 
-    /// Fixed per-request USD price. `None` means per-token mode.
+    /// Fixed per-request USD price. `None` means per-token mode. Ports Go
+    /// `GetModelPrice` (after `format_matching_model_name`): operator
+    /// `ModelPrice` map, then the Go default-price table (`defaultModelPrice`).
     pub fn model_price(&self, model: &str) -> Option<f64> {
-        self.model_prices.get(model).copied()
+        let name = format_matching_model_name(model);
+        self.model_prices
+            .get(&name)
+            .copied()
+            .or_else(|| default_model_price(&name))
     }
 
     /// Cache-read discount multiplier. Default 1.0 (no discount).
@@ -178,13 +241,18 @@ mod tests {
     #[test]
     fn empty_config_uses_defaults() {
         let config = PricingConfig::new();
-        assert_eq!(config.model_ratio("gpt-4o"), 1.0);
-        // An unknown model (no hardcoded entry) resolves to the 1.0 default.
-        // Models WITH a hardcoded soft default (e.g. gpt-4o → 4.0) resolve to
-        // that table value even with an empty map — see completion_ratio tests.
+        // The Go default-table base layer applies even with an empty operator
+        // map: gpt-4o → 1.25 (defaultModelRatio), not 1.0.
+        assert_eq!(config.model_ratio("gpt-4o"), 1.25);
+        // An unknown model (no default-table entry) resolves to 1.0 outside
+        // self-use mode (see self_use_mode tests for the 37.5 path).
+        assert_eq!(config.model_ratio("does-not-exist"), 1.0);
+        // An unknown model (no hardcoded completion entry) resolves to the 1.0
+        // default.
         assert_eq!(config.completion_ratio("deepseek-chat"), 1.0);
         assert_eq!(config.group_ratio("default"), 1.0);
         assert_eq!(config.cache_ratio("gpt-4o"), 1.0);
+        // gpt-4o is ratio-billed, so no default price.
         assert_eq!(config.model_price("gpt-4o"), None);
         assert_eq!(config.quota_per_unit, 500_000.0);
     }
@@ -312,15 +380,16 @@ mod tests {
     }
 
     #[test]
-    fn completion_ratio_slash_name_is_map_only() {
-        // Deployment/variant names containing "/" bypass the hardcoded table in
-        // Go: only the operator's map is consulted, else 1.0.
+    fn completion_ratio_slash_name_falls_through_to_table() {
+        // Go: a `/`-name short-circuits ONLY on a map hit; a miss falls through
+        // to the hardcoded table (where no `/`-name matches a prefix, so the
+        // observable result is the 1.0 default). Map hit wins:
         let mut config = PricingConfig::new();
         config
             .completion_ratios
             .insert("org/gpt-4o".to_string(), 9.0);
         assert_eq!(config.completion_ratio("org/gpt-4o"), 9.0);
-        // Same slash name with no map entry → 1.0 (table NOT consulted).
+        // No map hit → falls through to the table → no prefix matches → 1.0.
         let config = PricingConfig::new();
         assert_eq!(config.completion_ratio("org/gpt-4o"), 1.0);
     }
@@ -344,5 +413,66 @@ mod tests {
             config.completion_ratio("gemini-2.5-flash-thinking-8192"),
             2.5 / 0.3
         );
+    }
+
+    // --- Default-table base layer + self_use_mode parity (Go
+    // InitRatioSettings + GetModelRatio/Price). source-pricing-ratio-parity.md
+    // gaps #2/#3. ---
+
+    #[test]
+    fn model_ratio_uses_default_table_when_unconfigured() {
+        // Empty operator map: gpt-4o resolves to its Go default 1.25, o1 to 7.5.
+        let config = PricingConfig::new();
+        assert_eq!(config.model_ratio("gpt-4o"), 1.25);
+        assert_eq!(config.model_ratio("o1"), 7.5);
+        assert_eq!(config.model_ratio("claude-3-opus-20240229"), 7.5);
+    }
+
+    #[test]
+    fn model_ratio_operator_override_beats_default() {
+        // Operator map entry (2.0) wins over the default-table 1.25.
+        let mut config = PricingConfig::new();
+        config.model_ratios.insert("gpt-4o".to_string(), 2.0);
+        assert_eq!(config.model_ratio("gpt-4o"), 2.0);
+    }
+
+    #[test]
+    fn model_ratio_unknown_is_one_outside_self_use() {
+        let config = PricingConfig::new();
+        assert_eq!(config.model_ratio("totally-unknown-model"), 1.0);
+    }
+
+    #[test]
+    fn model_ratio_self_use_mode_returns_go_default_375() {
+        // In self-use mode an unknown model resolves to Go's unconfigured
+        // default 37.5 (operation_setting.SelfUseModeEnabled).
+        let config = PricingConfig::new().with_self_use_mode(true);
+        assert_eq!(config.model_ratio("totally-unknown-model"), 37.5);
+        // A known model still uses its default-table value, not 37.5.
+        assert_eq!(config.model_ratio("gpt-4o"), 1.25);
+    }
+
+    #[test]
+    fn model_price_uses_default_table_when_unconfigured() {
+        let config = PricingConfig::new();
+        assert_eq!(config.model_price("dall-e-3"), Some(0.04));
+        assert_eq!(config.model_price("sora-2-pro"), Some(0.5));
+        // Ratio-billed model has no default price.
+        assert_eq!(config.model_price("gpt-4o"), None);
+    }
+
+    #[test]
+    fn model_price_operator_override_beats_default() {
+        let mut config = PricingConfig::new();
+        config.model_prices.insert("dall-e-3".to_string(), 0.07);
+        assert_eq!(config.model_price("dall-e-3"), Some(0.07));
+    }
+
+    #[test]
+    fn completion_ratio_uses_default_table_when_unconfigured() {
+        // gpt-image-1 is in the Go defaultCompletionRatio map (8.0).
+        let config = PricingConfig::new();
+        assert_eq!(config.completion_ratio("gpt-image-1"), 8.0);
+        assert_eq!(config.completion_ratio("gpt-4o-gizmo-*"), 3.0);
     }
 }

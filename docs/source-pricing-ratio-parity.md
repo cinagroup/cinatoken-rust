@@ -163,10 +163,13 @@ Remaining checklist:
    base layer + 37.5/self-use tri-state are also wired (2026-06-26): the Go
    `defaultModelRatio`/`Price`/`CompletionRatio` tables are ported as
    `cinatoken_core::default_ratios` and consulted beneath the operator map,
-   and `with_self_use_mode` reproduces the unconfigured-37.5 path. Still
-   pending: the compact-suffix (`CompactModelSuffix`) wildcard fallback, the
-   `AcceptUnsetRatioModel` per-user override + `modelPriceNotConfigured`
-   error outside self-use, and the cache/audio/image default tables.
+   and `with_self_use_mode` reproduces the unconfigured-37.5 path. The
+   compact-suffix (`-openai-compact`) wildcard fallback is wired (2026-06-26)
+   into `model_ratio`/`model_price`, and `has_model_pricing` consults the same
+   layers so the billability gate agrees. Still pending: the
+   `AcceptUnsetRatioModel` per-user override + `modelPriceNotConfigured` error
+   outside self-use, and the cache/audio/image default tables (those feed the
+   sub-category settlement arithmetic, still simplified).
 3. Load ratio/price/group maps from `options` into a cached, invalidated store
    (CONFIG_KV/DO); refresh on admin option mutation.
 4. Implement the per-token settlement arithmetic with the full sub-category ratio

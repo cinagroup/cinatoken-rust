@@ -37,15 +37,20 @@
 //!   `cinatoken_core::hardcoded_completion_ratio`, with Go's
 //!   authoritative > options-map > soft-default precedence and
 //!   `format_matching_model_name` normalization applied first.
+//! - **Compact-suffix wildcard.** A `-openai-compact` name with no direct
+//!   ratio/price falls back to the `*-openai-compact` wildcard in the operator
+//!   map and default table (Go `CompactModelSuffix`). Applies to `model_ratio`
+//!   and `model_price` only. [`PricingConfig::has_model_pricing`] consults the
+//!   same layers so the billability gate and lookups agree.
 //!
 //! ## Not implemented here (deferred)
 //!
 //! - `CacheRatio` default table (`defaultCacheRatio`) — the operator map only
-//!   is consulted; default 1.0. (The cache/audio/image tables are the natural
-//!   next port; their settlement arithmetic is still simplified.)
+//!   is consulted; default 1.0. (The cache/audio/image tables feed the
+//!   sub-category settlement arithmetic, which is still simplified; porting the
+//!   tables alone would be dead data.)
 //! - `CacheCreation5mRatio` / `CacheCreation1hRatio` split. A single
 //!   `create_cache_ratio` is used instead.
-//! - Compact-suffix (`-openai-compact`) wildcard fallback for ratio/price.
 //! - `AcceptUnsetRatioModel` per-user override + the `modelPriceNotConfigured`
 //!   error path outside self-use.
 
@@ -135,15 +140,15 @@ impl PricingConfig {
     /// 1. operator `ModelRatio` map hit;
     /// 2. Go default-table hit (`defaultModelRatio`, the base layer Go's
     ///    `InitRatioSettings` seeds);
-    /// 3. in self-use mode, the Go unconfigured default `37.5`; otherwise
+    /// 3. for a `-openai-compact` name: operator-map wildcard
+    ///    (`*-openai-compact`) hit, then default-table wildcard hit;
+    /// 4. in self-use mode, the Go unconfigured default `37.5`; otherwise
     ///    `1.0` (and the caller's `has_pricing` gate treats the model as
     ///    unconfigured).
     pub fn model_ratio(&self, model: &str) -> f64 {
         let name = format_matching_model_name(model);
-        if let Some(ratio) = self.model_ratios.get(&name).copied() {
-            return ratio;
-        }
-        if let Some(ratio) = default_model_ratio(&name) {
+        if let Some(ratio) = compact_wildcard_lookup(&name, &self.model_ratios, default_model_ratio)
+        {
             return ratio;
         }
         if self.self_use_mode {
@@ -186,13 +191,12 @@ impl PricingConfig {
 
     /// Fixed per-request USD price. `None` means per-token mode. Ports Go
     /// `GetModelPrice` (after `format_matching_model_name`): operator
-    /// `ModelPrice` map, then the Go default-price table (`defaultModelPrice`).
+    /// `ModelPrice` map, then the Go default-price table (`defaultModelPrice`),
+    /// then — for a `-openai-compact` name — the `*-openai-compact` wildcard
+    /// in the operator map and the default table.
     pub fn model_price(&self, model: &str) -> Option<f64> {
         let name = format_matching_model_name(model);
-        self.model_prices
-            .get(&name)
-            .copied()
-            .or_else(|| default_model_price(&name))
+        compact_wildcard_lookup(&name, &self.model_prices, default_model_price)
     }
 
     /// Cache-read discount multiplier. Default 1.0 (no discount).
@@ -204,6 +208,55 @@ impl PricingConfig {
     pub fn group_ratio(&self, group: &str) -> f64 {
         self.group_ratios.get(group).copied().unwrap_or(1.0)
     }
+
+    /// True when the model has a ratio OR a price resolvable through any layer
+    /// (operator map, Go default table, or compact-wildcard). Mirrors Go's
+    /// "is this model configured?" check; the caller uses it to decide whether
+    /// a model is billable vs. treated as unconfigured/free. Equivalent to
+    /// `model_ratio != 1.0-or-self-use` OR `model_price.is_some()` but cheaper
+    /// and exact (a model deliberately priced at 1.0 still counts as priced).
+    pub fn has_model_pricing(&self, model: &str) -> bool {
+        let name = format_matching_model_name(model);
+        compact_wildcard_lookup(&name, &self.model_ratios, default_model_ratio).is_some()
+            || compact_wildcard_lookup(&name, &self.model_prices, default_model_price).is_some()
+    }
+}
+
+/// Compact-model suffix and its wildcard key, faithful ports of Go
+/// `setting/ratio_setting.CompactModelSuffix` / `CompactWildcardModelKey`.
+/// A model name ending in `-openai-compact` that has no direct ratio/price
+/// entry falls back to the `*-openai-compact` wildcard, so one wildcard entry
+/// can price every compact variant. Applied to `model_ratio` and `model_price`
+/// only (Go's `GetCompletionRatio` does not consult the compact wildcard).
+const COMPACT_MODEL_SUFFIX: &str = "-openai-compact";
+const COMPACT_WILDCARD_MODEL_KEY: &str = "*-openai-compact";
+
+/// Compact-suffix wildcard fallback for an operator map + Go default table,
+/// mirroring Go `GetModelRatio`/`GetModelPrice`. Both the operator map and the
+/// default table are consulted first by direct key, then — only when `name`
+/// ends in the compact suffix — by the `*-openai-compact` wildcard key. Returns
+/// the first hit, or `None`. `default_fn` is `default_model_ratio` or
+/// `default_model_price`.
+fn compact_wildcard_lookup(
+    name: &str,
+    op_map: &HashMap<String, f64>,
+    default_fn: impl Fn(&str) -> Option<f64>,
+) -> Option<f64> {
+    if let Some(v) = op_map.get(name).copied() {
+        return Some(v);
+    }
+    if let Some(v) = default_fn(name) {
+        return Some(v);
+    }
+    if name.ends_with(COMPACT_MODEL_SUFFIX) {
+        if let Some(v) = op_map.get(COMPACT_WILDCARD_MODEL_KEY).copied() {
+            return Some(v);
+        }
+        if let Some(v) = default_fn(COMPACT_WILDCARD_MODEL_KEY) {
+            return Some(v);
+        }
+    }
+    None
 }
 
 /// Parse a JSON object of `{key: number}` into a HashMap. Malformed entries
@@ -474,5 +527,68 @@ mod tests {
         let config = PricingConfig::new();
         assert_eq!(config.completion_ratio("gpt-image-1"), 8.0);
         assert_eq!(config.completion_ratio("gpt-4o-gizmo-*"), 3.0);
+    }
+
+    // --- Compact-suffix (`-openai-compact`) wildcard fallback parity (Go
+    // GetModelRatio/GetModelPrice). source-pricing-ratio-parity.md. ---
+
+    #[test]
+    fn model_ratio_compact_falls_back_to_operator_wildcard() {
+        // acme-foo-openai-compact has no direct entry; the operator's
+        // *-openai-compact wildcard (3.0) prices it.
+        let mut config = PricingConfig::new();
+        config
+            .model_ratios
+            .insert("*-openai-compact".to_string(), 3.0);
+        assert_eq!(config.model_ratio("acme-foo-openai-compact"), 3.0);
+    }
+
+    #[test]
+    fn model_ratio_compact_direct_entry_beats_wildcard() {
+        // A direct entry for the exact compact name wins over the wildcard.
+        let mut config = PricingConfig::new();
+        config
+            .model_ratios
+            .insert("*-openai-compact".to_string(), 3.0);
+        config
+            .model_ratios
+            .insert("acme-foo-openai-compact".to_string(), 9.0);
+        assert_eq!(config.model_ratio("acme-foo-openai-compact"), 9.0);
+    }
+
+    #[test]
+    fn model_ratio_non_compact_model_ignores_wildcard() {
+        // The wildcard must NOT apply to a name that lacks the compact suffix.
+        let mut config = PricingConfig::new();
+        config
+            .model_ratios
+            .insert("*-openai-compact".to_string(), 3.0);
+        // gpt-4o is in the default table (1.25); the wildcard is irrelevant.
+        assert_eq!(config.model_ratio("gpt-4o"), 1.25);
+        // Unknown non-compact model -> 1.0, never the wildcard.
+        assert_eq!(config.model_ratio("acme-foo"), 1.0);
+    }
+
+    #[test]
+    fn model_price_compact_falls_back_to_operator_wildcard() {
+        let mut config = PricingConfig::new();
+        config
+            .model_prices
+            .insert("*-openai-compact".to_string(), 0.02);
+        assert_eq!(config.model_price("acme-foo-openai-compact"), Some(0.02));
+    }
+
+    #[test]
+    fn has_model_pricing_reflects_all_layers() {
+        // Default-table model is priced.
+        assert!(PricingConfig::new().has_model_pricing("gpt-4o"));
+        // Unknown model is not priced.
+        assert!(!PricingConfig::new().has_model_pricing("acme-foo"));
+        // A compact model priced only via the wildcard counts as priced.
+        let mut config = PricingConfig::new();
+        config
+            .model_ratios
+            .insert("*-openai-compact".to_string(), 3.0);
+        assert!(config.has_model_pricing("acme-foo-openai-compact"));
     }
 }

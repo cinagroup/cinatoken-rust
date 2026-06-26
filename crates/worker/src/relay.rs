@@ -6,10 +6,7 @@ use cinatoken_billing::{
     TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
-use cinatoken_core::{
-    default_model_price, default_model_ratio, format_matching_model_name, select_weighted,
-    ApiError, ApiResult, Candidate, ErrorBody,
-};
+use cinatoken_core::{select_weighted, ApiError, ApiResult, Candidate, ErrorBody};
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
     first_channel_key, ip_allowlist_matches, is_auto_disable_status, is_retryable_status,
@@ -3213,18 +3210,13 @@ async fn try_flat_billing(
         values[4].as_deref(), // quota per unit
     );
 
-    // A model is "priced" (billable) if the operator configured a ratio or
-    // price for it OR it appears in Go's hardcoded default ratio/price tables
-    // (the base layer Go's InitRatioSettings seeds). Without this, an
-    // unconfigured-but-known model like gpt-4o (default ratio 1.25) would be
-    // treated as free. The name is normalized first because the default tables
-    // and model_ratio() both key on the normalized name.
-    let normalized = format_matching_model_name(model);
-    let has_pricing = config.model_ratios.contains_key(&normalized)
-        || config.model_prices.contains_key(&normalized)
-        || default_model_ratio(&normalized).is_some()
-        || default_model_price(&normalized).is_some();
-    if !has_pricing {
+    // A model is "priced" (billable) if it resolves a ratio OR price through
+    // any layer (operator map, Go default table, or compact-wildcard), mirroring
+    // Go's "is this model configured?" check. Without this, an unconfigured-but-
+    // known model like gpt-4o (default ratio 1.25) would be treated as free.
+    // `has_model_pricing` normalizes and consults the same layers model_ratio()
+    // / model_price() do, so the gate and the lookups can never disagree.
+    if !config.has_model_pricing(model) {
         // Truly unconfigured model: treat as unbilled (operator has not
         // configured pricing and Go has no default for it).
         return Ok(None);

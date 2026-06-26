@@ -203,12 +203,14 @@ mod tests {
 
     #[test]
     fn per_token_basic_formula() {
-        // model_ratio=2, group_ratio=1 (default), completion_ratio=1 (default)
-        // prompt=100, completion=50 → (100 + 50*1) * (2*1) = 300
+        // model_ratio=2, group_ratio=1 (default). gpt-4o has a hardcoded
+        // completion-ratio soft default of 4.0 (cinatoken_core::
+        // hardcoded_completion_ratio), so completion_ratio=4 even with an empty
+        // options map. prompt=100, completion=50 → (100 + 50*4) * (2*1) = 600.
         let config = config_with_model_ratio("gpt-4o", 2.0);
         let usage = simple_usage(100, 50);
         let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
-        assert_eq!(result.quota, 300);
+        assert_eq!(result.quota, 600);
         assert_eq!(result.mode, FlatBillingMode::PerToken);
     }
 
@@ -224,12 +226,13 @@ mod tests {
 
     #[test]
     fn group_ratio_multiplies() {
-        // model_ratio=1, group_ratio=2 → (100 + 50) * (1*2) = 300
+        // model_ratio=1, group_ratio=2, gpt-4o completion_ratio=4 (hardcoded
+        // soft default) → (100 + 50*4) * (1*2) = 600.
         let mut config = config_with_model_ratio("gpt-4o", 1.0);
         config.group_ratios.insert("vip".to_string(), 2.0);
         let usage = simple_usage(100, 50);
         let result = compute_flat_quota(&usage, "gpt-4o", "vip", &config);
-        assert_eq!(result.quota, 300);
+        assert_eq!(result.quota, 600);
     }
 
     #[test]
@@ -303,9 +306,11 @@ mod tests {
     #[test]
     fn floor_one_when_ratio_nonzero_and_quota_rounds_to_zero() {
         // Tiny usage that rounds to 0 with a non-zero ratio → floor to 1.
-        let config = config_with_model_ratio("gpt-4o", 1.0);
+        // Uses an unknown model (no hardcoded completion-ratio entry) so
+        // completion_ratio defaults to 1.0: completion=1 * cr=1 * mr=1 → 1.
+        let config = config_with_model_ratio("deepseek-chat", 1.0);
         let usage = simple_usage(0, 1); // completion=1, ratio=1 → quota=1
-        let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
+        let result = compute_flat_quota(&usage, "deepseek-chat", "default", &config);
         assert_eq!(result.quota, 1);
     }
 

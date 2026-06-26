@@ -138,10 +138,13 @@ mod tests {
     fn all_zero_weights_are_uniform() {
         // sum 0 -> sum=n*100=200, adjustment 100, factor 1, total 200.
         let cands = [c(0, 0), c(0, 0)];
-        assert_eq!(select_weighted(&cands, 0, |total| {
-            assert_eq!(total, 200);
-            50
-        }), Some(0)); // 50-100 < 0
+        assert_eq!(
+            select_weighted(&cands, 0, |total| {
+                assert_eq!(total, 200);
+                50
+            }),
+            Some(0)
+        ); // 50-100 < 0
         assert_eq!(select_weighted(&cands, 0, |_| 150), Some(1)); // 150-100=50; 50-100<0
     }
 
@@ -149,8 +152,8 @@ mod tests {
     fn high_weights_use_straight_weighted_pick() {
         // weights [10,90], avg 50 >= 10 -> factor 1, total 100.
         let cands = [c(0, 10), c(0, 90)];
-        assert_eq!(select_weighted(&cands, 0, |_| 5), Some(0));   // 5-10 < 0
-        assert_eq!(select_weighted(&cands, 0, |_| 10), Some(1));  // 10-10=0; 0-90 < 0
+        assert_eq!(select_weighted(&cands, 0, |_| 5), Some(0)); // 5-10 < 0
+        assert_eq!(select_weighted(&cands, 0, |_| 10), Some(1)); // 10-10=0; 0-90 < 0
         assert_eq!(select_weighted(&cands, 0, |_| 99), Some(1));
     }
 }

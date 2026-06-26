@@ -58,9 +58,18 @@ mod tests {
 
     #[test]
     fn gemini_thinking_budget_collapses_to_wildcard() {
-        assert_eq!(f("gemini-2.5-flash-lite-thinking-24576"), "gemini-2.5-flash-lite-thinking-*");
-        assert_eq!(f("gemini-2.5-flash-thinking-8192"), "gemini-2.5-flash-thinking-*");
-        assert_eq!(f("gemini-2.5-pro-thinking-32768"), "gemini-2.5-pro-thinking-*");
+        assert_eq!(
+            f("gemini-2.5-flash-lite-thinking-24576"),
+            "gemini-2.5-flash-lite-thinking-*"
+        );
+        assert_eq!(
+            f("gemini-2.5-flash-thinking-8192"),
+            "gemini-2.5-flash-thinking-*"
+        );
+        assert_eq!(
+            f("gemini-2.5-pro-thinking-32768"),
+            "gemini-2.5-pro-thinking-*"
+        );
     }
 
     #[test]
@@ -75,7 +84,10 @@ mod tests {
     fn flash_lite_checked_before_flash() {
         // A flash-lite thinking name must collapse to the flash-lite wildcard,
         // never the flash one (most-specific-first ordering).
-        assert_eq!(f("gemini-2.5-flash-lite-thinking-1"), "gemini-2.5-flash-lite-thinking-*");
+        assert_eq!(
+            f("gemini-2.5-flash-lite-thinking-1"),
+            "gemini-2.5-flash-lite-thinking-*"
+        );
     }
 
     #[test]

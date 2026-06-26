@@ -42,7 +42,11 @@ fn classify(model: &str) -> ModelImageProfile {
     };
 
     if patch_multiplier.is_some() {
-        return ModelImageProfile { base_tokens: 85, tile_tokens: 170, patch_multiplier };
+        return ModelImageProfile {
+            base_tokens: 85,
+            tile_tokens: 170,
+            patch_multiplier,
+        };
     }
 
     // Tile-based bases (default 85/170 for the 4o/4.1/4.5 family).
@@ -60,7 +64,11 @@ fn classify(model: &str) -> ModelImageProfile {
         // 4.1 / 4o / 4.5 and the default.
         (85, 170)
     };
-    ModelImageProfile { base_tokens, tile_tokens, patch_multiplier: None }
+    ModelImageProfile {
+        base_tokens,
+        tile_tokens,
+        patch_multiplier: None,
+    }
 }
 
 /// Estimate image input tokens. `width`/`height` are the decoded pixel
@@ -134,7 +142,11 @@ fn patch_based_tokens(width: i64, height: i64, multiplier: f64) -> i64 {
 fn tile_based_tokens(width: i64, height: i64, base_tokens: i64, tile_tokens: i64) -> i64 {
     // Step 1: fit within a 2048x2048 square.
     let max_side = (width.max(height)) as f64;
-    let fit_scale = if max_side > 2048.0 { max_side / 2048.0 } else { 1.0 };
+    let fit_scale = if max_side > 2048.0 {
+        max_side / 2048.0
+    } else {
+        1.0
+    };
     let fit_w = (width as f64 / fit_scale).round() as i64;
     let fit_h = (height as f64 / fit_scale).round() as i64;
 
@@ -156,7 +168,10 @@ fn tile_based_tokens(width: i64, height: i64, base_tokens: i64, tile_tokens: i64
 mod tests {
     use super::*;
 
-    const ON: MediaTokenFlags = MediaTokenFlags { get_media_token: true, get_media_token_not_stream: true };
+    const ON: MediaTokenFlags = MediaTokenFlags {
+        get_media_token: true,
+        get_media_token_not_stream: true,
+    };
 
     #[test]
     fn glm4_is_fixed() {
@@ -166,31 +181,55 @@ mod tests {
     #[test]
     fn detail_low_returns_base_for_tile_models() {
         assert_eq!(image_tokens(2000, 2000, "gpt-4o", "low", true, ON), 85);
-        assert_eq!(image_tokens(2000, 2000, "gpt-4o-mini", "low", true, ON), 2833);
+        assert_eq!(
+            image_tokens(2000, 2000, "gpt-4o-mini", "low", true, ON),
+            2833
+        );
     }
 
     #[test]
     fn media_token_flag_disabled_returns_three_base() {
-        let off = MediaTokenFlags { get_media_token: false, get_media_token_not_stream: true };
-        assert_eq!(image_tokens(2000, 2000, "gpt-4o", "high", true, off), 3 * 85);
+        let off = MediaTokenFlags {
+            get_media_token: false,
+            get_media_token_not_stream: true,
+        };
+        assert_eq!(
+            image_tokens(2000, 2000, "gpt-4o", "high", true, off),
+            3 * 85
+        );
         // non-stream + not_stream disabled -> 3*base too.
-        let nostream = MediaTokenFlags { get_media_token: true, get_media_token_not_stream: false };
-        assert_eq!(image_tokens(2000, 2000, "gpt-4o", "high", false, nostream), 3 * 85);
+        let nostream = MediaTokenFlags {
+            get_media_token: true,
+            get_media_token_not_stream: false,
+        };
+        assert_eq!(
+            image_tokens(2000, 2000, "gpt-4o", "high", false, nostream),
+            3 * 85
+        );
     }
 
     #[test]
     fn tile_based_small_image() {
         // 512x512: fit (<=2048) -> 512x512; shortest side 768 -> scale 1.5 ->
         // 768x768; tiles ceil(768/512)=2 each -> 4 tiles; 4*170+85 = 765.
-        assert_eq!(image_tokens(512, 512, "gpt-4o", "high", true, ON), 4 * 170 + 85);
+        assert_eq!(
+            image_tokens(512, 512, "gpt-4o", "high", true, ON),
+            4 * 170 + 85
+        );
         // gpt-4o-mini uses 2833/5667.
-        assert_eq!(image_tokens(512, 512, "gpt-4o-mini", "high", true, ON), 4 * 5667 + 2833);
+        assert_eq!(
+            image_tokens(512, 512, "gpt-4o-mini", "high", true, ON),
+            4 * 5667 + 2833
+        );
     }
 
     #[test]
     fn tile_based_o_series_base() {
         // o1: base 75, tile 150. 512x512 -> 4 tiles -> 4*150+75 = 675.
-        assert_eq!(image_tokens(512, 512, "o1-preview", "high", true, ON), 4 * 150 + 75);
+        assert_eq!(
+            image_tokens(512, 512, "o1-preview", "high", true, ON),
+            4 * 150 + 75
+        );
     }
 
     #[test]

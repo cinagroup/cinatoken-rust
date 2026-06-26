@@ -409,8 +409,35 @@ pub async fn reserve_relay_quota(
             debit_token_quota_usage_statement(db, token_id, quota, accessed_time)?,
         ])
         .await?;
-    require_batch_change(&results, 0, "user quota is not enough")?;
-    require_batch_change(&results, 1, "token quota is not enough")
+    // The user and token debits have independent guards (`quota >= ?` /
+    // `remain_quota >= ?`). A D1 batch is atomic only on SQL error, and a
+    // guarded UPDATE that matches 0 rows is NOT an error, so when exactly one
+    // guard fails the batch still commits the other debit. Without
+    // compensation that committed debit is leaked: a token with
+    // `0 < remain_quota < estimate` passes the `remain_quota <= 0` auth gate,
+    // then the user account is debited here while the request is rejected.
+    // Refund the committed side before returning the rejection so a rejected
+    // request never costs the user (or token) quota.
+    let user_reserved = batch_changed(&results, 0)?;
+    let token_reserved = batch_changed(&results, 1)?;
+    match (user_reserved, token_reserved) {
+        (true, true) => Ok(()),
+        (true, false) => {
+            credit_user_quota_statement(db, user_id, quota)?
+                .run()
+                .await?;
+            Err(worker::Error::RustError("token quota is not enough".to_string()))
+        }
+        (false, true) => {
+            credit_token_quota_usage_statement(db, token_id, quota, accessed_time)?
+                .run()
+                .await?;
+            Err(worker::Error::RustError("user quota is not enough".to_string()))
+        }
+        (false, false) => Err(worker::Error::RustError(
+            "user quota is not enough".to_string(),
+        )),
+    }
 }
 
 pub async fn refund_reserved_relay_quota(
@@ -703,17 +730,24 @@ fn require_one_change(result: D1Result, message: &str) -> worker::Result<()> {
 }
 
 fn require_batch_change(results: &[D1Result], index: usize, message: &str) -> worker::Result<()> {
+    if batch_changed(results, index)? {
+        Ok(())
+    } else {
+        Err(worker::Error::RustError(message.to_string()))
+    }
+}
+
+/// True when the batch statement at `index` affected exactly one row. Used to
+/// detect a divergent partial commit (one guarded debit applied, the other
+/// no-op) so the committed side can be compensated.
+fn batch_changed(results: &[D1Result], index: usize) -> worker::Result<bool> {
     let Some(result) = results.get(index) else {
         return Err(worker::Error::RustError(format!(
             "missing D1 batch result at index {index}"
         )));
     };
     let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
-    if changes == 1 {
-        Ok(())
-    } else {
-        Err(worker::Error::RustError(message.to_string()))
-    }
+    Ok(changes == 1)
 }
 
 fn quota_i32(quota: i64) -> worker::Result<i32> {

@@ -146,9 +146,9 @@ math is done.
 
 | Primitive | Ports (Go) | Wire into |
 | --- | --- | --- |
-| `core::model_name::format_matching_model_name` | `FormatMatchingModelName` | pricing, `select_relay_channels`, token model-limit |
+| `core::model_name::format_matching_model_name` | `FormatMatchingModelName` | **WIRED** into `billing/pricing.rs::completion_ratio` (2026-06-26). Still pending: `select_relay_channels` and the token model-limit match. |
 | `core::channel_select::select_weighted` | `GetRandomSatisfiedChannel` (priority + weighted-random + smoothing) | **WIRED** into the relay retry loop (`worker/relay.rs` ~670) with a `Math::random` RNG; pool shrinks per attempt (benign Go divergence). Affinity + cross-group retry still pending. |
-| `core::completion_ratio::hardcoded_completion_ratio` | `getHardcodedCompletionModelRatio` (incl. the `gpt-3.5` dead-code quirk) | `billing/pricing.rs::completion_ratio` with Go precedence (authoritative > options map > soft default) |
+| `core::completion_ratio::hardcoded_completion_ratio` | `getHardcodedCompletionModelRatio` (incl. the `gpt-3.5` dead-code quirk) | **WIRED** (2026-06-26) into `billing/pricing.rs::completion_ratio` with Go precedence (authoritative > options map > soft default; `/`-names map-only; `format_matching_model_name` applied first). |
 | `core::image_tokens::image_tokens` | `getImageToken` (patch/tile, 1536-cap, flags) | request token estimator (+ an image-dimension header parser to feed w/h) |
 | `core::request_tokens::{openai_chat_format_overhead, audio_*_tokens, media consts}` | `EstimateRequestToken`/`CountAudioToken*` pure parts | request token estimator (+ an audio-duration source) |
 | `core::relay_policy::{should_retry, should_disable_channel}` | `shouldRetry` + `ShouldDisableChannel` | retry loop; disable is the Go-matching option for decision #1 |

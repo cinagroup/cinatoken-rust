@@ -19,15 +19,22 @@
 //!   Per-group multiplier. Default 1.0.
 //! - `QuotaPerUnit` — scalar. `$1 = QuotaPerUnit quota`. Default 500_000.
 //!
-//! ## Not implemented here (deferred)
+//! ## Implemented here
 //!
 //! - Hardcoded completion-ratio prefix table (`gpt-4o* → 4`, `claude-* → 5`,
-//!   ...). Operators must configure `CompletionRatio` explicitly for models
-//!   with completion premiums. Default is 1.0 (prompt == completion price).
+//!   ...) is wired into [`PricingConfig::completion_ratio`] via
+//!   `cinatoken_core::hardcoded_completion_ratio`, with Go's
+//!   authoritative > options-map > soft-default precedence and
+//!   `format_matching_model_name` normalization applied first.
+//!
+//! ## Not implemented here (deferred)
+//!
 //! - `CacheCreation5mRatio` / `CacheCreation1hRatio` split. A single
 //!   `create_cache_ratio` is used instead.
 
 use std::collections::HashMap;
+
+use cinatoken_core::{format_matching_model_name, hardcoded_completion_ratio};
 
 use crate::DEFAULT_QUOTA_PER_UNIT;
 
@@ -94,9 +101,30 @@ impl PricingConfig {
         self.model_ratios.get(model).copied().unwrap_or(1.0)
     }
 
-    /// Completion-token ratio relative to prompt. Default 1.0 (no premium).
+    /// Completion-token ratio relative to prompt. Ports Go
+    /// `GetCompletionRatio` precedence exactly (after
+    /// `format_matching_model_name`):
+    /// 1. if the normalized name contains `/`, an options-map hit wins (and
+    ///    absent is `1.0`);
+    /// 2. `hardcoded_completion_ratio` — when `authoritative`, that value
+    ///    wins over the map;
+    /// 3. otherwise an options-map hit wins;
+    /// 4. otherwise the hardcoded value is a soft default.
     pub fn completion_ratio(&self, model: &str) -> f64 {
-        self.completion_ratios.get(model).copied().unwrap_or(1.0)
+        let name = format_matching_model_name(model);
+        let map_hit = self.completion_ratios.get(&name).copied();
+        if name.contains('/') {
+            // Deployment/variant names (`org/model`) bypass the hardcoded
+            // table in Go; the operator's map is authoritative.
+            return map_hit.unwrap_or(1.0);
+        }
+        let (hardcoded, authoritative) = hardcoded_completion_ratio(&name);
+        if authoritative {
+            return hardcoded;
+        }
+        // Non-authoritative: map hit wins, then the hardcoded soft default,
+        // then 1.0 for fully-unknown models.
+        map_hit.unwrap_or(if hardcoded != 1.0 { hardcoded } else { 1.0 })
     }
 
     /// Fixed per-request USD price. `None` means per-token mode.
@@ -151,7 +179,10 @@ mod tests {
     fn empty_config_uses_defaults() {
         let config = PricingConfig::new();
         assert_eq!(config.model_ratio("gpt-4o"), 1.0);
-        assert_eq!(config.completion_ratio("gpt-4o"), 1.0);
+        // An unknown model (no hardcoded entry) resolves to the 1.0 default.
+        // Models WITH a hardcoded soft default (e.g. gpt-4o → 4.0) resolve to
+        // that table value even with an empty map — see completion_ratio tests.
+        assert_eq!(config.completion_ratio("deepseek-chat"), 1.0);
         assert_eq!(config.group_ratio("default"), 1.0);
         assert_eq!(config.cache_ratio("gpt-4o"), 1.0);
         assert_eq!(config.model_price("gpt-4o"), None);
@@ -171,7 +202,10 @@ mod tests {
         assert_eq!(config.model_ratio("gpt-4o"), 1.25);
         assert_eq!(config.model_ratio("claude-3-5-sonnet"), 1.5);
         assert_eq!(config.completion_ratio("gpt-4o"), 4.0);
-        assert_eq!(config.completion_ratio("claude-3-5-sonnet"), 1.0); // default
+        // claude-3-5-sonnet is AUTHORITATIVE in the hardcoded table (5.0), so
+        // it wins even though no map entry exists and ignores the 1.5 model
+        // ratio — completion_ratio is independent of model_ratio.
+        assert_eq!(config.completion_ratio("claude-3-5-sonnet"), 5.0);
         assert_eq!(config.model_price("dall-e-3"), Some(0.04));
         assert_eq!(config.model_price("gpt-4o"), None);
         assert_eq!(config.cache_ratio("gpt-4o"), 0.5);
@@ -223,5 +257,92 @@ mod tests {
             PricingConfig::new().with_json_maps(Some(""), Some("   "), None, None, None, None);
         assert!(config.model_ratios.is_empty());
         assert!(config.completion_ratios.is_empty());
+    }
+
+    // --- completion_ratio Go-precedence parity (source-pricing-ratio-parity.md
+    // gap #1). The hardcoded table is authoritative for some families
+    // (claude-*→5, gpt-5*→8, o1/o3→4) and a soft default for others
+    // (gpt-4o*→4, gemini-2.5-pro→8). Precedence after format_matching_model_name:
+    //   1. name has "/" → map-only (no table)
+    //   2. authoritative hardcoded → wins over map
+    //   3. map hit → wins over soft default
+    //   4. soft-default hardcoded → wins over 1.0
+    //   5. 1.0 for fully-unknown models.
+
+    #[test]
+    fn completion_ratio_authoritative_overrides_map() {
+        // claude-3-5-sonnet is AUTHORITATIVE (5.0); the map's 2.0 must lose.
+        let mut config = PricingConfig::new();
+        config
+            .completion_ratios
+            .insert("claude-3-5-sonnet".to_string(), 2.0);
+        assert_eq!(config.completion_ratio("claude-3-5-sonnet"), 5.0);
+        // gpt-5 is authoritative 8.0 even with a conflicting map entry.
+        let mut config = PricingConfig::new();
+        config
+            .completion_ratios
+            .insert("gpt-5-pro".to_string(), 1.0);
+        assert_eq!(config.completion_ratio("gpt-5-pro"), 8.0);
+    }
+
+    #[test]
+    fn completion_ratio_map_overrides_soft_default() {
+        // gpt-4o is a NON-authoritative soft default (4.0); an explicit map hit
+        // (7.0) must win.
+        let mut config = PricingConfig::new();
+        config.completion_ratios.insert("gpt-4o".to_string(), 7.0);
+        assert_eq!(config.completion_ratio("gpt-4o"), 7.0);
+    }
+
+    #[test]
+    fn completion_ratio_soft_default_when_unconfigured() {
+        // Empty map: gpt-4o resolves to its 4.0 soft default, claude-* to 5.0.
+        let config = PricingConfig::new();
+        assert_eq!(config.completion_ratio("gpt-4o"), 4.0);
+        assert_eq!(config.completion_ratio("claude-sonnet-4"), 5.0);
+        assert_eq!(config.completion_ratio("gemini-2.5-pro"), 8.0);
+    }
+
+    #[test]
+    fn completion_ratio_unknown_model_is_one() {
+        // A model with no hardcoded entry and no map hit → 1.0 (no premium).
+        let config = PricingConfig::new();
+        assert_eq!(config.completion_ratio("deepseek-chat"), 1.0);
+        assert_eq!(config.completion_ratio("totally-unknown-model"), 1.0);
+    }
+
+    #[test]
+    fn completion_ratio_slash_name_is_map_only() {
+        // Deployment/variant names containing "/" bypass the hardcoded table in
+        // Go: only the operator's map is consulted, else 1.0.
+        let mut config = PricingConfig::new();
+        config
+            .completion_ratios
+            .insert("org/gpt-4o".to_string(), 9.0);
+        assert_eq!(config.completion_ratio("org/gpt-4o"), 9.0);
+        // Same slash name with no map entry → 1.0 (table NOT consulted).
+        let config = PricingConfig::new();
+        assert_eq!(config.completion_ratio("org/gpt-4o"), 1.0);
+    }
+
+    #[test]
+    fn completion_ratio_applies_format_matching_model_name() {
+        // A thinking-budget gemini name normalizes to its wildcard before the
+        // table/map lookup, so a map keyed on the wildcard applies.
+        let mut config = PricingConfig::new();
+        config
+            .completion_ratios
+            .insert("gemini-2.5-flash-thinking-*".to_string(), 3.0);
+        assert_eq!(
+            config.completion_ratio("gemini-2.5-flash-thinking-8192"),
+            3.0
+        );
+        // Without a map hit, the normalized name still hits the hardcoded
+        // table: gemini-2.5-flash-* resolves to (2.5/0.3, false) soft default.
+        let config = PricingConfig::new();
+        assert_eq!(
+            config.completion_ratio("gemini-2.5-flash-thinking-8192"),
+            2.5 / 0.3
+        );
     }
 }

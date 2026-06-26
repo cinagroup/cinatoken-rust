@@ -94,37 +94,151 @@ mod tests {
 
     #[test]
     fn channel_error_always_retries() {
-        assert!(should_retry(true, false, false, false, 400, 0, retry_5xx_429));
+        assert!(should_retry(
+            true,
+            false,
+            false,
+            false,
+            400,
+            0,
+            retry_5xx_429
+        ));
     }
 
     #[test]
     fn skip_retry_and_budget_and_specific_channel() {
-        assert!(!should_retry(false, true, false, false, 500, 3, retry_5xx_429)); // skip-retry
-        assert!(!should_retry(false, false, false, false, 500, 0, retry_5xx_429)); // no budget
-        assert!(!should_retry(false, false, false, true, 500, 3, retry_5xx_429)); // pinned channel
+        assert!(!should_retry(
+            false,
+            true,
+            false,
+            false,
+            500,
+            3,
+            retry_5xx_429
+        )); // skip-retry
+        assert!(!should_retry(
+            false,
+            false,
+            false,
+            false,
+            500,
+            0,
+            retry_5xx_429
+        )); // no budget
+        assert!(!should_retry(
+            false,
+            false,
+            false,
+            true,
+            500,
+            3,
+            retry_5xx_429
+        )); // pinned channel
     }
 
     #[test]
     fn status_code_rules() {
-        assert!(!should_retry(false, false, false, false, 200, 3, retry_5xx_429)); // 2xx
-        assert!(should_retry(false, false, false, false, 0, 3, retry_5xx_429)); // non-HTTP -> retry
-        assert!(should_retry(false, false, false, false, 503, 3, retry_5xx_429)); // 5xx
-        assert!(!should_retry(false, false, false, false, 400, 3, retry_5xx_429)); // 400 not retryable
-        assert!(!should_retry(false, false, true, false, 503, 3, retry_5xx_429)); // always-skip code
+        assert!(!should_retry(
+            false,
+            false,
+            false,
+            false,
+            200,
+            3,
+            retry_5xx_429
+        )); // 2xx
+        assert!(should_retry(
+            false,
+            false,
+            false,
+            false,
+            0,
+            3,
+            retry_5xx_429
+        )); // non-HTTP -> retry
+        assert!(should_retry(
+            false,
+            false,
+            false,
+            false,
+            503,
+            3,
+            retry_5xx_429
+        )); // 5xx
+        assert!(!should_retry(
+            false,
+            false,
+            false,
+            false,
+            400,
+            3,
+            retry_5xx_429
+        )); // 400 not retryable
+        assert!(!should_retry(
+            false,
+            false,
+            true,
+            false,
+            503,
+            3,
+            retry_5xx_429
+        )); // always-skip code
     }
 
     #[test]
     fn disable_on_channel_error_and_status() {
-        assert!(should_disable_channel(true, false, 200, "", disable_401_403, &[]));
-        assert!(should_disable_channel(false, false, 401, "bad key", disable_401_403, &[]));
-        assert!(!should_disable_channel(false, true, 401, "", disable_401_403, &[])); // skip-retry wins
+        assert!(should_disable_channel(
+            true,
+            false,
+            200,
+            "",
+            disable_401_403,
+            &[]
+        ));
+        assert!(should_disable_channel(
+            false,
+            false,
+            401,
+            "bad key",
+            disable_401_403,
+            &[]
+        ));
+        assert!(!should_disable_channel(
+            false,
+            true,
+            401,
+            "",
+            disable_401_403,
+            &[]
+        )); // skip-retry wins
     }
 
     #[test]
     fn disable_on_keyword_case_insensitive() {
         let kw = ["insufficient_quota", "invalid api key"];
-        assert!(should_disable_channel(false, false, 400, "Error: Insufficient_Quota exceeded", disable_401_403, &kw));
-        assert!(should_disable_channel(false, false, 400, "INVALID API KEY", disable_401_403, &kw));
-        assert!(!should_disable_channel(false, false, 400, "rate limited, try later", disable_401_403, &kw));
+        assert!(should_disable_channel(
+            false,
+            false,
+            400,
+            "Error: Insufficient_Quota exceeded",
+            disable_401_403,
+            &kw
+        ));
+        assert!(should_disable_channel(
+            false,
+            false,
+            400,
+            "INVALID API KEY",
+            disable_401_403,
+            &kw
+        ));
+        assert!(!should_disable_channel(
+            false,
+            false,
+            400,
+            "rate limited, try later",
+            disable_401_403,
+            &kw
+        ));
     }
 }

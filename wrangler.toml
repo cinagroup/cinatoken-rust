@@ -1,3 +1,23 @@
+# cinatoken-rust-api Wrangler configuration.
+#
+# Environment layout:
+#   - Top level (no [env.*]) is the local development shape. Bindings here use
+#     placeholder IDs that are safe for `wrangler dev` against local D1.
+#   - [env.staging] targets the production-shaped staging Worker. The staging
+#     D1/KV/R2/Queue bindings are already populated with real resource IDs; only
+#     secrets remain to be set via `wrangler secret put --env staging`. See
+#     docs/cloudflare-production-config-checklist.md for the SOP.
+#   - [env.production] targets the customer-facing Worker. Replace every
+#     `REPLACE_WITH_PRODUCTION_*` placeholder before
+#     `wrangler deploy --env production`. Production deploy is gated by G8 in
+#     docs/production-migration-execution-plan.md.
+#
+# Staging resource IDs are committed on purpose (they are not secrets) so the
+# staging target is deployable as-is; production IDs stay as placeholders until
+# G8 sign-off. Actual secret values (Upstash tokens, provider keys, JWT/session
+# secrets, payment secrets) must be set via `wrangler secret put --env <env>`
+# and never written into this file.
+
 name = "cinatoken-rust-api"
 main = "crates/worker/build/worker/shim.mjs"
 compatibility_date = "2026-06-17"
@@ -9,6 +29,15 @@ head_sampling_rate = 1
 
 [build]
 command = "cd crates/worker && worker-build --release"
+
+# Static admin frontend. `directory` is populated by `bun run build:web`
+# (see apps/web/README.md). When the directory is absent (e.g. a fresh
+# checkout that has not built the frontend yet) Wrangler will refuse to
+# deploy; either run the build or temporarily comment this block out.
+[assets]
+directory = "apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
 
 [vars]
 ENVIRONMENT = "development"
@@ -39,3 +68,138 @@ binding = "LOG_QUEUE"
 [[queues.producers]]
 queue = "cinatoken-rust-task-events"
 binding = "TASK_QUEUE"
+
+# LOG_QUEUE consumer: drains relay audit events in batches of up to 100
+# messages or every 5 seconds (whichever comes first), then bulk-INSERTs
+# them into D1 in a single round-trip. Failed batches retry up to 3 times
+# before landing in the dead-letter queue for manual inspection.
+# Create the DLQ before first deploy:
+#   wrangler queues create cinatoken-rust-log-events-dlq
+[[queues.consumers]]
+queue = "cinatoken-rust-log-events"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "cinatoken-rust-log-events-dlq"
+
+# ---------------------------------------------------------------------------
+# Staging environment.
+# ---------------------------------------------------------------------------
+# Deploy with: wrangler deploy --env staging
+# The staging bindings below are already populated with real resource IDs.
+# Before first deploy, run `wrangler secret put --env staging <NAME>` for each
+# required secret (see docs/cloudflare-production-config-checklist.md).
+
+[env.staging]
+name = "cinatoken-rust-api-staging"
+
+[env.staging.assets]
+directory = "apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+FRONTEND_BASE_URL = ""
+AI_GATEWAY_ID = ""
+
+[env.staging.observability]
+enabled = true
+# Staging samples every request so smoke and canary reports stay complete.
+# Lower this only if Workers Logs cost becomes a problem during sustained load.
+head_sampling_rate = 1
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "cinatoken-rust-db-staging"
+database_id = "c285553f-7f98-4ec2-b4d6-f84a3b409f3e"
+
+[[env.staging.kv_namespaces]]
+binding = "CACHE_KV"
+id = "a08b6d1f1deb46a5adc0a0ee9809d8b5"
+
+[[env.staging.kv_namespaces]]
+binding = "CONFIG_KV"
+id = "ff7fe9b7ff5d469d946a43e9d3ff6224"
+
+[[env.staging.r2_buckets]]
+binding = "FILE_BUCKET"
+bucket_name = "cinatoken-rust-files-staging"
+
+[[env.staging.queues.producers]]
+queue = "cinatoken-rust-log-events-staging"
+binding = "LOG_QUEUE"
+
+[[env.staging.queues.producers]]
+queue = "cinatoken-rust-task-events-staging"
+binding = "TASK_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "cinatoken-rust-log-events-staging"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "cinatoken-rust-log-events-dlq-staging"
+
+# ---------------------------------------------------------------------------
+# Production environment.
+# ---------------------------------------------------------------------------
+# Deploy with: wrangler deploy --env production
+# Production deploy requires G8 sign-off (see
+# docs/production-migration-execution-plan.md). Before first deploy, replace
+# every REPLACE_WITH_PRODUCTION_* placeholder and provision all secrets via
+# `wrangler secret put --env production <NAME>`.
+
+[env.production]
+name = "cinatoken-rust-api"
+
+[env.production.assets]
+directory = "apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+FRONTEND_BASE_URL = ""
+AI_GATEWAY_ID = ""
+
+[env.production.observability]
+enabled = true
+# Production default is a 10% sample. Raise during canary windows or incidents
+# so every canary request stays searchable, then restore once steady.
+head_sampling_rate = 0.1
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "cinatoken-rust-db"
+# Replace with the real production D1 database ID before deploy.
+database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+
+[[env.production.kv_namespaces]]
+binding = "CACHE_KV"
+# Replace with the real production CACHE_KV namespace ID before deploy.
+id = "REPLACE_WITH_PRODUCTION_CACHE_KV_ID"
+
+[[env.production.kv_namespaces]]
+binding = "CONFIG_KV"
+# Replace with the real production CONFIG_KV namespace ID before deploy.
+id = "REPLACE_WITH_PRODUCTION_CONFIG_KV_ID"
+
+[[env.production.r2_buckets]]
+binding = "FILE_BUCKET"
+bucket_name = "cinatoken-rust-files"
+
+[[env.production.queues.producers]]
+queue = "cinatoken-rust-log-events"
+binding = "LOG_QUEUE"
+
+[[env.production.queues.producers]]
+queue = "cinatoken-rust-task-events"
+binding = "TASK_QUEUE"
+
+[[env.production.queues.consumers]]
+queue = "cinatoken-rust-log-events"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "cinatoken-rust-log-events-dlq"

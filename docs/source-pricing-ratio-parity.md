@@ -121,15 +121,19 @@ per-call and per-token paths are **implemented and wired** in
 `crates/billing/src/{flat,pricing}.rs` + `crates/worker/src/relay.rs`. Confirmed
 gaps vs Go (the actual remaining work):
 
-- **Hardcoded completion-ratio table** — `pricing.rs::completion_ratio` defaults
-  to `1.0` with no table. The full Go table is now ported as a pure, tested
-  function `cinatoken_core::completion_ratio::hardcoded_completion_ratio`
-  (`gpt-4o*→4`, `claude-*→5`, gemini/command/ERNIE/llama branches, returning
-  `(ratio, authoritative)`), **pending wiring** into `completion_ratio` with Go's
-  precedence (authoritative-hardcoded > options-map > soft-default). Faithful-port
-  finding: Go's dedicated `gpt-3.5` block is **dead code** (the `gpt-` prefix
-  block returns `(2.0, false)` first), so every `gpt-3.5*` resolves to
-  `(2.0, false)` — the port preserves this; do not "fix" it without matching Go.
+- **Hardcoded completion-ratio table** — `pricing.rs::completion_ratio` now
+  applies Go's exact precedence (verified 2026-06-26): the model name is run
+  through `format_matching_model_name`, then `/`-names are map-only; otherwise
+  `cinatoken_core::hardcoded_completion_ratio` is consulted and its
+  `authoritative` value wins over the options map, a non-authoritative value
+  is a soft default the map can override, and fully-unknown models fall back to
+  `1.0`. The full Go table is the pure, tested
+  `cinatoken_core::completion_ratio::hardcoded_completion_ratio` (gpt-4o*→4,
+  claude-*→5, gpt-5*→8, o1/o3→4, gemini/command/ERNIE/llama branches).
+  Faithful-port finding: Go's dedicated `gpt-3.5` block is **dead code** (the
+  `gpt-` prefix block returns `(2.0, false)` first), so every `gpt-3.5*`
+  resolves to `(2.0, false)` — the port preserves this; do not "fix" it without
+  matching Go.
 - No cache-creation 5m/1h split (single `cache_ratio`); no `ToolCallSurcharge`;
   no `OtherRatios` (image `n` multiplier).
 - Image/audio tokens are **not** subtracted from the prompt base in flat mode
@@ -142,8 +146,12 @@ Remaining checklist:
 
 1. Three-way branch (per-call / tiered / per-token) — done; verify the
    `GetModelPrice`-vs-billing-mode keying matches Go.
-2. Port `FormatMatchingModelName`, the hardcoded completion-ratio table, compact-
-   suffix and thinking-budget wildcards, and the default-37.5 tri-state.
+2. `FormatMatchingModelName` + the hardcoded completion-ratio table are wired
+   (verified 2026-06-26) into `pricing.rs::completion_ratio` with Go's
+   authoritative > options-map > soft-default precedence. Still pending: the
+   compact-suffix (`CompactModelSuffix`) wildcard fallback, and the
+   default-`37.5` + self-use/`AcceptUnsetRatioModel` tri-state for
+   `model_ratio`.
 3. Load ratio/price/group maps from `options` into a cached, invalidated store
    (CONFIG_KV/DO); refresh on admin option mutation.
 4. Implement the per-token settlement arithmetic with the full sub-category ratio

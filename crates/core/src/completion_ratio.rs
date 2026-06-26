@@ -20,6 +20,11 @@
 /// means the hardcoded value wins over the operator's completion-ratio map;
 /// `false` means it is a soft default the map may override. Branch order is
 /// significant and mirrors Go exactly.
+//
+// Several adjacent branches return the same value but are kept distinct to mirror
+// the Go source 1:1 (e.g. gemini-1.5 and gemini-2.0 both -> 4), so the
+// collapsible-branch lints are intentionally allowed here.
+#[allow(clippy::if_same_then_else)]
 pub fn hardcoded_completion_ratio(name: &str) -> (f64, bool) {
     // Reserved/wildcard models (e.g. `*-all`, normalized `*-gizmo-*`).
     if name.ends_with("-all") || name.ends_with("-gizmo-*") {

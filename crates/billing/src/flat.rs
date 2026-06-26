@@ -48,16 +48,45 @@ pub const DEFAULT_CREATE_CACHE_RATIO: f64 = 1.25;
 /// Usage inputs for the flat quota computation. The caller maps from its
 /// own usage type (e.g. relay's `UsageSummary`) into this neutral struct
 /// so the billing crate stays free of relay types.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FlatUsage {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub total_tokens: i64,
     pub cached_tokens: i64,
+    /// Cache-write (creation) token count. For Anthropic usage this is the
+    /// total; the 5m/1h split fields refine it when present.
+    pub cache_creation_tokens: i64,
+    /// Anthropic cache-write 5-minute and 1-hour split. When both are 0 the
+    /// whole `cache_creation_tokens` is priced at the 5m ratio.
+    pub cache_creation_5m_tokens: i64,
+    pub cache_creation_1h_tokens: i64,
+    /// Vision/image input token count (subtracted from the prompt base and
+    /// re-priced at `image_ratio`).
+    pub image_tokens: i64,
     /// True when the upstream usage follows Anthropic semantics, where
     /// `prompt_tokens` already excludes cache hits (so we add them back at
     /// the cache ratio instead of subtracting-then-remultiplying).
     pub is_anthropic_usage_semantic: bool,
+}
+
+impl FlatUsage {
+    /// Total cache-write tokens, mirroring Go `cacheWriteTokensTotal`: when the
+    /// 5m/1h split is present and exceeds `cache_creation_tokens`, use the
+    /// split sum; otherwise the whole `cache_creation_tokens`. Used by Go only
+    /// for the audit `cache_write_tokens` display field; kept here so a future
+    /// audit-metadata port matches Go without re-deriving the rule.
+    #[allow(dead_code)]
+    fn cache_write_tokens_total(&self) -> i64 {
+        let split = self
+            .cache_creation_5m_tokens
+            .saturating_add(self.cache_creation_1h_tokens);
+        if self.cache_creation_5m_tokens > 0 || self.cache_creation_1h_tokens > 0 {
+            split.max(self.cache_creation_tokens)
+        } else {
+            self.cache_creation_tokens
+        }
+    }
 }
 
 /// Which billing mode produced the quota. Surfaced in audit metadata.
@@ -92,6 +121,10 @@ pub fn compute_flat_quota(
     let model_ratio = config.model_ratio(model);
     let completion_ratio = config.completion_ratio(model);
     let cache_ratio = config.cache_ratio(model);
+    let cache_creation_ratio = config.cache_creation_ratio(model);
+    let cache_creation_ratio_5m = config.cache_creation_ratio_5m(model);
+    let cache_creation_ratio_1h = config.cache_creation_ratio_1h(model);
+    let image_ratio = config.image_ratio(model);
 
     // Zero-usage guard: free request.
     if usage.total_tokens <= 0 {
@@ -118,24 +151,62 @@ pub fn compute_flat_quota(
         };
     }
 
-    // Per-token mode.
+    // Per-token mode. Ports Go `calculateTextQuotaSummary` (service/text_quota.go):
+    // each token sub-category is priced at its own ratio relative to model_ratio,
+    // then the sum is multiplied by model_ratio * group_ratio. Cache-read,
+    // cache-write, and image tokens are SUBTRACTED from the prompt base (for
+    // non-Anthropic usage) and re-added at their own ratio, so e.g. image
+    // tokens bill at image_ratio, not the prompt rate.
     let ratio = model_ratio * group_ratio;
     let prompt = usage.prompt_tokens.max(0) as f64;
     let completion = usage.completion_tokens.max(0) as f64;
     let cached = usage.cached_tokens.max(0) as f64;
+    let cache_creation = usage.cache_creation_tokens.max(0) as f64;
+    let image = usage.image_tokens.max(0) as f64;
 
-    let prompt_base = if usage.is_anthropic_usage_semantic {
-        // Claude: prompt_tokens already excludes cache hits; add them back
-        // at the cache ratio. No subtraction needed.
-        prompt + cached * cache_ratio
-    } else {
-        // OpenAI: cached tokens are INCLUDED in prompt_tokens; subtract then
-        // re-add at the cache ratio to apply the discount.
-        let base = (prompt - cached).max(0.0);
-        base + cached * cache_ratio
-    };
+    let mut base_tokens = prompt;
+    let mut cached_with_ratio = 0.0;
+    let mut cache_creation_with_ratio = 0.0;
+    let mut image_with_ratio = 0.0;
+
+    if cached > 0.0 {
+        if !usage.is_anthropic_usage_semantic {
+            // OpenAI: cached tokens are INCLUDED in prompt_tokens; subtract.
+            base_tokens -= cached;
+        }
+        cached_with_ratio = cached * cache_ratio;
+    }
+
+    if cache_creation > 0.0
+        || usage.cache_creation_5m_tokens > 0
+        || usage.cache_creation_1h_tokens > 0
+    {
+        if !usage.is_anthropic_usage_semantic {
+            base_tokens -= cache_creation;
+            cache_creation_with_ratio = cache_creation * cache_creation_ratio;
+        } else {
+            // Anthropic: prompt excludes cache-write; price the remainder at the
+            // 5m ratio and the explicit 5m/1h split at their own ratios.
+            let remaining = (cache_creation
+                - usage.cache_creation_5m_tokens as f64
+                - usage.cache_creation_1h_tokens as f64)
+                .max(0.0);
+            cache_creation_with_ratio = remaining * cache_creation_ratio_5m
+                + (usage.cache_creation_5m_tokens as f64) * cache_creation_ratio_5m
+                + (usage.cache_creation_1h_tokens as f64) * cache_creation_ratio_1h;
+        }
+    }
+
+    if image > 0.0 {
+        base_tokens -= image;
+        image_with_ratio = image * image_ratio;
+    }
+
+    base_tokens = base_tokens.max(0.0);
+    let prompt_quota =
+        base_tokens + cached_with_ratio + image_with_ratio + cache_creation_with_ratio;
     let completion_quota = completion * completion_ratio;
-    let raw_quota = (prompt_base + completion_quota) * ratio;
+    let raw_quota = (prompt_quota + completion_quota) * ratio;
 
     // Floor: a billable model with ratio > 0 must charge at least 1.
     let quota = if ratio != 0.0 && raw_quota <= 0.0 {
@@ -182,8 +253,7 @@ mod tests {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
-            cached_tokens: 0,
-            is_anthropic_usage_semantic: false,
+            ..FlatUsage::default()
         }
     }
 
@@ -191,11 +261,8 @@ mod tests {
     fn zero_usage_is_free() {
         let config = config_with_model_ratio("gpt-4o", 1.25);
         let usage = FlatUsage {
-            prompt_tokens: 0,
-            completion_tokens: 0,
             total_tokens: 0,
-            cached_tokens: 0,
-            is_anthropic_usage_semantic: false,
+            ..FlatUsage::default()
         };
         let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
         assert_eq!(result.quota, 0);
@@ -254,10 +321,8 @@ mod tests {
         // With total_tokens=1 (caller-set for image gens):
         let usage = FlatUsage {
             prompt_tokens: 1,
-            completion_tokens: 0,
             total_tokens: 1,
-            cached_tokens: 0,
-            is_anthropic_usage_semantic: false,
+            ..FlatUsage::default()
         };
         let result = compute_flat_quota(&usage, "dall-e-3", "default", &config);
         // 0.04 * 500000 * 1 = 20000
@@ -275,10 +340,9 @@ mod tests {
         config.cache_ratios.insert("gpt-4o".to_string(), 0.5);
         let usage = FlatUsage {
             prompt_tokens: 1000,
-            completion_tokens: 0,
             total_tokens: 1000,
             cached_tokens: 800,
-            is_anthropic_usage_semantic: false,
+            ..FlatUsage::default()
         };
         let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
         assert_eq!(result.quota, 600);
@@ -294,10 +358,10 @@ mod tests {
             .insert("claude-3-5-sonnet".to_string(), 0.1);
         let usage = FlatUsage {
             prompt_tokens: 200,
-            completion_tokens: 0,
             total_tokens: 1000,
             cached_tokens: 800,
             is_anthropic_usage_semantic: true,
+            ..FlatUsage::default()
         };
         let result = compute_flat_quota(&usage, "claude-3-5-sonnet", "default", &config);
         assert_eq!(result.quota, 280);
@@ -326,5 +390,89 @@ mod tests {
         assert_eq!(result.completion_ratio, 4.0);
         assert_eq!(result.cache_ratio, 0.5);
         assert_eq!(result.group_ratio, 1.5);
+    }
+
+    // --- Sub-category settlement arithmetic parity (Go
+    // calculateTextQuotaSummary, service/text_quota.go). ---
+
+    #[test]
+    fn image_tokens_billed_at_image_ratio_not_prompt_rate() {
+        // OpenAI: prompt=1000 INCLUDES 200 image tokens. image_ratio=2.
+        // base = 1000 - 200 = 800; image_contrib = 200*2 = 400.
+        // prompt_quota = 800 + 400 = 1200. model_ratio=1, completion=0.
+        // quota = 1200 * 1 = 1200 (vs 1000 if image stayed at prompt rate).
+        let mut config = config_with_model_ratio("gpt-4o", 1.0);
+        config.image_ratios.insert("gpt-4o".to_string(), 2.0);
+        let usage = FlatUsage {
+            prompt_tokens: 1000,
+            total_tokens: 1000,
+            image_tokens: 200,
+            ..FlatUsage::default()
+        };
+        let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
+        assert_eq!(result.quota, 1200);
+    }
+
+    #[test]
+    fn cache_creation_billed_at_create_cache_ratio() {
+        // OpenAI: prompt=1000 INCLUDES 100 cache-write tokens.
+        // create_cache_ratio=1.25 (the Go default). base = 1000 - 100 = 900;
+        // cache_creation_contrib = 100*1.25 = 125. prompt_quota = 900 + 125 =
+        // 1025. model_ratio=1, completion=0. quota = 1025.
+        let config = config_with_model_ratio("gpt-4o", 1.0);
+        let usage = FlatUsage {
+            prompt_tokens: 1000,
+            total_tokens: 1000,
+            cache_creation_tokens: 100,
+            ..FlatUsage::default()
+        };
+        let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
+        assert_eq!(result.quota, 1025);
+    }
+
+    #[test]
+    fn anthropic_cache_creation_5m_1h_split() {
+        // Claude: prompt EXCLUDES cache-write. cache_creation=100, split 60 5m
+        // + 40 1h. remaining = 100-60-40 = 0. create_cache_ratio (5m) default
+        // 1.25; 1h = 1.25 * 1.6 = 2.0. contrib = 60*1.25 + 40*2.0 = 75 + 80 =
+        // 155. prompt_quota = 200 + 155 = 355. model_ratio=1. quota = 355.
+        let config = config_with_model_ratio("claude-sonnet-4-20250514", 1.0);
+        let usage = FlatUsage {
+            prompt_tokens: 200,
+            total_tokens: 1000,
+            cache_creation_tokens: 100,
+            cache_creation_5m_tokens: 60,
+            cache_creation_1h_tokens: 40,
+            is_anthropic_usage_semantic: true,
+            ..FlatUsage::default()
+        };
+        let result = compute_flat_quota(&usage, "claude-sonnet-4-20250514", "default", &config);
+        assert_eq!(result.quota, 355);
+    }
+
+    #[test]
+    fn combined_subcategories_non_anthropic() {
+        // OpenAI: prompt=2000 includes 500 cached + 300 image + 200 cache-write.
+        // cache_ratio=0.5, image_ratio=2, create_cache_ratio=1.25.
+        // gpt-4o completion_ratio is the hardcoded soft default 4.0.
+        // base = 2000 - 500 - 300 - 200 = 1000
+        // cached_contrib = 500*0.5 = 250; image_contrib = 300*2 = 600;
+        // cache_creation_contrib = 200*1.25 = 250.
+        // prompt_quota = 1000 + 250 + 600 + 250 = 2100. completion=100, cr=4 → 400.
+        // (2100 + 400) * (model_ratio=1 * group=1) = 2500.
+        let mut config = config_with_model_ratio("gpt-4o", 1.0);
+        config.cache_ratios.insert("gpt-4o".to_string(), 0.5);
+        config.image_ratios.insert("gpt-4o".to_string(), 2.0);
+        let usage = FlatUsage {
+            prompt_tokens: 2000,
+            completion_tokens: 100,
+            total_tokens: 2100,
+            cached_tokens: 500,
+            cache_creation_tokens: 200,
+            image_tokens: 300,
+            ..FlatUsage::default()
+        };
+        let result = compute_flat_quota(&usage, "gpt-4o", "default", &config);
+        assert_eq!(result.quota, 2500);
     }
 }

@@ -3197,18 +3197,29 @@ async fn try_flat_billing(
         "CacheRatio",
         "QuotaPerUnit",
         crate::d1_repositories::GROUP_RATIO_OPTION_KEY,
+        "CreateCacheRatio",
+        "ImageRatio",
+        "AudioRatio",
+        "AudioCompletionRatio",
     ];
     let values = crate::d1_repositories::option_values(db, &keys)
         .await
         .map_err(|err| format!("failed to load pricing options: {err}"))?;
-    let config = PricingConfig::new().with_json_maps(
-        values[0].as_deref(),
-        values[1].as_deref(),
-        values[2].as_deref(),
-        values[3].as_deref(),
-        values[5].as_deref(), // group ratio
-        values[4].as_deref(), // quota per unit
-    );
+    let config = PricingConfig::new()
+        .with_json_maps(
+            values[0].as_deref(),
+            values[1].as_deref(),
+            values[2].as_deref(),
+            values[3].as_deref(),
+            values[5].as_deref(), // group ratio
+            values[4].as_deref(), // quota per unit
+        )
+        .with_subcategory_maps(
+            values[6].as_deref(), // create cache ratio
+            values[7].as_deref(), // image ratio
+            values[8].as_deref(), // audio ratio
+            values[9].as_deref(), // audio completion ratio
+        );
 
     // A model is "priced" (billable) if it resolves a ratio OR price through
     // any layer (operator map, Go default table, or compact-wildcard), mirroring
@@ -3227,6 +3238,10 @@ async fn try_flat_billing(
         completion_tokens: usage.completion_tokens as i64,
         total_tokens: usage.total_tokens as i64,
         cached_tokens: usage.cached_tokens as i64,
+        cache_creation_tokens: usage.cache_creation_tokens as i64,
+        cache_creation_5m_tokens: usage.claude_cache_creation_5m_tokens as i64,
+        cache_creation_1h_tokens: usage.claude_cache_creation_1h_tokens as i64,
+        image_tokens: usage.image_input_tokens as i64,
         is_anthropic_usage_semantic: usage.is_anthropic_usage_semantic,
     };
     let result = compute_flat_quota(&flat_usage, model, group, &config);

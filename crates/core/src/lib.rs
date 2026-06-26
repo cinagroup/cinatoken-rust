@@ -14,7 +14,11 @@ pub mod status;
 pub use bpe::bpe_token_count;
 pub use channel_select::{select_weighted, Candidate};
 pub use completion_ratio::hardcoded_completion_ratio;
-pub use default_ratios::{default_completion_ratio, default_model_price, default_model_ratio};
+pub use default_ratios::{
+    default_audio_completion_ratio, default_audio_ratio, default_cache_ratio,
+    default_completion_ratio, default_create_cache_ratio, default_image_ratio, default_model_price,
+    default_model_ratio, CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
+};
 pub use error::{ApiError, ApiResult};
 pub use image_tokens::{image_tokens, MediaTokenFlags};
 pub use model_name::format_matching_model_name;

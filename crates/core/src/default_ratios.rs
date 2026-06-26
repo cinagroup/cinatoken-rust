@@ -319,6 +319,158 @@ pub const DEFAULT_COMPLETION_RATIO: &[(&str, f64)] = &[
     ("gpt-image-1", 8.0),
 ];
 
+/// Default cache-read ratios (Go `defaultCacheRatio`, `cache_ratio.go`).
+/// Applied to cached prompt tokens. Mirrors Go.
+pub const DEFAULT_CACHE_RATIO: &[(&str, f64)] = &[
+    ("gemini-3-flash-preview", 0.1),
+    ("gemini-3-pro-preview", 0.1),
+    ("gemini-3.1-pro-preview", 0.1),
+    ("gpt-4", 0.5),
+    ("o1", 0.5),
+    ("o1-2024-12-17", 0.5),
+    ("o1-preview-2024-09-12", 0.5),
+    ("o1-preview", 0.5),
+    ("o1-mini-2024-09-12", 0.5),
+    ("o1-mini", 0.5),
+    ("o3-mini", 0.5),
+    ("o3-mini-2025-01-31", 0.5),
+    ("gpt-4o-2024-11-20", 0.5),
+    ("gpt-4o-2024-08-06", 0.5),
+    ("gpt-4o", 0.5),
+    ("gpt-4o-mini-2024-07-18", 0.5),
+    ("gpt-4o-mini", 0.5),
+    ("gpt-4o-realtime-preview", 0.5),
+    ("gpt-4o-mini-realtime-preview", 0.5),
+    ("gpt-4.5-preview", 0.5),
+    ("gpt-4.5-preview-2025-02-27", 0.5),
+    ("gpt-4.1", 0.25),
+    ("gpt-4.1-mini", 0.25),
+    ("gpt-4.1-nano", 0.25),
+    ("gpt-5", 0.1),
+    ("gpt-5-2025-08-07", 0.1),
+    ("gpt-5-chat-latest", 0.1),
+    ("gpt-5-mini", 0.1),
+    ("gpt-5-mini-2025-08-07", 0.1),
+    ("gpt-5-nano", 0.1),
+    ("gpt-5-nano-2025-08-07", 0.1),
+    ("deepseek-chat", 0.25),
+    ("deepseek-reasoner", 0.25),
+    ("deepseek-coder", 0.25),
+    ("claude-3-sonnet-20240229", 0.1),
+    ("claude-3-opus-20240229", 0.1),
+    ("claude-3-haiku-20240307", 0.1),
+    ("claude-3-5-haiku-20241022", 0.1),
+    ("claude-haiku-4-5-20251001", 0.1),
+    ("claude-3-5-sonnet-20240620", 0.1),
+    ("claude-3-5-sonnet-20241022", 0.1),
+    ("claude-3-7-sonnet-20250219", 0.1),
+    ("claude-3-7-sonnet-20250219-thinking", 0.1),
+    ("claude-sonnet-4-20250514", 0.1),
+    ("claude-sonnet-4-20250514-thinking", 0.1),
+    ("claude-opus-4-20250514", 0.1),
+    ("claude-opus-4-20250514-thinking", 0.1),
+    ("claude-opus-4-1-20250805", 0.1),
+    ("claude-opus-4-1-20250805-thinking", 0.1),
+    ("claude-sonnet-4-5-20250929", 0.1),
+    ("claude-sonnet-4-5-20250929-thinking", 0.1),
+    ("claude-opus-4-5-20251101", 0.1),
+    ("claude-opus-4-5-20251101-thinking", 0.1),
+    ("claude-opus-4-6", 0.1),
+    ("claude-opus-4-6-thinking", 0.1),
+    ("claude-opus-4-6-max", 0.1),
+    ("claude-opus-4-6-high", 0.1),
+    ("claude-opus-4-6-medium", 0.1),
+    ("claude-opus-4-6-low", 0.1),
+    ("claude-opus-4-7", 0.1),
+    ("claude-opus-4-7-thinking", 0.1),
+    ("claude-opus-4-7-max", 0.1),
+    ("claude-opus-4-7-xhigh", 0.1),
+    ("claude-opus-4-7-high", 0.1),
+    ("claude-opus-4-7-medium", 0.1),
+    ("claude-opus-4-7-low", 0.1),
+    ("claude-opus-4-8", 0.1),
+    ("claude-opus-4-8-thinking", 0.1),
+    ("claude-opus-4-8-max", 0.1),
+    ("claude-opus-4-8-xhigh", 0.1),
+    ("claude-opus-4-8-high", 0.1),
+    ("claude-opus-4-8-medium", 0.1),
+    ("claude-opus-4-8-low", 0.1),
+];
+
+/// Default cache-creation (cache-write) ratios (Go `defaultCreateCacheRatio`,
+/// `cache_ratio.go`). Mirrors Go.
+pub const DEFAULT_CREATE_CACHE_RATIO: &[(&str, f64)] = &[
+    ("claude-3-sonnet-20240229", 1.25),
+    ("claude-3-opus-20240229", 1.25),
+    ("claude-3-haiku-20240307", 1.25),
+    ("claude-3-5-haiku-20241022", 1.25),
+    ("claude-haiku-4-5-20251001", 1.25),
+    ("claude-3-5-sonnet-20240620", 1.25),
+    ("claude-3-5-sonnet-20241022", 1.25),
+    ("claude-3-7-sonnet-20250219", 1.25),
+    ("claude-3-7-sonnet-20250219-thinking", 1.25),
+    ("claude-sonnet-4-20250514", 1.25),
+    ("claude-sonnet-4-20250514-thinking", 1.25),
+    ("claude-opus-4-20250514", 1.25),
+    ("claude-opus-4-20250514-thinking", 1.25),
+    ("claude-opus-4-1-20250805", 1.25),
+    ("claude-opus-4-1-20250805-thinking", 1.25),
+    ("claude-sonnet-4-5-20250929", 1.25),
+    ("claude-sonnet-4-5-20250929-thinking", 1.25),
+    ("claude-opus-4-5-20251101", 1.25),
+    ("claude-opus-4-5-20251101-thinking", 1.25),
+    ("claude-opus-4-6", 1.25),
+    ("claude-opus-4-6-thinking", 1.25),
+    ("claude-opus-4-6-max", 1.25),
+    ("claude-opus-4-6-high", 1.25),
+    ("claude-opus-4-6-medium", 1.25),
+    ("claude-opus-4-6-low", 1.25),
+    ("claude-opus-4-7", 1.25),
+    ("claude-opus-4-7-thinking", 1.25),
+    ("claude-opus-4-7-max", 1.25),
+    ("claude-opus-4-7-xhigh", 1.25),
+    ("claude-opus-4-7-high", 1.25),
+    ("claude-opus-4-7-medium", 1.25),
+    ("claude-opus-4-7-low", 1.25),
+    ("claude-opus-4-8", 1.25),
+    ("claude-opus-4-8-thinking", 1.25),
+    ("claude-opus-4-8-max", 1.25),
+    ("claude-opus-4-8-xhigh", 1.25),
+    ("claude-opus-4-8-high", 1.25),
+    ("claude-opus-4-8-medium", 1.25),
+    ("claude-opus-4-8-low", 1.25),
+];
+
+/// Default image-token ratios (Go `defaultImageRatio`, `model_ratio.go`).
+/// Mirrors Go.
+pub const DEFAULT_IMAGE_RATIO: &[(&str, f64)] = &[("gpt-image-1", 2.0)];
+
+/// Default audio-token ratios (Go `defaultAudioRatio`, `model_ratio.go`).
+/// Mirrors Go.
+pub const DEFAULT_AUDIO_RATIO: &[(&str, f64)] = &[
+    ("gpt-4o-audio-preview", 16.0),
+    ("gpt-4o-mini-audio-preview", 66.67),
+    ("gpt-4o-realtime-preview", 8.0),
+    ("gpt-4o-mini-realtime-preview", 16.67),
+    ("gpt-4o-mini-tts", 25.0),
+];
+
+/// Default audio-completion ratios (Go `defaultAudioCompletionRatio`,
+/// `model_ratio.go`). Mirrors Go.
+pub const DEFAULT_AUDIO_COMPLETION_RATIO: &[(&str, f64)] = &[
+    ("gpt-4o-realtime", 2.0),
+    ("gpt-4o-mini-realtime", 2.0),
+    ("gpt-4o-mini-tts", 1.0),
+    ("tts-1", 0.0),
+    ("tts-1-hd", 0.0),
+    ("tts-1-1106", 0.0),
+    ("tts-1-hd-1106", 0.0),
+];
+
+/// Fixed ratio between the 1-hour and 5-minute Claude cache-creation prices.
+/// Go `relay/helper/price.go::claudeCacheCreation1hMultiplier = 6 / 3.75`.
+pub const CLAUDE_CACHE_CREATION_1H_MULTIPLIER: f64 = 6.0 / 3.75;
+
 /// Linear scan over a `(name, value)` table. These tables are small enough
 /// (the largest is ~250 entries) that a flat scan is cheaper than a `HashMap`
 /// allocation on the Worker hot path, and keeps the module `const`/`no_std`-
@@ -342,6 +494,31 @@ pub fn default_model_price(name: &str) -> Option<f64> {
 /// Default completion-token ratio for a model, or `None` if absent.
 pub fn default_completion_ratio(name: &str) -> Option<f64> {
     lookup(DEFAULT_COMPLETION_RATIO, name)
+}
+
+/// Default cache-read ratio for a model, or `None` if absent.
+pub fn default_cache_ratio(name: &str) -> Option<f64> {
+    lookup(DEFAULT_CACHE_RATIO, name)
+}
+
+/// Default cache-creation (cache-write) ratio for a model, or `None` if absent.
+pub fn default_create_cache_ratio(name: &str) -> Option<f64> {
+    lookup(DEFAULT_CREATE_CACHE_RATIO, name)
+}
+
+/// Default image-token ratio for a model, or `None` if absent.
+pub fn default_image_ratio(name: &str) -> Option<f64> {
+    lookup(DEFAULT_IMAGE_RATIO, name)
+}
+
+/// Default audio-token ratio for a model, or `None` if absent.
+pub fn default_audio_ratio(name: &str) -> Option<f64> {
+    lookup(DEFAULT_AUDIO_RATIO, name)
+}
+
+/// Default audio-completion ratio for a model, or `None` if absent.
+pub fn default_audio_completion_ratio(name: &str) -> Option<f64> {
+    lookup(DEFAULT_AUDIO_COMPLETION_RATIO, name)
 }
 
 #[cfg(test)]
@@ -391,5 +568,45 @@ mod tests {
         assert!((RMB - 68.4931506849315).abs() < 1e-9);
         // An RMB-derived entry resolves to the precomputed value.
         assert!((default_model_ratio("glm-4v").unwrap() - (0.05 * RMB)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cache_ratio_spot_checks() {
+        assert_eq!(default_cache_ratio("gpt-4o"), Some(0.5));
+        assert_eq!(default_cache_ratio("gpt-4.1"), Some(0.25));
+        assert_eq!(default_cache_ratio("claude-sonnet-4-20250514"), Some(0.1));
+        assert_eq!(default_cache_ratio("deepseek-chat"), Some(0.25));
+        assert_eq!(default_cache_ratio("unknown"), None);
+    }
+
+    #[test]
+    fn create_cache_ratio_spot_checks() {
+        // All entries are 1.25 (Claude cache-write default).
+        assert_eq!(
+            default_create_cache_ratio("claude-sonnet-4-20250514"),
+            Some(1.25)
+        );
+        assert_eq!(
+            default_create_cache_ratio("claude-opus-4-8-low"),
+            Some(1.25)
+        );
+        // Non-Claude / unknown models have no default create-cache ratio.
+        assert_eq!(default_create_cache_ratio("gpt-4o"), None);
+    }
+
+    #[test]
+    fn image_and_audio_ratio_spot_checks() {
+        assert_eq!(default_image_ratio("gpt-image-1"), Some(2.0));
+        assert_eq!(default_image_ratio("gpt-4o"), None);
+        assert_eq!(default_audio_ratio("gpt-4o-audio-preview"), Some(16.0));
+        assert_eq!(default_audio_completion_ratio("gpt-4o-realtime"), Some(2.0));
+        // tts models are priced at 0 completion (audio-only flat).
+        assert_eq!(default_audio_completion_ratio("tts-1"), Some(0.0));
+    }
+
+    #[test]
+    fn claude_cache_creation_1h_multiplier_matches_go() {
+        // Go: 6 / 3.75 = 1.6.
+        assert!((CLAUDE_CACHE_CREATION_1H_MULTIPLIER - 1.6).abs() < 1e-9);
     }
 }

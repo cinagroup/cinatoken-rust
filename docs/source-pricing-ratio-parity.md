@@ -146,12 +146,21 @@ gaps vs Go (the actual remaining work):
   default-table model as priced so e.g. unconfigured `gpt-4o` bills at 1.25
   instead of being treated as free. Still pending: `AcceptUnsetRatioModel`
   per-user override + the `modelPriceNotConfigured` error outside self-use.
-- No cache-creation 5m/1h split (single `cache_ratio`); no `ToolCallSurcharge`;
-  no `OtherRatios` (image `n` multiplier). The cache/audio/image default tables
-  (`defaultCacheRatio`, `defaultAudioRatio`, ...) are NOT yet ported —
-  `cache_ratio` consults the operator map only.
-- Image/audio tokens are **not** subtracted from the prompt base in flat mode
-  (billed at prompt rate) — differs from the full sub-category formula above.
+- Sub-category settlement arithmetic + tables — DONE 2026-06-26. The Go
+  `defaultCacheRatio`/`defaultCreateCacheRatio`/`defaultImageRatio`/
+  `defaultAudioRatio`/`defaultAudioCompletionRatio` tables are ported to
+  `cinatoken_core::default_ratios` and consulted beneath the operator maps by
+  `cache_ratio`/`cache_creation_ratio`/`image_ratio`/`audio_ratio`/
+  `audio_completion_ratio`. The 5m/1h cache-creation split is wired
+  (`cache_creation_ratio_1h = 5m * claudeCacheCreation1hMultiplier = 6/3.75`).
+  `flat.rs::compute_flat_quota` now prices each sub-category at its own ratio:
+  for non-Anthropic usage it SUBTRACTS cache/cache-write/image tokens from the
+  prompt base and re-adds them at `cacheRatio`/`cacheCreationRatio`/
+  `imageRatio`; Anthropic usage keeps the no-subtract semantic with the 5m/1h
+  split. Still pending: Gemini separate audio-input pricing
+  (`GetGeminiInputAudioPricePerMillionTokens`), `OtherRatios` (image `n`
+  multiplier), and `ToolCallSurcharge` (web/file search, image-gen call) — all
+  niche additive adjustments.
 
 Remaining checklist:
 
@@ -168,12 +177,14 @@ Remaining checklist:
    into `model_ratio`/`model_price`, and `has_model_pricing` consults the same
    layers so the billability gate agrees. Still pending: the
    `AcceptUnsetRatioModel` per-user override + `modelPriceNotConfigured` error
-   outside self-use, and the cache/audio/image default tables (those feed the
-   sub-category settlement arithmetic, still simplified).
+   outside self-use.
 3. Load ratio/price/group maps from `options` into a cached, invalidated store
    (CONFIG_KV/DO); refresh on admin option mutation.
-4. Implement the per-token settlement arithmetic with the full sub-category ratio
-   set and the rounding rules; reuse parsed `Usage`.
+4. Per-token settlement arithmetic with the full sub-category ratio set — DONE
+   2026-06-26 in `flat.rs::compute_flat_quota` (cache-read/cache-write/image at
+   their own ratios, base subtraction for non-Anthropic, 5m/1h split for
+   Anthropic). Still pending: the `OtherRatios` multiplier and
+   `ToolCallSurcharge` additive adjustments (niche).
 5. Implement the free-model rule and `EnableFreeModelPreConsume`.
 6. Add Go<->Rust golden fixtures: per-call, per-token, each sub-category ratio,
    unconfigured (self-use vs error), free model, group ratio 0/fractional/large.

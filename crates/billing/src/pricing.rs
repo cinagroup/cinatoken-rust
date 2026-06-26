@@ -43,22 +43,38 @@
 //!   and `model_price` only. [`PricingConfig::has_model_pricing`] consults the
 //!   same layers so the billability gate and lookups agree.
 //!
+//! ## Implemented here
+//!
+//! - **Default-table base layer** for the sub-category ratios too
+//!   (`defaultCacheRatio`, `defaultCreateCacheRatio`, `defaultImageRatio`,
+//!   `defaultAudioRatio`, `defaultAudioCompletionRatio`), consulted beneath the
+//!   operator maps. `cache_ratio`/`cache_creation_ratio`/`image_ratio`/
+//!   `audio_ratio`/`audio_completion_ratio` all resolve through operator map →
+//!   Go default table → base default (1.0, or 1.25 for cache-creation).
+//! - **Cache-creation 5m/1h split.** `cache_creation_ratio_5m` aliases the
+//!   create-cache ratio; `cache_creation_ratio_1h = 5m *
+//!   CLAUDE_CACHE_CREATION_1H_MULTIPLIER (6/3.75)`, faithful to Go.
+//! - The per-token settlement arithmetic in `flat.rs::compute_flat_quota` prices
+//!   each sub-category (cache-read, cache-write, image) at its own ratio,
+//!   subtracting them from the prompt base for non-Anthropic usage.
+//!
 //! ## Not implemented here (deferred)
 //!
-//! - `CacheRatio` default table (`defaultCacheRatio`) — the operator map only
-//!   is consulted; default 1.0. (The cache/audio/image tables feed the
-//!   sub-category settlement arithmetic, which is still simplified; porting the
-//!   tables alone would be dead data.)
-//! - `CacheCreation5mRatio` / `CacheCreation1hRatio` split. A single
-//!   `create_cache_ratio` is used instead.
+//! - Gemini separate audio-input pricing
+//!   (`GetGeminiInputAudioPricePerMillionTokens`) — a per-million-USD override
+//!   distinct from the ratio path.
+//! - `OtherRatios` (image `n` multiplier) and `ToolCallSurcharge` (web/file
+//!   search, image-generation call) additive quota adjustments.
 //! - `AcceptUnsetRatioModel` per-user override + the `modelPriceNotConfigured`
 //!   error path outside self-use.
 
 use std::collections::HashMap;
 
 use cinatoken_core::{
-    default_completion_ratio, default_model_price, default_model_ratio, format_matching_model_name,
-    hardcoded_completion_ratio,
+    default_audio_completion_ratio, default_audio_ratio, default_cache_ratio,
+    default_completion_ratio, default_create_cache_ratio, default_image_ratio, default_model_price,
+    default_model_ratio, format_matching_model_name, hardcoded_completion_ratio,
+    CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
 };
 
 use crate::DEFAULT_QUOTA_PER_UNIT;
@@ -73,6 +89,12 @@ pub struct PricingConfig {
     pub cache_ratios: HashMap<String, f64>,
     pub group_ratios: HashMap<String, f64>,
     pub quota_per_unit: f64,
+    /// Cache-write (creation) ratios — the 5-minute tier. The 1-hour tier is
+    /// derived as `cache_creation_ratio * CLAUDE_CACHE_CREATION_1H_MULTIPLIER`.
+    pub cache_creation_ratios: HashMap<String, f64>,
+    pub image_ratios: HashMap<String, f64>,
+    pub audio_ratios: HashMap<String, f64>,
+    pub audio_completion_ratios: HashMap<String, f64>,
     /// Mirrors Go `operation_setting.SelfUseModeEnabled`. When true, a model
     /// present in NEITHER the operator maps NOR the Go default tables resolves
     /// its model ratio to `37.5` (Go's unconfigured default) instead of `1.0`.
@@ -131,6 +153,33 @@ impl PricingConfig {
                     self.quota_per_unit = value;
                 }
             }
+        }
+        self
+    }
+
+    /// Parse the sub-category ratio option strings (cache-creation, image,
+    /// audio, audio-completion) into the config maps. Kept separate from
+    /// [`with_json_maps`](Self::with_json_maps) to avoid growing its positional
+    /// arg list; the caller chains this after it when it has the extra option
+    /// keys. Any malformed JSON entry is dropped (best-effort).
+    pub fn with_subcategory_maps(
+        mut self,
+        cache_creation_ratio_json: Option<&str>,
+        image_ratio_json: Option<&str>,
+        audio_ratio_json: Option<&str>,
+        audio_completion_ratio_json: Option<&str>,
+    ) -> Self {
+        if let Some(json) = cache_creation_ratio_json {
+            self.cache_creation_ratios = parse_ratio_map(json);
+        }
+        if let Some(json) = image_ratio_json {
+            self.image_ratios = parse_ratio_map(json);
+        }
+        if let Some(json) = audio_ratio_json {
+            self.audio_ratios = parse_ratio_map(json);
+        }
+        if let Some(json) = audio_completion_ratio_json {
+            self.audio_completion_ratios = parse_ratio_map(json);
         }
         self
     }
@@ -199,9 +248,74 @@ impl PricingConfig {
         compact_wildcard_lookup(&name, &self.model_prices, default_model_price)
     }
 
-    /// Cache-read discount multiplier. Default 1.0 (no discount).
+    /// Cache-read discount multiplier. Ports Go `GetCacheRatio`: operator map,
+    /// then the Go default-cache table (`defaultCacheRatio`), else 1.0 (no
+    /// discount). Applied after `format_matching_model_name`.
     pub fn cache_ratio(&self, model: &str) -> f64 {
-        self.cache_ratios.get(model).copied().unwrap_or(1.0)
+        let name = format_matching_model_name(model);
+        self.cache_ratios
+            .get(&name)
+            .copied()
+            .or_else(|| default_cache_ratio(&name))
+            .unwrap_or(1.0)
+    }
+
+    /// Cache-creation (cache-write) ratio for the 5-minute tier. Ports Go
+    /// `GetCreateCacheRatio`: operator map, then the Go default table
+    /// (`defaultCreateCacheRatio`), else **1.25** (Go's create-cache default).
+    pub fn cache_creation_ratio(&self, model: &str) -> f64 {
+        let name = format_matching_model_name(model);
+        self.cache_creation_ratios
+            .get(&name)
+            .copied()
+            .or_else(|| default_create_cache_ratio(&name))
+            .unwrap_or(1.25)
+    }
+
+    /// Cache-creation ratio for the 5-minute tier (alias of
+    /// [`cache_creation_ratio`](Self::cache_creation_ratio)).
+    pub fn cache_creation_ratio_5m(&self, model: &str) -> f64 {
+        self.cache_creation_ratio(model)
+    }
+
+    /// Cache-creation ratio for the 1-hour tier. Go derives this as
+    /// `cache_creation_ratio * claudeCacheCreation1hMultiplier (6/3.75 = 1.6)`.
+    pub fn cache_creation_ratio_1h(&self, model: &str) -> f64 {
+        self.cache_creation_ratio(model) * CLAUDE_CACHE_CREATION_1H_MULTIPLIER
+    }
+
+    /// Image-token ratio. Ports Go `GetImageRatio`: operator map, then the Go
+    /// default table (`defaultImageRatio`), else 1.0. Image tokens are billed
+    /// at this ratio (relative to the model ratio) instead of the prompt rate.
+    pub fn image_ratio(&self, model: &str) -> f64 {
+        let name = format_matching_model_name(model);
+        self.image_ratios
+            .get(&name)
+            .copied()
+            .or_else(|| default_image_ratio(&name))
+            .unwrap_or(1.0)
+    }
+
+    /// Audio-input-token ratio. Ports Go `GetAudioRatio`: operator map, then
+    /// the Go default table (`defaultAudioRatio`), else 1.0.
+    pub fn audio_ratio(&self, model: &str) -> f64 {
+        let name = format_matching_model_name(model);
+        self.audio_ratios
+            .get(&name)
+            .copied()
+            .or_else(|| default_audio_ratio(&name))
+            .unwrap_or(1.0)
+    }
+
+    /// Audio-completion-token ratio. Ports Go `GetAudioCompletionRatio`:
+    /// operator map, then the Go default table, else 1.0.
+    pub fn audio_completion_ratio(&self, model: &str) -> f64 {
+        let name = format_matching_model_name(model);
+        self.audio_completion_ratios
+            .get(&name)
+            .copied()
+            .or_else(|| default_audio_completion_ratio(&name))
+            .unwrap_or(1.0)
     }
 
     /// Per-group multiplier. Default 1.0.
@@ -304,7 +418,10 @@ mod tests {
         // default.
         assert_eq!(config.completion_ratio("deepseek-chat"), 1.0);
         assert_eq!(config.group_ratio("default"), 1.0);
-        assert_eq!(config.cache_ratio("gpt-4o"), 1.0);
+        // gpt-4o has a Go default cache ratio of 0.5 (defaultCacheRatio).
+        assert_eq!(config.cache_ratio("gpt-4o"), 0.5);
+        // An unknown model has no default cache entry → 1.0 (no discount).
+        assert_eq!(config.cache_ratio("does-not-exist"), 1.0);
         // gpt-4o is ratio-billed, so no default price.
         assert_eq!(config.model_price("gpt-4o"), None);
         assert_eq!(config.quota_per_unit, 500_000.0);

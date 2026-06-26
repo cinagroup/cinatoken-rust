@@ -29,6 +29,8 @@ pending. See `docs/relay-mvp.md` for the exact boundary.
 crates/core       shared DTOs, error types, JSON-facing structs
 crates/api        route-level business handlers independent from Worker APIs
 crates/auth       user, token, admin, OAuth, 2FA, and passkey boundaries
+crates/session    HMAC-signed session cookie codec for the admin/frontend
+crates/ssrf       SSRF protection helpers for user-controlled URL paths
 crates/storage    D1 repository abstractions
 crates/cache      KV, counters, rate limits, and Upstash Redis REST abstractions
 crates/relay      relay pipeline traits and context
@@ -40,6 +42,7 @@ crates/observability logs, audit, and metric event abstractions
 crates/migration  import/export/verify CLI scaffolding
 crates/xtask      local project automation
 crates/worker     Cloudflare Worker entrypoint
+apps/web          built admin frontend bundle (Worker static assets)
 migrations/d1     D1 schema migrations
 ```
 
@@ -71,6 +74,13 @@ wrangler secret put ENCRYPTION_KEY
 wrangler secret put UPSTASH_REDIS_REST_URL
 wrangler secret put UPSTASH_REDIS_REST_TOKEN
 ```
+
+`SESSION_SECRET` is required for the admin/frontend login flow. It must be at
+least 32 bytes (256 bits); a missing or short secret makes `POST /api/user/login`
+and `POST /api/setup` return 500 with an explicit error instead of falling
+back to a random per-boot key (which would silently invalidate every session
+on every redeploy). Generate one with, for example,
+`openssl rand -base64 48`.
 
 Copy `.dev.vars.example` to `.dev.vars` for local Wrangler development.
 See `docs/cache-upstash.md` for the Upstash Redis REST cache boundary and

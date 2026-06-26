@@ -1,0 +1,4 @@
+# Build artifacts — produced by `bun run build` from the source frontend at
+# web/default (Go repo) and copied here for the Worker to serve.
+dist/
+web-default/

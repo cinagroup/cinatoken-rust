@@ -1,5 +1,5 @@
 [package]
-name = "cinatoken-auth"
+name = "cinatoken-session"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,8 +7,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-async-trait.workspace = true
-bcrypt.workspace = true
-cinatoken-core = { path = "../core" }
-cinatoken-session = { path = "../session" }
+base64.workspace = true
+hmac.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true

@@ -12,6 +12,8 @@
     "verify:migration": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- verify",
     "dev:seed:sql": "cargo run --quiet -p cinatoken-migration --bin cinatoken-migrate -- dev-seed",
     "build:worker": "cd crates/worker && worker-build --release",
+    "build:web": "cd apps/web/web-default && bun install --frozen-lockfile && bun run build && xcopy /E /I /Y dist ..\\dist",
+    "build:all": "bun run build:web && bun run build:worker",
     "check": "cargo fmt --all --check && cargo test --workspace --exclude cinatoken-worker && cargo check -p cinatoken-worker --target wasm32-unknown-unknown",
     "check:worker": "cargo check -p cinatoken-worker --target wasm32-unknown-unknown",
     "check:cf:dry-run": "wrangler deploy --dry-run --outdir .wrangler/dry-run --minify",

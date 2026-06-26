@@ -1,19 +1,21 @@
 use cinatoken_billing::{
-    build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
-    estimate_tiered_billing_snapshot_with_request, split_billing_expr_request_rule,
-    BillingExprVariables, RequestInput, TieredBillingResult, TieredBillingSnapshot,
+    build_tiered_token_params, compute_flat_quota, compute_tiered_quota_with_request,
+    detect_billing_expr_variables, estimate_tiered_billing_snapshot_with_request,
+    split_billing_expr_request_rule, BillingExprVariables, FlatBillingMode, FlatQuotaResult,
+    FlatUsage, PricingConfig, RequestInput, TieredBillingResult, TieredBillingSnapshot,
     TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
-use cinatoken_core::{ApiError, ApiResult, ErrorBody};
+use cinatoken_core::{ApiError, ApiResult, Candidate, ErrorBody, select_weighted};
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
-    first_channel_key, ip_allowlist_matches, mapped_model_name, upstream_anthropic_messages_url,
-    upstream_gemini_native_url, upstream_v1_url, usage_summary_from_anthropic_body,
-    usage_summary_from_body, usage_summary_from_gemini_body, usage_summary_from_rerank_body,
-    CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath, RelayCacheKeys,
-    SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE,
-    GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
+    first_channel_key, ip_allowlist_matches, is_auto_disable_status, is_retryable_status,
+    mapped_model_name, upstream_anthropic_messages_url, upstream_gemini_native_url,
+    upstream_v1_url, usage_summary_from_anthropic_body, usage_summary_from_body,
+    usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
+    CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
+    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, GEMINI_CHANNEL_TYPES,
+    OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -35,6 +37,8 @@ const RATE_LIMIT_WINDOW_ENV: &str = "RELAY_RATE_LIMIT_WINDOW_SECONDS";
 const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
 const RELAY_JSON_BODY_LIMIT_ENV: &str = "RELAY_JSON_BODY_LIMIT_BYTES";
 const RELAY_JSON_RESPONSE_LIMIT_ENV: &str = "RELAY_JSON_RESPONSE_LIMIT_BYTES";
+const RELAY_RETRY_TIMES_ENV: &str = "RELAY_RETRY_TIMES";
+const CHANNEL_AUTOBAN_THRESHOLD_ENV: &str = "RELAY_CHANNEL_AUTOBAN_THRESHOLD";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -295,6 +299,94 @@ pub async fn audio_speech(req: Request, env: Env, context: Context) -> worker::R
     .await
 }
 
+pub async fn audio_transcriptions(
+    req: Request,
+    env: Env,
+    context: Context,
+) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "audio transcriptions",
+            cache_family: "openai_compatible",
+            upstream_path: "audio/transcriptions".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            // Whisper returns a text response, not a `usage` block. Billing
+            // uses 0 tokens unless the operator configures a flat
+            // `ModelPrice` for the whisper model.
+            parse_non_stream_usage: false,
+            request_body_mode: RelayRequestBodyMode::MultipartForm,
+            request_validator: None,
+        },
+        None,
+    )
+    .await
+}
+
+pub async fn audio_translations(
+    req: Request,
+    env: Env,
+    context: Context,
+) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "audio translations",
+            cache_family: "openai_compatible",
+            upstream_path: "audio/translations".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: false,
+            request_body_mode: RelayRequestBodyMode::MultipartForm,
+            request_validator: None,
+        },
+        None,
+    )
+    .await
+}
+
+pub async fn image_edits(req: Request, env: Env, context: Context) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "image edits",
+            cache_family: "openai_compatible",
+            upstream_path: "images/edits".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            // Image edits return the same shape as image generations, so we
+            // parse usage from the non-stream response body.
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::MultipartForm,
+            request_validator: None,
+        },
+        None,
+    )
+    .await
+}
+
 pub async fn completions(req: Request, env: Env, context: Context) -> worker::Result<Response> {
     relay_endpoint(
         req,
@@ -449,28 +541,46 @@ async fn relay_endpoint(
     let request_body = prepared_request.body;
     let billing_request_input = prepared_request.billing_request_input;
 
-    if let Some(feature) = endpoint.stream_not_implemented(&request_body) {
-        return json_with_status(&ErrorBody::not_implemented(feature), 501);
-    }
-    let should_relay_stream = endpoint.should_relay_stream(&request_body);
-    if should_relay_stream && context.is_none() {
-        return openai_error_response("streaming relay context is unavailable", 500);
-    }
-
-    let model = match model_override.or_else(|| {
-        request_body
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    }) {
-        Some(model) if !model.trim().is_empty() => model.trim().to_string(),
-        _ => {
+    // Multipart/raw bodies do not support streaming or model-mapping rewrites;
+    // they are forwarded verbatim. JSON bodies go through the full pipeline.
+    let (model, should_relay_stream, json_body) = match &request_body {
+        RelayRequestBody::Json(value) => {
+            if let Some(feature) = endpoint.stream_not_implemented(value) {
+                return json_with_status(&ErrorBody::not_implemented(feature), 501);
+            }
+            let stream = endpoint.should_relay_stream(value);
+            let model = model_override
+                .clone()
+                .or_else(|| {
+                    value
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            (model, stream, Some(value.clone()))
+        }
+        RelayRequestBody::Raw { .. } => {
+            // Upload endpoints never stream and never carry a JSON body.
+            let model = model_override
+                .clone()
+                .or_else(|| request_body.model())
+                .unwrap_or_default();
+            (model, false, None)
+        }
+    };
+    let model = match model.trim() {
+        "" => {
             return json_with_status(
                 &ErrorBody::bad_request("request body must include a non-empty model"),
                 400,
             );
         }
+        trimmed => trimmed.to_string(),
     };
+    if should_relay_stream && context.is_none() {
+        return openai_error_response("streaming relay context is unavailable", 500);
+    }
 
     let api_key = match extract_api_key(&req) {
         Some(key) => key,
@@ -493,7 +603,7 @@ async fn relay_endpoint(
         return response;
     }
 
-    let channel = match select_channel(
+    let candidates = match select_channels(
         &db,
         &env,
         &model,
@@ -503,20 +613,14 @@ async fn relay_endpoint(
     )
     .await
     {
-        Ok(channel) => channel,
+        Ok(candidates) => candidates,
         Err(response) => return response,
     };
 
-    let upstream_key = match first_channel_key(&channel.key) {
-        Some(key) => key,
-        None => {
-            return json_with_status(
-                &ErrorBody::bad_request(format!(
-                    "channel {} has no usable upstream key",
-                    channel.id
-                )),
-                502,
-            );
+    let retry_config = match RelayRetryConfig::from_env(&env) {
+        Ok(config) => config,
+        Err(err) => {
+            return openai_error_response(format!("invalid relay retry configuration: {err}"), 500);
         }
     };
 
@@ -524,7 +628,7 @@ async fn relay_endpoint(
         &db,
         &model,
         &group,
-        &request_body,
+        json_body.as_ref().unwrap_or(&Value::Null),
         &billing_request_input,
     )
     .await
@@ -546,53 +650,184 @@ async fn relay_endpoint(
         }
     }
 
-    let mut upstream_body = request_body;
-    apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
-    if endpoint.provider == RelayProviderKind::GeminiNative {
-        if let Some(mapped_model) = mapped_model_name(&model, channel.model_mapping.as_deref()) {
-            apply_gemini_native_model_mapping(&mut upstream_body, &model, &mapped_model);
-            if let Some(route) = endpoint.gemini_route.as_mut() {
-                route.model = mapped_model;
-                endpoint.upstream_path = route.upstream_path();
+    let max_attempts = retry_config.max_attempts().min(candidates.len().max(1));
+    let mut last_failure: Option<RelayAttemptFailure> = None;
+    let mut selected_attempt: Option<(RelayChannel, String, Response)> = None;
+
+    // Pool shrinks as channels are tried; we remove each picked entry so the
+    // same channel is never retried. `attempt_index` also advances the priority
+    // tier in `select_weighted`, matching Go `GetRandomSatisfiedChannel(retry)`.
+    let mut pool: Vec<RelayChannel> = candidates;
+
+    for attempt_index in 0..max_attempts {
+        if pool.is_empty() {
+            break;
+        }
+        let meta: Vec<Candidate> = pool
+            .iter()
+            .map(|c| Candidate { priority: c.priority, weight: c.weight })
+            .collect();
+        let pick = match select_weighted(&meta, attempt_index, |total| {
+            (js_sys::Math::random() * total as f64) as u64
+        }) {
+            Some(i) => i,
+            None => break,
+        };
+        let channel = pool.remove(pick);
+
+        let upstream_key = match first_channel_key(&channel.key) {
+            Some(key) => key,
+            None => {
+                last_failure = Some(RelayAttemptFailure::no_key(
+                    channel.id,
+                    channel.name.clone(),
+                ));
+                continue;
+            }
+        };
+
+        let upstream_url = endpoint.upstream_url(&channel);
+
+        let forward_result = match &request_body {
+            RelayRequestBody::Json(_) => {
+                let Some(mut upstream_body) = json_body.clone() else {
+                    break;
+                };
+                apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
+                if endpoint.provider == RelayProviderKind::GeminiNative {
+                    if let Some(mapped_model) =
+                        mapped_model_name(&model, channel.model_mapping.as_deref())
+                    {
+                        apply_gemini_native_model_mapping(
+                            &mut upstream_body,
+                            &model,
+                            &mapped_model,
+                        );
+                        if let Some(route) = endpoint.gemini_route.as_mut() {
+                            route.model = mapped_model;
+                            endpoint.upstream_path = route.upstream_path();
+                        }
+                    }
+                }
+                apply_endpoint_request_transform(
+                    &mut upstream_body,
+                    &endpoint.upstream_path,
+                    &channel,
+                );
+                forward_relay_request(
+                    endpoint.provider,
+                    &upstream_url,
+                    &upstream_key,
+                    &channel,
+                    &upstream_body,
+                    &provider_headers,
+                )
+                .await
+            }
+            RelayRequestBody::Raw {
+                bytes,
+                content_type,
+            } => {
+                // Multipart/raw bodies are forwarded verbatim. Model mapping
+                // is intentionally NOT applied (see docs/relay-mvp.md). All
+                // upload endpoints are OpenAI-compatible.
+                forward_raw_openai_compatible(
+                    &upstream_url,
+                    &upstream_key,
+                    &channel,
+                    bytes,
+                    content_type,
+                )
+                .await
+            }
+        };
+
+        match forward_result {
+            Ok(response) => {
+                let status = response.status_code();
+                if is_retryable_status(status) {
+                    record_retryable_channel_failure(&env, &channel, status).await;
+                    last_failure = Some(RelayAttemptFailure::retryable_status(
+                        channel.id,
+                        channel.name.clone(),
+                        status,
+                    ));
+                    if !pool.is_empty() && attempt_index + 1 < max_attempts {
+                        continue;
+                    }
+                    // Out of retries: pass the upstream response through to the
+                    // client. The audit/settlement path below will treat it as
+                    // a normal response; tiered reserve will be refunded via
+                    // the no-usage path because there is no billable usage.
+                    selected_attempt = Some((channel, upstream_url, response));
+                    break;
+                }
+                selected_attempt = Some((channel, upstream_url, response));
+                break;
+            }
+            Err(err) => {
+                record_retryable_channel_failure(&env, &channel, 0).await;
+                last_failure = Some(RelayAttemptFailure::fetch_error(
+                    channel.id,
+                    channel.name.clone(),
+                    err.to_string(),
+                ));
+                continue;
             }
         }
     }
-    apply_endpoint_request_transform(&mut upstream_body, &endpoint.upstream_path, &channel);
 
-    let upstream_url = endpoint.upstream_url(&channel);
-    let upstream_response = match forward_relay_request(
-        endpoint.provider,
-        &upstream_url,
-        &upstream_key,
-        &channel,
-        &upstream_body,
-        &provider_headers,
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(err) => {
-            if let Some(preflight) = tiered_billing_preflight.as_ref() {
-                if let Err(refund_err) =
-                    refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
-                {
-                    return openai_error_response(
-                            format!(
-                                "upstream request failed for channel {} ({}): {err}; tiered billing reserve refund failed: {refund_err}",
-                                channel.id, channel.name
-                            ),
-                            500,
-                        );
-                }
+    let Some((channel, _upstream_url, upstream_response)) = selected_attempt else {
+        // Every attempt failed with a fetch error or unconfigurable channel.
+        // Refund the tiered reserve (if any) and return a structured error
+        // describing the last failure.
+        if let Some(preflight) = tiered_billing_preflight.as_ref() {
+            if let Err(refund_err) =
+                refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+            {
+                return openai_error_response(
+                    format!(
+                        "tiered billing reserve refund failed after all retry attempts: {refund_err}"
+                    ),
+                    500,
+                );
             }
-            return json_with_status(
+        }
+        return match last_failure {
+            Some(RelayAttemptFailure {
+                kind: RelayAttemptFailureKind::FetchError,
+                channel_id,
+                channel_name,
+                detail,
+                ..
+            }) => json_with_status(
                 &ErrorBody::bad_request(format!(
-                    "upstream request failed for channel {} ({}): {err}",
-                    channel.id, channel.name
+                    "upstream request failed for channel {channel_id} ({channel_name}): {detail}"
                 )),
                 502,
-            );
-        }
+            ),
+            Some(RelayAttemptFailure {
+                kind: RelayAttemptFailureKind::NoUsableKey,
+                channel_id,
+                channel_name,
+                ..
+            }) => json_with_status(
+                &ErrorBody::bad_request(format!(
+                    "channel {channel_id} ({channel_name}) has no usable upstream key"
+                )),
+                502,
+            ),
+            // Retryable-status exhaustion falls through here only when the loop
+            // ran zero iterations (empty candidate list) — the
+            // selected_attempt path above handles the "ran out of retries with
+            // a real upstream response" case.
+            _ => json_with_status(
+                &ErrorBody::bad_request(format!(
+                    "no enabled relay channel or ability for model {model} in group {group}"
+                )),
+                503,
+            ),
+        };
     };
 
     let audit = RelayAuditContext {
@@ -607,6 +842,7 @@ async fn relay_endpoint(
         let context = context.expect("streaming context checked before reserve");
         return complete_streaming_relay_response(
             upstream_response,
+            env.clone(),
             db,
             context,
             auth,
@@ -623,6 +859,7 @@ async fn relay_endpoint(
     let max_json_response_bytes = json_response_config.max_bytes_for(&endpoint);
     complete_relay_response(
         upstream_response,
+        env.clone(),
         db,
         context,
         auth,
@@ -638,8 +875,193 @@ async fn relay_endpoint(
     .await
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RelayRetryConfig {
+    retry_times: u32,
+}
+
+impl RelayRetryConfig {
+    fn from_env(env: &Env) -> Result<Self, String> {
+        Self::from_raw(optional_env_var(env, RELAY_RETRY_TIMES_ENV))
+    }
+
+    fn from_raw(retry_times: Option<String>) -> Result<Self, String> {
+        let retry_times = cinatoken_relay::parse_retry_times_env(retry_times.as_deref())?;
+        Ok(Self { retry_times })
+    }
+
+    fn max_attempts(&self) -> usize {
+        (self.retry_times as usize).saturating_add(1)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RelayAttemptFailure {
+    kind: RelayAttemptFailureKind,
+    channel_id: i64,
+    channel_name: String,
+    #[allow(dead_code)]
+    detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayAttemptFailureKind {
+    FetchError,
+    NoUsableKey,
+    RetryableStatus,
+}
+
+impl RelayAttemptFailure {
+    fn fetch_error(channel_id: i64, channel_name: String, detail: String) -> Self {
+        Self {
+            kind: RelayAttemptFailureKind::FetchError,
+            channel_id,
+            channel_name,
+            detail,
+        }
+    }
+
+    fn no_key(channel_id: i64, channel_name: String) -> Self {
+        Self {
+            kind: RelayAttemptFailureKind::NoUsableKey,
+            channel_id,
+            channel_name,
+            detail: String::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn retryable_status(channel_id: i64, channel_name: String, status: u16) -> Self {
+        Self {
+            kind: RelayAttemptFailureKind::RetryableStatus,
+            channel_id,
+            channel_name,
+            detail: format!("upstream status {status}"),
+        }
+    }
+}
+
+/// Record a retryable channel failure in Upstash Redis (best-effort) and
+/// trigger an automatic D1 disable when the error count exceeds the configured
+/// threshold. Mirrors the Go `service.DisableChannel` short-circuit. Failures
+/// here are logged but never block the in-flight request.
+async fn record_retryable_channel_failure(env: &Env, channel: &RelayChannel, status: u16) {
+    // Auto-disable on bad-credential signals (default: 401) regardless of the
+    // Redis counter, matching the Go `AutomaticDisableStatusCodeRanges` default.
+    if is_auto_disable_status(status) {
+        let db = match env.d1("DB") {
+            Ok(db) => db,
+            Err(err) => {
+                worker::console_warn!(
+                    "failed to acquire D1 binding for auto-disable of channel {}: {}",
+                    channel.id,
+                    err
+                );
+                return;
+            }
+        };
+        let _ = crate::d1_repositories::disable_channel_best_effort(
+            &db,
+            channel.id,
+            "relay auto-disable: upstream returned 401",
+        )
+        .await;
+        // Evict the channel selection cache so the just-banned channel is not
+        // still served (without failover) from cache for the rest of its TTL.
+        let _ = crate::cache_invalidation::invalidate_channel_cache(env).await;
+        return;
+    }
+
+    let Ok(Some(redis)) = crate::cache::upstash_redis_from_env(env) else {
+        return;
+    };
+    let threshold = channel_auto_ban_threshold(env);
+    if threshold == 0 {
+        return;
+    }
+    let limiter = ExpiringCounterRateLimiter::new(redis, "relay:chanerr");
+    let key = format!("channel:{}", channel.id);
+    // Reuse the rate-limit counter store: INCRBY 1 + EXPIRE on the configured
+    // window. We treat "allowed" as "below threshold" by asking the limiter to
+    // permit threshold+1 requests; when it denies, the threshold has been hit.
+    let Ok(under_threshold) = limiter
+        .check(&key, threshold, CHANNEL_AUTO_BAN_WINDOW_SECONDS)
+        .await
+    else {
+        // Counter error: fail open, do not disable.
+        return;
+    };
+    if under_threshold {
+        return;
+    }
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(err) => {
+            worker::console_warn!(
+                "failed to acquire D1 binding for auto-disable of channel {}: {}",
+                channel.id,
+                err
+            );
+            return;
+        }
+    };
+    let _ = crate::d1_repositories::disable_channel_best_effort(
+        &db,
+        channel.id,
+        "relay auto-disable: consecutive upstream errors exceeded threshold",
+    )
+    .await;
+    // Evict the channel selection cache (see the 401 path above) so the banned
+    // channel stops being served from cache before its TTL expires.
+    let _ = crate::cache_invalidation::invalidate_channel_cache(env).await;
+}
+
+fn channel_auto_ban_threshold(env: &Env) -> u32 {
+    const DEFAULT_THRESHOLD: u32 = 5;
+    let Some(raw) = optional_env_var(env, CHANNEL_AUTOBAN_THRESHOLD_ENV) else {
+        return DEFAULT_THRESHOLD;
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return DEFAULT_THRESHOLD;
+    }
+    raw.parse::<u32>().unwrap_or(DEFAULT_THRESHOLD)
+}
+
+const CHANNEL_AUTO_BAN_WINDOW_SECONDS: u32 = 60;
+
+/// The parsed relay request body. JSON endpoints carry a `serde_json::Value`
+/// (the historical shape); multipart/raw endpoints carry the original bytes
+/// plus the Content-Type so the forwarder can replay them to the upstream
+/// verbatim.
+enum RelayRequestBody {
+    Json(Value),
+    Raw {
+        bytes: Vec<u8>,
+        content_type: String,
+    },
+}
+
+impl RelayRequestBody {
+    /// Return the `model` field value, whether the body is JSON or multipart.
+    /// For multipart bodies, the model is extracted from the `model` form
+    /// field via boundary split.
+    fn model(&self) -> Option<String> {
+        match self {
+            RelayRequestBody::Json(value) => value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            RelayRequestBody::Raw {
+                bytes,
+                content_type,
+            } => cinatoken_relay::extract_multipart_field(bytes, content_type, "model"),
+        }
+    }
+}
+
 struct PreparedRelayRequest {
-    body: Value,
+    body: RelayRequestBody,
     billing_request_input: RequestInput,
 }
 
@@ -652,6 +1074,7 @@ async fn prepare_relay_request(
         RelayRequestBodyMode::Json => {
             prepare_json_relay_request(req, endpoint, json_body_config.max_bytes).await
         }
+        RelayRequestBodyMode::MultipartForm => prepare_multipart_relay_request(req, endpoint).await,
         mode => {
             let response = json_with_status(
                 &ErrorBody::not_implemented(
@@ -698,8 +1121,73 @@ async fn prepare_json_relay_request(
 
     Ok(Ok(PreparedRelayRequest {
         billing_request_input: billing_request_input(req, &request_body),
-        body: request_body,
+        body: RelayRequestBody::Json(request_body),
     }))
+}
+
+/// Multipart body size limit. Audio files (mp3/wav) and images can be
+/// sizable; 25 MiB matches the Go gateway's effective limit.
+const MULTIPART_BODY_LIMIT_BYTES: usize = 25 * 1024 * 1024;
+
+async fn prepare_multipart_relay_request(
+    req: &mut Request,
+    endpoint: &RelayEndpoint,
+) -> worker::Result<Result<PreparedRelayRequest, Response>> {
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if !content_type
+        .to_ascii_lowercase()
+        .contains("multipart/form-data")
+    {
+        let response = json_with_status(
+            &ErrorBody::bad_request(format!(
+                "{} expects multipart/form-data",
+                endpoint.display_name
+            )),
+            415,
+        )?;
+        return Ok(Err(response));
+    }
+
+    let bytes = match read_bounded_relay_request_bytes(req, MULTIPART_BODY_LIMIT_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let response = json_with_status(
+                &ErrorBody::bad_request(err.message(
+                    endpoint.display_name,
+                    endpoint.request_body_mode.body_kind(),
+                )),
+                err.status_code(),
+            )?;
+            return Ok(Err(response));
+        }
+    };
+
+    // Synthesize a minimal JSON body for the billing request input. The
+    // tiered billing preflight reads prompt-token estimates from this; for
+    // multipart we pass the model through so the channel/billing lookups
+    // work, but text-prompt estimation will be empty (acceptable: STT
+    // billing is per-duration, not per-text-token).
+    let synthetic_body = match endpoint_multipart_model(&bytes, &content_type) {
+        Some(model) => json!({ "model": model }),
+        None => Value::Object(serde_json::Map::new()),
+    };
+
+    Ok(Ok(PreparedRelayRequest {
+        billing_request_input: billing_request_input(req, &synthetic_body),
+        body: RelayRequestBody::Raw {
+            bytes,
+            content_type,
+        },
+    }))
+}
+
+fn endpoint_multipart_model(bytes: &[u8], content_type: &str) -> Option<String> {
+    cinatoken_relay::extract_multipart_field(bytes, content_type, "model")
 }
 
 pub(crate) fn relay_rate_limit_configured(env: &Env) -> bool {
@@ -1535,47 +2023,51 @@ async fn mark_token_status(db: &D1Database, token_id: i64, status: i32) {
     }
 }
 
-async fn select_channel(
+/// Return the full ordered candidate list for a relay attempt. The Upstash
+/// read-through cache only stores the highest-priority candidate (to keep the
+/// cache payload small and avoid stale-rotation issues); on cache miss the full
+/// list is read from D1, the first entry is cached, and the full list is
+/// returned so the retry loop can walk it without re-querying D1.
+async fn select_channels(
     db: &D1Database,
     env: &Env,
     model: &str,
     group: &str,
     cache_family: &str,
     supported_channel_types: &[i32],
-) -> Result<RelayChannel, worker::Result<Response>> {
+) -> Result<Vec<RelayChannel>, worker::Result<Response>> {
     let Some((redis, ttl_seconds)) = relay_read_cache(env)? else {
-        return select_channel_from_d1(db, model, group, supported_channel_types).await;
+        return select_channels_from_d1(db, model, group, supported_channel_types).await;
     };
     let cache_key = RelayCacheKeys::default().channel(cache_family, group, model);
 
-    match read_cached_relay_channel(&redis, &cache_key).await {
-        Ok(Some(channel)) => return Ok(channel),
-        Ok(None) => {}
-        Err(err) => worker::console_warn!("failed to read relay channel cache: {}", err),
+    if let Ok(Some(cached)) = read_cached_relay_channel(&redis, &cache_key).await {
+        // Cache hit: return just the cached channel. We deliberately do not
+        // fall through to D1 for the rest of the rotation here; if that
+        // channel fails, the loop will still retry, but only with this single
+        // candidate. This mirrors the historical single-select behavior under
+        // cache and keeps the hot path at one D1 read.
+        return Ok(vec![cached]);
     }
 
-    let channel = select_channel_from_d1(db, model, group, supported_channel_types).await?;
-    if let Err(err) = write_cached_relay_channel(&redis, &cache_key, &channel, ttl_seconds).await {
-        worker::console_warn!("failed to write relay channel cache: {}", err);
+    let candidates = select_channels_from_d1(db, model, group, supported_channel_types).await?;
+    if let Some(first) = candidates.first() {
+        if let Err(err) = write_cached_relay_channel(&redis, &cache_key, first, ttl_seconds).await {
+            worker::console_warn!("failed to write relay channel cache: {}", err);
+        }
     }
-    Ok(channel)
+    Ok(candidates)
 }
 
-async fn select_channel_from_d1(
+async fn select_channels_from_d1(
     db: &D1Database,
     model: &str,
     group: &str,
     supported_channel_types: &[i32],
-) -> Result<RelayChannel, worker::Result<Response>> {
-    crate::d1_repositories::select_relay_channel(db, model, group, supported_channel_types)
+) -> Result<Vec<RelayChannel>, worker::Result<Response>> {
+    crate::d1_repositories::select_relay_channels(db, model, group, supported_channel_types)
         .await
-        .map_err(worker_error_response)?
-        .ok_or_else(|| {
-            openai_error_response(
-                format!("no enabled relay channel or ability for model {model} in group {group}"),
-                503,
-            )
-        })
+        .map_err(worker_error_response)
 }
 
 async fn read_cached_relay_channel<C>(cache: &C, cache_key: &str) -> ApiResult<Option<RelayChannel>>
@@ -1668,6 +2160,43 @@ async fn forward_openai_compatible(
     Fetch::Request(outbound).send().await
 }
 
+/// Forward a raw-bytes body (multipart/form-data, octet-stream, etc.) to an
+/// OpenAI-compatible upstream. Used by the upload endpoints
+/// (`/v1/audio/transcriptions`, `/v1/audio/translations`,
+/// `/v1/images/edits`) that receive `multipart/form-data` instead of JSON.
+///
+/// The `content_type` must carry the original boundary parameter so the
+/// upstream can parse the multipart body correctly.
+async fn forward_raw_openai_compatible(
+    url: &str,
+    upstream_key: &str,
+    channel: &RelayChannel,
+    bytes: &[u8],
+    content_type: &str,
+) -> worker::Result<Response> {
+    let mut headers = Headers::new();
+    headers.set("content-type", content_type)?;
+    headers.set("authorization", &format!("Bearer {upstream_key}"))?;
+    if let Some(org) = channel
+        .openai_organization
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        headers.set("openai-organization", org)?;
+    }
+
+    // Convert the raw bytes into a JS ArrayBuffer via Uint8Array so the
+    // Worker fetch sends binary data verbatim.
+    let body = js_sys::Uint8Array::from(bytes).buffer();
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(body.into()));
+    let outbound = Request::new_with_init(url, &init)?;
+    Fetch::Request(outbound).send().await
+}
+
 async fn forward_anthropic_messages(
     url: &str,
     upstream_key: &str,
@@ -1723,6 +2252,7 @@ async fn forward_gemini_native(
 
 async fn complete_relay_response(
     mut upstream: Response,
+    env: Env,
     db: D1Database,
     context: Option<Context>,
     auth: AuthenticatedToken,
@@ -1746,6 +2276,7 @@ async fn complete_relay_response(
     if status == 200 && should_transform_cohere_rerank_response(&endpoint_path, &channel) {
         return complete_cohere_rerank_response(
             upstream,
+            env,
             db,
             context,
             auth,
@@ -1765,6 +2296,7 @@ async fn complete_relay_response(
         if let Some(context) = context {
             context.wait_until(async move {
                 if let Err(err) = record_relay_audit(
+                    &env,
                     &db,
                     &auth,
                     &channel,
@@ -1783,6 +2315,7 @@ async fn complete_relay_response(
                 }
             });
         } else if let Err(err) = record_relay_audit(
+            &env,
             &db,
             &auth,
             &channel,
@@ -1815,6 +2348,7 @@ async fn complete_relay_response(
                 );
                 return complete_buffered_relay_response(
                     upstream,
+                    &env,
                     &db,
                     &auth,
                     &channel,
@@ -1845,6 +2379,7 @@ async fn complete_relay_response(
                 }
             };
             if let Err(err) = record_relay_audit(
+                &env,
                 &db,
                 &auth,
                 &channel,
@@ -1870,6 +2405,7 @@ async fn complete_relay_response(
 
     complete_buffered_relay_response(
         upstream,
+        &env,
         &db,
         &auth,
         &channel,
@@ -1886,6 +2422,7 @@ async fn complete_relay_response(
 #[allow(clippy::too_many_arguments)]
 async fn complete_passthrough_relay_response_with_usage(
     mut upstream: Response,
+    env: Env,
     db: D1Database,
     context: Option<Context>,
     auth: AuthenticatedToken,
@@ -1903,6 +2440,7 @@ async fn complete_passthrough_relay_response_with_usage(
     if let Some(context) = context {
         context.wait_until(async move {
             if let Err(err) = record_relay_audit(
+                &env,
                 &db,
                 &auth,
                 &channel,
@@ -1921,6 +2459,7 @@ async fn complete_passthrough_relay_response_with_usage(
             }
         });
     } else if let Err(err) = record_relay_audit(
+        &env,
         &db,
         &auth,
         &channel,
@@ -1946,6 +2485,7 @@ async fn complete_passthrough_relay_response_with_usage(
 #[allow(clippy::too_many_arguments)]
 async fn complete_cohere_rerank_response(
     mut upstream: Response,
+    env: Env,
     db: D1Database,
     context: Option<Context>,
     auth: AuthenticatedToken,
@@ -1975,6 +2515,7 @@ async fn complete_cohere_rerank_response(
             );
             return complete_passthrough_relay_response_with_usage(
                 upstream,
+                env,
                 db,
                 context,
                 auth,
@@ -2015,6 +2556,7 @@ async fn complete_cohere_rerank_response(
     if let Some(context) = context {
         context.wait_until(async move {
             if let Err(err) = record_relay_audit(
+                &env,
                 &db,
                 &auth,
                 &channel,
@@ -2033,6 +2575,7 @@ async fn complete_cohere_rerank_response(
             }
         });
     } else if let Err(err) = record_relay_audit(
+        &env,
         &db,
         &auth,
         &channel,
@@ -2060,6 +2603,7 @@ async fn complete_cohere_rerank_response(
 
 async fn complete_buffered_relay_response(
     mut upstream: Response,
+    env: &Env,
     db: &D1Database,
     auth: &AuthenticatedToken,
     channel: &RelayChannel,
@@ -2086,6 +2630,7 @@ async fn complete_buffered_relay_response(
                 err.message("relay response body")
             );
             if let Err(err) = record_relay_audit(
+                &env,
                 db,
                 auth,
                 channel,
@@ -2120,6 +2665,7 @@ async fn complete_buffered_relay_response(
     let usage = usage_summary_for_provider(&body, provider, endpoint_path);
 
     if let Err(err) = record_relay_audit(
+        &env,
         db,
         auth,
         channel,
@@ -2172,6 +2718,7 @@ fn usage_summary_for_provider(
 
 async fn complete_streaming_relay_response(
     mut upstream: Response,
+    env: Env,
     db: D1Database,
     context: Context,
     auth: AuthenticatedToken,
@@ -2215,6 +2762,7 @@ async fn complete_streaming_relay_response(
             }
         };
         if let Err(err) = record_relay_audit(
+            &env,
             &db,
             &auth,
             &channel,
@@ -2266,6 +2814,7 @@ struct RelayAuditContext {
 }
 
 async fn record_relay_audit(
+    env: &Env,
     db: &D1Database,
     auth: &AuthenticatedToken,
     channel: &RelayChannel,
@@ -2421,6 +2970,46 @@ async fn record_relay_audit(
         }
     }
 
+    if !billing_applied && upstream_status < 400 && usage.total_tokens > 0 {
+        // Non-tiered ("flat") billing: compute the per-token (or fixed-price)
+        // quota from ModelRatio / CompletionRatio / ModelPrice options and
+        // apply it atomically. This is the fallback when no `tiered_expr`
+        // is configured for the model. Mirrors Go's
+        // `service/text_quota.go::PostTextConsumeQuota` non-tiered path.
+        match try_flat_billing(db, auth, channel.id, model, group, usage, now).await {
+            Ok(Some(flat_result)) => {
+                quota = flat_result.quota;
+                billing_applied = true;
+                billing_resolved = true;
+                set_json_value(
+                    &mut other,
+                    "flat_billing",
+                    serde_json::json!({
+                        "quota": flat_result.quota,
+                        "mode": match flat_result.mode {
+                            FlatBillingMode::FixedPrice => "fixed_price",
+                            FlatBillingMode::PerToken => "per_token",
+                        },
+                        "model_ratio": flat_result.model_ratio,
+                        "completion_ratio": flat_result.completion_ratio,
+                        "group_ratio": flat_result.group_ratio,
+                        "cache_ratio": flat_result.cache_ratio,
+                    }),
+                );
+            }
+            Ok(None) => {
+                // Config loaded but no model entry; treat as unbilled.
+            }
+            Err(err) => {
+                set_json_string(
+                    &mut other,
+                    "flat_billing_error",
+                    format!("non-tiered billing failed: {err}"),
+                );
+            }
+        }
+    }
+
     if !billing_applied {
         crate::d1_repositories::touch_token(db, auth.token_id, now).await?;
         crate::d1_repositories::increment_user_request_count(db, auth.user_id).await?;
@@ -2454,7 +3043,25 @@ async fn record_relay_audit(
     } else {
         format!("Rust relay {action} {endpoint_path}; quota settlement pending")
     };
-    crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
+    // Send the audit event to LOG_QUEUE for async batch INSERT. Falls back
+    // to a synchronous D1 INSERT when the queue binding is not configured
+    // (local dev without wrangler queue, or `cargo test`).
+    let event = cinatoken_storage::AuditLogEvent::from_relay_audit(now, &content, &audit_log, 2);
+    match env.queue("LOG_QUEUE") {
+        Ok(queue) => match queue.send(&event).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                worker::console_warn!(
+                    "LOG_QUEUE send failed, falling back to synchronous D1 insert: {err}"
+                );
+                crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
+            }
+        },
+        Err(_) => {
+            // Queue binding not configured (local dev / tests).
+            crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
+        }
+    }
 }
 
 struct TieredBillingOutcome {
@@ -2494,7 +3101,7 @@ fn tiered_billing_preflight_snapshot(
     request: RequestInput,
 ) -> Result<TieredBillingPreflight, String> {
     let used_vars = detect_billing_expr_variables(expr);
-    let params = token_params_from_request(request_body, used_vars);
+    let params = token_params_from_request(model, request_body, used_vars);
     let snapshot =
         estimate_tiered_billing_snapshot_with_request(model, expr, params, group_ratio, request)
             .map_err(|err| format!("failed to estimate tiered billing: {err}"))?;
@@ -2560,6 +3167,80 @@ fn tiered_billing_settlement(
         snapshot: snapshot.clone(),
         result,
     })
+}
+
+/// Load pricing options from D1, compute the non-tiered ("flat") quota for
+/// the response, and apply it atomically to the user + token + channel.
+/// Returns `Ok(None)` when the model has no pricing configured (unbilled),
+/// `Ok(Some(result))` on success, `Err` on D1 or config failure.
+///
+/// Mirrors Go's `service.PostTextConsumeQuota` non-tiered path. The audit
+/// metadata is returned to the caller via the `FlatQuotaResult` so it can
+/// be recorded in the relay audit log's `other` JSON column.
+async fn try_flat_billing(
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    channel_id: i64,
+    model: &str,
+    group: &str,
+    usage: &UsageSummary,
+    now: i64,
+) -> Result<Option<FlatQuotaResult>, String> {
+    // Load all pricing options in one D1 round-trip.
+    let keys = [
+        "ModelRatio",
+        "CompletionRatio",
+        "ModelPrice",
+        "CacheRatio",
+        "QuotaPerUnit",
+        crate::d1_repositories::GROUP_RATIO_OPTION_KEY,
+    ];
+    let values = crate::d1_repositories::option_values(db, &keys)
+        .await
+        .map_err(|err| format!("failed to load pricing options: {err}"))?;
+    let config = PricingConfig::new().with_json_maps(
+        values[0].as_deref(),
+        values[1].as_deref(),
+        values[2].as_deref(),
+        values[3].as_deref(),
+        values[5].as_deref(), // group ratio
+        values[4].as_deref(), // quota per unit
+    );
+
+    // If the model has neither a ratio entry nor a price entry, treat as
+    // unbilled (operator has not configured pricing for this model). This
+    // avoids charging default-ratio quota for models the operator intended
+    // to be free.
+    let has_pricing =
+        config.model_ratios.contains_key(model) || config.model_prices.contains_key(model);
+    if !has_pricing {
+        return Ok(None);
+    }
+
+    let flat_usage = FlatUsage {
+        prompt_tokens: usage.prompt_tokens as i64,
+        completion_tokens: usage.completion_tokens as i64,
+        total_tokens: usage.total_tokens as i64,
+        cached_tokens: usage.cached_tokens as i64,
+        is_anthropic_usage_semantic: usage.is_anthropic_usage_semantic,
+    };
+    let result = compute_flat_quota(&flat_usage, model, group, &config);
+    if result.quota == 0 {
+        // Zero-usage or zero-cost: still considered resolved (no refund
+        // needed because non-tiered never reserves).
+        return Ok(Some(result));
+    }
+    crate::d1_repositories::apply_relay_quota_usage(
+        db,
+        auth.user_id,
+        auth.token_id,
+        channel_id,
+        result.quota,
+        now,
+    )
+    .await
+    .map_err(|err| format!("failed to apply flat quota: {err}"))?;
+    Ok(Some(result))
 }
 
 fn tiered_billing_metadata(
@@ -2702,8 +3383,12 @@ fn set_json_value(value: &mut Value, key: &str, item: Value) {
     }
 }
 
-fn token_params_from_request(body: &Value, used_vars: BillingExprVariables) -> TokenParams {
-    let estimate = request_token_estimate_from_body(body);
+fn token_params_from_request(
+    model: &str,
+    body: &Value,
+    used_vars: BillingExprVariables,
+) -> TokenParams {
+    let estimate = request_token_estimate_from_body_for_model(model, body);
     build_tiered_token_params(
         TieredTokenUsage {
             prompt_tokens: estimate.prompt_tokens(),
@@ -2836,7 +3521,14 @@ fn cohere_rerank_transform_usage(value: &Value, fallback_prompt_tokens: i64) -> 
 
 #[cfg(test)]
 fn estimate_prompt_tokens_from_request(body: &Value) -> i64 {
-    request_token_estimate_from_body(body).prompt_tokens()
+    estimate_prompt_tokens_from_request_for_model("gpt-4o", body)
+}
+
+/// Estimate prompt tokens using the char-class tokenizer for the given
+/// model family. Falls back to the legacy char/4 estimate when `model` is
+/// empty. Used by the tiered billing preflight to size the reserve.
+fn estimate_prompt_tokens_from_request_for_model(model: &str, body: &Value) -> i64 {
+    request_token_estimate_from_body_for_model(model, body).prompt_tokens()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2860,8 +3552,12 @@ impl RequestTokenEstimate {
 }
 
 fn request_token_estimate_from_body(body: &Value) -> RequestTokenEstimate {
+    request_token_estimate_from_body_for_model("gpt-4o", body)
+}
+
+fn request_token_estimate_from_body_for_model(model: &str, body: &Value) -> RequestTokenEstimate {
     let mut estimate = RequestTokenEstimate {
-        text_prompt_tokens: estimate_text_prompt_tokens_from_request(body),
+        text_prompt_tokens: estimate_text_prompt_tokens_from_request_for_model(model, body),
         completion_tokens: estimate_completion_tokens_from_request(body),
         ..RequestTokenEstimate::default()
     };
@@ -2869,8 +3565,8 @@ fn request_token_estimate_from_body(body: &Value) -> RequestTokenEstimate {
     estimate
 }
 
-fn estimate_text_prompt_tokens_from_request(body: &Value) -> i64 {
-    let mut chars = 0usize;
+fn estimate_text_prompt_tokens_from_request_for_model(model: &str, body: &Value) -> i64 {
+    let mut text = String::new();
 
     for key in [
         "prompt",
@@ -2885,7 +3581,7 @@ fn estimate_text_prompt_tokens_from_request(body: &Value) -> i64 {
         "suffix",
     ] {
         if let Some(value) = body.get(key) {
-            collect_prompt_text_chars(value, &mut chars);
+            collect_prompt_text(value, &mut text);
         }
     }
 
@@ -2896,14 +3592,16 @@ fn estimate_text_prompt_tokens_from_request(body: &Value) -> i64 {
             structural_tokens.saturating_add(saturating_usize_to_i64(messages.len()) * 3);
         for message in messages {
             if let Some(role) = message.get("role").and_then(Value::as_str) {
-                add_text_chars(&mut chars, role);
+                text.push_str(role);
+                text.push(' ');
             }
             if let Some(name) = message.get("name").and_then(Value::as_str) {
-                add_text_chars(&mut chars, name);
+                text.push_str(name);
+                text.push(' ');
                 structural_tokens = structural_tokens.saturating_add(3);
             }
             if let Some(content) = message.get("content") {
-                collect_prompt_text_chars(content, &mut chars);
+                collect_prompt_text(content, &mut text);
             }
         }
     }
@@ -2912,11 +3610,16 @@ fn estimate_text_prompt_tokens_from_request(body: &Value) -> i64 {
         structural_tokens =
             structural_tokens.saturating_add(saturating_usize_to_i64(tools.len()) * 8);
         for tool in tools {
-            collect_tool_text_chars(tool, &mut chars);
+            collect_tool_text(tool, &mut text);
         }
     }
 
-    estimate_tokens_from_chars(chars).saturating_add(structural_tokens)
+    let text_tokens = if model.is_empty() {
+        estimate_tokens_from_chars(text.chars().count())
+    } else {
+        cinatoken_tokenizer::estimate_tokens(model, &text) as i64
+    };
+    text_tokens.saturating_add(structural_tokens)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3065,6 +3768,9 @@ fn estimate_completion_tokens_from_request(body: &Value) -> i64 {
     .unwrap_or(0)
 }
 
+/// Legacy char-count collector. Retained for the model-empty fallback
+/// path inside `estimate_text_prompt_tokens_from_request_for_model`.
+#[allow(dead_code)]
 fn collect_prompt_text_chars(value: &Value, chars: &mut usize) {
     match value {
         Value::String(text) => add_text_chars(chars, text),
@@ -3103,6 +3809,7 @@ fn collect_prompt_text_chars(value: &Value, chars: &mut usize) {
     }
 }
 
+#[allow(dead_code)]
 fn collect_tool_text_chars(value: &Value, chars: &mut usize) {
     match value {
         Value::String(text) => add_text_chars(chars, text),
@@ -3123,6 +3830,83 @@ fn collect_tool_text_chars(value: &Value, chars: &mut usize) {
         }
         Value::Number(_) | Value::Bool(_) => {
             add_text_chars(chars, &value.to_string());
+        }
+        Value::Null => {}
+    }
+}
+
+/// Collect prompt text into a String buffer for tokenizer-based estimation.
+/// Mirrors `collect_prompt_text_chars` but accumulates the raw text so the
+/// char-class tokenizer can classify CJK / latin / number runs.
+fn collect_prompt_text(value: &Value, text: &mut String) {
+    match value {
+        Value::String(s) => {
+            text.push_str(s);
+            text.push(' ');
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_prompt_text(item, text);
+            }
+        }
+        Value::Object(object) => {
+            let mut matched_prompt_field = false;
+            for key in [
+                "text",
+                "input_text",
+                "content",
+                "prompt",
+                "instruction",
+                "instructions",
+                "prefix",
+                "suffix",
+            ] {
+                if let Some(value) = object.get(key) {
+                    matched_prompt_field = true;
+                    collect_prompt_text(value, text);
+                }
+            }
+            if !matched_prompt_field {
+                for (key, value) in object {
+                    if should_skip_prompt_text_key(key) {
+                        continue;
+                    }
+                    collect_prompt_text(value, text);
+                }
+            }
+        }
+        Value::Number(_) | Value::Bool(_) => {
+            text.push_str(&value.to_string());
+            text.push(' ');
+        }
+        Value::Null => {}
+    }
+}
+
+fn collect_tool_text(value: &Value, text: &mut String) {
+    match value {
+        Value::String(s) => {
+            text.push_str(s);
+            text.push(' ');
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_tool_text(item, text);
+            }
+        }
+        Value::Object(object) => {
+            for key in ["name", "description", "parameters"] {
+                if let Some(value) = object.get(key) {
+                    collect_tool_text(value, text);
+                }
+            }
+            if let Some(function) = object.get("function") {
+                collect_tool_text(function, text);
+            }
+        }
+        Value::Number(_) | Value::Bool(_) => {
+            text.push_str(&value.to_string());
+            text.push(' ');
         }
         Value::Null => {}
     }
@@ -3159,6 +3943,7 @@ fn should_skip_prompt_text_key(key: &str) -> bool {
     )
 }
 
+#[allow(dead_code)]
 fn add_text_chars(total: &mut usize, text: &str) {
     *total = total.saturating_add(text.chars().count());
 }
@@ -3222,7 +4007,7 @@ fn billing_request_input(req: &Request, body: &Value) -> RequestInput {
     }
 }
 
-fn client_ip(req: &Request) -> Option<String> {
+pub(crate) fn client_ip(req: &Request) -> Option<String> {
     req.headers()
         .get("cf-connecting-ip")
         .ok()
@@ -3497,6 +4282,8 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                priority: 0,
+                weight: 0,
             }),
             "https://api.openai.com/v1/images/generations"
         );
@@ -3540,6 +4327,8 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                priority: 0,
+                weight: 0,
             }),
             "https://api.openai.com/v1/audio/speech"
         );
@@ -3596,6 +4385,8 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                priority: 0,
+                weight: 0,
             }),
             "https://api.jina.ai/v1/rerank"
         );
@@ -3610,6 +4401,8 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                priority: 0,
+                weight: 0,
             }),
             "https://api.cohere.ai/v1/rerank"
         );
@@ -3667,6 +4460,8 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            priority: 0,
+            weight: 0,
         };
         let mut body = json!({
             "model": "rerank-english-v3.0",
@@ -3719,6 +4514,8 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            priority: 0,
+            weight: 0,
         };
         let mut body = json!({
             "model": "jina-reranker-v2-base-multilingual",
@@ -3910,6 +4707,53 @@ mod tests {
     fn relay_read_cache_config_rejects_invalid_ttl() {
         let err = RelayReadCacheConfig::from_raw(Some("fast".to_string())).unwrap_err();
         assert!(err.contains(RELAY_CACHE_TTL_ENV));
+    }
+
+    #[test]
+    fn relay_retry_config_defaults_to_no_retries() {
+        // Absent or empty env var keeps the historical single-attempt behavior.
+        let config = RelayRetryConfig::from_raw(None).unwrap();
+        assert_eq!(config.retry_times, 0);
+        assert_eq!(config.max_attempts(), 1);
+        let config = RelayRetryConfig::from_raw(Some("   ".to_string())).unwrap();
+        assert_eq!(config.retry_times, 0);
+        assert_eq!(config.max_attempts(), 1);
+    }
+
+    #[test]
+    fn relay_retry_config_accepts_positive_retry_times() {
+        let config = RelayRetryConfig::from_raw(Some("3".to_string())).unwrap();
+        assert_eq!(config.retry_times, 3);
+        assert_eq!(config.max_attempts(), 4);
+    }
+
+    #[test]
+    fn relay_retry_config_rejects_invalid_retry_times() {
+        assert!(RelayRetryConfig::from_raw(Some("-1".to_string())).is_err());
+        assert!(RelayRetryConfig::from_raw(Some("soon".to_string())).is_err());
+        assert!(RelayRetryConfig::from_raw(Some("1.5".to_string())).is_err());
+    }
+
+    #[test]
+    fn channel_auto_ban_threshold_falls_back_when_env_missing() {
+        // No Env available in pure unit tests; the helper reads `Env::var` at
+        // runtime via `optional_env_var`, which we cannot exercise without a
+        // live Worker binding. The constant default is checked here instead.
+        assert_eq!(CHANNEL_AUTO_BAN_WINDOW_SECONDS, 60);
+    }
+
+    #[test]
+    fn relay_attempt_failure_records_correct_kind() {
+        let fetch =
+            RelayAttemptFailure::fetch_error(7, "alpha".to_string(), "tcp reset".to_string());
+        assert_eq!(fetch.kind, RelayAttemptFailureKind::FetchError);
+        assert_eq!(fetch.channel_id, 7);
+
+        let no_key = RelayAttemptFailure::no_key(9, "beta".to_string());
+        assert_eq!(no_key.kind, RelayAttemptFailureKind::NoUsableKey);
+
+        let status = RelayAttemptFailure::retryable_status(11, "gamma".to_string(), 500);
+        assert_eq!(status.kind, RelayAttemptFailureKind::RetryableStatus);
     }
 
     #[test]
@@ -4323,13 +5167,14 @@ mod tests {
                 + ESTIMATED_FILE_INPUT_TOKENS
         );
 
-        let params = token_params_from_request(&body, BillingExprVariables::default());
+        let params = token_params_from_request("gpt-4o", &body, BillingExprVariables::default());
         assert_eq!(params.p, estimate.prompt_tokens() as f64);
         assert_eq!(params.len, estimate.prompt_tokens() as f64);
         assert_eq!(params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
         assert_eq!(params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
 
         let detail_params = token_params_from_request(
+            "gpt-4o",
             &body,
             BillingExprVariables {
                 img: true,
@@ -4485,6 +5330,7 @@ mod tests {
         );
 
         let params = token_params_from_request(
+            "gpt-4o",
             &request_body,
             BillingExprVariables {
                 img: true,
@@ -4538,16 +5384,16 @@ mod tests {
         assert_eq!(metadata["applied"], false);
         assert_eq!(metadata["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(metadata["has_request_rule"], false);
-        assert_eq!(metadata["pre_consumed_quota"], 4_500);
-        assert_eq!(metadata["estimated_prompt_tokens"], 1_000);
+        assert_eq!(metadata["pre_consumed_quota"], 4_560);
+        assert_eq!(metadata["estimated_prompt_tokens"], 1_020);
         assert_eq!(metadata["estimated_completion_tokens"], 100);
-        assert_eq!(metadata["estimated_quota_after_group"], 4_500);
+        assert_eq!(metadata["estimated_quota_after_group"], 4_560);
         assert_eq!(metadata["matched_tier"], "fast");
         assert_eq!(metadata["group_ratio"], 1.5);
         assert_eq!(metadata["quota_before_group"], 7_000.0);
         assert_eq!(metadata["quota_after_group"], 10_500);
         assert_eq!(metadata["settlement"]["final_quota"], 10_500);
-        assert_eq!(metadata["settlement"]["additional_quota"], 6_000);
+        assert_eq!(metadata["settlement"]["additional_quota"], 5_940);
     }
 
     #[test]
@@ -4624,13 +5470,13 @@ mod tests {
         assert_eq!(fallback["fallback_to_pre_consumed"], true);
         assert_eq!(fallback["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(fallback["has_request_rule"], true);
-        assert_eq!(fallback["pre_consumed_quota"], 4_500);
+        assert_eq!(fallback["pre_consumed_quota"], 4_560);
 
         let refund = tiered_billing_refund_metadata(&preflight, "missing_usage");
         assert_eq!(refund["refunded"], true);
         assert_eq!(refund["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(refund["has_request_rule"], true);
-        assert_eq!(refund["pre_consumed_quota"], 4_500);
+        assert_eq!(refund["pre_consumed_quota"], 4_560);
         assert_eq!(refund["reason"], "missing_usage");
     }
 

@@ -106,6 +106,10 @@ specific key, not the whole channel, in multi-key mode); notifies root user.
    `wait_until` or a Queue/DO write, and **must invalidate the channel/ability
    cache** after a ban so selection stops choosing it (ties to
    `docs/source-channel-selection-parity.md` and the cache-invalidation policy).
+   **Fixed 2026-06-25:** `record_retryable_channel_failure` now calls
+   `invalidate_channel_cache(env)` after both auto-disable paths (401 + threshold)
+   — previously a banned channel was still served (without failover) from the
+   read-through cache until its TTL, defeating the ban.
 7. **Total attempts = RetryTimes + 1**; the auto-group counter reset interacts
    with the budget. Add fixtures for single-group priority walk and cross-group
    advance.

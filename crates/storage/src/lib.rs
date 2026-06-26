@@ -55,6 +55,13 @@ pub struct RelayChannel {
     pub channel_group: String,
     pub model_mapping: Option<String>,
     pub openai_organization: Option<String>,
+    /// Selection priority tier (higher = preferred). Maps to `abilities.priority`
+    /// for ability-matched channels, `channels.priority` for CSV-matched ones.
+    #[serde(default)]
+    pub priority: i64,
+    /// Weighted-random weight within a priority tier. 0 is treated as uniform.
+    #[serde(default)]
+    pub weight: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +82,67 @@ pub struct RelayAuditLog<'a> {
     pub request_id: &'a str,
     pub upstream_request_id: &'a str,
     pub other: &'a str,
+}
+
+/// Owned, serializable audit log event for the LOG_QUEUE. Produced by the
+/// relay path (via `Queue::send`) and consumed by the queue handler (via
+/// `MessageBatch<AuditLogEvent>`) which bulk-INSERTs into D1. Covers every
+/// column of the `logs` table that a relay audit row touches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogEvent {
+    pub user_id: i64,
+    pub created_at: i64,
+    pub log_type: i32,
+    pub content: String,
+    pub username: String,
+    pub token_name: String,
+    pub model_name: String,
+    pub quota: i64,
+    pub prompt_tokens: i32,
+    pub completion_tokens: i32,
+    pub use_time: i64,
+    pub is_stream: i32,
+    pub channel_id: i64,
+    pub token_id: i64,
+    pub group: String,
+    pub ip: String,
+    pub request_id: String,
+    pub upstream_request_id: String,
+    pub other: String,
+}
+
+impl AuditLogEvent {
+    /// Build an event from the relay audit context. `log_type` is 2
+    /// (consume) for successful relays; the caller can override for error
+    /// logs.
+    pub fn from_relay_audit(
+        created_at: i64,
+        content: &str,
+        audit: &RelayAuditLog<'_>,
+        log_type: i32,
+    ) -> Self {
+        Self {
+            user_id: audit.user_id,
+            created_at,
+            log_type,
+            content: content.to_string(),
+            username: audit.username.to_string(),
+            token_name: audit.token_name.to_string(),
+            model_name: audit.model.to_string(),
+            quota: audit.quota,
+            prompt_tokens: audit.prompt_tokens,
+            completion_tokens: audit.completion_tokens,
+            use_time: audit.use_time_seconds,
+            is_stream: i32::from(audit.is_stream),
+            channel_id: audit.channel_id,
+            token_id: audit.token_id,
+            group: audit.group.to_string(),
+            ip: audit.ip.to_string(),
+            request_id: audit.request_id.to_string(),
+            upstream_request_id: audit.upstream_request_id.to_string(),
+            other: audit.other.to_string(),
+        }
+    }
 }
 
 #[async_trait(?Send)]

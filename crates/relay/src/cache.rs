@@ -1,7 +1,7 @@
 use cinatoken_storage::{AuthenticatedToken, RelayChannel};
 use serde::{Deserialize, Serialize};
 
-pub const RELAY_CACHE_SCHEMA_VERSION: u32 = 1;
+pub const RELAY_CACHE_SCHEMA_VERSION: u32 = 2;
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
@@ -200,6 +200,8 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            priority: 0,
+            weight: 0,
         }
     }
 }

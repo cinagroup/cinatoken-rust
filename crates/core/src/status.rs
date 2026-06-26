@@ -45,6 +45,10 @@ impl StatusResponse {
                     name: "relay_read_cache",
                     enabled: false,
                 },
+                RuntimeFeature {
+                    name: "session_auth",
+                    enabled: false,
+                },
             ],
         }
     }

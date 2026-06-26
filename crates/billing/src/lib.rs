@@ -3,12 +3,16 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 mod expression;
+mod flat;
+mod pricing;
 mod tiered;
 
 pub use expression::{
     run_billing_expr, run_billing_expr_with_request, validate_billing_expr, BillingExprError,
     ExprRun, RequestInput, TraceResult,
 };
+pub use flat::{compute_flat_quota, FlatBillingMode, FlatQuotaResult, FlatUsage};
+pub use pricing::PricingConfig;
 pub use tiered::{
     compute_tiered_quota, compute_tiered_quota_with_request, estimate_tiered_billing_snapshot,
     estimate_tiered_billing_snapshot_with_request, TieredBillingResult, TieredBillingSnapshot,

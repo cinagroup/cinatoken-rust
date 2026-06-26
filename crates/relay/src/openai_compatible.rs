@@ -2,14 +2,44 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+pub const CHANNEL_TYPE_OPENAI: i32 = 1;
+pub const CHANNEL_TYPE_BAIDU: i32 = 15;
+pub const CHANNEL_TYPE_ZHIPU: i32 = 16;
+pub const CHANNEL_TYPE_ALI: i32 = 17;
+pub const CHANNEL_TYPE_OPENROUTER: i32 = 20;
+pub const CHANNEL_TYPE_MOONSHOT: i32 = 25;
+pub const CHANNEL_TYPE_ZHIPU_V4: i32 = 26;
+pub const CHANNEL_TYPE_PERPLEXITY: i32 = 27;
+pub const CHANNEL_TYPE_LINGYIWANWU: i32 = 31;
+pub const CHANNEL_TYPE_SILICONFLOW: i32 = 40;
+pub const CHANNEL_TYPE_MISTRAL: i32 = 42;
+pub const CHANNEL_TYPE_DEEPSEEK: i32 = 43;
+pub const CHANNEL_TYPE_MOKAAI: i32 = 44;
+pub const CHANNEL_TYPE_XAI: i32 = 48;
+pub const CHANNEL_TYPE_SUBMODEL: i32 = 53;
+
+// OpenAI-compatible providers speak the OpenAI Chat Completions / Embeddings /
+// Images / Audio speech wire format with `Authorization: Bearer <key>`. The
+// list mirrors the Go `relay/channel/<provider>` adaptors that ultimately
+// delegate to the OpenAI adaptor shape. Provider-specific usage fields (DeepSeek
+// cache hits, Zhipu v4 reasoning tokens, etc.) are handled by the shared
+// OpenAI usage parser for now; provider-specific usage extensions remain TODO.
 pub const OPENAI_COMPATIBLE_CHANNEL_TYPES: &[i32] = &[
-    1,  // OpenAI
-    20, // OpenRouter
-    40, // SiliconFlow
-    42, // Mistral
-    43, // DeepSeek
-    48, // xAI
-    53, // Submodel
+    CHANNEL_TYPE_OPENAI,      // 1  OpenAI
+    CHANNEL_TYPE_BAIDU,       // 15 Baidu (Qianfan v2 OpenAI-compatible endpoint)
+    CHANNEL_TYPE_ZHIPU,       // 16 Zhipu (GLM)
+    CHANNEL_TYPE_ALI,         // 17 Ali (DashScope compatible-mode)
+    CHANNEL_TYPE_OPENROUTER,  // 20 OpenRouter
+    CHANNEL_TYPE_MOONSHOT,    // 25 Moonshot (Kimi)
+    CHANNEL_TYPE_ZHIPU_V4,    // 26 Zhipu v4 (GLM-4v / coding-plan)
+    CHANNEL_TYPE_PERPLEXITY,  // 27 Perplexity
+    CHANNEL_TYPE_LINGYIWANWU, // 31 LingYiWanWu
+    CHANNEL_TYPE_SILICONFLOW, // 40 SiliconFlow
+    CHANNEL_TYPE_MISTRAL,     // 42 Mistral
+    CHANNEL_TYPE_DEEPSEEK,    // 43 DeepSeek
+    CHANNEL_TYPE_MOKAAI,      // 44 MokaAI
+    CHANNEL_TYPE_XAI,         // 48 xAI (Grok)
+    CHANNEL_TYPE_SUBMODEL,    // 53 Submodel
 ];
 pub const CHANNEL_TYPE_COHERE: i32 = 34;
 pub const CHANNEL_TYPE_JINA: i32 = 38;
@@ -62,6 +92,14 @@ pub fn csv_contains(csv: &str, needle: &str) -> bool {
         .any(|item| item.eq_ignore_ascii_case(needle))
 }
 
+/// Whether `client_ip` is permitted by a token's `allow_ips` list.
+///
+/// Mirrors Go `middleware.TokenAuth`'s `common.IsIpInCIDRList`: an empty list
+/// allows all; otherwise each entry is a `*` wildcard, a CIDR range
+/// (`10.0.0.0/8`), or a bare IP literal. The client IP is parsed once and
+/// compared by value (so IPv6 spellings normalize) and tested for CIDR
+/// membership. A client IP that does not parse is denied, matching Go's
+/// `net.ParseIP(...) == nil -> 403`.
 pub fn ip_allowlist_matches(allow_ips: &str, client_ip: Option<&str>) -> bool {
     let allow_ips = allow_ips.trim();
     if allow_ips.is_empty() {
@@ -70,12 +108,25 @@ pub fn ip_allowlist_matches(allow_ips: &str, client_ip: Option<&str>) -> bool {
     let Some(client_ip) = client_ip.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
     };
+    let Ok(client_addr) = client_ip.parse::<std::net::IpAddr>() else {
+        return false;
+    };
     allow_ips
         .lines()
         .flat_map(|line| line.split(','))
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .any(|allowed| allowed == "*" || allowed == client_ip)
+        .any(|allowed| {
+            if allowed == "*" {
+                return true;
+            }
+            // CIDR range (e.g. `10.0.0.0/8`) — the common Go allowlist form.
+            if let Ok(net) = allowed.parse::<ipnet::IpNet>() {
+                return net.contains(&client_addr);
+            }
+            // Bare IP literal — value comparison normalizes IPv6 spellings.
+            matches!(allowed.parse::<std::net::IpAddr>(), Ok(addr) if addr == client_addr)
+        })
 }
 
 pub fn first_channel_key(raw: &str) -> Option<String> {
@@ -110,11 +161,25 @@ pub fn upstream_v1_url(channel_type: i32, base_url: Option<&str>, endpoint_path:
         .map(str::to_string)
         .unwrap_or_else(|| default_base_url(channel_type).to_string());
     let base = base.trim_end_matches('/');
-    if base.ends_with("/v1") {
+    // Honor provider-supplied version path segments like `/v1`, `/v2`, or
+    // Zhipu's `/v4` rather than blindly appending another `/v1`. Mirrors Go's
+    // behavior where a channel base_url that already ends with a version
+    // segment is treated as the full API root.
+    if has_trailing_version_segment(base) {
         format!("{base}/{endpoint_path}")
     } else {
         format!("{base}/v1/{endpoint_path}")
     }
+}
+
+fn has_trailing_version_segment(base: &str) -> bool {
+    let Some(segment) = base.rsplit('/').next() else {
+        return false;
+    };
+    let Some(rest) = segment.strip_prefix('v') else {
+        return false;
+    };
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
 }
 
 pub fn upstream_anthropic_messages_url(base_url: Option<&str>) -> String {
@@ -213,15 +278,23 @@ pub fn upstream_gemini_native_url(
 
 pub fn default_base_url(channel_type: i32) -> &'static str {
     match channel_type {
-        20 => "https://openrouter.ai/api",
+        CHANNEL_TYPE_BAIDU => "https://qianfan.baidubce.com/v2",
+        CHANNEL_TYPE_ZHIPU => "https://open.bigmodel.cn/api/paas/v4",
+        CHANNEL_TYPE_ZHIPU_V4 => "https://open.bigmodel.cn/api/paas/v4",
+        CHANNEL_TYPE_ALI => "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        CHANNEL_TYPE_OPENROUTER => "https://openrouter.ai/api",
+        CHANNEL_TYPE_MOONSHOT => "https://api.moonshot.cn",
+        CHANNEL_TYPE_PERPLEXITY => "https://api.perplexity.ai",
+        CHANNEL_TYPE_LINGYIWANWU => "https://api.lingyiwanwu.com",
+        CHANNEL_TYPE_SILICONFLOW => "https://api.siliconflow.cn",
+        CHANNEL_TYPE_MISTRAL => "https://api.mistral.ai",
+        CHANNEL_TYPE_DEEPSEEK => "https://api.deepseek.com",
+        CHANNEL_TYPE_MOKAAI => "https://api.moka.ai",
+        CHANNEL_TYPE_XAI => "https://api.x.ai",
+        CHANNEL_TYPE_SUBMODEL => "https://llm.submodel.ai",
         CHANNEL_TYPE_COHERE => "https://api.cohere.ai",
-        40 => "https://api.siliconflow.cn",
-        42 => "https://api.mistral.ai",
-        43 => "https://api.deepseek.com",
-        48 => "https://api.x.ai",
-        53 => "https://llm.submodel.ai",
         CHANNEL_TYPE_JINA => "https://api.jina.ai",
-        24 => "https://generativelanguage.googleapis.com",
+        CHANNEL_TYPE_GEMINI => "https://generativelanguage.googleapis.com",
         _ => "https://api.openai.com",
     }
 }
@@ -849,6 +922,24 @@ mod tests {
     }
 
     #[test]
+    fn ip_allowlist_supports_cidr_and_normalized_ips() {
+        // CIDR ranges (Go IsIpInCIDRList) — previously broken (exact-string only).
+        assert!(ip_allowlist_matches("10.0.0.0/8", Some("10.1.2.3")));
+        assert!(!ip_allowlist_matches("10.0.0.0/8", Some("11.0.0.1")));
+        assert!(ip_allowlist_matches(
+            "192.168.1.0/24, 10.0.0.0/8",
+            Some("192.168.1.50")
+        ));
+        // IPv6 CIDR and normalized bare-IP comparison.
+        assert!(ip_allowlist_matches("2001:db8::/32", Some("2001:db8::1")));
+        assert!(ip_allowlist_matches("::1", Some("0:0:0:0:0:0:0:1")));
+        // Mixed family: v4 CIDR must not match a v6 client.
+        assert!(!ip_allowlist_matches("10.0.0.0/8", Some("2001:db8::1")));
+        // Unparseable client IP is denied.
+        assert!(!ip_allowlist_matches("10.0.0.0/8", Some("not-an-ip")));
+    }
+
+    #[test]
     fn first_channel_key_accepts_plain_multiline_and_json_arrays() {
         assert_eq!(first_channel_key("sk-a\nsk-b").as_deref(), Some("sk-a"));
         assert_eq!(first_channel_key("\n  sk-b  ").as_deref(), Some("sk-b"));
@@ -905,6 +996,140 @@ mod tests {
             ),
             "https://rerank.example/v1/rerank"
         );
+    }
+
+    #[test]
+    fn openai_compatible_providers_use_known_default_base_urls() {
+        // Every provider newly added to OPENAI_COMPATIBLE_CHANNEL_TYPES must
+        // resolve to its documented upstream base when the channel does not
+        // carry an explicit base_url.
+        let cases: &[(i32, &str)] = &[
+            (
+                CHANNEL_TYPE_ZHIPU,
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_MOONSHOT,
+                "https://api.moonshot.cn/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_PERPLEXITY,
+                "https://api.perplexity.ai/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_LINGYIWANWU,
+                "https://api.lingyiwanwu.com/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_DEEPSEEK,
+                "https://api.deepseek.com/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_MISTRAL,
+                "https://api.mistral.ai/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_SILICONFLOW,
+                "https://api.siliconflow.cn/v1/chat/completions",
+            ),
+            (CHANNEL_TYPE_XAI, "https://api.x.ai/v1/chat/completions"),
+            (
+                CHANNEL_TYPE_MOKAAI,
+                "https://api.moka.ai/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_OPENROUTER,
+                "https://openrouter.ai/api/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_BAIDU,
+                "https://qianfan.baidubce.com/v2/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_ALI,
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            ),
+            (
+                CHANNEL_TYPE_ZHIPU_V4,
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            ),
+        ];
+        for (channel_type, expected) in cases {
+            assert_eq!(
+                upstream_v1_url(*channel_type, None, "chat/completions"),
+                *expected,
+                "channel type {channel_type} should map to its default base URL"
+            );
+        }
+    }
+
+    #[test]
+    fn openai_compatible_providers_prefer_explicit_base_url() {
+        // Admin-configured base_url always wins, mirroring Go behavior.
+        assert_eq!(
+            upstream_v1_url(
+                CHANNEL_TYPE_MOONSHOT,
+                Some("https://custom.example"),
+                "embeddings"
+            ),
+            "https://custom.example/v1/embeddings"
+        );
+        // Zhipu's default already ends with `/v4` (not `/v1`); an explicit
+        // `/v1` override should still be honored as-is.
+        assert_eq!(
+            upstream_v1_url(
+                CHANNEL_TYPE_ZHIPU,
+                Some("https://open.bigmodel.cn/api/paas/v4"),
+                "chat/completions"
+            ),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_channel_types_include_extended_providers() {
+        for channel_type in [
+            CHANNEL_TYPE_ZHIPU,
+            CHANNEL_TYPE_ZHIPU_V4,
+            CHANNEL_TYPE_BAIDU,
+            CHANNEL_TYPE_ALI,
+            CHANNEL_TYPE_MOONSHOT,
+            CHANNEL_TYPE_PERPLEXITY,
+            CHANNEL_TYPE_LINGYIWANWU,
+            CHANNEL_TYPE_MOKAAI,
+        ] {
+            assert!(
+                is_openai_compatible_channel_type(channel_type),
+                "channel type {channel_type} should be OpenAI-compatible"
+            );
+            assert!(channel_type_supported(
+                channel_type,
+                OPENAI_COMPATIBLE_CHANNEL_TYPES
+            ));
+        }
+        // Sanity check: native and rerank families are NOT OpenAI-compatible.
+        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_ANTHROPIC));
+        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_GEMINI));
+        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_COHERE));
+        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_JINA));
+    }
+
+    #[test]
+    fn trailing_version_segment_detection() {
+        // /v1, /v2, /v4 ... are honored so we do not append a second /v1.
+        assert!(has_trailing_version_segment(
+            "https://open.bigmodel.cn/api/paas/v4"
+        ));
+        assert!(has_trailing_version_segment("https://api.openai.com/v1"));
+        assert!(has_trailing_version_segment("https://example.test/v2"));
+        // Bare hosts, non-version paths, or `v` followed by non-digits must
+        // still get the default `/v1` prefix.
+        assert!(!has_trailing_version_segment("https://api.openai.com"));
+        assert!(!has_trailing_version_segment("https://example.test/openai"));
+        assert!(!has_trailing_version_segment(
+            "https://example.test/version"
+        ));
+        assert!(!has_trailing_version_segment("https://example.test/v"));
     }
 
     #[test]

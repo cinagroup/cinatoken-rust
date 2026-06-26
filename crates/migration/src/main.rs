@@ -525,6 +525,8 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "logs",
     "tasks",
     "subscription_orders",
+    "vendors",
+    "models",
 ];
 
 const D1_CORE_IMPORT_TABLES: &[&str] = &["users", "tokens", "channels", "abilities", "options"];
@@ -684,6 +686,33 @@ const SUBSCRIPTION_ORDERS_D1_COLUMNS: &[&str] = &[
     "currency",
     "created_at",
     "updated_at",
+];
+
+const VENDORS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "name",
+    "description",
+    "icon",
+    "status",
+    "created_time",
+    "updated_time",
+    "deleted_at",
+];
+
+const MODELS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "model_name",
+    "description",
+    "icon",
+    "tags",
+    "vendor_id",
+    "endpoints",
+    "status",
+    "sync_official",
+    "created_time",
+    "updated_time",
+    "name_rule",
+    "deleted_at",
 ];
 
 impl DevSeedConfig {
@@ -1342,6 +1371,20 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             column_map: &[],
             generate_missing_id: false,
         }),
+        "vendors" => Ok(D1TableSpec {
+            source_name: "vendors",
+            target_name: "vendors",
+            target_columns: VENDORS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: true,
+        }),
+        "models" => Ok(D1TableSpec {
+            source_name: "models",
+            target_name: "models",
+            target_columns: MODELS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: true,
+        }),
         _ => Err(format!("unsupported D1 import table: {table}")),
     }
 }
@@ -1631,11 +1674,39 @@ mod tests {
             "--output".to_string(),
             output.display().to_string(),
             "--table".to_string(),
-            "vendors".to_string(),
+            // midjourneys is in the export list but intentionally not in the
+            // D1 import list yet (async task tables land with G7).
+            "midjourneys".to_string(),
         ])
         .unwrap_err();
 
         assert!(err.contains("unsupported D1 import table"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn import_config_accepts_vendors_and_models() {
+        // vendors and models are now first-class D1 import tables so admin
+        // CRUD (G5) can restore vendor/model metadata alongside the core
+        // relay tables.
+        let temp = unique_temp_dir("import-vendors-models");
+        let input = temp.join("core.cinatoken-export.json");
+        let output = temp.join("core.d1.sql");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(&input, "{}").unwrap();
+
+        let config = ImportConfig::from_args(vec![
+            "--input".to_string(),
+            input.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--table".to_string(),
+            "vendors".to_string(),
+            "--table".to_string(),
+            "models".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(config.tables, vec!["vendors", "models"]);
         fs::remove_dir_all(temp).unwrap();
     }
 

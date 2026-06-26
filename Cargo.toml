@@ -10,8 +10,11 @@ members = [
   "crates/payments",
   "crates/providers",
   "crates/relay",
+  "crates/session",
+  "crates/ssrf",
   "crates/storage",
   "crates/tasks",
+  "crates/tokenizer",
   "crates/worker",
   "crates/xtask",
 ]
@@ -25,7 +28,14 @@ rust-version = "1.78"
 
 [workspace.dependencies]
 async-trait = "0.1"
+base64 = "0.22"
+bcrypt = "0.15"
+hmac = "0.12"
+ipnet = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
+unicode-segmentation = "1"
+url = "2"
 worker = "0.5"

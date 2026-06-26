@@ -2,11 +2,15 @@ use async_trait::async_trait;
 use cinatoken_core::{ApiResult, ChatCompletionRequest};
 
 pub mod cache;
+pub mod multipart;
 pub mod openai_compatible;
+pub mod retry;
+
 pub use cache::{
     scoped_key, token_fingerprint, CachedAuthenticatedToken, CachedRelayChannel, RelayCacheKeys,
     RELAY_CACHE_SCHEMA_VERSION,
 };
+pub use multipart::extract_multipart_field;
 pub use openai_compatible::{
     apply_gemini_native_model_mapping, apply_model_mapping, channel_type_supported,
     clamp_i64_to_i32, csv_contains, first_channel_key, ip_allowlist_matches,
@@ -19,6 +23,10 @@ pub use openai_compatible::{
     SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ANTHROPIC,
     CHANNEL_TYPE_COHERE, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA, GEMINI_CHANNEL_TYPES,
     OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
+};
+pub use retry::{
+    is_auto_disable_status, is_retryable_status, parse_retry_times_env, RetryConfig,
+    DEFAULT_RETRY_TIMES,
 };
 
 #[derive(Debug, Clone)]

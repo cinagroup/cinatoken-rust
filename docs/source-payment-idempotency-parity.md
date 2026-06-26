@@ -8,6 +8,45 @@ double-credit and missed-credit are hard rollback triggers
 (`docs/cutover-rollback-runbook.md`); this file pins the exact rules so the Rust
 implementation cannot double-credit or silently drop a payment.
 
+## Review findings (2026-06-25, `admin_payment.rs::stripe_webhook`)
+
+The Rust Stripe webhook has the two-layer idempotency shape but two real
+**missed-credit** bugs (customer paid, never credited; permanent after retry):
+
+1. **Non-atomic credit.** `complete_topup` (status 0->1) and `increase_user_quota`
+   are separate D1 calls; a crash between them leaves the top-up completed but
+   uncredited, and the retry is deduped.
+2. **Idempotency gated on event-dedup before the credit.** `insert_payment_event`
+   runs before `complete_topup`; if the credit then fails, the retry hits the
+   event-dedup early-return and the credit never runs.
+
+Fix: anchor idempotency on the conditional credit, make it atomic, demote event
+dedup to non-gating —
+```text
+batch:
+  s1: UPDATE topups SET status=1, complete_time=?now WHERE trade_no=? AND status=0
+  s2: UPDATE users SET quota = quota + (SELECT amount FROM topups WHERE trade_no=?)
+        WHERE id = (SELECT user_id FROM topups WHERE trade_no=?)
+          AND EXISTS (SELECT 1 FROM topups WHERE trade_no=? AND status=1 AND complete_time=?now)
+  return changes(s1) > 0
+```
+Replay -> s1 no-ops and the `complete_time=?now` guard fails (no double-credit);
+transient failure -> topup stays status=0 and the retry credits exactly once.
+Verify against staging D1 (D1 batch logic is not unit-testable here).
+
+Checkout (`stripe_pay`) also had:
+3. **Checkout created before the top-up row, with the row's error ignored**
+   (`let _ = create_topup`) -> a paid checkout could have no creditable record.
+4. **Hardcoded `cinatoken.example` redirect URLs** -> customers land on a dead
+   domain after paying.
+
+**Status: all four fixed in the working tree 2026-06-25** (uncommitted, in
+`admin_payment.rs` + `d1_repositories.rs`): atomic `complete_topup_and_credit`
+batch; event-dedup demoted to non-gating; top-up row created first with error
+handling; redirects built from `FRONTEND_BASE_URL` + `encode_uri_component`;
+fixed-width `trade_no` suffix. Worker tests + wasm green. **The atomic-batch
+credit still needs staging-D1 verification before paid cutover.**
+
 ## Source Of Truth
 
 - `model/topup.go` — `TopUp`, `Recharge` (Stripe), `RechargeCreem`,

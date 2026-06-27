@@ -91,9 +91,94 @@ pub fn select_weighted(
     tier.last().copied()
 }
 
+/// The result of one auto cross-group selection step: the channel chosen for
+/// this attempt plus the state to carry into the next retry. Mirrors the
+/// side effects of Go `service.CacheGetRandomSatisfiedChannel`
+/// (`ContextKeyAutoGroupIndex`, `param.SetRetry`, `param.ResetRetryNextTry`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoGroupOutcome<T> {
+    /// The selected channel (whatever the caller's `select` returned).
+    pub selected: T,
+    /// Index (into the user's auto-group list) of the group used this attempt.
+    pub group_index: usize,
+    /// The priority-tier index passed to the weighted selector for this group
+    /// (Go `priorityRetry`).
+    pub priority_retry: i32,
+    /// `ContextKeyAutoGroupIndex` to persist for the next retry.
+    pub next_group_index: usize,
+    /// `param.Retry` to persist for the next retry.
+    pub next_retry: i32,
+    /// Whether the next `IncreaseRetry` must be skipped (Go `ResetRetryNextTry`),
+    /// so the next attempt reuses `next_retry` rather than `next_retry + 1`.
+    pub reset_retry_next_try: bool,
+}
+
+/// Auto cross-group channel selection — pure port of the state machine in Go
+/// `service.CacheGetRandomSatisfiedChannel` for `tokenGroup == "auto"`
+/// (`service/channel_select.go:83`).
+///
+/// Starting at `start_group_index`, walk the user's auto groups. The first group
+/// uses `priority_retry = retry`; each subsequent group (reached because an
+/// earlier group had no channel for the model) uses `priority_retry = 0` — so a
+/// group exhausts its priorities before the next group is tried. `select(group_index,
+/// priority_retry)` performs the actual per-group weighted selection (e.g. via
+/// [`select_weighted`]) and returns the chosen channel, or `None` when that group
+/// has no channel for the model.
+///
+/// On finding a channel:
+/// - with `cross_group_retry` and `priority_retry >= retry_times`, the current
+///   group is still used but the next retry advances to the next group
+///   (`next_group_index = group_index + 1`, `next_retry = 0`,
+///   `reset_retry_next_try = true`);
+/// - otherwise the selection stays in the current group (`next_group_index =
+///   group_index`, `next_retry = priority_retry`).
+///
+/// Returns `None` when every group from `start_group_index` onward has no
+/// channel (the caller should stop retrying).
+pub fn auto_group_retry_step<T>(
+    group_count: usize,
+    start_group_index: usize,
+    retry: i32,
+    cross_group_retry: bool,
+    retry_times: i32,
+    mut select: impl FnMut(usize, i32) -> Option<T>,
+) -> Option<AutoGroupOutcome<T>> {
+    for group_index in start_group_index..group_count {
+        // The start group inherits the outer retry; groups reached after skipping
+        // an empty one restart at priority 0 (Go `if i > startGroupIndex`).
+        let priority_retry = if group_index > start_group_index {
+            0
+        } else {
+            retry
+        };
+
+        let Some(selected) = select(group_index, priority_retry) else {
+            // No channel in this group for the model: advance to the next group.
+            continue;
+        };
+
+        let (next_group_index, next_retry, reset_retry_next_try) =
+            if cross_group_retry && priority_retry >= retry_times {
+                (group_index + 1, 0, true)
+            } else {
+                (group_index, priority_retry, false)
+            };
+
+        return Some(AutoGroupOutcome {
+            selected,
+            group_index,
+            priority_retry,
+            next_group_index,
+            next_retry,
+            reset_retry_next_try,
+        });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{select_weighted, Candidate};
+    use super::{auto_group_retry_step, select_weighted, AutoGroupOutcome, Candidate};
 
     fn c(priority: i64, weight: i32) -> Candidate {
         Candidate { priority, weight }
@@ -155,5 +240,120 @@ mod tests {
         assert_eq!(select_weighted(&cands, 0, |_| 5), Some(0)); // 5-10 < 0
         assert_eq!(select_weighted(&cands, 0, |_| 10), Some(1)); // 10-10=0; 0-90 < 0
         assert_eq!(select_weighted(&cands, 0, |_| 99), Some(1));
+    }
+
+    // --- auto cross-group retry state machine ---
+
+    /// `select` available for group 0 only (always returns the priority it was
+    /// asked for, so we can assert priority_retry).
+    fn only_group0(gi: usize, pr: i32) -> Option<i32> {
+        if gi == 0 {
+            Some(pr)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn stays_in_group_without_cross_group_retry() {
+        let out =
+            auto_group_retry_step(2, 0, 1, false, 3, only_group0).expect("group 0 has a channel");
+        assert_eq!(
+            out,
+            AutoGroupOutcome {
+                selected: 1,         // priority_retry passed through by only_group0
+                group_index: 0,
+                priority_retry: 1,   // == outer retry
+                next_group_index: 0, // stay in group 0
+                next_retry: 1,       // unchanged -> outer loop will IncreaseRetry to 2
+                reset_retry_next_try: false,
+            }
+        );
+    }
+
+    #[test]
+    fn cross_group_retry_advances_group_when_priorities_exhausted() {
+        // priority_retry (3) >= retry_times (3): use group 0 now, advance next time.
+        let out = auto_group_retry_step(2, 0, 3, true, 3, |_, pr| Some(pr)).unwrap();
+        assert_eq!(out.group_index, 0);
+        assert_eq!(out.priority_retry, 3);
+        assert_eq!(out.next_group_index, 1); // next retry uses group 1
+        assert_eq!(out.next_retry, 0); // restart priorities in the new group
+        assert!(out.reset_retry_next_try); // skip the next IncreaseRetry
+    }
+
+    #[test]
+    fn skips_empty_leading_group_and_restarts_priority() {
+        // Group 0 has no channel; group 1 does -> use group 1 at priority 0.
+        let out = auto_group_retry_step(2, 0, 5, false, 3, |gi, pr| {
+            if gi == 1 {
+                Some(pr)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(out.group_index, 1);
+        assert_eq!(out.priority_retry, 0); // restarted (not the outer retry 5)
+        assert_eq!(out.next_group_index, 1);
+        assert_eq!(out.next_retry, 0);
+        assert!(!out.reset_retry_next_try);
+    }
+
+    #[test]
+    fn all_groups_empty_returns_none() {
+        let out = auto_group_retry_step(3, 0, 0, true, 3, |_, _| None::<i32>);
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn starts_from_persisted_group_index() {
+        // Resuming at group 1 (a prior cross-group advance); group 1 available.
+        let out = auto_group_retry_step(3, 1, 0, false, 3, |gi, pr| {
+            if gi == 1 {
+                Some(pr)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(out.group_index, 1);
+        assert_eq!(out.priority_retry, 0);
+        assert_eq!(out.next_group_index, 1);
+    }
+
+    #[test]
+    fn drives_a_full_two_group_retry_loop() {
+        // Two groups, each with channels at priorities 0..=1, retry_times = 1,
+        // cross_group_retry on. Replicate the outer loop:
+        //   for retry in 0..=retry_times (with IncreaseRetry / reset semantics).
+        // Expect: g0/p0, g0/p1 (advance armed), g1/p0, g1/p1.
+        let group_count = 2;
+        let retry_times = 1;
+        let select = |_gi: usize, _pr: i32| Some(());
+        let mut group_index = 0usize;
+        let mut retry = 0i32;
+        let mut trace = Vec::new();
+
+        while retry <= retry_times {
+            let out = auto_group_retry_step(
+                group_count,
+                group_index,
+                retry,
+                true,
+                retry_times,
+                select,
+            );
+            let Some(out) = out else { break };
+            trace.push((out.group_index, out.priority_retry));
+            group_index = out.next_group_index;
+            retry = out.next_retry;
+            // Outer-loop IncreaseRetry: skip the increment once if reset was armed.
+            if !out.reset_retry_next_try {
+                retry += 1;
+            }
+        }
+
+        assert_eq!(trace, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
     }
 }

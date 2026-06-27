@@ -136,8 +136,21 @@ the pool. `RelayChannel` carries `priority`/`weight` (`crates/storage`).
 Benign divergence from Go (documented): the Rust pool **shrinks** each attempt
 (`pool.remove(pick)`), so a channel is never retried; Go re-selects from the full
 set each retry and *can* repeat the same channel. Rust's behavior spreads retries
-better within a tier. Affinity and auto cross-group retry parity are still
-pending.
+better within a tier.
+
+Auto cross-group retry — **state machine ported 2026-06-27** as the pure
+`cinatoken_core::channel_select::auto_group_retry_step` (faithful port of
+`CacheGetRandomSatisfiedChannel`'s group/priority walk: start group uses
+`priorityRetry = retry`, later groups restart at 0 so a group exhausts its
+priorities before the next is tried; `crossGroupRetry && priorityRetry >=
+RetryTimes` arms a group advance for the next retry via the `ResetRetryNextTry`
+semantics; returns the per-attempt `(group_index, priority_retry)` plus the
+`(next_group_index, next_retry, reset_retry_next_try)` to persist). 6 unit tests
+incl. a full two-group loop trace. **Ready to wire** — the wiring needs the
+auto-group config layer (`GetAutoGroups` / `GetUserUsableGroups` /
+`GetUserAutoGroup`), which is not yet ported, plus per-group candidate querying
+in the relay retry loop (today the loop selects within a single
+`effective_group`). Affinity parity is still pending.
 
 The selection-specific parity gaps to close before relay canary:
 
@@ -147,8 +160,10 @@ The selection-specific parity gaps to close before relay canary:
    weights, single candidate.
 2. **Retry->priority mapping** — fixture that retry 0..k walks priorities highest
    to lowest with clamping.
-3. **Auto cross-group retry** — state-machine fixtures for "exhaust priorities
-   then advance group", with and without `crossGroupRetry`.
+3. **Auto cross-group retry** — pure state machine DONE 2026-06-27
+   (`core::channel_select::auto_group_retry_step`, 6 fixtures incl. with/without
+   `crossGroupRetry` and a full two-group loop trace). Remaining: the auto-group
+   config layer + wiring into the relay retry loop (see status note above).
 4. **Affinity layer** — preferred-channel reuse, disabled-channel fallthrough,
    record-on-success-only, and store-outage fail-open; on Durable Objects per
    §21.2.

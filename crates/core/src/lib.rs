@@ -15,7 +15,7 @@ pub mod status;
 pub mod tiktoken;
 
 pub use bpe::bpe_token_count;
-pub use channel_select::{select_weighted, Candidate};
+pub use channel_select::{auto_group_retry_step, select_weighted, AutoGroupOutcome, Candidate};
 pub use completion_ratio::hardcoded_completion_ratio;
 pub use default_ratios::{
     default_audio_completion_ratio, default_audio_ratio, default_cache_ratio,

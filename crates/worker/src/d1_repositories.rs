@@ -1,3 +1,4 @@
+use cinatoken_core::format_matching_model_name;
 use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_contains};
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde::Deserialize;
@@ -140,9 +141,26 @@ pub async fn select_relay_channels(
 ) -> worker::Result<Vec<RelayChannel>> {
     let mut candidates =
         select_channels_from_abilities(db, model, group, supported_channel_types).await?;
+    // Go `GetRandomSatisfiedChannel` (model/channel_cache.go:107-113) tries the
+    // exact requested model first, then falls back to the NORMALIZED model —
+    // this is how thinking-budget / gizmo models route: a request for
+    // `gemini-2.5-flash-thinking-8192` has no exact ability row, but the
+    // normalized `gemini-2.5-flash-thinking-*` wildcard matches the ability
+    // seeded for the wildcard. Only re-query when normalization actually
+    // changed the name, so the common exact-match path stays one round-trip.
+    if candidates.is_empty() {
+        if let Some(normalized) = normalized_fallback_model(model) {
+            candidates =
+                select_channels_from_abilities(db, &normalized, group, supported_channel_types)
+                    .await?;
+        }
+    }
     if candidates.is_empty() {
         // Only fall back to the channel-CSV scan when abilities had nothing
-        // for this group/model, mirroring the historical single-select path.
+        // for this group/model (exact or normalized), mirroring the historical
+        // single-select path. NOTE: Go also normalizes in channel_satisfy.go
+        // for this scan, but it only runs when abilities are entirely empty,
+        // so the gap is negligible here.
         candidates =
             select_channels_from_channel_csv(db, model, group, supported_channel_types).await?;
     }
@@ -150,6 +168,19 @@ pub async fn select_relay_channels(
         .into_iter()
         .filter(|channel| channel_type_supported(channel.channel_type, supported_channel_types))
         .collect())
+}
+
+/// The normalized model name to retry when an exact ability match misses, or
+/// `None` when normalization would not change the name (so there is nothing to
+/// retry). Mirrors Go's `normalizedModel := FormatMatchingModelName(model)`
+/// fallback condition. Pure so the routing logic is unit-testable without a D1.
+fn normalized_fallback_model(model: &str) -> Option<String> {
+    let normalized = format_matching_model_name(model);
+    if normalized == model {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 /// Best-effort automatic channel disable. Used by the relay retry loop when a
@@ -3362,6 +3393,48 @@ pub async fn quota_trend_by_user_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_fallback_model_collapses_thinking_budget() {
+        // A thinking-budget gemini request has no exact ability row; the
+        // normalized wildcard is the retry target Go uses.
+        assert_eq!(
+            normalized_fallback_model("gemini-2.5-flash-thinking-8192").as_deref(),
+            Some("gemini-2.5-flash-thinking-*")
+        );
+        assert_eq!(
+            normalized_fallback_model("gemini-2.5-pro-thinking-32768").as_deref(),
+            Some("gemini-2.5-pro-thinking-*")
+        );
+        assert_eq!(
+            normalized_fallback_model("gemini-2.5-flash-lite-thinking-1").as_deref(),
+            Some("gemini-2.5-flash-lite-thinking-*")
+        );
+    }
+
+    #[test]
+    fn normalized_fallback_model_collapses_gizmo() {
+        assert_eq!(
+            normalized_fallback_model("gpt-4-gizmo-g-abc").as_deref(),
+            Some("gpt-4-gizmo-*")
+        );
+        assert_eq!(
+            normalized_fallback_model("gpt-4o-gizmo-g-xyz").as_deref(),
+            Some("gpt-4o-gizmo-*")
+        );
+    }
+
+    #[test]
+    fn normalized_fallback_model_is_none_when_unchanged() {
+        // Plain / already-normal models have no retry target — the exact match
+        // is the only query, so the common path stays one round-trip.
+        assert_eq!(normalized_fallback_model("gpt-4o"), None);
+        assert_eq!(normalized_fallback_model("claude-3-5-sonnet"), None);
+        assert_eq!(normalized_fallback_model("gemini-2.5-flash"), None);
+        // A name WITHOUT the thinking-budget marker is unchanged even though it
+        // shares a prefix with a collapsible family.
+        assert_eq!(normalized_fallback_model("gemini-2.5-flash-002"), None);
+    }
 
     #[test]
     fn resolves_tiered_billing_expr_from_go_option_maps() {

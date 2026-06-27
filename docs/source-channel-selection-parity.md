@@ -154,8 +154,16 @@ The selection-specific parity gaps to close before relay canary:
    §21.2.
 5. **Pre-selection gates** — specific-channel pin (enabled check, 403) and token
    model-limit (normalized match, empty-map deny) with matching status codes.
-6. **Model normalization** — shared `FormatMatchingModelName`-equivalent used in
-   ability lookup, model-limit, and candidate fallback.
+6. **Model normalization** — DONE 2026-06-26 for the ability lookup:
+   `select_relay_channels` now mirrors Go's exact-then-normalized fallback
+   (`GetRandomSatisfiedChannel`, `model/channel_cache.go:107-113`): query
+   abilities with the raw requested model; if empty and
+   `format_matching_model_name(model) != model`, re-query with the normalized
+   name (via the pure `normalized_fallback_model` helper). This routes
+   thinking-budget/gizmo models (`gemini-2.5-flash-thinking-8192` →
+   `gemini-2.5-flash-thinking-*`) to their wildcard-keyed ability. The common
+   exact-match path stays one D1 round-trip. Still pending: normalization in the
+   token model-limit gate and the last-resort channel-CSV scan.
 
 ## Wire-In
 

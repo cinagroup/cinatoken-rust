@@ -7,3 +7,7 @@
 /exports/
 *.cinatoken-export.json
 *.log
+
+# Windows `nul` is a reserved device name; accidental `> nul` redirects in
+# Git Bash create a stray file named `nul` that must never be committed.
+/nul

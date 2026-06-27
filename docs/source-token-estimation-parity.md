@@ -148,10 +148,19 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    one bug found — `U+017F` long-s case-folding in the contraction rule — is
    fixed). Documented approximation: `\p{L}`/`\p{N}` ↔ `char::is_alphabetic`/
    `is_numeric` (differs only on exotic `Nl`/`No` code points like Roman
-   numerals; acceptable for a reserve estimate). Remaining: (a) the `o200k_base`
-   pre-tokenizer (gpt-4o/o-series), (b) load the mergeable-rank vocab from KV/R2
-   at runtime (do not embed ~1.7 MB, §21.7) and wire `count_bpe_tokens_*` into
-   the request text estimator for OpenAI models, replacing the heuristic there.
+   numerals; acceptable for a reserve estimate). **o200k_base pre-tokenizer DONE
+   2026-06-27** (`pre_tokenize_o200k`/`count_bpe_tokens_o200k`): the case-split
+   A/B word rule (camelCase boundaries) with attached contractions and the `/`
+   trailing class; `\p{L}`/`\p{N}`/`\p{M}` and the upper/lower letter classes are
+   now resolved from **exact Unicode general categories** (`unicode-general-category`
+   crate, no_std/WASM-ok), which also removed the cl100k `is_alphabetic`/
+   `is_numeric` approximation. 17 unit tests; cl100k was differentially verified
+   vs real Python `tiktoken` earlier. CAVEAT: the o200k adversarial differential
+   verification vs real `tiktoken` o200k_base did not finish (session limit) —
+   **re-run it** before wiring o200k into billing. Remaining: load the
+   mergeable-rank vocab from KV/R2 at runtime (do not embed ~1.7 MB, §21.7) and
+   wire `count_bpe_tokens_*` into the request text estimator for OpenAI models,
+   replacing the heuristic there.
 2. Port the non-OpenAI `EstimateTokenByModel` heuristic and the
    `TokenTypeTextNumber` rune-count path — **DONE 2026-06-26**. `crates/tokenizer`
    is now a faithful per-rune port of Go `EstimateToken`: all 10 weighted

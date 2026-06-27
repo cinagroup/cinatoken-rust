@@ -32,4 +32,7 @@ pub use relay_policy::{should_disable_channel, should_retry};
 pub use request_tokens::openai_chat_format_overhead;
 pub use response::ApiEnvelope;
 pub use status::{RuntimeFeature, StatusResponse};
-pub use tiktoken::{count_bpe_tokens_cl100k, parse_mergeable_ranks, pre_tokenize_cl100k};
+pub use tiktoken::{
+    count_bpe_tokens_cl100k, count_bpe_tokens_o200k, parse_mergeable_ranks, pre_tokenize_cl100k,
+    pre_tokenize_o200k,
+};

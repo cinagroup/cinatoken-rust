@@ -19,13 +19,21 @@
 //! The `\s+(?!\S)` alternative needs regex look-ahead, which the `regex` crate
 //! lacks. Rather than pull in a look-ahead regex engine, this module reproduces
 //! the regex's *ordered-alternative, leftmost-longest* semantics directly as a
-//! scanner. The one approximation is `\p{L}`/`\p{N}` ↔ Rust's
-//! `char::is_alphabetic`/`is_numeric` (the Unicode *Alphabetic*/*Numeric*
-//! derived properties), which differ only for exotic code points (e.g. Roman
-//! numerals). This is a request-time *estimate* (settlement uses upstream
-//! usage), so that edge is acceptable and documented.
+//! scanner. `\p{L}`/`\p{N}`/`\p{M}` and the o200k upper/lower letter classes are
+//! resolved from exact Unicode general categories
+//! (`unicode-general-category`); `\s` uses `char::is_whitespace` (the Unicode
+//! *White_Space* property, which equals regex `\s`).
+//!
+//! Two encoders are provided: `count_bpe_tokens_cl100k` (`cl100k_base`, GPT-4 /
+//! 3.5 era) and `count_bpe_tokens_o200k` (`o200k_base`, gpt-4o / o-series). They
+//! share the digit/punctuation/whitespace alternatives but differ in the word
+//! rule: o200k splits letter runs on case transitions (camelCase) and attaches a
+//! trailing contraction to the word, while cl100k treats a letter run as one
+//! piece and emits contractions as their own piece.
 
 use std::collections::HashMap;
+
+use unicode_general_category::{get_general_category, GeneralCategory};
 
 use crate::bpe::bpe_token_count;
 
@@ -33,6 +41,15 @@ use crate::bpe::bpe_token_count;
 /// mergeable-rank table. Pre-tokenizes, then BPE-merges each piece.
 pub fn count_bpe_tokens_cl100k(text: &str, ranks: &HashMap<Vec<u8>, u32>) -> usize {
     pre_tokenize_cl100k(text)
+        .iter()
+        .map(|piece| bpe_token_count(piece.as_bytes(), ranks))
+        .sum()
+}
+
+/// Count the tokens `text` encodes to under the `o200k_base` encoder (gpt-4o /
+/// o-series), given the mergeable-rank table.
+pub fn count_bpe_tokens_o200k(text: &str, ranks: &HashMap<Vec<u8>, u32>) -> usize {
+    pre_tokenize_o200k(text)
         .iter()
         .map(|piece| bpe_token_count(piece.as_bytes(), ranks))
         .sum()
@@ -66,6 +83,17 @@ pub fn parse_mergeable_ranks(data: &str) -> HashMap<Vec<u8>, u32> {
 /// Split `text` into pre-token pieces per the `cl100k_base` regex (see module
 /// docs). Exposed for testing; production callers use `count_bpe_tokens_cl100k`.
 pub fn pre_tokenize_cl100k(text: &str) -> Vec<&str> {
+    pre_tokenize_with(text, next_piece_char_len)
+}
+
+/// Split `text` into pre-token pieces per the `o200k_base` regex. Exposed for
+/// testing; production callers use `count_bpe_tokens_o200k`.
+pub fn pre_tokenize_o200k(text: &str) -> Vec<&str> {
+    pre_tokenize_with(text, next_piece_char_len_o200k)
+}
+
+/// Run the pre-tokenization scan with the given per-encoder `next_len` rule.
+fn pre_tokenize_with(text: &str, next_len: fn(&[char], usize) -> usize) -> Vec<&str> {
     let chars: Vec<char> = text.chars().collect();
     // Byte offset of each char boundary (len+1 entries; last == text.len()).
     let mut byte_at = Vec::with_capacity(chars.len() + 1);
@@ -79,7 +107,7 @@ pub fn pre_tokenize_cl100k(text: &str) -> Vec<&str> {
     let mut pieces = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        let len = next_piece_char_len(&chars, i);
+        let len = next_len(&chars, i);
         pieces.push(&text[byte_at[i]..byte_at[i + len]]);
         i += len;
     }
@@ -99,12 +127,57 @@ fn fold_contraction_letter(c: char) -> char {
     }
 }
 
+/// `\p{L}`: any letter (Lu, Ll, Lt, Lm, Lo).
 fn is_letter(c: char) -> bool {
-    c.is_alphabetic()
+    matches!(
+        get_general_category(c),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    )
 }
 
+/// `\p{N}`: any number (Nd, Nl, No) — includes e.g. Roman numerals (Nl).
 fn is_number(c: char) -> bool {
-    c.is_numeric()
+    matches!(
+        get_general_category(c),
+        GeneralCategory::DecimalNumber
+            | GeneralCategory::LetterNumber
+            | GeneralCategory::OtherNumber
+    )
+}
+
+/// `\p{M}`: any mark (Mn, Mc, Me).
+fn is_mark(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::NonspacingMark
+            | GeneralCategory::SpacingMark
+            | GeneralCategory::EnclosingMark
+    )
+}
+
+/// o200k upper-letter class `[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]`.
+fn is_o200k_upper(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    ) || is_mark(c)
+}
+
+/// o200k lower-letter class `[\p{Ll}\p{Lm}\p{Lo}\p{M}]`.
+fn is_o200k_lower(c: char) -> bool {
+    matches!(
+        get_general_category(c),
+        GeneralCategory::LowercaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+    ) || is_mark(c)
 }
 
 fn is_newline(c: char) -> bool {
@@ -117,7 +190,7 @@ fn is_space(c: char) -> bool {
 
 /// `[^\s\p{L}\p{N}]`: not whitespace, letter, or number (punctuation/symbols).
 fn is_other(c: char) -> bool {
-    !c.is_whitespace() && !c.is_alphabetic() && !c.is_numeric()
+    !c.is_whitespace() && !is_letter(c) && !is_number(c)
 }
 
 /// Number of chars the next pre-token piece consumes at position `i`. Returns at
@@ -163,38 +236,83 @@ fn next_piece_char_len(c: &[char], i: usize) -> usize {
 
     // alt3: \p{N}{1,3} — 1 to 3 digits.
     if is_number(ch) {
-        let mut j = i + 1;
-        while j < n && j < i + 3 && is_number(c[j]) {
-            j += 1;
-        }
-        return j - i;
+        return digit_run_len(c, i);
     }
 
-    // alt4:  ?[^\s\p{L}\p{N}]+[\r\n]* — optional single space, a run of
-    // punctuation/symbols, then trailing newlines.
-    {
-        let scan_start = if ch == ' ' { i + 1 } else { i };
-        if scan_start < n && is_other(c[scan_start]) {
-            let mut k = scan_start + 1;
-            while k < n && is_other(c[k]) {
-                k += 1;
-            }
-            while k < n && is_newline(c[k]) {
-                k += 1;
-            }
-            return k - i;
-        }
+    // alt4:  ?[^\s\p{L}\p{N}]+[\r\n]* — optional single space, a punctuation/
+    // symbol run, then trailing newlines.
+    if let Some(len) = punctuation_run_len(c, i, false) {
+        return len;
     }
 
-    // Reaching here, `ch` is whitespace (all non-whitespace starts matched an
-    // earlier alternative). Find the maximal whitespace run.
+    // alt5-7: `ch` is whitespace (every non-whitespace start matched above).
+    whitespace_piece_len(c, i)
+}
+
+/// Number of chars the next `o200k_base` pre-token piece consumes at `i`. Shares
+/// the digit/whitespace alternatives with cl100k; differs in the word rule
+/// (case-split letter runs with attached contraction) and the alt4 trailing
+/// class (which also absorbs `/`).
+fn next_piece_char_len_o200k(c: &[char], i: usize) -> usize {
+    let ch = c[i];
+
+    // The word rule (regex alternatives A then B), each = optional
+    // non-letter/digit lead, a case-structured letter run, optional contraction.
+    if let Some(len) = match_word_o200k(c, i) {
+        return len;
+    }
+
+    // alt3: \p{N}{1,3}
+    if is_number(ch) {
+        return digit_run_len(c, i);
+    }
+
+    // alt4:  ?[^\s\p{L}\p{N}]+[\r\n/]* — o200k adds `/` to the trailing class.
+    if let Some(len) = punctuation_run_len(c, i, true) {
+        return len;
+    }
+
+    // alt5-7: whitespace.
+    whitespace_piece_len(c, i)
+}
+
+/// alt3: `\p{N}{1,3}` — 1 to 3 digits at `i` (caller ensures c[i] is a digit).
+fn digit_run_len(c: &[char], i: usize) -> usize {
+    let n = c.len();
+    let mut j = i + 1;
+    while j < n && j < i + 3 && is_number(c[j]) {
+        j += 1;
+    }
+    j - i
+}
+
+/// alt4: ` ?[^\s\p{L}\p{N}]+[\r\n]*`, plus `/` in the trailing class when
+/// `slash_trailing` (o200k). Returns the piece length, or `None` if no
+/// punctuation/symbol run starts here.
+fn punctuation_run_len(c: &[char], i: usize, slash_trailing: bool) -> Option<usize> {
+    let n = c.len();
+    let scan_start = if c[i] == ' ' { i + 1 } else { i };
+    if scan_start < n && is_other(c[scan_start]) {
+        let mut k = scan_start + 1;
+        while k < n && is_other(c[k]) {
+            k += 1;
+        }
+        while k < n && (is_newline(c[k]) || (slash_trailing && c[k] == '/')) {
+            k += 1;
+        }
+        return Some(k - i);
+    }
+    None
+}
+
+/// alt5-7: `\s*[\r\n]+ | \s+(?!\S) | \s+`. Caller ensures c[i] is whitespace.
+fn whitespace_piece_len(c: &[char], i: usize) -> usize {
+    let n = c.len();
     let mut k = i;
     while k < n && is_space(c[k]) {
         k += 1;
     }
-
-    // alt5: \s*[\r\n]+ — a whitespace run is consumed through its LAST newline;
-    // trailing non-newline whitespace is left for the next scan.
+    // alt5: consume through the LAST newline in the run, if any.
     let mut last_newline = None;
     for (idx, &wc) in c.iter().enumerate().take(k).skip(i) {
         if is_newline(wc) {
@@ -204,11 +322,7 @@ fn next_piece_char_len(c: &[char], i: usize) -> usize {
     if let Some(last) = last_newline {
         return last + 1 - i;
     }
-
-    // alt6: \s+(?!\S) — whitespace run not followed by a non-space. At end of
-    // input the whole run matches; otherwise the run is followed by a non-space,
-    // so look-ahead forces the last whitespace char to be left for the next
-    // piece (where it becomes the leading space of a word/punctuation token).
+    // alt6: \s+(?!\S) — whole run at end of input, else leave the last space.
     if k == n {
         return k - i;
     }
@@ -217,6 +331,85 @@ fn next_piece_char_len(c: &[char], i: usize) -> usize {
     }
     // alt7: \s+ — a lone whitespace char before a non-space.
     1
+}
+
+/// o200k word match: optional lead `[^\r\n\p{L}\p{N}]?` then alternative A
+/// (`[upper]*[lower]+`) or B (`[upper]+[lower]*`), then an optional contraction.
+fn match_word_o200k(c: &[char], i: usize) -> Option<usize> {
+    let ch = c[i];
+    if is_letter(ch) {
+        return match_ab_body(c, i);
+    }
+    // A valid lead is any non-newline, non-letter, non-digit char (incl. space /
+    // punctuation); the letter body must then start at i+1.
+    if !is_newline(ch) && !is_number(ch) {
+        return match_ab_body(c, i + 1).map(|len| 1 + len);
+    }
+    None
+}
+
+/// Alternative A then B (no lead); returns the body length incl. contraction.
+fn match_ab_body(c: &[char], start: usize) -> Option<usize> {
+    match_a_body(c, start).or_else(|| match_b_body(c, start))
+}
+
+/// A body: `[upper]*[lower]+(contraction)?`. The greedy upper run yields a
+/// "both-class" (Lm/Lo/M) trailing char to the required lower run when needed.
+fn match_a_body(c: &[char], start: usize) -> Option<usize> {
+    let n = c.len();
+    let mut u = start;
+    while u < n && is_o200k_upper(c[u]) {
+        u += 1;
+    }
+    let lower_start = if u < n && is_o200k_lower(c[u]) {
+        u
+    } else if u > start && is_o200k_lower(c[u - 1]) {
+        u - 1
+    } else {
+        return None;
+    };
+    let mut k = lower_start;
+    while k < n && is_o200k_lower(c[k]) {
+        k += 1;
+    }
+    Some(k - start + contraction_suffix_len(c, k))
+}
+
+/// B body: `[upper]+[lower]*(contraction)?`.
+fn match_b_body(c: &[char], start: usize) -> Option<usize> {
+    let n = c.len();
+    let mut u = start;
+    while u < n && is_o200k_upper(c[u]) {
+        u += 1;
+    }
+    if u == start {
+        return None;
+    }
+    let mut k = u;
+    while k < n && is_o200k_lower(c[k]) {
+        k += 1;
+    }
+    Some(k - start + contraction_suffix_len(c, k))
+}
+
+/// Optional `(?i:'s|'t|'re|'ve|'m|'ll|'d)` directly after an o200k word. Returns
+/// 0 (none), 2, or 3.
+fn contraction_suffix_len(c: &[char], k: usize) -> usize {
+    let n = c.len();
+    if k >= n || c[k] != '\'' {
+        return 0;
+    }
+    if k + 2 < n {
+        let a = fold_contraction_letter(c[k + 1]);
+        let b = fold_contraction_letter(c[k + 2]);
+        if ((a == 'r' || a == 'v') && b == 'e') || (a == 'l' && b == 'l') {
+            return 3;
+        }
+    }
+    if k + 1 < n && matches!(fold_contraction_letter(c[k + 1]), 's' | 't' | 'm' | 'd') {
+        return 2;
+    }
+    0
 }
 
 /// Decode standard base64 (RFC 4648, `+/` alphabet, `=` padding). Returns `None`
@@ -383,5 +576,58 @@ mod tests {
         // "lo lo": pieces ["lo", " lo"]. "lo" -> 1 token (merged). " lo": bytes
         // [' ','l','o'] -> ' ' stays, "lo" merges -> 2 tokens. Total 3.
         assert_eq!(count_bpe_tokens_cl100k("lo lo", &ranks), 3);
+    }
+
+    #[test]
+    fn o200k_splits_camelcase() {
+        assert_eq!(pre_tokenize_o200k("HelloWorld"), vec!["Hello", "World"]);
+        assert_eq!(pre_tokenize_o200k("getHTTPResponse"), vec!["get", "HTTPResponse"]);
+        assert_eq!(pre_tokenize_o200k("aB"), vec!["a", "B"]);
+        // upper* lower+ keeps a leading caps run with its lowercase tail.
+        assert_eq!(pre_tokenize_o200k("ABCdef"), vec!["ABCdef"]);
+        assert_eq!(pre_tokenize_o200k("ABC"), vec!["ABC"]);
+    }
+
+    #[test]
+    fn o200k_attaches_contraction_to_word() {
+        // Unlike cl100k, o200k folds the contraction into the word piece.
+        assert_eq!(pre_tokenize_o200k("don't"), vec!["don't"]);
+        assert_eq!(pre_tokenize_o200k("I'm"), vec!["I'm"]);
+        assert_eq!(pre_tokenize_o200k("they're"), vec!["they're"]);
+        assert_eq!(pre_tokenize_o200k("ABC's"), vec!["ABC's"]);
+        // cl100k splits the same input differently (regression guard).
+        assert_eq!(pre_tokenize_cl100k("don't"), vec!["don", "'t"]);
+    }
+
+    #[test]
+    fn o200k_shares_digit_and_whitespace_rules() {
+        assert_eq!(pre_tokenize_o200k("hello world"), vec!["hello", " world"]);
+        assert_eq!(pre_tokenize_o200k("1234567"), vec!["123", "456", "7"]);
+        assert_eq!(pre_tokenize_o200k("a\nb"), vec!["a", "\n", "b"]);
+        assert_eq!(pre_tokenize_o200k("  hello"), vec![" ", " hello"]);
+        // CJK (OtherLetter) groups as a single letter run.
+        assert_eq!(pre_tokenize_o200k("你好"), vec!["你好"]);
+    }
+
+    #[test]
+    fn o200k_no_chars_dropped() {
+        for text in [
+            "camelCaseHTTPServer don't 你好 — 2026!\n\tTab\tand   spaces.",
+            "a/b/c path/to/file ABCdef'reGHI",
+            "'tis 'TWAS 123abc456",
+        ] {
+            let joined: String = pre_tokenize_o200k(text).concat();
+            assert_eq!(joined, text, "o200k round-trip failed for {text:?}");
+        }
+    }
+
+    #[test]
+    fn exact_unicode_categories_for_letter_and_number() {
+        // Roman numeral U+2160 is \p{Nl} (a number), not \p{L} — exact category
+        // resolution puts it on the digit path, matching real tiktoken.
+        assert!(is_number('\u{2160}'));
+        assert!(!is_letter('\u{2160}'));
+        // CJK ideograph is \p{Lo} (a letter).
+        assert!(is_letter('好'));
     }
 }

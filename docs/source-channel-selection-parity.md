@@ -152,8 +152,14 @@ The selection-specific parity gaps to close before relay canary:
 4. **Affinity layer** — preferred-channel reuse, disabled-channel fallthrough,
    record-on-success-only, and store-outage fail-open; on Durable Objects per
    §21.2.
-5. **Pre-selection gates** — specific-channel pin (enabled check, 403) and token
-   model-limit (normalized match, empty-map deny) with matching status codes.
+5. **Pre-selection gates** — token model-limit: DONE 2026-06-26. The pure
+   `model_allowed_for_token` helper (in `relay.rs`) mirrors Go
+   `middleware/distributor.go:60-76`: limits disabled → allow; otherwise
+   normalize the request model via `format_matching_model_name` and require it
+   in the limits CSV; an enabled-but-empty limit list denies everything (Go's
+   empty-map → 403, reproduced because `csv_contains("") == false`). 7 unit
+   tests cover disabled/exact/wildcard(gizmo+thinking)/deny/empty-deny-all/
+   case-insensitive. Still pending: the specific-channel pin gate.
 6. **Model normalization** — DONE 2026-06-26 for the ability lookup:
    `select_relay_channels` now mirrors Go's exact-then-normalized fallback
    (`GetRandomSatisfiedChannel`, `model/channel_cache.go:107-113`): query

@@ -151,7 +151,7 @@ math is done.
 
 | Primitive | Ports (Go) | Wire into |
 | --- | --- | --- |
-| `core::model_name::format_matching_model_name` | `FormatMatchingModelName` | **WIRED** into `billing/pricing.rs::completion_ratio` (2026-06-26) and into `d1_repositories.rs::select_relay_channels` ability-lookup fallback (2026-06-26, exact-then-normalized, Go parity). Still pending: the token model-limit match. |
+| `core::model_name::format_matching_model_name` | `FormatMatchingModelName` | **WIRED** into `billing/pricing.rs::completion_ratio` (2026-06-26), `d1_repositories.rs::select_relay_channels` ability-lookup fallback (2026-06-26, exact-then-normalized), and `relay.rs::model_allowed_for_token` token model-limit gate (2026-06-26). The last `format_matching_model_name` site (last-resort channel-CSV scan) is intentionally left — negligible, runs only when abilities are entirely empty. |
 | `core::channel_select::select_weighted` | `GetRandomSatisfiedChannel` (priority + weighted-random + smoothing) | **WIRED** into the relay retry loop (`worker/relay.rs` ~670) with a `Math::random` RNG; pool shrinks per attempt (benign Go divergence). Affinity + cross-group retry still pending. |
 | `core::completion_ratio::hardcoded_completion_ratio` | `getHardcodedCompletionModelRatio` (incl. the `gpt-3.5` dead-code quirk) | **WIRED** (2026-06-26) into `billing/pricing.rs::completion_ratio` with Go precedence (authoritative > options map > soft default; `/`-names map-only; `format_matching_model_name` applied first). |
 | `core::image_tokens::image_tokens` | `getImageToken` (patch/tile, 1536-cap, flags) | request token estimator (+ an image-dimension header parser to feed w/h) |

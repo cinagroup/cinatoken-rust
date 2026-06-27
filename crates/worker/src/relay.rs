@@ -6,7 +6,9 @@ use cinatoken_billing::{
     TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
-use cinatoken_core::{select_weighted, ApiError, ApiResult, Candidate, ErrorBody};
+use cinatoken_core::{
+    format_matching_model_name, select_weighted, ApiError, ApiResult, Candidate, ErrorBody,
+};
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
     first_channel_key, ip_allowlist_matches, is_auto_disable_status, is_retryable_status,
@@ -1950,6 +1952,24 @@ async fn authenticate_from_d1(
     validate_authenticated_token(db, row, model, client_ip).await
 }
 
+/// Whether `model` is permitted by a token's model-limit setting, mirroring Go
+/// `middleware/distributor.go:60-76` exactly:
+/// - limits disabled → allow (true);
+/// - otherwise normalize the requested model via `format_matching_modelName`
+///   (so a token limited to `gemini-2.5-flash-thinking-*` admits a request for
+///   `gemini-2.5-flash-thinking-8192`), and allow iff it is in the limits CSV;
+/// - an enabled-but-empty limit list denies everything (Go: empty map → 403),
+///   which `csv_contains("") == false` reproduces.
+///
+/// Pure so the gate logic is unit-testable without a D1.
+fn model_allowed_for_token(model_limits_enabled: i32, model_limits: &str, model: &str) -> bool {
+    if model_limits_enabled == 0 {
+        return true;
+    }
+    let normalized = format_matching_model_name(model);
+    csv_contains(model_limits, &normalized)
+}
+
 async fn validate_authenticated_token(
     db: &D1Database,
     row: AuthenticatedToken,
@@ -1970,7 +1990,7 @@ async fn validate_authenticated_token(
     if row.user_quota <= 0 {
         return Err(openai_error_response("user quota is exhausted", 403));
     }
-    if row.has_model_limits() && !csv_contains(&row.model_limits, model) {
+    if !model_allowed_for_token(row.model_limits_enabled, &row.model_limits, model) {
         return Err(openai_error_response(
             format!("model {model} is not allowed for this token"),
             403,
@@ -4104,6 +4124,78 @@ fn quota_mutation_error_status(err: &worker::Error) -> u16 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn model_limit_disabled_allows_anything() {
+        // Go: modelLimitEnable == false -> skip the gate entirely.
+        assert!(model_allowed_for_token(0, "", "gpt-4o"));
+        assert!(model_allowed_for_token(0, "claude-3-opus", "gpt-4o"));
+    }
+
+    #[test]
+    fn model_limit_exact_match_allows() {
+        assert!(model_allowed_for_token(1, "gpt-4o,claude-3-opus", "gpt-4o"));
+        assert!(model_allowed_for_token(
+            1,
+            "gpt-4o,claude-3-opus",
+            "claude-3-opus"
+        ));
+    }
+
+    #[test]
+    fn model_limit_non_match_denies() {
+        assert!(!model_allowed_for_token(1, "gpt-4o", "claude-3-opus"));
+    }
+
+    #[test]
+    fn model_limit_enabled_empty_denies_all() {
+        // Go distributor.go: enabled with an empty limit map -> 403 for every
+        // model (no entry matches). csv_contains("") == false reproduces it.
+        assert!(!model_allowed_for_token(1, "", "gpt-4o"));
+        assert!(!model_allowed_for_token(1, "  ", "claude-3-opus"));
+    }
+
+    #[test]
+    fn model_limit_normalizes_thinking_budget_wildcard() {
+        // A token limited to the thinking-* wildcard admits the concrete
+        // thinking-budget request (Go distributor.go:72 normalizes first).
+        assert!(model_allowed_for_token(
+            1,
+            "gemini-2.5-flash-thinking-*",
+            "gemini-2.5-flash-thinking-8192"
+        ));
+        assert!(model_allowed_for_token(
+            1,
+            "gemini-2.5-pro-thinking-*",
+            "gemini-2.5-pro-thinking-32768"
+        ));
+        assert!(model_allowed_for_token(
+            1,
+            "gemini-2.5-flash-lite-thinking-*",
+            "gemini-2.5-flash-lite-thinking-1"
+        ));
+    }
+
+    #[test]
+    fn model_limit_normalizes_gizmo_wildcard() {
+        assert!(model_allowed_for_token(
+            1,
+            "gpt-4-gizmo-*",
+            "gpt-4-gizmo-g-abc"
+        ));
+        assert!(model_allowed_for_token(
+            1,
+            "gpt-4o-gizmo-*",
+            "gpt-4o-gizmo-g-xyz"
+        ));
+    }
+
+    #[test]
+    fn model_limit_match_is_case_insensitive() {
+        // csv_contains is case-insensitive; the limits map / CSV may use either.
+        assert!(model_allowed_for_token(1, "GPT-4O", "gpt-4o"));
+        assert!(model_allowed_for_token(1, "gpt-4o", "GPT-4O"));
+    }
 
     fn endpoint(supports_streaming: bool, feature: Option<&'static str>) -> RelayEndpoint {
         RelayEndpoint {

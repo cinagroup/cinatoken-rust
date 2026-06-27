@@ -337,11 +337,15 @@ fn whitespace_piece_len(c: &[char], i: usize) -> usize {
 /// (`[upper]*[lower]+`) or B (`[upper]+[lower]*`), then an optional contraction.
 fn match_word_o200k(c: &[char], i: usize) -> Option<usize> {
     let ch = c[i];
-    if is_letter(ch) {
+    // A word body starts with an upper- or lower-class char. Both classes include
+    // marks (\p{M}) and Lm/Lo, so a leading mark starts a word (Alternative A's
+    // `[lower]+`) — it must NOT fall through to the punctuation rule.
+    if is_letter(ch) || is_mark(ch) {
         return match_ab_body(c, i);
     }
-    // A valid lead is any non-newline, non-letter, non-digit char (incl. space /
-    // punctuation); the letter body must then start at i+1.
+    // Otherwise the only word match is via the optional lead `[^\r\n\p{L}\p{N}]`
+    // (a non-newline, non-letter, non-digit char — marks were handled above), with
+    // the body starting at i+1.
     if !is_newline(ch) && !is_number(ch) {
         return match_ab_body(c, i + 1).map(|len| 1 + len);
     }
@@ -353,8 +357,10 @@ fn match_ab_body(c: &[char], start: usize) -> Option<usize> {
     match_a_body(c, start).or_else(|| match_b_body(c, start))
 }
 
-/// A body: `[upper]*[lower]+(contraction)?`. The greedy upper run yields a
-/// "both-class" (Lm/Lo/M) trailing char to the required lower run when needed.
+/// A body: `[upper]*[lower]+(contraction)?`. The regex backtracks the greedy
+/// `[upper]*` run as little as possible so the required `[lower]+` can anchor on
+/// the rightmost lower-class char (Ll, or a "both-class" Lm/Lo/M consumed by the
+/// upper run), which is what splits e.g. `中文API` into `中文` + `API`.
 fn match_a_body(c: &[char], start: usize) -> Option<usize> {
     let n = c.len();
     let mut u = start;
@@ -363,10 +369,16 @@ fn match_a_body(c: &[char], start: usize) -> Option<usize> {
     }
     let lower_start = if u < n && is_o200k_lower(c[u]) {
         u
-    } else if u > start && is_o200k_lower(c[u - 1]) {
-        u - 1
     } else {
-        return None;
+        // Backtrack into the upper run for the rightmost lower-class char.
+        let mut j = u;
+        while j > start && !is_o200k_lower(c[j - 1]) {
+            j -= 1;
+        }
+        if j == start {
+            return None;
+        }
+        j - 1
     };
     let mut k = lower_start;
     while k < n && is_o200k_lower(c[k]) {
@@ -597,6 +609,35 @@ mod tests {
         assert_eq!(pre_tokenize_o200k("ABC's"), vec!["ABC's"]);
         // cl100k splits the same input differently (regression guard).
         assert_eq!(pre_tokenize_cl100k("don't"), vec!["don", "'t"]);
+    }
+
+    #[test]
+    fn o200k_backtracks_upper_run_for_both_class_chars() {
+        // A "both-class" char (CJK \p{Lo}, modifier letter \p{Lm}) followed by an
+        // upper-only run must split: alt A backtracks [upper]* so [lower]+ anchors
+        // on the both-class char. Verified vs real tiktoken o200k_base.
+        assert_eq!(pre_tokenize_o200k("中文API"), vec!["中文", "API"]);
+        assert_eq!(pre_tokenize_o200k("你A"), vec!["你", "A"]);
+        assert_eq!(pre_tokenize_o200k("你你Z"), vec!["你你", "Z"]);
+        assert_eq!(pre_tokenize_o200k("\u{02C6}A"), vec!["\u{02C6}", "A"]);
+        // A trailing lowercase still attaches normally.
+        assert_eq!(pre_tokenize_o200k("中文api"), vec!["中文api"]);
+    }
+
+    #[test]
+    fn o200k_leading_mark_starts_a_word() {
+        // Combining marks (\p{M}) are in both o200k letter classes, so a leading
+        // mark starts a word (alt A [lower]+) and must NOT be glued onto following
+        // punctuation. Token counts below match real tiktoken o200k_base
+        // (U+20DD enclosing mark; U+0300 combining grave).
+        assert_eq!(
+            pre_tokenize_o200k("\u{20DD}.c"),
+            vec!["\u{20DD}", ".c"]
+        );
+        assert_eq!(
+            pre_tokenize_o200k("\u{0300}(v好"),
+            vec!["\u{0300}", "(v好"]
+        );
     }
 
     #[test]

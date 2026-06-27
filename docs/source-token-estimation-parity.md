@@ -142,7 +142,17 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    (b) the GPT pre-tokenization regex split per model. Then golden-compare total
    counts vs Go (`crates/tokenizer` has the heuristic fallback for non-OpenAI).
 2. Port the non-OpenAI `EstimateTokenByModel` heuristic and the
-   `TokenTypeTextNumber` rune-count path.
+   `TokenTypeTextNumber` rune-count path — **DONE 2026-06-26**. `crates/tokenizer`
+   is now a faithful per-rune port of Go `EstimateToken`: all 10 weighted
+   classes per family (Word/Number/CJK/Symbol/MathSymbol/URLDelim/AtSign/Emoji/
+   Newline/Space) with the exact Go multiplier values, the Latin↔Number
+   word-type-transition state machine, the correct `is_url_delim`
+   (`/:?&=;#%`, not the prior wrong set), `is_math_symbol` (explicit set + 3
+   ranges), `is_emoji` (incl. `0x1F600-0x1F64F`), and `ceil(sum)` rounding.
+   Previously the Rust estimator diverged algorithmically (word-boundary
+   tokenization with heuristic `/4` `/3` divisions that don't exist in Go),
+   had wrong multipliers, and misclassified url-delims/`@` — so missing-usage
+   estimates were materially off.
 3. OpenAI formatting overhead (8/3/3/3) — **done** as
    `cinatoken_core::request_tokens::openai_chat_format_overhead`; gate it on
    `RelayFormatOpenAI` at the call site.

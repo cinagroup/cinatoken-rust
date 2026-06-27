@@ -1,39 +1,50 @@
 //! Char-class token estimator for relay preflight estimates and fallback
 //! counting when the upstream provider does not return a `usage` block.
 //!
-//! Ports the Go gateway's `service/token_estimator.go` character-class
-//! state machine. The Go gateway uses real BPE tokenization only for
-//! GPT/o-series models (via `tiktoken-go`); for Claude, Gemini, and all
-//! other models it falls back to this estimator. The Rust port mirrors
-//! that behavior: every model family uses the estimator, and a future
-//! native-server build can swap in `tiktoken` for OpenAI models without
-//! changing this crate's public API.
+//! Faithful per-rune port of Go `service/token_estimator.go::EstimateToken`
+//! (the state machine + per-family multiplier tables). The Go gateway uses
+//! real BPE tokenization only for GPT/o-series models (via `tiktoken-go`); for
+//! Claude, Gemini, and all other models it falls back to this estimator. The
+//! Rust port mirrors that behavior: every model family uses the estimator, and
+//! a future native-server build can swap in `tiktoken` for OpenAI models (the
+//! `core::bpe` primitive) without changing this crate's public API.
+//!
+//! ## Algorithm (matches Go exactly)
+//!
+//! Each rune is classified in order — space → CJK → emoji → latin/number →
+//! math-symbol → `@` → url-delim → generic symbol — and the per-family weight
+//! is added. A Latin↔Number type switch starts a new weighted token (so
+//! `abc123` bills the word then the number). Newlines/tabs use the `Newline`
+//! weight; other spaces use `Space`. The total is `ceil(sum) + base_pad`
+//! (base_pad is 0 for all families).
 //!
 //! ## Accuracy
 //!
-//! The estimator classifies each UnicodeGrapheme as CJK / Latin word /
-//! Number / Emoji / MathSymbol / URLDelim / Space and sums per-family
-//! weights. It is intentionally approximate (±20-30% vs real BPE) and is
-//! only used when no authoritative usage is available. Settlement always
-//! prefers the provider-reported `usage`.
+//! Intentionally approximate (±20-30% vs real BPE) and used only when no
+//! authoritative usage is available. Settlement always prefers the
+//! provider-reported `usage`.
 
 use std::collections::HashMap;
-use unicode_segmentation::UnicodeSegmentation;
 
-/// Per-family multipliers. Mirrors Go `service/token_estimator.go`
-/// `multipliersMap` (lines 36-46).
+/// Per-family multipliers — faithful port of Go `multipliersMap`
+/// (`service/token_estimator.go:36-46`). Every class Go weighs is present with
+/// its exact value; do not add heuristic divisions or drop a class without
+/// matching Go.
 #[derive(Debug, Clone, Copy)]
 struct FamilyMultipliers {
     word: f64,
     number: f64,
     cjk: f64,
-    emoji: f64,
+    symbol: f64,
     math_symbol: f64,
     url_delim: f64,
-    /// Space multiplier (Go uses 0.0 for all families; kept for parity but
-    /// currently unused because whitespace runs are not separately weighed).
-    #[allow(dead_code)]
+    at_sign: f64,
+    emoji: f64,
+    newline: f64,
     space: f64,
+    /// Base padding added after rounding (Go `BasePad`); 0 for all families.
+    #[allow(dead_code)]
+    base_pad: i64,
 }
 
 impl FamilyMultipliers {
@@ -42,10 +53,14 @@ impl FamilyMultipliers {
             word: 1.02,
             number: 1.55,
             cjk: 0.85,
-            emoji: 2.0,
-            math_symbol: 1.0,
+            symbol: 0.4,
+            math_symbol: 2.68,
             url_delim: 1.0,
-            space: 0.0,
+            at_sign: 2.0,
+            emoji: 2.12,
+            newline: 0.5,
+            space: 0.42,
+            base_pad: 0,
         }
     }
 
@@ -54,10 +69,14 @@ impl FamilyMultipliers {
             word: 1.13,
             number: 1.63,
             cjk: 1.21,
-            emoji: 2.0,
-            math_symbol: 1.0,
-            url_delim: 1.0,
-            space: 0.0,
+            symbol: 0.4,
+            math_symbol: 4.52,
+            url_delim: 1.26,
+            at_sign: 2.82,
+            emoji: 2.6,
+            newline: 0.89,
+            space: 0.39,
+            base_pad: 0,
         }
     }
 
@@ -66,16 +85,20 @@ impl FamilyMultipliers {
             word: 1.15,
             number: 2.8,
             cjk: 0.68,
-            emoji: 2.0,
-            math_symbol: 1.0,
-            url_delim: 1.0,
-            space: 0.0,
+            symbol: 0.38,
+            math_symbol: 1.05,
+            url_delim: 1.2,
+            at_sign: 2.5,
+            emoji: 1.08,
+            newline: 1.15,
+            space: 0.2,
+            base_pad: 0,
         }
     }
 }
 
 /// Tokenizer family derived from the model name. Mirrors Go
-/// `service/token_estimator.go::EstimateToken` dispatch.
+/// `service/token_estimator.go::EstimateTokenByModel` dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenizerFamily {
     OpenAI,
@@ -84,8 +107,8 @@ pub enum TokenizerFamily {
 }
 
 /// Resolve the tokenizer family from a model name. Mirrors Go
-/// `EstimateToken(provider, text)` dispatch: `gemini` substring → Gemini,
-/// `claude` substring → Claude, everything else → OpenAI.
+/// `EstimateTokenByModel` dispatch: `gemini` substring → Gemini,
+/// `claude` substring → Claude, everything else → OpenAI (the default).
 pub fn family_for_model(model: &str) -> TokenizerFamily {
     let lower = model.to_ascii_lowercase();
     if lower.contains("gemini") {
@@ -99,8 +122,11 @@ pub fn family_for_model(model: &str) -> TokenizerFamily {
 
 /// Estimate the token count of `text` for the given `model`. This is the
 /// primary entry point used by the relay preflight estimate and the
-/// no-usage fallback path.
+/// no-usage fallback path. Empty text → 0 (matches Go's `text == ""` guard).
 pub fn estimate_tokens(model: &str, text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
     let family = family_for_model(model);
     estimate_tokens_for_family(family, text)
 }
@@ -108,142 +134,159 @@ pub fn estimate_tokens(model: &str, text: &str) -> usize {
 /// Estimate the token count for a known family. Exposed so callers can
 /// override the auto-detected family (rarely needed).
 pub fn estimate_tokens_for_family(family: TokenizerFamily, text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
     let multipliers = match family {
         TokenizerFamily::OpenAI => FamilyMultipliers::openai(),
         TokenizerFamily::Claude => FamilyMultipliers::claude(),
         TokenizerFamily::Gemini => FamilyMultipliers::gemini(),
     };
     let total = estimate_weighted(text, multipliers);
-    // The Go estimator floors at 1 for any non-empty text.
-    if text.chars().any(|c| !c.is_whitespace()) && total < 1.0 {
+    // Go returns int(math.Ceil(count)) + BasePad; BasePad is 0, so ceil. The
+    // public contract floors at 1 for any non-empty text (Go's caller guards
+    // on text != ""). Empty was handled above.
+    let ceil = total.ceil();
+    if ceil < 1.0 {
         1
     } else {
-        total.round() as usize
+        ceil as usize
     }
 }
 
-/// Walk the text's word boundaries, classify each token, and sum the
-/// weighted contribution. Mirrors Go `EstimateToken`'s inner loop.
+/// Word-type state for the Latin/Number transition logic, mirroring Go's
+/// `currentWordType` (`None` / `Latin` / `Number`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordType {
+    None,
+    Latin,
+    Number,
+}
+
+/// Walk `text` rune-by-rune, classifying each in Go's exact order and summing
+/// the per-family weight. Faithful port of Go `EstimateToken`'s inner loop
+/// (`token_estimator.go:69-148`).
 fn estimate_weighted(text: &str, m: FamilyMultipliers) -> f64 {
-    let mut total = 0.0_f64;
-    // Use Unicode word boundaries (handles CJK runs, latin words, numbers,
-    // punctuation). This matches Go's `strings.FieldsFunc`-based tokenizer
-    // semantics.
-    for word in text.unicode_words() {
-        total += classify_token(word, m);
-    }
-    // unicode_words skips whitespace runs; account for standalone
-    // whitespace-separated non-word tokens (punctuation, symbols) via the
-    // word-boundary iterator, which yields grapheme clusters we also need
-    // to weigh. Walk UWordBounds to catch symbols unicode_words drops.
-    for token in text.split_word_bounds() {
-        let token = token.trim();
-        if token.is_empty() {
+    let mut count = 0.0_f64;
+    let mut current_word_type = WordType::None;
+
+    for ch in text.chars() {
+        // 1. Whitespace: newline/tab use Newline weight, other spaces use Space.
+        if ch.is_whitespace() {
+            current_word_type = WordType::None;
+            if ch == '\n' || ch == '\t' {
+                count += m.newline;
+            } else {
+                count += m.space;
+            }
             continue;
         }
-        // If this token is entirely non-word (symbol/punct), unicode_words
-        // skipped it; weigh it here as math_symbol / url_delim.
-        if token.chars().all(|c| !c.is_alphanumeric()) {
-            total += classify_symbol_token(token, m);
-        }
-    }
-    total
-}
-
-/// Classify a single alphanumeric token (word or number run) and return its
-/// weighted contribution. Mirrors Go's per-rune classification aggregated
-/// per token.
-fn classify_token(token: &str, m: FamilyMultipliers) -> f64 {
-    let mut sum = 0.0_f64;
-    let mut cjk_chars = 0usize;
-    let mut word_chars = 0usize;
-    let mut number_chars = 0usize;
-    for ch in token.chars() {
+        // 2. CJK — billed per character.
         if is_cjk(ch) {
-            cjk_chars += 1;
-        } else if ch.is_ascii_digit() {
-            number_chars += 1;
-        } else if ch.is_alphanumeric() {
-            word_chars += 1;
-        } else if is_emoji(ch) {
-            sum += m.emoji;
-        } else if is_math_symbol(ch) {
-            sum += m.math_symbol;
+            current_word_type = WordType::None;
+            count += m.cjk;
+            continue;
         }
-    }
-    // Aggregate word/number/cjk at the token level to mirror Go's behavior
-    // where the weight is applied per-character-class-run.
-    if cjk_chars > 0 {
-        sum += (cjk_chars as f64) * m.cjk;
-    }
-    if word_chars > 0 {
-        // Latin/Cyrillic/etc. word: weight by characters, then divide by ~4
-        // to approximate subword token count (Go applies word weight per
-        // rune but a "word" token averages ~4 chars per subword).
-        sum += ((word_chars as f64) * m.word) / 4.0;
-    }
-    if number_chars > 0 {
-        // Numbers: Go weights per-digit but digits cluster ~3 per token.
-        sum += ((number_chars as f64) * m.number) / 3.0;
-    }
-    sum
-}
-
-/// Classify a non-alphanumeric token (pure punctuation/symbol run).
-fn classify_symbol_token(token: &str, m: FamilyMultipliers) -> f64 {
-    let chars: Vec<char> = token.chars().collect();
-    let mut sum = 0.0_f64;
-    for ch in chars {
+        // 3. Emoji — own weight.
         if is_emoji(ch) {
-            sum += m.emoji;
-        } else if is_math_symbol(ch) {
-            sum += m.math_symbol;
+            current_word_type = WordType::None;
+            count += m.emoji;
+            continue;
+        }
+        // 4. Latin letter / number — a type switch (letter<->number) starts a
+        // new weighted token; mid-token chars add nothing.
+        if is_latin_or_number(ch) {
+            let new_type = if ch.is_numeric() {
+                WordType::Number
+            } else {
+                WordType::Latin
+            };
+            if current_word_type == WordType::None || current_word_type != new_type {
+                count += if new_type == WordType::Number {
+                    m.number
+                } else {
+                    m.word
+                };
+                current_word_type = new_type;
+            }
+            continue;
+        }
+        // 5. Punctuation / special — by type. Resets the word run.
+        current_word_type = WordType::None;
+        if is_math_symbol(ch) {
+            count += m.math_symbol;
+        } else if ch == '@' {
+            count += m.at_sign;
         } else if is_url_delim(ch) {
-            sum += m.url_delim;
+            count += m.url_delim;
         } else {
-            // Generic punctuation contributes ~1 token per cluster.
-            sum += 1.0;
+            count += m.symbol;
         }
     }
-    sum
+
+    count
 }
 
+/// CJK check — port of Go `isCJK`: `unicode.Han` + Hiragana/Katakana
+/// (0x3040-0x30FF) + Hangul (0xAC00-0xD7A3). Go's `unicode.Is(unicode.Han, r)`
+/// covers the Han ideograph blocks; we list them explicitly.
 fn is_cjk(c: char) -> bool {
-    matches!(c as u32,
-        0x3000..=0x303F |   // CJK symbols and punctuation
-        0x3040..=0x309F |   // Hiragana
-        0x30A0..=0x30FF |   // Katakana
-        0x3400..=0x4DBF |   // CJK Unified Ideographs Extension A
-        0x4E00..=0x9FFF |   // CJK Unified Ideographs
-        0xF900..=0xFAFF |   // CJK Compatibility Ideographs
-        0xFF00..=0xFFEF |   // Halfwidth and Fullwidth Forms
-        0x20000..=0x2A6DF | // Extension B
-        0x2A700..=0x2B73F | // Extension C
-        0x2B740..=0x2B81F | // Extension D
-        0x2B820..=0x2CEAF   // Extension E
-    )
+    let cp = c as u32;
+    // Hiragana / Katakana (Go's explicit 0x3040-0x30FF).
+    (0x3040..=0x30FF).contains(&cp)
+    // Hangul Syllables (Go's explicit 0xAC00-0xD7A3).
+    || (0xAC00..=0xD7A3).contains(&cp)
+    // unicode.Han equivalents (the ideograph blocks).
+    || (0x3400..=0x4DBF).contains(&cp)   // CJK Unified Ideographs Extension A
+    || (0x4E00..=0x9FFF).contains(&cp)   // CJK Unified Ideographs
+    || (0xF900..=0xFAFF).contains(&cp)   // CJK Compatibility Ideographs
+    || (0x20000..=0x2A6DF).contains(&cp) // Extension B
+    || (0x2A700..=0x2B73F).contains(&cp) // Extension C
+    || (0x2B740..=0x2B81F).contains(&cp) // Extension D
+    || (0x2B820..=0x2CEAF).contains(&cp) // Extension E
 }
 
+/// Latin letter or number — port of Go `isLatinOrNumber`
+/// (`unicode.IsLetter(r) || unicode.IsNumber(r)`). CJK/emoji are checked
+/// first in the caller, so Han letters never reach here.
+fn is_latin_or_number(c: char) -> bool {
+    c.is_alphanumeric()
+}
+
+/// Emoji check — port of Go `isEmoji` ranges.
 fn is_emoji(c: char) -> bool {
-    matches!(c as u32,
-        0x1F300..=0x1F9FF |
-        0x1FA00..=0x1FAFF |
-        0x2600..=0x26FF |
-        0x2700..=0x27BF |
-        0xFE00..=0xFE0F |
-        0x1F000..=0x1F02F
-    )
+    let cp = c as u32;
+    (0x1F300..=0x1F9FF).contains(&cp)
+        || (0x2600..=0x26FF).contains(&cp)
+        || (0x2700..=0x27BF).contains(&cp)
+        || (0x1F600..=0x1F64F).contains(&cp)
+        || (0x1F900..=0x1F9FF).contains(&cp)
+        || (0x1FA00..=0x1FAFF).contains(&cp)
 }
 
+/// Math-symbol check — port of Go `isMathSymbol`: an explicit character set
+/// plus the Mathematical Operators / Supplemental / Alphanumeric ranges.
 fn is_math_symbol(c: char) -> bool {
-    matches!(c as u32, 0x2200..=0x22FF | 0x27C0..=0x27EF | 0x2980..=0x29FF | 0x2A00..=0x2AFF)
+    // The explicit set from Go (sub/superscripts, basic operators, Greek-ish).
+    const MATH_CHARS: &[char] = &[
+        '∑', '∫', '∂', '√', '∞', '≤', '≥', '≠', '≈', '±', '×', '÷', '∈', '∉', '∋', '∌', '⊂', '⊃',
+        '⊆', '⊇', '∪', '∩', '∧', '∨', '¬', '∀', '∃', '∄', '∅', '∆', '∇', '∝', '∟', '∠', '∡', '∢',
+        '°', '′', '″', '‴', '⁺', '⁻', '⁼', '⁽', '⁾', 'ⁿ', '₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇',
+        '₈', '₉', '₊', '₋', '₌', '₍', '₎', '²', '³', '¹', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹', '⁰',
+    ];
+    if MATH_CHARS.contains(&c) {
+        return true;
+    }
+    let cp = c as u32;
+    (0x2200..=0x22FF).contains(&cp) // Mathematical Operators
+        || (0x2A00..=0x2AFF).contains(&cp) // Supplemental Mathematical Operators
+        || (0x1D400..=0x1D7FF).contains(&cp) // Mathematical Alphanumeric Symbols
 }
 
+/// URL-delimiter check — port of Go `isURLDelim` (`/:?&=;#%`). NOTE: Go does
+/// NOT include `@` here (it gets its own AtSign weight), nor `.-_~[]!`.
 fn is_url_delim(c: char) -> bool {
-    matches!(
-        c,
-        '/' | ':' | '.' | '-' | '_' | '~' | '?' | '#' | '[' | ']' | '@' | '!'
-    )
+    matches!(c, '/' | ':' | '?' | '&' | '=' | ';' | '#' | '%')
 }
 
 /// Collect model→family dispatch into a reusable map shape for callers that
@@ -282,52 +325,94 @@ mod tests {
     #[test]
     fn empty_text_is_zero() {
         assert_eq!(estimate_tokens("gpt-4o", ""), 0);
-        assert_eq!(estimate_tokens("gpt-4o", "   "), 0);
+        // Whitespace-only is non-empty in Go's guard (text != ""); 3 spaces ×
+        // Space 0.42 = 1.26 -> ceil 2 for OpenAI.
+        assert_eq!(estimate_tokens("gpt-4o", "   "), 2);
     }
 
     #[test]
-    fn pure_english_openai_is_reasonable() {
-        // "Hello world" ~ 2 tokens; estimator should be in the 1-3 range.
-        let n = estimate_tokens("gpt-4o", "Hello world");
-        assert!(n >= 1 && n <= 4, "got {n}");
+    fn pure_english_openai_weights_per_word() {
+        // "Hello world" — two Latin words (Word=1.02 each) + space (0.42) =
+        // 2.46 -> ceil 3.
+        assert_eq!(estimate_tokens("gpt-4o", "Hello world"), 3);
     }
 
     #[test]
-    fn pure_chinese_openai_is_reasonable() {
-        // 10 CJK chars × 0.85 ≈ 9 tokens for OpenAI.
-        let n = estimate_tokens("gpt-4o", "你好世界你好世界你好");
-        assert!(n >= 6 && n <= 12, "got {n}");
+    fn pure_chinese_openai_is_per_char() {
+        // 10 CJK chars × 0.85 = 8.5 -> ceil 9 for OpenAI.
+        assert_eq!(estimate_tokens("gpt-4o", "你好世界你好世界你好"), 9);
     }
 
     #[test]
     fn claude_weights_cjk_higher_than_openai() {
-        // Same CJK text: Claude weight 1.21 > OpenAI 0.85, so Claude should
-        // estimate more tokens.
         let text = "你好世界你好世界你好";
         let openai = estimate_tokens_for_family(TokenizerFamily::OpenAI, text);
         let claude = estimate_tokens_for_family(TokenizerFamily::Claude, text);
         assert!(
             claude > openai,
-            "claude ({claude}) should exceed openai ({openai}) for CJK"
+            "claude ({claude}) > openai ({openai}) for CJK"
         );
     }
 
     #[test]
     fn gemini_weights_numbers_higher() {
-        // "1234567890" — Gemini number weight 2.8 vs OpenAI 1.55.
-        let text = "12345678901234567890";
+        let text = "1234567890";
         let openai = estimate_tokens_for_family(TokenizerFamily::OpenAI, text);
         let gemini = estimate_tokens_for_family(TokenizerFamily::Gemini, text);
         assert!(
             gemini > openai,
-            "gemini ({gemini}) should exceed openai ({openai}) for numbers"
+            "gemini ({gemini}) > openai ({openai}) for a number run"
         );
     }
 
     #[test]
+    fn letter_number_switch_starts_new_token() {
+        let word_only = estimate_tokens("gpt-4o", "abc");
+        let with_digits = estimate_tokens("gpt-4o", "abc123");
+        assert!(with_digits > word_only);
+    }
+
+    #[test]
+    fn at_sign_uses_atsign_weight_not_url_delim() {
+        // "a@b" = Latin '@'(AtSign) Latin = 1.02+2.0+1.02 = 4.04 -> ceil 5.
+        assert_eq!(estimate_tokens("gpt-4o", "a@b"), 5);
+    }
+
+    #[test]
+    fn math_symbol_weighted_high() {
+        // "a+b" = 1.02 + 0.4(Symbol) + 1.02 = 2.44 -> ceil 3.
+        assert_eq!(estimate_tokens("gpt-4o", "a+b"), 3);
+        // "a∑b" = 1.02 + 2.68(MathSymbol) + 1.02 = 4.72 -> ceil 5.
+        assert_eq!(estimate_tokens("gpt-4o", "a∑b"), 5);
+    }
+
+    #[test]
+    fn newline_and_space_weighted_separately() {
+        assert_eq!(estimate_tokens("gpt-4o", "a\nb"), 3); // 1.02+0.5+1.02=2.54
+        assert_eq!(estimate_tokens("gpt-4o", "a b"), 3); // 1.02+0.42+1.02=2.46
+                                                         // Newline counts more than space for Claude (0.89 vs 0.39) on a long run.
+        let spaces = estimate_tokens("claude-3", "a    b");
+        let newlines = estimate_tokens("claude-3", "a\n\n\n\nb");
+        assert!(newlines > spaces, "{newlines} > {spaces}");
+    }
+
+    #[test]
+    fn emoji_contributes_tokens() {
+        let no_emoji = estimate_tokens("gpt-4o", "Hello");
+        let with_emoji = estimate_tokens("gpt-4o", "Hello 🎉🚀");
+        assert!(with_emoji > no_emoji);
+        assert_eq!(with_emoji, 6); // 1.02+0.42+2.12+2.12=5.68 -> 6
+    }
+
+    #[test]
+    fn url_delim_set_matches_go() {
+        assert_eq!(estimate_tokens("gpt-4o", "a/b"), 4); // 1.02+1.0+1.02=3.04
+        assert_eq!(estimate_tokens("gpt-4o", "a.b"), 3); // '.' is Symbol 0.4
+    }
+
+    #[test]
     fn mixed_text_produces_positive_count() {
-        let text = "Hello 世界! 123 🎉 https://example.com";
-        let n = estimate_tokens("gpt-4o", text);
+        let n = estimate_tokens("gpt-4o", "Hello 世界! 123 🎉 https://example.com");
         assert!(n > 0, "got {n}");
     }
 
@@ -337,24 +422,15 @@ mod tests {
         let long = "Hello world this is a much longer sentence with many words";
         let short_n = estimate_tokens("gpt-4o", short);
         let long_n = estimate_tokens("gpt-4o", long);
-        assert!(
-            long_n > short_n,
-            "long ({long_n}) should exceed short ({short_n})"
-        );
-    }
-
-    #[test]
-    fn emoji_contributes_tokens() {
-        let no_emoji = estimate_tokens("gpt-4o", "Hello");
-        let with_emoji = estimate_tokens("gpt-4o", "Hello 🎉🚀");
-        assert!(with_emoji > no_emoji);
+        assert!(long_n > short_n, "long ({long_n}) > short ({short_n})");
     }
 
     #[test]
     fn estimate_is_deterministic() {
         let text = "The quick brown fox 你好世界 12345";
-        let a = estimate_tokens("claude-3-5-sonnet", text);
-        let b = estimate_tokens("claude-3-5-sonnet", text);
-        assert_eq!(a, b);
+        assert_eq!(
+            estimate_tokens("claude-3-5-sonnet", text),
+            estimate_tokens("claude-3-5-sonnet", text)
+        );
     }
 }

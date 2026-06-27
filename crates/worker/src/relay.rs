@@ -5366,8 +5366,12 @@ mod tests {
 
     #[test]
     fn tiered_billing_settlement_uses_frozen_preflight_snapshot() {
+        // A realistic space-separated prompt so the token estimator (the Go
+        // per-rune state machine in `crates/tokenizer`) yields a stable,
+        // meaningful count: 1000 "word" tokens → ~1440 estimated tokens.
+        let prompt = (0..1000).map(|_| "word").collect::<Vec<_>>().join(" ");
         let request_body = json!({
-            "prompt": "x".repeat(4000),
+            "prompt": prompt,
             "max_completion_tokens": 100,
             "service_tier": "fast"
         });
@@ -5404,16 +5408,19 @@ mod tests {
         assert_eq!(metadata["applied"], false);
         assert_eq!(metadata["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(metadata["has_request_rule"], false);
-        assert_eq!(metadata["pre_consumed_quota"], 4_560);
-        assert_eq!(metadata["estimated_prompt_tokens"], 1_020);
+        // With the realistic 1000-word prompt the estimator yields ~1440 prompt
+        // tokens (Go per-rune state machine); the pre-consume and downstream
+        // settlement figures follow from that.
+        assert_eq!(metadata["pre_consumed_quota"], 5_820);
+        assert_eq!(metadata["estimated_prompt_tokens"], 1_440);
         assert_eq!(metadata["estimated_completion_tokens"], 100);
-        assert_eq!(metadata["estimated_quota_after_group"], 4_560);
+        assert_eq!(metadata["estimated_quota_after_group"], 5_820);
         assert_eq!(metadata["matched_tier"], "fast");
         assert_eq!(metadata["group_ratio"], 1.5);
         assert_eq!(metadata["quota_before_group"], 7_000.0);
         assert_eq!(metadata["quota_after_group"], 10_500);
         assert_eq!(metadata["settlement"]["final_quota"], 10_500);
-        assert_eq!(metadata["settlement"]["additional_quota"], 5_940);
+        assert_eq!(metadata["settlement"]["additional_quota"], 4_680);
     }
 
     #[test]
@@ -5472,8 +5479,11 @@ mod tests {
 
     #[test]
     fn tiered_billing_fallback_and_refund_metadata_include_reserved_quota() {
+        // Realistic 1000-word prompt (matches the sibling settlement test) so
+        // the estimator yields a stable ~1440 prompt-token estimate.
+        let prompt = (0..1000).map(|_| "word").collect::<Vec<_>>().join(" ");
         let request_body = json!({
-            "prompt": "x".repeat(4000),
+            "prompt": prompt,
             "max_completion_tokens": 100
         });
         let preflight = tiered_billing_preflight_snapshot(
@@ -5490,13 +5500,13 @@ mod tests {
         assert_eq!(fallback["fallback_to_pre_consumed"], true);
         assert_eq!(fallback["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(fallback["has_request_rule"], true);
-        assert_eq!(fallback["pre_consumed_quota"], 4_560);
+        assert_eq!(fallback["pre_consumed_quota"], 5_820);
 
         let refund = tiered_billing_refund_metadata(&preflight, "missing_usage");
         assert_eq!(refund["refunded"], true);
         assert_eq!(refund["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(refund["has_request_rule"], true);
-        assert_eq!(refund["pre_consumed_quota"], 4_560);
+        assert_eq!(refund["pre_consumed_quota"], 5_820);
         assert_eq!(refund["reason"], "missing_usage");
     }
 

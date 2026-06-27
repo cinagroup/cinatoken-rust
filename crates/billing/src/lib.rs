@@ -8,8 +8,9 @@ mod pricing;
 mod tiered;
 
 pub use expression::{
-    run_billing_expr, run_billing_expr_with_request, validate_billing_expr, BillingExprError,
-    ExprRun, RequestInput, TraceResult,
+    run_billing_expr, run_billing_expr_at, run_billing_expr_with_request,
+    run_billing_expr_with_request_at, validate_billing_expr, BillingExprError, ExprRun,
+    RequestInput, TraceResult,
 };
 pub use flat::{compute_flat_quota, FlatBillingMode, FlatQuotaResult, FlatUsage};
 pub use pricing::PricingConfig;

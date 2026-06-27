@@ -120,8 +120,8 @@ baseline; everything else is a gap.
 | `ComputeTieredQuota_{Basic,SameTier,WithCache,WithCacheCrossTier,BasicSettlement,WithGroupRatio,ZeroTokens,BoundaryTierCrossing}` | 8 | Settlement + group ratio + cross-tier | Partial |
 | `ComputeTieredQuota_RoundingEdge[Down]`, `QuotaRound` | 3 | Rounding (half-away-from-zero) | **Done** (unified `quota_round`, 2026-06-26) |
 | `RequestProbe*`, `HeaderProbeHelper`, `ParamProbe*`, `ProbeAffectsQuota` | 8 | Request probes / `|||` rules | Partial |
-| `MathHelpers`, `CeilFloor` | 2 | Math helpers | **Missing** |
-| `TimeFunctions_*` | 7 | Time helpers (tz, UTC fallback) | **Missing** |
+| `MathHelpers`, `CeilFloor` | 2 | Math helpers | **Done** (`max/min/abs/ceil/floor`) |
+| `TimeFunctions_*` | 7 | Time helpers (tz, UTC fallback) | **Partial** (functions + injectable clock + deterministic vectors; DST-accurate tzdata pending) |
 | `Image*`, `Audio*`, `ImageAudio*` | 4 | Image/audio categories | **Missing/Partial** |
 | `SimpleExpr_NoTier` | 1 | Flat / non-tiered pricing | **Missing** |
 | `Fuzz_{NonNegativeResults,SettlementConsistency}` | 2 | Property/fuzz | **Missing** |
@@ -144,8 +144,16 @@ Missing/verify first, since these block paid settlement:
    full ratio/price resolution + default-table base layer + sub-category
    arithmetic are in `pricing.rs` (see `docs/source-pricing-ratio-parity.md`).
    `quota=0/billing_pending` is cleared on settlement.
-3. **Time helpers** — `hour/minute/weekday/month/day` with tz, UTC fallback, and
-   the night-discount/weekday/month-day patterns; use an injectable clock.
+3. **Time helpers** — DONE (clock) 2026-06-26. The functions
+   (`hour/minute/weekday/month/day`) are implemented with tz + UTC fallback, and
+   the clock is now **injectable**: `run_billing_expr_at` /
+   `run_billing_expr_with_request_at` thread a pinned `now_unix_seconds` through
+   `Evaluator`, so time-based expressions (night discounts, weekday/month-day
+   tiers) are tested deterministically (4 golden vectors: exact UTC fields,
+   Asia/Shanghai +8, night-discount single-value, Jan-1 pattern) — the vectors
+   Go could not pin because it reads the wall clock. Still pending: DST-accurate
+   tz offsets (`timezone_offset_seconds` uses fixed offsets, not tzdata, so
+   summer DST differs from Go's `time.LoadLocation`).
 4. **Image/audio variables** — `img`,`img_o`,`ai`,`ao` pricing plus no-double-
    subtraction; couple with request-time image-dimension/audio-duration estimate
    parity (open `TokenCountMeta` gap, fully specified in

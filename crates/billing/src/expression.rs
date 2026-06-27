@@ -62,6 +62,16 @@ pub fn run_billing_expr(expr: &str, params: TokenParams) -> Result<ExprRun, Bill
     run_billing_expr_with_request(expr, params, RequestInput::default())
 }
 
+/// Like [`run_billing_expr`] but evaluates time helpers against a pinned
+/// `now_unix_seconds` instant (deterministic tests).
+pub fn run_billing_expr_at(
+    expr: &str,
+    params: TokenParams,
+    now_unix_seconds: i64,
+) -> Result<ExprRun, BillingExprError> {
+    run_billing_expr_with_request_at(expr, params, RequestInput::default(), now_unix_seconds)
+}
+
 pub fn validate_billing_expr(expr: &str) -> Result<(), BillingExprError> {
     let parts = split_billing_expr_request_rule(expr);
     validate_billing_expr_part(&parts.billing_expr)?;
@@ -71,17 +81,46 @@ pub fn validate_billing_expr(expr: &str) -> Result<(), BillingExprError> {
     Ok(())
 }
 
+/// Current Unix time in seconds (UTC). Used as the default clock for the
+/// time helpers when no pinned instant is supplied.
+fn current_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 pub fn run_billing_expr_with_request(
     expr: &str,
     params: TokenParams,
     request: RequestInput,
 ) -> Result<ExprRun, BillingExprError> {
+    run_billing_expr_with_request_at(expr, params, request, current_unix_seconds())
+}
+
+/// Like [`run_billing_expr_with_request`] but evaluates time helpers
+/// (`hour`/`minute`/...) against a pinned `now_unix_seconds` instant, enabling
+/// deterministic tests of time-based billing expressions (night discounts,
+/// weekday/month-day tiers). Production callers use
+/// [`run_billing_expr_with_request`], which passes the wall clock.
+pub fn run_billing_expr_with_request_at(
+    expr: &str,
+    params: TokenParams,
+    request: RequestInput,
+    now_unix_seconds: i64,
+) -> Result<ExprRun, BillingExprError> {
     let parts = split_billing_expr_request_rule(expr);
-    let base_run = run_billing_expr_part(&parts.billing_expr, params, request.clone())?;
+    let base_run = run_billing_expr_part(
+        &parts.billing_expr,
+        params,
+        request.clone(),
+        now_unix_seconds,
+    )?;
     let Some(request_rule_expr) = parts.request_rule_expr else {
         return Ok(base_run);
     };
-    let multiplier_run = run_billing_expr_part(&request_rule_expr, params, request)?;
+    let multiplier_run =
+        run_billing_expr_part(&request_rule_expr, params, request, now_unix_seconds)?;
     Ok(ExprRun {
         cost: base_run.cost * multiplier_run.cost,
         trace: base_run.trace,
@@ -92,11 +131,12 @@ fn run_billing_expr_part(
     expr: &str,
     params: TokenParams,
     request: RequestInput,
+    now_unix_seconds: i64,
 ) -> Result<ExprRun, BillingExprError> {
     let (_, body) = parse_expr_version(expr);
     let tokens = Lexer::new(body).lex()?;
     let ast = Parser::new(tokens).parse()?;
-    let mut evaluator = Evaluator::new(params, request);
+    let mut evaluator = Evaluator::new(params, request, now_unix_seconds);
     let value = evaluator.eval(&ast)?;
     let cost = value.as_number("expression result")?;
     Ok(ExprRun {
@@ -835,16 +875,21 @@ struct Evaluator {
     request: RequestInput,
     normalized_headers: HashMap<String, String>,
     trace: TraceResult,
+    /// Pinned Unix-seconds instant used by the time helpers (`hour`, `minute`,
+    /// ...). Threaded in from the entry point so tests can evaluate time-based
+    /// expressions deterministically instead of reading `SystemTime::now()`.
+    now_unix_seconds: i64,
 }
 
 impl Evaluator {
-    fn new(params: TokenParams, request: RequestInput) -> Self {
+    fn new(params: TokenParams, request: RequestInput, now_unix_seconds: i64) -> Self {
         let normalized_headers = normalize_headers(&request.headers);
         Self {
             params,
             request,
             normalized_headers,
             trace: TraceResult::default(),
+            now_unix_seconds,
         }
     }
 
@@ -1058,7 +1103,9 @@ impl Evaluator {
     ) -> Result<ExprValue, BillingExprError> {
         self.expect_arg_count(name, args, 1)?;
         let tz = self.eval(&args[0])?.as_string("timezone")?.to_string();
-        Ok(ExprValue::Number(pick(time_parts(&tz)) as f64))
+        Ok(ExprValue::Number(
+            pick(time_parts(&tz, self.now_unix_seconds)) as f64,
+        ))
     }
 
     fn numeric_binary_function(
@@ -1151,13 +1198,9 @@ struct TimeParts {
     day: i64,
 }
 
-fn time_parts(timezone: &str) -> TimeParts {
+fn time_parts(timezone: &str, now_unix_seconds: i64) -> TimeParts {
     let offset_seconds = timezone_offset_seconds(timezone);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-        + offset_seconds;
+    let now = now_unix_seconds + offset_seconds;
     let days = now.div_euclid(86_400);
     let seconds_in_day = now.rem_euclid(86_400);
     let (_, month, day) = civil_from_days(days);
@@ -1487,5 +1530,115 @@ mod tests {
             .expect_err("invalid expression should fail");
 
         assert!(matches!(error, BillingExprError::Runtime(_)));
+    }
+
+    // --- Deterministic time-helper tests (injectable clock). These pin a known
+    // UTC instant so the time functions resolve to exact values — the golden
+    // vectors Go could not write because it reads the wall clock.
+
+    /// 2024-01-15T13:30:00Z. Fields: weekday=1 (Monday), month=1, day=15,
+    /// hour=13, minute=30. Asia/Shanghai (+8) hour=21.
+    const PINNED_NOW: i64 = 1_705_325_400;
+
+    #[test]
+    fn pinned_utc_fields_resolve_exactly() {
+        // hour/minute/weekday/month/day all resolve to the known UTC values.
+        let hour = run_billing_expr_at(r#"hour("UTC")"#, TokenParams::default(), PINNED_NOW)
+            .unwrap()
+            .cost;
+        assert_eq!(hour, 13.0);
+        let minute = run_billing_expr_at(r#"minute("UTC")"#, TokenParams::default(), PINNED_NOW)
+            .unwrap()
+            .cost;
+        assert_eq!(minute, 30.0);
+        let weekday = run_billing_expr_at(r#"weekday("UTC")"#, TokenParams::default(), PINNED_NOW)
+            .unwrap()
+            .cost;
+        assert_eq!(weekday, 1.0); // Monday
+        let month = run_billing_expr_at(r#"month("UTC")"#, TokenParams::default(), PINNED_NOW)
+            .unwrap()
+            .cost;
+        assert_eq!(month, 1.0);
+        let day = run_billing_expr_at(r#"day("UTC")"#, TokenParams::default(), PINNED_NOW)
+            .unwrap()
+            .cost;
+        assert_eq!(day, 15.0);
+    }
+
+    #[test]
+    fn asia_shanghai_offset_is_plus_eight() {
+        // 13:30 UTC -> 21:30 Asia/Shanghai (+8). Confirms the tz offset path.
+        let hour = run_billing_expr_at(
+            r#"hour("Asia/Shanghai")"#,
+            TokenParams::default(),
+            PINNED_NOW,
+        )
+        .unwrap()
+        .cost;
+        assert_eq!(hour, 21.0);
+    }
+
+    #[test]
+    fn night_discount_resolves_to_one_value_not_two() {
+        // Go's equivalent test accepts 7000 OR 3500 (non-deterministic). With a
+        // pinned clock we get exactly one. At 13:30 UTC the night window
+        // (>=21 || <6) is FALSE, so the multiplier is 1 -> cost 7000.
+        let cost = run_billing_expr_at(
+            r#"tier("default", p * 2 + c * 10) * (hour("UTC") >= 21 || hour("UTC") < 6 ? 0.5 : 1)"#,
+            TokenParams {
+                p: 1000.0,
+                c: 500.0,
+                ..TokenParams::default()
+            },
+            PINNED_NOW,
+        )
+        .unwrap()
+        .cost;
+        assert_eq!(cost, 7000.0);
+
+        // Same expression at 22:00 UTC (night) -> multiplier 0.5 -> 3500.
+        let night = PINNED_NOW - (13 * 3600 + 30 * 60) + (22 * 3600); // 2024-01-15 22:00:00Z
+        let cost = run_billing_expr_at(
+            r#"tier("default", p * 2 + c * 10) * (hour("UTC") >= 21 || hour("UTC") < 6 ? 0.5 : 1)"#,
+            TokenParams {
+                p: 1000.0,
+                c: 500.0,
+                ..TokenParams::default()
+            },
+            night,
+        )
+        .unwrap()
+        .cost;
+        assert_eq!(cost, 3500.0);
+    }
+
+    #[test]
+    fn month_day_pattern_resolves_deterministically() {
+        // Jan-1 discount. At 2024-01-15 it does NOT apply (multiplier 1).
+        let cost = run_billing_expr_at(
+            r#"tier("default", p) * (month("Asia/Shanghai") == 1 && day("Asia/Shanghai") == 1 ? 0.5 : 1)"#,
+            TokenParams {
+                p: 1000.0,
+                ..TokenParams::default()
+            },
+            PINNED_NOW,
+        )
+        .unwrap()
+        .cost;
+        assert_eq!(cost, 1000.0);
+
+        // 2024-01-01 00:30 UTC -> 08:30 Shanghai, still Jan 1 -> discount applies.
+        let jan1 = 1_704_067_800_i64; // 2024-01-01T00:30:00Z
+        let cost = run_billing_expr_at(
+            r#"tier("default", p) * (month("Asia/Shanghai") == 1 && day("Asia/Shanghai") == 1 ? 0.5 : 1)"#,
+            TokenParams {
+                p: 1000.0,
+                ..TokenParams::default()
+            },
+            jan1,
+        )
+        .unwrap()
+        .cost;
+        assert_eq!(cost, 500.0);
     }
 }

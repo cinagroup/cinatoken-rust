@@ -28,6 +28,14 @@
 //! `SsrfPolicy::strict_default()` mirrors the Go `EnableSSRFProtection: true`
 //! defaults: HTTP/HTTPS only, ports 80/443, private IPs rejected, no domain
 //! allowlist / blocklist.
+//!
+//! ## Parallel surface: redirect-URL validation
+//!
+//! [`redirect::validate_redirect_url`] ports Go `ValidateRedirectURL` — a
+//! *separate* allowlist (trusted redirect domains) for client-facing payment
+//! callback URLs, distinct from this crate's outbound-fetch SSRF check.
+
+pub mod redirect;
 
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -42,20 +50,20 @@ use url::Url;
 /// `docs/source-ssrf-parity.md` (CIDR Table Divergences) for the reconciliation
 /// log and per-range fixtures.
 const PRIVATE_IPV4_NETS: &[&str] = &[
-    "0.0.0.0/8",        // "This network" / unspecified
-    "10.0.0.0/8",       // private
-    "100.64.0.0/10",    // CGNAT
-    "127.0.0.0/8",      // loopback
-    "169.254.0.0/16",   // link-local
-    "172.16.0.0/12",    // private
-    "192.0.0.0/24",     // IETF protocol assignments (full /24, matches Go)
-    "192.0.2.0/24",     // TEST-NET-1
-    "192.168.0.0/16",   // private
-    "198.18.0.0/15",    // benchmarking
-    "198.51.100.0/24",  // TEST-NET-2
-    "203.0.113.0/24",   // TEST-NET-3
-    "224.0.0.0/4",      // multicast
-    "240.0.0.0/4",      // reserved
+    "0.0.0.0/8",          // "This network" / unspecified
+    "10.0.0.0/8",         // private
+    "100.64.0.0/10",      // CGNAT
+    "127.0.0.0/8",        // loopback
+    "169.254.0.0/16",     // link-local
+    "172.16.0.0/12",      // private
+    "192.0.0.0/24",       // IETF protocol assignments (full /24, matches Go)
+    "192.0.2.0/24",       // TEST-NET-1
+    "192.168.0.0/16",     // private
+    "198.18.0.0/15",      // benchmarking
+    "198.51.100.0/24",    // TEST-NET-2
+    "203.0.113.0/24",     // TEST-NET-3
+    "224.0.0.0/4",        // multicast
+    "240.0.0.0/4",        // reserved
     "255.255.255.255/32", // limited broadcast
 ];
 
@@ -65,17 +73,17 @@ const PRIVATE_IPV4_NETS: &[&str] = &[
 /// local-use NAT64) is blocked here as defense-in-depth even though Go does not
 /// list it. See `docs/source-ssrf-parity.md` (CIDR Table Divergences).
 const PRIVATE_IPV6_NETS: &[&str] = &[
-    "::/128",          // unspecified
-    "::1/128",         // loopback
-    "::ffff:0:0/96",   // IPv4-mapped
-    "64:ff9b::/96",    // well-known NAT64 (can embed private IPv4)
-    "64:ff9b:1::/48",  // local-use NAT64 (RFC 8215) — superset over Go, defense-in-depth
-    "100::/64",        // discard-only
-    "2001::/23",       // IETF protocol assignments (subsumes Teredo + ORCHIDv2)
-    "2001:db8::/32",   // documentation
-    "fc00::/7",        // unique local address (ULA)
-    "fe80::/10",       // link-local
-    "ff00::/8",        // multicast
+    "::/128",         // unspecified
+    "::1/128",        // loopback
+    "::ffff:0:0/96",  // IPv4-mapped
+    "64:ff9b::/96",   // well-known NAT64 (can embed private IPv4)
+    "64:ff9b:1::/48", // local-use NAT64 (RFC 8215) — superset over Go, defense-in-depth
+    "100::/64",       // discard-only
+    "2001::/23",      // IETF protocol assignments (subsumes Teredo + ORCHIDv2)
+    "2001:db8::/32",  // documentation
+    "fc00::/7",       // unique local address (ULA)
+    "fe80::/10",      // link-local
+    "ff00::/8",       // multicast
 ];
 
 /// SSRF validation policy. Built from runtime configuration in the future; for
@@ -543,8 +551,8 @@ mod tests {
 
         // Just outside the widened ranges must stay public (no over-blocking).
         let allowed = [
-            "192.0.1.1",       // immediately above 192.0.0.0/24
-            "2001:200::1",     // immediately above 2001::/23
+            "192.0.1.1",   // immediately above 192.0.0.0/24
+            "2001:200::1", // immediately above 2001::/23
         ];
         for ip in allowed {
             assert!(

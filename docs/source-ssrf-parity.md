@@ -115,6 +115,15 @@ callback URLs against `TrustedRedirectDomains` (subdomain match). This is a
 (`docs/source-payment-idempotency-parity.md`); the env var is in the
 Environment And Config Inventory.
 
+**Ported 2026-06-26** as `crates/ssrf::redirect::validate_redirect_url` — a
+faithful, tested port (12 unit tests mirroring Go's `TestValidateRedirectURL`
+table: exact/subdomain/case-insensitive matches, suffix-attack `fakeexample.com`
+reject, empty-trusted-list reject, `javascript:`/`data:` scheme reject,
+empty-URL reject). Uses the `url` crate (already a dependency) and matches Go's
+lenient empty-URL behavior (empty → "invalid URL scheme"). Stays unwired until a
+payment flow accepts user-supplied callback URLs (the Rust `stripe_pay` currently
+builds redirect URLs server-side from `FRONTEND_BASE_URL`).
+
 ## Wiring Gate (crate is not yet wired in)
 
 `crates/ssrf` is a standalone, unit-tested crate **not wired into any Worker

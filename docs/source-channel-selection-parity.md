@@ -151,11 +151,19 @@ incl. a full two-group loop trace. The group-config layer is ported too
 faithfully port `service.GetUserUsableGroups` (base usable map + per-group
 `+:`/`-:`/plain special overrides + ensure the user's own group) and
 `service.GetUserAutoGroup` (auto-groups list ∩ usable, in configured order); 9
-unit tests. **Ready to wire** — remaining is the relay-loop integration: load
-the auto-groups list + base/special usable-group settings from options/D1, feed
-`user_auto_groups` into `auto_group_retry_step`, and query candidates per group
-(today the loop selects within a single `effective_group`). Affinity parity is
-still pending.
+unit tests. The settings/resolution layer is wired too (2026-06-27):
+`d1_repositories::resolve_user_auto_groups` reads the `AutoGroups`,
+`UserUsableGroups`, and `group_ratio_setting.group_special_usable_group` options
+and feeds them through `core::groups::user_auto_groups` (pure parse/resolve, 3
+tests). **Remaining: the relay-loop integration** (ready-to-wire pieces are in
+place but not yet called from the loop). It is a hot-path change that must:
+(a) trigger only when `token_group == "auto"`, resolving groups from the user's
+group; (b) fetch candidates **per group** and drive `auto_group_retry_step`
+across attempts; and (c) **move tiered-billing group-ratio resolution to the
+SELECTED group** — Go resolves the group ratio after channel selection
+(`selectGroup`), whereas the Rust preflight currently resolves it from the token
+group, which is `"auto"` (not a real ratio key) in the auto case. Needs staging
+verification (D1 reads + e2e). Affinity parity is still pending.
 
 The selection-specific parity gaps to close before relay canary:
 

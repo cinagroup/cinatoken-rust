@@ -158,9 +158,29 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    `RelayFormatOpenAI` at the call site.
 4. Port `getImageToken` exactly — **done** as the pure
    `cinatoken_core::image_tokens::image_tokens` (model table, patch/tile,
-   multipliers, the 1536-cap scale-down, detail/media flags; 7 tests). Remaining:
-   choose an image-dimension source (lightweight PNG/JPEG/WebP/GIF header parser)
-   to feed it width/height, and wire it into the request estimator.
+   multipliers, the 1536-cap scale-down, detail/media flags; 7 tests).
+   Image-dimension source + wiring — **DONE 2026-06-27**. The lightweight
+   header parser is `cinatoken_core::image_dims::image_dimensions`
+   (PNG/JPEG/GIF/WebP, header-only, 8 tests) — the WASM substitute for Go's
+   `image.DecodeConfig`/`webp.DecodeConfig` in `GetImageConfig`. It is wired
+   into the request estimator (`relay.rs::image_token_estimate`): for OpenAI
+   text models (`cinatoken_core::is_openai_text_model`, port of
+   `common.IsOpenAITextModel`) it decodes inline images (base64 data URLs and
+   raw base64 `data` fields) and calls `image_tokens` with Go's env-default
+   media flags (`GetMediaToken=true`, `GetMediaTokenNotStream=false`), so
+   streaming requests get the precise patch/tile count, non-stream requests get
+   `3*baseTokens`, and `detail=low` gets `baseTokens` — matching Go. The
+   dimension-independent short-circuits Go runs *before* `GetImageConfig`
+   (`detail=low`, the media-token flags, the non-stream gate) are applied first
+   (`image_tokens_needs_dimensions`), so they match Go even for remote/
+   undecodable images that carry no inline bytes — no egress required.
+   Non-OpenAI models add the flat `520` (Go's else branch). **Known divergence**:
+   only when the count genuinely needs pixels (streaming + non-`low` detail) and
+   the image is a *remote* URL or undecodable does Rust fall back to the flat
+   `520`; Go fetches the URL (`LoadFileSource`) and decodes it. The preflight
+   estimator skips that egress (ties into SSRF wiring, ssrf-parity 4.5). HEIF/
+   HEIC inline images are also undecodable here and take the same fallback. This
+   affects only the reserved-quota estimate — settlement uses upstream usage.
 5. Audio duration formulas — **done** in `core::request_tokens`
    (`audio_transcription_tokens`, `realtime_audio_{input,output}_tokens`, with
    Go's round-vs-truncate). Remaining: a duration source (header parse / size

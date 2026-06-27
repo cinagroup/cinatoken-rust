@@ -3,7 +3,9 @@ pub mod channel_select;
 pub mod completion_ratio;
 pub mod default_ratios;
 pub mod error;
+pub mod image_dims;
 pub mod image_tokens;
+pub mod model_class;
 pub mod model_name;
 pub mod relay;
 pub mod relay_policy;
@@ -20,7 +22,9 @@ pub use default_ratios::{
     default_model_ratio, CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
 };
 pub use error::{ApiError, ApiResult};
-pub use image_tokens::{image_tokens, MediaTokenFlags};
+pub use image_dims::image_dimensions;
+pub use image_tokens::{image_tokens, image_tokens_needs_dimensions, MediaTokenFlags};
+pub use model_class::is_openai_text_model;
 pub use model_name::format_matching_model_name;
 pub use relay::{ChatCompletionRequest, ChatMessage, ErrorBody, ModelListResponse, ModelObject};
 pub use relay_policy::{should_disable_channel, should_retry};

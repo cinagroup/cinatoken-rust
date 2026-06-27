@@ -82,9 +82,47 @@ pub fn image_tokens(
     stream: bool,
     flags: MediaTokenFlags,
 ) -> i64 {
-    let lower = model.to_ascii_lowercase();
-    if lower.starts_with("glm-4") {
-        return 1047;
+    match pre_dimension_result(model, detail, stream, flags) {
+        Ok(tokens) => tokens,
+        Err(profile) => {
+            if let Some(multiplier) = profile.patch_multiplier {
+                patch_based_tokens(width, height, multiplier)
+            } else {
+                tile_based_tokens(width, height, profile.base_tokens, profile.tile_tokens)
+            }
+        }
+    }
+}
+
+/// Whether `image_tokens` would reach the patch/tile computation, i.e. whether
+/// the result genuinely depends on the decoded `width`/`height`. Mirrors which
+/// Go `getImageToken` short-circuits run *before* `GetImageConfig`: a `false`
+/// result means Go produces the count without decoding the image, so a caller
+/// that lacks decoded dimensions can still match Go exactly by calling
+/// `image_tokens` with any dimensions; a `true` result means the count requires
+/// the real pixels (and Go would fetch/decode to get them).
+pub fn image_tokens_needs_dimensions(
+    model: &str,
+    detail: &str,
+    stream: bool,
+    flags: MediaTokenFlags,
+) -> bool {
+    pre_dimension_result(model, detail, stream, flags).is_err()
+}
+
+/// The part of Go `getImageToken` that runs before `GetImageConfig`. Returns
+/// `Ok(tokens)` for the dimension-independent short-circuits (glm-4, `detail=low`
+/// on non-patch models, the media-token flags / non-stream gate) or
+/// `Err(profile)` when the patch/tile computation — which needs width/height —
+/// must run.
+fn pre_dimension_result(
+    model: &str,
+    detail: &str,
+    stream: bool,
+    flags: MediaTokenFlags,
+) -> Result<i64, ModelImageProfile> {
+    if model.to_ascii_lowercase().starts_with("glm-4") {
+        return Ok(1047);
     }
 
     let profile = classify(model);
@@ -92,20 +130,17 @@ pub fn image_tokens(
 
     // detail=low short-circuit (non-patch only), matching Go.
     if detail == "low" && !is_patch {
-        return profile.base_tokens;
+        return Ok(profile.base_tokens);
     }
     // Media-token flags: when disabled, Go returns 3 * base.
     if !flags.get_media_token {
-        return 3 * profile.base_tokens;
+        return Ok(3 * profile.base_tokens);
     }
     if !flags.get_media_token_not_stream && !stream {
-        return 3 * profile.base_tokens;
+        return Ok(3 * profile.base_tokens);
     }
 
-    if let Some(multiplier) = profile.patch_multiplier {
-        return patch_based_tokens(width, height, multiplier);
-    }
-    tile_based_tokens(width, height, profile.base_tokens, profile.tile_tokens)
+    Err(profile)
 }
 
 fn ceil_div(a: i64, b: i64) -> i64 {
@@ -239,6 +274,29 @@ mod tests {
         assert_eq!(image_tokens(64, 64, "gpt-4.1-mini", "high", true, ON), 6);
         // detail=low does NOT short-circuit patch models -> still computed.
         assert_eq!(image_tokens(64, 64, "gpt-4.1-mini", "low", true, ON), 6);
+    }
+
+    #[test]
+    fn needs_dimensions_matches_short_circuits() {
+        // Streaming, high detail, flags on -> tile path needs pixels.
+        assert!(image_tokens_needs_dimensions("gpt-4o", "high", true, ON));
+        // Non-stream with not_stream flag off -> 3*base, no pixels needed.
+        let not_stream_off = MediaTokenFlags {
+            get_media_token: true,
+            get_media_token_not_stream: false,
+        };
+        assert!(!image_tokens_needs_dimensions(
+            "gpt-4o",
+            "high",
+            false,
+            not_stream_off
+        ));
+        // detail=low on a tile model -> base, no pixels needed.
+        assert!(!image_tokens_needs_dimensions("gpt-4o", "low", true, ON));
+        // detail=low on a PATCH model still needs pixels (no low short-circuit).
+        assert!(image_tokens_needs_dimensions("gpt-4.1-mini", "low", true, ON));
+        // glm-4 is a fixed value -> no pixels needed.
+        assert!(!image_tokens_needs_dimensions("glm-4v", "high", true, ON));
     }
 
     #[test]

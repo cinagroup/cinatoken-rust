@@ -7,7 +7,9 @@ use cinatoken_billing::{
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{
-    format_matching_model_name, select_weighted, ApiError, ApiResult, Candidate, ErrorBody,
+    format_matching_model_name, image_dimensions, image_tokens, image_tokens_needs_dimensions,
+    is_openai_text_model, select_weighted, ApiError, ApiResult, Candidate, ErrorBody,
+    MediaTokenFlags,
 };
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
@@ -3601,7 +3603,8 @@ fn request_token_estimate_from_body_for_model(model: &str, body: &Value) -> Requ
         completion_tokens: estimate_completion_tokens_from_request(body),
         ..RequestTokenEstimate::default()
     };
-    collect_media_token_estimate(body, &mut estimate);
+    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    collect_media_token_estimate(body, model, stream, &mut estimate);
     estimate
 }
 
@@ -3670,24 +3673,186 @@ enum RequestMediaKind {
     File,
 }
 
-fn collect_media_token_estimate(value: &Value, estimate: &mut RequestTokenEstimate) {
+fn collect_media_token_estimate(
+    value: &Value,
+    model: &str,
+    stream: bool,
+    estimate: &mut RequestTokenEstimate,
+) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_media_token_estimate(item, estimate);
+                collect_media_token_estimate(item, model, stream, estimate);
             }
         }
         Value::Object(object) => {
             if let Some(kind) = request_media_kind_from_object(object) {
-                add_media_token_estimate(kind, estimate);
+                match kind {
+                    RequestMediaKind::Image => {
+                        let tokens = image_token_estimate(object, model, stream);
+                        estimate.image_input_tokens =
+                            estimate.image_input_tokens.saturating_add(tokens);
+                    }
+                    other => add_media_token_estimate(other, estimate),
+                }
                 return;
             }
             for value in object.values() {
-                collect_media_token_estimate(value, estimate);
+                collect_media_token_estimate(value, model, stream, estimate);
             }
         }
         _ => {}
     }
+}
+
+/// Estimate prompt tokens contributed by one image content part, mirroring Go
+/// `EstimateRequestToken`'s image branch: `getImageToken` for OpenAI text models
+/// (decode width/height, then patch/tile), a flat `520` for non-OpenAI models.
+///
+/// Go decodes the image config via `GetImageConfig`, which fetches remote URLs.
+/// The preflight estimator does not perform that egress, so only images with
+/// inline bytes (base64 data URLs or raw base64 `data` fields) get the precise
+/// patch/tile count; remote-URL and undecodable images fall back to the flat
+/// `520`. This affects only the reserved-quota estimate — settlement always uses
+/// the upstream-reported usage.
+fn image_token_estimate(
+    object: &serde_json::Map<String, Value>,
+    model: &str,
+    stream: bool,
+) -> i64 {
+    if !is_openai_text_model(model) {
+        return ESTIMATED_IMAGE_INPUT_TOKENS;
+    }
+    let detail = extract_image_detail(object);
+    // Go env defaults: GET_MEDIA_TOKEN=true, GET_MEDIA_TOKEN_NOT_STREAM=false.
+    let flags = MediaTokenFlags {
+        get_media_token: true,
+        get_media_token_not_stream: false,
+    };
+    // Go's dimension-independent short-circuits (detail=low, media flags,
+    // non-stream) run before GetImageConfig and need no decoded pixels, so match
+    // them even for remote/undecodable images (dimensions here are unused).
+    if !image_tokens_needs_dimensions(model, &detail, stream, flags) {
+        return image_tokens(0, 0, model, &detail, stream, flags);
+    }
+    // The patch/tile path genuinely needs pixels. Go fetches remote images to
+    // decode them; the preflight estimator does not, so only inline images
+    // (base64 data URLs / raw base64 `data`) get the precise count — remote and
+    // undecodable images fall back to the flat per-image estimate.
+    match extract_inline_image_bytes(object)
+        .as_deref()
+        .and_then(image_dimensions)
+    {
+        Some((width, height)) => image_tokens(width, height, model, &detail, stream, flags),
+        None => ESTIMATED_IMAGE_INPUT_TOKENS,
+    }
+}
+
+/// The OpenAI `detail` hint for an image part: `image_url.detail` (object form)
+/// or a top-level `detail`. Empty when absent (`image_tokens` treats anything
+/// other than `"low"` as high-detail, matching Go's normalization).
+fn extract_image_detail(object: &serde_json::Map<String, Value>) -> String {
+    object
+        .get("image_url")
+        .and_then(Value::as_object)
+        .and_then(|inner| inner.get("detail"))
+        .and_then(Value::as_str)
+        .or_else(|| object.get("detail").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Decode budget for image-dimension parsing: enough to reach a JPEG SOF marker
+/// past large EXIF/APP segments without decoding multi-MB payloads.
+const IMAGE_DIM_DECODE_CAP: usize = 64 * 1024;
+
+/// Extract inline image bytes (header prefix) for dimension parsing. Handles
+/// OpenAI `image_url` (string or `{url}`) base64 data URLs and raw base64 `data`
+/// fields (Gemini `inline_data`, Anthropic `source`). Returns `None` for remote
+/// `http(s)` URLs (not fetched in preflight) and non-base64 sources.
+fn extract_inline_image_bytes(object: &serde_json::Map<String, Value>) -> Option<Vec<u8>> {
+    let url = object
+        .get("image_url")
+        .and_then(|value| match value {
+            Value::String(text) => Some(text.as_str()),
+            Value::Object(inner) => inner.get("url").and_then(Value::as_str),
+            _ => None,
+        })
+        .or_else(|| object.get("url").and_then(Value::as_str));
+    if let Some(url) = url {
+        // image_url is present: only inline base64 data URLs are decodable here.
+        let bytes = data_url_base64(url)
+            .map(|b64| base64_standard_decode_prefix(b64, IMAGE_DIM_DECODE_CAP))
+            .filter(|bytes| !bytes.is_empty());
+        return bytes;
+    }
+
+    let raw = object
+        .get("data")
+        .and_then(Value::as_str)
+        .or_else(|| nested_str(object, "source", "data"))
+        .or_else(|| nested_str(object, "inline_data", "data"))
+        .or_else(|| nested_str(object, "inlineData", "data"))?;
+    // Some clients put a full data URL in the raw `data` field.
+    let b64 = data_url_base64(raw).unwrap_or(raw);
+    let bytes = base64_standard_decode_prefix(b64, IMAGE_DIM_DECODE_CAP);
+    (!bytes.is_empty()).then_some(bytes)
+}
+
+fn nested_str<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    outer: &str,
+    inner: &str,
+) -> Option<&'a str> {
+    object
+        .get(outer)
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(inner))
+        .and_then(Value::as_str)
+}
+
+/// Return the base64 payload of a `data:[<mediatype>];base64,<payload>` URL, or
+/// `None` if `url` is not a base64 data URL.
+fn data_url_base64(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("data:")?;
+    let comma = rest.find(',')?;
+    let (meta, payload) = rest.split_at(comma);
+    if meta.contains(";base64") {
+        Some(&payload[1..])
+    } else {
+        None
+    }
+}
+
+/// Decode standard base64 (`+/` alphabet, RFC 4648) into bytes, stopping once
+/// `max_bytes` are produced. Whitespace is skipped; `=` padding and any invalid
+/// byte end the decode. Returns the decoded prefix — sufficient for a header
+/// dimension parse without decoding the whole image.
+fn base64_standard_decode_prefix(input: &str, max_bytes: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut acc: u32 = 0;
+    let mut bits: u32 = 0;
+    for &byte in input.as_bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b' ' | b'\n' | b'\r' | b'\t' => continue,
+            _ => break,
+        } as u32;
+        acc = (acc << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            if out.len() >= max_bytes {
+                break;
+            }
+        }
+    }
+    out
 }
 
 fn request_media_kind_from_object(
@@ -5267,22 +5432,24 @@ mod tests {
 
         let estimate = request_token_estimate_from_body(&body);
 
+        // Default model gpt-4o, no `stream` field (non-stream): Go's getImageToken
+        // returns 3*baseTokens (3*85) before any fetch, so the remote image is
+        // counted without egress. Audio/video/file keep the flat fallbacks.
+        let non_stream_image = 3 * 85;
         assert_eq!(estimate.text_prompt_tokens, 9);
-        assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
+        assert_eq!(estimate.image_input_tokens, non_stream_image);
         assert_eq!(estimate.audio_input_tokens, ESTIMATED_AUDIO_INPUT_TOKENS);
         assert_eq!(estimate.file_input_tokens, ESTIMATED_FILE_INPUT_TOKENS);
         assert_eq!(estimate.video_input_tokens, 0);
         assert_eq!(
             estimate.prompt_tokens(),
-            9 + ESTIMATED_IMAGE_INPUT_TOKENS
-                + ESTIMATED_AUDIO_INPUT_TOKENS
-                + ESTIMATED_FILE_INPUT_TOKENS
+            9 + non_stream_image + ESTIMATED_AUDIO_INPUT_TOKENS + ESTIMATED_FILE_INPUT_TOKENS
         );
 
         let params = token_params_from_request("gpt-4o", &body, BillingExprVariables::default());
         assert_eq!(params.p, estimate.prompt_tokens() as f64);
         assert_eq!(params.len, estimate.prompt_tokens() as f64);
-        assert_eq!(params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
+        assert_eq!(params.img, non_stream_image as f64);
         assert_eq!(params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
 
         let detail_params = token_params_from_request(
@@ -5299,8 +5466,148 @@ mod tests {
             (estimate.text_prompt_tokens + estimate.file_input_tokens) as f64
         );
         assert_eq!(detail_params.len, estimate.prompt_tokens() as f64);
-        assert_eq!(detail_params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
+        assert_eq!(detail_params.img, non_stream_image as f64);
         assert_eq!(detail_params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
+    }
+
+    fn encode_base64_bytes(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = chunk.get(1).copied().unwrap_or_default() as u32;
+            let b2 = chunk.get(2).copied().unwrap_or_default() as u32;
+            let bits = (b0 << 16) | (b1 << 8) | b2;
+            out.push(TABLE[((bits >> 18) & 0x3f) as usize] as char);
+            out.push(TABLE[((bits >> 12) & 0x3f) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[((bits >> 6) & 0x3f) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[(bits & 0x3f) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    fn png_data_url(width: u32, height: u32) -> String {
+        let mut data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x0D]); // IHDR length
+        data.extend_from_slice(b"IHDR");
+        data.extend_from_slice(&width.to_be_bytes());
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&[8, 6, 0, 0, 0]);
+        format!("data:image/png;base64,{}", encode_base64_bytes(&data))
+    }
+
+    #[test]
+    fn inline_openai_image_uses_tile_based_image_tokens() {
+        // 512x256 inline PNG, streaming gpt-4o (tile base 85, tile 170): fit
+        // <=2048; scale shortest side 256 -> 768 (x3) => 1536x768 => 3x2=6 tiles
+        // => 6*170 + 85 = 1105 (not the flat 520).
+        let body = json!({
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "abcdefgh"},
+                    {"type": "image_url", "image_url": {"url": png_data_url(512, 256), "detail": "high"}}
+                ]
+            }]
+        });
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        assert_eq!(estimate.image_input_tokens, 1105);
+        assert_ne!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
+    }
+
+    #[test]
+    fn inline_openai_image_non_stream_uses_three_base_tokens() {
+        // Non-stream with GET_MEDIA_TOKEN_NOT_STREAM=false -> Go 3*baseTokens.
+        let body = json!({
+            "stream": false,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": png_data_url(512, 256)}}]
+            }]
+        });
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        assert_eq!(estimate.image_input_tokens, 3 * 85);
+    }
+
+    #[test]
+    fn inline_openai_image_detail_low_uses_base_tokens() {
+        let body = json!({
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": png_data_url(512, 256), "detail": "low"}}]
+            }]
+        });
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        assert_eq!(estimate.image_input_tokens, 85);
+    }
+
+    #[test]
+    fn inline_image_non_openai_model_uses_flat_estimate() {
+        // Non-OpenAI models add a flat 520 per image (Go's else branch), even
+        // with decodable inline dimensions.
+        let body = json!({
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": png_data_url(512, 256), "detail": "high"}}]
+            }]
+        });
+        let estimate = request_token_estimate_from_body_for_model("claude-3-5-sonnet", &body);
+        assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
+    }
+
+    #[test]
+    fn remote_image_non_stream_uses_three_base_tokens_without_fetch() {
+        // gpt-4o, remote URL (no inline bytes), non-stream: Go short-circuits to
+        // 3*baseTokens before fetching, so the estimate matches with no egress.
+        let body = json!({
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}}]
+            }]
+        });
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        assert_eq!(estimate.image_input_tokens, 3 * 85);
+    }
+
+    #[test]
+    fn remote_image_detail_low_uses_base_tokens_without_fetch() {
+        // detail=low short-circuits to baseTokens before any fetch.
+        let body = json!({
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png", "detail": "low"}}]
+            }]
+        });
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        assert_eq!(estimate.image_input_tokens, 85);
+    }
+
+    #[test]
+    fn remote_image_stream_high_detail_falls_back_to_flat_estimate() {
+        // Stream + high detail genuinely needs pixels; the remote URL is not
+        // fetched in preflight, so it falls back to the flat per-image estimate.
+        let body = json!({
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png", "detail": "high"}}]
+            }]
+        });
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
     }
 
     #[test]
@@ -5333,14 +5640,19 @@ mod tests {
 
         let estimate = request_token_estimate_from_body(&body);
 
+        // Default model gpt-4o, non-stream: the inline PNG bytes here are not a
+        // real header (all-zero), but the non-stream short-circuit returns
+        // 3*baseTokens (3*85) before decoding, matching Go. Audio/video/file
+        // keep the flat fallbacks.
+        let non_stream_image = 3 * 85;
         assert_eq!(estimate.text_prompt_tokens, 2);
-        assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
+        assert_eq!(estimate.image_input_tokens, non_stream_image);
         assert_eq!(estimate.audio_input_tokens, ESTIMATED_AUDIO_INPUT_TOKENS);
         assert_eq!(estimate.video_input_tokens, ESTIMATED_VIDEO_INPUT_TOKENS);
         assert_eq!(estimate.file_input_tokens, ESTIMATED_FILE_INPUT_TOKENS);
         assert_eq!(
             estimate.prompt_tokens(),
-            2 + ESTIMATED_IMAGE_INPUT_TOKENS
+            2 + non_stream_image
                 + ESTIMATED_AUDIO_INPUT_TOKENS
                 + ESTIMATED_VIDEO_INPUT_TOKENS
                 + ESTIMATED_FILE_INPUT_TOKENS
@@ -5422,12 +5734,14 @@ mod tests {
         .unwrap();
 
         let estimated_text_prompt = 9.0;
-        let estimated_prompt = estimated_text_prompt
-            + ESTIMATED_IMAGE_INPUT_TOKENS as f64
-            + ESTIMATED_AUDIO_INPUT_TOKENS as f64;
+        // Remote image, non-stream, OpenAI base model (85): 3*baseTokens, matching
+        // Go's pre-fetch short-circuit (no egress).
+        let estimated_image = (3 * 85) as f64;
+        let estimated_prompt =
+            estimated_text_prompt + estimated_image + ESTIMATED_AUDIO_INPUT_TOKENS as f64;
         let estimated_cost = (estimated_text_prompt * 2.0)
             + (100.0 * 10.0)
-            + (ESTIMATED_IMAGE_INPUT_TOKENS as f64 * 3.0)
+            + (estimated_image * 3.0)
             + (ESTIMATED_AUDIO_INPUT_TOKENS as f64 * 4.0);
 
         assert_eq!(
@@ -5438,7 +5752,8 @@ mod tests {
         assert_eq!(preflight.snapshot.estimated_expression_cost, estimated_cost);
         assert_eq!(
             preflight.pre_consumed_quota,
-            (estimated_cost / 1_000_000.0 * 500_000.0) as i64
+            // quota_round: round half away from zero, matching Go QuotaRound.
+            (estimated_cost / 1_000_000.0 * 500_000.0).round() as i64
         );
 
         let params = token_params_from_request(
@@ -5452,7 +5767,7 @@ mod tests {
         );
         assert_eq!(params.p, estimated_text_prompt);
         assert_eq!(params.len, estimated_prompt);
-        assert_eq!(params.img, ESTIMATED_IMAGE_INPUT_TOKENS as f64);
+        assert_eq!(params.img, estimated_image);
         assert_eq!(params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
     }
 

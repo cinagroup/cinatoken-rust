@@ -11,6 +11,11 @@ const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
 pub(crate) const GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_ratio";
 const LEGACY_GROUP_RATIO_OPTION_KEY: &str = "GroupRatio";
 const BILLING_MODE_TIERED_EXPR: &str = "tiered_expr";
+// Auto cross-group selection settings (Go option keys, see model/option.go).
+const AUTO_GROUPS_OPTION_KEY: &str = "AutoGroups";
+const USER_USABLE_GROUPS_OPTION_KEY: &str = "UserUsableGroups";
+const GROUP_SPECIAL_USABLE_GROUP_OPTION_KEY: &str =
+    "group_ratio_setting.group_special_usable_group";
 
 #[derive(Debug, Deserialize)]
 struct OptionValueRow {
@@ -869,6 +874,80 @@ fn parse_string_map_option(
     serde_json::from_str::<HashMap<String, String>>(raw).map_err(|err| {
         worker::Error::RustError(format!("option {key} must be a JSON string map: {err}"))
     })
+}
+
+// NOTE: the four helpers below are the ready-to-wire auto cross-group resolution
+// layer; they are exercised by unit tests and will be called from the relay
+// retry loop in a follow-up (the loop restructure also moves group-ratio
+// resolution to the selected group — see source-channel-selection-parity.md).
+#[allow(dead_code)]
+/// Parse the `AutoGroups` option (a JSON array of group names). Missing or
+/// malformed config yields an empty list (auto selection is then "not enabled",
+/// matching Go's behavior when no auto groups are configured).
+fn parse_auto_groups_option(raw: Option<&str>) -> Vec<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+/// Parse the `group_ratio_setting.group_special_usable_group` option: a JSON
+/// object mapping a user group to its special usable-group overrides
+/// (`{ userGroup: { "+:g"|"-:g"|"g": desc } }`). Missing/malformed -> empty.
+fn parse_special_usable_groups_option(raw: Option<&str>) -> HashMap<String, HashMap<String, String>> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str::<HashMap<String, HashMap<String, String>>>(value).ok())
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+/// Pure resolution of a user's auto groups from the raw option values — port of
+/// `service.GetUserAutoGroup` glue. Returns the ordered auto-group list (empty
+/// when auto groups are not configured). Exposed (via the async wrapper) for the
+/// relay loop's cross-group retry.
+fn resolve_user_auto_groups_from_options(
+    user_group: &str,
+    auto_groups_raw: Option<&str>,
+    user_usable_groups_raw: Option<&str>,
+    special_usable_groups_raw: Option<&str>,
+) -> Vec<String> {
+    let auto_groups = parse_auto_groups_option(auto_groups_raw);
+    if auto_groups.is_empty() {
+        return Vec::new();
+    }
+    let base = parse_string_map_option(USER_USABLE_GROUPS_OPTION_KEY, user_usable_groups_raw)
+        .unwrap_or_default();
+    let special = parse_special_usable_groups_option(special_usable_groups_raw)
+        .remove(user_group)
+        .unwrap_or_default();
+    cinatoken_core::groups::user_auto_groups(user_group, &auto_groups, &base, &special)
+}
+
+#[allow(dead_code)]
+/// Resolve the ordered list of auto groups a user may use, reading the
+/// `AutoGroups`, `UserUsableGroups`, and special-usable-group options from D1.
+/// Empty when auto selection is not configured for this user.
+pub async fn resolve_user_auto_groups(
+    db: &D1Database,
+    user_group: &str,
+) -> worker::Result<Vec<String>> {
+    let values = option_values(
+        db,
+        &[
+            AUTO_GROUPS_OPTION_KEY,
+            USER_USABLE_GROUPS_OPTION_KEY,
+            GROUP_SPECIAL_USABLE_GROUP_OPTION_KEY,
+        ],
+    )
+    .await?;
+    Ok(resolve_user_auto_groups_from_options(
+        user_group,
+        values[0].as_deref(),
+        values[1].as_deref(),
+        values[2].as_deref(),
+    ))
 }
 
 fn resolve_group_ratio(group: &str, raw: &str) -> worker::Result<Option<f64>> {
@@ -3393,6 +3472,43 @@ pub async fn quota_trend_by_user_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_auto_groups_option_reads_json_array() {
+        assert_eq!(
+            parse_auto_groups_option(Some(r#"["default","vip"]"#)),
+            vec!["default".to_string(), "vip".to_string()]
+        );
+        // Missing / blank / malformed -> empty (auto selection disabled).
+        assert!(parse_auto_groups_option(None).is_empty());
+        assert!(parse_auto_groups_option(Some("   ")).is_empty());
+        assert!(parse_auto_groups_option(Some("not json")).is_empty());
+    }
+
+    #[test]
+    fn resolve_user_auto_groups_intersects_usable_and_special() {
+        let auto = Some(r#"["default","vip","svip"]"#);
+        let usable = Some(r#"{"default":"默认分组","vip":"vip分组"}"#);
+        // user group "u" gets svip added and vip removed via special overrides.
+        let special = Some(r#"{"u":{"+:svip":"超级","-:vip":""}}"#);
+        // default + svip are usable; vip removed; order follows the auto list.
+        assert_eq!(
+            resolve_user_auto_groups_from_options("u", auto, usable, special),
+            vec!["default".to_string(), "svip".to_string()]
+        );
+        // A different user group has no specials: default + vip remain.
+        assert_eq!(
+            resolve_user_auto_groups_from_options("other", auto, usable, special),
+            vec!["default".to_string(), "vip".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_user_auto_groups_empty_when_auto_not_configured() {
+        let usable = Some(r#"{"default":"x"}"#);
+        assert!(resolve_user_auto_groups_from_options("u", None, usable, None).is_empty());
+        assert!(resolve_user_auto_groups_from_options("u", Some("[]"), usable, None).is_empty());
+    }
 
     #[test]
     fn normalized_fallback_model_collapses_thinking_budget() {

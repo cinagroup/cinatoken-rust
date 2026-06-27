@@ -3,6 +3,7 @@ pub mod channel_select;
 pub mod completion_ratio;
 pub mod default_ratios;
 pub mod error;
+pub mod groups;
 pub mod image_dims;
 pub mod image_tokens;
 pub mod model_class;
@@ -23,6 +24,7 @@ pub use default_ratios::{
     default_model_ratio, CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
 };
 pub use error::{ApiError, ApiResult};
+pub use groups::{user_auto_groups, user_usable_groups};
 pub use image_dims::image_dimensions;
 pub use image_tokens::{image_tokens, image_tokens_needs_dimensions, MediaTokenFlags};
 pub use model_class::is_openai_text_model;

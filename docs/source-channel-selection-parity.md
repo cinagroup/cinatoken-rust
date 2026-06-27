@@ -146,11 +146,16 @@ priorities before the next is tried; `crossGroupRetry && priorityRetry >=
 RetryTimes` arms a group advance for the next retry via the `ResetRetryNextTry`
 semantics; returns the per-attempt `(group_index, priority_retry)` plus the
 `(next_group_index, next_retry, reset_retry_next_try)` to persist). 6 unit tests
-incl. a full two-group loop trace. **Ready to wire** — the wiring needs the
-auto-group config layer (`GetAutoGroups` / `GetUserUsableGroups` /
-`GetUserAutoGroup`), which is not yet ported, plus per-group candidate querying
-in the relay retry loop (today the loop selects within a single
-`effective_group`). Affinity parity is still pending.
+incl. a full two-group loop trace. The group-config layer is ported too
+(2026-06-27): `cinatoken_core::groups::{user_usable_groups, user_auto_groups}`
+faithfully port `service.GetUserUsableGroups` (base usable map + per-group
+`+:`/`-:`/plain special overrides + ensure the user's own group) and
+`service.GetUserAutoGroup` (auto-groups list ∩ usable, in configured order); 9
+unit tests. **Ready to wire** — remaining is the relay-loop integration: load
+the auto-groups list + base/special usable-group settings from options/D1, feed
+`user_auto_groups` into `auto_group_retry_step`, and query candidates per group
+(today the loop selects within a single `effective_group`). Affinity parity is
+still pending.
 
 The selection-specific parity gaps to close before relay canary:
 

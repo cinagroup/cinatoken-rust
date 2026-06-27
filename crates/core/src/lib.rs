@@ -12,6 +12,7 @@ pub mod relay_policy;
 pub mod request_tokens;
 pub mod response;
 pub mod status;
+pub mod tiktoken;
 
 pub use bpe::bpe_token_count;
 pub use channel_select::{select_weighted, Candidate};
@@ -31,3 +32,4 @@ pub use relay_policy::{should_disable_channel, should_retry};
 pub use request_tokens::openai_chat_format_overhead;
 pub use response::ApiEnvelope;
 pub use status::{RuntimeFeature, StatusResponse};
+pub use tiktoken::{count_bpe_tokens_cl100k, parse_mergeable_ranks, pre_tokenize_cl100k};

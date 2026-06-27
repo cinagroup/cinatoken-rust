@@ -137,10 +137,21 @@ and audio token algorithms are not in the crate. So the OpenAI text path diverge
 from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
 
 1. Real `cl100k_base`/`o200k_base` tiktoken. The **BPE merge core** is ported as
-   pure `cinatoken_core::bpe::bpe_token_count` (ranks injected). Remaining I/O:
-   (a) load the mergeable-rank vocab from KV/R2 (do not embed ~1.7 MB, §21.7),
-   (b) the GPT pre-tokenization regex split per model. Then golden-compare total
-   counts vs Go (`crates/tokenizer` has the heuristic fallback for non-OpenAI).
+   pure `cinatoken_core::bpe::bpe_token_count` (ranks injected). **cl100k_base
+   encoder DONE 2026-06-27**: `cinatoken_core::tiktoken` adds the hand-rolled
+   `cl100k_base` GPT pre-tokenizer (`pre_tokenize_cl100k` — a faithful
+   ordered-alternative scanner for the published regex, avoiding a look-ahead
+   regex dependency), a `.tiktoken` mergeable-rank parser (`parse_mergeable_ranks`),
+   and the glue (`count_bpe_tokens_cl100k`). Adversarially verified against real
+   Python `tiktoken` 0.13.0 + the real 100,256-entry cl100k vocab: 0 count
+   mismatches over ~15.7k strings and millions of pre-tokenizer fuzz inputs (the
+   one bug found — `U+017F` long-s case-folding in the contraction rule — is
+   fixed). Documented approximation: `\p{L}`/`\p{N}` ↔ `char::is_alphabetic`/
+   `is_numeric` (differs only on exotic `Nl`/`No` code points like Roman
+   numerals; acceptable for a reserve estimate). Remaining: (a) the `o200k_base`
+   pre-tokenizer (gpt-4o/o-series), (b) load the mergeable-rank vocab from KV/R2
+   at runtime (do not embed ~1.7 MB, §21.7) and wire `count_bpe_tokens_*` into
+   the request text estimator for OpenAI models, replacing the heuristic there.
 2. Port the non-OpenAI `EstimateTokenByModel` heuristic and the
    `TokenTypeTextNumber` rune-count path — **DONE 2026-06-26**. `crates/tokenizer`
    is now a faithful per-rune port of Go `EstimateToken`: all 10 weighted

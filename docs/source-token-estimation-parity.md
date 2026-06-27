@@ -154,8 +154,14 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    had wrong multipliers, and misclassified url-delims/`@` — so missing-usage
    estimates were materially off.
 3. OpenAI formatting overhead (8/3/3/3) — **done** as
-   `cinatoken_core::request_tokens::openai_chat_format_overhead`; gate it on
-   `RelayFormatOpenAI` at the call site.
+   `cinatoken_core::request_tokens::openai_chat_format_overhead`, and **gated on
+   `RelayFormatOpenAI` (DONE 2026-06-27)**: the request estimator now takes an
+   `is_openai_chat` flag, set from `RelayEndpoint::uses_openai_chat_format()`
+   (request route == OpenAI `chat/completions`). Previously the overhead was
+   added whenever a `messages` array was present, which over-counted Anthropic
+   `/v1/messages` requests (they also carry `messages`); now only OpenAI
+   chat-format requests get it. Bounded to the preflight reserve; settlement
+   uses upstream usage.
 4. Port `getImageToken` exactly — **done** as the pure
    `cinatoken_core::image_tokens::image_tokens` (model table, patch/tile,
    multipliers, the 1536-cap scale-down, detail/media flags; 7 tests).

@@ -8,8 +8,8 @@ use cinatoken_billing::{
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{
     format_matching_model_name, image_dimensions, image_tokens, image_tokens_needs_dimensions,
-    is_openai_text_model, select_weighted, ApiError, ApiResult, Candidate, ErrorBody,
-    MediaTokenFlags,
+    is_openai_text_model, openai_chat_format_overhead, select_weighted, ApiError, ApiResult,
+    Candidate, ErrorBody, MediaTokenFlags,
 };
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
@@ -118,6 +118,15 @@ struct RelayEndpoint {
 impl RelayEndpoint {
     fn expects_json_request_body(&self) -> bool {
         self.request_body_mode == RelayRequestBodyMode::Json
+    }
+
+    /// Whether requests to this endpoint arrive in the OpenAI chat-completions
+    /// format (Go `types.RelayFormatOpenAI`). Only this format gets the
+    /// `tools*8 + messages*3 + name*3 + 3` token overhead; Anthropic `/messages`
+    /// (which also carries a `messages` array) and Gemini do not.
+    fn uses_openai_chat_format(&self) -> bool {
+        matches!(self.provider, RelayProviderKind::OpenAiCompatible)
+            && self.upstream_path == "chat/completions"
     }
 
     fn requested_stream(&self, body: &Value) -> bool {
@@ -634,6 +643,7 @@ async fn relay_endpoint(
         &group,
         json_body.as_ref().unwrap_or(&Value::Null),
         &billing_request_input,
+        endpoint.uses_openai_chat_format(),
     )
     .await
     {
@@ -2528,7 +2538,8 @@ async fn complete_cohere_rerank_response(
         .billing_request_input
         .body
         .as_ref()
-        .map(request_token_estimate_from_body)
+        // Rerank is not the OpenAI chat format, so no chat formatting overhead.
+        .map(|body| request_token_estimate_from_body(body, false))
         .map(RequestTokenEstimate::prompt_tokens)
         .unwrap_or_default();
     let body = match read_response_text_limited(&mut upstream, max_json_response_bytes).await {
@@ -3108,14 +3119,22 @@ async fn prepare_tiered_billing_preflight(
     group: &str,
     request_body: &Value,
     request: &RequestInput,
+    is_openai_chat: bool,
 ) -> worker::Result<Option<TieredBillingPreflight>> {
     let Some(expr) = crate::d1_repositories::tiered_billing_expr_for_model(db, model).await? else {
         return Ok(None);
     };
     let group_ratio = crate::d1_repositories::group_ratio_for_group(db, group).await?;
-    tiered_billing_preflight_snapshot(model, &expr, group_ratio, request_body, request.clone())
-        .map(Some)
-        .map_err(worker::Error::RustError)
+    tiered_billing_preflight_snapshot(
+        model,
+        &expr,
+        group_ratio,
+        request_body,
+        request.clone(),
+        is_openai_chat,
+    )
+    .map(Some)
+    .map_err(worker::Error::RustError)
 }
 
 fn tiered_billing_preflight_snapshot(
@@ -3124,9 +3143,10 @@ fn tiered_billing_preflight_snapshot(
     group_ratio: f64,
     request_body: &Value,
     request: RequestInput,
+    is_openai_chat: bool,
 ) -> Result<TieredBillingPreflight, String> {
     let used_vars = detect_billing_expr_variables(expr);
-    let params = token_params_from_request(model, request_body, used_vars);
+    let params = token_params_from_request(model, request_body, used_vars, is_openai_chat);
     let snapshot =
         estimate_tiered_billing_snapshot_with_request(model, expr, params, group_ratio, request)
             .map_err(|err| format!("failed to estimate tiered billing: {err}"))?;
@@ -3429,8 +3449,9 @@ fn token_params_from_request(
     model: &str,
     body: &Value,
     used_vars: BillingExprVariables,
+    is_openai_chat: bool,
 ) -> TokenParams {
-    let estimate = request_token_estimate_from_body_for_model(model, body);
+    let estimate = request_token_estimate_from_body_for_model(model, body, is_openai_chat);
     build_tiered_token_params(
         TieredTokenUsage {
             prompt_tokens: estimate.prompt_tokens(),
@@ -3562,15 +3583,19 @@ fn cohere_rerank_transform_usage(value: &Value, fallback_prompt_tokens: i64) -> 
 }
 
 #[cfg(test)]
-fn estimate_prompt_tokens_from_request(body: &Value) -> i64 {
-    estimate_prompt_tokens_from_request_for_model("gpt-4o", body)
+fn estimate_prompt_tokens_from_request(body: &Value, is_openai_chat: bool) -> i64 {
+    estimate_prompt_tokens_from_request_for_model("gpt-4o", body, is_openai_chat)
 }
 
 /// Estimate prompt tokens using the char-class tokenizer for the given
 /// model family. Falls back to the legacy char/4 estimate when `model` is
 /// empty. Used by the tiered billing preflight to size the reserve.
-fn estimate_prompt_tokens_from_request_for_model(model: &str, body: &Value) -> i64 {
-    request_token_estimate_from_body_for_model(model, body).prompt_tokens()
+fn estimate_prompt_tokens_from_request_for_model(
+    model: &str,
+    body: &Value,
+    is_openai_chat: bool,
+) -> i64 {
+    request_token_estimate_from_body_for_model(model, body, is_openai_chat).prompt_tokens()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3593,13 +3618,21 @@ impl RequestTokenEstimate {
     }
 }
 
-fn request_token_estimate_from_body(body: &Value) -> RequestTokenEstimate {
-    request_token_estimate_from_body_for_model("gpt-4o", body)
+fn request_token_estimate_from_body(body: &Value, is_openai_chat: bool) -> RequestTokenEstimate {
+    request_token_estimate_from_body_for_model("gpt-4o", body, is_openai_chat)
 }
 
-fn request_token_estimate_from_body_for_model(model: &str, body: &Value) -> RequestTokenEstimate {
+fn request_token_estimate_from_body_for_model(
+    model: &str,
+    body: &Value,
+    is_openai_chat: bool,
+) -> RequestTokenEstimate {
     let mut estimate = RequestTokenEstimate {
-        text_prompt_tokens: estimate_text_prompt_tokens_from_request_for_model(model, body),
+        text_prompt_tokens: estimate_text_prompt_tokens_from_request_for_model(
+            model,
+            body,
+            is_openai_chat,
+        ),
         completion_tokens: estimate_completion_tokens_from_request(body),
         ..RequestTokenEstimate::default()
     };
@@ -3608,7 +3641,11 @@ fn request_token_estimate_from_body_for_model(model: &str, body: &Value) -> Requ
     estimate
 }
 
-fn estimate_text_prompt_tokens_from_request_for_model(model: &str, body: &Value) -> i64 {
+fn estimate_text_prompt_tokens_from_request_for_model(
+    model: &str,
+    body: &Value,
+    is_openai_chat: bool,
+) -> i64 {
     let mut text = String::new();
 
     for key in [
@@ -3628,11 +3665,13 @@ fn estimate_text_prompt_tokens_from_request_for_model(model: &str, body: &Value)
         }
     }
 
-    let mut structural_tokens = 0i64;
+    // Collect the message/tool text (counted for every request format) and the
+    // counts that feed the OpenAI chat formatting overhead.
+    let mut messages_count = 0i64;
+    let mut name_count = 0i64;
+    let mut tools_count = 0i64;
     if let Some(messages) = body.get("messages").and_then(Value::as_array) {
-        structural_tokens = structural_tokens.saturating_add(3);
-        structural_tokens =
-            structural_tokens.saturating_add(saturating_usize_to_i64(messages.len()) * 3);
+        messages_count = saturating_usize_to_i64(messages.len());
         for message in messages {
             if let Some(role) = message.get("role").and_then(Value::as_str) {
                 text.push_str(role);
@@ -3641,7 +3680,7 @@ fn estimate_text_prompt_tokens_from_request_for_model(model: &str, body: &Value)
             if let Some(name) = message.get("name").and_then(Value::as_str) {
                 text.push_str(name);
                 text.push(' ');
-                structural_tokens = structural_tokens.saturating_add(3);
+                name_count = name_count.saturating_add(1);
             }
             if let Some(content) = message.get("content") {
                 collect_prompt_text(content, &mut text);
@@ -3650,12 +3689,21 @@ fn estimate_text_prompt_tokens_from_request_for_model(model: &str, body: &Value)
     }
 
     if let Some(tools) = body.get("tools").and_then(Value::as_array) {
-        structural_tokens =
-            structural_tokens.saturating_add(saturating_usize_to_i64(tools.len()) * 8);
+        tools_count = saturating_usize_to_i64(tools.len());
         for tool in tools {
             collect_tool_text(tool, &mut text);
         }
     }
+
+    // The chat formatting overhead (Go: tools*8 + messages*3 + name*3 + 3) is
+    // added only for the OpenAI chat-completions format (RelayFormatOpenAI);
+    // Anthropic /messages and Gemini count the text without it. Gated only when a
+    // messages array is present, matching Go's per-request `meta` population.
+    let structural_tokens = if is_openai_chat && body.get("messages").is_some() {
+        openai_chat_format_overhead(messages_count, tools_count, name_count)
+    } else {
+        0
+    };
 
     let text_tokens = if model.is_empty() {
         estimate_tokens_from_chars(text.chars().count())
@@ -5276,6 +5324,7 @@ mod tests {
             1.0,
             &json!({}),
             RequestInput::default(),
+            true,
         )
         .unwrap()
         .snapshot;
@@ -5411,7 +5460,7 @@ mod tests {
             ]
         });
 
-        assert_eq!(estimate_prompt_tokens_from_request(&body), 21);
+        assert_eq!(estimate_prompt_tokens_from_request(&body, true), 21);
     }
 
     #[test]
@@ -5430,7 +5479,7 @@ mod tests {
             ]
         });
 
-        let estimate = request_token_estimate_from_body(&body);
+        let estimate = request_token_estimate_from_body(&body, true);
 
         // Default model gpt-4o, no `stream` field (non-stream): Go's getImageToken
         // returns 3*baseTokens (3*85) before any fetch, so the remote image is
@@ -5446,7 +5495,8 @@ mod tests {
             9 + non_stream_image + ESTIMATED_AUDIO_INPUT_TOKENS + ESTIMATED_FILE_INPUT_TOKENS
         );
 
-        let params = token_params_from_request("gpt-4o", &body, BillingExprVariables::default());
+        let params =
+            token_params_from_request("gpt-4o", &body, BillingExprVariables::default(), true);
         assert_eq!(params.p, estimate.prompt_tokens() as f64);
         assert_eq!(params.len, estimate.prompt_tokens() as f64);
         assert_eq!(params.img, non_stream_image as f64);
@@ -5460,6 +5510,7 @@ mod tests {
                 ai: true,
                 ..BillingExprVariables::default()
             },
+            true,
         );
         assert_eq!(
             detail_params.p,
@@ -5520,7 +5571,7 @@ mod tests {
                 ]
             }]
         });
-        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
         assert_eq!(estimate.image_input_tokens, 1105);
         assert_ne!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
     }
@@ -5535,7 +5586,7 @@ mod tests {
                 "content": [{"type": "image_url", "image_url": {"url": png_data_url(512, 256)}}]
             }]
         });
-        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
         assert_eq!(estimate.image_input_tokens, 3 * 85);
     }
 
@@ -5548,7 +5599,7 @@ mod tests {
                 "content": [{"type": "image_url", "image_url": {"url": png_data_url(512, 256), "detail": "low"}}]
             }]
         });
-        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
         assert_eq!(estimate.image_input_tokens, 85);
     }
 
@@ -5563,7 +5614,7 @@ mod tests {
                 "content": [{"type": "image_url", "image_url": {"url": png_data_url(512, 256), "detail": "high"}}]
             }]
         });
-        let estimate = request_token_estimate_from_body_for_model("claude-3-5-sonnet", &body);
+        let estimate = request_token_estimate_from_body_for_model("claude-3-5-sonnet", &body, true);
         assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
     }
 
@@ -5577,7 +5628,7 @@ mod tests {
                 "content": [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png"}}]
             }]
         });
-        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
         assert_eq!(estimate.image_input_tokens, 3 * 85);
     }
 
@@ -5591,7 +5642,7 @@ mod tests {
                 "content": [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png", "detail": "low"}}]
             }]
         });
-        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
         assert_eq!(estimate.image_input_tokens, 85);
     }
 
@@ -5606,8 +5657,30 @@ mod tests {
                 "content": [{"type": "image_url", "image_url": {"url": "https://example.test/cat.png", "detail": "high"}}]
             }]
         });
-        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body);
+        let estimate = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
         assert_eq!(estimate.image_input_tokens, ESTIMATED_IMAGE_INPUT_TOKENS);
+    }
+
+    #[test]
+    fn anthropic_format_skips_openai_chat_overhead() {
+        // Anthropic /v1/messages requests also carry a `messages` array, but Go
+        // adds the tools*8 + messages*3 + name*3 + 3 overhead only for the
+        // OpenAI chat format. With is_openai_chat=false it must be omitted; the
+        // text count itself is identical, so the difference is exactly the
+        // overhead (1*8 + 2*3 + 1*3 + 3 = 20).
+        let body = json!({
+            "messages": [
+                {"role": "user", "name": "alice", "content": "abcdefgh"},
+                {"role": "assistant", "content": "ijklmnop"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "f", "description": "d"}}]
+        });
+        let openai = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
+        let anthropic = request_token_estimate_from_body_for_model("gpt-4o", &body, false);
+        assert_eq!(
+            openai.text_prompt_tokens - anthropic.text_prompt_tokens,
+            20
+        );
     }
 
     #[test]
@@ -5619,7 +5692,7 @@ mod tests {
             "top_n": 2
         });
 
-        assert_eq!(estimate_prompt_tokens_from_request(&body), 5);
+        assert_eq!(estimate_prompt_tokens_from_request(&body, false), 5);
     }
 
     #[test]
@@ -5638,7 +5711,7 @@ mod tests {
             ]
         });
 
-        let estimate = request_token_estimate_from_body(&body);
+        let estimate = request_token_estimate_from_body(&body, false);
 
         // Default model gpt-4o, non-stream: the inline PNG bytes here are not a
         // real header (all-zero), but the non-stream short-circuit returns
@@ -5683,6 +5756,7 @@ mod tests {
             1.0,
             &request_body,
             request.clone(),
+            true,
         )
         .unwrap();
         let usage = UsageSummary {
@@ -5730,6 +5804,7 @@ mod tests {
             1.0,
             &request_body,
             request,
+            true,
         )
         .unwrap();
 
@@ -5764,6 +5839,7 @@ mod tests {
                 ai: true,
                 ..BillingExprVariables::default()
             },
+            true,
         );
         assert_eq!(params.p, estimated_text_prompt);
         assert_eq!(params.len, estimated_prompt);
@@ -5789,6 +5865,7 @@ mod tests {
             1.5,
             &request_body,
             request.clone(),
+            true,
         )
         .unwrap();
         let outcome = tiered_billing_settlement(
@@ -5853,6 +5930,7 @@ mod tests {
             1.0,
             &request_body,
             request.clone(),
+            true,
         )
         .unwrap();
         let outcome = tiered_billing_settlement(
@@ -5899,6 +5977,7 @@ mod tests {
             1.5,
             &request_body,
             RequestInput::from_json_body(request_body.clone()),
+            true,
         )
         .unwrap();
 

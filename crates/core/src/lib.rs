@@ -1,3 +1,4 @@
+pub mod audio_duration;
 pub mod bpe;
 pub mod channel_select;
 pub mod completion_ratio;
@@ -15,6 +16,7 @@ pub mod response;
 pub mod status;
 pub mod tiktoken;
 
+pub use audio_duration::wav_duration_seconds;
 pub use bpe::bpe_token_count;
 pub use channel_select::{auto_group_retry_step, select_weighted, AutoGroupOutcome, Candidate};
 pub use completion_ratio::hardcoded_completion_ratio;

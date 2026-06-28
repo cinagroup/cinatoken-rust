@@ -211,8 +211,13 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    affects only the reserved-quota estimate — settlement uses upstream usage.
 5. Audio duration formulas — **done** in `core::request_tokens`
    (`audio_transcription_tokens`, `realtime_audio_{input,output}_tokens`, with
-   Go's round-vs-truncate). Remaining: a duration source (header parse / size
-   estimate / Container).
+   Go's round-vs-truncate). Duration source: **WAV DONE 2026-06-27** —
+   `core::audio_duration::wav_duration_seconds` is a header-only parser matching
+   Go `getWAVDuration` exactly (frame-floored `pcmSize/(channels*bits/8)/sampleRate`,
+   declared-data-size with the streaming fallback; 5 tests). Remaining: the other
+   containers Go decodes (MP3/FLAC/M4A/OGG/Opus — header parse / size estimate /
+   Container, §21.4) and wiring it into the transcription/translation endpoint
+   (multipart parse, charge-affecting, staging-gated).
 6. Media fallback constants — **done** (`core::request_tokens` consts:
    `NON_OPENAI_IMAGE_TOKENS`/`AUDIO_FILE_TOKENS`/`VIDEO_FILE_TOKENS`/`FILE_TOKENS`);
    wire the per-file-type selection + feature-flag gating.

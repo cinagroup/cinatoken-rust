@@ -124,7 +124,14 @@ divergence — and document it. Gaps to close:
 
 1. Implement the missing-usage estimate fallback (prompt-estimate +
    `EstimateTokenByModel` over streamed text + `toolCount*7`) and the
-   `ValidUsage` gate.
+   `ValidUsage` gate. **Pure pieces DONE 2026-06-27**:
+   `cinatoken_tokenizer::response_text_to_usage` (faithful `ResponseText2Usage` +
+   the `toolCount*7` bump, heuristic estimator for all models as Go does) and
+   `valid_usage` (Go's `prompt!=0 || completion!=0` gate — note this differs from
+   the relay's current `total<=0` check). **Remaining**: the product decision
+   (estimate-and-bill vs refund), SSE response-text accumulation to feed the
+   estimate, and switching `refund_reason` to the `valid_usage` gate — all
+   charge-affecting, so staging-gated.
 2. Implement audio-model second-to-last-chunk usage extraction.
 3. Implement the `SupportStreamOptions` upstream injection and the
    client-facing strip/forward/synthesize matrix keyed on `ShouldIncludeUsage`.

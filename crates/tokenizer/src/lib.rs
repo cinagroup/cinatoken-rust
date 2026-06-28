@@ -303,6 +303,43 @@ pub fn family_dispatch_table() -> HashMap<&'static str, TokenizerFamily> {
     map
 }
 
+/// Estimated usage when an upstream response omits a `usage` block — a faithful
+/// port of Go `service.ResponseText2Usage` plus the relay's `toolCount * 7`
+/// completion bump. Completion tokens are the char-class heuristic estimate over
+/// the accumulated response text (Go uses `EstimateTokenByModel` here, the
+/// heuristic, for *all* models — not real tiktoken) plus 7 per tool call; total
+/// is prompt + completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EstimatedUsage {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+}
+
+/// See [`EstimatedUsage`]. `tool_count` is clamped at 0.
+pub fn response_text_to_usage(
+    model: &str,
+    response_text: &str,
+    prompt_tokens: i64,
+    tool_count: i64,
+) -> EstimatedUsage {
+    let completion_tokens =
+        estimate_tokens(model, response_text) as i64 + tool_count.max(0) * 7;
+    EstimatedUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+    }
+}
+
+/// Go `service.ValidUsage`: an upstream usage block is "real" when it reports any
+/// prompt **or** completion tokens. Note this is `prompt != 0 || completion != 0`
+/// — NOT `total > 0` — so a usage that reports only prompt tokens is valid (the
+/// relay should settle it, not refund as missing).
+pub fn valid_usage(prompt_tokens: i64, completion_tokens: i64) -> bool {
+    prompt_tokens != 0 || completion_tokens != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +468,32 @@ mod tests {
         assert_eq!(
             estimate_tokens("claude-3-5-sonnet", text),
             estimate_tokens("claude-3-5-sonnet", text)
+        );
+    }
+
+    #[test]
+    fn valid_usage_checks_prompt_or_completion_not_total() {
+        assert!(!valid_usage(0, 0));
+        assert!(valid_usage(10, 0)); // prompt-only is valid (Go: prompt!=0)
+        assert!(valid_usage(0, 5)); // completion-only is valid
+        assert!(valid_usage(10, 5));
+    }
+
+    #[test]
+    fn response_text_to_usage_estimates_completion_plus_tool_bump() {
+        // "Hello world" estimates to 3 (two OpenAI words + space); +2*7 tools.
+        let usage = response_text_to_usage("gpt-4o", "Hello world", 10, 2);
+        assert_eq!(usage.completion_tokens, 3 + 14);
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.total_tokens, 10 + 17);
+        // No text + no tools -> zero completion, total = prompt.
+        let empty = response_text_to_usage("gpt-4o", "", 8, 0);
+        assert_eq!(empty.completion_tokens, 0);
+        assert_eq!(empty.total_tokens, 8);
+        // Negative tool count is clamped to 0.
+        assert_eq!(
+            response_text_to_usage("gpt-4o", "", 0, -3).completion_tokens,
+            0
         );
     }
 }

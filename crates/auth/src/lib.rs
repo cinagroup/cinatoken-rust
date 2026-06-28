@@ -2,8 +2,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod password;
+pub mod totp;
 
 pub use password::{hash_password, verify_password};
+pub use totp::{
+    backup_code_from_bytes, normalize_backup_code, totp_code_at, validate_backup_code_format,
+    validate_totp,
+};
 
 pub use cinatoken_session::SessionClaims;
 

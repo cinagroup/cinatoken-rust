@@ -99,8 +99,15 @@ Per the matrices, OAuth/Passkey/2FA are `Planned`. Checklist:
    (`TrustedRedirectDomains`), provider secrets from options/Secrets Store,
    bind-vs-login branch, `user_oauth_bindings` + `custom_oauth_providers`
    (custom-provider discovery fetch needs SSRF validation).
-2. 2FA: WASM TOTP verify, KV/DO pending-2FA state, hashed single-use backup
-   codes, admin stats/disable with audit.
+2. 2FA: **TOTP verify DONE 2026-06-27** — `cinatoken_auth::totp` ports the pure
+   algorithm matching Go's pquerna/otp params (HMAC-SHA1, 30s, 6 digits, ±1 skew,
+   base32 secret): `validate_totp` / `totp_code_at` + backup-code format helpers
+   (`backup_code_from_bytes` / `validate_backup_code_format` /
+   `normalize_backup_code`). Verified against the RFC 6238 Appendix B vectors;
+   compiles to wasm (sha1+hmac). **Remaining**: the KV/DO pending-2FA login
+   state, secret generation + persistence, single-use backup-code hashing
+   (bcrypt via `crate::password`) + the `/user/login/2fa` flow + admin
+   stats/disable with audit.
 3. Passkey: KV/DO single-use challenge; choose WASM WebAuthn vs Container;
    RP config from options; secure-verification gating on register/delete/verify.
 4. Decide and document forced re-enroll vs credential import per credential type.

@@ -11,4 +11,6 @@ async-trait.workspace = true
 bcrypt.workspace = true
 cinatoken-core = { path = "../core" }
 cinatoken-session = { path = "../session" }
+hmac.workspace = true
 serde.workspace = true
+sha1.workspace = true

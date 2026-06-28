@@ -4,6 +4,7 @@ mod admin_crud;
 mod admin_data;
 mod admin_payment;
 mod admin_user;
+mod affinity;
 mod cache;
 mod cache_invalidation;
 mod d1_repositories;

@@ -82,6 +82,17 @@ max_batch_timeout = 5
 max_retries = 3
 dead_letter_queue = "cinatoken-rust-log-events-dlq"
 
+# Channel-affinity (sticky-routing) Durable Object. Inert at runtime unless
+# RELAY_CHANNEL_AFFINITY_ENABLED is set, so deploying the binding alone changes
+# nothing. SQLite-backed (requires the compatibility_date above).
+[[durable_objects.bindings]]
+name = "CHANNEL_AFFINITY"
+class_name = "ChannelAffinity"
+
+[[migrations]]
+tag = "v1-channel-affinity"
+new_sqlite_classes = ["ChannelAffinity"]
+
 # ---------------------------------------------------------------------------
 # Staging environment.
 # ---------------------------------------------------------------------------
@@ -140,6 +151,14 @@ max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
 dead_letter_queue = "cinatoken-rust-log-events-dlq-staging"
+
+[[env.staging.durable_objects.bindings]]
+name = "CHANNEL_AFFINITY"
+class_name = "ChannelAffinity"
+
+[[env.staging.migrations]]
+tag = "v1-channel-affinity"
+new_sqlite_classes = ["ChannelAffinity"]
 
 # ---------------------------------------------------------------------------
 # Production environment.
@@ -203,3 +222,11 @@ max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
 dead_letter_queue = "cinatoken-rust-log-events-dlq"
+
+[[env.production.durable_objects.bindings]]
+name = "CHANNEL_AFFINITY"
+class_name = "ChannelAffinity"
+
+[[env.production.migrations]]
+tag = "v1-channel-affinity"
+new_sqlite_classes = ["ChannelAffinity"]

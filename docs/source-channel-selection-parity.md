@@ -193,7 +193,8 @@ mis-bill); and the auto planner used a single global attempt cap instead of Go's
 per-group retry budget (cross-group failover never advanced when the first group
 had channels). Both have regression tests.
 
-Affinity parity (1.3) is still pending.
+Affinity (1.3) — minimal version is now code-complete (off by default; see the
+G3 checklist item 4 below), pending staging runtime verification + deploy.
 
 The selection-specific parity gaps to close before relay canary:
 
@@ -209,9 +210,22 @@ The selection-specific parity gaps to close before relay canary:
    wiring (`relay.rs::plan_relay_attempts`, billing on the selected group). See
    the status note above for the two staging-verification caveats (per-token
    `cross_group_retry`; tiered+auto frozen-snapshot ratio).
-4. **Affinity layer** — preferred-channel reuse, disabled-channel fallthrough,
-   record-on-success-only, and store-outage fail-open; on Durable Objects per
-   §21.2.
+4. **Affinity layer** — **minimal version DONE 2026-06-27** (code-complete,
+   off-by-default). A `ChannelAffinity` Durable Object (`crates/worker/src/affinity.rs`,
+   per §21.2) holds one sticky preferred channel per `(user, model, group)` with
+   a fixed TTL; the relay loop reorders the preferred channel to the front of the
+   attempt plan (`move_preferred_to_front`, before `billing_group`) and records
+   it on a `< 400` upstream response. Gated on `RELAY_CHANNEL_AFFINITY_ENABLED`
+   (a no-op when off — verified no regression) and **fails open** on any
+   binding/DO error. wrangler.toml declares the binding + `new_sqlite_classes`
+   migration in all three env scopes. Adversarially verified (DO API, fail-open,
+   wiring, config — 0 findings); pure logic unit-tested. **Remaining vs Go**
+   (documented simplifications): no L1 in-memory cache (one DO round-trip/request
+   when enabled), single fixed TTL, the `(user, model, group)` key instead of
+   Go's configurable rule sources/regex/override-templates/stats, and
+   `ShouldKeepChannelAffinityOnChannelDisabled` not modeled. **Runtime
+   verification is staging-gated** (DOs need `wrangler dev`/staging) and the new
+   DO requires a `wrangler deploy` migration.
 5. **Pre-selection gates** — token model-limit: DONE 2026-06-26. The pure
    `model_allowed_for_token` helper (in `relay.rs`) mirrors Go
    `middleware/distributor.go:60-76`: limits disabled → allow; otherwise

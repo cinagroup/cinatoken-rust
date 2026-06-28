@@ -30,7 +30,7 @@ use worker::{
     Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response, ResponseBody,
 };
 
-use crate::{json_with_status, set_cors_headers};
+use crate::{affinity, json_with_status, set_cors_headers};
 
 const TOKEN_STATUS_EXPIRED: i32 = 3;
 const TOKEN_STATUS_EXHAUSTED: i32 = 4;
@@ -686,6 +686,20 @@ async fn relay_endpoint(
         |total| (js_sys::Math::random() * total as f64) as u64,
     );
 
+    // Channel affinity (sticky routing): when enabled, prefer the user's last
+    // successful channel for this (model, group) if it is still a live candidate
+    // (moved to the front of the plan, with the planned order as fallback). Fails
+    // open — flag off, no DO binding, or any DO error leaves the plan unchanged.
+    let affinity_key =
+        affinity::affinity_enabled(optional_env_var(&env, affinity::AFFINITY_ENABLED_ENV))
+            .then(|| affinity::affinity_key(auth.user_id, &model, &group));
+    let attempt_plan = if let Some(key) = affinity_key.as_deref() {
+        let preferred = affinity::lookup_preferred_channel(&env, key).await;
+        affinity::move_preferred_to_front(attempt_plan, preferred, |plan| plan.channel.id)
+    } else {
+        attempt_plan
+    };
+
     // Billing uses the selected group's ratio (Go resolves the ratio post-
     // selection). The first planned attempt's group is the one used unless a
     // cross-group retry advances; settlement below uses the actual serving group.
@@ -891,6 +905,20 @@ async fn relay_endpoint(
             ),
         };
     };
+
+    // Record affinity on a successful upstream response so subsequent requests
+    // stick to this channel. Best-effort and fail-open; only when enabled.
+    if let Some(key) = affinity_key.as_deref() {
+        if upstream_response.status_code() < 400 {
+            affinity::record_preferred_channel(
+                &env,
+                key,
+                channel.id,
+                affinity::AFFINITY_TTL_SECONDS,
+            )
+            .await;
+        }
+    }
 
     let audit = RelayAuditContext {
         started_at,

@@ -42,6 +42,11 @@ const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
 const RELAY_JSON_BODY_LIMIT_ENV: &str = "RELAY_JSON_BODY_LIMIT_BYTES";
 const RELAY_JSON_RESPONSE_LIMIT_ENV: &str = "RELAY_JSON_RESPONSE_LIMIT_BYTES";
 const RELAY_RETRY_TIMES_ENV: &str = "RELAY_RETRY_TIMES";
+/// When set (`true`/`1`), a missing or invalid upstream usage block triggers
+/// Go's estimate-and-bill fallback instead of refunding the reserve. Default off
+/// preserves the current refund-on-missing behavior; flipping it on is the
+/// charge-affecting, staging-gated cutover to Go parity.
+const MISSING_USAGE_ESTIMATE_ENV: &str = "RELAY_MISSING_USAGE_ESTIMATE_ENABLED";
 const CHANNEL_AUTOBAN_THRESHOLD_ENV: &str = "RELAY_CHANNEL_AUTOBAN_THRESHOLD";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -920,12 +925,32 @@ async fn relay_endpoint(
         }
     }
 
+    // Single pre-consume prompt estimate for the request, reused by the
+    // missing-usage fallback. Prefer the tiered preflight's frozen value (the
+    // exact amount pre-consumed); otherwise recompute from the JSON body.
+    let estimated_prompt_tokens = tiered_billing_preflight
+        .as_ref()
+        .map(|preflight| preflight.snapshot.estimated_prompt_tokens as i64)
+        .unwrap_or_else(|| {
+            json_body
+                .as_ref()
+                .map(|body| {
+                    estimate_prompt_tokens_from_request_for_model(
+                        &model,
+                        body,
+                        endpoint.uses_openai_chat_format(),
+                    )
+                })
+                .unwrap_or(0)
+        });
     let audit = RelayAuditContext {
         started_at,
         client_ip,
         request_id,
         billing_request_input,
         tiered_billing_preflight,
+        estimated_prompt_tokens,
+        missing_usage_estimate_enabled: missing_usage_estimate_enabled(&env),
     };
 
     if should_relay_stream {
@@ -2594,6 +2619,9 @@ async fn complete_relay_response(
                 provider,
                 &endpoint_path,
                 max_json_response_bytes,
+                &model,
+                audit.estimated_prompt_tokens,
+                audit.missing_usage_estimate_enabled,
             )
             .await
             {
@@ -2914,11 +2942,30 @@ async fn response_usage_summary(
     provider: RelayProviderKind,
     endpoint_path: &str,
     max_json_response_bytes: usize,
+    model: &str,
+    estimated_prompt_tokens: i64,
+    estimate_enabled: bool,
 ) -> worker::Result<UsageSummary> {
     let body = read_response_text_limited(response, max_json_response_bytes)
         .await
         .map_err(|err| worker::Error::RustError(err.message("relay response body")))?;
-    Ok(usage_summary_for_provider(&body, provider, endpoint_path))
+    let usage = usage_summary_for_provider(&body, provider, endpoint_path);
+    // Missing-usage estimate fallback only applies to the OpenAI chat shape
+    // (the body-text extraction is OpenAI-shaped); rerank carries its own usage.
+    let estimate_applicable = estimate_enabled
+        && matches!(provider, RelayProviderKind::OpenAiCompatible)
+        && endpoint_path != "rerank";
+    let (usage, locally_estimated) =
+        resolve_non_stream_usage(usage, &body, model, estimated_prompt_tokens, estimate_applicable);
+    if locally_estimated {
+        worker::console_log!(
+            "relay usage missing; locally estimated non-stream usage for {} (prompt={}, completion={})",
+            model,
+            usage.prompt_tokens,
+            usage.completion_tokens
+        );
+    }
+    Ok(usage)
 }
 
 fn usage_summary_for_provider(
@@ -2974,7 +3021,15 @@ async fn complete_streaming_relay_response(
     };
 
     context.wait_until(async move {
-        let usage = match streaming_usage_summary(&mut audit_response, provider).await {
+        let usage = match streaming_usage_summary(
+            &mut audit_response,
+            provider,
+            &model,
+            audit.estimated_prompt_tokens,
+            audit.missing_usage_estimate_enabled,
+        )
+        .await
+        {
             Ok(usage) => usage,
             Err(err) => {
                 worker::console_error!("failed to parse streaming relay usage: {}", err);
@@ -3007,6 +3062,9 @@ async fn complete_streaming_relay_response(
 async fn streaming_usage_summary(
     upstream: &mut Response,
     provider: RelayProviderKind,
+    model: &str,
+    estimated_prompt_tokens: i64,
+    estimate_enabled: bool,
 ) -> worker::Result<UsageSummary> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
@@ -3019,7 +3077,29 @@ async fn streaming_usage_summary(
         accumulator.push_chunk(&chunk?);
     }
 
-    Ok(accumulator.finish())
+    let (usage, response_text, tool_count) = accumulator.into_parts();
+    // The streamed-text accumulation is OpenAI-shaped; only estimate for that
+    // provider (Anthropic/Gemini emit reliable usage chunks).
+    let estimate_applicable =
+        estimate_enabled && matches!(provider, RelayProviderKind::OpenAiCompatible);
+    let (usage, locally_estimated) = resolve_stream_usage(
+        usage,
+        &response_text,
+        tool_count,
+        model,
+        estimated_prompt_tokens,
+        estimate_applicable,
+    );
+    if locally_estimated {
+        worker::console_log!(
+            "relay stream usage missing; locally estimated usage for {} (prompt={}, completion={}, tools={})",
+            model,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            tool_count
+        );
+    }
+    Ok(usage)
 }
 
 #[derive(Clone)]
@@ -3029,6 +3109,15 @@ struct RelayAuditContext {
     request_id: Option<String>,
     billing_request_input: RequestInput,
     tiered_billing_preflight: Option<TieredBillingPreflight>,
+    /// Pre-consume prompt-token estimate for this request (Go
+    /// `info.GetEstimatePromptTokens()`). Feeds the missing-usage estimate
+    /// fallback so a usage-less response settles on `estimate(prompt) +
+    /// estimate(completion-text)` instead of refunding.
+    estimated_prompt_tokens: i64,
+    /// Whether `RELAY_MISSING_USAGE_ESTIMATE_ENABLED` is set. When off (default),
+    /// a missing/invalid upstream usage refunds the reserve as before; when on,
+    /// the relay estimates and bills it (Go parity). Charge-affecting cutover.
+    missing_usage_estimate_enabled: bool,
 }
 
 async fn record_relay_audit(
@@ -3598,6 +3687,83 @@ fn tiered_billing_refund_metadata(
         "estimated_quota_after_group": preflight.snapshot.estimated_quota_after_group.0,
         "reason": reason,
     })
+}
+
+fn missing_usage_estimate_enabled(env: &Env) -> bool {
+    matches!(
+        optional_env_var(env, MISSING_USAGE_ESTIMATE_ENV).as_deref(),
+        Some("true") | Some("1")
+    )
+}
+
+/// Resolve a streaming chat usage, applying Go's missing-usage estimate fallback
+/// (`OaiStreamHandler`): when the stream carried no valid usage
+/// (`!ValidUsage`, i.e. both prompt and completion are zero), estimate from the
+/// accumulated completion text and `tool_count * 7`
+/// (`ResponseText2Usage` + the tool bump). Returns the (possibly estimated)
+/// usage and whether it was locally estimated. A no-op (returns the upstream
+/// usage) when the fallback is disabled or the usage is already valid.
+fn resolve_stream_usage(
+    usage: UsageSummary,
+    response_text: &str,
+    tool_count: i64,
+    model: &str,
+    estimated_prompt_tokens: i64,
+    enabled: bool,
+) -> (UsageSummary, bool) {
+    if !enabled
+        || cinatoken_tokenizer::valid_usage(usage.prompt_tokens as i64, usage.completion_tokens as i64)
+    {
+        return (usage, false);
+    }
+    let estimate = cinatoken_tokenizer::response_text_to_usage(
+        model,
+        response_text,
+        estimated_prompt_tokens,
+        tool_count,
+    );
+    (
+        UsageSummary {
+            prompt_tokens: estimate.prompt_tokens as i32,
+            completion_tokens: estimate.completion_tokens as i32,
+            total_tokens: estimate.total_tokens as i32,
+            ..UsageSummary::default()
+        },
+        true,
+    )
+}
+
+/// Resolve a non-stream chat usage, applying Go's missing-usage estimate
+/// fallback (`OpenaiHandler`): when the upstream reports zero prompt tokens,
+/// set prompt to the pre-consume estimate and completion to the upstream
+/// completion if non-zero, else the char-class estimate over the response body's
+/// assistant text. No `tool_count * 7` bump here (Go adds it only on the stream
+/// path). Returns the (possibly estimated) usage and whether it was estimated.
+fn resolve_non_stream_usage(
+    usage: UsageSummary,
+    body: &str,
+    model: &str,
+    estimated_prompt_tokens: i64,
+    enabled: bool,
+) -> (UsageSummary, bool) {
+    if !enabled || usage.prompt_tokens != 0 {
+        return (usage, false);
+    }
+    let completion_tokens = if usage.completion_tokens != 0 {
+        usage.completion_tokens as i64
+    } else {
+        let text = cinatoken_relay::openai_response_completion_text(body);
+        cinatoken_tokenizer::estimate_tokens(model, &text) as i64
+    };
+    (
+        UsageSummary {
+            prompt_tokens: estimated_prompt_tokens as i32,
+            completion_tokens: completion_tokens as i32,
+            total_tokens: (estimated_prompt_tokens + completion_tokens) as i32,
+            ..UsageSummary::default()
+        },
+        true,
+    )
 }
 
 fn refund_reason(upstream_status: u16, usage: &UsageSummary, is_stream: bool) -> &'static str {
@@ -6284,5 +6450,80 @@ mod tests {
             refund_reason(200, &UsageSummary::default(), false),
             "missing_usage"
         );
+    }
+
+    #[test]
+    fn resolve_stream_usage_estimates_when_invalid_and_enabled() {
+        // Both-zero usage is invalid (Go ValidUsage) -> estimate from streamed
+        // text + toolCount*7. "Hello world" -> 3 OpenAI tokens, + 2*7.
+        let (resolved, estimated) =
+            resolve_stream_usage(UsageSummary::default(), "Hello world", 2, "gpt-4o", 100, true);
+        assert!(estimated);
+        assert_eq!(resolved.prompt_tokens, 100);
+        assert_eq!(resolved.completion_tokens, 3 + 14);
+        assert_eq!(resolved.total_tokens, 100 + 17);
+    }
+
+    #[test]
+    fn resolve_stream_usage_noop_when_disabled_or_valid() {
+        let valid = UsageSummary {
+            prompt_tokens: 5,
+            total_tokens: 5,
+            ..UsageSummary::default()
+        };
+        // Disabled -> no-op even though usage is invalid.
+        let (r, est) = resolve_stream_usage(UsageSummary::default(), "x", 1, "gpt-4o", 100, false);
+        assert!(!est);
+        assert_eq!(r, UsageSummary::default());
+        // Enabled but usage already valid (prompt != 0) -> no-op.
+        let (r2, est2) = resolve_stream_usage(valid, "x", 1, "gpt-4o", 100, true);
+        assert!(!est2);
+        assert_eq!(r2, valid);
+    }
+
+    #[test]
+    fn resolve_non_stream_usage_keeps_upstream_completion_when_prompt_zero() {
+        // prompt==0 triggers the fallback, but a non-zero upstream completion is
+        // preserved (Go only re-estimates completion when it is also zero).
+        let usage = UsageSummary {
+            completion_tokens: 42,
+            total_tokens: 42,
+            ..UsageSummary::default()
+        };
+        let body = r#"{"choices":[{"message":{"content":"ignored"}}]}"#;
+        let (r, est) = resolve_non_stream_usage(usage, body, "gpt-4o", 100, true);
+        assert!(est);
+        assert_eq!(r.prompt_tokens, 100);
+        assert_eq!(r.completion_tokens, 42);
+        assert_eq!(r.total_tokens, 142);
+    }
+
+    #[test]
+    fn resolve_non_stream_usage_estimates_completion_from_body_when_zero() {
+        let body = r#"{"choices":[{"message":{"content":"Hello world"}}]}"#;
+        let (r, est) =
+            resolve_non_stream_usage(UsageSummary::default(), body, "gpt-4o", 50, true);
+        assert!(est);
+        assert_eq!(r.prompt_tokens, 50);
+        // "Hello world" -> 3; no tool bump on the non-stream path.
+        assert_eq!(r.completion_tokens, 3);
+        assert_eq!(r.total_tokens, 53);
+    }
+
+    #[test]
+    fn resolve_non_stream_usage_noop_when_prompt_present_or_disabled() {
+        let with_prompt = UsageSummary {
+            prompt_tokens: 7,
+            total_tokens: 7,
+            ..UsageSummary::default()
+        };
+        // prompt present -> no-op even when enabled.
+        let (r, est) = resolve_non_stream_usage(with_prompt, "{}", "gpt-4o", 100, true);
+        assert!(!est);
+        assert_eq!(r, with_prompt);
+        // disabled -> no-op even with zero prompt.
+        let (r2, est2) = resolve_non_stream_usage(UsageSummary::default(), "{}", "gpt-4o", 100, false);
+        assert!(!est2);
+        assert_eq!(r2, UsageSummary::default());
     }
 }

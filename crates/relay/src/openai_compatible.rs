@@ -403,6 +403,14 @@ pub struct SseUsageAccumulator {
     pending_line: Vec<u8>,
     data_lines: Vec<String>,
     mode: SseUsageMode,
+    /// Accumulated streamed completion text (OpenAI mode only) — used to
+    /// estimate usage when the upstream stream omits a `usage` block. Faithful
+    /// to Go `ProcessStreamResponse`: `delta.content` + `delta.reasoning_content`
+    /// + each tool call's `function.name`/`function.arguments`.
+    response_text: String,
+    /// The largest `len(delta.tool_calls)` seen across the stream (Go uses a
+    /// running max, not a sum). Feeds the `toolCount * 7` completion bump.
+    tool_count: i64,
 }
 
 impl SseUsageAccumulator {
@@ -435,13 +443,21 @@ impl SseUsageAccumulator {
         }
     }
 
-    pub fn finish(mut self) -> UsageSummary {
+    pub fn finish(self) -> UsageSummary {
+        self.into_parts().0
+    }
+
+    /// Flush any buffered data and return the parsed usage together with the
+    /// accumulated streamed completion text and tool-call count. Callers that
+    /// need the missing-usage estimate fallback use this; [`Self::finish`] is the
+    /// thin wrapper for callers that only want the usage.
+    pub fn into_parts(mut self) -> (UsageSummary, String, i64) {
         if !self.pending_line.is_empty() {
             let line = std::mem::take(&mut self.pending_line);
             self.push_line(&line);
         }
         self.flush_event();
-        self.latest
+        (self.latest, self.response_text, self.tool_count)
     }
 
     fn push_line(&mut self, line: &[u8]) {
@@ -462,6 +478,11 @@ impl SseUsageAccumulator {
                 if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, false) {
                     self.latest = summary;
                 }
+                accumulate_openai_stream_text(
+                    &self.data_lines,
+                    &mut self.response_text,
+                    &mut self.tool_count,
+                );
             }
             SseUsageMode::Anthropic => {
                 if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, true) {
@@ -727,6 +748,109 @@ fn usage_summary_from_sse_data_lines(
     } else {
         usage
     })
+}
+
+/// Accumulate the streamed completion text and running tool-call count from one
+/// OpenAI SSE event's data lines, mirroring Go `openai.ProcessStreamResponse`:
+/// for each choice append `delta.content` + `delta.reasoning_content`
+/// (or `delta.reasoning`) + each tool call's `function.name`/`function.arguments`,
+/// and track `tool_count = max(tool_count, len(delta.tool_calls))`.
+fn accumulate_openai_stream_text(data_lines: &[String], text: &mut String, tool_count: &mut i64) {
+    if data_lines.is_empty() {
+        return;
+    }
+    let payload = data_lines.join("\n");
+    let payload = payload.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+        return;
+    };
+    for choice in choices {
+        let Some(delta) = choice.get("delta") else {
+            continue;
+        };
+        if let Some(content) = delta.get("content") {
+            append_content_string(content, text);
+        }
+        // GetReasoningContent: prefer `reasoning_content`, fall back to `reasoning`.
+        if let Some(reasoning) = delta
+            .get("reasoning_content")
+            .or_else(|| delta.get("reasoning"))
+            .and_then(Value::as_str)
+        {
+            text.push_str(reasoning);
+        }
+        if let Some(tools) = delta.get("tool_calls").and_then(Value::as_array) {
+            if tools.len() as i64 > *tool_count {
+                *tool_count = tools.len() as i64;
+            }
+            for tool in tools {
+                if let Some(function) = tool.get("function") {
+                    if let Some(name) = function.get("name").and_then(Value::as_str) {
+                        text.push_str(name);
+                    }
+                    if let Some(args) = function.get("arguments").and_then(Value::as_str) {
+                        text.push_str(args);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Concatenate the assistant completion text of a non-stream OpenAI response
+/// body — every `choices[].message.content` plus `reasoning_content`
+/// (or `reasoning`). Mirrors Go `OpenaiHandler`'s missing-usage branch, which
+/// estimates completion tokens from `choice.Message.StringContent() +
+/// choice.Message.GetReasoningContent()`. Returns an empty string when the body
+/// is not parseable or has no choices.
+pub fn openai_response_completion_text(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return String::new();
+    };
+    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for choice in choices {
+        let Some(message) = choice.get("message") else {
+            continue;
+        };
+        if let Some(content) = message.get("content") {
+            append_content_string(content, &mut text);
+        }
+        if let Some(reasoning) = message
+            .get("reasoning_content")
+            .or_else(|| message.get("reasoning"))
+            .and_then(Value::as_str)
+        {
+            text.push_str(reasoning);
+        }
+    }
+    text
+}
+
+/// Append an OpenAI message-content value as text. A delta's `content` is
+/// normally a plain string, but tolerate the content-parts array shape
+/// (`[{"type":"text","text":"..."}]`) by concatenating the `text` fields, so the
+/// estimate never silently drops content.
+fn append_content_string(content: &Value, text: &mut String) {
+    match content {
+        Value::String(value) => text.push_str(value),
+        Value::Array(parts) => {
+            for part in parts {
+                if let Some(value) = part.get("text").and_then(Value::as_str) {
+                    text.push_str(value);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn usage_summary_from_gemini_sse_data_lines(data_lines: &[String]) -> Option<UsageSummary> {
@@ -1686,6 +1810,55 @@ mod tests {
                 ..UsageSummary::default()
             }
         );
+    }
+
+    #[test]
+    fn into_parts_accumulates_openai_stream_text_and_tool_count() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" think\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\" world\",\"tool_calls\":[{\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let mut acc = SseUsageAccumulator::default();
+        acc.push_chunk(body.as_bytes());
+        let (usage, text, tool_count) = acc.into_parts();
+        // content + reasoning + tool name/args, in stream order.
+        assert_eq!(text, "Hello think worldf{}");
+        assert_eq!(tool_count, 1);
+        // No usage chunk present -> usage stays default (caller estimates).
+        assert_eq!(usage, UsageSummary::default());
+    }
+
+    #[test]
+    fn into_parts_tool_count_is_running_max_not_sum() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"a\",\"arguments\":\"\"}},{\"index\":1,\"function\":{\"name\":\"b\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"x\"}}]}}]}\n\n",
+        );
+        let mut acc = SseUsageAccumulator::default();
+        acc.push_chunk(body.as_bytes());
+        let (_usage, _text, tool_count) = acc.into_parts();
+        // Go uses a running max across deltas, not a sum: max(2, 1) == 2.
+        assert_eq!(tool_count, 2);
+    }
+
+    #[test]
+    fn into_parts_handles_content_parts_array() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}]}\n\n";
+        let mut acc = SseUsageAccumulator::default();
+        acc.push_chunk(body.as_bytes());
+        let (_usage, text, _tool_count) = acc.into_parts();
+        assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn openai_response_completion_text_concatenates_choices_content_and_reasoning() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hello","reasoning_content":" because"}},{"message":{"content":[{"type":"text","text":" world"}]}}]}"#;
+        assert_eq!(openai_response_completion_text(body), "Hello because world");
+        // Unparseable / no choices -> empty.
+        assert_eq!(openai_response_completion_text("not json"), "");
+        assert_eq!(openai_response_completion_text(r#"{"usage":{}}"#), "");
     }
 
     #[test]

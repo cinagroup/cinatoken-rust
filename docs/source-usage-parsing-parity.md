@@ -112,26 +112,44 @@ of what the client sees.
 
 ## Rust Status And Checklist
 
-Implementation status (verified 2026-06-25): usage parsing is implemented, but
-the **missing-usage behavior diverges from Go**. When `usage.total_tokens <= 0`,
-`crates/worker/src/relay.rs::refund_reason` classifies it `missing_usage` /
-`missing_stream_usage` and **refunds the reserved quota** (settles to 0). Go
-instead **estimates completion from the accumulated streamed text**
-(`ResponseText2Usage` + `toolCount*7`) and bills that. So Rust currently
-**under-bills** streams/responses that omit usage. Decide: match Go's
-estimate-and-bill, or keep refund-on-missing as an intentional (customer-friendly)
-divergence — and document it. Gaps to close:
+Implementation status (UPDATE 2026-06-28): the **product decision is to match
+Go (estimate-and-bill)**, and the estimate fallback is now **implemented and
+wired behind a flag**. `RELAY_MISSING_USAGE_ESTIMATE_ENABLED` (`true`/`1`) gates
+the new behavior; **default off** preserves the prior refund-on-missing path, so
+deploying the code changes nothing until the operator flips the flag (the
+charge-affecting, staging-gated cutover). When on:
 
-1. Implement the missing-usage estimate fallback (prompt-estimate +
-   `EstimateTokenByModel` over streamed text + `toolCount*7`) and the
-   `ValidUsage` gate. **Pure pieces DONE 2026-06-27**:
-   `cinatoken_tokenizer::response_text_to_usage` (faithful `ResponseText2Usage` +
-   the `toolCount*7` bump, heuristic estimator for all models as Go does) and
-   `valid_usage` (Go's `prompt!=0 || completion!=0` gate — note this differs from
-   the relay's current `total<=0` check). **Remaining**: the product decision
-   (estimate-and-bill vs refund), SSE response-text accumulation to feed the
-   estimate, and switching `refund_reason` to the `valid_usage` gate — all
-   charge-affecting, so staging-gated.
+- **Streaming** (`streaming_usage_summary` → `resolve_stream_usage`): the SSE
+  accumulator (`cinatoken_relay::SseUsageAccumulator`) now accumulates the OpenAI
+  streamed completion text (`delta.content` + `delta.reasoning_content` + each
+  tool call's `function.name`/`arguments`) and `tool_count = max(len(tool_calls))`
+  — a faithful port of Go `ProcessStreamResponse` (running max, not a sum). When
+  the stream carried no valid usage (`!ValidUsage`, both prompt and completion
+  zero) it settles on `response_text_to_usage(text, model, estPrompt)` +
+  `tool_count*7`.
+- **Non-stream** (`response_usage_summary` → `resolve_non_stream_usage`): mirrors
+  Go `OpenaiHandler` — when `prompt_tokens == 0`, set prompt to the pre-consume
+  estimate and completion to the upstream completion if non-zero, else the
+  char-class estimate over `openai_response_completion_text` (choices' content +
+  reasoning); no tool bump (Go adds it only on the stream path).
+- Both apply only to the OpenAI-compatible provider (the text shapes are
+  OpenAI-specific; Anthropic/Gemini emit reliable usage). `estimated_prompt_tokens`
+  is carried on `RelayAuditContext` (the tiered preflight's frozen value, else
+  recomputed from the body). A `console_log` marks each estimated settlement.
+
+Remaining gaps to close:
+
+1. **DONE 2026-06-28 (flag-gated)** — the missing-usage estimate fallback and the
+   `ValidUsage`-based estimate decision. Pure pieces (`response_text_to_usage`,
+   `valid_usage`) plus the SSE text/tool accumulation and the worker wiring above
+   are implemented and host-tested. **Still open**: flip the flag on after staging
+   verification (it is the charge-affecting cutover); switch the *settlement*
+   billing gate (`record_relay_audit`'s `usage.total_tokens > 0` and
+   `refund_reason`) from `total>0` to `valid_usage` (deferred to avoid a flag-off
+   regression for total-only usages — currently the estimate produces `total>0`
+   so it bills through the existing gate); explicit `usage_source` audit field
+   (#4); Anthropic/Gemini streamed-text accumulation; and the **audio
+   second-to-last-chunk** extraction (#2).
 2. Implement audio-model second-to-last-chunk usage extraction.
 3. Implement the `SupportStreamOptions` upstream injection and the
    client-facing strip/forward/synthesize matrix keyed on `ShouldIncludeUsage`.

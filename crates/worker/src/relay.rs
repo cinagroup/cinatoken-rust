@@ -2453,6 +2453,30 @@ async fn forward_gemini_native(
     Fetch::Request(outbound).send().await
 }
 
+/// Build the client-facing response from an upstream (fetched) response.
+///
+/// A `Response` returned by `fetch()` has immutable headers on the Workers
+/// runtime, so content-type / CORS cannot be set on it directly (doing so
+/// throws `TypeError: Can't modify immutable headers`). Copy its headers into a
+/// fresh, mutable `Headers`, carry over the status and (possibly streaming)
+/// body, then apply the content-type override and CORS.
+fn finalize_relay_response(upstream: Response, content_type: &str) -> worker::Result<Response> {
+    let status = upstream.status_code();
+    let mut headers = Headers::new();
+    for (name, value) in upstream.headers().entries() {
+        // Best-effort copy: skip any single header the runtime rejects on
+        // re-emit rather than failing the whole relay response.
+        let _ = headers.set(&name, &value);
+    }
+    let (_, body) = upstream.into_parts();
+    let mut response = Response::from_body(body)?
+        .with_status(status)
+        .with_headers(headers);
+    response.headers_mut().set("content-type", content_type)?;
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
 async fn complete_relay_response(
     mut upstream: Response,
     env: Env,
@@ -2536,9 +2560,7 @@ async fn complete_relay_response(
             worker::console_error!("failed to record relay audit: {}", err);
         }
 
-        upstream.headers_mut().set("content-type", &content_type)?;
-        set_cors_headers(&mut upstream)?;
-        return Ok(upstream);
+        return finalize_relay_response(upstream, &content_type);
     }
 
     if let Some(context) = context {
@@ -2601,9 +2623,7 @@ async fn complete_relay_response(
             }
         });
 
-        upstream.headers_mut().set("content-type", &content_type)?;
-        set_cors_headers(&mut upstream)?;
-        return Ok(upstream);
+        return finalize_relay_response(upstream, &content_type);
     }
 
     complete_buffered_relay_response(
@@ -2624,7 +2644,7 @@ async fn complete_relay_response(
 
 #[allow(clippy::too_many_arguments)]
 async fn complete_passthrough_relay_response_with_usage(
-    mut upstream: Response,
+    upstream: Response,
     env: Env,
     db: D1Database,
     context: Option<Context>,
@@ -2680,9 +2700,7 @@ async fn complete_passthrough_relay_response_with_usage(
         worker::console_error!("failed to record {} audit: {}", log_label, err);
     }
 
-    upstream.headers_mut().set("content-type", &content_type)?;
-    set_cors_headers(&mut upstream)?;
-    Ok(upstream)
+    finalize_relay_response(upstream, &content_type)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2852,9 +2870,7 @@ async fn complete_buffered_relay_response(
                 worker::console_error!("failed to record relay audit: {}", err);
             }
 
-            upstream.headers_mut().set("content-type", &content_type)?;
-            set_cors_headers(&mut upstream)?;
-            return Ok(upstream);
+            return finalize_relay_response(upstream, &content_type);
         }
         Err(err) => {
             return openai_error_response(
@@ -2985,9 +3001,7 @@ async fn complete_streaming_relay_response(
         }
     });
 
-    upstream.headers_mut().set("content-type", &content_type)?;
-    set_cors_headers(&mut upstream)?;
-    Ok(upstream)
+    finalize_relay_response(upstream, &content_type)
 }
 
 async fn streaming_usage_summary(

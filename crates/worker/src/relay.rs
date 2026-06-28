@@ -7,9 +7,9 @@ use cinatoken_billing::{
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{
-    format_matching_model_name, image_dimensions, image_tokens, image_tokens_needs_dimensions,
-    is_openai_text_model, openai_chat_format_overhead, select_weighted, ApiError, ApiResult,
-    Candidate, ErrorBody, MediaTokenFlags,
+    auto_group_retry_step, format_matching_model_name, image_dimensions, image_tokens,
+    image_tokens_needs_dimensions, is_openai_text_model, openai_chat_format_overhead,
+    select_weighted, ApiError, ApiResult, Candidate, ErrorBody, MediaTokenFlags,
 };
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
@@ -616,20 +616,6 @@ async fn relay_endpoint(
         return response;
     }
 
-    let candidates = match select_channels(
-        &db,
-        &env,
-        &model,
-        &group,
-        endpoint.cache_family,
-        endpoint.supported_channel_types,
-    )
-    .await
-    {
-        Ok(candidates) => candidates,
-        Err(response) => return response,
-    };
-
     let retry_config = match RelayRetryConfig::from_env(&env) {
         Ok(config) => config,
         Err(err) => {
@@ -637,10 +623,81 @@ async fn relay_endpoint(
         }
     };
 
+    // Resolve the candidate pool(s). For an "auto" token group, walk the user's
+    // auto groups (Go `CacheGetRandomSatisfiedChannel`); otherwise a single group.
+    let is_auto = group == "auto";
+    let group_pools: Vec<(String, Vec<RelayChannel>)> = if is_auto {
+        let auto_groups =
+            match crate::d1_repositories::resolve_user_auto_groups(&db, &auth.user_group).await {
+                Ok(groups) => groups,
+                Err(err) => {
+                    return openai_error_response(
+                        format!("failed to resolve auto groups: {err}"),
+                        500,
+                    );
+                }
+            };
+        if auto_groups.is_empty() {
+            return json_with_status(&ErrorBody::bad_request("auto groups is not enabled"), 503);
+        }
+        let mut pools = Vec::with_capacity(auto_groups.len());
+        for auto_group in auto_groups {
+            match select_channels(
+                &db,
+                &env,
+                &model,
+                &auto_group,
+                endpoint.cache_family,
+                endpoint.supported_channel_types,
+            )
+            .await
+            {
+                Ok(candidates) => pools.push((auto_group, candidates)),
+                Err(response) => return response,
+            }
+        }
+        pools
+    } else {
+        match select_channels(
+            &db,
+            &env,
+            &model,
+            &group,
+            endpoint.cache_family,
+            endpoint.supported_channel_types,
+        )
+        .await
+        {
+            Ok(candidates) => vec![(group.clone(), candidates)],
+            Err(response) => return response,
+        }
+    };
+
+    // Plan the ordered (group, channel) attempts up front. `cross_group_retry`
+    // is not yet a ported per-token setting; auto tokens default to enabled so
+    // priority exhaustion advances to the next group (documented divergence).
+    let cross_group_retry = true;
+    let attempt_plan = plan_relay_attempts(
+        group_pools,
+        is_auto,
+        retry_config.max_attempts(),
+        retry_config.retry_times as i32,
+        cross_group_retry,
+        |total| (js_sys::Math::random() * total as f64) as u64,
+    );
+
+    // Billing uses the selected group's ratio (Go resolves the ratio post-
+    // selection). The first planned attempt's group is the one used unless a
+    // cross-group retry advances; settlement below uses the actual serving group.
+    let billing_group = attempt_plan
+        .first()
+        .map(|plan| plan.group.clone())
+        .unwrap_or_else(|| group.clone());
+
     let tiered_billing_preflight = match prepare_tiered_billing_preflight(
         &db,
         &model,
-        &group,
+        &billing_group,
         json_body.as_ref().unwrap_or(&Value::Null),
         &billing_request_input,
         endpoint.uses_openai_chat_format(),
@@ -664,33 +721,21 @@ async fn relay_endpoint(
         }
     }
 
-    let max_attempts = retry_config.max_attempts().min(candidates.len().max(1));
     let mut last_failure: Option<RelayAttemptFailure> = None;
+    // (channel, selected group, upstream response). The group is the channel's
+    // actual serving group (for cross-group it can differ from `billing_group`).
     let mut selected_attempt: Option<(RelayChannel, String, Response)> = None;
 
-    // Pool shrinks as channels are tried; we remove each picked entry so the
-    // same channel is never retried. `attempt_index` also advances the priority
-    // tier in `select_weighted`, matching Go `GetRandomSatisfiedChannel(retry)`.
-    let mut pool: Vec<RelayChannel> = candidates;
+    // Selection is planned up front (priority tier + weighted-random, shrinking
+    // each group's pool, plus the auto cross-group walk). The loop forwards each
+    // planned channel in order, stopping at the first non-retryable response.
+    let attempt_count = attempt_plan.len();
 
-    for attempt_index in 0..max_attempts {
-        if pool.is_empty() {
-            break;
-        }
-        let meta: Vec<Candidate> = pool
-            .iter()
-            .map(|c| Candidate {
-                priority: c.priority,
-                weight: c.weight,
-            })
-            .collect();
-        let pick = match select_weighted(&meta, attempt_index, |total| {
-            (js_sys::Math::random() * total as f64) as u64
-        }) {
-            Some(i) => i,
-            None => break,
-        };
-        let channel = pool.remove(pick);
+    for (attempt_index, plan) in attempt_plan.into_iter().enumerate() {
+        let RelayAttemptPlan {
+            group: selected_group,
+            channel,
+        } = plan;
 
         let upstream_key = match first_channel_key(&channel.key) {
             Some(key) => key,
@@ -769,17 +814,17 @@ async fn relay_endpoint(
                         channel.name.clone(),
                         status,
                     ));
-                    if !pool.is_empty() && attempt_index + 1 < max_attempts {
+                    if attempt_index + 1 < attempt_count {
                         continue;
                     }
                     // Out of retries: pass the upstream response through to the
                     // client. The audit/settlement path below will treat it as
                     // a normal response; tiered reserve will be refunded via
                     // the no-usage path because there is no billable usage.
-                    selected_attempt = Some((channel, upstream_url, response));
+                    selected_attempt = Some((channel, selected_group, response));
                     break;
                 }
-                selected_attempt = Some((channel, upstream_url, response));
+                selected_attempt = Some((channel, selected_group, response));
                 break;
             }
             Err(err) => {
@@ -794,7 +839,7 @@ async fn relay_endpoint(
         }
     }
 
-    let Some((channel, _upstream_url, upstream_response)) = selected_attempt else {
+    let Some((channel, selected_group, upstream_response)) = selected_attempt else {
         // Every attempt failed with a fetch error or unconfigurable channel.
         // Refund the tiered reserve (if any) and return a structured error
         // describing the last failure.
@@ -865,7 +910,7 @@ async fn relay_endpoint(
             auth,
             channel,
             model,
-            group,
+            selected_group,
             endpoint.upstream_path.clone(),
             endpoint.provider,
             audit,
@@ -910,6 +955,96 @@ impl RelayRetryConfig {
     fn max_attempts(&self) -> usize {
         (self.retry_times as usize).saturating_add(1)
     }
+}
+
+/// One planned relay attempt: the channel to try and the group it was selected
+/// from (the group drives settlement billing — for `auto` tokens it is the
+/// selected group, not the literal `"auto"` token group).
+struct RelayAttemptPlan {
+    group: String,
+    channel: RelayChannel,
+}
+
+/// Build the ordered list of `(group, channel)` attempts up to `max_attempts`.
+///
+/// - **Single group** (`is_auto = false`): the prior inline behavior — pick a
+///   priority tier by attempt index, weighted-random within it, and shrink the
+///   pool so a channel is never retried.
+/// - **Auto cross-group** (`is_auto = true`): drive
+///   [`cinatoken_core::auto_group_retry_step`] across the user's pre-fetched
+///   per-group pools, exhausting a group's priorities before advancing.
+///
+/// `rng(total)` must yield `[0, total)`; injected so the selection is
+/// deterministically testable.
+fn plan_relay_attempts(
+    group_pools: Vec<(String, Vec<RelayChannel>)>,
+    is_auto: bool,
+    max_attempts: usize,
+    retry_times: i32,
+    cross_group_retry: bool,
+    mut rng: impl FnMut(u64) -> u64,
+) -> Vec<RelayAttemptPlan> {
+    let meta_of = |pool: &[RelayChannel]| -> Vec<Candidate> {
+        pool.iter()
+            .map(|c| Candidate {
+                priority: c.priority,
+                weight: c.weight,
+            })
+            .collect()
+    };
+
+    if !is_auto {
+        let (group, mut pool) = group_pools.into_iter().next().unwrap_or_default();
+        let mut order = Vec::new();
+        for attempt_index in 0..max_attempts {
+            if pool.is_empty() {
+                break;
+            }
+            let meta = meta_of(&pool);
+            let Some(pick) = select_weighted(&meta, attempt_index, &mut rng) else {
+                break;
+            };
+            order.push(RelayAttemptPlan {
+                group: group.clone(),
+                channel: pool.remove(pick),
+            });
+        }
+        return order;
+    }
+
+    let groups: Vec<String> = group_pools.iter().map(|(g, _)| g.clone()).collect();
+    let mut pools: Vec<Vec<RelayChannel>> = group_pools.into_iter().map(|(_, p)| p).collect();
+    let mut order = Vec::new();
+    let mut group_index = 0usize;
+    let mut retry = 0i32;
+    while order.len() < max_attempts {
+        let outcome = auto_group_retry_step(
+            pools.len(),
+            group_index,
+            retry,
+            cross_group_retry,
+            retry_times,
+            |gi, priority_retry| {
+                if pools[gi].is_empty() {
+                    return None;
+                }
+                let meta = meta_of(&pools[gi]);
+                select_weighted(&meta, priority_retry.max(0) as usize, &mut rng)
+            },
+        );
+        let Some(outcome) = outcome else { break };
+        let channel = pools[outcome.group_index].remove(outcome.selected);
+        order.push(RelayAttemptPlan {
+            group: groups[outcome.group_index].clone(),
+            channel,
+        });
+        group_index = outcome.next_group_index;
+        retry = outcome.next_retry;
+        if !outcome.reset_retry_next_try {
+            retry += 1;
+        }
+    }
+    order
 }
 
 #[derive(Debug, Clone)]
@@ -5519,6 +5654,80 @@ mod tests {
         assert_eq!(detail_params.len, estimate.prompt_tokens() as f64);
         assert_eq!(detail_params.img, non_stream_image as f64);
         assert_eq!(detail_params.ai, ESTIMATED_AUDIO_INPUT_TOKENS as f64);
+    }
+
+    fn test_channel(id: i64, priority: i64, weight: i32) -> RelayChannel {
+        RelayChannel {
+            id,
+            channel_type: 1,
+            key: format!("sk-{id}"),
+            name: format!("c{id}"),
+            base_url: None,
+            models: String::new(),
+            channel_group: String::new(),
+            model_mapping: None,
+            openai_organization: None,
+            priority,
+            weight,
+        }
+    }
+
+    #[test]
+    fn plan_single_group_walks_priority_tiers_with_shrink() {
+        // Distinct priorities 10/5/1: retry index walks tiers high->low, and the
+        // pool shrinks so each channel is tried once (the prior inline behavior).
+        let pools = vec![(
+            "g".to_string(),
+            vec![
+                test_channel(1, 10, 1),
+                test_channel(2, 5, 1),
+                test_channel(3, 1, 1),
+            ],
+        )];
+        let plan = plan_relay_attempts(pools, false, 3, 2, false, |_| 0);
+        let ids: Vec<i64> = plan.iter().map(|p| p.channel.id).collect();
+        // attempt 0 -> tier 0 = p10 (ch1); after the shrink the remaining
+        // distinct priorities are [5,1], so attempt 1 (tier index 1) hits p1
+        // (ch3); attempt 2 clamps to the last remaining tier (ch2). This matches
+        // the prior inline select_weighted + pool-shrink behavior exactly.
+        assert_eq!(ids, vec![1, 3, 2]);
+        assert!(plan.iter().all(|p| p.group == "g"));
+    }
+
+    #[test]
+    fn plan_single_group_respects_max_attempts() {
+        let pools = vec![(
+            "g".to_string(),
+            vec![test_channel(1, 1, 1), test_channel(2, 1, 1)],
+        )];
+        // max_attempts = 1 -> only one planned attempt despite two channels.
+        let plan = plan_relay_attempts(pools, false, 1, 0, false, |_| 0);
+        assert_eq!(plan.len(), 1);
+    }
+
+    #[test]
+    fn plan_auto_advances_group_after_each_priority_when_cross_group() {
+        let pools = vec![
+            ("g0".to_string(), vec![test_channel(1, 0, 1)]),
+            ("g1".to_string(), vec![test_channel(2, 0, 1)]),
+        ];
+        // retry_times = 0, cross_group_retry -> advance to next group each attempt.
+        let plan = plan_relay_attempts(pools, true, 4, 0, true, |_| 0);
+        let trace: Vec<(&str, i64)> =
+            plan.iter().map(|p| (p.group.as_str(), p.channel.id)).collect();
+        assert_eq!(trace, vec![("g0", 1), ("g1", 2)]);
+    }
+
+    #[test]
+    fn plan_auto_skips_a_group_with_no_channels() {
+        let pools = vec![
+            ("g0".to_string(), vec![]),
+            ("g1".to_string(), vec![test_channel(2, 0, 1)]),
+        ];
+        let plan = plan_relay_attempts(pools, true, 2, 3, true, |_| 0);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].group, "g1");
+        assert_eq!(plan[0].channel.id, 2);
     }
 
     fn encode_base64_bytes(bytes: &[u8]) -> String {

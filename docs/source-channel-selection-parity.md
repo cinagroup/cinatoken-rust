@@ -155,15 +155,30 @@ unit tests. The settings/resolution layer is wired too (2026-06-27):
 `d1_repositories::resolve_user_auto_groups` reads the `AutoGroups`,
 `UserUsableGroups`, and `group_ratio_setting.group_special_usable_group` options
 and feeds them through `core::groups::user_auto_groups` (pure parse/resolve, 3
-tests). **Remaining: the relay-loop integration** (ready-to-wire pieces are in
-place but not yet called from the loop). It is a hot-path change that must:
-(a) trigger only when `token_group == "auto"`, resolving groups from the user's
-group; (b) fetch candidates **per group** and drive `auto_group_retry_step`
-across attempts; and (c) **move tiered-billing group-ratio resolution to the
-SELECTED group** — Go resolves the group ratio after channel selection
-(`selectGroup`), whereas the Rust preflight currently resolves it from the token
-group, which is `"auto"` (not a real ratio key) in the auto case. Needs staging
-verification (D1 reads + e2e). Affinity parity is still pending.
+tests). **Relay-loop integration WIRED 2026-06-27** (`relay.rs`): selection is
+now planned up front by `plan_relay_attempts`, which produces the ordered
+`(group, channel)` attempts — the single-group branch reproduces the prior
+inline `select_weighted` + pool-shrink behavior exactly (so non-auto traffic is
+unchanged), and the `is_auto` branch (triggered by `token_group == "auto"`)
+resolves the user's groups via `resolve_user_auto_groups`, fetches candidates
+**per group**, and drives `auto_group_retry_step`. Billing now resolves the
+group ratio from the **selected** group: the preflight uses the first planned
+attempt's group, and settlement uses the actual serving channel's group (passed
+into `complete_relay_response`/`complete_streaming_relay_response`). 4 planner
+unit tests; non-auto suite unchanged (129 worker tests).
+
+Documented divergences / caveats (need **staging verification** — D1 reads + e2e
+cannot be tested locally):
+- `cross_group_retry` is not yet a ported per-token setting; auto tokens default
+  it to `true` (priority exhaustion advances to the next group). Port the token
+  field to honor per-token config.
+- The tiered-billing **frozen snapshot** uses the *first* planned attempt's
+  group ratio; if a cross-group retry lands on a different group, the tiered
+  charge still uses the first group's ratio (flat settlement uses the serving
+  group correctly). Fully faithful tiered+auto needs per-attempt reserve (Go
+  reserves per retry), a larger billing-flow change.
+
+Affinity parity (1.3) is still pending.
 
 The selection-specific parity gaps to close before relay canary:
 
@@ -173,10 +188,12 @@ The selection-specific parity gaps to close before relay canary:
    weights, single candidate.
 2. **Retry->priority mapping** — fixture that retry 0..k walks priorities highest
    to lowest with clamping.
-3. **Auto cross-group retry** — pure state machine DONE 2026-06-27
-   (`core::channel_select::auto_group_retry_step`, 6 fixtures incl. with/without
-   `crossGroupRetry` and a full two-group loop trace). Remaining: the auto-group
-   config layer + wiring into the relay retry loop (see status note above).
+3. **Auto cross-group retry** — DONE 2026-06-27: pure state machine
+   (`core::channel_select::auto_group_retry_step`) + config layer
+   (`core::groups`, `d1_repositories::resolve_user_auto_groups`) + relay-loop
+   wiring (`relay.rs::plan_relay_attempts`, billing on the selected group). See
+   the status note above for the two staging-verification caveats (per-token
+   `cross_group_retry`; tiered+auto frozen-snapshot ratio).
 4. **Affinity layer** — preferred-channel reuse, disabled-channel fallthrough,
    record-on-success-only, and store-outage fail-open; on Durable Objects per
    §21.2.

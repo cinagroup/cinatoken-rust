@@ -876,11 +876,8 @@ fn parse_string_map_option(
     })
 }
 
-// NOTE: the four helpers below are the ready-to-wire auto cross-group resolution
-// layer; they are exercised by unit tests and will be called from the relay
-// retry loop in a follow-up (the loop restructure also moves group-ratio
-// resolution to the selected group — see source-channel-selection-parity.md).
-#[allow(dead_code)]
+// Auto cross-group resolution layer, consumed by the relay retry loop's
+// `is_auto` path (see source-channel-selection-parity.md).
 /// Parse the `AutoGroups` option (a JSON array of group names). Missing or
 /// malformed config yields an empty list (auto selection is then "not enabled",
 /// matching Go's behavior when no auto groups are configured).
@@ -891,7 +888,6 @@ fn parse_auto_groups_option(raw: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
 /// Parse the `group_ratio_setting.group_special_usable_group` option: a JSON
 /// object mapping a user group to its special usable-group overrides
 /// (`{ userGroup: { "+:g"|"-:g"|"g": desc } }`). Missing/malformed -> empty.
@@ -902,7 +898,6 @@ fn parse_special_usable_groups_option(raw: Option<&str>) -> HashMap<String, Hash
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
 /// Pure resolution of a user's auto groups from the raw option values — port of
 /// `service.GetUserAutoGroup` glue. Returns the ordered auto-group list (empty
 /// when auto groups are not configured). Exposed (via the async wrapper) for the
@@ -925,7 +920,6 @@ fn resolve_user_auto_groups_from_options(
     cinatoken_core::groups::user_auto_groups(user_group, &auto_groups, &base, &special)
 }
 
-#[allow(dead_code)]
 /// Resolve the ordered list of auto groups a user may use, reading the
 /// `AutoGroups`, `UserUsableGroups`, and special-usable-group options from D1.
 /// Empty when auto selection is not configured for this user.

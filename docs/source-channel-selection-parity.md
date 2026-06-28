@@ -177,6 +177,21 @@ cannot be tested locally):
   charge still uses the first group's ratio (flat settlement uses the serving
   group correctly). Fully faithful tiered+auto needs per-attempt reserve (Go
   reserves per retry), a larger billing-flow change.
+- "auto groups is not enabled" (503) is returned when the *user-filtered* auto
+  list is empty; Go returns that only for the *globally* empty case and otherwise
+  falls through to a no-channel error. Same outcome (request fails), different
+  wording/status.
+- Settings are read straight from D1 options with no in-memory default seeding;
+  Go seeds defaults (`{default,vip}` usable, `[default]` auto) then overlays DB.
+  The D1 options must be seeded (migration) or auto resolution can differ from Go
+  on an unseeded deployment.
+
+Adversarial verification (2026-06-27) confirmed non-auto behavior is byte-for-byte
+preserved and caught two bugs that were fixed before this note: the non-stream
+settlement passed the `"auto"` token group instead of the serving group (flat
+mis-bill); and the auto planner used a single global attempt cap instead of Go's
+per-group retry budget (cross-group failover never advanced when the first group
+had channels). Both have regression tests.
 
 Affinity parity (1.3) is still pending.
 

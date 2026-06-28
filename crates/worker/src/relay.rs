@@ -927,7 +927,7 @@ async fn relay_endpoint(
         auth,
         channel,
         model,
-        group,
+        selected_group,
         endpoint.upstream_path.clone(),
         endpoint.provider,
         endpoint.parse_non_stream_usage,
@@ -1017,7 +1017,12 @@ fn plan_relay_attempts(
     let mut order = Vec::new();
     let mut group_index = 0usize;
     let mut retry = 0i32;
-    while order.len() < max_attempts {
+    // Mirror Go's outer loop `for retry <= RetryTimes`: a group advance resets
+    // `retry` to 0 (via auto_group_retry_step), so each group gets its own
+    // RetryTimes+1 budget rather than a single global cap (`max_attempts` only
+    // bounds the single-group branch). Termination: each step either increments
+    // `retry` toward the bound or advances the group until none remain (`None`).
+    while retry <= retry_times {
         let outcome = auto_group_retry_step(
             pools.len(),
             group_index,
@@ -5711,11 +5716,33 @@ mod tests {
             ("g0".to_string(), vec![test_channel(1, 0, 1)]),
             ("g1".to_string(), vec![test_channel(2, 0, 1)]),
         ];
-        // retry_times = 0, cross_group_retry -> advance to next group each attempt.
-        let plan = plan_relay_attempts(pools, true, 4, 0, true, |_| 0);
+        // retry_times = 0 (max_attempts = 1); cross_group_retry advances each
+        // attempt. The plan spans BOTH groups despite max_attempts=1 because auto
+        // gives each group its own budget (not a global cap).
+        let plan = plan_relay_attempts(pools, true, 1, 0, true, |_| 0);
         let trace: Vec<(&str, i64)> =
             plan.iter().map(|p| (p.group.as_str(), p.channel.id)).collect();
         assert_eq!(trace, vec![("g0", 1), ("g1", 2)]);
+    }
+
+    #[test]
+    fn plan_auto_gives_each_group_its_own_retry_budget() {
+        // Go resets the retry counter on group advance, so each group gets
+        // RetryTimes+1 attempts. g0 has two priority tiers (consumes retry 0 and
+        // 1, then arms the advance at retry>=RetryTimes=1); g1 is then reached.
+        let pools = vec![
+            (
+                "g0".to_string(),
+                vec![test_channel(1, 10, 1), test_channel(2, 5, 1)],
+            ),
+            ("g1".to_string(), vec![test_channel(3, 0, 1)]),
+        ];
+        // max_attempts = retry_times + 1 = 2 (the single-group cap); auto must
+        // still reach g1 — a global cap of 2 would have stopped at g0.
+        let plan = plan_relay_attempts(pools, true, 2, 1, true, |_| 0);
+        let trace: Vec<(&str, i64)> =
+            plan.iter().map(|p| (p.group.as_str(), p.channel.id)).collect();
+        assert_eq!(trace, vec![("g0", 1), ("g0", 2), ("g1", 3)]);
     }
 
     #[test]
@@ -5724,7 +5751,7 @@ mod tests {
             ("g0".to_string(), vec![]),
             ("g1".to_string(), vec![test_channel(2, 0, 1)]),
         ];
-        let plan = plan_relay_attempts(pools, true, 2, 3, true, |_| 0);
+        let plan = plan_relay_attempts(pools, true, 4, 3, true, |_| 0);
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].group, "g1");
         assert_eq!(plan[0].channel.id, 2);

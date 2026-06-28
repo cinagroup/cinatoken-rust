@@ -142,14 +142,19 @@ Remaining gaps to close:
 1. **DONE 2026-06-28 (flag-gated)** — the missing-usage estimate fallback and the
    `ValidUsage`-based estimate decision. Pure pieces (`response_text_to_usage`,
    `valid_usage`) plus the SSE text/tool accumulation and the worker wiring above
-   are implemented and host-tested. **Still open**: flip the flag on after staging
-   verification (it is the charge-affecting cutover); switch the *settlement*
-   billing gate (`record_relay_audit`'s `usage.total_tokens > 0` and
-   `refund_reason`) from `total>0` to `valid_usage` (deferred to avoid a flag-off
-   regression for total-only usages — currently the estimate produces `total>0`
-   so it bills through the existing gate); explicit `usage_source` audit field
-   (#4); Anthropic/Gemini streamed-text accumulation; and the **audio
-   second-to-last-chunk** extraction (#2).
+   are implemented and host-tested.
+   - **DONE 2026-06-28** — the *settlement* billing gate and `refund_reason` now
+     use Go's `ValidUsage` (prompt-or-completion non-zero) when the flag is on,
+     and the legacy `total > 0` when off (so flipping the flag off is a no-op; no
+     total-only-usage regression). `record_relay_audit` records a `usage_source`
+     audit field (`local_estimate` vs `upstream`, Go `ContextKeyLocalCountTokens`)
+     carried on `RelayAuditContext::usage_locally_estimated` (#4).
+   - **Still open**: flip the flag on after staging verification (the
+     charge-affecting cutover); Anthropic/Gemini streamed-text accumulation; and
+     the **audio second-to-last-chunk** extraction (#2) — note the current
+     last-valid-usage accumulator semantics already extract audio usage when the
+     final chunk carries no usage; only an audio model that emits a *different*
+     usage in both the last and second-to-last chunks would diverge.
 2. Implement audio-model second-to-last-chunk usage extraction.
 3. Implement the `SupportStreamOptions` upstream injection and the
    client-facing strip/forward/synthesize matrix keyed on `ShouldIncludeUsage`.

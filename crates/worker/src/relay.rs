@@ -951,6 +951,7 @@ async fn relay_endpoint(
         tiered_billing_preflight,
         estimated_prompt_tokens,
         missing_usage_estimate_enabled: missing_usage_estimate_enabled(&env),
+        usage_locally_estimated: false,
     };
 
     if should_relay_stream {
@@ -2614,7 +2615,8 @@ async fn complete_relay_response(
         };
 
         context.wait_until(async move {
-            let usage = match response_usage_summary(
+            let mut audit = audit;
+            let (usage, usage_locally_estimated) = match response_usage_summary(
                 &mut audit_response,
                 provider,
                 &endpoint_path,
@@ -2625,12 +2627,13 @@ async fn complete_relay_response(
             )
             .await
             {
-                Ok(usage) => usage,
+                Ok(resolved) => resolved,
                 Err(err) => {
                     worker::console_error!("failed to parse non-streaming relay usage: {}", err);
-                    UsageSummary::default()
+                    (UsageSummary::default(), false)
                 }
             };
+            audit.usage_locally_estimated = usage_locally_estimated;
             if let Err(err) = record_relay_audit(
                 &env,
                 &db,
@@ -2945,7 +2948,7 @@ async fn response_usage_summary(
     model: &str,
     estimated_prompt_tokens: i64,
     estimate_enabled: bool,
-) -> worker::Result<UsageSummary> {
+) -> worker::Result<(UsageSummary, bool)> {
     let body = read_response_text_limited(response, max_json_response_bytes)
         .await
         .map_err(|err| worker::Error::RustError(err.message("relay response body")))?;
@@ -2965,7 +2968,7 @@ async fn response_usage_summary(
             usage.completion_tokens
         );
     }
-    Ok(usage)
+    Ok((usage, locally_estimated))
 }
 
 fn usage_summary_for_provider(
@@ -3021,7 +3024,8 @@ async fn complete_streaming_relay_response(
     };
 
     context.wait_until(async move {
-        let usage = match streaming_usage_summary(
+        let mut audit = audit;
+        let (usage, usage_locally_estimated) = match streaming_usage_summary(
             &mut audit_response,
             provider,
             &model,
@@ -3030,12 +3034,13 @@ async fn complete_streaming_relay_response(
         )
         .await
         {
-            Ok(usage) => usage,
+            Ok(resolved) => resolved,
             Err(err) => {
                 worker::console_error!("failed to parse streaming relay usage: {}", err);
-                UsageSummary::default()
+                (UsageSummary::default(), false)
             }
         };
+        audit.usage_locally_estimated = usage_locally_estimated;
         if let Err(err) = record_relay_audit(
             &env,
             &db,
@@ -3065,7 +3070,7 @@ async fn streaming_usage_summary(
     model: &str,
     estimated_prompt_tokens: i64,
     estimate_enabled: bool,
-) -> worker::Result<UsageSummary> {
+) -> worker::Result<(UsageSummary, bool)> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
         RelayProviderKind::OpenAiCompatible => SseUsageAccumulator::default(),
@@ -3099,7 +3104,7 @@ async fn streaming_usage_summary(
             tool_count
         );
     }
-    Ok(usage)
+    Ok((usage, locally_estimated))
 }
 
 #[derive(Clone)]
@@ -3118,6 +3123,10 @@ struct RelayAuditContext {
     /// a missing/invalid upstream usage refunds the reserve as before; when on,
     /// the relay estimates and bills it (Go parity). Charge-affecting cutover.
     missing_usage_estimate_enabled: bool,
+    /// Set by the settlement path when the usage was locally estimated (the
+    /// missing-usage fallback fired) rather than reported by the upstream. Drives
+    /// the `usage_source` audit field (Go `ContextKeyLocalCountTokens`).
+    usage_locally_estimated: bool,
 }
 
 async fn record_relay_audit(
@@ -3137,18 +3146,28 @@ async fn record_relay_audit(
     let now = unix_timestamp();
 
     let use_time = now.saturating_sub(audit.started_at);
+    // Whether the upstream reported real usage to settle on. With the Go-parity
+    // estimate fallback enabled, a usage is "present" when it passes Go's
+    // `ValidUsage` gate (prompt or completion non-zero); otherwise the legacy
+    // `total > 0` gate applies so flipping the flag off changes nothing.
+    let usage_present = if audit.missing_usage_estimate_enabled {
+        cinatoken_tokenizer::valid_usage(usage.prompt_tokens as i64, usage.completion_tokens as i64)
+    } else {
+        usage.total_tokens > 0
+    };
     let mut other = json!({
         "billing_pending": true,
         "relay_runtime": "cloudflare_worker_rust",
         "endpoint": endpoint_path,
         "upstream_status": upstream_status,
         "total_tokens": usage.total_tokens,
+        "usage_source": if audit.usage_locally_estimated { "local_estimate" } else { "upstream" },
     });
     let mut quota = 0;
     let mut billing_applied = false;
     let mut billing_resolved = false;
     if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
-        if upstream_status < 400 && usage.total_tokens > 0 {
+        if upstream_status < 400 && usage_present {
             match tiered_billing_settlement(
                 &preflight.snapshot,
                 usage,
@@ -3262,7 +3281,12 @@ async fn record_relay_audit(
                         "tiered_billing_refund",
                         tiered_billing_refund_metadata(
                             preflight,
-                            refund_reason(upstream_status, usage, is_stream),
+                            refund_reason(
+                                upstream_status,
+                                usage,
+                                is_stream,
+                                audit.missing_usage_estimate_enabled,
+                            ),
                         ),
                     );
                 }
@@ -3277,7 +3301,7 @@ async fn record_relay_audit(
         }
     }
 
-    if !billing_applied && upstream_status < 400 && usage.total_tokens > 0 {
+    if !billing_applied && upstream_status < 400 && usage_present {
         // Non-tiered ("flat") billing: compute the per-token (or fixed-price)
         // quota from ModelRatio / CompletionRatio / ModelPrice options and
         // apply it atomically. This is the fallback when no `tiered_expr`
@@ -3766,10 +3790,22 @@ fn resolve_non_stream_usage(
     )
 }
 
-fn refund_reason(upstream_status: u16, usage: &UsageSummary, is_stream: bool) -> &'static str {
+fn refund_reason(
+    upstream_status: u16,
+    usage: &UsageSummary,
+    is_stream: bool,
+    estimate_enabled: bool,
+) -> &'static str {
+    // Same "is usage present" gate as settlement so the classification agrees
+    // with whether billing was attempted.
+    let usage_present = if estimate_enabled {
+        cinatoken_tokenizer::valid_usage(usage.prompt_tokens as i64, usage.completion_tokens as i64)
+    } else {
+        usage.total_tokens > 0
+    };
     if upstream_status >= 400 {
         "upstream_error"
-    } else if usage.total_tokens <= 0 {
+    } else if !usage_present {
         if is_stream {
             return "missing_stream_usage";
         }
@@ -6443,13 +6479,35 @@ mod tests {
     #[test]
     fn refund_reason_distinguishes_missing_stream_usage() {
         assert_eq!(
-            refund_reason(200, &UsageSummary::default(), true),
+            refund_reason(200, &UsageSummary::default(), true, false),
             "missing_stream_usage"
         );
         assert_eq!(
-            refund_reason(200, &UsageSummary::default(), false),
+            refund_reason(200, &UsageSummary::default(), false, false),
             "missing_usage"
         );
+    }
+
+    #[test]
+    fn refund_reason_uses_valid_usage_gate_when_estimate_enabled() {
+        // A prompt-only usage has total>0 but is "present" under both gates.
+        let prompt_only = UsageSummary {
+            prompt_tokens: 5,
+            total_tokens: 5,
+            ..UsageSummary::default()
+        };
+        assert_eq!(
+            refund_reason(200, &prompt_only, false, true),
+            "not_billable"
+        );
+        // A total-only usage (provider sent only total_tokens) is present under
+        // the legacy gate but absent under ValidUsage (Go parity).
+        let total_only = UsageSummary {
+            total_tokens: 12,
+            ..UsageSummary::default()
+        };
+        assert_eq!(refund_reason(200, &total_only, false, false), "not_billable");
+        assert_eq!(refund_reason(200, &total_only, false, true), "missing_usage");
     }
 
     #[test]

@@ -124,6 +124,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/oauth/github", |req, ctx| async move {
             admin_oauth::github_oauth(req, ctx.env).await
         })
+        .get_async("/api/oauth/oidc", |req, ctx| async move {
+            admin_oauth::oidc_oauth(req, ctx.env).await
+        })
         .post_async("/api/user/logout", |req, ctx| async move {
             admin::logout_handler(req, ctx.env).await
         })

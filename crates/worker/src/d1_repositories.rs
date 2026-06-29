@@ -1181,6 +1181,75 @@ pub async fn bind_github_id(
     Ok(())
 }
 
+/// Find an enabled user by their linked OIDC subject (`sub`). Empty ids never
+/// match. OIDC backs Google and any generic OpenID Connect provider.
+pub async fn find_user_by_oidc_id(
+    db: &D1Database,
+    oidc_id: &str,
+) -> worker::Result<Option<AdminUserRow>> {
+    if oidc_id.is_empty() {
+        return Ok(None);
+    }
+    db.prepare(&format!(
+        r#"
+        SELECT {ADMIN_USER_SELF_COLUMNS}
+        FROM users
+        WHERE oidc_id = ?1 AND deleted_at IS NULL
+        LIMIT 1
+        "#,
+    ))
+    .bind_refs(&[D1Type::Text(oidc_id)])?
+    .first::<AdminUserRow>(None)
+    .await
+}
+
+/// Create a user from an OIDC login. `oidc_id` is the subject; `username` and
+/// `aff_code` must be unique (the caller generates a CSPRNG `aff_code`). No
+/// password (login is via the provider only). Returns the new user id.
+pub async fn create_oidc_user(
+    db: &D1Database,
+    username: &str,
+    oidc_id: &str,
+    display_name: &str,
+    email: &str,
+    aff_code: &str,
+    now: i64,
+) -> worker::Result<i64> {
+    db.prepare(
+        r#"
+        INSERT INTO users (
+          username, password, display_name, oidc_id, email, role, status,
+          quota, "group", aff_code, created_at, last_login_at
+        )
+        VALUES (?1, '', ?2, ?3, ?4, 1, 1, 0, 'default', ?5, ?6, ?6)
+        "#,
+    )
+    .bind_refs(&[
+        D1Type::Text(username),
+        D1Type::Text(display_name),
+        D1Type::Text(oidc_id),
+        D1Type::Text(email),
+        D1Type::Text(aff_code),
+        D1Type::Integer(d1_i32(now)),
+    ])?
+    .run()
+    .await?;
+    let row = find_user_by_oidc_id(db, oidc_id).await?;
+    row.map(|user| user.id).ok_or_else(|| {
+        worker::Error::RustError("oidc user insert not found after create".into())
+    })
+}
+
+/// Link an OIDC subject to an existing user account (OAuth bind). The caller
+/// verifies the subject is not already linked elsewhere.
+pub async fn bind_oidc_id(db: &D1Database, user_id: i64, oidc_id: &str) -> worker::Result<()> {
+    db.prepare("UPDATE users SET oidc_id = ?2 WHERE id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id)), D1Type::Text(oidc_id)])?
+        .run()
+        .await?;
+    Ok(())
+}
+
 /// Find a user by primary key (`/api/user/self`, admin user management).
 pub async fn find_user_by_id(db: &D1Database, id: i64) -> worker::Result<Option<AdminUserRow>> {
     let arg = D1Type::Integer(d1_i32(id));

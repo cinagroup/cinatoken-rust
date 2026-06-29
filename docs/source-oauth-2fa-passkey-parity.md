@@ -48,8 +48,12 @@ session, and 302-redirects to `FRONTEND_BASE_URL`. Inert unless
 `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` are set. The **bind** flow is wired:
 when `/api/oauth/github` is hit with a valid session, it links the GitHub login
 to the current account (`bind_github_id`, rejecting a login already linked
-elsewhere) instead of logging in/registering (Go `GitHubBind`). **Remaining:**
-the other providers (Google/Discord/OIDC/WeChat) follow the same generic shape;
+elsewhere) instead of logging in/registering (Go `GitHubBind`). **Generic OIDC
+DONE 2026-06-28** (`oidc_oauth`, stored in `oidc_id`) — covers Google and any
+OpenID Connect provider: form-encoded token exchange at `OIDC_TOKEN_URL` +
+`OIDC_USERINFO_URL` (`sub`/`name`/`email`), same single-use state, login /
+register / bind, gated on `OIDC_CLIENT_ID/SECRET/TOKEN_URL/USERINFO_URL/
+REDIRECT_URI`. **Remaining:** Discord/WeChat (same shape as GitHub) and
 `TrustedRedirectDomains` validation for the final redirect.
 
 ## 2FA (TOTP)

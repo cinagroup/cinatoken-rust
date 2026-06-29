@@ -183,6 +183,247 @@ fn frontend_location(env: &Env) -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
+// ---------------------------------------------------------------------------
+// OIDC (generic OpenID Connect — backs Google and any OIDC provider).
+// ---------------------------------------------------------------------------
+
+struct OidcConfig {
+    client_id: String,
+    client_secret: String,
+    token_url: String,
+    userinfo_url: String,
+    redirect_uri: String,
+}
+
+struct OidcUser {
+    sub: String,
+    name: String,
+    email: String,
+}
+
+/// `GET /api/oauth/oidc?code&state`: generic OIDC callback. Validates the CSRF
+/// state (single-use), exchanges the code at the configured token endpoint
+/// (form-encoded), fetches userinfo, finds-or-creates (or binds) the account by
+/// the OIDC subject, issues the session, and redirects to the frontend. Inert
+/// unless `OIDC_CLIENT_ID/SECRET/TOKEN_URL/USERINFO_URL/REDIRECT_URI` are set.
+pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
+    let state = query_param(&req, "state").unwrap_or_default();
+    if state.is_empty()
+        || flow_state::take(&env, flow_state::FlowKind::OAuthState, &state)
+            .await?
+            .is_none()
+    {
+        return Ok(envelope_error_response(403, "invalid or expired oauth state"));
+    }
+    let Some(config) = oidc_config(&env) else {
+        return Ok(envelope_error_response(400, "OIDC login is not enabled"));
+    };
+    let code = query_param(&req, "code").unwrap_or_default();
+    if code.is_empty() {
+        return Ok(envelope_error_response(400, "missing authorization code"));
+    }
+
+    let oidc = match fetch_oidc_user(&config, &code).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return Ok(envelope_error_response(
+                502,
+                "OIDC provider did not return a valid user",
+            ))
+        }
+        Err(err) => {
+            worker::console_error!("oidc exchange failed: {err}");
+            return Ok(envelope_error_response(502, "failed to reach the OIDC provider"));
+        }
+    };
+
+    let db = env.d1("DB")?;
+    let now = unix_timestamp();
+
+    // BIND: link the OIDC subject to a logged-in account.
+    match crate::admin::parse_session_claims(&req, &env).await? {
+        Ok(Some(claims)) => {
+            if let Some(existing) = d1_repositories::find_user_by_oidc_id(&db, &oidc.sub).await? {
+                if existing.id != claims.id {
+                    return Ok(envelope_error_response(
+                        409,
+                        "this OIDC account is already linked to another user",
+                    ));
+                }
+            }
+            d1_repositories::bind_oidc_id(&db, claims.id, &oidc.sub).await?;
+            let mut response = Response::empty()?.with_status(302);
+            response
+                .headers_mut()
+                .set("Location", &frontend_location(&env))?;
+            return Ok(response);
+        }
+        Ok(None) => {}
+        Err(response) => return Ok(response),
+    }
+
+    let user = match d1_repositories::find_user_by_oidc_id(&db, &oidc.sub).await? {
+        Some(user) => user,
+        None => {
+            let username = format!("oidc_{}", oidc.sub);
+            let Some(aff_code) = crate::admin_2fa::new_pending_token() else {
+                return Ok(envelope_error_response(500, "failed to provision account"));
+            };
+            let display_name = if oidc.name.trim().is_empty() {
+                "OIDC User".to_string()
+            } else {
+                oidc.name.clone()
+            };
+            let id = d1_repositories::create_oidc_user(
+                &db,
+                &username,
+                &oidc.sub,
+                &display_name,
+                &oidc.email,
+                &aff_code,
+                now,
+            )
+            .await?;
+            match d1_repositories::find_user_by_id(&db, id).await? {
+                Some(user) => user,
+                None => return Ok(envelope_error_response(500, "failed to load new account")),
+            }
+        }
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(envelope_error_response(403, "user is disabled"));
+    }
+
+    let codec = match session_codec(&env)? {
+        Ok(codec) => codec,
+        Err(response) => return Ok(response),
+    };
+    let claims = SessionClaims {
+        id: user.id,
+        username: user.username.clone(),
+        role: user.role,
+        status: user.status,
+        group: user.group.clone(),
+        exp: 0,
+    };
+    let cookie_value = match codec.issue(claims, now) {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                500,
+                &format!("failed to issue session: {err}"),
+            ))
+        }
+    };
+    let _ = d1_repositories::update_last_login_at(&db, user.id, now).await;
+    let mut response = Response::empty()?.with_status(302);
+    attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    response
+        .headers_mut()
+        .set("Location", &frontend_location(&env))?;
+    Ok(response)
+}
+
+fn oidc_config(env: &Env) -> Option<OidcConfig> {
+    let secret_or_var = |name: &str| -> Option<String> {
+        env.secret(name)
+            .map(|value| value.to_string())
+            .ok()
+            .or_else(|| env.var(name).map(|value| value.to_string()).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    Some(OidcConfig {
+        client_id: secret_or_var("OIDC_CLIENT_ID")?,
+        client_secret: secret_or_var("OIDC_CLIENT_SECRET")?,
+        token_url: secret_or_var("OIDC_TOKEN_URL")?,
+        userinfo_url: secret_or_var("OIDC_USERINFO_URL")?,
+        redirect_uri: secret_or_var("OIDC_REDIRECT_URI")?,
+    })
+}
+
+async fn fetch_oidc_user(config: &OidcConfig, code: &str) -> WorkerResult<Option<OidcUser>> {
+    let body = format!(
+        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
+        form_encode(code),
+        form_encode(&config.client_id),
+        form_encode(&config.client_secret),
+        form_encode(&config.redirect_uri),
+    );
+    let mut token_headers = Headers::new();
+    token_headers.set("Content-Type", "application/x-www-form-urlencoded")?;
+    token_headers.set("Accept", "application/json")?;
+    let mut token_init = RequestInit::new();
+    token_init
+        .with_method(Method::Post)
+        .with_headers(token_headers)
+        .with_body(Some(wasm_bindgen::JsValue::from_str(&body)));
+    let token_request = Request::new_with_init(&config.token_url, &token_init)?;
+    let mut token_response = Fetch::Request(token_request).send().await?;
+    let token_text = token_response.text().await?;
+    let access_token = serde_json::from_str::<Value>(&token_text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("access_token")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|token| !token.is_empty());
+    let Some(access_token) = access_token else {
+        return Ok(None);
+    };
+
+    let mut user_headers = Headers::new();
+    user_headers.set("Authorization", &format!("Bearer {access_token}"))?;
+    user_headers.set("Accept", "application/json")?;
+    user_headers.set("User-Agent", "cinatoken-rust")?;
+    let mut user_init = RequestInit::new();
+    user_init.with_method(Method::Get).with_headers(user_headers);
+    let user_request = Request::new_with_init(&config.userinfo_url, &user_init)?;
+    let mut user_response = Fetch::Request(user_request).send().await?;
+    let user_text = user_response.text().await?;
+    let value: Value = serde_json::from_str(&user_text).unwrap_or(Value::Null);
+    let sub = value
+        .get("sub")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if sub.is_empty() {
+        return Ok(None);
+    }
+    // Prefer `name`, fall back to `preferred_username`.
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("preferred_username").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string();
+    Ok(Some(OidcUser {
+        sub,
+        name,
+        email: value
+            .get("email")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    }))
+}
+
+/// Percent-encode a value for an `application/x-www-form-urlencoded` body.
+fn form_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// `(client_id, client_secret)` when GitHub OAuth is configured, else `None`.
 fn github_config(env: &Env) -> Option<(String, String)> {
     let id = env

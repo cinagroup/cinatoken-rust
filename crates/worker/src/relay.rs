@@ -47,6 +47,13 @@ const RELAY_RETRY_TIMES_ENV: &str = "RELAY_RETRY_TIMES";
 /// preserves the current refund-on-missing behavior; flipping it on is the
 /// charge-affecting, staging-gated cutover to Go parity.
 const MISSING_USAGE_ESTIMATE_ENV: &str = "RELAY_MISSING_USAGE_ESTIMATE_ENABLED";
+/// When set, the relay injects `stream_options.include_usage=true` into
+/// streaming OpenAI-compatible upstream requests for channels that support it
+/// (and strips `stream_options` for those that do not), so the upstream emits a
+/// real usage chunk instead of relying on the local estimate. Off by default;
+/// behavior-affecting (changes the upstream request and client-facing stream),
+/// staging-gated.
+const STREAM_OPTIONS_INJECT_ENV: &str = "RELAY_STREAM_OPTIONS_INJECT_ENABLED";
 const CHANNEL_AUTOBAN_THRESHOLD_ENV: &str = "RELAY_CHANNEL_AUTOBAN_THRESHOLD";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -749,6 +756,7 @@ async fn relay_endpoint(
     // each group's pool, plus the auto cross-group walk). The loop forwards each
     // planned channel in order, stopping at the first non-retryable response.
     let attempt_count = attempt_plan.len();
+    let inject_stream_options = stream_options_inject_enabled(&env);
 
     for (attempt_index, plan) in attempt_plan.into_iter().enumerate() {
         let RelayAttemptPlan {
@@ -795,6 +803,19 @@ async fn relay_endpoint(
                     &endpoint.upstream_path,
                     &channel,
                 );
+                // Inject/strip `stream_options.include_usage` for OpenAI-compatible
+                // upstreams (Go parity) so supporting channels emit a real usage
+                // chunk instead of forcing the local estimate. Native Anthropic/
+                // Gemini providers carry usage natively and are left untouched.
+                if inject_stream_options
+                    && endpoint.provider == RelayProviderKind::OpenAiCompatible
+                {
+                    cinatoken_relay::openai_compatible::apply_stream_options(
+                        &mut upstream_body,
+                        channel.channel_type,
+                        should_relay_stream,
+                    );
+                }
                 forward_relay_request(
                     endpoint.provider,
                     &upstream_url,
@@ -3716,6 +3737,13 @@ fn tiered_billing_refund_metadata(
 fn missing_usage_estimate_enabled(env: &Env) -> bool {
     matches!(
         optional_env_var(env, MISSING_USAGE_ESTIMATE_ENV).as_deref(),
+        Some("true") | Some("1")
+    )
+}
+
+fn stream_options_inject_enabled(env: &Env) -> bool {
+    matches!(
+        optional_env_var(env, STREAM_OPTIONS_INJECT_ENV).as_deref(),
         Some("true") | Some("1")
     )
 }

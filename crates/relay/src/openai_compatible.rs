@@ -85,6 +85,59 @@ pub fn channel_type_supported(channel_type: i32, supported_channel_types: &[i32]
     supported_channel_types.contains(&channel_type)
 }
 
+/// Channel types that honor the OpenAI `stream_options` request field — a
+/// faithful port of Go `relay/common.streamSupportedChannels`. For a streaming
+/// request to one of these, the relay forces `stream_options.include_usage=true`
+/// so the upstream emits a final usage chunk (real usage for settlement, instead
+/// of the local estimate). For every other channel — and for non-streaming
+/// requests — `stream_options` is stripped so upstreams that reject it don't error.
+pub const STREAM_OPTIONS_SUPPORTED_CHANNEL_TYPES: &[i32] = &[
+    1,  // OpenAI
+    3,  // Azure
+    4,  // Ollama
+    14, // Anthropic
+    17, // Ali
+    24, // Gemini
+    25, // Moonshot
+    26, // Zhipu v4
+    33, // AWS
+    35, // MiniMax
+    39, // Cloudflare
+    40, // SiliconFlow
+    43, // DeepSeek
+    45, // VolcEngine
+    46, // Baidu v2
+    48, // xAI
+    53, // Submodel
+    57, // Codex
+];
+
+/// Whether `channel_type` honors the OpenAI `stream_options` request field.
+pub fn channel_supports_stream_options(channel_type: i32) -> bool {
+    STREAM_OPTIONS_SUPPORTED_CHANNEL_TYPES.contains(&channel_type)
+}
+
+/// Inject or strip the OpenAI `stream_options` request field, a faithful port of
+/// Go `openai/adaptor.go` (inject) + `compatible_handler.go` (strip). On a
+/// streaming request to a channel that supports it, force
+/// `stream_options.include_usage = true` (replacing any client value) so the
+/// upstream emits a final usage chunk. Otherwise — unsupported channel or a
+/// non-streaming request — remove `stream_options` entirely. No-op on a
+/// non-object body.
+pub fn apply_stream_options(body: &mut Value, channel_type: i32, is_stream: bool) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+    if is_stream && channel_supports_stream_options(channel_type) {
+        map.insert(
+            "stream_options".to_string(),
+            serde_json::json!({ "include_usage": true }),
+        );
+    } else {
+        map.remove("stream_options");
+    }
+}
+
 pub fn csv_contains(csv: &str, needle: &str) -> bool {
     let needle = needle.trim();
     csv.split(',')
@@ -1031,6 +1084,65 @@ mod tests {
         assert!(csv_contains(" default, VIP ,beta", "vip"));
         assert!(csv_contains("gpt-4o,gpt-4.1", " GPT-4O "));
         assert!(!csv_contains("default,vip", "other"));
+    }
+
+    #[test]
+    fn stream_options_injected_for_supported_streaming_channel() {
+        // OpenAI (1) is supported; a streaming request gets include_usage forced
+        // on, replacing any client-supplied value.
+        let mut body = json!({
+            "model": "gpt-4o",
+            "stream": true,
+            "stream_options": { "include_usage": false }
+        });
+        apply_stream_options(&mut body, CHANNEL_TYPE_OPENAI, true);
+        assert_eq!(body["stream_options"]["include_usage"], json!(true));
+    }
+
+    #[test]
+    fn stream_options_injected_when_absent() {
+        let mut body = json!({ "model": "gpt-4o", "stream": true });
+        apply_stream_options(&mut body, CHANNEL_TYPE_DEEPSEEK, true);
+        assert_eq!(body["stream_options"]["include_usage"], json!(true));
+    }
+
+    #[test]
+    fn stream_options_stripped_for_unsupported_channel() {
+        // Perplexity (27) is not in the supported set: strip stream_options even
+        // on a streaming request so the upstream does not reject it.
+        let mut body = json!({
+            "model": "x",
+            "stream": true,
+            "stream_options": { "include_usage": true }
+        });
+        assert!(!channel_supports_stream_options(CHANNEL_TYPE_PERPLEXITY));
+        apply_stream_options(&mut body, CHANNEL_TYPE_PERPLEXITY, true);
+        assert!(body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn stream_options_stripped_for_non_streaming_request() {
+        // Supported channel but non-streaming: strip (Go strips when !stream).
+        let mut body = json!({
+            "model": "gpt-4o",
+            "stream_options": { "include_usage": true }
+        });
+        apply_stream_options(&mut body, CHANNEL_TYPE_OPENAI, false);
+        assert!(body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn stream_options_supported_set_matches_go() {
+        // Spot-check the Go streamSupportedChannels values.
+        for ct in [1, 3, 4, 14, 17, 24, 25, 26, 33, 35, 39, 40, 43, 45, 46, 48, 53, 57] {
+            assert!(channel_supports_stream_options(ct), "{ct} should be supported");
+        }
+        for ct in [20, 27, 34, 38, 42] {
+            assert!(
+                !channel_supports_stream_options(ct),
+                "{ct} should NOT be supported"
+            );
+        }
     }
 
     #[test]

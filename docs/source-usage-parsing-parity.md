@@ -156,9 +156,22 @@ Remaining gaps to close:
      final chunk carries no usage; only an audio model that emits a *different*
      usage in both the last and second-to-last chunks would diverge.
 2. Implement audio-model second-to-last-chunk usage extraction.
-3. Implement the `SupportStreamOptions` upstream injection and the
-   client-facing strip/forward/synthesize matrix keyed on `ShouldIncludeUsage`.
-4. Record `usage_source` (upstream vs local estimate) in audit/logs.
+3. **Upstream `stream_options` injection DONE 2026-06-28 (flag-gated,
+   `RELAY_STREAM_OPTIONS_INJECT_ENABLED`)** — `cinatoken_relay::openai_compatible::
+   apply_stream_options` ports Go's `streamSupportedChannels` set + the
+   `openai/adaptor.go` inject / `compatible_handler.go` strip: for an
+   OpenAI-compatible streaming request to a supported channel type it forces
+   `stream_options.include_usage=true` so the upstream emits a real usage chunk
+   (making the local estimate a true fallback); for unsupported channels or
+   non-streaming requests it strips `stream_options`. Wired in the relay attempt
+   loop after the per-channel request transform. **Still open**: the
+   *client-facing* strip/synthesize keyed on `ShouldIncludeUsage` — Go defaults
+   `ShouldIncludeUsage=true`, so forwarding the usage chunk matches Go's default;
+   only a client that explicitly sends `stream_options.include_usage=false` would
+   still receive the chunk (no SSE-stream strip), and the synthesize-from-estimate
+   case requires SSE response transformation (separate, heavier change).
+4. Record `usage_source` (upstream vs local estimate) in audit/logs — **DONE
+   2026-06-28** (see item 1).
 5. Map all subcategory details into billing token params with AST-gated
    exclusion; add Go<->Rust usage-parse golden fixtures per provider family.
 6. Add live SSE smoke per family proving first byte, final usage (or estimate),

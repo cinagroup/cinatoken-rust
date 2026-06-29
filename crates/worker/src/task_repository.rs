@@ -1,0 +1,163 @@
+//! D1-backed task lifecycle repository.
+//!
+//! Ports the persistence half of Go `model.Task` (`model/task.go`) against the
+//! `tasks` table from `migrations/d1/0001_core.sql`. The correctness core is
+//! [`update_task_status_cas`], a faithful port of Go `Task.UpdateWithStatus`: a
+//! status transition is a conditional UPDATE guarded by the *current* status, so
+//! exactly one caller can move a task out of a given state. That guard is what
+//! makes settlement idempotent — a task can only be billed or refunded by the
+//! caller that wins the transition into a terminal state (item 4.2).
+//!
+//! Provider-independent: every async-task platform (Suno, Midjourney, video, …)
+//! shares this lifecycle, so this layer carries no provider-specific logic.
+//!
+//! Foundation ahead of the task orchestration that will consume it; allowed to
+//! be dead code until then, mirroring [`crate::flow_state`].
+#![allow(dead_code)]
+
+use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
+use cinatoken_tasks::TaskStatus;
+use serde::Deserialize;
+use worker::{D1Database, D1Type};
+
+/// The fields needed to create a task row. Columns not listed take their
+/// `0001_core.sql` defaults (`properties`/`private_data`/`data` = `{}`, etc.).
+pub struct NewTask<'a> {
+    pub task_id: &'a str,
+    pub upstream_task_id: &'a str,
+    pub platform: &'a str,
+    pub user_id: i64,
+    pub username: &'a str,
+    pub group: &'a str,
+    pub channel_id: i64,
+    pub quota: i64,
+    pub action: &'a str,
+    pub status: TaskStatus,
+    pub submit_time: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A task row as read back from D1. `status` is parsed via
+/// [`TaskStatus::from_status_str`] (unknown → `Unknown`, Go's fallback).
+#[derive(Debug, Deserialize)]
+pub struct TaskRow {
+    pub id: i64,
+    pub task_id: String,
+    pub upstream_task_id: String,
+    pub platform: String,
+    pub user_id: i64,
+    pub channel_id: i64,
+    pub quota: i64,
+    pub action: String,
+    pub status: String,
+    pub fail_reason: String,
+    pub progress: String,
+    pub finish_time: i64,
+}
+
+impl TaskRow {
+    /// The parsed lifecycle status.
+    pub fn status(&self) -> TaskStatus {
+        TaskStatus::from_status_str(&self.status)
+    }
+}
+
+/// Insert a new task (Go `Task.Insert`). The unique `task_id` enforces that a
+/// given public task is created once.
+pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<()> {
+    let args = [
+        D1Type::Text(task.task_id),
+        D1Type::Text(task.upstream_task_id),
+        D1Type::Text(task.platform),
+        D1Type::Integer(d1_i32(task.user_id)),
+        D1Type::Text(task.username),
+        D1Type::Text(task.group),
+        D1Type::Integer(d1_i32(task.channel_id)),
+        D1Type::Integer(d1_i32(task.quota)),
+        D1Type::Text(task.action),
+        D1Type::Text(task.status.as_str()),
+        D1Type::Integer(d1_i32(task.submit_time)),
+        D1Type::Integer(d1_i32(task.created_at)),
+        D1Type::Integer(d1_i32(task.updated_at)),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO tasks
+          (task_id, upstream_task_id, platform, user_id, username, "group",
+           channel_id, quota, action, status, submit_time, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await
+    .map(|_| ())
+}
+
+/// Look up a task by its public `task_id` (Go `GetTaskByTaskId`).
+pub async fn find_task_by_task_id(
+    db: &D1Database,
+    task_id: &str,
+) -> worker::Result<Option<TaskRow>> {
+    let arg = D1Type::Text(task_id);
+    db.prepare(
+        r#"
+        SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
+               quota, action, status, fail_reason, progress, finish_time
+        FROM tasks
+        WHERE task_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&arg)?
+    .first::<TaskRow>(None)
+    .await
+}
+
+/// Conditional status transition guarded by the current status — a faithful
+/// port of Go `Task.UpdateWithStatus(fromStatus)`.
+///
+/// Returns `Ok(true)` if this caller won (the row was in `from` and is now in
+/// `to`), `Ok(false)` if another process already moved it out of `from`. The
+/// guard makes the win unique, which is what callers rely on to settle billing
+/// exactly once. Callers should treat a `false` return as "someone else already
+/// transitioned this task" and skip the associated billing/refund side effect.
+pub async fn update_task_status_cas(
+    db: &D1Database,
+    id: i64,
+    from: TaskStatus,
+    to: TaskStatus,
+    fail_reason: &str,
+    progress: &str,
+    finish_time: i64,
+    updated_at: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(to.as_str()),
+        D1Type::Text(fail_reason),
+        D1Type::Text(progress),
+        D1Type::Integer(d1_i32(finish_time)),
+        D1Type::Integer(d1_i32(updated_at)),
+        D1Type::Integer(d1_i32(id)),
+        D1Type::Text(from.as_str()),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE tasks
+            SET status = ?1, fail_reason = ?2, progress = ?3,
+                finish_time = ?4, updated_at = ?5
+            WHERE id = ?6 AND status = ?7
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    Ok(changes == 1)
+}
+
+// The pure settlement-detection guard a caller pairs with a CAS win lives in
+// `cinatoken_tasks::is_settlement_transition` (host-tested there, since this
+// wasm-only crate cannot run host unit tests).

@@ -54,6 +54,17 @@ impl TaskStatus {
     }
 }
 
+/// Whether a `from -> to` transition is a billable settlement: leaving a
+/// non-terminal state for a terminal one (`SUCCESS`/`FAILURE`). A status-CAS win
+/// (Go `Task.UpdateWithStatus`) that matches this predicate is the one-time
+/// point at which the caller settles or refunds the task's quota; a transition
+/// that does not match (e.g. `QUEUED -> IN_PROGRESS`, or any move out of an
+/// already-terminal state) carries no billing effect. Pure, so the guard is
+/// unit-testable without a D1.
+pub fn is_settlement_transition(from: TaskStatus, to: TaskStatus) -> bool {
+    !from.is_terminal() && to.is_terminal()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
     pub id: i64,
@@ -120,5 +131,42 @@ mod tests {
         ] {
             assert!(!status.is_terminal(), "{status:?} must not be terminal");
         }
+    }
+
+    #[test]
+    fn settlement_only_on_nonterminal_to_terminal() {
+        // Billable settlements: entering a terminal state from a live one.
+        assert!(is_settlement_transition(
+            TaskStatus::InProgress,
+            TaskStatus::Success
+        ));
+        assert!(is_settlement_transition(
+            TaskStatus::Queued,
+            TaskStatus::Failure
+        ));
+        assert!(is_settlement_transition(
+            TaskStatus::Submitted,
+            TaskStatus::Failure
+        ));
+
+        // Mid-flight transitions carry no billing effect.
+        assert!(!is_settlement_transition(
+            TaskStatus::Queued,
+            TaskStatus::InProgress
+        ));
+        assert!(!is_settlement_transition(
+            TaskStatus::NotStart,
+            TaskStatus::Submitted
+        ));
+
+        // Already terminal: never re-settles (the double-refund guard).
+        assert!(!is_settlement_transition(
+            TaskStatus::Success,
+            TaskStatus::Failure
+        ));
+        assert!(!is_settlement_transition(
+            TaskStatus::Failure,
+            TaskStatus::Success
+        ));
     }
 }

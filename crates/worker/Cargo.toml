@@ -20,6 +20,7 @@ cinatoken-payments = { path = "../payments" }
 cinatoken-relay = { path = "../relay" }
 cinatoken-session = { path = "../session" }
 cinatoken-storage = { path = "../storage" }
+cinatoken-tasks = { path = "../tasks" }
 cinatoken-tokenizer = { path = "../tokenizer" }
 console_error_panic_hook = "0.1"
 futures-util = { version = "0.3", default-features = false }

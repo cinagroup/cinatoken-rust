@@ -16,6 +16,10 @@ mod d1_repositories;
 #[allow(dead_code)]
 mod flow_state;
 mod relay;
+// Provider-independent task lifecycle persistence + CAS settlement guard (item
+// 4.2). Foundation ahead of the task orchestration that consumes it; the module
+// allows dead_code internally until then.
+mod task_repository;
 mod turnstile;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
@@ -528,7 +532,10 @@ fn resolve_cors_allow_origin(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| DEFAULT_CORS_ORIGINS.to_vec());
-    if allowed.iter().any(|allowed_origin| *allowed_origin == origin) {
+    if allowed
+        .iter()
+        .any(|allowed_origin| *allowed_origin == origin)
+    {
         Some(origin.to_string())
     } else {
         None

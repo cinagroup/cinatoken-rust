@@ -8,6 +8,11 @@ mod affinity;
 mod cache;
 mod cache_invalidation;
 mod d1_repositories;
+// Foundational mutable-flow-state substrate (item 2.1). Its consumers
+// (secure-verification step-up, Turnstile, OAuth/2FA/passkey) land in following
+// increments; allow dead_code until the first one is wired.
+#[allow(dead_code)]
+mod flow_state;
 mod relay;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};

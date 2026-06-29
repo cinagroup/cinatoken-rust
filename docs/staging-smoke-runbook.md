@@ -243,6 +243,32 @@ Pass criteria:
 - Request-rule body is not logged.
 - Cached/image/audio token categories are not double-counted.
 
+## Phase 5b: Relay Feature-Flag Cutover Smoke
+
+The charge/behavior-affecting relay flags ship **off** (see the flag table in
+`docs/cloudflare-production-config-checklist.md`). Each must be smoked both off
+and on **in staging** before it is armed in production — the on path changes
+billing or the upstream request, so it cannot be defaulted on at deploy.
+
+| Case ID | Flag | Off-path expected | On-path expected |
+| --- | --- | --- | --- |
+| FLAG-001 | `RELAY_MISSING_USAGE_ESTIMATE_ENABLED` | Upstream omits usage ⇒ reserve refunded to zero (pre-cutover behavior) | Same response ⇒ completion tokens estimated and **billed**; audit `usage_source` marks it locally estimated |
+| FLAG-002 | `RELAY_STREAM_OPTIONS_INJECT_ENABLED` | Streaming request to a supported channel passes through unmodified | `stream_options.include_usage=true` injected for supported channels (stripped for unsupported); a real usage chunk arrives |
+| FLAG-003 | `RELAY_CHANNEL_KEYWORD_BAN_ENABLED` | Auto-ban-keyword error body leaves the channel enabled | Same error body auto-disables the channel; action is audited |
+
+Procedure per flag: run the off case and capture evidence → set the flag to
+`true` on the staging env only → re-run the on case → diff the billing/usage and
+audit fields against the expected column.
+
+Pass criteria:
+
+- Off path reproduces pre-cutover behavior exactly (no billing/behavior drift
+  from merely shipping the code with the flag off).
+- On path matches the Go-parity expectation, and the difference between off and
+  on is fully explained by the flag.
+- No charge-affecting flag is enabled in production without a recorded staging
+  on-path pass.
+
 ## Phase 6: Cache And Failure-Mode Smoke
 
 Cases:

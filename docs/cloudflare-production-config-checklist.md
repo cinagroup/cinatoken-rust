@@ -236,6 +236,49 @@ Rules:
   OAuth client secrets, session secrets, and provider keys are not.
 - Rotate any key that appears in logs or a smoke report.
 
+## Exact Worker Env Vars (source of truth)
+
+The groups above are intentionally generic. The names below are the **exact**
+identifiers the Worker reads from `crates/worker/src/*.rs` as of the auth/security
++ usage cutover. Each is read **`secret(NAME)` first, then `var(NAME)`** — set the
+secret halves with `wrangler secret put --env <env> NAME`; the public halves
+(client IDs, URLs) may be plaintext `[env.*.vars]`. A feature whose vars are unset
+is **inert** (the endpoint returns "not configured"), so partial enablement is
+safe.
+
+| Var | Kind | Feature | Notes |
+| --- | --- | --- | --- |
+| `SESSION_SECRET` | secret | Session cookie HMAC | Required for any login; rotating it forces re-auth |
+| `FRONTEND_BASE_URL` | var | OAuth redirect target | Must be the real frontend origin in staging/prod, not `localhost` |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | id=var, secret=secret | GitHub OAuth | Both required or GitHub login is inert |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_TOKEN_URL` / `OIDC_USERINFO_URL` / `OIDC_REDIRECT_URI` | ids/URLs=var, secret=secret | Generic OIDC (incl. Google) | All five required or OIDC login is inert |
+| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` / `DISCORD_REDIRECT_URI` | id/URI=var, secret=secret | Discord OAuth | All three required or Discord login is inert |
+| `TURNSTILE_SECRET` | secret | Turnstile verification | Unset ⇒ Turnstile checks are skipped (no-op), per `require_turnstile` |
+
+### Relay feature flags (default OFF — behavior/charge-affecting)
+
+These are plain `vars` parsed truthy on `"true"` or `"1"`; **absent ⇒ off**.
+Each is off by default precisely because flipping it changes upstream behavior or
+billing, so it is a staging-gated cutover, not a deploy-time default.
+
+| Flag | Effect when on | Risk class |
+| --- | --- | --- |
+| `RELAY_MISSING_USAGE_ESTIMATE_ENABLED` | On missing/invalid upstream usage, estimate completion tokens and **bill** (Go parity) instead of refunding to zero | charge-affecting |
+| `RELAY_STREAM_OPTIONS_INJECT_ENABLED` | Inject `stream_options.include_usage=true` for supported streaming channels (strip it for unsupported) so the upstream emits real usage | behavior-affecting |
+| `RELAY_CHANNEL_KEYWORD_BAN_ENABLED` | Auto-disable a channel when an upstream error body matches the auto-ban keyword list | behavior-affecting |
+| `RELAY_CHANNEL_AFFINITY_ENABLED` | Use the `CHANNEL_AFFINITY` Durable Object for sticky channel selection | requires the DO binding |
+
+Enable order (per flag): deploy with it **off** → smoke the off path → flip it on
+in **staging** only → re-smoke (verify billing/usage and audit `usage_source`) →
+then arm it in production. Never flip a charge-affecting flag straight to prod.
+
+### Migration prerequisite
+
+2FA endpoints (`/api/user/2fa/*`, `/api/user/login/2fa`, `/api/verify` with
+`method:"2fa"`) require **`migrations/d1/0006_two_fa.sql`** applied to the target
+D1 (`two_fa` + `two_fa_backup_codes`). Apply the full ordered set `0001`→`0006`
+before the auth smoke.
+
 ## Observability Checklist
 
 Detailed sampling, dashboard, alert, SLO, and redaction gates are tracked in

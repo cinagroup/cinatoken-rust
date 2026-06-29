@@ -8,8 +8,7 @@
 //! routes that drive it; runtime-verified by a staging poll.
 #![allow(dead_code)]
 
-use crate::task_repository::{apply_poll_result, TaskRow};
-use cinatoken_storage::RelayChannel;
+use crate::task_repository::{apply_poll_result, find_unfinished_tasks, TaskRow};
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::VideoProvider;
 use cinatoken_tasks::TaskInfo;
@@ -66,25 +65,27 @@ pub async fn poll_task(provider: VideoProvider, request: &PollRequest) -> worker
 pub async fn poll_one_task(
     db: &D1Database,
     task: &TaskRow,
-    channel: &RelayChannel,
+    channel_type: i32,
+    channel_key: &str,
+    channel_base_url: &str,
     gemini_version: &str,
     now: i64,
 ) -> worker::Result<Option<bool>> {
-    let Some(provider) = VideoProvider::from_channel_type(channel.channel_type as i64) else {
+    let Some(provider) = VideoProvider::from_channel_type(channel_type as i64) else {
         return Ok(None);
     };
-    let base_url = channel.base_url.as_deref().unwrap_or_default();
-    let key = channel.key.as_str();
     let id = task.upstream_task_id.as_str();
 
     let request = match provider {
-        VideoProvider::Sora => poll_request::sora(base_url, key, id),
-        VideoProvider::Vidu => poll_request::vidu(base_url, key, id),
-        VideoProvider::Ali => poll_request::ali(base_url, key, id),
-        VideoProvider::Doubao => poll_request::doubao(base_url, key, id),
-        VideoProvider::Hailuo => poll_request::hailuo(base_url, key, id),
-        VideoProvider::Gemini => poll_request::gemini(base_url, key, id, gemini_version)
-            .map_err(worker::Error::RustError)?,
+        VideoProvider::Sora => poll_request::sora(channel_base_url, channel_key, id),
+        VideoProvider::Vidu => poll_request::vidu(channel_base_url, channel_key, id),
+        VideoProvider::Ali => poll_request::ali(channel_base_url, channel_key, id),
+        VideoProvider::Doubao => poll_request::doubao(channel_base_url, channel_key, id),
+        VideoProvider::Hailuo => poll_request::hailuo(channel_base_url, channel_key, id),
+        VideoProvider::Gemini => {
+            poll_request::gemini(channel_base_url, channel_key, id, gemini_version)
+                .map_err(worker::Error::RustError)?
+        }
         VideoProvider::Kling | VideoProvider::Jimeng | VideoProvider::Vertex => return Ok(None),
     };
 
@@ -92,4 +93,39 @@ pub async fn poll_one_task(
     let finish_time = if info.status.is_terminal() { now } else { 0 };
     let won = apply_poll_result(db, task, &info, finish_time, now).await?;
     Ok(Some(won))
+}
+
+/// Drive one batch of the poller: load up to `limit` unfinished tasks, look up
+/// each task's channel, and run a poll cycle. Best-effort per task — a lookup or
+/// poll failure on one task is skipped rather than aborting the batch (mirroring
+/// the per-task error handling in Go's pollers). Returns the number of tasks
+/// whose terminal settlement this run won.
+pub async fn poll_unfinished_tasks(
+    db: &D1Database,
+    gemini_version: &str,
+    now: i64,
+    limit: i64,
+) -> worker::Result<u32> {
+    let tasks = find_unfinished_tasks(db, limit).await?;
+    let mut settled = 0u32;
+    for task in &tasks {
+        let channel = match crate::d1_repositories::find_channel_by_id(db, task.channel_id).await {
+            Ok(Some(channel)) => channel,
+            _ => continue,
+        };
+        let outcome = poll_one_task(
+            db,
+            task,
+            channel.kind,
+            &channel.key,
+            &channel.base_url,
+            gemini_version,
+            now,
+        )
+        .await;
+        if let Ok(Some(true)) = outcome {
+            settled += 1;
+        }
+    }
+    Ok(settled)
 }

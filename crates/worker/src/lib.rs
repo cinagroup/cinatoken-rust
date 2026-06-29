@@ -377,6 +377,30 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
 /// On D1 batch failure, the entire batch is retried (`retry_all`); after
 /// `max_retries` (3) attempts Cloudflare routes surviving messages to the
 /// dead-letter queue for manual inspection.
+/// Cron-triggered task poller. Drives one batch of `poll_unfinished_tasks`
+/// (query unfinished tasks → poll each provider → CAS-settle). Inert until a
+/// `[triggers] crons` schedule is configured in wrangler.toml and async tasks
+/// exist to poll, so shipping the handler is safe ahead of the submit flow.
+#[event(scheduled)]
+pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::ScheduleContext) {
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(err) => {
+            worker::console_error!("task poller: D1 binding unavailable: {err}");
+            return;
+        }
+    };
+    let gemini_version = env
+        .var("GEMINI_VERSION")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "v1beta".to_string());
+    let now = (worker::Date::now().as_millis() / 1000) as i64;
+    match task_orchestration::poll_unfinished_tasks(&db, &gemini_version, now, 100).await {
+        Ok(settled) => worker::console_log!("task poller: settled {settled} task(s)"),
+        Err(err) => worker::console_error!("task poller: batch failed: {err}"),
+    }
+}
+
 #[event(queue)]
 pub async fn queue(
     message_batch: MessageBatch<AuditLogEvent>,

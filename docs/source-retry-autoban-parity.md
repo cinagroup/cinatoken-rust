@@ -138,6 +138,17 @@ multi-key ban are not evident. Checklist:
    **ported** as `core::relay_policy::should_disable_channel` (the Go-matching
    immediate-disable policy; available if decision #1 chooses to match Go).
    Still needs the error taxonomy (IsChannelError/IsSkipRetry) at the caller.
+   **Keyword branch WIRED 2026-06-28 (flag-gated,
+   `RELAY_CHANNEL_KEYWORD_BAN_ENABLED`):** the Go `AutomaticDisableKeywords`
+   default (7 phrases) is ported as `core::AUTOMATIC_DISABLE_KEYWORDS` +
+   `error_body_triggers_auto_disable` (host-tested), and
+   `relay.rs::maybe_keyword_disable_channel` reads a bounded prefix of a retried
+   channel's error body, bans the channel off-path + invalidates the selection
+   cache on a match. The status-code default already matches Go
+   (`AutomaticDisableStatusCodeRanges = {401}` == `is_auto_disable_status`).
+   **Remaining**: the keyword check currently fires only on the retry path
+   (where the error body is freely discarded); the out-of-retries passthrough
+   response would need read+reconstruct to also keyword-ban there.
 4. Implement `DisableChannel` as an off-path (wait_until/Queue/DO) status write
    to `AutoDisabled`, multi-key aware, plus channel/ability cache invalidation
    and optional root notification.

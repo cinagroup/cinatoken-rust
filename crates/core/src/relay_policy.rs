@@ -80,9 +80,54 @@ pub fn should_disable_channel(
         .any(|kw| lower.contains(&kw.to_lowercase()))
 }
 
+/// Go `operation_setting.AutomaticDisableKeywords` default list — the
+/// quota/credential phrases that auto-disable a channel when found in its
+/// upstream error body.
+pub const AUTOMATIC_DISABLE_KEYWORDS: &[&str] = &[
+    "Your credit balance is too low",
+    "This organization has been disabled.",
+    "You exceeded your current quota",
+    "Permission denied",
+    "The security token included in the request is invalid",
+    "Operation not allowed",
+    "Your account is not authorized",
+];
+
+/// Whether an upstream error body contains a default [`AUTOMATIC_DISABLE_KEYWORDS`]
+/// phrase (case-insensitive substring) — the keyword branch of Go
+/// `ShouldDisableChannel` with the default keyword list.
+pub fn error_body_triggers_auto_disable(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    AUTOMATIC_DISABLE_KEYWORDS
+        .iter()
+        .any(|keyword| lower.contains(&keyword.to_lowercase()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_disable_keywords_match_case_insensitively() {
+        // Real upstream error bodies that should auto-disable the channel.
+        assert!(error_body_triggers_auto_disable(
+            r#"{"error":{"message":"You exceeded your current quota, please check your plan"}}"#
+        ));
+        assert!(error_body_triggers_auto_disable(
+            "your credit balance is too low" // lowercased upstream variant
+        ));
+        assert!(error_body_triggers_auto_disable(
+            "The security token included in the request is invalid."
+        ));
+        // Unrelated errors must NOT disable (transient/server-side).
+        assert!(!error_body_triggers_auto_disable(
+            r#"{"error":{"message":"upstream timeout, try again"}}"#
+        ));
+        assert!(!error_body_triggers_auto_disable("internal server error"));
+        assert!(!error_body_triggers_auto_disable(""));
+        // The default list mirrors Go's 7 phrases.
+        assert_eq!(AUTOMATIC_DISABLE_KEYWORDS.len(), 7);
+    }
 
     // A representative configurable retry policy: retry 429 and 5xx.
     fn retry_5xx_429(code: u16) -> bool {

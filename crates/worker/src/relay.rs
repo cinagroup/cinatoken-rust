@@ -54,6 +54,15 @@ const MISSING_USAGE_ESTIMATE_ENV: &str = "RELAY_MISSING_USAGE_ESTIMATE_ENABLED";
 /// behavior-affecting (changes the upstream request and client-facing stream),
 /// staging-gated.
 const STREAM_OPTIONS_INJECT_ENV: &str = "RELAY_STREAM_OPTIONS_INJECT_ENABLED";
+/// When set, the relay inspects a retried channel's error body for a default
+/// auto-disable keyword (Go `AutomaticDisableKeywords`) and bans the channel
+/// off-path when matched — the keyword branch of Go `ShouldDisableChannel`, on
+/// top of the existing status-code (401) and failure-threshold disables. Off by
+/// default; behavior-affecting (disables channels), staging-gated.
+const CHANNEL_KEYWORD_BAN_ENV: &str = "RELAY_CHANNEL_KEYWORD_BAN_ENABLED";
+/// Bound on the error-body prefix read for keyword matching (error bodies are
+/// small JSON; this only runs on a response that is about to be discarded).
+const CHANNEL_KEYWORD_BAN_MAX_BYTES: usize = 16 * 1024;
 const CHANNEL_AUTOBAN_THRESHOLD_ENV: &str = "RELAY_CHANNEL_AUTOBAN_THRESHOLD";
 const DEFAULT_RELAY_CACHE_TTL_SECONDS: u32 = 60;
 const DEFAULT_RELAY_JSON_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024;
@@ -757,6 +766,7 @@ async fn relay_endpoint(
     // planned channel in order, stopping at the first non-retryable response.
     let attempt_count = attempt_plan.len();
     let inject_stream_options = stream_options_inject_enabled(&env);
+    let keyword_ban_enabled = channel_keyword_ban_enabled(&env);
 
     for (attempt_index, plan) in attempt_plan.into_iter().enumerate() {
         let RelayAttemptPlan {
@@ -845,7 +855,7 @@ async fn relay_endpoint(
         };
 
         match forward_result {
-            Ok(response) => {
+            Ok(mut response) => {
                 let status = response.status_code();
                 if is_retryable_status(status) {
                     record_retryable_channel_failure(&env, &channel, status).await;
@@ -855,6 +865,12 @@ async fn relay_endpoint(
                         status,
                     ));
                     if attempt_index + 1 < attempt_count {
+                        // About to retry and discard this response — inspect its
+                        // error body for a disable keyword (Go ShouldDisableChannel
+                        // keyword branch) before dropping it.
+                        if keyword_ban_enabled {
+                            maybe_keyword_disable_channel(&env, &channel, &mut response).await;
+                        }
                         continue;
                     }
                     // Out of retries: pass the upstream response through to the
@@ -1177,6 +1193,36 @@ impl RelayAttemptFailure {
 /// trigger an automatic D1 disable when the error count exceeds the configured
 /// threshold. Mirrors the Go `service.DisableChannel` short-circuit. Failures
 /// here are logged but never block the in-flight request.
+fn channel_keyword_ban_enabled(env: &Env) -> bool {
+    matches!(
+        optional_env_var(env, CHANNEL_KEYWORD_BAN_ENV).as_deref(),
+        Some("true") | Some("1")
+    )
+}
+
+/// Keyword branch of Go `ShouldDisableChannel`: inspect a failed channel's error
+/// body for a default auto-disable keyword and ban the channel off-path when
+/// matched. Only called on a response that is about to be discarded on retry, so
+/// consuming the body is safe. Best-effort: any read/D1 error is swallowed.
+async fn maybe_keyword_disable_channel(env: &Env, channel: &RelayChannel, response: &mut Response) {
+    let Ok(body) = read_response_text_limited(response, CHANNEL_KEYWORD_BAN_MAX_BYTES).await else {
+        return;
+    };
+    if !cinatoken_core::error_body_triggers_auto_disable(&body) {
+        return;
+    }
+    let Ok(db) = env.d1("DB") else {
+        return;
+    };
+    let _ = crate::d1_repositories::disable_channel_best_effort(
+        &db,
+        channel.id,
+        "relay auto-disable: upstream error body matched disable keyword",
+    )
+    .await;
+    let _ = crate::cache_invalidation::invalidate_channel_cache(env).await;
+}
+
 async fn record_retryable_channel_failure(env: &Env, channel: &RelayChannel, status: u16) {
     // Auto-disable on bad-credential signals (default: 401) regardless of the
     // Redis counter, matching the Go `AutomaticDisableStatusCodeRanges` default.

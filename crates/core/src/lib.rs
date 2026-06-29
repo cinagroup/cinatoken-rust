@@ -32,7 +32,10 @@ pub use image_tokens::{image_tokens, image_tokens_needs_dimensions, MediaTokenFl
 pub use model_class::is_openai_text_model;
 pub use model_name::format_matching_model_name;
 pub use relay::{ChatCompletionRequest, ChatMessage, ErrorBody, ModelListResponse, ModelObject};
-pub use relay_policy::{should_disable_channel, should_retry};
+pub use relay_policy::{
+    error_body_triggers_auto_disable, should_disable_channel, should_retry,
+    AUTOMATIC_DISABLE_KEYWORDS,
+};
 pub use request_tokens::openai_chat_format_overhead;
 pub use response::ApiEnvelope;
 pub use status::{RuntimeFeature, StatusResponse};

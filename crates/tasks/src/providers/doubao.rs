@@ -78,9 +78,38 @@ pub fn parse_task_result(resp_body: &[u8]) -> Result<TaskInfo, String> {
     })
 }
 
+#[derive(Deserialize, Default)]
+struct SubmitResponse {
+    #[serde(default)]
+    id: String,
+}
+
+/// Extract the upstream task id from a Doubao submit response (Go `DoResponse`):
+/// the `id`, which must be non-empty.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    if resp.id.is_empty() {
+        return Err("task_id is empty".to_string());
+    }
+    Ok(resp.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submit_returns_id_or_errors_when_empty() {
+        assert_eq!(
+            parse_submit_response(br#"{"id":"cgt-123"}"#).unwrap(),
+            "cgt-123"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{}"#).unwrap_err(),
+            "task_id is empty"
+        );
+    }
 
     #[test]
     fn queued_and_running_states() {

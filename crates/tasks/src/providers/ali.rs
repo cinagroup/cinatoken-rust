@@ -72,9 +72,56 @@ pub fn parse_task_result(resp_body: &[u8]) -> Result<TaskInfo, String> {
     })
 }
 
+#[derive(Deserialize, Default)]
+struct SubmitResponse {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    output: SubmitOutput,
+}
+
+#[derive(Deserialize, Default)]
+struct SubmitOutput {
+    #[serde(default)]
+    task_id: String,
+}
+
+/// Extract the upstream task id from an Ali submit response (Go `DoResponse`): a
+/// non-empty top-level `code` is an API error (`"<code>: <message>"`), an empty
+/// `output.task_id` is an error, otherwise return `output.task_id`.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    if !resp.code.is_empty() {
+        return Err(format!("{}: {}", resp.code, resp.message));
+    }
+    if resp.output.task_id.is_empty() {
+        return Err("task_id is empty".to_string());
+    }
+    Ok(resp.output.task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submit_extracts_output_task_id_with_error_checks() {
+        assert_eq!(
+            parse_submit_response(br#"{"output":{"task_id":"ali_5"}}"#).unwrap(),
+            "ali_5"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"code":"InvalidApiKey","message":"bad key"}"#).unwrap_err(),
+            "InvalidApiKey: bad key"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"output":{}}"#).unwrap_err(),
+            "task_id is empty"
+        );
+    }
 
     #[test]
     fn pending_running_succeeded() {

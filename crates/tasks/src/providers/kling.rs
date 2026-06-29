@@ -83,9 +83,49 @@ pub fn parse_task_result(resp_body: &[u8]) -> Result<TaskInfo, String> {
     })
 }
 
+#[derive(Deserialize, Default)]
+struct SubmitResponse {
+    #[serde(default)]
+    code: i64,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    data: SubmitData,
+}
+
+#[derive(Deserialize, Default)]
+struct SubmitData {
+    #[serde(default)]
+    task_id: String,
+}
+
+/// Extract the upstream task id from a Kling submit response (Go `DoResponse`): a
+/// non-zero `code` is an error (carrying `message`), otherwise return
+/// `data.task_id`.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_failed: {err}"))?;
+    if resp.code != 0 {
+        return Err(resp.message);
+    }
+    Ok(resp.data.task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submit_returns_task_id_or_message_on_error() {
+        assert_eq!(
+            parse_submit_response(br#"{"code":0,"data":{"task_id":"k_77"}}"#).unwrap(),
+            "k_77"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"code":1,"message":"quota exceeded"}"#).unwrap_err(),
+            "quota exceeded"
+        );
+    }
 
     #[test]
     fn submitted_and_processing_map_to_live_states() {

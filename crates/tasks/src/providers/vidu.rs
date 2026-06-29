@@ -62,9 +62,40 @@ pub fn parse_task_result(resp_body: &[u8]) -> Result<TaskInfo, String> {
     })
 }
 
+#[derive(Deserialize, Default)]
+struct SubmitResponse {
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    task_id: String,
+}
+
+/// Extract the upstream task id from a Vidu submit response (Go `DoResponse`): a
+/// `failed` state is an error, otherwise return the `task_id`.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_failed: {err}"))?;
+    if resp.state == "failed" {
+        return Err("task failed".to_string());
+    }
+    Ok(resp.task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submit_returns_task_id_unless_failed() {
+        assert_eq!(
+            parse_submit_response(br#"{"task_id":"vidu_9","state":"created"}"#).unwrap(),
+            "vidu_9"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"state":"failed"}"#).unwrap_err(),
+            "task failed"
+        );
+    }
 
     #[test]
     fn state_vocabulary_maps_to_lifecycle() {

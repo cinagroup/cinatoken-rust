@@ -68,9 +68,53 @@ pub fn parse_task_result(resp_body: &[u8]) -> Result<TaskInfo, String> {
     })
 }
 
+#[derive(Deserialize, Default)]
+struct SubmitResponse {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    task_id: String,
+}
+
+/// Extract the upstream task id from a Sora submit response (Go `DoResponse`):
+/// prefer `id`, fall back to `task_id`; an empty result is an error.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    let upstream = if resp.id.is_empty() {
+        resp.task_id
+    } else {
+        resp.id
+    };
+    if upstream.is_empty() {
+        return Err("task_id is empty".to_string());
+    }
+    Ok(upstream)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn submit_prefers_id_then_task_id() {
+        assert_eq!(
+            parse_submit_response(br#"{"id":"vid_1"}"#).unwrap(),
+            "vid_1"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"task_id":"t_2"}"#).unwrap(),
+            "t_2"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"id":"a","task_id":"b"}"#).unwrap(),
+            "a"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{}"#).unwrap_err(),
+            "task_id is empty"
+        );
+    }
 
     #[test]
     fn status_vocabulary_maps_to_lifecycle() {

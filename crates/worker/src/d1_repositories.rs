@@ -1107,6 +1107,66 @@ pub async fn find_user_by_username_or_email(
     .await
 }
 
+/// Find an enabled user by their linked GitHub id (the GitHub login string).
+/// Mirrors Go `FillUserByGitHubId` — empty ids never match.
+pub async fn find_user_by_github_id(
+    db: &D1Database,
+    github_id: &str,
+) -> worker::Result<Option<AdminUserRow>> {
+    if github_id.is_empty() {
+        return Ok(None);
+    }
+    db.prepare(&format!(
+        r#"
+        SELECT {ADMIN_USER_SELF_COLUMNS}
+        FROM users
+        WHERE github_id = ?1 AND deleted_at IS NULL
+        LIMIT 1
+        "#,
+    ))
+    .bind_refs(&[D1Type::Text(github_id)])?
+    .first::<AdminUserRow>(None)
+    .await
+}
+
+/// Create a user from a GitHub OAuth login (Go GitHubOAuth register branch).
+/// `github_id` is the GitHub login; `username` and `aff_code` must be unique
+/// (the caller generates a CSPRNG `aff_code`). The account has no password
+/// (login is via GitHub only). Returns the new user id.
+pub async fn create_github_user(
+    db: &D1Database,
+    username: &str,
+    github_id: &str,
+    display_name: &str,
+    email: &str,
+    aff_code: &str,
+    now: i64,
+) -> worker::Result<i64> {
+    db.prepare(
+        r#"
+        INSERT INTO users (
+          username, password, display_name, github_id, email, role, status,
+          quota, "group", aff_code, created_at, last_login_at
+        )
+        VALUES (?1, '', ?2, ?3, ?4, 1, 1, 0, 'default', ?5, ?6, ?6)
+        "#,
+    )
+    .bind_refs(&[
+        D1Type::Text(username),
+        D1Type::Text(display_name),
+        D1Type::Text(github_id),
+        D1Type::Text(email),
+        D1Type::Text(aff_code),
+        D1Type::Integer(d1_i32(now)),
+    ])?
+    .run()
+    .await?;
+    let row = find_user_by_github_id(db, github_id).await?;
+    row.map(|user| user.id).ok_or_else(|| {
+        worker::Error::RustError("github user insert not found after create".into())
+    })
+}
+
 /// Find a user by primary key (`/api/user/self`, admin user management).
 pub async fn find_user_by_id(db: &D1Database, id: i64) -> worker::Result<Option<AdminUserRow>> {
     let arg = D1Type::Integer(d1_i32(id));

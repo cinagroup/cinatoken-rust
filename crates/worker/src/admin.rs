@@ -686,7 +686,9 @@ fn session_secret(env: &Env) -> WorkerResult<Option<Vec<u8>>> {
 /// 500 envelope response instead of a randomly generated fallback (the Go
 /// gateway's behavior of defaulting to a per-boot random secret is an
 /// anti-pattern that silently invalidates every session on redeploy).
-fn session_codec(env: &Env) -> WorkerResult<std::result::Result<SessionCodec, Response>> {
+pub(crate) fn session_codec(
+    env: &Env,
+) -> WorkerResult<std::result::Result<SessionCodec, Response>> {
     let Some(secret) = session_secret(env)? else {
         return Ok(Err(envelope_error_response(
             500,
@@ -728,7 +730,7 @@ fn extract_session_cookie(cookie_header: &str) -> Option<String> {
     None
 }
 
-fn attach_session_cookie(
+pub(crate) fn attach_session_cookie(
     response: &mut Response,
     cookie_value: &str,
     max_age_seconds: i64,

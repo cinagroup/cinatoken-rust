@@ -35,6 +35,21 @@ Migration: store state in **KV/DO short TTL** keyed by a pre-auth session id;
 origin against `TrustedRedirectDomains` (`docs/source-ssrf-parity.md`); provider
 client secrets come from options / Secrets Store (§21.7).
 
+**Rust status (GitHub OAuth DONE 2026-06-28, item 4.6):**
+`crates/worker/src/admin_oauth.rs`. `GET /api/oauth/state` issues a CSPRNG state
+nonce stored in `flow_state::OAuthState` (the Rust has no pre-auth session, so
+the nonce is self-keyed). `GET /api/oauth/github` consumes the state with
+`flow_state::take` (**single-use / replay-proof**, the explicit improvement
+called for above), exchanges the code (`getGitHubUserInfoByCode` port — JSON
+token POST + `api.github.com/user` GET with the required `User-Agent`),
+finds-or-creates the account by GitHub login (`find_user_by_github_id` /
+`create_github_user` with a CSPRNG `aff_code` for the UNIQUE column), issues the
+session, and 302-redirects to `FRONTEND_BASE_URL`. Inert unless
+`GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` are set. **Remaining:** the other
+providers (Google/Discord/OIDC/WeChat) follow the same generic shape; the
+**bind** flow (link OAuth to a logged-in account); `TrustedRedirectDomains`
+validation for the final redirect.
+
 ## 2FA (TOTP)
 
 - Lifecycle: `Setup2FA` (generate secret) -> `Enable2FA` (verify a TOTP code) ->

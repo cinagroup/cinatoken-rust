@@ -3,6 +3,7 @@ mod admin_2fa;
 mod admin_channel;
 mod admin_crud;
 mod admin_data;
+mod admin_oauth;
 mod admin_payment;
 mod admin_user;
 mod affinity;
@@ -115,6 +116,13 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Two-step login second factor (item 4.6): complete a 2FA-gated login.
         .post_async("/api/user/login/2fa", |req, ctx| async move {
             admin::login_2fa(req, ctx.env).await
+        })
+        // OAuth login (item 4.6): CSRF state + GitHub callback.
+        .get_async("/api/oauth/state", |req, ctx| async move {
+            admin_oauth::oauth_state(req, ctx.env).await
+        })
+        .get_async("/api/oauth/github", |req, ctx| async move {
+            admin_oauth::github_oauth(req, ctx.env).await
         })
         .post_async("/api/user/logout", |req, ctx| async move {
             admin::logout_handler(req, ctx.env).await

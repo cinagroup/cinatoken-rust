@@ -730,25 +730,63 @@ fn parse_id_param(id_param: Option<&String>) -> Option<i64> {
     id_param?.trim().parse::<i64>().ok()
 }
 
-/// Generate a URL-safe random key suffix of the given length using the
-/// Worker's CSPRNG (`crypto.getRandomValues`). The result is base62-ish
-/// (alphanumeric) to stay compatible with how clients pass keys in headers.
+/// Generate a URL-safe random key suffix of the given length using the Worker's
+/// CSPRNG. The result is base62 (alphanumeric) to stay compatible with how
+/// clients pass keys in headers.
+///
+/// SECURITY: token keys are bearer credentials, so the entropy MUST be
+/// cryptographic. `getrandom` is backed by `crypto.getRandomValues` on the
+/// Worker runtime (the `js` feature, the same source bcrypt uses) and the OS
+/// CSPRNG on host. The previous implementation used `Math.random()`, which is
+/// NOT cryptographically secure — predictable token keys. Bytes are mapped to
+/// the 62-char alphabet with rejection sampling (drop bytes >= 248 = 4*62) so
+/// there is no modulo bias.
 fn random_key_suffix(len: usize) -> String {
-    let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut bytes = vec![0u8; len];
-    // js_sys::eval is avoided; use Math::random via js_sys for portability.
-    // crypto.getRandomValues is preferred but requires web-sys glue; Math.random
-    // is sufficient for token key entropy in this admin path.
-    for byte in bytes.iter_mut() {
-        let r = js_sys::Math::random() * (alphabet.len() as f64);
-        *byte = alphabet[r as usize];
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    // Over-draw 2x so rejections (~3.1% of bytes) almost never leave us short.
+    let mut buf = vec![0u8; len.saturating_mul(2).max(16)];
+    if getrandom::getrandom(&mut buf).is_err() {
+        // crypto.getRandomValues does not fail on the Worker runtime; fail
+        // closed (empty -> caller rejects) rather than emit a weak key.
+        return String::new();
     }
-    String::from_utf8(bytes).unwrap_or_else(|_| "tokenkeyfallback".to_string())
+    let mut out = Vec::with_capacity(len);
+    for &byte in &buf {
+        if out.len() >= len {
+            break;
+        }
+        if byte < 248 {
+            out.push(ALPHABET[(byte % 62) as usize]);
+        }
+    }
+    // Astronomically unlikely with the 2x over-draw, but stay secure if too many
+    // bytes were rejected: keep mapping from the already-secure buffer.
+    let mut i = 0usize;
+    while out.len() < len && !buf.is_empty() {
+        out.push(ALPHABET[(buf[i % buf.len()] % 62) as usize]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_key_suffix_is_secure_length_and_alphabet() {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        for len in [1usize, 8, 16, 48] {
+            let suffix = random_key_suffix(len);
+            assert_eq!(suffix.len(), len, "suffix length for {len}");
+            assert!(
+                suffix.bytes().all(|byte| ALPHABET.contains(&byte)),
+                "alphabet for {suffix:?}"
+            );
+        }
+        // Distinct draws (CSPRNG produces non-repeating keys).
+        assert_ne!(random_key_suffix(32), random_key_suffix(32));
+    }
 
     #[test]
     fn mask_key_hides_all_but_last_four() {
@@ -808,7 +846,4 @@ mod tests {
         assert_eq!(parse_id_param(None), None);
     }
 
-    // `random_key_suffix` calls `js_sys::Math::random` and can therefore only
-    // be exercised under the wasm32 target (it panics on the host test
-    // runner). End-to-end coverage happens via the wasm smoke suite.
 }

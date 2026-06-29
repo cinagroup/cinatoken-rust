@@ -410,6 +410,226 @@ async fn fetch_oidc_user(config: &OidcConfig, code: &str) -> WorkerResult<Option
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Discord (fixed endpoints; OAuth2 authorization-code, like OIDC).
+// ---------------------------------------------------------------------------
+
+const DISCORD_TOKEN_URL: &str = "https://discord.com/api/oauth2/token";
+const DISCORD_USER_URL: &str = "https://discord.com/api/users/@me";
+
+struct DiscordUser {
+    id: String,
+    username: String,
+    email: String,
+}
+
+/// `GET /api/oauth/discord?code&state`: Discord OAuth callback (login / register
+/// / bind by Discord id). Inert unless `DISCORD_CLIENT_ID/SECRET/REDIRECT_URI`
+/// are configured.
+pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
+    let state = query_param(&req, "state").unwrap_or_default();
+    if state.is_empty()
+        || flow_state::take(&env, flow_state::FlowKind::OAuthState, &state)
+            .await?
+            .is_none()
+    {
+        return Ok(envelope_error_response(403, "invalid or expired oauth state"));
+    }
+    let Some((client_id, client_secret, redirect_uri)) = discord_config(&env) else {
+        return Ok(envelope_error_response(400, "Discord login is not enabled"));
+    };
+    let code = query_param(&req, "code").unwrap_or_default();
+    if code.is_empty() {
+        return Ok(envelope_error_response(400, "missing authorization code"));
+    }
+
+    let discord = match fetch_discord_user(&client_id, &client_secret, &redirect_uri, &code).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return Ok(envelope_error_response(
+                502,
+                "Discord did not return a valid user",
+            ))
+        }
+        Err(err) => {
+            worker::console_error!("discord oauth exchange failed: {err}");
+            return Ok(envelope_error_response(502, "failed to reach Discord"));
+        }
+    };
+
+    let db = env.d1("DB")?;
+    let now = unix_timestamp();
+
+    match crate::admin::parse_session_claims(&req, &env).await? {
+        Ok(Some(claims)) => {
+            if let Some(existing) = d1_repositories::find_user_by_discord_id(&db, &discord.id).await?
+            {
+                if existing.id != claims.id {
+                    return Ok(envelope_error_response(
+                        409,
+                        "this Discord account is already linked to another user",
+                    ));
+                }
+            }
+            d1_repositories::bind_discord_id(&db, claims.id, &discord.id).await?;
+            let mut response = Response::empty()?.with_status(302);
+            response
+                .headers_mut()
+                .set("Location", &frontend_location(&env))?;
+            return Ok(response);
+        }
+        Ok(None) => {}
+        Err(response) => return Ok(response),
+    }
+
+    let user = match d1_repositories::find_user_by_discord_id(&db, &discord.id).await? {
+        Some(user) => user,
+        None => {
+            let username = format!("discord_{}", discord.id);
+            let Some(aff_code) = crate::admin_2fa::new_pending_token() else {
+                return Ok(envelope_error_response(500, "failed to provision account"));
+            };
+            let display_name = if discord.username.trim().is_empty() {
+                "Discord User".to_string()
+            } else {
+                discord.username.clone()
+            };
+            let id = d1_repositories::create_discord_user(
+                &db,
+                &username,
+                &discord.id,
+                &display_name,
+                &discord.email,
+                &aff_code,
+                now,
+            )
+            .await?;
+            match d1_repositories::find_user_by_id(&db, id).await? {
+                Some(user) => user,
+                None => return Ok(envelope_error_response(500, "failed to load new account")),
+            }
+        }
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(envelope_error_response(403, "user is disabled"));
+    }
+
+    let codec = match session_codec(&env)? {
+        Ok(codec) => codec,
+        Err(response) => return Ok(response),
+    };
+    let claims = SessionClaims {
+        id: user.id,
+        username: user.username.clone(),
+        role: user.role,
+        status: user.status,
+        group: user.group.clone(),
+        exp: 0,
+    };
+    let cookie_value = match codec.issue(claims, now) {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                500,
+                &format!("failed to issue session: {err}"),
+            ))
+        }
+    };
+    let _ = d1_repositories::update_last_login_at(&db, user.id, now).await;
+    let mut response = Response::empty()?.with_status(302);
+    attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    response
+        .headers_mut()
+        .set("Location", &frontend_location(&env))?;
+    Ok(response)
+}
+
+fn discord_config(env: &Env) -> Option<(String, String, String)> {
+    let read = |name: &str| -> Option<String> {
+        env.secret(name)
+            .map(|value| value.to_string())
+            .ok()
+            .or_else(|| env.var(name).map(|value| value.to_string()).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    Some((
+        read("DISCORD_CLIENT_ID")?,
+        read("DISCORD_CLIENT_SECRET")?,
+        read("DISCORD_REDIRECT_URI")?,
+    ))
+}
+
+async fn fetch_discord_user(
+    client_id: &str,
+    client_secret: &str,
+    redirect_uri: &str,
+    code: &str,
+) -> WorkerResult<Option<DiscordUser>> {
+    let body = format!(
+        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
+        form_encode(code),
+        form_encode(client_id),
+        form_encode(client_secret),
+        form_encode(redirect_uri),
+    );
+    let mut token_headers = Headers::new();
+    token_headers.set("Content-Type", "application/x-www-form-urlencoded")?;
+    token_headers.set("Accept", "application/json")?;
+    let mut token_init = RequestInit::new();
+    token_init
+        .with_method(Method::Post)
+        .with_headers(token_headers)
+        .with_body(Some(wasm_bindgen::JsValue::from_str(&body)));
+    let token_request = Request::new_with_init(DISCORD_TOKEN_URL, &token_init)?;
+    let mut token_response = Fetch::Request(token_request).send().await?;
+    let token_text = token_response.text().await?;
+    let access_token = serde_json::from_str::<Value>(&token_text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("access_token")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|token| !token.is_empty());
+    let Some(access_token) = access_token else {
+        return Ok(None);
+    };
+
+    let mut user_headers = Headers::new();
+    user_headers.set("Authorization", &format!("Bearer {access_token}"))?;
+    user_headers.set("Accept", "application/json")?;
+    user_headers.set("User-Agent", "cinatoken-rust")?;
+    let mut user_init = RequestInit::new();
+    user_init.with_method(Method::Get).with_headers(user_headers);
+    let user_request = Request::new_with_init(DISCORD_USER_URL, &user_init)?;
+    let mut user_response = Fetch::Request(user_request).send().await?;
+    let user_text = user_response.text().await?;
+    let value: Value = serde_json::from_str(&user_text).unwrap_or(Value::Null);
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(DiscordUser {
+        id,
+        username: value
+            .get("username")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        email: value
+            .get("email")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    }))
+}
+
 /// Percent-encode a value for an `application/x-www-form-urlencoded` body.
 fn form_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());

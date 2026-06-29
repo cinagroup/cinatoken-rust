@@ -53,8 +53,11 @@ DONE 2026-06-28** (`oidc_oauth`, stored in `oidc_id`) — covers Google and any
 OpenID Connect provider: form-encoded token exchange at `OIDC_TOKEN_URL` +
 `OIDC_USERINFO_URL` (`sub`/`name`/`email`), same single-use state, login /
 register / bind, gated on `OIDC_CLIENT_ID/SECRET/TOKEN_URL/USERINFO_URL/
-REDIRECT_URI`. **Remaining:** Discord/WeChat (same shape as GitHub) and
-`TrustedRedirectDomains` validation for the final redirect.
+REDIRECT_URI`. **Discord DONE 2026-06-28** (`discord_oauth`, stored in
+`discord_id`; fixed Discord endpoints, `users/@me` -> `id`/`username`/`email`;
+login/register/bind; gated on `DISCORD_CLIENT_ID/SECRET/REDIRECT_URI`).
+**Remaining:** WeChat (custom QR flow) and `TrustedRedirectDomains` validation
+for the final redirect.
 
 ## 2FA (TOTP)
 

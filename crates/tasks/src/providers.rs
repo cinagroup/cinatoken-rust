@@ -8,4 +8,5 @@ pub mod hailuo;
 pub mod jimeng;
 pub mod kling;
 pub mod sora;
+pub mod vertex;
 pub mod vidu;

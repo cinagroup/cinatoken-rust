@@ -97,6 +97,40 @@ pub fn is_settlement_transition(from: TaskStatus, to: TaskStatus) -> bool {
     !from.is_terminal() && to.is_terminal()
 }
 
+/// The billing action a CAS-won status transition implies during polling — the
+/// settlement decision in Go's task pollers (`updateSunoTasks`, the video fetch
+/// path): a terminal **failure** refunds the reserved quota, a terminal
+/// **success** keeps the pre-charge (which the orchestration may still adjust by
+/// the actual completion tokens), and everything else is no billing change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskSettlement {
+    /// No billing change: a mid-flight transition, or a move out of an
+    /// already-terminal state (nothing left to settle).
+    None,
+    /// Terminal failure — refund the reserved quota to the user.
+    Refund,
+    /// Terminal success — keep the pre-charged quota.
+    Keep,
+}
+
+/// Decide the settlement for a `from -> to` transition. Only a
+/// [`is_settlement_transition`] (non-terminal → terminal) carries a billing
+/// effect: `FAILURE` refunds, `SUCCESS` keeps the charge. Pure and exhaustive,
+/// so the billing-critical decision is unit-tested without a D1; the worker
+/// applies it after winning the status CAS.
+pub fn settlement_for(from: TaskStatus, to: TaskStatus) -> TaskSettlement {
+    if !is_settlement_transition(from, to) {
+        return TaskSettlement::None;
+    }
+    match to {
+        TaskStatus::Failure => TaskSettlement::Refund,
+        TaskStatus::Success => TaskSettlement::Keep,
+        // Unreachable: is_settlement_transition guarantees `to` is terminal,
+        // and the only terminal states are Success/Failure.
+        _ => TaskSettlement::None,
+    }
+}
+
 /// Recalculate a task's quota when the upstream submit response reports actual
 /// parameters (duration, resolution, …) that differ from the pre-charge
 /// estimate — a faithful port of Go `recalcQuotaFromRatios` in
@@ -261,6 +295,37 @@ mod tests {
             TaskStatus::Failure,
             TaskStatus::Success
         ));
+    }
+
+    #[test]
+    fn settlement_for_refunds_failure_keeps_success() {
+        // Terminal failure from a live state -> refund.
+        assert_eq!(
+            settlement_for(TaskStatus::InProgress, TaskStatus::Failure),
+            TaskSettlement::Refund
+        );
+        assert_eq!(
+            settlement_for(TaskStatus::Queued, TaskStatus::Failure),
+            TaskSettlement::Refund
+        );
+        // Terminal success from a live state -> keep the pre-charge.
+        assert_eq!(
+            settlement_for(TaskStatus::InProgress, TaskStatus::Success),
+            TaskSettlement::Keep
+        );
+        // Mid-flight transitions and moves out of a terminal state -> no change.
+        assert_eq!(
+            settlement_for(TaskStatus::Queued, TaskStatus::InProgress),
+            TaskSettlement::None
+        );
+        assert_eq!(
+            settlement_for(TaskStatus::Success, TaskStatus::Failure),
+            TaskSettlement::None
+        );
+        assert_eq!(
+            settlement_for(TaskStatus::Failure, TaskStatus::Failure),
+            TaskSettlement::None
+        );
     }
 
     #[test]

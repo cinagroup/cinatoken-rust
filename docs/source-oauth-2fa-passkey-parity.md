@@ -70,10 +70,12 @@ and returns `{two_fa_required, pending_token}`. `POST /api/user/login/2fa`
 backup code (bcrypt-compared, consumed via `mark_backup_code_used`) before
 issuing the session.
 
+**Secure-verify 2fa method DONE 2026-06-28:** `/api/verify` accepts
+`method: "2fa"` (`{code}`) and verifies via `verify_2fa_code` (TOTP or backup
+code), in addition to `method: "password"`.
+
 **Remaining (follow-ups):** failed-attempt **lockout** (schema columns exist),
-`RegenerateBackupCodes`, the `secure_verify` **2fa method** for `/api/verify`
-(so step-up can use TOTP, reusing `verify_2fa_code`, not just password), and
-admin 2FA stats/disable.
+`RegenerateBackupCodes`, and admin 2FA stats/disable.
 
 ## Passkey / WebAuthn
 

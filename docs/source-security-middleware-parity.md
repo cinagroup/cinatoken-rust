@@ -64,10 +64,11 @@ window). `admin::require_secure_verification` is the step-up gate (403
 `secure verification required` when absent), wired into the token-key reveal (`POST /api/token/:id/key`) and the
 Go-canonical channel-key reveal (`POST /api/channel/:id/key`,
 `admin_channel::reveal_channel_key` — admin + step-up + audit; `get_channel`
-already masks the key via `channel_response_no_key`). Simplification: the
-step-up method is **password re-auth**, not Go's 2FA/passkey, until 2FA/passkey
-enrollment (item 4.6) lands. Remaining: the expired-vs-missing distinction (the
-KV TTL collapses both to "absent").
+already masks the key via `channel_response_no_key`). `/api/verify` accepts
+`method: "password"` (re-auth) **or** `method: "2fa"` (TOTP/backup code via
+`admin_2fa::verify_2fa_code`, matching Go's 2FA step-up) since 2FA enrollment
+landed (item 4.6); passkey step-up is still pending WebAuthn. Remaining: the
+expired-vs-missing distinction (the KV TTL collapses both to "absent").
 
 ## CORS (`CORS`)
 

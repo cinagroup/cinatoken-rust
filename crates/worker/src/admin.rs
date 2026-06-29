@@ -282,13 +282,12 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
         Ok(body) => body,
         Err(response) => return Ok(response),
     };
-    let password = body
-        .get("password")
+    // Step-up method: "2fa" (TOTP or backup code, Go's method) or "password"
+    // (the default re-auth). Both, on success, refresh the SecureVerify marker.
+    let method = body
+        .get("method")
         .and_then(|value| value.as_str())
-        .unwrap_or("");
-    if password.is_empty() {
-        return Ok(envelope_error_response(400, "password is required"));
-    }
+        .unwrap_or("password");
     let db = env.d1("DB")?;
     let Some(user) = crate::d1_repositories::find_user_by_id(&db, claims.id).await? else {
         return Ok(envelope_error_response(401, "session user no longer exists"));
@@ -296,11 +295,36 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
     if user.status == USER_STATUS_DISABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
-    let password_ok = verify_password(password, &user.password).unwrap_or(false);
-    if !password_ok {
+    let now = unix_timestamp();
+    let verified = match method {
+        "2fa" => {
+            let code = body
+                .get("code")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            match crate::d1_repositories::find_two_fa_by_user(&db, claims.id).await? {
+                Some(two_fa) if two_fa.is_enabled != 0 => {
+                    crate::admin_2fa::verify_2fa_code(&db, claims.id, &two_fa.secret, code, now)
+                        .await?
+                }
+                _ => return Ok(envelope_error_response(400, "2FA is not enabled")),
+            }
+        }
+        _ => {
+            let password = body
+                .get("password")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if password.is_empty() {
+                return Ok(envelope_error_response(400, "password is required"));
+            }
+            verify_password(password, &user.password).unwrap_or(false)
+        }
+    };
+    if !verified {
         return Ok(envelope_error_response(401, "secure verification failed"));
     }
-    let now = unix_timestamp();
     crate::flow_state::put(
         &env,
         crate::flow_state::FlowKind::SecureVerify,

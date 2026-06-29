@@ -232,8 +232,10 @@ dependencies = [
  "async-trait",
  "base64",
  "cinatoken-core",
+ "hmac",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

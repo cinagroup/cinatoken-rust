@@ -2,7 +2,58 @@
 //! `relay/channel/task/kling/adaptor.go` (`ParseTaskResult`).
 
 use crate::{TaskInfo, TaskStatus};
-use serde::Deserialize;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Serialize)]
+struct JwtClaims<'a> {
+    exp: i64,
+    iss: &'a str,
+    nbf: i64,
+}
+
+/// Build the Kling API JWT — a port of Go `createJWTTokenWithKey`.
+///
+/// A key starting with `sk-` is a new-api relay key, returned verbatim.
+/// Otherwise the key is `accessKey|secretKey` and this mints an HS256 JWT with
+/// `iss = accessKey`, `exp = now + 1800`, `nbf = now - 5`, signed with
+/// `secretKey`. `now` is unix seconds, supplied by the caller (the Worker reads
+/// the clock; keeping it a parameter makes this pure and testable). The header
+/// and claims are serialized with alphabetically-ordered keys to match Go's
+/// `encoding/json` map marshaling, so the signature is reproducible.
+pub fn create_jwt_token(api_key: &str, now: i64) -> Result<String, String> {
+    if api_key.starts_with("sk-") {
+        return Ok(api_key.to_string());
+    }
+    let parts: Vec<&str> = api_key.split('|').collect();
+    if parts.len() != 2 {
+        return Err("invalid api_key, required format is accessKey|secretKey".to_string());
+    }
+    let access_key = parts[0].trim();
+    let secret_key = parts[1].trim();
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let claims = JwtClaims {
+        exp: now + 1800,
+        iss: access_key,
+        nbf: now - 5,
+    };
+    let claims_json = serde_json::to_vec(&claims).map_err(|err| err.to_string())?;
+    let claims_b64 = URL_SAFE_NO_PAD.encode(&claims_json);
+
+    let signing_input = format!("{header_b64}.{claims_b64}");
+    let mut mac =
+        HmacSha256::new_from_slice(secret_key.as_bytes()).map_err(|err| err.to_string())?;
+    mac.update(signing_input.as_bytes());
+    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+
+    Ok(format!("{signing_input}.{signature}"))
+}
 
 #[derive(Deserialize, Default)]
 struct Response {
@@ -114,6 +165,65 @@ pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jwt_passthrough_for_new_api_relay_key() {
+        assert_eq!(create_jwt_token("sk-abc123", 1000).unwrap(), "sk-abc123");
+    }
+
+    #[test]
+    fn jwt_requires_access_secret_format() {
+        assert_eq!(
+            create_jwt_token("onlyone", 1000).unwrap_err(),
+            "invalid api_key, required format is accessKey|secretKey"
+        );
+    }
+
+    #[test]
+    fn jwt_structure_and_signature_round_trip() {
+        let token = create_jwt_token("AK123|SECRET", 1_000_000).unwrap();
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3, "header.payload.signature");
+
+        // Header matches Go's sorted-key marshaling.
+        let header = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
+        assert_eq!(header, br#"{"alg":"HS256","typ":"JWT"}"#);
+
+        // Claims carry iss/exp/nbf with the Go offsets.
+        let claims = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        assert_eq!(
+            String::from_utf8(claims).unwrap(),
+            r#"{"exp":1001800,"iss":"AK123","nbf":999995}"#
+        );
+
+        // Signature verifies: recompute HMAC-SHA256 over header.payload with the
+        // secret and compare.
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let mut mac = HmacSha256::new_from_slice(b"SECRET").unwrap();
+        mac.update(signing_input.as_bytes());
+        let expected = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        assert_eq!(parts[2], expected);
+    }
+
+    #[test]
+    fn jwt_trims_key_parts() {
+        // Surrounding whitespace in the key parts is trimmed (Go TrimSpace).
+        let token = create_jwt_token(" AK | SECRET ", 1_000_000).unwrap();
+        let parts: Vec<&str> = token.split('.').collect();
+        let claims = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        assert_eq!(
+            String::from_utf8(claims).unwrap(),
+            r#"{"exp":1001800,"iss":"AK","nbf":999995}"#
+        );
+        // Signed with the trimmed secret.
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let mut mac = HmacSha256::new_from_slice(b"SECRET").unwrap();
+        mac.update(signing_input.as_bytes());
+        assert_eq!(
+            parts[2],
+            URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+        );
+    }
 
     #[test]
     fn submit_returns_task_id_or_message_on_error() {

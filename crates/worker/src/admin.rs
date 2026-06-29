@@ -228,8 +228,17 @@ pub async fn login_2fa(mut req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(400, "2FA is not enabled for this user"));
     };
     let now = unix_timestamp();
-    if !crate::admin_2fa::verify_2fa_code(&db, user_id, &two_fa.secret, &code, now).await? {
-        return Ok(envelope_error_response(401, "invalid 2FA code"));
+    match crate::admin_2fa::verify_2fa_code(&db, &two_fa, &code, now).await? {
+        crate::admin_2fa::TwoFaVerifyResult::Verified => {}
+        crate::admin_2fa::TwoFaVerifyResult::Locked { until } => {
+            return Ok(envelope_error_response(
+                429,
+                &format!("too many 2FA attempts; locked until {until}"),
+            ));
+        }
+        crate::admin_2fa::TwoFaVerifyResult::Invalid => {
+            return Ok(envelope_error_response(401, "invalid 2FA code"));
+        }
     }
 
     let claims = SessionClaims {
@@ -305,8 +314,16 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
                 .trim();
             match crate::d1_repositories::find_two_fa_by_user(&db, claims.id).await? {
                 Some(two_fa) if two_fa.is_enabled != 0 => {
-                    crate::admin_2fa::verify_2fa_code(&db, claims.id, &two_fa.secret, code, now)
-                        .await?
+                    match crate::admin_2fa::verify_2fa_code(&db, &two_fa, code, now).await? {
+                        crate::admin_2fa::TwoFaVerifyResult::Verified => true,
+                        crate::admin_2fa::TwoFaVerifyResult::Locked { until } => {
+                            return Ok(envelope_error_response(
+                                429,
+                                &format!("too many 2FA attempts; locked until {until}"),
+                            ));
+                        }
+                        crate::admin_2fa::TwoFaVerifyResult::Invalid => false,
+                    }
                 }
                 _ => return Ok(envelope_error_response(400, "2FA is not enabled")),
             }

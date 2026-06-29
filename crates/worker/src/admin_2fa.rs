@@ -169,28 +169,71 @@ pub fn new_pending_token() -> Option<String> {
     Some(encode_base32(&bytes))
 }
 
-/// Verify a login 2FA `code` for `user_id`: a current TOTP code (±1 skew) OR a
-/// single-use backup code (consumed on match). Used by `/api/user/login/2fa`
-/// and re-usable for the secure-verification 2fa method.
+/// Go `common.MaxFailAttempts` — lock 2FA after this many failures.
+const TWO_FA_MAX_FAIL_ATTEMPTS: i64 = 5;
+/// Go `common.LockoutDuration` — lock window in seconds.
+const TWO_FA_LOCKOUT_SECONDS: i64 = 300;
+
+/// Outcome of a login-2FA / step-up verification.
+pub enum TwoFaVerifyResult {
+    Verified,
+    Invalid,
+    /// Verification is locked (too many failures) until this unix-seconds time.
+    Locked {
+        until: i64,
+    },
+}
+
+/// Verify a 2FA `code` for an enrolled user: a current TOTP code (±1 skew) OR a
+/// single-use backup code (consumed on match), with anti-brute-force lockout
+/// (Go `IncrementFailedAttempts`/`ResetFailedAttempts`). Used by
+/// `/api/user/login/2fa` and the secure-verification 2fa method. The caller
+/// supplies the loaded [`d1_repositories::TwoFaRow`] (for the lock state).
 pub async fn verify_2fa_code(
     db: &D1Database,
+    two_fa: &d1_repositories::TwoFaRow,
+    code: &str,
+    now: i64,
+) -> WorkerResult<TwoFaVerifyResult> {
+    if let Some(until) = two_fa.locked_until {
+        if until > now {
+            return Ok(TwoFaVerifyResult::Locked { until });
+        }
+    }
+    let matched = validate_totp(&two_fa.secret, code, now.max(0) as u64)
+        || backup_code_matches(db, two_fa.user_id, code, now).await?;
+    if matched {
+        d1_repositories::reset_two_fa_attempts(db, two_fa.user_id).await?;
+        Ok(TwoFaVerifyResult::Verified)
+    } else {
+        d1_repositories::record_two_fa_failure(
+            db,
+            two_fa.user_id,
+            now,
+            TWO_FA_MAX_FAIL_ATTEMPTS,
+            TWO_FA_LOCKOUT_SECONDS,
+        )
+        .await?;
+        Ok(TwoFaVerifyResult::Invalid)
+    }
+}
+
+/// Backup-code fallback: bcrypt-compare `code` against the user's unused codes,
+/// consuming the matching one (single-use).
+async fn backup_code_matches(
+    db: &D1Database,
     user_id: i64,
-    secret: &str,
     code: &str,
     now: i64,
 ) -> WorkerResult<bool> {
-    if validate_totp(secret, code, now.max(0) as u64) {
-        return Ok(true);
+    if !validate_backup_code_format(code) {
+        return Ok(false);
     }
-    // Backup-code fallback: bcrypt-compare against the unused codes, consuming
-    // the matching one (single-use).
-    if validate_backup_code_format(code) {
-        let normalized = normalize_backup_code(code);
-        for row in d1_repositories::find_unused_backup_codes(db, user_id).await? {
-            if verify_password(&normalized, &row.code_hash).unwrap_or(false) {
-                d1_repositories::mark_backup_code_used(db, row.id, now).await?;
-                return Ok(true);
-            }
+    let normalized = normalize_backup_code(code);
+    for row in d1_repositories::find_unused_backup_codes(db, user_id).await? {
+        if verify_password(&normalized, &row.code_hash).unwrap_or(false) {
+            d1_repositories::mark_backup_code_used(db, row.id, now).await?;
+            return Ok(true);
         }
     }
     Ok(false)

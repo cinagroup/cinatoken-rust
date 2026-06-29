@@ -74,8 +74,15 @@ issuing the session.
 `method: "2fa"` (`{code}`) and verifies via `verify_2fa_code` (TOTP or backup
 code), in addition to `method: "password"`.
 
-**Remaining (follow-ups):** failed-attempt **lockout** (schema columns exist),
-`RegenerateBackupCodes`, and admin 2FA stats/disable.
+**Lockout + RegenerateBackupCodes DONE 2026-06-28:** `verify_2fa_code` enforces
+Go's anti-brute-force lockout — after `MaxFailAttempts` (5) failures it locks for
+`LockoutDuration` (300s) via `record_two_fa_failure` (atomic increment + CASE
+lock) / `reset_two_fa_attempts` on success, returning `Verified` / `Invalid` /
+`Locked{until}` (callers map Locked -> 429). `POST /api/user/2fa/backup-codes`
+regenerates the code set (secure-verify gated).
+
+**Remaining (follow-ups):** admin 2FA stats/disable; passkey/WebAuthn (needs a
+WASM-compatible WebAuthn lib or a Container).
 
 ## Passkey / WebAuthn
 

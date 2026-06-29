@@ -1135,6 +1135,10 @@ pub struct TwoFaRow {
     pub user_id: i64,
     pub secret: String,
     pub is_enabled: i64,
+    pub failed_attempts: i64,
+    /// Unix-seconds until which verification is locked (anti-brute-force);
+    /// `None` when not locked.
+    pub locked_until: Option<i64>,
 }
 
 /// An unused backup-code row (id + bcrypt hash) for login verification.
@@ -1149,10 +1153,49 @@ pub async fn find_two_fa_by_user(
     db: &D1Database,
     user_id: i64,
 ) -> worker::Result<Option<TwoFaRow>> {
-    db.prepare("SELECT id, user_id, secret, is_enabled FROM two_fa WHERE user_id = ?1 LIMIT 1")
+    db.prepare(
+        "SELECT id, user_id, secret, is_enabled, failed_attempts, locked_until \
+         FROM two_fa WHERE user_id = ?1 LIMIT 1",
+    )
+    .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+    .first::<TwoFaRow>(None)
+    .await
+}
+
+/// Record a failed 2FA attempt: increment `failed_attempts` and, once it
+/// reaches `max_attempts`, lock verification until `now + lockout_secs`
+/// (anti-brute-force; Go `IncrementFailedAttempts`). Atomic in one UPDATE.
+pub async fn record_two_fa_failure(
+    db: &D1Database,
+    user_id: i64,
+    now: i64,
+    max_attempts: i64,
+    lockout_secs: i64,
+) -> worker::Result<()> {
+    db.prepare(
+        "UPDATE two_fa \
+         SET failed_attempts = failed_attempts + 1, \
+             locked_until = CASE WHEN failed_attempts + 1 >= ?3 THEN ?2 ELSE locked_until END \
+         WHERE user_id = ?1",
+    )
+    .bind_refs(&[
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(now + lockout_secs)),
+        D1Type::Integer(d1_i32(max_attempts)),
+    ])?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Reset the failed-attempt counter and clear any lock (Go
+/// `ResetFailedAttempts`), called after a successful verification.
+pub async fn reset_two_fa_attempts(db: &D1Database, user_id: i64) -> worker::Result<()> {
+    db.prepare("UPDATE two_fa SET failed_attempts = 0, locked_until = NULL WHERE user_id = ?1")
         .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
-        .first::<TwoFaRow>(None)
-        .await
+        .run()
+        .await?;
+    Ok(())
 }
 
 /// Provision a new (disabled) TOTP secret for a user at enrollment setup. Any

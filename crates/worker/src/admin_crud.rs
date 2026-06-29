@@ -402,6 +402,11 @@ pub async fn reveal_token_key(
         Some(id) => id,
         None => return Ok(envelope_error_response(400, "token id is required")),
     };
+    // Step-up gate (item 2.3): revealing a credential requires a fresh
+    // secure-verification (POST /api/verify within the last 300s).
+    if let Some(response) = crate::admin::require_secure_verification(&env, claims.id).await? {
+        return Ok(response);
+    }
     let db = env.d1("DB")?;
     let Some(row) = d1_repositories::find_token_by_id_and_user(&db, id, claims.id).await? else {
         return Ok(envelope_error_response(404, "token not found"));

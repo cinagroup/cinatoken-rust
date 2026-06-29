@@ -143,6 +143,83 @@ pub async fn login(mut req: Request, env: Env) -> WorkerResult<Response> {
     Ok(response)
 }
 
+/// `POST /api/verify`: secure-verification step-up (item 2.3). Re-authenticates
+/// the already-logged-in user and records a short-lived `secure_verified_at`
+/// marker in the [`crate::flow_state`] store, which gates sensitive operations
+/// (key reveal) for the next 300s.
+///
+/// NOTE: Go `UniversalVerify` steps up via 2FA/passkey. Until 2FA/passkey
+/// enrollment lands (item 4.6) this uses a password re-auth — a valid step-up
+/// (it defends sensitive ops against a hijacked session, since the attacker
+/// would still need the password) and a documented simplification of the Go
+/// method set.
+pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let password = body
+        .get("password")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if password.is_empty() {
+        return Ok(envelope_error_response(400, "password is required"));
+    }
+    let db = env.d1("DB")?;
+    let Some(user) = crate::d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(envelope_error_response(401, "session user no longer exists"));
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(envelope_error_response(403, "user is disabled"));
+    }
+    let password_ok = verify_password(password, &user.password).unwrap_or(false);
+    if !password_ok {
+        return Ok(envelope_error_response(401, "secure verification failed"));
+    }
+    let now = unix_timestamp();
+    crate::flow_state::put(
+        &env,
+        crate::flow_state::FlowKind::SecureVerify,
+        &claims.id.to_string(),
+        &now.to_string(),
+    )
+    .await?;
+    let ttl = crate::flow_state::FlowKind::SecureVerify.default_ttl_secs() as i64;
+    envelope_ok_response(&serde_json::json!({
+        "verified": true,
+        "expires_at": now + ttl,
+    }))
+}
+
+/// Step-up gate (item 2.3): returns `Some(403)` when `user_id` has no fresh
+/// secure-verification marker, else `None`. The flow-state entry's 300s TTL IS
+/// the freshness window (Go's `SecureVerificationTimeout`), so mere presence
+/// means verified; `/api/verify` (re)sets it.
+pub async fn require_secure_verification(
+    env: &Env,
+    user_id: i64,
+) -> WorkerResult<Option<Response>> {
+    let verified = crate::flow_state::get(
+        env,
+        crate::flow_state::FlowKind::SecureVerify,
+        &user_id.to_string(),
+    )
+    .await?
+    .is_some();
+    if verified {
+        Ok(None)
+    } else {
+        Ok(Some(envelope_error_response(
+            403,
+            "secure verification required",
+        )))
+    }
+}
+
 /// `POST /api/user/logout`: clear the session cookie.
 pub async fn logout(_req: Request, _env: Env) -> WorkerResult<Response> {
     let mut response = envelope_ok_response(&Value::Null)?;

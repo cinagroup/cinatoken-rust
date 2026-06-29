@@ -45,6 +45,17 @@ KV/Durable Objects.
 - `OptionalSecureVerification` sets a `secure_verified` context flag without
   blocking.
 
+**Rust status (DONE 2026-06-28, item 2.3):** `POST /api/verify`
+(`admin::secure_verify_handler`) re-authenticates the logged-in user and writes
+a `SecureVerify` entry to [`crate::flow_state`] (300s TTL = the freshness
+window). `admin::require_secure_verification` is the step-up gate (403
+`secure verification required` when absent), wired into the token-key reveal
+(`POST /api/token/:id/key`). Simplification: the step-up method is **password
+re-auth**, not Go's 2FA/passkey, until 2FA/passkey enrollment (item 4.6) lands.
+Remaining: gate the Go-canonical channel-key reveal (`POST /api/channel/:id/key`
+— confirm/add the endpoint + mask the key in `get_channel`), and the
+expired-vs-missing distinction (the KV TTL collapses both to "absent").
+
 ## CORS (`CORS`)
 
 - Origins from `CORS_ORIGINS` env (comma-separated), else defaults

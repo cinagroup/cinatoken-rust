@@ -116,6 +116,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/user/self", |req, ctx| async move {
             admin::self_handler(req, ctx.env).await
         })
+        // Secure-verification step-up (item 2.3): re-auth -> 300s flow-state
+        // marker gating sensitive operations (credential reveal).
+        .post_async("/api/verify", |req, ctx| async move {
+            admin::secure_verify_handler(req, ctx.env).await
+        })
         // Admin CRUD (G5 P0): logs, options, tokens.
         // Logs.
         .get_async("/api/log/", |req, ctx| async move {

@@ -150,7 +150,9 @@ pub async fn reveal_channel_key(
         crate::admin::unix_timestamp(),
     )
     .await;
-    Ok(envelope_ok_response(&serde_json::json!({ "key": row.key }))?)
+    Ok(envelope_ok_response(
+        &serde_json::json!({ "key": row.key }),
+    )?)
 }
 
 // ---------------------------------------------------------------------------

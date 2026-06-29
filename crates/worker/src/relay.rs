@@ -817,8 +817,7 @@ async fn relay_endpoint(
                 // upstreams (Go parity) so supporting channels emit a real usage
                 // chunk instead of forcing the local estimate. Native Anthropic/
                 // Gemini providers carry usage natively and are left untouched.
-                if inject_stream_options
-                    && endpoint.provider == RelayProviderKind::OpenAiCompatible
+                if inject_stream_options && endpoint.provider == RelayProviderKind::OpenAiCompatible
                 {
                     cinatoken_relay::openai_compatible::apply_stream_options(
                         &mut upstream_body,
@@ -3025,8 +3024,13 @@ async fn response_usage_summary(
     let estimate_applicable = estimate_enabled
         && matches!(provider, RelayProviderKind::OpenAiCompatible)
         && endpoint_path != "rerank";
-    let (usage, locally_estimated) =
-        resolve_non_stream_usage(usage, &body, model, estimated_prompt_tokens, estimate_applicable);
+    let (usage, locally_estimated) = resolve_non_stream_usage(
+        usage,
+        &body,
+        model,
+        estimated_prompt_tokens,
+        estimate_applicable,
+    );
     if locally_estimated {
         worker::console_log!(
             "relay usage missing; locally estimated non-stream usage for {} (prompt={}, completion={})",
@@ -3810,7 +3814,10 @@ fn resolve_stream_usage(
     enabled: bool,
 ) -> (UsageSummary, bool) {
     if !enabled
-        || cinatoken_tokenizer::valid_usage(usage.prompt_tokens as i64, usage.completion_tokens as i64)
+        || cinatoken_tokenizer::valid_usage(
+            usage.prompt_tokens as i64,
+            usage.completion_tokens as i64,
+        )
     {
         return (usage, false);
     }
@@ -4221,11 +4228,7 @@ fn collect_media_token_estimate(
 /// patch/tile count; remote-URL and undecodable images fall back to the flat
 /// `520`. This affects only the reserved-quota estimate — settlement always uses
 /// the upstream-reported usage.
-fn image_token_estimate(
-    object: &serde_json::Map<String, Value>,
-    model: &str,
-    stream: bool,
-) -> i64 {
+fn image_token_estimate(object: &serde_json::Map<String, Value>, model: &str, stream: bool) -> i64 {
     if !is_openai_text_model(model) {
         return ESTIMATED_IMAGE_INPUT_TOKENS;
     }
@@ -6038,8 +6041,10 @@ mod tests {
         // attempt. The plan spans BOTH groups despite max_attempts=1 because auto
         // gives each group its own budget (not a global cap).
         let plan = plan_relay_attempts(pools, true, 1, 0, true, |_| 0);
-        let trace: Vec<(&str, i64)> =
-            plan.iter().map(|p| (p.group.as_str(), p.channel.id)).collect();
+        let trace: Vec<(&str, i64)> = plan
+            .iter()
+            .map(|p| (p.group.as_str(), p.channel.id))
+            .collect();
         assert_eq!(trace, vec![("g0", 1), ("g1", 2)]);
     }
 
@@ -6058,8 +6063,10 @@ mod tests {
         // max_attempts = retry_times + 1 = 2 (the single-group cap); auto must
         // still reach g1 — a global cap of 2 would have stopped at g0.
         let plan = plan_relay_attempts(pools, true, 2, 1, true, |_| 0);
-        let trace: Vec<(&str, i64)> =
-            plan.iter().map(|p| (p.group.as_str(), p.channel.id)).collect();
+        let trace: Vec<(&str, i64)> = plan
+            .iter()
+            .map(|p| (p.group.as_str(), p.channel.id))
+            .collect();
         assert_eq!(trace, vec![("g0", 1), ("g0", 2), ("g1", 3)]);
     }
 
@@ -6231,10 +6238,7 @@ mod tests {
         });
         let openai = request_token_estimate_from_body_for_model("gpt-4o", &body, true);
         let anthropic = request_token_estimate_from_body_for_model("gpt-4o", &body, false);
-        assert_eq!(
-            openai.text_prompt_tokens - anthropic.text_prompt_tokens,
-            20
-        );
+        assert_eq!(openai.text_prompt_tokens - anthropic.text_prompt_tokens, 20);
     }
 
     #[test]
@@ -6580,16 +6584,28 @@ mod tests {
             total_tokens: 12,
             ..UsageSummary::default()
         };
-        assert_eq!(refund_reason(200, &total_only, false, false), "not_billable");
-        assert_eq!(refund_reason(200, &total_only, false, true), "missing_usage");
+        assert_eq!(
+            refund_reason(200, &total_only, false, false),
+            "not_billable"
+        );
+        assert_eq!(
+            refund_reason(200, &total_only, false, true),
+            "missing_usage"
+        );
     }
 
     #[test]
     fn resolve_stream_usage_estimates_when_invalid_and_enabled() {
         // Both-zero usage is invalid (Go ValidUsage) -> estimate from streamed
         // text + toolCount*7. "Hello world" -> 3 OpenAI tokens, + 2*7.
-        let (resolved, estimated) =
-            resolve_stream_usage(UsageSummary::default(), "Hello world", 2, "gpt-4o", 100, true);
+        let (resolved, estimated) = resolve_stream_usage(
+            UsageSummary::default(),
+            "Hello world",
+            2,
+            "gpt-4o",
+            100,
+            true,
+        );
         assert!(estimated);
         assert_eq!(resolved.prompt_tokens, 100);
         assert_eq!(resolved.completion_tokens, 3 + 14);
@@ -6633,8 +6649,7 @@ mod tests {
     #[test]
     fn resolve_non_stream_usage_estimates_completion_from_body_when_zero() {
         let body = r#"{"choices":[{"message":{"content":"Hello world"}}]}"#;
-        let (r, est) =
-            resolve_non_stream_usage(UsageSummary::default(), body, "gpt-4o", 50, true);
+        let (r, est) = resolve_non_stream_usage(UsageSummary::default(), body, "gpt-4o", 50, true);
         assert!(est);
         assert_eq!(r.prompt_tokens, 50);
         // "Hello world" -> 3; no tool bump on the non-stream path.
@@ -6654,7 +6669,8 @@ mod tests {
         assert!(!est);
         assert_eq!(r, with_prompt);
         // disabled -> no-op even with zero prompt.
-        let (r2, est2) = resolve_non_stream_usage(UsageSummary::default(), "{}", "gpt-4o", 100, false);
+        let (r2, est2) =
+            resolve_non_stream_usage(UsageSummary::default(), "{}", "gpt-4o", 100, false);
         assert!(!est2);
         assert_eq!(r2, UsageSummary::default());
     }

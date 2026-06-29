@@ -294,7 +294,12 @@ mod tests {
         // detail=low on a tile model -> base, no pixels needed.
         assert!(!image_tokens_needs_dimensions("gpt-4o", "low", true, ON));
         // detail=low on a PATCH model still needs pixels (no low short-circuit).
-        assert!(image_tokens_needs_dimensions("gpt-4.1-mini", "low", true, ON));
+        assert!(image_tokens_needs_dimensions(
+            "gpt-4.1-mini",
+            "low",
+            true,
+            ON
+        ));
         // glm-4 is a fixed value -> no pixels needed.
         assert!(!image_tokens_needs_dimensions("glm-4v", "high", true, ON));
     }

@@ -22,7 +22,11 @@ fn turnstile_secret(env: &Env) -> Option<String> {
     env.secret(TURNSTILE_SECRET_ENV)
         .map(|value| value.to_string())
         .ok()
-        .or_else(|| env.var(TURNSTILE_SECRET_ENV).map(|value| value.to_string()).ok())
+        .or_else(|| {
+            env.var(TURNSTILE_SECRET_ENV)
+                .map(|value| value.to_string())
+                .ok()
+        })
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }

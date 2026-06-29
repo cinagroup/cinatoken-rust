@@ -184,7 +184,12 @@ mod tests {
         assert_eq!(encode_base32(b"fooba"), "MZXW6YTB");
         assert_eq!(encode_base32(b"foobar"), "MZXW6YTBOI");
         // Encoded output decodes back to the original (round-trip).
-        for sample in [b"".as_slice(), b"a", b"hello world", b"\x00\xff\x10\x20\x7f"] {
+        for sample in [
+            b"".as_slice(),
+            b"a",
+            b"hello world",
+            b"\x00\xff\x10\x20\x7f",
+        ] {
             assert_eq!(decode_base32(&encode_base32(sample)).unwrap(), sample);
         }
         // A 20-byte secret (the typical TOTP size) round-trips and feeds TOTP.
@@ -204,7 +209,11 @@ mod tests {
             (20000000000, "353130"),
         ];
         for (t, expected) in cases {
-            assert_eq!(totp_code_at(RFC_SECRET, t).as_deref(), Some(expected), "T={t}");
+            assert_eq!(
+                totp_code_at(RFC_SECRET, t).as_deref(),
+                Some(expected),
+                "T={t}"
+            );
         }
     }
 
@@ -216,7 +225,7 @@ mod tests {
         // ±1 period skew accepted (counter 0 and 2 windows).
         assert!(validate_totp(RFC_SECRET, &code, 29)); // prev period
         assert!(validate_totp(RFC_SECRET, &code, 89)); // next period
-        // Two periods away is rejected.
+                                                       // Two periods away is rejected.
         assert!(!validate_totp(RFC_SECRET, &code, 120));
         // Spaces stripped; wrong length / non-digits rejected.
         assert!(validate_totp(RFC_SECRET, "287 082", 59));
@@ -231,7 +240,10 @@ mod tests {
         // All-zero bytes -> first charset char 'A'.
         assert_eq!(backup_code_from_bytes(&[0; 8]), "AAAA-AAAA");
         // byte 26 -> '0' (index 26 in A-Z0-9); 35 -> '9'; 36 wraps to 'A'.
-        assert_eq!(backup_code_from_bytes(&[26, 35, 36, 0, 0, 0, 0, 0]), "09AA-AAAA");
+        assert_eq!(
+            backup_code_from_bytes(&[26, 35, 36, 0, 0, 0, 0, 0]),
+            "09AA-AAAA"
+        );
         assert!(validate_backup_code_format("ABCD-1234"));
         assert!(validate_backup_code_format("abcd1234")); // case-insensitive, sep optional
         assert!(!validate_backup_code_format("ABC-123")); // too short

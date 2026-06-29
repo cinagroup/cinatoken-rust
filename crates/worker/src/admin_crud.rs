@@ -845,5 +845,4 @@ mod tests {
         assert_eq!(parse_id_param(Some(&"abc".to_string())), None);
         assert_eq!(parse_id_param(None), None);
     }
-
 }

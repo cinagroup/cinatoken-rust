@@ -40,7 +40,10 @@ struct GitHubUser {
 /// provider; the callback consumes it (`take`).
 pub async fn oauth_state(_req: Request, env: Env) -> WorkerResult<Response> {
     let Some(state) = crate::admin_2fa::new_pending_token() else {
-        return Ok(envelope_error_response(500, "failed to generate oauth state"));
+        return Ok(envelope_error_response(
+            500,
+            "failed to generate oauth state",
+        ));
     };
     flow_state::put(&env, flow_state::FlowKind::OAuthState, &state, "1").await?;
     envelope_ok_response(&StateResponse { state })
@@ -57,7 +60,10 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             .await?
             .is_none()
     {
-        return Ok(envelope_error_response(403, "invalid or expired oauth state"));
+        return Ok(envelope_error_response(
+            403,
+            "invalid or expired oauth state",
+        ));
     }
     let Some((client_id, client_secret)) = github_config(&env) else {
         return Ok(envelope_error_response(400, "GitHub login is not enabled"));
@@ -213,7 +219,10 @@ pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             .await?
             .is_none()
     {
-        return Ok(envelope_error_response(403, "invalid or expired oauth state"));
+        return Ok(envelope_error_response(
+            403,
+            "invalid or expired oauth state",
+        ));
     }
     let Some(config) = oidc_config(&env) else {
         return Ok(envelope_error_response(400, "OIDC login is not enabled"));
@@ -233,7 +242,10 @@ pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
         }
         Err(err) => {
             worker::console_error!("oidc exchange failed: {err}");
-            return Ok(envelope_error_response(502, "failed to reach the OIDC provider"));
+            return Ok(envelope_error_response(
+                502,
+                "failed to reach the OIDC provider",
+            ));
         }
     };
 
@@ -379,7 +391,9 @@ async fn fetch_oidc_user(config: &OidcConfig, code: &str) -> WorkerResult<Option
     user_headers.set("Accept", "application/json")?;
     user_headers.set("User-Agent", "cinatoken-rust")?;
     let mut user_init = RequestInit::new();
-    user_init.with_method(Method::Get).with_headers(user_headers);
+    user_init
+        .with_method(Method::Get)
+        .with_headers(user_headers);
     let user_request = Request::new_with_init(&config.userinfo_url, &user_init)?;
     let mut user_response = Fetch::Request(user_request).send().await?;
     let user_text = user_response.text().await?;
@@ -433,7 +447,10 @@ pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             .await?
             .is_none()
     {
-        return Ok(envelope_error_response(403, "invalid or expired oauth state"));
+        return Ok(envelope_error_response(
+            403,
+            "invalid or expired oauth state",
+        ));
     }
     let Some((client_id, client_secret, redirect_uri)) = discord_config(&env) else {
         return Ok(envelope_error_response(400, "Discord login is not enabled"));
@@ -462,7 +479,8 @@ pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
 
     match crate::admin::parse_session_claims(&req, &env).await? {
         Ok(Some(claims)) => {
-            if let Some(existing) = d1_repositories::find_user_by_discord_id(&db, &discord.id).await?
+            if let Some(existing) =
+                d1_repositories::find_user_by_discord_id(&db, &discord.id).await?
             {
                 if existing.id != claims.id {
                     return Ok(envelope_error_response(
@@ -602,7 +620,9 @@ async fn fetch_discord_user(
     user_headers.set("Accept", "application/json")?;
     user_headers.set("User-Agent", "cinatoken-rust")?;
     let mut user_init = RequestInit::new();
-    user_init.with_method(Method::Get).with_headers(user_headers);
+    user_init
+        .with_method(Method::Get)
+        .with_headers(user_headers);
     let user_request = Request::new_with_init(DISCORD_USER_URL, &user_init)?;
     let mut user_response = Fetch::Request(user_request).send().await?;
     let user_text = user_response.text().await?;
@@ -650,7 +670,11 @@ fn github_config(env: &Env) -> Option<(String, String)> {
         .secret("GITHUB_CLIENT_ID")
         .map(|value| value.to_string())
         .ok()
-        .or_else(|| env.var("GITHUB_CLIENT_ID").map(|value| value.to_string()).ok())
+        .or_else(|| {
+            env.var("GITHUB_CLIENT_ID")
+                .map(|value| value.to_string())
+                .ok()
+        })
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())?;
     let secret = env
@@ -706,7 +730,9 @@ async fn fetch_github_user(
     // GitHub's API rejects requests without a User-Agent.
     user_headers.set("User-Agent", "cinatoken-rust")?;
     let mut user_init = RequestInit::new();
-    user_init.with_method(Method::Get).with_headers(user_headers);
+    user_init
+        .with_method(Method::Get)
+        .with_headers(user_headers);
     let user_request = Request::new_with_init(GITHUB_USER_URL, &user_init)?;
     let mut user_response = Fetch::Request(user_request).send().await?;
     let user_text = user_response.text().await?;

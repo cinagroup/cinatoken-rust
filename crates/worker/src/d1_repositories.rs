@@ -891,10 +891,14 @@ fn parse_auto_groups_option(raw: Option<&str>) -> Vec<String> {
 /// Parse the `group_ratio_setting.group_special_usable_group` option: a JSON
 /// object mapping a user group to its special usable-group overrides
 /// (`{ userGroup: { "+:g"|"-:g"|"g": desc } }`). Missing/malformed -> empty.
-fn parse_special_usable_groups_option(raw: Option<&str>) -> HashMap<String, HashMap<String, String>> {
+fn parse_special_usable_groups_option(
+    raw: Option<&str>,
+) -> HashMap<String, HashMap<String, String>> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
-        .and_then(|value| serde_json::from_str::<HashMap<String, HashMap<String, String>>>(value).ok())
+        .and_then(|value| {
+            serde_json::from_str::<HashMap<String, HashMap<String, String>>>(value).ok()
+        })
         .unwrap_or_default()
 }
 
@@ -1162,18 +1166,13 @@ pub async fn create_github_user(
     .run()
     .await?;
     let row = find_user_by_github_id(db, github_id).await?;
-    row.map(|user| user.id).ok_or_else(|| {
-        worker::Error::RustError("github user insert not found after create".into())
-    })
+    row.map(|user| user.id)
+        .ok_or_else(|| worker::Error::RustError("github user insert not found after create".into()))
 }
 
 /// Link a GitHub login to an existing user account (OAuth bind). Mirrors Go
 /// `GitHubBind`. The caller verifies the login is not already linked elsewhere.
-pub async fn bind_github_id(
-    db: &D1Database,
-    user_id: i64,
-    github_id: &str,
-) -> worker::Result<()> {
+pub async fn bind_github_id(db: &D1Database, user_id: i64, github_id: &str) -> worker::Result<()> {
     db.prepare("UPDATE users SET github_id = ?2 WHERE id = ?1")
         .bind_refs(&[D1Type::Integer(d1_i32(user_id)), D1Type::Text(github_id)])?
         .run()
@@ -1235,9 +1234,8 @@ pub async fn create_oidc_user(
     .run()
     .await?;
     let row = find_user_by_oidc_id(db, oidc_id).await?;
-    row.map(|user| user.id).ok_or_else(|| {
-        worker::Error::RustError("oidc user insert not found after create".into())
-    })
+    row.map(|user| user.id)
+        .ok_or_else(|| worker::Error::RustError("oidc user insert not found after create".into()))
 }
 
 /// Link an OIDC subject to an existing user account (OAuth bind). The caller
@@ -1442,7 +1440,10 @@ pub async fn upsert_two_fa_secret(
 /// Enable a user's 2FA after a confirming TOTP code.
 pub async fn enable_two_fa(db: &D1Database, user_id: i64, now: i64) -> worker::Result<()> {
     db.prepare("UPDATE two_fa SET is_enabled = 1, updated_at = ?2 WHERE user_id = ?1")
-        .bind_refs(&[D1Type::Integer(d1_i32(user_id)), D1Type::Integer(d1_i32(now))])?
+        .bind_refs(&[
+            D1Type::Integer(d1_i32(user_id)),
+            D1Type::Integer(d1_i32(now)),
+        ])?
         .run()
         .await?;
     Ok(())

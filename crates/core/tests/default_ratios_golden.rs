@@ -86,7 +86,9 @@ fn default_tables_match_go() {
     let mut problems: Vec<String> = Vec::new();
 
     for t in tables {
-        let go_map = go.get(t).unwrap_or_else(|| panic!("fixture missing table {t}"));
+        let go_map = go
+            .get(t)
+            .unwrap_or_else(|| panic!("fixture missing table {t}"));
         let slice = rust_table(t);
 
         let mut rust_map: HashMap<&str, f64> = HashMap::with_capacity(slice.len());

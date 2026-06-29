@@ -288,7 +288,7 @@ mod tests {
         // (group-ratio-converted USD) can land on a non-integer quota, where
         // truncate and round diverge.
         let config = StripeConfig::default(); // unit_price = 8.0, QuotaPerUnit = 500_000
-        // 0.25000015 * 8.0 * 500_000 = 1_000_000.6
+                                              // 0.25000015 * 8.0 * 500_000 = 1_000_000.6
         let money = 0.25000015;
         let raw = money * config.unit_price * 500_000.0;
         assert!((raw - 1_000_000.6).abs() < 1e-6, "raw product = {raw}");

@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(
             out,
             AutoGroupOutcome {
-                selected: 1,         // priority_retry passed through by only_group0
+                selected: 1, // priority_retry passed through by only_group0
                 group_index: 0,
                 priority_retry: 1,   // == outer retry
                 next_group_index: 0, // stay in group 0
@@ -285,13 +285,20 @@ mod tests {
     #[test]
     fn skips_empty_leading_group_and_restarts_priority() {
         // Group 0 has no channel; group 1 does -> use group 1 at priority 0.
-        let out = auto_group_retry_step(2, 0, 5, false, 3, |gi, pr| {
-            if gi == 1 {
-                Some(pr)
-            } else {
-                None
-            }
-        })
+        let out = auto_group_retry_step(
+            2,
+            0,
+            5,
+            false,
+            3,
+            |gi, pr| {
+                if gi == 1 {
+                    Some(pr)
+                } else {
+                    None
+                }
+            },
+        )
         .unwrap();
         assert_eq!(out.group_index, 1);
         assert_eq!(out.priority_retry, 0); // restarted (not the outer retry 5)
@@ -309,13 +316,20 @@ mod tests {
     #[test]
     fn starts_from_persisted_group_index() {
         // Resuming at group 1 (a prior cross-group advance); group 1 available.
-        let out = auto_group_retry_step(3, 1, 0, false, 3, |gi, pr| {
-            if gi == 1 {
-                Some(pr)
-            } else {
-                None
-            }
-        })
+        let out = auto_group_retry_step(
+            3,
+            1,
+            0,
+            false,
+            3,
+            |gi, pr| {
+                if gi == 1 {
+                    Some(pr)
+                } else {
+                    None
+                }
+            },
+        )
         .unwrap();
         assert_eq!(out.group_index, 1);
         assert_eq!(out.priority_retry, 0);
@@ -336,14 +350,8 @@ mod tests {
         let mut trace = Vec::new();
 
         while retry <= retry_times {
-            let out = auto_group_retry_step(
-                group_count,
-                group_index,
-                retry,
-                true,
-                retry_times,
-                select,
-            );
+            let out =
+                auto_group_retry_step(group_count, group_index, retry, true, retry_times, select);
             let Some(out) = out else { break };
             trace.push((out.group_index, out.priority_retry));
             group_index = out.next_group_index;

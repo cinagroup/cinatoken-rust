@@ -14,7 +14,9 @@ const OPENAI_TEXT_MODELS: &[&str] = &["gpt-", "o1", "o3", "o4", "chatgpt"];
 /// matching Go's `strings.Contains`).
 pub fn is_openai_text_model(model: &str) -> bool {
     let lower = model.to_ascii_lowercase();
-    OPENAI_TEXT_MODELS.iter().any(|needle| lower.contains(needle))
+    OPENAI_TEXT_MODELS
+        .iter()
+        .any(|needle| lower.contains(needle))
 }
 
 #[cfg(test)]

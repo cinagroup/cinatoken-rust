@@ -112,7 +112,10 @@ mod tests {
     fn unknown_user_group_is_added_with_default_desc() {
         let g = user_usable_groups("svip", &base(), &HashMap::new());
         assert_eq!(keys(&g), vec!["default", "svip", "vip"]);
-        assert_eq!(g.get("svip").map(String::as_str), Some(DEFAULT_USER_GROUP_DESC));
+        assert_eq!(
+            g.get("svip").map(String::as_str),
+            Some(DEFAULT_USER_GROUP_DESC)
+        );
     }
 
     #[test]

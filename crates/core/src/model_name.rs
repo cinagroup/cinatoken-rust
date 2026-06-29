@@ -75,10 +75,19 @@ mod tests {
                 "gemini-2.5-flash-lite-thinking-2024",
                 "gemini-2.5-flash-lite-thinking-*",
             ),
-            ("gemini-2.5-flash-lite-preview", "gemini-2.5-flash-lite-preview"),
+            (
+                "gemini-2.5-flash-lite-preview",
+                "gemini-2.5-flash-lite-preview",
+            ),
             ("gemini-2.5-flash-lite", "gemini-2.5-flash-lite"),
-            ("gemini-2.5-flash-thinking-low", "gemini-2.5-flash-thinking-*"),
-            ("gemini-2.5-flash-preview-04-17", "gemini-2.5-flash-preview-04-17"),
+            (
+                "gemini-2.5-flash-thinking-low",
+                "gemini-2.5-flash-thinking-*",
+            ),
+            (
+                "gemini-2.5-flash-preview-04-17",
+                "gemini-2.5-flash-preview-04-17",
+            ),
             ("gemini-2.5-flash", "gemini-2.5-flash"),
             ("gemini-2.5-pro-thinking-high", "gemini-2.5-pro-thinking-*"),
             ("gemini-2.5-pro-preview", "gemini-2.5-pro-preview"),
@@ -87,8 +96,14 @@ mod tests {
             ("gpt-4-gizmo", "gpt-4-gizmo-*"),
             ("gpt-4o-gizmo-g-xyz", "gpt-4o-gizmo-*"),
             ("gpt-4o-gizmo", "gpt-4o-gizmo-*"),
-            ("claude-3-7-sonnet-thinking-2025", "claude-3-7-sonnet-thinking-2025"),
-            ("gemini-2.0-flash-thinking-exp", "gemini-2.0-flash-thinking-exp"),
+            (
+                "claude-3-7-sonnet-thinking-2025",
+                "claude-3-7-sonnet-thinking-2025",
+            ),
+            (
+                "gemini-2.0-flash-thinking-exp",
+                "gemini-2.0-flash-thinking-exp",
+            ),
         ];
         for (input, expected) in cases {
             assert_eq!(f(input), *expected, "diverged from Go for {input:?}");

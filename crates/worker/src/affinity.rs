@@ -157,7 +157,10 @@ mod tests {
 
     #[test]
     fn affinity_key_is_stable_and_scoped() {
-        assert_eq!(affinity_key(7, "gpt-4o", "default"), "u:7|m:gpt-4o|g:default");
+        assert_eq!(
+            affinity_key(7, "gpt-4o", "default"),
+            "u:7|m:gpt-4o|g:default"
+        );
         assert_ne!(
             affinity_key(7, "gpt-4o", "default"),
             affinity_key(7, "gpt-4o", "vip")
@@ -176,7 +179,10 @@ mod tests {
     #[test]
     fn preferred_moves_to_front_when_present() {
         let plan = vec![1, 2, 3];
-        assert_eq!(ids(&move_preferred_to_front(plan, Some(3), |x| *x)), vec![3, 1, 2]);
+        assert_eq!(
+            ids(&move_preferred_to_front(plan, Some(3), |x| *x)),
+            vec![3, 1, 2]
+        );
     }
 
     #[test]

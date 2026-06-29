@@ -323,8 +323,7 @@ pub fn response_text_to_usage(
     prompt_tokens: i64,
     tool_count: i64,
 ) -> EstimatedUsage {
-    let completion_tokens =
-        estimate_tokens(model, response_text) as i64 + tool_count.max(0) * 7;
+    let completion_tokens = estimate_tokens(model, response_text) as i64 + tool_count.max(0) * 7;
     EstimatedUsage {
         prompt_tokens,
         completion_tokens,
@@ -501,7 +500,11 @@ mod tests {
             ("claude-3-5-sonnet", "Hello world", 3),
             ("claude-3-5-sonnet", "你好世界你好世界你好", 13),
             ("claude-3-5-sonnet", "a\n\n\n\nb", 6),
-            ("claude-3-5-sonnet", "The quick brown fox 你好世界 12345 🎉", 16),
+            (
+                "claude-3-5-sonnet",
+                "The quick brown fox 你好世界 12345 🎉",
+                16,
+            ),
             ("claude-3", "α β γ δ ε", 8),
             ("gemini-2.0-flash", "1234567890", 3),
             ("gemini-2.0-flash", "Hello world", 3),

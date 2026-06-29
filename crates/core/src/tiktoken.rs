@@ -488,7 +488,10 @@ mod tests {
         assert_eq!(pre_tokenize_cl100k("DON'T"), vec!["DON", "'T"]);
         // U+017F (long s) case-folds to 's' under (?i:'s), so 'ſ is the 's
         // contraction (matching real tiktoken), not absorbed into a word run.
-        assert_eq!(pre_tokenize_cl100k("x'\u{017F}y"), vec!["x", "'\u{017F}", "y"]);
+        assert_eq!(
+            pre_tokenize_cl100k("x'\u{017F}y"),
+            vec!["x", "'\u{017F}", "y"]
+        );
         assert_eq!(
             pre_tokenize_cl100k("we'\u{017F}\u{017F}"),
             vec!["we", "'\u{017F}", "\u{017F}"]
@@ -593,7 +596,10 @@ mod tests {
     #[test]
     fn o200k_splits_camelcase() {
         assert_eq!(pre_tokenize_o200k("HelloWorld"), vec!["Hello", "World"]);
-        assert_eq!(pre_tokenize_o200k("getHTTPResponse"), vec!["get", "HTTPResponse"]);
+        assert_eq!(
+            pre_tokenize_o200k("getHTTPResponse"),
+            vec!["get", "HTTPResponse"]
+        );
         assert_eq!(pre_tokenize_o200k("aB"), vec!["a", "B"]);
         // upper* lower+ keeps a leading caps run with its lowercase tail.
         assert_eq!(pre_tokenize_o200k("ABCdef"), vec!["ABCdef"]);
@@ -630,14 +636,8 @@ mod tests {
         // mark starts a word (alt A [lower]+) and must NOT be glued onto following
         // punctuation. Token counts below match real tiktoken o200k_base
         // (U+20DD enclosing mark; U+0300 combining grave).
-        assert_eq!(
-            pre_tokenize_o200k("\u{20DD}.c"),
-            vec!["\u{20DD}", ".c"]
-        );
-        assert_eq!(
-            pre_tokenize_o200k("\u{0300}(v好"),
-            vec!["\u{0300}", "(v好"]
-        );
+        assert_eq!(pre_tokenize_o200k("\u{20DD}.c"), vec!["\u{20DD}", ".c"]);
+        assert_eq!(pre_tokenize_o200k("\u{0300}(v好"), vec!["\u{0300}", "(v好"]);
     }
 
     #[test]

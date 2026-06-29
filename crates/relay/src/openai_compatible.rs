@@ -1134,8 +1134,13 @@ mod tests {
     #[test]
     fn stream_options_supported_set_matches_go() {
         // Spot-check the Go streamSupportedChannels values.
-        for ct in [1, 3, 4, 14, 17, 24, 25, 26, 33, 35, 39, 40, 43, 45, 46, 48, 53, 57] {
-            assert!(channel_supports_stream_options(ct), "{ct} should be supported");
+        for ct in [
+            1, 3, 4, 14, 17, 24, 25, 26, 33, 35, 39, 40, 43, 45, 46, 48, 53, 57,
+        ] {
+            assert!(
+                channel_supports_stream_options(ct),
+                "{ct} should be supported"
+            );
         }
         for ct in [20, 27, 34, 38, 42] {
             assert!(

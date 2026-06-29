@@ -54,11 +54,17 @@ pub async fn setup(req: Request, env: Env) -> WorkerResult<Response> {
         }
     }
     let Some(secret) = generate_totp_secret() else {
-        return Ok(envelope_error_response(500, "failed to generate 2FA secret"));
+        return Ok(envelope_error_response(
+            500,
+            "failed to generate 2FA secret",
+        ));
     };
     d1_repositories::upsert_two_fa_secret(&db, claims.id, &secret, unix_timestamp()).await?;
     let otpauth_url = otpauth_uri(TWO_FA_ISSUER, &claims.username, &secret);
-    envelope_ok_response(&SetupResponse { secret, otpauth_url })
+    envelope_ok_response(&SetupResponse {
+        secret,
+        otpauth_url,
+    })
 }
 
 /// `POST /api/user/2fa/confirm` `{code}`: verify a TOTP code → enable 2FA and
@@ -93,7 +99,10 @@ pub async fn confirm(mut req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(401, "invalid 2FA code"));
     }
     let Some((plaintext, hashes)) = generate_backup_codes() else {
-        return Ok(envelope_error_response(500, "failed to generate backup codes"));
+        return Ok(envelope_error_response(
+            500,
+            "failed to generate backup codes",
+        ));
     };
     d1_repositories::replace_backup_codes(&db, claims.id, &hashes, now).await?;
     d1_repositories::enable_two_fa(&db, claims.id, now).await?;
@@ -123,7 +132,10 @@ pub async fn regenerate_backup_codes(req: Request, env: Env) -> WorkerResult<Res
         return Ok(envelope_error_response(400, "2FA is not enabled"));
     }
     let Some((plaintext, hashes)) = generate_backup_codes() else {
-        return Ok(envelope_error_response(500, "failed to generate backup codes"));
+        return Ok(envelope_error_response(
+            500,
+            "failed to generate backup codes",
+        ));
     };
     d1_repositories::replace_backup_codes(&db, claims.id, &hashes, unix_timestamp()).await?;
     envelope_ok_response(&BackupCodesResponse {

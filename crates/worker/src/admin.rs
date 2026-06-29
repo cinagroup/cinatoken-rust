@@ -114,7 +114,10 @@ pub async fn login(mut req: Request, env: Env) -> WorkerResult<Response> {
     if let Some(two_fa) = crate::d1_repositories::find_two_fa_by_user(&db, user.id).await? {
         if two_fa.is_enabled != 0 {
             let Some(pending_token) = crate::admin_2fa::new_pending_token() else {
-                return Ok(envelope_error_response(500, "failed to start 2FA challenge"));
+                return Ok(envelope_error_response(
+                    500,
+                    "failed to start 2FA challenge",
+                ));
             };
             crate::flow_state::put(
                 &env,
@@ -219,13 +222,19 @@ pub async fn login_2fa(mut req: Request, env: Env) -> WorkerResult<Response> {
 
     let db = env.d1("DB")?;
     let Some(user) = crate::d1_repositories::find_user_by_id(&db, user_id).await? else {
-        return Ok(envelope_error_response(401, "session user no longer exists"));
+        return Ok(envelope_error_response(
+            401,
+            "session user no longer exists",
+        ));
     };
     if user.status == USER_STATUS_DISABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
     let Some(two_fa) = crate::d1_repositories::find_two_fa_by_user(&db, user_id).await? else {
-        return Ok(envelope_error_response(400, "2FA is not enabled for this user"));
+        return Ok(envelope_error_response(
+            400,
+            "2FA is not enabled for this user",
+        ));
     };
     let now = unix_timestamp();
     match crate::admin_2fa::verify_2fa_code(&db, &two_fa, &code, now).await? {
@@ -299,7 +308,10 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
         .unwrap_or("password");
     let db = env.d1("DB")?;
     let Some(user) = crate::d1_repositories::find_user_by_id(&db, claims.id).await? else {
-        return Ok(envelope_error_response(401, "session user no longer exists"));
+        return Ok(envelope_error_response(
+            401,
+            "session user no longer exists",
+        ));
     };
     if user.status == USER_STATUS_DISABLED {
         return Ok(envelope_error_response(403, "user is disabled"));

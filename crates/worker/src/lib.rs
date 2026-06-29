@@ -112,6 +112,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/user/login", |req, ctx| async move {
             admin::login_handler(req, ctx.env).await
         })
+        // Two-step login second factor (item 4.6): complete a 2FA-gated login.
+        .post_async("/api/user/login/2fa", |req, ctx| async move {
+            admin::login_2fa(req, ctx.env).await
+        })
         .post_async("/api/user/logout", |req, ctx| async move {
             admin::logout_handler(req, ctx.env).await
         })

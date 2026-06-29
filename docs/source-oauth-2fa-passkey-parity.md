@@ -61,12 +61,19 @@ TOTP) is session state -> KV/DO short TTL. Backup codes stay hashed + single-use
 - `GET /api/user/2fa/status`; `POST /api/user/2fa/disable` (hard-delete, gated by
   secure-verification step-up §2.3).
 
-**Remaining (follow-ups):** the two-step **login 2FA** (password -> pending-2FA
-via `flow_state::TwoFaPending` -> `/user/login/2fa` verifying TOTP **or** a
-backup code; this re-adds the `find_unused_backup_codes`/`mark_backup_code_used`
-repo functions), failed-attempt **lockout** (schema columns exist),
+**Login 2FA DONE 2026-06-28:** `login` no longer issues a session for a
+2FA-enabled user — it stores a single-use pending marker
+(`flow_state::TwoFaPending`, keyed by an opaque CSPRNG token → user id, 300s)
+and returns `{two_fa_required, pending_token}`. `POST /api/user/login/2fa`
+(`admin::login_2fa`) consumes the marker (`take`, single-use), then
+`admin_2fa::verify_2fa_code` accepts a current TOTP code **or** a single-use
+backup code (bcrypt-compared, consumed via `mark_backup_code_used`) before
+issuing the session.
+
+**Remaining (follow-ups):** failed-attempt **lockout** (schema columns exist),
 `RegenerateBackupCodes`, the `secure_verify` **2fa method** for `/api/verify`
-(so step-up can use TOTP, not just password), and admin 2FA stats/disable.
+(so step-up can use TOTP, reusing `verify_2fa_code`, not just password), and
+admin 2FA stats/disable.
 
 ## Passkey / WebAuthn
 

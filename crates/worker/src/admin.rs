@@ -108,6 +108,28 @@ pub async fn login(mut req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(401, "invalid username or password"));
     }
 
+    // 2FA second factor: if the user has 2FA enabled, do NOT issue a session
+    // yet. Hold a single-use pending marker (flow-state, keyed by an opaque
+    // token -> user id) and require POST /api/user/login/2fa to finish.
+    if let Some(two_fa) = crate::d1_repositories::find_two_fa_by_user(&db, user.id).await? {
+        if two_fa.is_enabled != 0 {
+            let Some(pending_token) = crate::admin_2fa::new_pending_token() else {
+                return Ok(envelope_error_response(500, "failed to start 2FA challenge"));
+            };
+            crate::flow_state::put(
+                &env,
+                crate::flow_state::FlowKind::TwoFaPending,
+                &pending_token,
+                &user.id.to_string(),
+            )
+            .await?;
+            return Ok(envelope_ok_response(&TwoFaRequiredResponse {
+                two_fa_required: true,
+                pending_token,
+            })?);
+        }
+    }
+
     let now = unix_timestamp();
     if let Err(err) = crate::d1_repositories::update_last_login_at(&db, user.id, now).await {
         worker::console_warn!(
@@ -135,6 +157,99 @@ pub async fn login(mut req: Request, env: Env) -> WorkerResult<Response> {
         }
     };
 
+    let body = LoginResponse {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name,
+        role: user.role,
+        status: user.status,
+        group: user.group,
+    };
+    let mut response = envelope_ok_response(&body)?;
+    attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    Ok(response)
+}
+
+/// `POST /api/user/login/2fa` `{pending_token, code}`: complete a two-step login
+/// for a 2FA-enabled user. Consumes the single-use pending marker from login,
+/// verifies a TOTP code (or a single-use backup code), and issues the session.
+pub async fn login_2fa(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let codec = match session_codec(&env)? {
+        Ok(codec) => codec,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let pending_token = body
+        .get("pending_token")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let code = body
+        .get("code")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if pending_token.is_empty() || code.is_empty() {
+        return Ok(envelope_error_response(
+            400,
+            "pending_token and code are required",
+        ));
+    }
+    // Consume the pending marker (single-use): an expired/replayed token fails.
+    let Some(user_id_raw) = crate::flow_state::take(
+        &env,
+        crate::flow_state::FlowKind::TwoFaPending,
+        &pending_token,
+    )
+    .await?
+    else {
+        return Ok(envelope_error_response(
+            401,
+            "2FA challenge expired; sign in again",
+        ));
+    };
+    let Ok(user_id) = user_id_raw.parse::<i64>() else {
+        return Ok(envelope_error_response(401, "invalid 2FA challenge"));
+    };
+
+    let db = env.d1("DB")?;
+    let Some(user) = crate::d1_repositories::find_user_by_id(&db, user_id).await? else {
+        return Ok(envelope_error_response(401, "session user no longer exists"));
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(envelope_error_response(403, "user is disabled"));
+    }
+    let Some(two_fa) = crate::d1_repositories::find_two_fa_by_user(&db, user_id).await? else {
+        return Ok(envelope_error_response(400, "2FA is not enabled for this user"));
+    };
+    let now = unix_timestamp();
+    if !crate::admin_2fa::verify_2fa_code(&db, user_id, &two_fa.secret, &code, now).await? {
+        return Ok(envelope_error_response(401, "invalid 2FA code"));
+    }
+
+    let claims = SessionClaims {
+        id: user.id,
+        username: user.username.clone(),
+        role: user.role,
+        status: user.status,
+        group: user.group.clone(),
+        exp: 0,
+    };
+    let cookie_value = match codec.issue(claims, now) {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                500,
+                &format!("failed to issue session: {err}"),
+            ));
+        }
+    };
+    let _ = crate::d1_repositories::update_last_login_at(&db, user.id, now).await;
     let body = LoginResponse {
         id: user.id,
         username: user.username,
@@ -449,6 +564,14 @@ struct LoginResponse {
     role: i32,
     status: i32,
     group: String,
+}
+
+/// Login response when the user has 2FA enabled: no session is issued; the
+/// client must call `/api/user/login/2fa` with `pending_token` + a code.
+#[derive(Debug, Serialize)]
+struct TwoFaRequiredResponse {
+    two_fa_required: bool,
+    pending_token: String,
 }
 
 #[derive(Debug, Serialize)]

@@ -21,9 +21,10 @@ use serde::Serialize;
 use worker::{Env, Request, Response, Result as WorkerResult};
 
 use cinatoken_auth::{
-    backup_code_from_bytes, encode_base32, hash_password, normalize_backup_code, validate_totp,
-    BACKUP_CODE_LENGTH,
+    backup_code_from_bytes, encode_base32, hash_password, normalize_backup_code,
+    validate_backup_code_format, validate_totp, verify_password, BACKUP_CODE_LENGTH,
 };
+use worker::D1Database;
 
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_secure_verification,
@@ -131,6 +132,42 @@ pub async fn disable(req: Request, env: Env) -> WorkerResult<Response> {
     envelope_ok_response(&DisableResponse { disabled: true })
 }
 
+/// Generate a single-use, URL-safe pending-login token (CSPRNG). Used as the
+/// flow-state key for the two-step login 2FA challenge (the value is the user
+/// id), so the client can complete `/api/user/login/2fa` without a session.
+pub fn new_pending_token() -> Option<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).ok()?;
+    Some(encode_base32(&bytes))
+}
+
+/// Verify a login 2FA `code` for `user_id`: a current TOTP code (±1 skew) OR a
+/// single-use backup code (consumed on match). Used by `/api/user/login/2fa`
+/// and re-usable for the secure-verification 2fa method.
+pub async fn verify_2fa_code(
+    db: &D1Database,
+    user_id: i64,
+    secret: &str,
+    code: &str,
+    now: i64,
+) -> WorkerResult<bool> {
+    if validate_totp(secret, code, now.max(0) as u64) {
+        return Ok(true);
+    }
+    // Backup-code fallback: bcrypt-compare against the unused codes, consuming
+    // the matching one (single-use).
+    if validate_backup_code_format(code) {
+        let normalized = normalize_backup_code(code);
+        for row in d1_repositories::find_unused_backup_codes(db, user_id).await? {
+            if verify_password(&normalized, &row.code_hash).unwrap_or(false) {
+                d1_repositories::mark_backup_code_used(db, row.id, now).await?;
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn generate_totp_secret() -> Option<String> {
     let mut bytes = [0u8; TOTP_SECRET_BYTES];
     getrandom::getrandom(&mut bytes).ok()?;
@@ -217,6 +254,14 @@ mod tests {
         assert!(validate_totp(&secret, &code, 1_700_000_000));
         // Two secrets differ (CSPRNG).
         assert_ne!(generate_totp_secret(), generate_totp_secret());
+    }
+
+    #[test]
+    fn pending_token_is_distinct_url_safe_base32() {
+        let token = new_pending_token().expect("token");
+        assert_eq!(token.len(), 26); // 16 bytes -> 26 unpadded base32 chars
+        assert!(decode_base32(&token).is_some());
+        assert_ne!(new_pending_token(), new_pending_token());
     }
 
     #[test]

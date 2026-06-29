@@ -1137,6 +1137,13 @@ pub struct TwoFaRow {
     pub is_enabled: i64,
 }
 
+/// An unused backup-code row (id + bcrypt hash) for login verification.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct BackupCodeRow {
+    pub id: i64,
+    pub code_hash: String,
+}
+
 /// Fetch a user's 2FA config (`None` when not enrolled).
 pub async fn find_two_fa_by_user(
     db: &D1Database,
@@ -1223,6 +1230,29 @@ pub async fn replace_backup_codes(
         .run()
         .await?;
     }
+    Ok(())
+}
+
+/// All unused backup codes for a user (for login verification).
+pub async fn find_unused_backup_codes(
+    db: &D1Database,
+    user_id: i64,
+) -> worker::Result<Vec<BackupCodeRow>> {
+    let rows = db
+        .prepare("SELECT id, code_hash FROM two_fa_backup_codes WHERE user_id = ?1 AND is_used = 0")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .all()
+        .await?
+        .results::<BackupCodeRow>()?;
+    Ok(rows)
+}
+
+/// Mark a backup code consumed (single-use).
+pub async fn mark_backup_code_used(db: &D1Database, id: i64, now: i64) -> worker::Result<()> {
+    db.prepare("UPDATE two_fa_backup_codes SET is_used = 1, used_at = ?2 WHERE id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(id)), D1Type::Integer(d1_i32(now))])?
+        .run()
+        .await?;
     Ok(())
 }
 

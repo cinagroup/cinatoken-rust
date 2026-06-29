@@ -22,13 +22,26 @@ use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
+    // Resolve the credentialed CORS origin once, before `req`/`env` are moved
+    // into the route handlers. Allowlisted browser Origins get a credentialed
+    // echo; everything else keeps the permissive non-credentialed wildcard.
+    let cors_allow_origin = {
+        let configured = env.var("CORS_ORIGINS").map(|value| value.to_string()).ok();
+        let request_origin = req.headers().get("Origin").ok().flatten();
+        resolve_cors_allow_origin(configured.as_deref(), request_origin.as_deref())
+    };
+
     if req.method() == Method::Options {
-        return empty_cors_response();
+        let mut response = empty_cors_response()?;
+        upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+        return Ok(response);
     }
 
     if req.method() == Method::Post {
         if let Some(route) = cinatoken_relay::parse_gemini_native_path(&req.path()) {
-            return relay::gemini_native(req, env, ctx, route).await;
+            let mut response = relay::gemini_native(req, env, ctx, route).await?;
+            upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+            return Ok(response);
         }
     }
 
@@ -49,7 +62,7 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // keeps `cargo test` / wasm check working without a built frontend.
     }
 
-    Router::with_data(ctx)
+    let response = Router::with_data(ctx)
         .get("/api/status", |_, ctx| {
             let environment = ctx
                 .var("ENVIRONMENT")
@@ -286,7 +299,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             relay::image_edits(req, env, event_ctx).await
         })
         .run(req, env)
-        .await
+        .await;
+    let mut response = response?;
+    upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+    Ok(response)
 }
 
 /// LOG_QUEUE consumer: drains relay audit events in batches and bulk-INSERTs
@@ -404,6 +420,10 @@ fn empty_cors_response() -> Result<Response> {
 
 pub(crate) fn set_cors_headers(response: &mut Response) -> Result<()> {
     let headers = response.headers_mut();
+    // Permissive default (no credentials) for Bearer/API and no-Origin clients.
+    // For an allowlisted browser Origin this is upgraded to a credentialed echo
+    // by `upgrade_cors_for_origin` in the global `fetch` pass — a credentialed
+    // wildcard (`*` + Allow-Credentials) is never emitted.
     headers.set("Access-Control-Allow-Origin", "*")?;
     headers.set(
         "Access-Control-Allow-Headers",
@@ -413,7 +433,63 @@ pub(crate) fn set_cors_headers(response: &mut Response) -> Result<()> {
         "Access-Control-Allow-Methods",
         "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     )?;
+    // Mirror Go `middleware.CORS` ExposeHeaders so browsers can read these on
+    // cross-origin (esp. SSE) responses.
+    headers.set(
+        "Access-Control-Expose-Headers",
+        "Content-Length,Cache-Control,X-Accel-Buffering,X-Request-Id",
+    )?;
     Ok(())
+}
+
+/// Default CORS allowlist when `CORS_ORIGINS` is unset/empty — faithful to Go
+/// `middleware.CORS` (production frontend + local dev server).
+const DEFAULT_CORS_ORIGINS: &[&str] = &["https://app.cinatoken.com", "http://localhost:5173"];
+
+/// Resolve the `Access-Control-Allow-Origin` to echo for a credentialed request,
+/// faithful to Go `middleware.CORS`: the allowlist is `CORS_ORIGINS`
+/// (comma-separated) or, when unset/empty, [`DEFAULT_CORS_ORIGINS`]. Returns the
+/// request `Origin` when it is allowlisted (the caller echoes it and sets
+/// `Allow-Credentials: true`), else `None` (keep the permissive non-credentialed
+/// wildcard). `configured` is the raw `CORS_ORIGINS` value (split here so the
+/// logic is host-testable without an `Env`).
+fn resolve_cors_allow_origin(
+    configured: Option<&str>,
+    request_origin: Option<&str>,
+) -> Option<String> {
+    let origin = request_origin?.trim();
+    if origin.is_empty() {
+        return None;
+    }
+    let allowed = configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| DEFAULT_CORS_ORIGINS.to_vec());
+    if allowed.iter().any(|allowed_origin| *allowed_origin == origin) {
+        Some(origin.to_string())
+    } else {
+        None
+    }
+}
+
+/// Upgrade an already-built response's CORS headers to a credentialed echo when
+/// the request `Origin` is allowlisted. No-op (keeps the non-credentialed
+/// wildcard from [`set_cors_headers`]) otherwise. Errors are ignored: an
+/// immutable-header response (e.g. a static asset) simply keeps its own headers.
+fn upgrade_cors_for_origin(response: &mut Response, allow_origin: Option<&str>) {
+    if let Some(origin) = allow_origin {
+        let headers = response.headers_mut();
+        let _ = headers.set("Access-Control-Allow-Origin", origin);
+        let _ = headers.set("Access-Control-Allow-Credentials", "true");
+        let _ = headers.set("Vary", "Origin");
+    }
 }
 
 fn set_feature(status: &mut cinatoken_core::StatusResponse, name: &'static str, enabled: bool) {
@@ -467,6 +543,45 @@ fn is_static_asset_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cors_allowlist_resolves_like_go() {
+        // Default allowlist (CORS_ORIGINS unset): only the default origins echo.
+        assert_eq!(
+            resolve_cors_allow_origin(None, Some("https://app.cinatoken.com")).as_deref(),
+            Some("https://app.cinatoken.com")
+        );
+        assert_eq!(
+            resolve_cors_allow_origin(None, Some("http://localhost:5173")).as_deref(),
+            Some("http://localhost:5173")
+        );
+        // A non-allowlisted Origin is denied (caller keeps the wildcard, no creds).
+        assert_eq!(
+            resolve_cors_allow_origin(None, Some("https://evil.example")),
+            None
+        );
+        // Configured allowlist overrides the default; whitespace is trimmed.
+        assert_eq!(
+            resolve_cors_allow_origin(
+                Some(" https://a.test , https://b.test "),
+                Some("https://b.test")
+            )
+            .as_deref(),
+            Some("https://b.test")
+        );
+        assert_eq!(
+            resolve_cors_allow_origin(Some("https://a.test"), Some("https://app.cinatoken.com")),
+            None // default no longer applies once CORS_ORIGINS is set
+        );
+        // Empty/absent Origin (non-browser/API client) -> no credentialed echo.
+        assert_eq!(resolve_cors_allow_origin(None, None), None);
+        assert_eq!(resolve_cors_allow_origin(None, Some("   ")), None);
+        // Empty CORS_ORIGINS falls back to the default list.
+        assert_eq!(
+            resolve_cors_allow_origin(Some("  "), Some("https://app.cinatoken.com")).as_deref(),
+            Some("https://app.cinatoken.com")
+        );
+    }
 
     #[test]
     fn static_asset_path_routes_known_admin_spa_routes_to_assets() {

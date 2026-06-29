@@ -54,6 +54,19 @@ KV/Durable Objects.
   (the last two for SSE).
 - Empty origin list -> `AllowAllOrigins=true` (fallback).
 
+**Rust status (DONE 2026-06-28):** `crates/worker/src/lib.rs::resolve_cors_allow_origin`
+ports the allowlist (`CORS_ORIGINS` Worker var, else the default pair) and is
+host-tested (`cors_allowlist_resolves_like_go`). The global `fetch` pass
+(`upgrade_cors_for_origin`) echoes an allowlisted browser `Origin` with
+`Access-Control-Allow-Credentials: true` + `Vary: Origin`; non-allowlisted /
+no-`Origin` (Bearer/API) requests keep the permissive non-credentialed wildcard
+from `set_cors_headers`. A **credentialed wildcard is never emitted** (finding
+#4). `set_cors_headers` now also sets the Go `ExposeHeaders`. Applied to the
+OPTIONS preflight, the Gemini-native path, and all router responses (static
+assets are same-origin and skipped). Remaining: `CORS_ORIGINS` is read from the
+Worker var; wire it per-environment in `wrangler.toml` before the separated-
+frontend cutover.
+
 ## Parity-Critical Findings
 
 1. **Mutable session state vs immutable HMAC cookie.** `TurnstileCheck` and

@@ -103,6 +103,34 @@ pub async fn confirm(mut req: Request, env: Env) -> WorkerResult<Response> {
     })
 }
 
+/// `POST /api/user/2fa/backup-codes`: regenerate a user's backup codes,
+/// invalidating the old set. Requires 2FA to be enabled and a fresh
+/// secure-verification step-up (item 2.3) — Go `RegenerateBackupCodes`.
+pub async fn regenerate_backup_codes(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    if let Some(response) = require_secure_verification(&env, claims.id).await? {
+        return Ok(response);
+    }
+    let db = env.d1("DB")?;
+    let enabled = d1_repositories::find_two_fa_by_user(&db, claims.id)
+        .await?
+        .map(|row| row.is_enabled != 0)
+        .unwrap_or(false);
+    if !enabled {
+        return Ok(envelope_error_response(400, "2FA is not enabled"));
+    }
+    let Some((plaintext, hashes)) = generate_backup_codes() else {
+        return Ok(envelope_error_response(500, "failed to generate backup codes"));
+    };
+    d1_repositories::replace_backup_codes(&db, claims.id, &hashes, unix_timestamp()).await?;
+    envelope_ok_response(&BackupCodesResponse {
+        backup_codes: plaintext,
+    })
+}
+
 /// `GET /api/user/2fa/status`: whether the user has 2FA enabled.
 pub async fn status(req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_user_auth(&req, &env).await? {
@@ -230,6 +258,11 @@ struct ConfirmResponse {
 #[derive(Serialize)]
 struct StatusResponse {
     enabled: bool,
+}
+
+#[derive(Serialize)]
+struct BackupCodesResponse {
+    backup_codes: Vec<String>,
 }
 
 #[derive(Serialize)]

@@ -2,6 +2,8 @@
 //! `relay/channel/task/<provider>` adaptor's `ParseTaskResult`. Each maps a
 //! provider's poll response onto the shared [`crate::TaskInfo`]; the I/O half
 //! (request building, HTTP) lives in the Worker adaptor that calls these.
+pub mod ali;
+pub mod doubao;
 pub mod hailuo;
 pub mod jimeng;
 pub mod kling;

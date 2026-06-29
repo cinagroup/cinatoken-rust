@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod providers;
+
 /// Task lifecycle status — a faithful port of Go `model.TaskStatus`
 /// (`model/task.go`), including its exact wire string values. The D1 `tasks`
 /// table stores these strings in its `status` column.
@@ -132,6 +134,27 @@ pub fn recalc_quota_from_ratios(
         }
     }
     result as i64
+}
+
+/// Parsed result of polling an upstream task provider — a port of
+/// `relaycommon.TaskInfo` (`relay/common/relay_info.go`). Each provider's
+/// response parser (e.g. [`providers::kling::parse_task_result`]) maps its
+/// upstream poll response onto this shape; the orchestration then drives the
+/// status CAS and delta settlement from it. Internal type (drives billing/CAS),
+/// distinct from the client-facing `TaskDto`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskInfo {
+    pub code: i64,
+    pub task_id: String,
+    pub status: TaskStatus,
+    pub reason: String,
+    pub url: String,
+    pub remote_url: String,
+    pub progress: String,
+    /// Actual upstream token charge reported on completion (drives delta
+    /// settlement); 0 when the upstream reports none.
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

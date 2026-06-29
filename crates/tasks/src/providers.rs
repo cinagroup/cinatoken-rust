@@ -8,6 +8,7 @@ pub mod gemini;
 pub mod hailuo;
 pub mod jimeng;
 pub mod kling;
+pub mod midjourney;
 pub mod sora;
 pub mod suno;
 pub mod vertex;

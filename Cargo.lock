@@ -230,6 +230,7 @@ name = "cinatoken-tasks"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "cinatoken-core",
  "serde",
  "serde_json",

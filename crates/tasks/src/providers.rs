@@ -4,6 +4,7 @@
 //! (request building, HTTP) lives in the Worker adaptor that calls these.
 pub mod ali;
 pub mod doubao;
+pub mod gemini;
 pub mod hailuo;
 pub mod jimeng;
 pub mod kling;

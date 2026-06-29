@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod providers;
+pub mod taskcommon;
 
 /// Task lifecycle status — a faithful port of Go `model.TaskStatus`
 /// (`model/task.go`), including its exact wire string values. The D1 `tasks`

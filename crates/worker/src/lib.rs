@@ -20,6 +20,9 @@ mod relay;
 // 4.2). Foundation ahead of the task orchestration that consumes it; the module
 // allows dead_code internally until then.
 mod task_repository;
+// Worker-side task polling I/O (executes the pure poll requests + threads bytes
+// into the parser/settle-apply). Foundation ahead of its routes/trigger.
+mod task_orchestration;
 mod turnstile;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};

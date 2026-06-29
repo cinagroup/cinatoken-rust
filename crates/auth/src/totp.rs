@@ -50,6 +50,32 @@ pub fn decode_base32(secret: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// RFC 4648 base32 alphabet (`A-Z2-7`).
+const BASE32_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/// Encode bytes as RFC 4648 base32 — uppercase, **unpadded** (no `=`). This is
+/// the form authenticator apps expect for the otpauth `secret` parameter and is
+/// exactly round-tripped by [`decode_base32`] (which ignores padding). Used to
+/// turn CSPRNG bytes into a TOTP secret at enrollment.
+pub fn encode_base32(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(5) * 8);
+    let mut buffer: u64 = 0;
+    let mut bits: u32 = 0;
+    for &byte in bytes {
+        buffer = (buffer << 8) | byte as u64;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(BASE32_ALPHABET[((buffer >> bits) & 0x1f) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        // Pad the trailing partial group on the right with zero bits.
+        out.push(BASE32_ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
+    }
+    out
+}
+
 /// RFC 4226 HOTP: the `DIGITS`-digit value for `counter` under `key`, via
 /// HMAC-SHA1 dynamic truncation.
 fn hotp(key: &[u8], counter: u64) -> u32 {
@@ -145,6 +171,25 @@ mod tests {
         assert_eq!(decode_base32("me======").unwrap(), b"a");
         assert_eq!(decode_base32("M E").unwrap(), decode_base32("ME").unwrap());
         assert!(decode_base32("0189").is_none()); // 0/1/8/9 not in base32
+    }
+
+    #[test]
+    fn base32_encodes_rfc4648_vectors_unpadded() {
+        // RFC 4648 §10 test vectors, unpadded (the otpauth secret convention).
+        assert_eq!(encode_base32(b""), "");
+        assert_eq!(encode_base32(b"f"), "MY");
+        assert_eq!(encode_base32(b"fo"), "MZXQ");
+        assert_eq!(encode_base32(b"foo"), "MZXW6");
+        assert_eq!(encode_base32(b"foob"), "MZXW6YQ");
+        assert_eq!(encode_base32(b"fooba"), "MZXW6YTB");
+        assert_eq!(encode_base32(b"foobar"), "MZXW6YTBOI");
+        // Encoded output decodes back to the original (round-trip).
+        for sample in [b"".as_slice(), b"a", b"hello world", b"\x00\xff\x10\x20\x7f"] {
+            assert_eq!(decode_base32(&encode_base32(sample)).unwrap(), sample);
+        }
+        // A 20-byte secret (the typical TOTP size) round-trips and feeds TOTP.
+        let secret_bytes = b"12345678901234567890";
+        assert_eq!(encode_base32(secret_bytes), RFC_SECRET);
     }
 
     #[test]

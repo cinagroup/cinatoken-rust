@@ -6,8 +6,8 @@ pub mod totp;
 
 pub use password::{hash_password, verify_password};
 pub use totp::{
-    backup_code_from_bytes, normalize_backup_code, totp_code_at, validate_backup_code_format,
-    validate_totp,
+    backup_code_from_bytes, decode_base32, encode_base32, normalize_backup_code, totp_code_at,
+    validate_backup_code_format, validate_totp, BACKUP_CODE_LENGTH,
 };
 
 pub use cinatoken_session::SessionClaims;

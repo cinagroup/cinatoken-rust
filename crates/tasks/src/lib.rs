@@ -52,6 +52,35 @@ impl TaskStatus {
     pub fn is_terminal(self) -> bool {
         matches!(self, TaskStatus::Success | TaskStatus::Failure)
     }
+
+    /// Project to the OpenAI-video API status vocabulary (Go
+    /// `TaskStatus.ToVideoStatus`, values from `dto/openai_video.go`). Used by
+    /// the video task-status endpoint.
+    pub fn to_video_status(self) -> &'static str {
+        match self {
+            TaskStatus::Queued | TaskStatus::Submitted => "queued",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Success => "completed",
+            TaskStatus::Failure => "failed",
+            // NOT_START / UNKNOWN
+            _ => "unknown",
+        }
+    }
+
+    /// Project to the simple polling vocabulary (Go `mapTaskStatusToSimple` in
+    /// `relay/relay_task.go`). Note the asymmetry with [`Self::to_video_status`]:
+    /// success is `succeeded` (not `completed`) and the non-terminal default is
+    /// `processing` (not `unknown`), so `IN_PROGRESS` and `NOT_START` both map
+    /// to `processing` here.
+    pub fn to_simple_status(self) -> &'static str {
+        match self {
+            TaskStatus::Success => "succeeded",
+            TaskStatus::Failure => "failed",
+            TaskStatus::Queued | TaskStatus::Submitted => "queued",
+            // NOT_START / IN_PROGRESS / UNKNOWN
+            _ => "processing",
+        }
+    }
 }
 
 /// Whether a `from -> to` transition is a billable settlement: leaving a
@@ -168,5 +197,37 @@ mod tests {
             TaskStatus::Failure,
             TaskStatus::Success
         ));
+    }
+
+    #[test]
+    fn video_status_projection_matches_go() {
+        let cases = [
+            (TaskStatus::NotStart, "unknown"),
+            (TaskStatus::Submitted, "queued"),
+            (TaskStatus::Queued, "queued"),
+            (TaskStatus::InProgress, "in_progress"),
+            (TaskStatus::Success, "completed"),
+            (TaskStatus::Failure, "failed"),
+            (TaskStatus::Unknown, "unknown"),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(status.to_video_status(), expected, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn simple_status_projection_matches_go() {
+        let cases = [
+            (TaskStatus::NotStart, "processing"),
+            (TaskStatus::Submitted, "queued"),
+            (TaskStatus::Queued, "queued"),
+            (TaskStatus::InProgress, "processing"),
+            (TaskStatus::Success, "succeeded"),
+            (TaskStatus::Failure, "failed"),
+            (TaskStatus::Unknown, "processing"),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(status.to_simple_status(), expected, "{status:?}");
+        }
     }
 }

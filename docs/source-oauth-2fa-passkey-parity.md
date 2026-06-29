@@ -49,6 +49,25 @@ escape hatch needed). The **pending-2FA login state** (between password and
 TOTP) is session state -> KV/DO short TTL. Backup codes stay hashed + single-use
 (consume via conditional D1 update, like the payment CAS pattern).
 
+**Rust status (enrollment DONE 2026-06-28, item 4.6):** schema in
+`migrations/d1/0006_two_fa.sql`; primitives in `cinatoken_auth` (TOTP +
+`encode_base32` + backup-code gen, all host-tested); endpoints in
+`crates/worker/src/admin_2fa.rs`:
+- `POST /api/user/2fa/setup` — CSPRNG 160-bit secret (getrandom + encode_base32),
+  stored disabled, returns the secret + an `otpauth://totp` URI.
+- `POST /api/user/2fa/confirm {code}` — `validate_totp` (±1 skew) -> enable +
+  issue 10 single-use backup codes (returned once, stored bcrypt-hashed via the
+  shared `hash_password`, = Go `HashBackupCode`).
+- `GET /api/user/2fa/status`; `POST /api/user/2fa/disable` (hard-delete, gated by
+  secure-verification step-up §2.3).
+
+**Remaining (follow-ups):** the two-step **login 2FA** (password -> pending-2FA
+via `flow_state::TwoFaPending` -> `/user/login/2fa` verifying TOTP **or** a
+backup code; this re-adds the `find_unused_backup_codes`/`mark_backup_code_used`
+repo functions), failed-attempt **lockout** (schema columns exist),
+`RegenerateBackupCodes`, the `secure_verify` **2fa method** for `/api/verify`
+(so step-up can use TOTP, not just password), and admin 2FA stats/disable.
+
 ## Passkey / WebAuthn
 
 - Three ceremonies, each begin/finish: registration, login, verify (step-up).

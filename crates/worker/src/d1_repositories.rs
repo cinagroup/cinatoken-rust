@@ -1124,6 +1124,108 @@ pub async fn find_user_by_id(db: &D1Database, id: i64) -> worker::Result<Option<
     .await
 }
 
+// ---------------------------------------------------------------------------
+// Two-factor authentication (2FA / TOTP) — schema in 0006_two_fa.sql.
+// ---------------------------------------------------------------------------
+
+/// A user's 2FA configuration row.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct TwoFaRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub secret: String,
+    pub is_enabled: i64,
+}
+
+/// Fetch a user's 2FA config (`None` when not enrolled).
+pub async fn find_two_fa_by_user(
+    db: &D1Database,
+    user_id: i64,
+) -> worker::Result<Option<TwoFaRow>> {
+    db.prepare("SELECT id, user_id, secret, is_enabled FROM two_fa WHERE user_id = ?1 LIMIT 1")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .first::<TwoFaRow>(None)
+        .await
+}
+
+/// Provision a new (disabled) TOTP secret for a user at enrollment setup. Any
+/// existing config + backup codes are hard-deleted first so re-enrollment
+/// replaces a stale/pending secret cleanly.
+pub async fn upsert_two_fa_secret(
+    db: &D1Database,
+    user_id: i64,
+    secret: &str,
+    now: i64,
+) -> worker::Result<()> {
+    delete_two_fa(db, user_id).await?;
+    db.prepare(
+        r#"
+        INSERT INTO two_fa (user_id, secret, is_enabled, failed_attempts, created_at, updated_at)
+        VALUES (?1, ?2, 0, 0, ?3, ?3)
+        "#,
+    )
+    .bind_refs(&[
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Text(secret),
+        D1Type::Integer(d1_i32(now)),
+    ])?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Enable a user's 2FA after a confirming TOTP code.
+pub async fn enable_two_fa(db: &D1Database, user_id: i64, now: i64) -> worker::Result<()> {
+    db.prepare("UPDATE two_fa SET is_enabled = 1, updated_at = ?2 WHERE user_id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id)), D1Type::Integer(d1_i32(now))])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+/// Hard-delete a user's 2FA config and all its backup codes (disable). The TOTP
+/// secret is removed entirely (divergence from Go's soft-delete; see migration
+/// 0006).
+pub async fn delete_two_fa(db: &D1Database, user_id: i64) -> worker::Result<()> {
+    let arg = [D1Type::Integer(d1_i32(user_id))];
+    db.prepare("DELETE FROM two_fa_backup_codes WHERE user_id = ?1")
+        .bind_refs(&arg)?
+        .run()
+        .await?;
+    db.prepare("DELETE FROM two_fa WHERE user_id = ?1")
+        .bind_refs(&arg)?
+        .run()
+        .await?;
+    Ok(())
+}
+
+/// Replace a user's backup codes with a fresh set of bcrypt hashes (generated
+/// at enable time and shown to the user once in plaintext).
+pub async fn replace_backup_codes(
+    db: &D1Database,
+    user_id: i64,
+    code_hashes: &[String],
+    now: i64,
+) -> worker::Result<()> {
+    db.prepare("DELETE FROM two_fa_backup_codes WHERE user_id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .run()
+        .await?;
+    for hash in code_hashes {
+        db.prepare(
+            "INSERT INTO two_fa_backup_codes (user_id, code_hash, is_used, created_at) VALUES (?1, ?2, 0, ?3)",
+        )
+        .bind_refs(&[
+            D1Type::Integer(d1_i32(user_id)),
+            D1Type::Text(hash),
+            D1Type::Integer(d1_i32(now)),
+        ])?
+        .run()
+        .await?;
+    }
+    Ok(())
+}
+
 /// Return `true` if a root user (`role = 100`) exists. Used by `/api/setup`
 /// to decide whether initial bootstrap is still allowed.
 pub async fn root_user_exists(db: &D1Database) -> worker::Result<bool> {

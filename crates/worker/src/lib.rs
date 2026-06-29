@@ -1,4 +1,5 @@
 mod admin;
+mod admin_2fa;
 mod admin_channel;
 mod admin_crud;
 mod admin_data;
@@ -121,6 +122,19 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // marker gating sensitive operations (credential reveal).
         .post_async("/api/verify", |req, ctx| async move {
             admin::secure_verify_handler(req, ctx.env).await
+        })
+        // 2FA enrollment (item 4.6).
+        .post_async("/api/user/2fa/setup", |req, ctx| async move {
+            admin_2fa::setup(req, ctx.env).await
+        })
+        .post_async("/api/user/2fa/confirm", |req, ctx| async move {
+            admin_2fa::confirm(req, ctx.env).await
+        })
+        .get_async("/api/user/2fa/status", |req, ctx| async move {
+            admin_2fa::status(req, ctx.env).await
+        })
+        .post_async("/api/user/2fa/disable", |req, ctx| async move {
+            admin_2fa::disable(req, ctx.env).await
         })
         // Admin CRUD (G5 P0): logs, options, tokens.
         // Logs.

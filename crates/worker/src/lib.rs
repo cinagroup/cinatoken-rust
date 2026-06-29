@@ -276,6 +276,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let id = ctx.param("id").cloned();
             admin_user::get_user(req, ctx.env, id.as_ref()).await
         })
+        // Admin account recovery: clear a target user's 2FA (item 4.6).
+        .post_async("/api/user/:id/2fa/disable", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_user::admin_disable_2fa(req, ctx.env, id.as_ref()).await
+        })
         .delete_async("/api/user/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_user::delete_user(req, ctx.env, id.as_ref()).await

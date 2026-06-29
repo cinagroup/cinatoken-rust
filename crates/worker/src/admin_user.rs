@@ -338,6 +338,49 @@ pub async fn delete_user(
     Ok(envelope_ok_response(&serde_json::Value::Null)?)
 }
 
+/// `POST /api/user/:id/2fa/disable`: an admin clears a target user's 2FA
+/// (account recovery when the user loses their authenticator). Requires manage
+/// privilege over the target (`is_root || outranks`) and is audited. Mirrors Go
+/// `AdminDisable2FA`.
+pub async fn admin_disable_2fa(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let id = match parse_id_param(id_param) {
+        Some(id) => id,
+        None => return Ok(envelope_error_response(400, "user id is required")),
+    };
+    let db = env.d1("DB")?;
+    let Some(target) = d1_repositories::find_user_role_status(&db, id).await? else {
+        return Ok(envelope_error_response(404, "user not found"));
+    };
+    if !is_root(claims.role) && !outranks(claims.role, target.role) {
+        return Ok(envelope_error_response(
+            403,
+            "insufficient privileges to manage this user",
+        ));
+    }
+    d1_repositories::delete_two_fa(&db, id).await?;
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(id),
+        None,
+        &claims.username,
+        "two_fa.admin_disable",
+        &format!("admin {} disabled 2FA for user {}", claims.username, id),
+        &serde_json::json!({"id": id}),
+        &crate::admin::admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+    envelope_ok_response(&serde_json::json!({ "disabled": true }))
+}
+
 // ---------------------------------------------------------------------------
 // ManageUser (the action switch)
 // ---------------------------------------------------------------------------

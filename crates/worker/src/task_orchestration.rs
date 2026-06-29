@@ -8,11 +8,13 @@
 //! routes that drive it; runtime-verified by a staging poll.
 #![allow(dead_code)]
 
-use cinatoken_tasks::providers::poll_request::{HttpMethod, PollRequest};
+use crate::task_repository::{apply_poll_result, TaskRow};
+use cinatoken_storage::RelayChannel;
+use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::VideoProvider;
 use cinatoken_tasks::TaskInfo;
 use wasm_bindgen::JsValue;
-use worker::{Fetch, Headers, Method, Request, RequestInit};
+use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit};
 
 /// Execute a provider poll request and return the response body bytes. The
 /// caller feeds these to the matching provider parser
@@ -47,4 +49,47 @@ pub async fn poll_task(provider: VideoProvider, request: &PollRequest) -> worker
     provider
         .parse_task_result(&body)
         .map_err(|message| worker::Error::RustError(format!("parse task result: {message}")))
+}
+
+/// Run one full poll cycle for a task against its channel: resolve the provider
+/// from the channel type, build the (simple-auth) poll request, fetch + parse,
+/// and apply the result through the CAS settle-apply.
+///
+/// Returns `Ok(None)` when the channel type runs no task provider, or when the
+/// provider needs worker-side signing that is not yet ported (Kling JWT, Jimeng
+/// Volcengine HMAC, Vertex GCP OAuth); `Ok(Some(won))` otherwise, where `won`
+/// reports whether this call won the settlement transition.
+///
+/// The fetch id is the task's `upstream_task_id` (for Gemini that is the
+/// base64-encoded operation name the request builder decodes). The exact id
+/// field per provider is confirmed by a staging poll.
+pub async fn poll_one_task(
+    db: &D1Database,
+    task: &TaskRow,
+    channel: &RelayChannel,
+    gemini_version: &str,
+    now: i64,
+) -> worker::Result<Option<bool>> {
+    let Some(provider) = VideoProvider::from_channel_type(channel.channel_type as i64) else {
+        return Ok(None);
+    };
+    let base_url = channel.base_url.as_deref().unwrap_or_default();
+    let key = channel.key.as_str();
+    let id = task.upstream_task_id.as_str();
+
+    let request = match provider {
+        VideoProvider::Sora => poll_request::sora(base_url, key, id),
+        VideoProvider::Vidu => poll_request::vidu(base_url, key, id),
+        VideoProvider::Ali => poll_request::ali(base_url, key, id),
+        VideoProvider::Doubao => poll_request::doubao(base_url, key, id),
+        VideoProvider::Hailuo => poll_request::hailuo(base_url, key, id),
+        VideoProvider::Gemini => poll_request::gemini(base_url, key, id, gemini_version)
+            .map_err(worker::Error::RustError)?,
+        VideoProvider::Kling | VideoProvider::Jimeng | VideoProvider::Vertex => return Ok(None),
+    };
+
+    let info = poll_task(provider, &request).await?;
+    let finish_time = if info.status.is_terminal() { now } else { 0 };
+    let won = apply_poll_result(db, task, &info, finish_time, now).await?;
+    Ok(Some(won))
 }

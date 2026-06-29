@@ -61,12 +61,13 @@ land.
 (`admin::secure_verify_handler`) re-authenticates the logged-in user and writes
 a `SecureVerify` entry to [`crate::flow_state`] (300s TTL = the freshness
 window). `admin::require_secure_verification` is the step-up gate (403
-`secure verification required` when absent), wired into the token-key reveal
-(`POST /api/token/:id/key`). Simplification: the step-up method is **password
-re-auth**, not Go's 2FA/passkey, until 2FA/passkey enrollment (item 4.6) lands.
-Remaining: gate the Go-canonical channel-key reveal (`POST /api/channel/:id/key`
-— confirm/add the endpoint + mask the key in `get_channel`), and the
-expired-vs-missing distinction (the KV TTL collapses both to "absent").
+`secure verification required` when absent), wired into the token-key reveal (`POST /api/token/:id/key`) and the
+Go-canonical channel-key reveal (`POST /api/channel/:id/key`,
+`admin_channel::reveal_channel_key` — admin + step-up + audit; `get_channel`
+already masks the key via `channel_response_no_key`). Simplification: the
+step-up method is **password re-auth**, not Go's 2FA/passkey, until 2FA/passkey
+enrollment (item 4.6) lands. Remaining: the expired-vs-missing distinction (the
+KV TTL collapses both to "absent").
 
 ## CORS (`CORS`)
 

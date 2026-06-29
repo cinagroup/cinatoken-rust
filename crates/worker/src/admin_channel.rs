@@ -108,6 +108,51 @@ pub async fn get_channel(
     Ok(envelope_ok_response(&channel_response_no_key(row))?)
 }
 
+/// `POST /api/channel/:id/key`: reveal a channel's upstream key. Admin-only and
+/// gated by secure-verification step-up (item 2.3) — the Go-canonical
+/// secure-verified credential reveal. The reveal is audited (the key itself is
+/// NEVER logged, only channel id/name) so the trail shows who revealed what.
+pub async fn reveal_channel_key(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let id = match parse_id_param(id_param) {
+        Some(id) => id,
+        None => return Ok(envelope_error_response(400, "channel id is required")),
+    };
+    // Step-up gate: revealing a credential requires a fresh secure-verification.
+    if let Some(response) = crate::admin::require_secure_verification(&env, claims.id).await? {
+        return Ok(response);
+    }
+    let db = env.d1("DB")?;
+    let Some(row) = d1_repositories::find_channel_by_id(&db, id).await? else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+    let channel_id = row.id;
+    let channel_name = row.name.clone();
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        Some(&claims.username),
+        &claims.username,
+        "channel.key_view",
+        &format!(
+            "user {} revealed key for channel {}",
+            claims.username, channel_name
+        ),
+        &serde_json::json!({"channel_id": channel_id, "channel_name": channel_name}),
+        &crate::admin::admin_audit_info(&claims, &req),
+        crate::admin::unix_timestamp(),
+    )
+    .await;
+    Ok(envelope_ok_response(&serde_json::json!({ "key": row.key }))?)
+}
+
 // ---------------------------------------------------------------------------
 // Create / update / delete / batch / fix
 // ---------------------------------------------------------------------------

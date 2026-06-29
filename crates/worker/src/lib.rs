@@ -226,6 +226,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let id = ctx.param("id").cloned();
             admin_channel::get_channel(req, ctx.env, id.as_ref()).await
         })
+        // Channel-key reveal: admin + secure-verification step-up (item 2.3).
+        .post_async("/api/channel/:id/key", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_channel::reveal_channel_key(req, ctx.env, id.as_ref()).await
+        })
         .delete_async("/api/channel/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_channel::delete_channel(req, ctx.env, id.as_ref()).await

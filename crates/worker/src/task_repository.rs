@@ -95,6 +95,28 @@ pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<
     .map(|_| ())
 }
 
+/// Load unfinished tasks for the poller — rows not yet in a terminal status that
+/// carry an upstream id to poll (Go's "未完成的任务" selection). Bounded by
+/// `limit` and ordered by id so a batch is deterministic.
+pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Result<Vec<TaskRow>> {
+    let arg = D1Type::Integer(d1_i32(limit));
+    db.prepare(
+        r#"
+        SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
+               quota, action, status, fail_reason, progress, finish_time
+        FROM tasks
+        WHERE status NOT IN ('SUCCESS', 'FAILURE')
+          AND upstream_task_id != ''
+        ORDER BY id ASC
+        LIMIT ?1
+        "#,
+    )
+    .bind_refs(&arg)?
+    .all()
+    .await?
+    .results::<TaskRow>()
+}
+
 /// Look up a task by its public `task_id` (Go `GetTaskByTaskId`).
 pub async fn find_task_by_task_id(
     db: &D1Database,

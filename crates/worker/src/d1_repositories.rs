@@ -1167,6 +1167,20 @@ pub async fn create_github_user(
     })
 }
 
+/// Link a GitHub login to an existing user account (OAuth bind). Mirrors Go
+/// `GitHubBind`. The caller verifies the login is not already linked elsewhere.
+pub async fn bind_github_id(
+    db: &D1Database,
+    user_id: i64,
+    github_id: &str,
+) -> worker::Result<()> {
+    db.prepare("UPDATE users SET github_id = ?2 WHERE id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id)), D1Type::Text(github_id)])?
+        .run()
+        .await?;
+    Ok(())
+}
+
 /// Find a user by primary key (`/api/user/self`, admin user management).
 pub async fn find_user_by_id(db: &D1Database, id: i64) -> worker::Result<Option<AdminUserRow>> {
     let arg = D1Type::Integer(d1_i32(id));

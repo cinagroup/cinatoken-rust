@@ -45,10 +45,12 @@ token POST + `api.github.com/user` GET with the required `User-Agent`),
 finds-or-creates the account by GitHub login (`find_user_by_github_id` /
 `create_github_user` with a CSPRNG `aff_code` for the UNIQUE column), issues the
 session, and 302-redirects to `FRONTEND_BASE_URL`. Inert unless
-`GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` are set. **Remaining:** the other
-providers (Google/Discord/OIDC/WeChat) follow the same generic shape; the
-**bind** flow (link OAuth to a logged-in account); `TrustedRedirectDomains`
-validation for the final redirect.
+`GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` are set. The **bind** flow is wired:
+when `/api/oauth/github` is hit with a valid session, it links the GitHub login
+to the current account (`bind_github_id`, rejecting a login already linked
+elsewhere) instead of logging in/registering (Go `GitHubBind`). **Remaining:**
+the other providers (Google/Discord/OIDC/WeChat) follow the same generic shape;
+`TrustedRedirectDomains` validation for the final redirect.
 
 ## 2FA (TOTP)
 

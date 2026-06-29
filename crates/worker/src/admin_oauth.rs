@@ -83,6 +83,32 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
 
     let db = env.d1("DB")?;
     let now = unix_timestamp();
+
+    // BIND: if the caller is already logged in, link this GitHub login to their
+    // existing account instead of logging in / registering (Go GitHubBind).
+    match crate::admin::parse_session_claims(&req, &env).await? {
+        Ok(Some(claims)) => {
+            if let Some(existing) =
+                d1_repositories::find_user_by_github_id(&db, &github.login).await?
+            {
+                if existing.id != claims.id {
+                    return Ok(envelope_error_response(
+                        409,
+                        "this GitHub account is already linked to another user",
+                    ));
+                }
+            }
+            d1_repositories::bind_github_id(&db, claims.id, &github.login).await?;
+            let mut response = Response::empty()?.with_status(302);
+            response
+                .headers_mut()
+                .set("Location", &frontend_location(&env))?;
+            return Ok(response);
+        }
+        Ok(None) => {}
+        Err(response) => return Ok(response),
+    }
+
     let user = match d1_repositories::find_user_by_github_id(&db, &github.login).await? {
         Some(user) => user,
         None => {
@@ -140,16 +166,21 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
     };
     let _ = d1_repositories::update_last_login_at(&db, user.id, now).await;
 
-    let location = env
-        .var("FRONTEND_BASE_URL")
+    let mut response = Response::empty()?.with_status(302);
+    attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    response
+        .headers_mut()
+        .set("Location", &frontend_location(&env))?;
+    Ok(response)
+}
+
+/// The post-OAuth redirect target: `FRONTEND_BASE_URL`, or `/` when unset.
+fn frontend_location(env: &Env) -> String {
+    env.var("FRONTEND_BASE_URL")
         .map(|value| value.to_string())
         .ok()
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "/".to_string());
-    let mut response = Response::empty()?.with_status(302);
-    attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
-    response.headers_mut().set("Location", &location)?;
-    Ok(response)
+        .unwrap_or_else(|| "/".to_string())
 }
 
 /// `(client_id, client_secret)` when GitHub OAuth is configured, else `None`.

@@ -9,6 +9,7 @@ pub mod hailuo;
 pub mod jimeng;
 pub mod kling;
 pub mod midjourney;
+pub mod poll_request;
 pub mod sora;
 pub mod suno;
 pub mod vertex;

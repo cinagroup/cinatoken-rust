@@ -16,7 +16,7 @@
 #![allow(dead_code)]
 
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
-use cinatoken_tasks::TaskStatus;
+use cinatoken_tasks::{settlement_for, TaskInfo, TaskSettlement, TaskStatus};
 use serde::Deserialize;
 use worker::{D1Database, D1Type};
 
@@ -161,3 +161,39 @@ pub async fn update_task_status_cas(
 // The pure settlement-detection guard a caller pairs with a CAS win lives in
 // `cinatoken_tasks::is_settlement_transition` (host-tested there, since this
 // wasm-only crate cannot run host unit tests).
+
+/// Apply a parsed upstream poll result to a stored task: CAS its status from the
+/// current value to the parsed one and, on a winning settlement transition,
+/// refund the reserved quota for a terminal failure (Go `RefundTaskQuota`) or
+/// keep the pre-charge for a success. Returns whether this caller won the
+/// transition, so the orchestration knows it owns any one-time side effects.
+///
+/// The CAS guard makes this idempotent: a concurrent poller that already settled
+/// the task wins the transition, and this call becomes a no-op that performs no
+/// second refund. The pure decision (`settlement_for`) and the CAS semantics are
+/// unit-tested in `cinatoken_tasks`; this function is the thin wasm I/O that
+/// wires them to the D1 quota helpers and is verified by a staging poll.
+pub async fn apply_poll_result(
+    db: &D1Database,
+    task: &TaskRow,
+    info: &TaskInfo,
+    finish_time: i64,
+    now: i64,
+) -> worker::Result<bool> {
+    let from = task.status();
+    let won = update_task_status_cas(
+        db,
+        task.id,
+        from,
+        info.status,
+        &info.reason,
+        &info.progress,
+        finish_time,
+        now,
+    )
+    .await?;
+    if won && matches!(settlement_for(from, info.status), TaskSettlement::Refund) {
+        crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
+    }
+    Ok(won)
+}

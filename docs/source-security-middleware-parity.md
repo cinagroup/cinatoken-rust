@@ -29,6 +29,18 @@ KV/Durable Objects.
 - Applied to: register, login, reset_password, email verification, checkin
   (the public/critical routes in `docs/source-route-inventory.md`).
 
+**Rust status (DONE 2026-06-28, item 2.4):** `crates/worker/src/turnstile.rs`
+ports the siteverify flow — `verify_turnstile_token` POSTs the form
+`{secret, response, remoteip}` to the Cloudflare endpoint and reads `success`;
+`require_turnstile` reads the `?turnstile=` token (empty → 400), uses
+`CF-Connecting-IP` as `remoteip`, and is a no-op when `TURNSTILE_SECRET` is
+unset (≈ `TurnstileCheckEnabled`). The user-supplied token is percent-encoded
+into the form body (host-tested `form_encode`) so it can't inject fields. Wired
+into `POST /api/user/login`. Remaining: the session-cached "verified once per
+session" optimization (use [`crate::flow_state`] `Turnstile` for authenticated
+routes) and wiring the other public routes (register/reset/checkin) as they
+land.
+
 ## Secure Verification (`SecureVerificationRequired`) — step-up
 
 - Session keys: `secure_verified_at` (unix ts), `secure_verified_method`.

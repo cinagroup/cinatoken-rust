@@ -56,6 +56,11 @@ const ADMIN_BODY_LIMIT_BYTES: usize = 64 * 1024;
 /// `POST /api/user/login`: authenticate by username/email + password, then
 /// issue a signed session cookie and return the user summary.
 pub async fn login(mut req: Request, env: Env) -> WorkerResult<Response> {
+    // Turnstile gate (item 2.4): when configured, an anonymous login must carry
+    // a valid `?turnstile=` token. No-op when TURNSTILE_SECRET is unset.
+    if let Some(response) = crate::turnstile::require_turnstile(&req, &env).await? {
+        return Ok(response);
+    }
     let codec = match session_codec(&env)? {
         Ok(codec) => codec,
         Err(response) => return Ok(response),

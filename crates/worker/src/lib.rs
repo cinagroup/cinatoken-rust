@@ -14,6 +14,7 @@ mod d1_repositories;
 #[allow(dead_code)]
 mod flow_state;
 mod relay;
+mod turnstile;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
 

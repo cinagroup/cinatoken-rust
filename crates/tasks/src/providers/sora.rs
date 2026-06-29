@@ -3,6 +3,7 @@
 
 use crate::{TaskInfo, TaskStatus};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 #[derive(Deserialize, Default)]
 struct ResponseTask {
@@ -92,9 +93,63 @@ pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
     Ok(upstream)
 }
 
+/// Estimate the pre-charge ratio multipliers for a Sora submit (Go
+/// `EstimateBilling`). Seconds come from `seconds_field`, else `duration`, else
+/// the default 4; the `size` multiplier is `1.666667` for the two large
+/// portrait/landscape sizes and `1` otherwise (empty size defaults to
+/// `720x1280`). Remix submits return `None` — their ratios are set when the
+/// origin task is resolved.
+pub fn estimate_billing(
+    seconds_field: &str,
+    duration: i64,
+    size: &str,
+    is_remix: bool,
+) -> Option<HashMap<String, f64>> {
+    if is_remix {
+        return None;
+    }
+    let mut seconds = seconds_field.parse::<i64>().unwrap_or(0);
+    if seconds == 0 {
+        seconds = duration;
+    }
+    if seconds <= 0 {
+        seconds = 4;
+    }
+    let size = if size.is_empty() { "720x1280" } else { size };
+    let size_ratio = if size == "1792x1024" || size == "1024x1792" {
+        1.666667
+    } else {
+        1.0
+    };
+    let mut ratios = HashMap::new();
+    ratios.insert("seconds".to_string(), seconds as f64);
+    ratios.insert("size".to_string(), size_ratio);
+    Some(ratios)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn estimate_billing_ratios() {
+        let r = estimate_billing("5", 0, "720x1280", false).unwrap();
+        assert_eq!(r["seconds"], 5.0);
+        assert_eq!(r["size"], 1.0);
+
+        // Empty seconds -> duration; empty size -> default (ratio 1).
+        let r = estimate_billing("", 8, "", false).unwrap();
+        assert_eq!(r["seconds"], 8.0);
+        assert_eq!(r["size"], 1.0);
+
+        // No seconds/duration -> default 4; large size -> 1.666667.
+        let r = estimate_billing("", 0, "1792x1024", false).unwrap();
+        assert_eq!(r["seconds"], 4.0);
+        assert_eq!(r["size"], 1.666667);
+
+        // Remix carries no estimate here.
+        assert!(estimate_billing("5", 0, "720x1280", true).is_none());
+    }
 
     #[test]
     fn submit_prefers_id_then_task_id() {

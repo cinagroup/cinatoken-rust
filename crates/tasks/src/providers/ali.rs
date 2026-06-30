@@ -103,9 +103,131 @@ pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
     Ok(resp.output.task_id)
 }
 
+/// Resolve Ali's submit `(size, resolution, duration)` from the request — the
+/// non-trivial core of Go `convertToAliRequest`. `model` is the client model
+/// (Go's prefix checks read `req.Model`). Exactly one of `size`/`resolution` is
+/// set per Go's branching:
+/// - explicit size containing `*` → `size`; otherwise it's upcased to a
+///   resolution (a trailing `P` is appended if missing);
+/// - a t2v request with a `*`-less explicit size is an error;
+/// - no size → a model-prefix default (t2v: `1920*1080` for wan2.5/wan2.2 else
+///   `1280*720`; i2v: `1080P` for wan2.6/wan2.5/wan2.2-i2v-plus, `720P` for
+///   wan2.2-i2v-flash and the rest).
+///
+/// Duration is `req.Duration` when positive, else parsed from `seconds` (error on
+/// non-numeric), else the default 5. The struct assembly + metadata merge around
+/// this is worker-side (Ali merges metadata without stripping `model`, unlike
+/// the other providers).
+pub fn resolve_parameters(
+    model: &str,
+    size: &str,
+    duration: i64,
+    seconds: &str,
+) -> Result<(String, String, i64), String> {
+    let mut out_size = String::new();
+    let mut out_resolution = String::new();
+
+    if !size.is_empty() {
+        if model.contains("t2v") && !size.contains('*') {
+            return Err(format!("invalid size: {size}, example: 1920*1080"));
+        }
+        if size.contains('*') {
+            out_size = size.to_string();
+        } else {
+            let mut resolution = size.to_uppercase();
+            if !resolution.ends_with('P') {
+                resolution.push('P');
+            }
+            out_resolution = resolution;
+        }
+    } else if model.contains("t2v") {
+        out_size = if model.starts_with("wan2.5") || model.starts_with("wan2.2") {
+            "1920*1080".to_string()
+        } else {
+            "1280*720".to_string()
+        };
+    } else {
+        out_resolution = if model.starts_with("wan2.6") || model.starts_with("wan2.5") {
+            "1080P".to_string()
+        } else if model.starts_with("wan2.2-i2v-flash") {
+            "720P".to_string()
+        } else if model.starts_with("wan2.2-i2v-plus") {
+            "1080P".to_string()
+        } else {
+            "720P".to_string()
+        };
+    }
+
+    let out_duration = if duration > 0 {
+        duration
+    } else if !seconds.is_empty() {
+        seconds
+            .parse::<i64>()
+            .map_err(|_| "convert seconds to int failed".to_string())?
+    } else {
+        5
+    };
+
+    Ok((out_size, out_resolution, out_duration))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_parameters_size_and_resolution() {
+        // Explicit "*" size -> size; t2v happy path.
+        assert_eq!(
+            resolve_parameters("wan2.2-t2v", "1920*1080", 0, "").unwrap(),
+            ("1920*1080".to_string(), String::new(), 5)
+        );
+        // t2v + size without "*" -> error.
+        assert!(resolve_parameters("wan2.2-t2v", "720p", 0, "").is_err());
+        // i2v + bare size -> upcased resolution with trailing P.
+        assert_eq!(
+            resolve_parameters("wan-i2v", "720p", 0, "").unwrap(),
+            (String::new(), "720P".to_string(), 5)
+        );
+    }
+
+    #[test]
+    fn resolve_parameters_model_defaults() {
+        // t2v defaults.
+        assert_eq!(
+            resolve_parameters("wan2.2-t2v", "", 0, "").unwrap().0,
+            "1920*1080"
+        );
+        assert_eq!(
+            resolve_parameters("foo-t2v", "", 0, "").unwrap().0,
+            "1280*720"
+        );
+        // i2v resolution defaults.
+        assert_eq!(
+            resolve_parameters("wan2.5-i2v", "", 0, "").unwrap().1,
+            "1080P"
+        );
+        assert_eq!(
+            resolve_parameters("wan2.2-i2v-flash", "", 0, "").unwrap().1,
+            "720P"
+        );
+        assert_eq!(
+            resolve_parameters("wan2.2-i2v-plus", "", 0, "").unwrap().1,
+            "1080P"
+        );
+        assert_eq!(
+            resolve_parameters("other-i2v", "", 0, "").unwrap().1,
+            "720P"
+        );
+    }
+
+    #[test]
+    fn resolve_parameters_duration() {
+        assert_eq!(resolve_parameters("m-i2v", "720p", 8, "").unwrap().2, 8);
+        assert_eq!(resolve_parameters("m-i2v", "720p", 0, "10").unwrap().2, 10);
+        assert_eq!(resolve_parameters("m-i2v", "720p", 0, "").unwrap().2, 5);
+        assert!(resolve_parameters("m-i2v", "720p", 0, "bad").is_err());
+    }
 
     #[test]
     fn submit_extracts_output_task_id_with_error_checks() {

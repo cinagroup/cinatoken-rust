@@ -10,10 +10,47 @@
 
 use crate::task_repository::{apply_poll_result, find_unfinished_tasks, TaskRow};
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
-use cinatoken_tasks::providers::VideoProvider;
-use cinatoken_tasks::TaskInfo;
+use cinatoken_tasks::providers::{doubao, hailuo, kling, sora, vidu, VideoProvider};
+use cinatoken_tasks::{TaskInfo, TaskSubmitReq};
 use wasm_bindgen::JsValue;
 use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit};
+
+/// Build the submit request body for a provider by dispatching to its ported
+/// body transform (the submit half of Go `BuildRequestBody`). The four
+/// JSON-payload providers serialize their `convert_to_request_payload`; Sora
+/// overrides `model` in the raw client body. Ali (nested struct + no-model-strip
+/// metadata merge), Gemini, and Vertex submit bodies are not yet ported and
+/// return an error so the caller can fall back. `raw_client_body` is the original
+/// request body Sora reshapes.
+pub fn build_submit_body(
+    provider: VideoProvider,
+    req: &TaskSubmitReq,
+    upstream_model: &str,
+    raw_client_body: &[u8],
+) -> Result<Vec<u8>, String> {
+    fn serialize_payload<T: serde::Serialize>(
+        result: Result<T, String>,
+    ) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(&result?).map_err(|err| err.to_string())
+    }
+    match provider {
+        VideoProvider::Doubao => serialize_payload(doubao::convert_to_request_payload(req)),
+        VideoProvider::Hailuo => {
+            serialize_payload(hailuo::convert_to_request_payload(req, upstream_model))
+        }
+        VideoProvider::Vidu => {
+            serialize_payload(vidu::convert_to_request_payload(req, upstream_model))
+        }
+        VideoProvider::Kling => {
+            serialize_payload(kling::convert_to_request_payload(req, upstream_model))
+        }
+        VideoProvider::Sora => Ok(sora::build_json_body(raw_client_body, upstream_model)),
+        VideoProvider::Ali
+        | VideoProvider::Gemini
+        | VideoProvider::Vertex
+        | VideoProvider::Jimeng => Err("submit body not yet ported for this provider".to_string()),
+    }
+}
 
 /// Execute a provider poll request and return the response body bytes. The
 /// caller feeds these to the matching provider parser

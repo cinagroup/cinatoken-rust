@@ -14,19 +14,17 @@ use crate::task_repository::{
 };
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
-    ali, doubao, hailuo, jimeng, kling, sora, submit_request, vidu, VideoProvider,
+    ali, doubao, gemini, hailuo, jimeng, kling, sora, submit_request, vidu, VideoProvider,
 };
 use cinatoken_tasks::{apply_other_ratios, TaskInfo, TaskStatus, TaskSubmitReq};
 use wasm_bindgen::JsValue;
 use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
 /// Build the submit request body for a provider by dispatching to its ported
-/// body transform (the submit half of Go `BuildRequestBody`). The four
-/// JSON-payload providers serialize their `convert_to_request_payload`; Sora
-/// overrides `model` in the raw client body. Ali (nested struct + no-model-strip
-/// metadata merge), Gemini, and Vertex submit bodies are not yet ported and
-/// return an error so the caller can fall back. `raw_client_body` is the original
-/// request body Sora reshapes.
+/// body transform (the submit half of Go `BuildRequestBody`). The JSON-payload
+/// providers serialize their `convert_to_request_payload`; Sora overrides `model`
+/// in the raw client body. Only Vertex's submit body is unported (it returns an
+/// error). `raw_client_body` is the original request body Sora reshapes.
 pub fn build_submit_body(
     provider: VideoProvider,
     req: &TaskSubmitReq,
@@ -56,9 +54,8 @@ pub fn build_submit_body(
             serialize_payload(ali::convert_to_request_payload(req, upstream_model))
         }
         VideoProvider::Sora => Ok(sora::build_json_body(raw_client_body, upstream_model)),
-        VideoProvider::Gemini | VideoProvider::Vertex => {
-            Err("submit body not yet ported for this provider".to_string())
-        }
+        VideoProvider::Gemini => serialize_payload(gemini::convert_to_request_payload(req)),
+        VideoProvider::Vertex => Err("submit body not yet ported for this provider".to_string()),
     }
 }
 
@@ -133,23 +130,40 @@ fn build_jimeng_request(
     })
 }
 
-/// Build the signed submit HTTP request (a `POST` [`PollRequest`]) for the
-/// simple-auth providers: the submit URL (action-dependent), the key-derived
-/// auth header (`Bearer` for sora/doubao/ali/hailuo, `Token` for vidu), and the
-/// JSON body. Kling (JWT) and Jimeng (Volcengine SigV4) need request signing and
-/// are not wired here; Gemini/Vertex submit bodies aren't ported.
+/// Build the signed submit HTTP request (a `POST` [`PollRequest`]). The
+/// simple-auth providers use the action-dependent submit URL + a key-derived
+/// auth header (`Bearer` for sora/doubao/ali/hailuo, `Token` for vidu); Kling
+/// mints a JWT, Jimeng builds a Volcengine-SigV4-signed request, and Gemini posts
+/// to `predictLongRunning` with an `x-goog-api-key` header. Only Vertex (GCP
+/// OAuth) is unwired.
 pub fn build_submit_http_request(
     provider: VideoProvider,
     base_url: &str,
     key: &str,
     action: &str,
     origin_task_id: &str,
+    upstream_model: &str,
+    gemini_version: &str,
     body: Vec<u8>,
     now: i64,
 ) -> Result<PollRequest, String> {
     // Jimeng builds the full signed request (SigV4 adds host/date/sha256 headers).
     if provider == VideoProvider::Jimeng {
         return build_jimeng_request(base_url, key, "CVSync2AsyncSubmitTask", body, now);
+    }
+    // Gemini posts to predictLongRunning with the `x-goog-api-key` header (not a
+    // bearer Authorization), so it builds its request directly.
+    if provider == VideoProvider::Gemini {
+        let body = String::from_utf8(body).map_err(|err| err.to_string())?;
+        return Ok(PollRequest {
+            method: HttpMethod::Post,
+            url: submit_request::gemini(base_url, gemini_version, upstream_model),
+            headers: vec![
+                ("x-goog-api-key".to_string(), key.to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: Some(body),
+        });
     }
     let (url, auth) = match provider {
         VideoProvider::Sora => (
@@ -175,7 +189,11 @@ pub fn build_submit_http_request(
             )
         }
         VideoProvider::Jimeng | VideoProvider::Gemini | VideoProvider::Vertex => {
-            return Err("submit request not wired for this provider (signing/unported)".to_string())
+            // Jimeng + Gemini are handled above; only Vertex (GCP OAuth) is
+            // genuinely unported here.
+            return Err(
+                "submit request not wired for this provider (Vertex GCP OAuth)".to_string(),
+            );
         }
     };
     let body = String::from_utf8(body).map_err(|err| err.to_string())?;
@@ -203,14 +221,24 @@ pub async fn submit_task(
     origin_task_id: &str,
     req: &TaskSubmitReq,
     upstream_model: &str,
+    gemini_version: &str,
     raw_client_body: &[u8],
     now: i64,
 ) -> worker::Result<String> {
     let body = build_submit_body(provider, req, upstream_model, raw_client_body)
         .map_err(worker::Error::RustError)?;
-    let request =
-        build_submit_http_request(provider, base_url, key, action, origin_task_id, body, now)
-            .map_err(worker::Error::RustError)?;
+    let request = build_submit_http_request(
+        provider,
+        base_url,
+        key,
+        action,
+        origin_task_id,
+        upstream_model,
+        gemini_version,
+        body,
+        now,
+    )
+    .map_err(worker::Error::RustError)?;
     let response = execute_poll_request(&request).await?;
     provider
         .parse_submit_response(&response)
@@ -280,6 +308,8 @@ pub struct TaskSubmitContext<'a> {
     pub origin_task_id: &'a str,
     pub base_quota: i64,
     pub now: i64,
+    /// Configured Gemini API version (e.g. `v1beta`); only used by Gemini.
+    pub gemini_version: &'a str,
 }
 
 /// Orchestrate a task submit — the billing + submit + insert core of Go
@@ -323,6 +353,7 @@ pub async fn relay_task_submit(
         ctx.origin_task_id,
         req,
         ctx.upstream_model,
+        ctx.gemini_version,
         raw_client_body,
         ctx.now,
     )
@@ -418,6 +449,10 @@ pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker:
         .unwrap_or(0);
 
     let channel_base_url = channel.base_url.as_deref().unwrap_or_default();
+    let gemini_version = env
+        .var("GEMINI_VERSION")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "v1beta".to_string());
     let ctx = TaskSubmitContext {
         provider,
         channel_id: channel.id,
@@ -433,6 +468,7 @@ pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker:
         origin_task_id: "",
         base_quota,
         now,
+        gemini_version: &gemini_version,
     };
 
     match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {

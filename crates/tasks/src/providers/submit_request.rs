@@ -57,6 +57,12 @@ pub fn hailuo(base_url: &str) -> String {
     format!("{base_url}/v1/video_generation")
 }
 
+/// Gemini/Veo: the `predictLongRunning` submit endpoint for a model + API
+/// version (Go `BuildRequestURL`).
+pub fn gemini(base_url: &str, version: &str, model: &str) -> String {
+    format!("{base_url}/{version}/models/{model}:predictLongRunning")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,8 +1,11 @@
-//! Pure response parser for the Sora video task provider, ported from
-//! `relay/channel/task/sora/adaptor.go` (`ParseTaskResult`).
+//! Pure response parser, billing estimate, and JSON submit-body builder for the
+//! Sora video task provider, ported from `relay/channel/task/sora/adaptor.go`
+//! (`ParseTaskResult`, `EstimateBilling`, and the JSON branch of
+//! `BuildRequestBody`).
 
 use crate::{TaskInfo, TaskStatus};
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 
 #[derive(Deserialize, Default)]
@@ -127,9 +130,45 @@ pub fn estimate_billing(
     Some(ratios)
 }
 
+/// Build the Sora JSON submit body — a port of the `application/json` branch of
+/// Go `BuildRequestBody`: parse the client body, override `model` with the
+/// upstream model name, and re-serialize. If the body isn't a JSON object (or
+/// re-serialization fails), it is passed through unchanged. The
+/// `multipart/form-data` branch streams file parts and is handled worker-side.
+pub fn build_json_body(client_body: &[u8], upstream_model: &str) -> Vec<u8> {
+    if let Ok(Value::Object(mut map)) = serde_json::from_slice::<Value>(client_body) {
+        map.insert(
+            "model".to_string(),
+            Value::String(upstream_model.to_string()),
+        );
+        if let Ok(bytes) = serde_json::to_vec(&Value::Object(map)) {
+            return bytes;
+        }
+    }
+    client_body.to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_json_body_overrides_model() {
+        // model overridden; other fields preserved.
+        let out = build_json_body(br#"{"prompt":"x","model":"old"}"#, "sora-2");
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["model"], serde_json::json!("sora-2"));
+        assert_eq!(value["prompt"], serde_json::json!("x"));
+
+        // model added when absent.
+        let out = build_json_body(br#"{"prompt":"x"}"#, "sora-2");
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["model"], serde_json::json!("sora-2"));
+
+        // Non-object / invalid JSON passes through unchanged.
+        assert_eq!(build_json_body(b"not json", "m"), b"not json".to_vec());
+        assert_eq!(build_json_body(b"[1,2]", "m"), b"[1,2]".to_vec());
+    }
 
     #[test]
     fn estimate_billing_ratios() {

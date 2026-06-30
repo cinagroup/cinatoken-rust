@@ -171,6 +171,24 @@ pub fn recalc_quota_from_ratios(
     result as i64
 }
 
+/// Apply the estimate's `OtherRatios` to the base model quota for the pre-charge
+/// — a port of step 6 of Go `RelayTaskSubmit`: multiply the base quota by each
+/// ratio that isn't `1.0`, truncating toward zero **at each step**
+/// (`int(float64(quota) * ra)` per ratio). This per-step truncation is distinct
+/// from [`recalc_quota_from_ratios`], which accumulates in float and truncates
+/// once. Models in Go's `TaskPricePatches` skip this entirely — the caller makes
+/// that check and simply doesn't call this. Pure, so the pre-charge arithmetic
+/// is unit-testable without the relay billing path.
+pub fn apply_other_ratios(base_quota: i64, ratios: &[f64]) -> i64 {
+    let mut quota = base_quota;
+    for &ra in ratios {
+        if ra != 1.0 {
+            quota = (quota as f64 * ra) as i64;
+        }
+    }
+    quota
+}
+
 /// Parsed result of polling an upstream task provider — a port of
 /// `relaycommon.TaskInfo` (`relay/common/relay_info.go`). Each provider's
 /// response parser (e.g. [`providers::kling::parse_task_result`]) maps its
@@ -383,5 +401,16 @@ mod tests {
         // Reapply accumulates in float, truncating only once at the end:
         // base 100, new ratios 1.5 then 1.5 -> 100 * 2.25 = 225.0 -> 225.
         assert_eq!(recalc_quota_from_ratios(100, &[], &[1.5, 1.5]), 225);
+    }
+
+    #[test]
+    fn apply_other_ratios_truncates_per_step() {
+        assert_eq!(apply_other_ratios(1000, &[]), 1000);
+        assert_eq!(apply_other_ratios(1000, &[2.0]), 2000);
+        // 1.0 ratios are skipped.
+        assert_eq!(apply_other_ratios(1000, &[1.0]), 1000);
+        // Per-step truncation differs from a single accumulated multiply:
+        // 3 * 1.5 = 4.5 -> 4, then * 2.0 = 8.0 -> 8 (accumulate would give 9).
+        assert_eq!(apply_other_ratios(3, &[1.5, 2.0]), 8);
     }
 }

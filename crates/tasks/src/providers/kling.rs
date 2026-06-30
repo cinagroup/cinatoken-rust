@@ -1,11 +1,13 @@
 //! Pure response parser for the Kling video task provider, ported from
 //! `relay/channel/task/kling/adaptor.go` (`ParseTaskResult`).
 
-use crate::{TaskInfo, TaskStatus};
+use crate::taskcommon::{default_int, default_string, merge_metadata};
+use crate::{TaskInfo, TaskStatus, TaskSubmitReq};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -162,9 +164,86 @@ pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
     Ok(resp.data.task_id)
 }
 
+/// Map a request size to Kling's aspect ratio (Go `getAspectRatio`); unknown
+/// sizes default to `1:1`.
+fn get_aspect_ratio(size: &str) -> &'static str {
+    match size {
+        "1024x1024" | "512x512" => "1:1",
+        "1280x720" | "1920x1080" => "16:9",
+        "720x1280" | "1080x1920" => "9:16",
+        _ => "1:1",
+    }
+}
+
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
+}
+
+/// The Kling submit payload. The transform sets prompt/image/mode/duration/
+/// aspect_ratio/model(_name)/cfg_scale; other fields (image_tail, masks, …)
+/// arrive via metadata (carried in `extra`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RequestPayload {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    prompt: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    image: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    mode: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    duration: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    aspect_ratio: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    model_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    model: String,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    cfg_scale: f64,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// Build the Kling submit payload from the client request — a port of
+/// `convertToRequestPayload`. Mode defaults to `std`, duration to `"5"` (a
+/// stringified int), aspect ratio comes from the size, model/model_name default
+/// to `kling-v1` when the upstream model is empty, cfg_scale is `0.5`; metadata
+/// passthrough is merged last (with `model` stripped). `upstream_model` is Go's
+/// `info.UpstreamModelName`.
+pub fn convert_to_request_payload(
+    req: &TaskSubmitReq,
+    upstream_model: &str,
+) -> Result<RequestPayload, String> {
+    let model = if upstream_model.is_empty() {
+        "kling-v1"
+    } else {
+        upstream_model
+    };
+    let mut payload = RequestPayload {
+        prompt: req.prompt.clone(),
+        image: req.image.clone(),
+        mode: default_string(&req.mode, "std").to_string(),
+        duration: default_int(req.duration, 5).to_string(),
+        aspect_ratio: get_aspect_ratio(&req.size).to_string(),
+        model_name: model.to_string(),
+        model: model.to_string(),
+        cfg_scale: 0.5,
+        extra: Map::new(),
+    };
+
+    if let Some(metadata) = &req.metadata {
+        let mut value = serde_json::to_value(&payload).map_err(|err| err.to_string())?;
+        merge_metadata(&mut value, metadata);
+        payload = serde_json::from_value(value).map_err(|err| err.to_string())?;
+    }
+
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn jwt_passthrough_for_new_api_relay_key() {
@@ -223,6 +302,44 @@ mod tests {
             parts[2],
             URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
         );
+    }
+
+    #[test]
+    fn request_payload_defaults_aspect_and_metadata() {
+        // Empty model/mode/duration -> defaults; size -> aspect ratio.
+        let req = TaskSubmitReq {
+            prompt: "p".to_string(),
+            size: "1280x720".to_string(),
+            ..Default::default()
+        };
+        let payload = convert_to_request_payload(&req, "").unwrap();
+        assert_eq!(
+            serde_json::to_value(&payload).unwrap(),
+            json!({
+                "prompt": "p",
+                "mode": "std",
+                "duration": "5",
+                "aspect_ratio": "16:9",
+                "model_name": "kling-v1",
+                "model": "kling-v1",
+                "cfg_scale": 0.5
+            })
+        );
+
+        // Explicit upstream model + duration + metadata; model stripped.
+        let req = TaskSubmitReq {
+            prompt: "p".to_string(),
+            duration: 10,
+            size: "720x1280".to_string(),
+            metadata: Some(json!({"negative_prompt": "blurry", "model": "evil"})),
+            ..Default::default()
+        };
+        let value =
+            serde_json::to_value(convert_to_request_payload(&req, "kling-v2").unwrap()).unwrap();
+        assert_eq!(value["duration"], json!("10"));
+        assert_eq!(value["aspect_ratio"], json!("9:16"));
+        assert_eq!(value["model"], json!("kling-v2"));
+        assert_eq!(value["negative_prompt"], json!("blurry"));
     }
 
     #[test]

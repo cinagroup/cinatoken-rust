@@ -1,8 +1,11 @@
-//! Pure response parser for the Vidu video task provider, ported from
-//! `relay/channel/task/vidu/adaptor.go` (`ParseTaskResult`).
+//! Pure response parser + submit-body builder for the Vidu video task provider,
+//! ported from `relay/channel/task/vidu/adaptor.go` (`ParseTaskResult` and
+//! `convertToRequestPayload`).
 
-use crate::{TaskInfo, TaskStatus};
-use serde::Deserialize;
+use crate::taskcommon::{default_int, default_string, merge_metadata};
+use crate::{TaskInfo, TaskStatus, TaskSubmitReq};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Deserialize, Default)]
 struct Response {
@@ -81,9 +84,105 @@ pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
     Ok(resp.task_id)
 }
 
+/// The Vidu submit payload. The transform sets model/images/prompt/duration/
+/// resolution/movement_amplitude/bgm; other fields arrive via metadata (carried
+/// in `extra`). `model` and `images` have no omitempty in Go and are always
+/// serialized.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RequestPayload {
+    model: String,
+    images: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    prompt: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    duration: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    resolution: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    movement_amplitude: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    bgm: bool,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Build the Vidu submit payload from the client request — a port of
+/// `convertToRequestPayload`. Model defaults to `viduq1`, duration to 5,
+/// resolution to `1080p`; movement amplitude is `auto` and bgm off; metadata
+/// passthrough is merged last (with `model` stripped). `upstream_model` is Go's
+/// `info.UpstreamModelName`.
+pub fn convert_to_request_payload(
+    req: &TaskSubmitReq,
+    upstream_model: &str,
+) -> Result<RequestPayload, String> {
+    let mut payload = RequestPayload {
+        model: default_string(upstream_model, "viduq1").to_string(),
+        images: req.images.clone(),
+        prompt: req.prompt.clone(),
+        duration: default_int(req.duration, 5),
+        resolution: default_string(&req.size, "1080p").to_string(),
+        movement_amplitude: "auto".to_string(),
+        bgm: false,
+        extra: Map::new(),
+    };
+
+    if let Some(metadata) = &req.metadata {
+        let mut value = serde_json::to_value(&payload).map_err(|err| err.to_string())?;
+        merge_metadata(&mut value, metadata);
+        payload = serde_json::from_value(value).map_err(|err| err.to_string())?;
+    }
+
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn request_payload_defaults_and_metadata() {
+        // Empty model/duration/size -> defaults; auto movement; bgm omitted.
+        let req = TaskSubmitReq {
+            prompt: "p".to_string(),
+            images: vec!["i1".to_string()],
+            ..Default::default()
+        };
+        let payload = convert_to_request_payload(&req, "").unwrap();
+        assert_eq!(
+            serde_json::to_value(&payload).unwrap(),
+            json!({
+                "model": "viduq1",
+                "images": ["i1"],
+                "prompt": "p",
+                "duration": 5,
+                "resolution": "1080p",
+                "movement_amplitude": "auto"
+            })
+        );
+
+        // Explicit values + metadata; model stripped from metadata.
+        let req = TaskSubmitReq {
+            duration: 8,
+            size: "720p".to_string(),
+            metadata: Some(json!({"seed": 42, "model": "evil"})),
+            ..Default::default()
+        };
+        let value =
+            serde_json::to_value(convert_to_request_payload(&req, "viduq2").unwrap()).unwrap();
+        assert_eq!(value["model"], json!("viduq2"));
+        assert_eq!(value["duration"], json!(8));
+        assert_eq!(value["resolution"], json!("720p"));
+        assert_eq!(value["seed"], json!(42));
+    }
 
     #[test]
     fn submit_returns_task_id_unless_failed() {

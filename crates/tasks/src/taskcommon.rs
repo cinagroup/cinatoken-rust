@@ -21,6 +21,24 @@ pub fn decode_local_task_id(id: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|err| format!("decode local task id failed: {err}"))
 }
 
+/// Go `taskcommon.DefaultString`: `value` unless it is empty, then `fallback`.
+pub fn default_string<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.is_empty() {
+        fallback
+    } else {
+        value
+    }
+}
+
+/// Go `taskcommon.DefaultInt`: `value` unless it is zero, then `fallback`.
+pub fn default_int(value: i64, fallback: i64) -> i64 {
+    if value == 0 {
+        fallback
+    } else {
+        value
+    }
+}
+
 /// Merge a provider's passthrough `metadata` into a `target` payload value — a
 /// port of Go `taskcommon.UnmarshalMetadata`. The `model` key is dropped first
 /// (Go deletes it to prevent a metadata-driven billing bypass), then metadata's
@@ -74,6 +92,14 @@ mod tests {
     fn decode_rejects_invalid_base64() {
         // '!' is not in the base64url alphabet.
         assert!(decode_local_task_id("not!valid").is_err());
+    }
+
+    #[test]
+    fn default_helpers() {
+        assert_eq!(default_string("x", "fb"), "x");
+        assert_eq!(default_string("", "fb"), "fb");
+        assert_eq!(default_int(7, 5), 7);
+        assert_eq!(default_int(0, 5), 5);
     }
 
     #[test]

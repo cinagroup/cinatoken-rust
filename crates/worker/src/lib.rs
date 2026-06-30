@@ -420,6 +420,10 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         Ok(settled) => worker::console_log!("task poller: settled {settled} suno task(s)"),
         Err(err) => worker::console_error!("task poller: suno batch failed: {err}"),
     }
+    match task_orchestration::poll_unfinished_midjourney_tasks(&db, now, 100).await {
+        Ok(settled) => worker::console_log!("task poller: settled {settled} mj task(s)"),
+        Err(err) => worker::console_error!("task poller: mj batch failed: {err}"),
+    }
 }
 
 #[event(queue)]

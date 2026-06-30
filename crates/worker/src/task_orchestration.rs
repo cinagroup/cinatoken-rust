@@ -14,7 +14,8 @@ use crate::task_repository::{
 };
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
-    ali, doubao, gemini, hailuo, jimeng, kling, sora, submit_request, suno, vidu, VideoProvider,
+    ali, doubao, gemini, hailuo, jimeng, kling, midjourney, sora, submit_request, suno, vidu,
+    VideoProvider,
 };
 use cinatoken_tasks::{
     apply_other_ratios, cover_task_action_to_model_name, TaskInfo, TaskStatus, TaskSubmitReq,
@@ -790,6 +791,88 @@ pub async fn poll_unfinished_suno_tasks(
             )
             .await
             {
+                settled += 1;
+            }
+        }
+    }
+    Ok(settled)
+}
+
+/// Drive the Midjourney batch poll (Go `controller/midjourney.go`): load
+/// unfinished `midjourneys` rows, group by channel, POST the batch of `mj_id`s to
+/// `{base}/mj/task/list-by-condition` (authenticated with the `mj-api-secret`
+/// header), parse the `[]MidjourneyDto` array, and merge each item onto its row
+/// via [`crate::mj_repository::apply_midjourney_poll_result`]. A row that has
+/// been unfinished for over an hour without reaching 100% is forced to FAILURE
+/// (Go's timeout guard). Best-effort per channel/item; returns settlements won.
+pub async fn poll_unfinished_midjourney_tasks(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<u32> {
+    use crate::mj_repository::{apply_midjourney_poll_result, MjPollResult, MjRow};
+
+    let rows = crate::mj_repository::find_unfinished_midjourneys(db, limit).await?;
+    let mut by_channel: HashMap<i64, Vec<&MjRow>> = HashMap::new();
+    for row in &rows {
+        by_channel.entry(row.channel_id).or_default().push(row);
+    }
+
+    let mut settled = 0u32;
+    for (channel_id, channel_rows) in by_channel {
+        let channel = match crate::d1_repositories::find_channel_by_id(db, channel_id).await {
+            Ok(Some(channel)) => channel,
+            _ => continue,
+        };
+        let ids: Vec<&str> = channel_rows.iter().map(|row| row.mj_id.as_str()).collect();
+        let request = PollRequest {
+            method: HttpMethod::Post,
+            url: format!("{}/mj/task/list-by-condition", channel.base_url),
+            headers: vec![
+                ("mj-api-secret".to_string(), channel.key.clone()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: Some(serde_json::json!({ "ids": ids }).to_string()),
+        };
+
+        let Ok(response) = execute_poll_request(&request).await else {
+            continue;
+        };
+        let items: Vec<midjourney::MidjourneyDto> = match serde_json::from_slice(&response) {
+            Ok(items) => items,
+            Err(_) => continue,
+        };
+
+        for item in &items {
+            let Some(row) = channel_rows.iter().find(|row| row.mj_id == item.mj_id) else {
+                continue;
+            };
+            // Over an hour unfinished and not at 100% -> force failure (Go guard).
+            let timed_out = now - row.submit_time > 3600 && row.progress != "100%";
+            let status = if timed_out {
+                "FAILURE"
+            } else {
+                item.status.as_str()
+            };
+            let fail_reason = if timed_out {
+                "upstream task timeout (over 1 hour)"
+            } else {
+                item.fail_reason.as_str()
+            };
+            let finish_time = if status == "SUCCESS" || status == "FAILURE" {
+                now
+            } else {
+                0
+            };
+            let result = MjPollResult {
+                status,
+                progress: &item.progress,
+                fail_reason,
+                image_url: &item.image_url,
+                video_url: &item.video_url,
+                finish_time,
+            };
+            if let Ok(true) = apply_midjourney_poll_result(db, row, &result).await {
                 settled += 1;
             }
         }

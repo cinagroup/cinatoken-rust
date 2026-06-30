@@ -14,6 +14,9 @@ use serde_json::Value;
 /// Go `dto.MidjourneyDto` (camelCase JSON keys mapped via serde rename).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct MidjourneyDto {
+    /// The upstream mj task id (JSON `id`), used to match the stored row.
+    #[serde(default, rename = "id")]
+    pub mj_id: String,
     #[serde(default, rename = "promptEn")]
     pub prompt_en: String,
     #[serde(default)]
@@ -127,6 +130,7 @@ mod tests {
 
     fn matching_incoming() -> MidjourneyDto {
         MidjourneyDto {
+            mj_id: String::new(),
             prompt_en: "a cat".to_string(),
             state: String::new(),
             submit_time: 1,

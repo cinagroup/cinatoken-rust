@@ -8,12 +8,15 @@
 //! routes that drive it; runtime-verified by a staging poll.
 #![allow(dead_code)]
 
-use crate::task_repository::{apply_poll_result, find_unfinished_tasks, TaskRow};
+use crate::d1_repositories::{refund_reserved_relay_quota, reserve_relay_quota};
+use crate::task_repository::{
+    apply_poll_result, find_unfinished_tasks, generate_task_id, insert_task, NewTask, TaskRow,
+};
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
     doubao, hailuo, kling, sora, submit_request, vidu, VideoProvider,
 };
-use cinatoken_tasks::{TaskInfo, TaskSubmitReq};
+use cinatoken_tasks::{apply_other_ratios, TaskInfo, TaskStatus, TaskSubmitReq};
 use wasm_bindgen::JsValue;
 use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit};
 
@@ -121,6 +124,101 @@ pub async fn submit_task(
     provider
         .parse_submit_response(&response)
         .map_err(|message| worker::Error::RustError(format!("parse submit response: {message}")))
+}
+
+/// The resolved auth/channel/billing context for a task submit — what the route
+/// handler produces (authenticate → select channel → price the base model)
+/// before the billing+submit orchestration runs.
+pub struct TaskSubmitContext<'a> {
+    pub provider: VideoProvider,
+    pub channel_id: i64,
+    pub channel_base_url: &'a str,
+    pub channel_key: &'a str,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub username: &'a str,
+    pub group: &'a str,
+    pub platform: &'a str,
+    pub upstream_model: &'a str,
+    pub action: &'a str,
+    pub origin_task_id: &'a str,
+    pub base_quota: i64,
+    pub now: i64,
+}
+
+/// Orchestrate a task submit — the billing + submit + insert core of Go
+/// `RelayTaskSubmit` (the route handler supplies the resolved context). Steps:
+/// estimate the pre-charge ratios and apply them to the base quota, reserve it,
+/// submit upstream, and on success insert the task row (status `SUBMITTED`). A
+/// submit failure refunds the reserve before returning the error. Returns the
+/// public task id.
+///
+/// Today only Sora contributes a billing estimate; other providers use the base
+/// quota. The estimate ratios are applied via `apply_other_ratios` whose per-step
+/// truncation is order-sensitive — like Go (which iterates a map), so the
+/// ordering is unspecified for multi-ratio estimates. Runtime-verified by a
+/// staging submit.
+pub async fn relay_task_submit(
+    db: &D1Database,
+    ctx: &TaskSubmitContext<'_>,
+    req: &TaskSubmitReq,
+    raw_client_body: &[u8],
+) -> worker::Result<String> {
+    let ratios: Vec<f64> = match ctx.provider {
+        VideoProvider::Sora => sora::estimate_billing(
+            &req.seconds,
+            req.duration,
+            &req.size,
+            ctx.action == "remixGenerate",
+        )
+        .map(|estimate| estimate.into_values().collect())
+        .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let quota = apply_other_ratios(ctx.base_quota, &ratios);
+
+    reserve_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now).await?;
+
+    let upstream_task_id = match submit_task(
+        ctx.provider,
+        ctx.channel_base_url,
+        ctx.channel_key,
+        ctx.action,
+        ctx.origin_task_id,
+        req,
+        ctx.upstream_model,
+        raw_client_body,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            // Best-effort refund of the reserve before surfacing the failure.
+            let _ =
+                refund_reserved_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now).await;
+            return Err(err);
+        }
+    };
+
+    let public_task_id = generate_task_id();
+    let new_task = NewTask {
+        task_id: &public_task_id,
+        upstream_task_id: &upstream_task_id,
+        platform: ctx.platform,
+        user_id: ctx.user_id,
+        username: ctx.username,
+        group: ctx.group,
+        channel_id: ctx.channel_id,
+        quota,
+        action: ctx.action,
+        status: TaskStatus::Submitted,
+        submit_time: ctx.now,
+        created_at: ctx.now,
+        updated_at: ctx.now,
+    };
+    insert_task(db, &new_task).await?;
+
+    Ok(public_task_id)
 }
 
 /// Execute a provider poll request and return the response body bytes. The

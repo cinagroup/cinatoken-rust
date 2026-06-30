@@ -11,6 +11,7 @@ async-trait.workspace = true
 base64.workspace = true
 cinatoken-core = { path = "../core" }
 hmac.workspace = true
+rsa = { version = "0.9", features = ["sha2", "pem"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

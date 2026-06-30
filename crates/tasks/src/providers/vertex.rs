@@ -9,7 +9,88 @@
 //! (variant), checked in that order.
 
 use crate::{TaskInfo, TaskStatus};
-use serde::Deserialize;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use rsa::pkcs1v15::SigningKey;
+use rsa::pkcs8::DecodePrivateKey;
+use rsa::sha2::Sha256;
+use rsa::signature::{SignatureEncoding, Signer};
+use rsa::RsaPrivateKey;
+use serde::{Deserialize, Serialize};
+
+/// A GCP service-account credentials blob (the channel key for Vertex) — Go
+/// `vertex.Credentials`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ServiceAccount {
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub private_key: String,
+    #[serde(default)]
+    pub client_email: String,
+}
+
+#[derive(Serialize)]
+struct JwtClaims<'a> {
+    aud: &'a str,
+    exp: i64,
+    iat: i64,
+    iss: &'a str,
+    scope: &'a str,
+}
+
+/// Mint the RS256 service-account assertion JWT — a port of Go
+/// `createSignedJWT`. The PEM is normalized (strip the armor + all newline
+/// forms, including literal `\n`, then re-wrap) before parsing as PKCS#8, and the
+/// claims are `iss`/`scope`/`aud`/`exp = now + 35m`/`iat = now`, signed with
+/// RSASSA-PKCS1-v1.5-SHA256. `now` is unix seconds (the caller reads the clock),
+/// and the header/claims keys are alphabetically ordered to match Go's
+/// `encoding/json` map marshaling so the signing input is reproducible.
+/// Parse a service-account PKCS#8 private key, normalizing the PEM the way Go's
+/// `createSignedJWT` does first: strip the armor + every newline form (including
+/// the literal `\n` GCP JSON escapes), then re-wrap as a single base64 line. This
+/// tolerates the many ways the key arrives (escaped JSON, CRLFs, no wrapping).
+fn parse_private_key(private_key_pem: &str) -> Result<RsaPrivateKey, String> {
+    let cleaned: String = private_key_pem
+        .replace("-----BEGIN PRIVATE KEY-----", "")
+        .replace("-----END PRIVATE KEY-----", "")
+        .replace('\r', "")
+        .replace('\n', "")
+        .replace("\\n", "")
+        .replace(' ', "");
+    // Re-wrap the base64 body at 64 columns: Rust's PKCS#8 PEM parser follows
+    // RFC 7468 strictly (Go's `pem.Decode` tolerates a single long line).
+    let wrapped = cleaned
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let pem = format!("-----BEGIN PRIVATE KEY-----\n{wrapped}\n-----END PRIVATE KEY-----");
+    RsaPrivateKey::from_pkcs8_pem(&pem).map_err(|err| format!("parse private key: {err}"))
+}
+
+pub fn create_signed_jwt(email: &str, private_key_pem: &str, now: i64) -> Result<String, String> {
+    let key = parse_private_key(private_key_pem)?;
+    let signing_key: SigningKey<Sha256> = SigningKey::new(key);
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let claims = JwtClaims {
+        aud: "https://www.googleapis.com/oauth2/v4/token",
+        exp: now + 35 * 60,
+        iat: now,
+        iss: email,
+        scope: "https://www.googleapis.com/auth/cloud-platform",
+    };
+    let claims_json = serde_json::to_vec(&claims).map_err(|err| err.to_string())?;
+    let claims_b64 = URL_SAFE_NO_PAD.encode(&claims_json);
+
+    let signing_input = format!("{header_b64}.{claims_b64}");
+    let signature = signing_key.sign(signing_input.as_bytes());
+    let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+
+    Ok(format!("{signing_input}.{signature_b64}"))
+}
 
 #[derive(Deserialize, Default)]
 struct OperationResponse {
@@ -130,6 +211,73 @@ pub fn parse_task_result(resp_body: &[u8]) -> Result<TaskInfo, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A throwaway 2048-bit PKCS#8 RSA key, used only to exercise RS256 signing.
+    const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5OMWi4PW2wccW
+AoM9K5NbKLHIAjm62emIT30sJk73ZOOb2A+B5vUoZFlPOG3AuFj7iiNffTrovtpe
+MiOuw4nq/UDuCcgIW/W17JqrgA5efglMt8fPhIaYQ1oYoy52iK6u/ckPxDYSPVhc
+PASgoKaFdfo0tStExgXjkOMipQQlDei90RqFx4cH2ytGar1skvoxkE+LnYIkc7Qj
+u3p5bdJI6lU2Q8zhQlr1swlF0VTP9kImn2ijNIPevzFAujb16j7jQIwZTff2VR+/
+afHxKH3zbNPfAPjqo9lYx+FCqhvXtZFqYA7ITAkiDUmBQP9JHGrxtn3VPblGczzO
+QnNDA6S9AgMBAAECggEAGmQmdPDM0f+GWHJ/NKYS1vhTbIY0p5UJG20IDtReiA2O
+CNSeUQoRgHHb79fAe6dItn6WT7LOQ/99qdJHF02xRxRSvhgSsm438nYGC82xPnGC
+7bV5+O2PJ/7gxYXqxuTuzuxGS8LPWYX4IxxCJIj/cSDAR+ZQhfoZOLWaR4Nvtb+p
+Sl/ylZhf4NPea95kLJORmum0Ollj6u6KHUMxZf4n3brXzEjvgJOXiniD+giRZIWY
+4bHTmolo7kugNr7rbAeq0dsxS0Sii4202sMKV7XUu0wutdwIEPkFGkXEBUAPzI1j
+N2fMAWc9xP7zgwUvYW9jM95OnJAR84UNQtM1Tw4xQQKBgQDu0FcCZVgdA97HZiyC
+KYVOWdsUbFa9mhBQu7u56Gelj0rFMdHwAdn92z6BRWuuhhWUCuE4gTMvnOcuZKY+
+ciL7Ycx/Iupxv+8X5AjQBR/BKPi6sMY1CBXAr3L1bRulaBrypLBW0uRjt3pVMuAh
+MdQezM6uGmDg+mvCdL5sMm/KaQKBgQDGjRtujQbQPXRSxrmY4nNSErlBz1hcWvKv
+Pb6KouksdD6G4nwtNixSaOo9CMVl43vBQ2uUL+d2ztnAc2CCKophIHWN6Mr+Osct
+gxs/yJv/fNgpktJfFJW3MY9OjgBeu5DB12xnYX6yg5yJHWV2VgqYtPTnEETJuTj3
+v6aREF81NQKBgBXcLkrC2hj11Lut558Wi+RLJ1msPRhn9NxfAuUWl/44qqB4Wf49
+PSYWnpcYsq2sCmedw1X3xaazFxpRDkKjEf6uyhhNKua0qf8m2YOpJGn7BSGZstsB
+3XPg24YJscEnUWgqmRWpgkx6bBFGceu38vHKz5RyR7HwWlLXeuLOjxsZAoGBALUr
+nJRLaqQo7zN40XGHb+K74v8By4a6FieBF5Q5ArrldwhtMRGwFNE9mj8G+df2sr2u
+X0NgUrw+EsNgg/dCCfKGQ72xZUiFKamFsB+LVYzSxgtpRTws9E+skS8Es6G9VGEL
+yIasl4ccQIF8qVBJQnIE7FLKrXnD4Q9vePV1EurhAoGAY7ltI71fxcE4Lzwx6sKn
+6rz5z4xD28xvnYTi67I1aCID6q9hNczY5LKCpJ1RF9tTvUJbLZo1hOsueaMgWQHv
+l+NIzNWilPGfyLTdFEJPwdH8BUDvHi8AkMarH0Jb4wbG9wFECYk3qWARvtHPko2l
+XLmak3bnZHNpev8oBuq/HH0=
+-----END PRIVATE KEY-----";
+
+    #[test]
+    fn create_signed_jwt_rs256_structure_and_signature() {
+        use rsa::pkcs1v15::{Signature, VerifyingKey};
+        use rsa::signature::Verifier;
+
+        let jwt =
+            create_signed_jwt("svc@proj.iam.gserviceaccount.com", TEST_KEY, 1_000_000).unwrap();
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "header.payload.signature");
+
+        // Header is RS256, sorted keys (matching Go's json marshaling).
+        assert_eq!(
+            URL_SAFE_NO_PAD.decode(parts[0]).unwrap(),
+            br#"{"alg":"RS256","typ":"JWT"}"#
+        );
+        // Claims carry the Go fields; exp = now + 35m.
+        assert_eq!(
+            String::from_utf8(URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap(),
+            r#"{"aud":"https://www.googleapis.com/oauth2/v4/token","exp":1002100,"iat":1000000,"iss":"svc@proj.iam.gserviceaccount.com","scope":"https://www.googleapis.com/auth/cloud-platform"}"#
+        );
+
+        // The RS256 signature verifies under the matching public key.
+        let key = parse_private_key(TEST_KEY).unwrap();
+        let verifying_key = VerifyingKey::<Sha256>::new(key.to_public_key());
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let signature =
+            Signature::try_from(URL_SAFE_NO_PAD.decode(parts[2]).unwrap().as_slice()).unwrap();
+        assert!(verifying_key
+            .verify(signing_input.as_bytes(), &signature)
+            .is_ok());
+    }
+
+    #[test]
+    fn create_signed_jwt_rejects_bad_key() {
+        assert!(create_signed_jwt("svc", "not a key", 0).is_err());
+    }
 
     #[test]
     fn error_message_is_failure() {

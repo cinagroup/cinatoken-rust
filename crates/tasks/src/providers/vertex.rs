@@ -173,6 +173,62 @@ pub fn build_predict_url(
     )
 }
 
+/// Extract the path segment following `key` from a resource name like
+/// `projects/<p>/locations/<r>/.../models/<m>/operations/<op>`.
+fn extract_segment(name: &str, key: &str) -> String {
+    let parts: Vec<&str> = name.split('/').collect();
+    for window in parts.windows(2) {
+        if window[0] == key {
+            return window[1].to_string();
+        }
+    }
+    String::new()
+}
+
+/// Build the Vertex poll URL (Go `buildFetchOperationURL`): extract the
+/// project/region/model from the operation name and build the
+/// `fetchPredictOperation` endpoint (region defaults to `us-central1`). The poll
+/// body is `{"operationName": "<name>"}`.
+pub fn build_fetch_url(base_url: &str, operation_name: &str) -> Result<String, String> {
+    let region = {
+        let r = extract_segment(operation_name, "locations");
+        if r.is_empty() {
+            "us-central1".to_string()
+        } else {
+            r
+        }
+    };
+    let project = extract_segment(operation_name, "projects");
+    let model = extract_segment(operation_name, "models");
+    if model.trim().is_empty() {
+        return Err("cannot extract model from operation name".to_string());
+    }
+    if project.trim().is_empty() {
+        return Err("cannot extract project from operation name".to_string());
+    }
+    Ok(format!(
+        "{}/publishers/google/models/{model}:fetchPredictOperation",
+        build_api_base_url(base_url, "v1", &project, &region)
+    ))
+}
+
+/// Extract the upstream task id from a Vertex submit response (Go `DoResponse`):
+/// the operation `name`, base64-encoded as a local task id; an empty name is an
+/// error.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    #[derive(Deserialize, Default)]
+    struct SubmitResponse {
+        #[serde(default)]
+        name: String,
+    }
+    let resp: SubmitResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_failed: {err}"))?;
+    if resp.name.trim().is_empty() {
+        return Err("missing operation name".to_string());
+    }
+    Ok(crate::taskcommon::encode_local_task_id(&resp.name))
+}
+
 #[derive(Deserialize, Default)]
 struct OperationResponse {
     #[serde(default)]
@@ -396,6 +452,32 @@ XLmak3bnZHNpev8oBuq/HH0=
         let body = token_exchange_body("JWT123");
         assert!(body.contains("grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer"));
         assert!(body.contains("assertion=JWT123"));
+    }
+
+    #[test]
+    fn fetch_url_from_operation_name() {
+        let op = "projects/my-proj/locations/us-central1/publishers/google/models/veo-2/operations/abc123";
+        assert_eq!(
+            build_fetch_url("", op).unwrap(),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/publishers/google/models/veo-2:fetchPredictOperation"
+        );
+        // Missing project/model -> error.
+        assert!(build_fetch_url("", "operations/abc").is_err());
+    }
+
+    #[test]
+    fn submit_response_encodes_operation_name() {
+        use crate::taskcommon::decode_local_task_id;
+        let id =
+            parse_submit_response(br#"{"name":"projects/p/locations/r/operations/op9"}"#).unwrap();
+        assert_eq!(
+            decode_local_task_id(&id).unwrap(),
+            "projects/p/locations/r/operations/op9"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"name":""}"#).unwrap_err(),
+            "missing operation name"
+        );
     }
 
     #[test]

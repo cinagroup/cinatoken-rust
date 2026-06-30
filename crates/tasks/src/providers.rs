@@ -11,6 +11,7 @@ pub mod kling;
 pub mod midjourney;
 pub mod poll_request;
 pub mod sora;
+pub mod submit_request;
 pub mod suno;
 pub mod vertex;
 pub mod vidu;

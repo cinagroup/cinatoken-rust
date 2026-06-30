@@ -243,3 +243,55 @@ pub async fn apply_poll_result(
     }
     Ok(won)
 }
+
+/// Apply one Suno batch-poll item to a stored task — a port of the per-item merge
+/// in Go `updateSunoTasks`. The upstream status (empty keeps the current one,
+/// Go's `lo.If(!= "")`) is CAS-applied; the progress is pinned to `100%` on
+/// success or failure; and the reserve is refunded when the item is a failure
+/// (`fail_reason` set **or** status `FAILURE`) and this caller wins a transition
+/// out of a non-terminal state — so the CAS guard makes the refund happen once.
+///
+/// Simplification vs Go: submit/start times and the `data` blob aren't merged
+/// here (display-only); the status/progress/fail-reason/finish-time + refund —
+/// the billing-critical core — are. Returns whether this caller won the CAS.
+pub async fn apply_suno_poll_result(
+    db: &D1Database,
+    task: &TaskRow,
+    item_status: &str,
+    item_fail_reason: &str,
+    now: i64,
+) -> worker::Result<bool> {
+    let from = task.status();
+    let to = if item_status.is_empty() {
+        from
+    } else {
+        TaskStatus::from_status_str(item_status)
+    };
+    let is_failure = !item_fail_reason.is_empty() || to == TaskStatus::Failure;
+    let progress = if is_failure || to == TaskStatus::Success {
+        "100%"
+    } else {
+        ""
+    };
+    let finish_time = if is_failure || to.is_terminal() {
+        now
+    } else {
+        0
+    };
+
+    let won = update_task_status_cas(
+        db,
+        task.id,
+        from,
+        to,
+        item_fail_reason,
+        progress,
+        finish_time,
+        now,
+    )
+    .await?;
+    if won && is_failure && !from.is_terminal() {
+        crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
+    }
+    Ok(won)
+}

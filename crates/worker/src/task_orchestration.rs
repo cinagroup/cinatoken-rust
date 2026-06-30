@@ -19,6 +19,7 @@ use cinatoken_tasks::providers::{
 use cinatoken_tasks::{
     apply_other_ratios, cover_task_action_to_model_name, TaskInfo, TaskStatus, TaskSubmitReq,
 };
+use std::collections::HashMap;
 use wasm_bindgen::JsValue;
 use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
@@ -714,6 +715,83 @@ pub async fn poll_unfinished_tasks(
         .await;
         if let Ok(Some(true)) = outcome {
             settled += 1;
+        }
+    }
+    Ok(settled)
+}
+
+/// Drive the Suno batch poll (Go `UpdateSunoTasks`): load unfinished `suno`
+/// tasks, group them by channel, and for each channel POST the batch of upstream
+/// ids to `{base}/suno/fetch`, parse the `TaskResponse<Vec<SunoDataResponse>>`,
+/// and merge each item back onto its task via
+/// [`crate::task_repository::apply_suno_poll_result`] (CAS status + refund on
+/// failure). Best-effort per channel/item. Returns the count of settlements won.
+pub async fn poll_unfinished_suno_tasks(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<u32> {
+    let tasks = find_unfinished_tasks(db, limit).await?;
+    let mut by_channel: HashMap<i64, Vec<&TaskRow>> = HashMap::new();
+    for task in &tasks {
+        if task.platform == "suno" && !task.upstream_task_id.is_empty() {
+            by_channel.entry(task.channel_id).or_default().push(task);
+        }
+    }
+
+    let mut settled = 0u32;
+    for (channel_id, channel_tasks) in by_channel {
+        let channel = match crate::d1_repositories::find_channel_by_id(db, channel_id).await {
+            Ok(Some(channel)) => channel,
+            _ => continue,
+        };
+        let ids: Vec<&str> = channel_tasks
+            .iter()
+            .map(|task| task.upstream_task_id.as_str())
+            .collect();
+        let request = PollRequest {
+            method: HttpMethod::Post,
+            url: format!("{}/suno/fetch", channel.base_url),
+            headers: vec![
+                (
+                    "Authorization".to_string(),
+                    format!("Bearer {}", channel.key),
+                ),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: Some(serde_json::json!({ "ids": ids }).to_string()),
+        };
+
+        let Ok(response) = execute_poll_request(&request).await else {
+            continue;
+        };
+        let parsed: suno::TaskResponse<Vec<suno::SunoDataResponse>> =
+            match serde_json::from_slice(&response) {
+                Ok(parsed) => parsed,
+                Err(_) => continue,
+            };
+        if !parsed.is_success() {
+            continue;
+        }
+
+        for item in &parsed.data {
+            let Some(task) = channel_tasks
+                .iter()
+                .find(|task| task.upstream_task_id == item.task_id)
+            else {
+                continue;
+            };
+            if let Ok(true) = crate::task_repository::apply_suno_poll_result(
+                db,
+                task,
+                &item.status,
+                &item.fail_reason,
+                now,
+            )
+            .await
+            {
+                settled += 1;
+            }
         }
     }
     Ok(settled)

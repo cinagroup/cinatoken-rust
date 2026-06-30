@@ -410,8 +410,12 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
     match task_orchestration::poll_unfinished_tasks(&db, &gemini_version, now, 100).await {
-        Ok(settled) => worker::console_log!("task poller: settled {settled} task(s)"),
-        Err(err) => worker::console_error!("task poller: batch failed: {err}"),
+        Ok(settled) => worker::console_log!("task poller: settled {settled} video task(s)"),
+        Err(err) => worker::console_error!("task poller: video batch failed: {err}"),
+    }
+    match task_orchestration::poll_unfinished_suno_tasks(&db, now, 100).await {
+        Ok(settled) => worker::console_log!("task poller: settled {settled} suno task(s)"),
+        Err(err) => worker::console_error!("task poller: suno batch failed: {err}"),
     }
 }
 

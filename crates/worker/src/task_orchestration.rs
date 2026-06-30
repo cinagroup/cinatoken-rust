@@ -69,6 +69,7 @@ pub fn build_submit_http_request(
     action: &str,
     origin_task_id: &str,
     body: Vec<u8>,
+    now: i64,
 ) -> Result<PollRequest, String> {
     let (url, auth) = match provider {
         VideoProvider::Sora => (
@@ -82,10 +83,18 @@ pub fn build_submit_http_request(
             submit_request::vidu(base_url, action),
             format!("Token {key}"),
         ),
-        VideoProvider::Kling
-        | VideoProvider::Jimeng
-        | VideoProvider::Gemini
-        | VideoProvider::Vertex => {
+        VideoProvider::Kling => {
+            // Kling signs with a JWT minted from the channel key (an `sk-`-prefixed
+            // key is a new-api relay key, routed through the `/kling` prefix and
+            // passed through verbatim by create_jwt_token).
+            let is_new_api_relay = key.starts_with("sk-");
+            let token = kling::create_jwt_token(key, now)?;
+            (
+                submit_request::kling(base_url, action, is_new_api_relay),
+                format!("Bearer {token}"),
+            )
+        }
+        VideoProvider::Jimeng | VideoProvider::Gemini | VideoProvider::Vertex => {
             return Err("submit request not wired for this provider (signing/unported)".to_string())
         }
     };
@@ -115,11 +124,13 @@ pub async fn submit_task(
     req: &TaskSubmitReq,
     upstream_model: &str,
     raw_client_body: &[u8],
+    now: i64,
 ) -> worker::Result<String> {
     let body = build_submit_body(provider, req, upstream_model, raw_client_body)
         .map_err(worker::Error::RustError)?;
-    let request = build_submit_http_request(provider, base_url, key, action, origin_task_id, body)
-        .map_err(worker::Error::RustError)?;
+    let request =
+        build_submit_http_request(provider, base_url, key, action, origin_task_id, body, now)
+            .map_err(worker::Error::RustError)?;
     let response = execute_poll_request(&request).await?;
     provider
         .parse_submit_response(&response)
@@ -233,6 +244,7 @@ pub async fn relay_task_submit(
         req,
         ctx.upstream_model,
         raw_client_body,
+        ctx.now,
     )
     .await
     {

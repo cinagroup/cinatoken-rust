@@ -14,7 +14,7 @@ use crate::task_repository::{
 };
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
-    doubao, hailuo, jimeng, kling, sora, submit_request, vidu, VideoProvider,
+    ali, doubao, hailuo, jimeng, kling, sora, submit_request, vidu, VideoProvider,
 };
 use cinatoken_tasks::{apply_other_ratios, TaskInfo, TaskStatus, TaskSubmitReq};
 use wasm_bindgen::JsValue;
@@ -52,8 +52,11 @@ pub fn build_submit_body(
         VideoProvider::Jimeng => {
             serialize_payload(jimeng::convert_to_request_payload(req, upstream_model))
         }
+        VideoProvider::Ali => {
+            serialize_payload(ali::convert_to_request_payload(req, upstream_model))
+        }
         VideoProvider::Sora => Ok(sora::build_json_body(raw_client_body, upstream_model)),
-        VideoProvider::Ali | VideoProvider::Gemini | VideoProvider::Vertex => {
+        VideoProvider::Gemini | VideoProvider::Vertex => {
             Err("submit body not yet ported for this provider".to_string())
         }
     }

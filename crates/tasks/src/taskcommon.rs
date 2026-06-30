@@ -64,6 +64,23 @@ pub fn merge_metadata(target: &mut Value, metadata: &Value) {
     }
 }
 
+/// Recursively merge `source` into `target`: nested objects are deep-merged
+/// (source keys override or recurse into matching target keys), and scalars or
+/// arrays replace. This mirrors Go's `json.Unmarshal` into an already-populated
+/// struct — which sets present fields and recurses into nested structs — and is
+/// what Ali's metadata merge needs (it unmarshals raw metadata into the nested
+/// request without stripping `model`, unlike [`merge_metadata`]).
+pub fn merge_value_deep(target: &mut Value, source: &Value) {
+    match (target, source) {
+        (Value::Object(target), Value::Object(source)) => {
+            for (key, value) in source {
+                merge_value_deep(target.entry(key.clone()).or_insert(Value::Null), value);
+            }
+        }
+        (target, source) => *target = source.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +109,21 @@ mod tests {
     fn decode_rejects_invalid_base64() {
         // '!' is not in the base64url alphabet.
         assert!(decode_local_task_id("not!valid").is_err());
+    }
+
+    #[test]
+    fn merge_value_deep_recurses_objects() {
+        use serde_json::json;
+        let mut target = json!({"model": "m", "parameters": {"size": "1080", "duration": 5}});
+        // Nested object deep-merges (size kept, seed added); scalar overrides.
+        merge_value_deep(
+            &mut target,
+            &json!({"parameters": {"seed": 42, "duration": 8}, "extra": true}),
+        );
+        assert_eq!(
+            target,
+            json!({"model": "m", "parameters": {"size": "1080", "duration": 8, "seed": 42}, "extra": true})
+        );
     }
 
     #[test]

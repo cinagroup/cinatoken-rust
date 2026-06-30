@@ -1,8 +1,11 @@
-//! Pure response parser for the Ali (DashScope) video task provider, ported
-//! from `relay/channel/task/ali/adaptor.go` (`ParseTaskResult`).
+//! Pure response parser + submit-body builder for the Ali (DashScope) video task
+//! provider, ported from `relay/channel/task/ali/adaptor.go` (`ParseTaskResult`
+//! and `convertToAliRequest`).
 
-use crate::{TaskInfo, TaskStatus};
-use serde::Deserialize;
+use crate::taskcommon::merge_value_deep;
+use crate::{TaskInfo, TaskStatus, TaskSubmitReq};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Deserialize, Default)]
 struct AliVideoResponse {
@@ -171,9 +174,126 @@ pub fn resolve_parameters(
     Ok((out_size, out_resolution, out_duration))
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AliVideoInput {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    prompt: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    img_url: String,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AliVideoParameters {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    resolution: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    size: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    duration: i64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    prompt_extend: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    watermark: bool,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// The Ali submit payload (`input` + `parameters` are always serialized, as in
+/// Go). The transform fills model/input/parameters; metadata is deep-merged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AliVideoRequest {
+    model: String,
+    input: AliVideoInput,
+    parameters: AliVideoParameters,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Build the Ali submit payload from the client request — a port of
+/// `convertToAliRequest`. Model is the upstream model; the size/resolution/
+/// duration come from [`resolve_parameters`] (which keys off the *client* model);
+/// `prompt_extend` defaults on, `watermark` off. Metadata is deep-merged
+/// **without** stripping `model` (Ali unmarshals raw metadata into the request),
+/// unlike the other providers' [`crate::taskcommon::merge_metadata`].
+pub fn convert_to_request_payload(
+    req: &TaskSubmitReq,
+    upstream_model: &str,
+) -> Result<AliVideoRequest, String> {
+    let (size, resolution, duration) =
+        resolve_parameters(&req.model, &req.size, req.duration, &req.seconds)?;
+
+    let mut payload = AliVideoRequest {
+        model: upstream_model.to_string(),
+        input: AliVideoInput {
+            prompt: req.prompt.clone(),
+            img_url: req.input_reference.clone(),
+            extra: Map::new(),
+        },
+        parameters: AliVideoParameters {
+            resolution,
+            size,
+            duration,
+            prompt_extend: true,
+            watermark: false,
+            extra: Map::new(),
+        },
+        extra: Map::new(),
+    };
+
+    if let Some(metadata) = &req.metadata {
+        let mut value = serde_json::to_value(&payload).map_err(|err| err.to_string())?;
+        merge_value_deep(&mut value, metadata);
+        payload = serde_json::from_value(value).map_err(|err| err.to_string())?;
+    }
+
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn request_payload_assembly_and_deep_metadata() {
+        // i2v model, no size -> resolution default 720P; prompt + img_url; duration 5.
+        let req = TaskSubmitReq {
+            prompt: "p".to_string(),
+            input_reference: "https://i/1.png".to_string(),
+            ..Default::default()
+        };
+        let value =
+            serde_json::to_value(convert_to_request_payload(&req, "wan-i2v").unwrap()).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "model": "wan-i2v",
+                "input": {"prompt": "p", "img_url": "https://i/1.png"},
+                "parameters": {"resolution": "720P", "duration": 5, "prompt_extend": true}
+            })
+        );
+
+        // Deep metadata merge into parameters (model NOT stripped).
+        let req = TaskSubmitReq {
+            metadata: Some(json!({"model": "override", "parameters": {"seed": 9}})),
+            ..Default::default()
+        };
+        let value =
+            serde_json::to_value(convert_to_request_payload(&req, "wan-i2v").unwrap()).unwrap();
+        assert_eq!(value["model"], json!("override")); // Ali keeps metadata model
+        assert_eq!(value["parameters"]["seed"], json!(9));
+        assert_eq!(value["parameters"]["resolution"], json!("720P")); // computed value preserved
+    }
 
     #[test]
     fn resolve_parameters_size_and_resolution() {

@@ -189,6 +189,14 @@ pub fn apply_other_ratios(base_quota: i64, ratios: &[f64]) -> i64 {
     quota
 }
 
+/// Map a task platform + action to its billing model name — Go
+/// `CoverTaskActionToModelName`: `lowercase(platform)_lowercase(action)` (e.g.
+/// `suno` + `MUSIC` → `suno_music`). Used as the billing model when the client
+/// request doesn't carry an explicit one.
+pub fn cover_task_action_to_model_name(platform: &str, action: &str) -> String {
+    format!("{}_{}", platform.to_lowercase(), action.to_lowercase())
+}
+
 /// The 62-char alphabet Go `GenerateRandomCharsKey` draws from
 /// (`common/utils.go` `keyChars`): digits, then lowercase, then uppercase.
 pub const TASK_ID_KEY_CHARS: &[u8] =
@@ -474,6 +482,22 @@ mod tests {
         // Per-step truncation differs from a single accumulated multiply:
         // 3 * 1.5 = 4.5 -> 4, then * 2.0 = 8.0 -> 8 (accumulate would give 9).
         assert_eq!(apply_other_ratios(3, &[1.5, 2.0]), 8);
+    }
+
+    #[test]
+    fn cover_task_action_to_model_name_lowercases() {
+        assert_eq!(
+            cover_task_action_to_model_name("suno", "MUSIC"),
+            "suno_music"
+        );
+        assert_eq!(
+            cover_task_action_to_model_name("suno", "LYRICS"),
+            "suno_lyrics"
+        );
+        assert_eq!(
+            cover_task_action_to_model_name("mj", "IMAGINE"),
+            "mj_imagine"
+        );
     }
 
     #[test]

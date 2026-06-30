@@ -14,9 +14,11 @@ use crate::task_repository::{
 };
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
-    ali, doubao, gemini, hailuo, jimeng, kling, sora, submit_request, vidu, VideoProvider,
+    ali, doubao, gemini, hailuo, jimeng, kling, sora, submit_request, suno, vidu, VideoProvider,
 };
-use cinatoken_tasks::{apply_other_ratios, TaskInfo, TaskStatus, TaskSubmitReq};
+use cinatoken_tasks::{
+    apply_other_ratios, cover_task_action_to_model_name, TaskInfo, TaskStatus, TaskSubmitReq,
+};
 use wasm_bindgen::JsValue;
 use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
@@ -477,6 +479,106 @@ pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker:
         }
         Err(err) => crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500),
     }
+}
+
+/// HTTP entry for a Suno task submit (`POST /suno/submit/:action`). Suno is a
+/// platform (not a channel-type video provider): it selects a SunoAPI channel
+/// (type 36), reserves the base quota, forwards the client body verbatim to
+/// `{base}/suno/submit/{action}` with bearer auth, parses the upstream task id,
+/// and inserts the task with platform `suno`. The billing model is the request's
+/// model, or `suno_<action>` when absent. A submit failure refunds the reserve.
+/// Runtime-verified by a staging submit.
+pub async fn handle_suno_submit(
+    mut req: Request,
+    env: Env,
+    action: &str,
+    now: i64,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+    // Go uppercases the action (ValidateRequestAndSetAction); the upstream URL
+    // and stored action use it, while the billing model lowercases it back.
+    let action = action.to_uppercase();
+
+    let Some(api_key) = crate::relay::extract_api_key(&req) else {
+        return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
+    };
+    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
+        return crate::json_with_status(&serde_json::json!({"error": "invalid api key"}), 401);
+    };
+
+    let body_bytes = req.bytes().await?;
+    let task_req: TaskSubmitReq = serde_json::from_slice(&body_bytes).unwrap_or_default();
+    let model = if task_req.model.is_empty() {
+        cover_task_action_to_model_name("suno", &action)
+    } else {
+        task_req.model.clone()
+    };
+
+    // Suno channels are channel type 36 (SunoAPI).
+    let channels =
+        crate::d1_repositories::select_relay_channels(&db, &model, &auth.user_group, &[36]).await?;
+    let Some(channel) = channels.into_iter().next() else {
+        return crate::json_with_status(
+            &serde_json::json!({"error": "no available suno channel for model"}),
+            503,
+        );
+    };
+
+    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
+        .await?
+        .unwrap_or(0);
+    reserve_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now).await?;
+
+    let base_url = channel.base_url.as_deref().unwrap_or_default();
+    let request = PollRequest {
+        method: HttpMethod::Post,
+        url: format!("{base_url}/suno/submit/{action}"),
+        headers: vec![
+            (
+                "Authorization".to_string(),
+                format!("Bearer {}", channel.key),
+            ),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ],
+        body: Some(String::from_utf8(body_bytes).unwrap_or_default()),
+    };
+
+    let upstream_task_id = match execute_poll_request(&request).await {
+        Ok(response) => match suno::parse_submit_response(&response) {
+            Ok(id) => id,
+            Err(err) => {
+                let _ =
+                    refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                        .await;
+                return crate::json_with_status(&serde_json::json!({"error": err}), 500);
+            }
+        },
+        Err(err) => {
+            let _ = refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                .await;
+            return crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500);
+        }
+    };
+
+    let public_task_id = generate_task_id();
+    let new_task = NewTask {
+        task_id: &public_task_id,
+        upstream_task_id: &upstream_task_id,
+        platform: "suno",
+        user_id: auth.user_id,
+        username: &auth.username,
+        group: &auth.token_group,
+        channel_id: channel.id,
+        quota: base_quota,
+        action: &action,
+        status: TaskStatus::Submitted,
+        submit_time: now,
+        created_at: now,
+        updated_at: now,
+    };
+    insert_task(&db, &new_task).await?;
+
+    crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
 }
 
 /// Execute a provider poll request and return the response body bytes. The

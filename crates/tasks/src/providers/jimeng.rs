@@ -2,9 +2,11 @@
 //! video task provider, ported from `relay/channel/task/jimeng/adaptor.go`
 //! (`ParseTaskResult` and `signRequest`).
 
-use crate::{TaskInfo, TaskStatus};
+use crate::taskcommon::merge_metadata;
+use crate::{TaskInfo, TaskStatus, TaskSubmitReq};
 use hmac::{Hmac, Mac};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -237,9 +239,155 @@ pub fn sign_request(
     }
 }
 
+/// The Jimeng submit payload. The transform sets req_key/prompt/frames and one
+/// of image_urls / binary_data_base64; other fields (seed, aspect_ratio, …)
+/// arrive via metadata (carried in `extra`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RequestPayload {
+    req_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    prompt: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    frames: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    image_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    binary_data_base64: Vec<String>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
+}
+
+/// Build the Jimeng submit payload — a port of `convertToRequestPayload`.
+/// `req_key` is the upstream model, frames is 241 for a 10s duration else 121,
+/// images route to `image_urls` (http) or `binary_data_base64` (otherwise), and
+/// metadata is merged (model stripped). Finally the jimeng_v30 family `req_key`
+/// is remapped by image count: `_pro` → `jimeng_ti2v_v30_pro`; >1 image →
+/// `jimeng_i2v_first_tail_v30`; 1 image → `jimeng_i2v_first_v30`; none →
+/// `jimeng_t2v_v30` (the i2v forms strip one trailing `p`, matching Go's
+/// TrimSuffix).
+pub fn convert_to_request_payload(
+    req: &TaskSubmitReq,
+    upstream_model: &str,
+) -> Result<RequestPayload, String> {
+    let frames = if req.duration == 10 { 241 } else { 121 };
+    let mut image_urls = Vec::new();
+    let mut binary_data_base64 = Vec::new();
+    if req.has_image() {
+        if req.images[0].starts_with("http") {
+            image_urls = req.images.clone();
+        } else {
+            binary_data_base64 = req.images.clone();
+        }
+    }
+
+    let mut payload = RequestPayload {
+        req_key: upstream_model.to_string(),
+        prompt: req.prompt.clone(),
+        frames,
+        image_urls,
+        binary_data_base64,
+        extra: Map::new(),
+    };
+
+    if let Some(metadata) = &req.metadata {
+        let mut value = serde_json::to_value(&payload).map_err(|err| err.to_string())?;
+        merge_metadata(&mut value, metadata);
+        payload = serde_json::from_value(value).map_err(|err| err.to_string())?;
+    }
+
+    if payload.req_key.contains("jimeng_v30") {
+        let image_len = req
+            .images
+            .len()
+            .max(payload.binary_data_base64.len())
+            .max(payload.image_urls.len());
+        payload.req_key = if payload.req_key == "jimeng_v30_pro" {
+            "jimeng_ti2v_v30_pro".to_string()
+        } else if image_len > 1 {
+            trim_one_trailing_p(&payload.req_key.replacen(
+                "jimeng_v30",
+                "jimeng_i2v_first_tail_v30",
+                1,
+            ))
+        } else if image_len == 1 {
+            trim_one_trailing_p(
+                &payload
+                    .req_key
+                    .replacen("jimeng_v30", "jimeng_i2v_first_v30", 1),
+            )
+        } else {
+            payload.req_key.replacen("jimeng_v30", "jimeng_t2v_v30", 1)
+        };
+    }
+
+    Ok(payload)
+}
+
+/// Remove a single trailing `p` if present (Go `strings.TrimSuffix(_, "p")`).
+fn trim_one_trailing_p(value: &str) -> String {
+    value.strip_suffix('p').unwrap_or(value).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_payload_frames_images_and_reqkey_remap() {
+        use serde_json::json;
+
+        // Text, 5s -> frames 121; req_key = upstream model.
+        let req = TaskSubmitReq {
+            prompt: "p".to_string(),
+            ..Default::default()
+        };
+        let value =
+            serde_json::to_value(convert_to_request_payload(&req, "jimeng_xx").unwrap()).unwrap();
+        assert_eq!(
+            value,
+            json!({"req_key": "jimeng_xx", "prompt": "p", "frames": 121})
+        );
+
+        // 10s -> frames 241; http image -> image_urls.
+        let req = TaskSubmitReq {
+            duration: 10,
+            images: vec!["http://i/1.png".to_string()],
+            ..Default::default()
+        };
+        let value =
+            serde_json::to_value(convert_to_request_payload(&req, "jimeng_xx").unwrap()).unwrap();
+        assert_eq!(value["frames"], json!(241));
+        assert_eq!(value["image_urls"], json!(["http://i/1.png"]));
+
+        // v30 remap: no image -> t2v; 1 image -> i2v_first (trim p); pro -> ti2v.
+        let no_img = TaskSubmitReq::default();
+        assert_eq!(
+            convert_to_request_payload(&no_img, "jimeng_v30")
+                .unwrap()
+                .req_key,
+            "jimeng_t2v_v30"
+        );
+        let one_img = TaskSubmitReq {
+            images: vec!["data:abc".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            convert_to_request_payload(&one_img, "jimeng_v30p")
+                .unwrap()
+                .req_key,
+            "jimeng_i2v_first_v30"
+        );
+        assert_eq!(
+            convert_to_request_payload(&no_img, "jimeng_v30_pro")
+                .unwrap()
+                .req_key,
+            "jimeng_ti2v_v30_pro"
+        );
+    }
 
     #[test]
     fn volcengine_dates_format() {

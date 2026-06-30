@@ -14,7 +14,7 @@ use crate::task_repository::{
 };
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
-    doubao, hailuo, kling, sora, submit_request, vidu, VideoProvider,
+    doubao, hailuo, jimeng, kling, sora, submit_request, vidu, VideoProvider,
 };
 use cinatoken_tasks::{apply_other_ratios, TaskInfo, TaskStatus, TaskSubmitReq};
 use wasm_bindgen::JsValue;
@@ -49,12 +49,85 @@ pub fn build_submit_body(
         VideoProvider::Kling => {
             serialize_payload(kling::convert_to_request_payload(req, upstream_model))
         }
+        VideoProvider::Jimeng => {
+            serialize_payload(jimeng::convert_to_request_payload(req, upstream_model))
+        }
         VideoProvider::Sora => Ok(sora::build_json_body(raw_client_body, upstream_model)),
-        VideoProvider::Ali
-        | VideoProvider::Gemini
-        | VideoProvider::Vertex
-        | VideoProvider::Jimeng => Err("submit body not yet ported for this provider".to_string()),
+        VideoProvider::Ali | VideoProvider::Gemini | VideoProvider::Vertex => {
+            Err("submit body not yet ported for this provider".to_string())
+        }
     }
+}
+
+/// The host component of a base URL (scheme stripped, up to the first `/`), for
+/// the Jimeng/Volcengine SigV4 `Host` header.
+fn url_host(base_url: &str) -> &str {
+    base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .unwrap_or(base_url)
+        .split('/')
+        .next()
+        .unwrap_or(base_url)
+}
+
+/// Build a signed Jimeng (Volcengine) request for a `CVSync2Async*` action. A
+/// new-api relay key (`sk-`) uses `Bearer` auth and the `/jimeng/` path; a direct
+/// `accessKey|secretKey` uses SigV4 signing (host/date/content-sha256/auth
+/// headers). Shared by submit (`SubmitTask`) and poll (`GetResult`).
+fn build_jimeng_request(
+    base_url: &str,
+    key: &str,
+    query_action: &str,
+    body: Vec<u8>,
+    now: i64,
+) -> Result<PollRequest, String> {
+    let is_relay = key.starts_with("sk-");
+    let path_prefix = if is_relay { "/jimeng/" } else { "/" };
+    let url = format!("{base_url}{path_prefix}?Action={query_action}&Version=2022-08-31");
+    let body_string = String::from_utf8(body.clone()).map_err(|err| err.to_string())?;
+
+    let mut headers = vec![
+        ("Accept".to_string(), "application/json".to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    if is_relay {
+        headers.push(("Authorization".to_string(), format!("Bearer {key}")));
+    } else {
+        let parts: Vec<&str> = key.split('|').collect();
+        if parts.len() != 2 {
+            return Err("invalid jimeng key, required accessKey|secretKey".to_string());
+        }
+        let (access_key, secret_key) = (parts[0].trim(), parts[1].trim());
+        let (x_date, short_date) = jimeng::format_volcengine_dates(now);
+        let query = [
+            ("Action".to_string(), query_action.to_string()),
+            ("Version".to_string(), "2022-08-31".to_string()),
+        ];
+        let signed = jimeng::sign_request(
+            "POST",
+            url_host(base_url),
+            "/",
+            &query,
+            Some("application/json"),
+            &body,
+            access_key,
+            secret_key,
+            &x_date,
+            &short_date,
+        );
+        headers.push(("Host".to_string(), signed.host));
+        headers.push(("X-Date".to_string(), signed.x_date));
+        headers.push(("X-Content-Sha256".to_string(), signed.x_content_sha256));
+        headers.push(("Authorization".to_string(), signed.authorization));
+    }
+
+    Ok(PollRequest {
+        method: HttpMethod::Post,
+        url,
+        headers,
+        body: Some(body_string),
+    })
 }
 
 /// Build the signed submit HTTP request (a `POST` [`PollRequest`]) for the
@@ -71,6 +144,10 @@ pub fn build_submit_http_request(
     body: Vec<u8>,
     now: i64,
 ) -> Result<PollRequest, String> {
+    // Jimeng builds the full signed request (SigV4 adds host/date/sha256 headers).
+    if provider == VideoProvider::Jimeng {
+        return build_jimeng_request(base_url, key, "CVSync2AsyncSubmitTask", body, now);
+    }
     let (url, auth) = match provider {
         VideoProvider::Sora => (
             submit_request::sora(base_url, action, origin_task_id),
@@ -440,7 +517,24 @@ pub async fn poll_one_task(
                 kling::create_jwt_token(channel_key, now).map_err(worker::Error::RustError)?;
             poll_request::kling(channel_base_url, &token, &task.action, id, is_new_api_relay)
         }
-        VideoProvider::Jimeng | VideoProvider::Vertex => return Ok(None),
+        VideoProvider::Jimeng => {
+            // Jimeng polls with a POST carrying a fixed req_key + the task id,
+            // SigV4-signed (or Bearer for a relay key).
+            let body = serde_json::to_vec(&serde_json::json!({
+                "req_key": "jimeng_vgfm_t2v_l20",
+                "task_id": id,
+            }))
+            .map_err(|err| worker::Error::RustError(err.to_string()))?;
+            build_jimeng_request(
+                channel_base_url,
+                channel_key,
+                "CVSync2AsyncGetResult",
+                body,
+                now,
+            )
+            .map_err(worker::Error::RustError)?
+        }
+        VideoProvider::Vertex => return Ok(None),
     };
 
     let info = poll_task(provider, &request).await?;

@@ -1,8 +1,11 @@
-//! Pure response parser for the Doubao (Volcengine) video task provider, ported
-//! from `relay/channel/task/doubao/adaptor.go` (`ParseTaskResult`).
+//! Pure response parser + submit-body builder for the Doubao (Volcengine) video
+//! task provider, ported from `relay/channel/task/doubao/adaptor.go`
+//! (`ParseTaskResult` and `convertToRequestPayload`).
 
-use crate::{TaskInfo, TaskStatus};
-use serde::Deserialize;
+use crate::taskcommon::merge_metadata;
+use crate::{TaskInfo, TaskStatus, TaskSubmitReq};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Deserialize, Default)]
 struct ResponseTask {
@@ -95,9 +98,127 @@ pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
     Ok(resp.id)
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct MediaUrl {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    url: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ContentItem {
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
+    content_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_url: Option<MediaUrl>,
+}
+
+/// The Doubao submit payload. The transform actively sets `model`/`content`/
+/// `duration`; any other field (resolution, ratio, seed, …) arrives via the
+/// metadata passthrough and is carried in `extra` (flattened to the top level on
+/// serialize). Note: Go's typed payload would drop metadata keys that aren't
+/// real fields; the flattened passthrough keeps them, a benign superset.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RequestPayload {
+    model: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    content: Vec<ContentItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration: Option<i64>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// Build the Doubao submit payload from the client request — a port of
+/// `convertToRequestPayload`. Images become `image_url` content items, metadata
+/// passthrough fields are merged (with `model` stripped), `seconds` (when > 0)
+/// sets `duration`, and finally the prompt is appended as the sole text content
+/// item (any pre-existing text content is dropped first).
+pub fn convert_to_request_payload(req: &TaskSubmitReq) -> Result<RequestPayload, String> {
+    let mut payload = RequestPayload {
+        model: req.model.clone(),
+        ..Default::default()
+    };
+    for image in &req.images {
+        payload.content.push(ContentItem {
+            content_type: "image_url".to_string(),
+            image_url: Some(MediaUrl { url: image.clone() }),
+            ..Default::default()
+        });
+    }
+
+    if let Some(metadata) = &req.metadata {
+        let mut value = serde_json::to_value(&payload).map_err(|err| err.to_string())?;
+        merge_metadata(&mut value, metadata);
+        payload = serde_json::from_value(value).map_err(|err| err.to_string())?;
+    }
+
+    if let Ok(seconds) = req.seconds.parse::<i64>() {
+        if seconds > 0 {
+            payload.duration = Some(seconds);
+        }
+    }
+
+    payload.content.retain(|item| item.content_type != "text");
+    payload.content.push(ContentItem {
+        content_type: "text".to_string(),
+        text: req.prompt.clone(),
+        ..Default::default()
+    });
+
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn request_payload_text_only() {
+        let req = TaskSubmitReq {
+            prompt: "a flying cat".to_string(),
+            model: "doubao-seedance".to_string(),
+            ..Default::default()
+        };
+        let payload = convert_to_request_payload(&req).unwrap();
+        assert_eq!(
+            serde_json::to_value(&payload).unwrap(),
+            json!({
+                "model": "doubao-seedance",
+                "content": [{"type": "text", "text": "a flying cat"}]
+            })
+        );
+    }
+
+    #[test]
+    fn request_payload_images_metadata_and_seconds() {
+        let req = TaskSubmitReq {
+            prompt: "p".to_string(),
+            model: "m".to_string(),
+            images: vec!["https://i/1.png".to_string()],
+            seconds: "5".to_string(),
+            metadata: Some(json!({"resolution": "720p", "ratio": "16:9", "model": "evil"})),
+            ..Default::default()
+        };
+        let payload = convert_to_request_payload(&req).unwrap();
+        let value = serde_json::to_value(&payload).unwrap();
+        // Image content first, prompt text last.
+        assert_eq!(
+            value["content"],
+            json!([
+                {"type": "image_url", "image_url": {"url": "https://i/1.png"}},
+                {"type": "text", "text": "p"}
+            ])
+        );
+        // seconds -> duration; metadata merged; model stripped.
+        assert_eq!(value["duration"], json!(5));
+        assert_eq!(value["resolution"], json!("720p"));
+        assert_eq!(value["ratio"], json!("16:9"));
+        assert!(value.get("model").is_some()); // the request model, not metadata's
+        assert_eq!(value["model"], json!("m"));
+    }
 
     #[test]
     fn submit_returns_id_or_errors_when_empty() {

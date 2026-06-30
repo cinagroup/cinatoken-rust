@@ -120,6 +120,13 @@ enabled = true
 # Lower this only if Workers Logs cost becomes a problem during sustained load.
 head_sampling_rate = 1
 
+# Drives the async-task poller (`#[event(scheduled)]`): every minute it sweeps
+# unfinished video/suno/mj tasks, polls each upstream, and settles/refunds via
+# the CAS. Inert when there are no in-flight tasks. (Cloudflare's minimum cron
+# granularity is one minute; Go's loop polled every 15s.)
+[env.staging.triggers]
+crons = ["* * * * *"]
+
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "cinatoken-rust-db-staging"
@@ -187,6 +194,11 @@ enabled = true
 # Production default is a 10% sample. Raise during canary windows or incidents
 # so every canary request stays searchable, then restore once steady.
 head_sampling_rate = 0.1
+
+# Async-task poller cron (see the staging note). Armed with the rest of the
+# production deploy, which is gated by G8.
+[env.production.triggers]
+crons = ["* * * * *"]
 
 [[env.production.d1_databases]]
 binding = "DB"

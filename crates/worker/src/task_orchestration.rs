@@ -10,7 +10,9 @@
 
 use crate::task_repository::{apply_poll_result, find_unfinished_tasks, TaskRow};
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
-use cinatoken_tasks::providers::{doubao, hailuo, kling, sora, vidu, VideoProvider};
+use cinatoken_tasks::providers::{
+    doubao, hailuo, kling, sora, submit_request, vidu, VideoProvider,
+};
 use cinatoken_tasks::{TaskInfo, TaskSubmitReq};
 use wasm_bindgen::JsValue;
 use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit};
@@ -50,6 +52,75 @@ pub fn build_submit_body(
         | VideoProvider::Vertex
         | VideoProvider::Jimeng => Err("submit body not yet ported for this provider".to_string()),
     }
+}
+
+/// Build the signed submit HTTP request (a `POST` [`PollRequest`]) for the
+/// simple-auth providers: the submit URL (action-dependent), the key-derived
+/// auth header (`Bearer` for sora/doubao/ali/hailuo, `Token` for vidu), and the
+/// JSON body. Kling (JWT) and Jimeng (Volcengine SigV4) need request signing and
+/// are not wired here; Gemini/Vertex submit bodies aren't ported.
+pub fn build_submit_http_request(
+    provider: VideoProvider,
+    base_url: &str,
+    key: &str,
+    action: &str,
+    origin_task_id: &str,
+    body: Vec<u8>,
+) -> Result<PollRequest, String> {
+    let (url, auth) = match provider {
+        VideoProvider::Sora => (
+            submit_request::sora(base_url, action, origin_task_id),
+            format!("Bearer {key}"),
+        ),
+        VideoProvider::Doubao => (submit_request::doubao(base_url), format!("Bearer {key}")),
+        VideoProvider::Ali => (submit_request::ali(base_url), format!("Bearer {key}")),
+        VideoProvider::Hailuo => (submit_request::hailuo(base_url), format!("Bearer {key}")),
+        VideoProvider::Vidu => (
+            submit_request::vidu(base_url, action),
+            format!("Token {key}"),
+        ),
+        VideoProvider::Kling
+        | VideoProvider::Jimeng
+        | VideoProvider::Gemini
+        | VideoProvider::Vertex => {
+            return Err("submit request not wired for this provider (signing/unported)".to_string())
+        }
+    };
+    let body = String::from_utf8(body).map_err(|err| err.to_string())?;
+    Ok(PollRequest {
+        method: HttpMethod::Post,
+        url,
+        headers: vec![
+            ("Authorization".to_string(), auth),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ],
+        body: Some(body),
+    })
+}
+
+/// The submit HTTP half (symmetric to [`poll_task`]): build the provider body,
+/// build the signed submit request, send it, and parse the upstream task id from
+/// the response. The pure pieces (body transform, request URL, response parser)
+/// are host-tested; this thin I/O wrapper is runtime-verified by a staging
+/// submit. Returns the upstream task id.
+pub async fn submit_task(
+    provider: VideoProvider,
+    base_url: &str,
+    key: &str,
+    action: &str,
+    origin_task_id: &str,
+    req: &TaskSubmitReq,
+    upstream_model: &str,
+    raw_client_body: &[u8],
+) -> worker::Result<String> {
+    let body = build_submit_body(provider, req, upstream_model, raw_client_body)
+        .map_err(worker::Error::RustError)?;
+    let request = build_submit_http_request(provider, base_url, key, action, origin_task_id, body)
+        .map_err(worker::Error::RustError)?;
+    let response = execute_poll_request(&request).await?;
+    provider
+        .parse_submit_response(&response)
+        .map_err(|message| worker::Error::RustError(format!("parse submit response: {message}")))
 }
 
 /// Execute a provider poll request and return the response body bytes. The

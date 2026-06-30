@@ -279,6 +279,21 @@ then arm it in production. Never flip a charge-affecting flag straight to prod.
 D1 (`two_fa` + `two_fa_backup_codes`). Apply the full ordered set `0001`→`0006`
 before the auth smoke.
 
+### Async-task system (video / suno / mj)
+
+The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
+`/mj/submit/:action` + the cron poller) needs:
+
+| Item | Requirement |
+| --- | --- |
+| Migrations | Apply through **`0007_midjourneys.sql`** (the mj subsystem's own table); the `tasks` table is in `0001`. |
+| Cron trigger | `[env.*.triggers] crons = ["* * * * *"]` (added to wrangler.toml) drives the `#[event(scheduled)]` poller. Inert with no in-flight tasks; **required** for any task to settle. |
+| `GEMINI_VERSION` | var, default `v1beta` — Gemini/Veo API version. |
+| `VERTEX_REGION` | var, default `us-central1` — Vertex region for `predictLongRunning` (per-channel region edge cases TBD on staging). |
+| Channel types | Each provider is a channel `type`: Ali=17, Gemini=24, MiniMax/Hailuo=35, SunoAPI=36, VertexAi=41, VolcEngine=45, Kling=50, Jimeng=51, Vidu=52, DoubaoVideo=54, Sora=55/OpenAI=1; Midjourney=2/5. A task model with no matching enabled channel returns 503. |
+| Channel keys | Provider-specific: bearer key (sora/doubao/ali/hailuo/suno), `Token` (vidu), `mj-api-secret` (mj), `accessKey\|secretKey` (kling JWT / jimeng SigV4), or the **service-account JSON** (vertex). |
+| Pricing | Task billing models are `suno_<action>`, `mj_<action>`, or the video model name — price them or they bill 0. |
+
 ## Observability Checklist
 
 Detailed sampling, dashboard, alert, SLO, and redaction gates are tracked in

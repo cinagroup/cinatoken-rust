@@ -14,9 +14,10 @@ use crate::task_repository::{
 };
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
-    ali, doubao, gemini, hailuo, jimeng, kling, midjourney, sora, submit_request, suno, vidu,
-    VideoProvider,
+    ali, doubao, gemini, hailuo, jimeng, kling, midjourney, sora, submit_request, suno, vertex,
+    vidu, VideoProvider,
 };
+use cinatoken_tasks::taskcommon::decode_local_task_id;
 use cinatoken_tasks::{
     apply_other_ratios, cover_task_action_to_model_name, TaskInfo, TaskStatus, TaskSubmitReq,
 };
@@ -27,8 +28,9 @@ use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Resp
 /// Build the submit request body for a provider by dispatching to its ported
 /// body transform (the submit half of Go `BuildRequestBody`). The JSON-payload
 /// providers serialize their `convert_to_request_payload`; Sora overrides `model`
-/// in the raw client body. Only Vertex's submit body is unported (it returns an
-/// error). `raw_client_body` is the original request body Sora reshapes.
+/// in the raw client body; Gemini/Vertex share the Veo payload. All providers'
+/// bodies are ported. `raw_client_body` is the original request body Sora
+/// reshapes.
 pub fn build_submit_body(
     provider: VideoProvider,
     req: &TaskSubmitReq,
@@ -58,8 +60,12 @@ pub fn build_submit_body(
             serialize_payload(ali::convert_to_request_payload(req, upstream_model))
         }
         VideoProvider::Sora => Ok(sora::build_json_body(raw_client_body, upstream_model)),
-        VideoProvider::Gemini => serialize_payload(gemini::convert_to_request_payload(req)),
-        VideoProvider::Vertex => Err("submit body not yet ported for this provider".to_string()),
+        // Gemini and Vertex share the Veo predictLongRunning body. (Vertex's full
+        // submit runs through submit_vertex_task, which needs the async token, so
+        // this arm is only reached for Gemini in practice.)
+        VideoProvider::Gemini | VideoProvider::Vertex => {
+            serialize_payload(gemini::convert_to_request_payload(req))
+        }
     }
 }
 
@@ -138,8 +144,8 @@ fn build_jimeng_request(
 /// simple-auth providers use the action-dependent submit URL + a key-derived
 /// auth header (`Bearer` for sora/doubao/ali/hailuo, `Token` for vidu); Kling
 /// mints a JWT, Jimeng builds a Volcengine-SigV4-signed request, and Gemini posts
-/// to `predictLongRunning` with an `x-goog-api-key` header. Only Vertex (GCP
-/// OAuth) is unwired.
+/// to `predictLongRunning` with an `x-goog-api-key` header. Vertex is handled by
+/// [`submit_vertex_task`] (async GCP token exchange) and never reaches here.
 pub fn build_submit_http_request(
     provider: VideoProvider,
     base_url: &str,
@@ -217,6 +223,90 @@ pub fn build_submit_http_request(
 /// the response. The pure pieces (body transform, request URL, response parser)
 /// are host-tested; this thin I/O wrapper is runtime-verified by a staging
 /// submit. Returns the upstream task id.
+/// Acquire a Vertex access token: parse the service-account JSON (the channel
+/// key), mint the RS256 assertion JWT, and exchange it at Google's OAuth2 token
+/// endpoint. Returns `(access_token, project_id)`. No caching yet — each
+/// submit/poll exchanges fresh (Vertex is low-volume); a KV-backed cache is a
+/// follow-up.
+async fn acquire_vertex_token(
+    service_account_json: &str,
+    now: i64,
+) -> worker::Result<(String, String)> {
+    let sa: vertex::ServiceAccount = serde_json::from_str(service_account_json)
+        .map_err(|err| worker::Error::RustError(format!("parse service account: {err}")))?;
+    let jwt = vertex::create_signed_jwt(&sa.client_email, &sa.private_key, now)
+        .map_err(worker::Error::RustError)?;
+    let request = PollRequest {
+        method: HttpMethod::Post,
+        url: vertex::TOKEN_ENDPOINT.to_string(),
+        headers: vec![(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        )],
+        body: Some(vertex::token_exchange_body(&jwt)),
+    };
+    let response = execute_poll_request(&request).await?;
+    let token = vertex::parse_token_response(&response).map_err(worker::Error::RustError)?;
+    Ok((token, sa.project_id))
+}
+
+/// Submit a Vertex task: acquire a token, build the `predictLongRunning` URL +
+/// the shared Veo body, POST, and return the encoded operation name.
+async fn submit_vertex_task(
+    base_url: &str,
+    service_account_json: &str,
+    region: &str,
+    req: &TaskSubmitReq,
+    model: &str,
+    now: i64,
+) -> worker::Result<String> {
+    let (token, project_id) = acquire_vertex_token(service_account_json, now).await?;
+    let url = vertex::build_predict_url(base_url, "v1", &project_id, region, model);
+    let payload = gemini::convert_to_request_payload(req).map_err(worker::Error::RustError)?;
+    let body = serde_json::to_string(&payload)?;
+    let request = PollRequest {
+        method: HttpMethod::Post,
+        url,
+        headers: vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ],
+        body: Some(body),
+    };
+    let response = execute_poll_request(&request).await?;
+    vertex::parse_submit_response(&response).map_err(worker::Error::RustError)
+}
+
+/// Poll a Vertex task: decode the operation name, build the
+/// `fetchPredictOperation` URL, acquire a token, POST `{operationName}`, parse,
+/// and apply the settle.
+async fn poll_vertex_task(
+    db: &D1Database,
+    task: &TaskRow,
+    base_url: &str,
+    service_account_json: &str,
+    now: i64,
+) -> worker::Result<bool> {
+    let operation_name =
+        decode_local_task_id(&task.upstream_task_id).map_err(worker::Error::RustError)?;
+    let url =
+        vertex::build_fetch_url(base_url, &operation_name).map_err(worker::Error::RustError)?;
+    let (token, _project_id) = acquire_vertex_token(service_account_json, now).await?;
+    let request = PollRequest {
+        method: HttpMethod::Post,
+        url,
+        headers: vec![
+            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ],
+        body: Some(serde_json::json!({ "operationName": operation_name }).to_string()),
+    };
+    let response = execute_poll_request(&request).await?;
+    let info = vertex::parse_task_result(&response).map_err(worker::Error::RustError)?;
+    let finish_time = if info.status.is_terminal() { now } else { 0 };
+    apply_poll_result(db, task, &info, finish_time, now).await
+}
+
 pub async fn submit_task(
     provider: VideoProvider,
     base_url: &str,
@@ -226,9 +316,15 @@ pub async fn submit_task(
     req: &TaskSubmitReq,
     upstream_model: &str,
     gemini_version: &str,
+    vertex_region: &str,
     raw_client_body: &[u8],
     now: i64,
 ) -> worker::Result<String> {
+    // Vertex needs an async GCP token exchange before building the request, so it
+    // bypasses the sync build_submit_* path.
+    if provider == VideoProvider::Vertex {
+        return submit_vertex_task(base_url, key, vertex_region, req, upstream_model, now).await;
+    }
     let body = build_submit_body(provider, req, upstream_model, raw_client_body)
         .map_err(worker::Error::RustError)?;
     let request = build_submit_http_request(
@@ -314,6 +410,8 @@ pub struct TaskSubmitContext<'a> {
     pub now: i64,
     /// Configured Gemini API version (e.g. `v1beta`); only used by Gemini.
     pub gemini_version: &'a str,
+    /// Configured Vertex region (e.g. `us-central1`); only used by Vertex.
+    pub vertex_region: &'a str,
 }
 
 /// Orchestrate a task submit — the billing + submit + insert core of Go
@@ -358,6 +456,7 @@ pub async fn relay_task_submit(
         req,
         ctx.upstream_model,
         ctx.gemini_version,
+        ctx.vertex_region,
         raw_client_body,
         ctx.now,
     )
@@ -457,6 +556,10 @@ pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker:
         .var("GEMINI_VERSION")
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
+    let vertex_region = env
+        .var("VERTEX_REGION")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "us-central1".to_string());
     let ctx = TaskSubmitContext {
         provider,
         channel_id: channel.id,
@@ -473,6 +576,7 @@ pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker:
         base_quota,
         now,
         gemini_version: &gemini_version,
+        vertex_region: &vertex_region,
     };
 
     match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
@@ -778,7 +882,13 @@ pub async fn poll_one_task(
             )
             .map_err(worker::Error::RustError)?
         }
-        VideoProvider::Vertex => return Ok(None),
+        VideoProvider::Vertex => {
+            // Vertex needs an async GCP token exchange + the operation-name-based
+            // fetch URL, so it runs its own poll cycle.
+            return poll_vertex_task(db, task, channel_base_url, channel_key, now)
+                .await
+                .map(Some);
+        }
     };
 
     let info = poll_task(provider, &request).await?;

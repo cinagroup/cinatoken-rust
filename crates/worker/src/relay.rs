@@ -2153,7 +2153,7 @@ fn relay_read_cache(
         })
 }
 
-fn extract_api_key(req: &Request) -> Option<String> {
+pub(crate) fn extract_api_key(req: &Request) -> Option<String> {
     let authorization = req.headers().get("authorization").ok().flatten();
     if let Some(value) = authorization {
         let value = value.trim();

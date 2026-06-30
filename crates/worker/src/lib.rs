@@ -316,6 +316,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let event_ctx = ctx.data;
             relay::completions(req, env, event_ctx).await
         })
+        // Async video task submit (item 4.x): authenticate → select channel →
+        // price → reserve → submit upstream → insert SUBMITTED task. The cron
+        // poller settles it. Runtime-verified by a staging submit.
+        .post_async("/v1/video/generations", |req, ctx| async move {
+            let env = ctx.env;
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_task_submit(req, env, now).await
+        })
         .post_async("/v1/responses", |req, ctx| async move {
             let env = ctx.env;
             let event_ctx = ctx.data;

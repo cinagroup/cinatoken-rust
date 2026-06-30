@@ -18,7 +18,7 @@ use cinatoken_tasks::providers::{
 };
 use cinatoken_tasks::{apply_other_ratios, TaskInfo, TaskStatus, TaskSubmitReq};
 use wasm_bindgen::JsValue;
-use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit};
+use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
 /// Build the submit request body for a provider by dispatching to its ported
 /// body transform (the submit half of Go `BuildRequestBody`). The four
@@ -126,6 +126,51 @@ pub async fn submit_task(
         .map_err(|message| worker::Error::RustError(format!("parse submit response: {message}")))
 }
 
+/// Compute the base per-call quota for a task model — a port of Go
+/// `ModelPriceHelperPerCall`: `model_price * quota_per_unit * group_ratio`.
+/// Returns `Ok(None)` when the model has no configured price (unbilled). Loads
+/// the pricing options in one D1 round-trip, mirroring the relay's flat-billing
+/// load.
+pub async fn compute_task_base_quota(
+    db: &D1Database,
+    model: &str,
+    group: &str,
+) -> worker::Result<Option<i64>> {
+    let keys = [
+        "ModelRatio",
+        "CompletionRatio",
+        "ModelPrice",
+        "CacheRatio",
+        "QuotaPerUnit",
+        crate::d1_repositories::GROUP_RATIO_OPTION_KEY,
+        "CreateCacheRatio",
+        "ImageRatio",
+        "AudioRatio",
+        "AudioCompletionRatio",
+    ];
+    let values = crate::d1_repositories::option_values(db, &keys).await?;
+    let config = cinatoken_billing::PricingConfig::new()
+        .with_json_maps(
+            values[0].as_deref(),
+            values[1].as_deref(),
+            values[2].as_deref(),
+            values[3].as_deref(),
+            values[5].as_deref(), // group ratio
+            values[4].as_deref(), // quota per unit
+        )
+        .with_subcategory_maps(
+            values[6].as_deref(),
+            values[7].as_deref(),
+            values[8].as_deref(),
+            values[9].as_deref(),
+        );
+    let Some(price) = config.model_price(model) else {
+        return Ok(None);
+    };
+    let group_ratio = crate::d1_repositories::group_ratio_for_group(db, group).await?;
+    Ok(Some((price * config.quota_per_unit * group_ratio) as i64))
+}
+
 /// The resolved auth/channel/billing context for a task submit — what the route
 /// handler produces (authenticate → select channel → price the base model)
 /// before the billing+submit orchestration runs.
@@ -219,6 +264,91 @@ pub async fn relay_task_submit(
     insert_task(db, &new_task).await?;
 
     Ok(public_task_id)
+}
+
+/// Video channel types that run task providers (`constant/channel.go`), used to
+/// scope channel selection to task-capable channels.
+const VIDEO_CHANNEL_TYPES: &[i32] = &[1, 17, 24, 35, 41, 45, 50, 51, 52, 54, 55];
+
+/// HTTP entry for a video task submit — the route handler that produces the
+/// [`TaskSubmitContext`] and drives [`relay_task_submit`]: authenticate the key,
+/// parse the request, select a task channel for the model, price the base model
+/// ([`compute_task_base_quota`]), and submit. Returns `{"task_id": "task_..."}`.
+///
+/// Simplifications pending runtime tuning against Go: the action defaults to
+/// `generate` (Go derives it per-provider in `ValidateRequestAndSetAction`), the
+/// platform tag uses the model, and channel model-mapping isn't applied — these
+/// affect provider routing/billing detail and are validated by a staging submit.
+pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+
+    let Some(api_key) = crate::relay::extract_api_key(&req) else {
+        return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
+    };
+    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
+        return crate::json_with_status(&serde_json::json!({"error": "invalid api key"}), 401);
+    };
+
+    let body_bytes = req.bytes().await?;
+    let task_req: TaskSubmitReq = match serde_json::from_slice(&body_bytes) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return crate::json_with_status(
+                &serde_json::json!({"error": format!("invalid request: {err}")}),
+                400,
+            )
+        }
+    };
+    let model = task_req.model.clone();
+
+    let channels = crate::d1_repositories::select_relay_channels(
+        &db,
+        &model,
+        &auth.user_group,
+        VIDEO_CHANNEL_TYPES,
+    )
+    .await?;
+    let Some(channel) = channels.into_iter().next() else {
+        return crate::json_with_status(
+            &serde_json::json!({"error": "no available channel for model"}),
+            503,
+        );
+    };
+    let Some(provider) = VideoProvider::from_channel_type(channel.channel_type as i64) else {
+        return crate::json_with_status(
+            &serde_json::json!({"error": "channel is not a task provider"}),
+            503,
+        );
+    };
+
+    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
+        .await?
+        .unwrap_or(0);
+
+    let channel_base_url = channel.base_url.as_deref().unwrap_or_default();
+    let ctx = TaskSubmitContext {
+        provider,
+        channel_id: channel.id,
+        channel_base_url,
+        channel_key: &channel.key,
+        user_id: auth.user_id,
+        token_id: auth.token_id,
+        username: &auth.username,
+        group: &auth.token_group,
+        platform: &model,
+        upstream_model: &model,
+        action: "generate",
+        origin_task_id: "",
+        base_quota,
+        now,
+    };
+
+    match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
+        Ok(public_task_id) => {
+            crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
+        }
+        Err(err) => crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500),
+    }
 }
 
 /// Execute a provider poll request and return the response body bytes. The

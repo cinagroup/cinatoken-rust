@@ -39,17 +39,11 @@ struct JwtClaims<'a> {
     scope: &'a str,
 }
 
-/// Mint the RS256 service-account assertion JWT — a port of Go
-/// `createSignedJWT`. The PEM is normalized (strip the armor + all newline
-/// forms, including literal `\n`, then re-wrap) before parsing as PKCS#8, and the
-/// claims are `iss`/`scope`/`aud`/`exp = now + 35m`/`iat = now`, signed with
-/// RSASSA-PKCS1-v1.5-SHA256. `now` is unix seconds (the caller reads the clock),
-/// and the header/claims keys are alphabetically ordered to match Go's
-/// `encoding/json` map marshaling so the signing input is reproducible.
 /// Parse a service-account PKCS#8 private key, normalizing the PEM the way Go's
 /// `createSignedJWT` does first: strip the armor + every newline form (including
-/// the literal `\n` GCP JSON escapes), then re-wrap as a single base64 line. This
-/// tolerates the many ways the key arrives (escaped JSON, CRLFs, no wrapping).
+/// the literal `\n` GCP JSON escapes), then re-wrap the base64 at 64 columns.
+/// This tolerates the many ways the key arrives (escaped JSON, CRLFs, single
+/// line) and satisfies Rust's strict RFC-7468 PKCS#8 parser.
 fn parse_private_key(private_key_pem: &str) -> Result<RsaPrivateKey, String> {
     let cleaned: String = private_key_pem
         .replace("-----BEGIN PRIVATE KEY-----", "")
@@ -70,6 +64,11 @@ fn parse_private_key(private_key_pem: &str) -> Result<RsaPrivateKey, String> {
     RsaPrivateKey::from_pkcs8_pem(&pem).map_err(|err| format!("parse private key: {err}"))
 }
 
+/// Mint the RS256 service-account assertion JWT — a port of Go `createSignedJWT`.
+/// The claims are `iss`/`scope`/`aud`/`exp = now + 35m`/`iat = now`, signed with
+/// RSASSA-PKCS1-v1.5-SHA256. `now` is unix seconds (the caller reads the clock),
+/// and the header/claims keys are alphabetically ordered to match Go's
+/// `encoding/json` map marshaling so the signing input is reproducible.
 pub fn create_signed_jwt(email: &str, private_key_pem: &str, now: i64) -> Result<String, String> {
     let key = parse_private_key(private_key_pem)?;
     let signing_key: SigningKey<Sha256> = SigningKey::new(key);

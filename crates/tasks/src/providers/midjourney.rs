@@ -106,10 +106,44 @@ pub fn check_mj_task_need_update(old: &CurrentMidjourneyState, new: &MidjourneyD
     false
 }
 
+#[derive(Deserialize, Default)]
+struct MidjourneyResponse {
+    #[serde(default)]
+    code: i64,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    result: String,
+}
+
+/// Extract the upstream mj task id from a Midjourney submit response (Go
+/// `dto.MidjourneyResponse`): `code == 1` is success and `result` is the mj id;
+/// any other code is an error carrying `description`.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: MidjourneyResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    if resp.code != 1 {
+        return Err(resp.description);
+    }
+    Ok(resp.result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn submit_response_returns_result_or_description() {
+        assert_eq!(
+            parse_submit_response(br#"{"code":1,"result":"168xxx"}"#).unwrap(),
+            "168xxx"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"code":4,"description":"banned prompt"}"#).unwrap_err(),
+            "banned prompt"
+        );
+    }
 
     fn current<'a>() -> CurrentMidjourneyState<'a> {
         CurrentMidjourneyState {

@@ -333,6 +333,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let now = (worker::Date::now().as_millis() / 1000) as i64;
             task_orchestration::handle_suno_submit(req, ctx.env, &action, now).await
         })
+        // Midjourney submit (mj subsystem): POST /mj/submit/:action.
+        .post_async("/mj/submit/:action", |req, ctx| async move {
+            let action = ctx.param("action").cloned().unwrap_or_default();
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_mj_submit(req, ctx.env, &action, now).await
+        })
         .post_async("/v1/responses", |req, ctx| async move {
             let env = ctx.env;
             let event_ctx = ctx.data;

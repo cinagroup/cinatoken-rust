@@ -583,6 +583,107 @@ pub async fn handle_suno_submit(
     crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
 }
 
+/// HTTP entry for a Midjourney submit (`POST /mj/submit/:action`). mj is its own
+/// subsystem: it selects a Midjourney channel (type 2 or 5), reserves the base
+/// quota, forwards the client body to `{base}/mj/submit/{action}` with the
+/// `mj-api-secret` header, parses the `MidjourneyResponse` (`code == 1` ⇒ the
+/// `result` mj id), and inserts a row into `midjourneys`. The billing model is
+/// `mj_<action>`. A submit failure refunds the reserve. Runtime-verified by a
+/// staging submit.
+pub async fn handle_mj_submit(
+    mut req: Request,
+    env: Env,
+    action: &str,
+    now: i64,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+
+    let Some(api_key) = crate::relay::extract_api_key(&req) else {
+        return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
+    };
+    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
+        return crate::json_with_status(&serde_json::json!({"error": "invalid api key"}), 401);
+    };
+
+    let body_bytes = req.bytes().await?;
+    let body_value: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap_or_default();
+    let prompt = body_value
+        .get("prompt")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let model = cover_task_action_to_model_name("mj", action);
+
+    // Midjourney channels are type 2 (Midjourney) or 5 (MidjourneyPlus).
+    let channels =
+        crate::d1_repositories::select_relay_channels(&db, &model, &auth.user_group, &[2, 5])
+            .await?;
+    let Some(channel) = channels.into_iter().next() else {
+        return crate::json_with_status(
+            &serde_json::json!({"error": "no available midjourney channel for model"}),
+            503,
+        );
+    };
+
+    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
+        .await?
+        .unwrap_or(0);
+    reserve_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now).await?;
+
+    let base_url = channel.base_url.as_deref().unwrap_or_default();
+    let request = PollRequest {
+        method: HttpMethod::Post,
+        url: format!("{base_url}/mj/submit/{action}"),
+        headers: vec![
+            ("mj-api-secret".to_string(), channel.key.clone()),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ],
+        body: Some(String::from_utf8(body_bytes.clone()).unwrap_or_default()),
+    };
+
+    let mj_id = match execute_poll_request(&request).await {
+        Ok(response) => match midjourney::parse_submit_response(&response) {
+            Ok(id) => id,
+            Err(err) => {
+                let _ =
+                    refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                        .await;
+                return crate::json_with_status(
+                    &serde_json::json!({"code": 4, "description": err}),
+                    400,
+                );
+            }
+        },
+        Err(err) => {
+            let _ = refund_reserved_relay_quota(&db, auth.user_id, auth.token_id, base_quota, now)
+                .await;
+            return crate::json_with_status(
+                &serde_json::json!({"code": 4, "description": err.to_string()}),
+                500,
+            );
+        }
+    };
+
+    let new_mj = crate::mj_repository::NewMidjourney {
+        code: 1,
+        user_id: auth.user_id,
+        action,
+        mj_id: &mj_id,
+        prompt,
+        prompt_en: prompt,
+        channel_id: channel.id,
+        quota: base_quota,
+        status: "SUBMITTED",
+        progress: "0%",
+        submit_time: now,
+    };
+    crate::mj_repository::insert_midjourney(&db, &new_mj).await?;
+
+    crate::json_with_status(
+        &serde_json::json!({"code": 1, "description": "submit success", "result": mj_id}),
+        200,
+    )
+}
+
 /// Execute a provider poll request and return the response body bytes. The
 /// caller feeds these to the matching provider parser
 /// ([`VideoProvider::parse_task_result`]).

@@ -189,6 +189,27 @@ pub fn apply_other_ratios(base_quota: i64, ratios: &[f64]) -> i64 {
     quota
 }
 
+/// The 62-char alphabet Go `GenerateRandomCharsKey` draws from
+/// (`common/utils.go` `keyChars`): digits, then lowercase, then uppercase.
+pub const TASK_ID_KEY_CHARS: &[u8] =
+    b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/// Build a public task id from random indices — the pure half of Go
+/// `GenerateTaskID` (= `"task_" + GenerateRandomCharsKey(32)`). Each index
+/// selects a character from [`TASK_ID_KEY_CHARS`]. The caller supplies the
+/// indices (the Worker draws them uniformly from a CSPRNG via rejection
+/// sampling); an out-of-range index wraps via modulo as a safety net. Keeping
+/// the mapping pure lets it be host-tested even though the entropy source is
+/// wasm-only.
+pub fn build_task_id(indices: &[u8]) -> String {
+    let mut id = String::with_capacity("task_".len() + indices.len());
+    id.push_str("task_");
+    for &index in indices {
+        id.push(TASK_ID_KEY_CHARS[(index as usize) % TASK_ID_KEY_CHARS.len()] as char);
+    }
+    id
+}
+
 /// Parsed result of polling an upstream task provider — a port of
 /// `relaycommon.TaskInfo` (`relay/common/relay_info.go`). Each provider's
 /// response parser (e.g. [`providers::kling::parse_task_result`]) maps its
@@ -412,5 +433,17 @@ mod tests {
         // Per-step truncation differs from a single accumulated multiply:
         // 3 * 1.5 = 4.5 -> 4, then * 2.0 = 8.0 -> 8 (accumulate would give 9).
         assert_eq!(apply_other_ratios(3, &[1.5, 2.0]), 8);
+    }
+
+    #[test]
+    fn build_task_id_maps_indices_to_alphabet() {
+        // 0->'0', 1->'1', 10->'a', 35->'z', 36->'A', 61->'Z'.
+        assert_eq!(build_task_id(&[0, 1, 10, 35, 36, 61]), "task_01azAZ");
+        // Prefix + length: 32 indices -> "task_" + 32 chars.
+        assert_eq!(build_task_id(&[0; 32]).len(), "task_".len() + 32);
+        assert!(build_task_id(&[5]).starts_with("task_"));
+        // Out-of-range index wraps (62 -> index 0 -> '0').
+        assert_eq!(build_task_id(&[62]), "task_0");
+        assert_eq!(TASK_ID_KEY_CHARS.len(), 62);
     }
 }

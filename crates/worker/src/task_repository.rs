@@ -16,9 +16,33 @@
 #![allow(dead_code)]
 
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
-use cinatoken_tasks::{settlement_for, TaskInfo, TaskSettlement, TaskStatus};
+use cinatoken_tasks::{build_task_id, settlement_for, TaskInfo, TaskSettlement, TaskStatus};
 use serde::Deserialize;
 use worker::{D1Database, D1Type};
+
+/// Generate a public task id — `"task_"` + 32 CSPRNG characters, the Worker
+/// (wasm) half of Go `GenerateTaskID`. Bytes come from `getrandom` (Web Crypto)
+/// and are rejection-sampled to a uniform `[0, 62)` (rejecting the biased tail
+/// `>= 248 = 62*4`) before mapping through [`build_task_id`], so the alphabet is
+/// drawn without modulo bias, matching Go's `crand.Int`.
+pub fn generate_task_id() -> String {
+    let mut indices: Vec<u8> = Vec::with_capacity(32);
+    let mut buffer = [0u8; 64];
+    while indices.len() < 32 {
+        if getrandom::getrandom(&mut buffer).is_err() {
+            break;
+        }
+        for &byte in &buffer {
+            if indices.len() >= 32 {
+                break;
+            }
+            if byte < 248 {
+                indices.push(byte % 62);
+            }
+        }
+    }
+    build_task_id(&indices)
+}
 
 /// The fields needed to create a task row. Columns not listed take their
 /// `0001_core.sql` defaults (`properties`/`private_data`/`data` = `{}`, etc.).

@@ -210,6 +210,47 @@ pub fn build_task_id(indices: &[u8]) -> String {
     id
 }
 
+/// The client's task submit request — a port of `relaycommon.TaskSubmitReq`
+/// (`relay/common/relay_info.go`). This is the shared input the per-provider
+/// `BuildRequestBody` transforms reshape into each upstream's payload, and the
+/// source of the billing estimate inputs (`seconds`/`size`/`duration`).
+/// `metadata` carries provider-specific passthrough fields (merged into the
+/// upstream payload, with `model` stripped to prevent a billing bypass).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TaskSubmitReq {
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub size: String,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub duration: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seconds: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub input_reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
+}
+
+impl TaskSubmitReq {
+    /// Go `TaskSubmitReq.HasImage`: true when at least one image URL is present.
+    pub fn has_image(&self) -> bool {
+        !self.images.is_empty()
+    }
+}
+
 /// Parsed result of polling an upstream task provider — a port of
 /// `relaycommon.TaskInfo` (`relay/common/relay_info.go`). Each provider's
 /// response parser (e.g. [`providers::kling::parse_task_result`]) maps its
@@ -433,6 +474,24 @@ mod tests {
         // Per-step truncation differs from a single accumulated multiply:
         // 3 * 1.5 = 4.5 -> 4, then * 2.0 = 8.0 -> 8 (accumulate would give 9).
         assert_eq!(apply_other_ratios(3, &[1.5, 2.0]), 8);
+    }
+
+    #[test]
+    fn task_submit_req_deserializes_and_reports_image() {
+        let req: TaskSubmitReq = serde_json::from_slice(
+            br#"{"prompt":"a cat","model":"sora","seconds":"5","images":["https://i/1.png"]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.prompt, "a cat");
+        assert_eq!(req.model, "sora");
+        assert_eq!(req.seconds, "5");
+        assert!(req.has_image());
+
+        // No images -> has_image false; absent fields default empty.
+        let req: TaskSubmitReq = serde_json::from_slice(br#"{"prompt":"x"}"#).unwrap();
+        assert!(!req.has_image());
+        assert_eq!(req.duration, 0);
+        assert!(req.metadata.is_none());
     }
 
     #[test]

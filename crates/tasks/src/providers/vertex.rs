@@ -91,6 +91,88 @@ pub fn create_signed_jwt(email: &str, private_key_pem: &str, now: i64) -> Result
     Ok(format!("{signing_input}.{signature_b64}"))
 }
 
+/// The Google OAuth2 token endpoint the assertion JWT is exchanged at.
+pub const TOKEN_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v4/token";
+
+/// The form body for the JWT-bearer token exchange (Go
+/// `exchangeJwtForAccessToken`): `grant_type=jwt-bearer&assertion=<jwt>`.
+pub fn token_exchange_body(signed_jwt: &str) -> String {
+    format!(
+        "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion={}",
+        signed_jwt
+    )
+}
+
+/// Extract the `access_token` from a GCP token-exchange response.
+pub fn parse_token_response(body: &[u8]) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(|err| err.to_string())?;
+    value
+        .get("access_token")
+        .and_then(|token| token.as_str())
+        .map(|token| token.to_string())
+        .ok_or_else(|| format!("no access_token: {}", String::from_utf8_lossy(body)))
+}
+
+fn append_api_version(base_url: &str, version: &str) -> String {
+    let version = version.trim().trim_matches('/');
+    if version.is_empty() || base_url.ends_with(&format!("/{version}")) {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/{version}")
+    }
+}
+
+fn normalize_region(region: &str) -> String {
+    let region = region.trim();
+    if region.is_empty() {
+        "global".to_string()
+    } else {
+        region.to_string()
+    }
+}
+
+/// Build the Vertex API base URL (Go `BuildAPIBaseURL`). A configured channel
+/// base URL is normalized + version-appended + scoped to the project/location;
+/// otherwise the regional `aiplatform.googleapis.com` host is constructed (the
+/// `global` region uses the unprefixed host).
+fn build_api_base_url(base_url: &str, version: &str, project_id: &str, region: &str) -> String {
+    let normalized = base_url.trim().trim_end_matches('/');
+    if !normalized.is_empty() {
+        let mut url = append_api_version(normalized, version);
+        let region = normalize_region(region);
+        if !project_id.trim().is_empty() {
+            url = format!("{url}/projects/{project_id}/locations/{region}");
+        }
+        return url;
+    }
+    let region = normalize_region(region);
+    match (project_id.trim().is_empty(), region.as_str()) {
+        (true, "global") => format!("https://aiplatform.googleapis.com/{version}"),
+        (true, _) => format!("https://{region}-aiplatform.googleapis.com/{version}"),
+        (false, "global") => format!(
+            "https://aiplatform.googleapis.com/{version}/projects/{project_id}/locations/global"
+        ),
+        (false, _) => format!(
+            "https://{region}-aiplatform.googleapis.com/{version}/projects/{project_id}/locations/{region}"
+        ),
+    }
+}
+
+/// Build the Vertex `predictLongRunning` submit URL (Go `BuildGoogleModelURL`
+/// with publisher `google`).
+pub fn build_predict_url(
+    base_url: &str,
+    version: &str,
+    project_id: &str,
+    region: &str,
+    model: &str,
+) -> String {
+    format!(
+        "{}/publishers/google/models/{model}:predictLongRunning",
+        build_api_base_url(base_url, version, project_id, region)
+    )
+}
+
 #[derive(Deserialize, Default)]
 struct OperationResponse {
     #[serde(default)]
@@ -276,6 +358,44 @@ XLmak3bnZHNpev8oBuq/HH0=
     #[test]
     fn create_signed_jwt_rejects_bad_key() {
         assert!(create_signed_jwt("svc", "not a key", 0).is_err());
+    }
+
+    #[test]
+    fn predict_url_configured_base() {
+        assert_eq!(
+            build_predict_url("https://proxy.example/", "v1", "my-proj", "us-central1", "veo-2"),
+            "https://proxy.example/v1/projects/my-proj/locations/us-central1/publishers/google/models/veo-2:predictLongRunning"
+        );
+    }
+
+    #[test]
+    fn predict_url_constructed_host() {
+        // Regional host when no base URL is configured.
+        assert_eq!(
+            build_predict_url("", "v1", "my-proj", "us-central1", "veo-2"),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/publishers/google/models/veo-2:predictLongRunning"
+        );
+        // global region uses the unprefixed host; empty region defaults to global.
+        assert_eq!(
+            build_predict_url("", "v1", "my-proj", "", "veo-2"),
+            "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/publishers/google/models/veo-2:predictLongRunning"
+        );
+    }
+
+    #[test]
+    fn token_response_extracts_access_token() {
+        assert_eq!(
+            parse_token_response(br#"{"access_token":"ya29.abc","expires_in":3599}"#).unwrap(),
+            "ya29.abc"
+        );
+        assert!(parse_token_response(br#"{"error":"invalid_grant"}"#).is_err());
+    }
+
+    #[test]
+    fn token_exchange_body_is_form_encoded() {
+        let body = token_exchange_body("JWT123");
+        assert!(body.contains("grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer"));
+        assert!(body.contains("assertion=JWT123"));
     }
 
     #[test]

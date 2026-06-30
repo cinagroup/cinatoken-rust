@@ -23,6 +23,9 @@ mod task_repository;
 // Worker-side task polling I/O (executes the pure poll requests + threads bytes
 // into the parser/settle-apply). Foundation ahead of its routes/trigger.
 mod task_orchestration;
+// Midjourney subsystem persistence (separate `midjourneys` table). Foundation
+// ahead of the mj submit/poll wiring.
+mod mj_repository;
 mod turnstile;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};

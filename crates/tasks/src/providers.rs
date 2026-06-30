@@ -71,6 +71,26 @@ impl VideoProvider {
             VideoProvider::Hailuo => hailuo::parse_task_result(body),
         }
     }
+
+    /// Extract the upstream task id from a submit response using this provider's
+    /// `DoResponse` port. The five providers with a ported submit parser
+    /// (sora/vidu/doubao/kling/ali) dispatch to it; the others return an error
+    /// until their submit parser is ported.
+    pub fn parse_submit_response(self, body: &[u8]) -> Result<String, String> {
+        match self {
+            VideoProvider::Sora => sora::parse_submit_response(body),
+            VideoProvider::Vidu => vidu::parse_submit_response(body),
+            VideoProvider::Doubao => doubao::parse_submit_response(body),
+            VideoProvider::Kling => kling::parse_submit_response(body),
+            VideoProvider::Ali => ali::parse_submit_response(body),
+            VideoProvider::Jimeng
+            | VideoProvider::Vertex
+            | VideoProvider::Gemini
+            | VideoProvider::Hailuo => {
+                Err("submit response parser not yet ported for this provider".to_string())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +138,27 @@ mod tests {
             .parse_task_result(br#"{"data":{"task_status":"succeed"}}"#)
             .unwrap_err();
         assert_eq!(err, "unknown task state: ");
+    }
+
+    #[test]
+    fn submit_response_dispatch_routes_per_provider() {
+        // Doubao extracts `id`.
+        assert_eq!(
+            VideoProvider::Doubao
+                .parse_submit_response(br#"{"id":"cgt-9"}"#)
+                .unwrap(),
+            "cgt-9"
+        );
+        // Ali extracts `output.task_id`.
+        assert_eq!(
+            VideoProvider::Ali
+                .parse_submit_response(br#"{"output":{"task_id":"ali-1"}}"#)
+                .unwrap(),
+            "ali-1"
+        );
+        // Unported providers error.
+        assert!(VideoProvider::Jimeng
+            .parse_submit_response(br#"{}"#)
+            .is_err());
     }
 }

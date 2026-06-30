@@ -88,6 +88,32 @@ pub struct SignedHeaders {
     pub authorization: String,
 }
 
+/// Convert a unix-seconds timestamp to the two UTC date strings the Volcengine
+/// SigV4 signing needs: `x_date` (`YYYYMMDDTHHMMSSZ`, Go `t.Format("20060102T150405Z")`)
+/// and `short_date` (`YYYYMMDD`). Pure (no clock) so it is host-testable; the
+/// Worker supplies `now`. Uses Howard Hinnant's civil-from-days algorithm.
+pub fn format_volcengine_dates(unix_seconds: i64) -> (String, String) {
+    let days = unix_seconds.div_euclid(86400);
+    let secs = unix_seconds.rem_euclid(86400);
+    let (hour, minute, second) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+
+    // civil_from_days: days since 1970-01-01 -> (year, month, day).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { year + 1 } else { year };
+
+    let x_date = format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z");
+    let short_date = format!("{year:04}{month:02}{day:02}");
+    (x_date, short_date)
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -214,6 +240,22 @@ pub fn sign_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volcengine_dates_format() {
+        // 2024-01-15 12:00:00 UTC = 1_705_320_000 (the sign_request ground-truth time).
+        assert_eq!(
+            format_volcengine_dates(1_705_320_000),
+            ("20240115T120000Z".to_string(), "20240115".to_string())
+        );
+        // Unix epoch.
+        assert_eq!(
+            format_volcengine_dates(0),
+            ("19700101T000000Z".to_string(), "19700101".to_string())
+        );
+        // A leap-day afternoon: 2020-02-29 23:59:59 UTC = 1_583_020_799.
+        assert_eq!(format_volcengine_dates(1_583_020_799).0, "20200229T235959Z");
+    }
 
     #[test]
     fn sign_request_matches_go_ground_truth() {

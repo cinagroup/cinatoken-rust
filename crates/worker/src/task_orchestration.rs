@@ -434,7 +434,13 @@ pub async fn poll_one_task(
             poll_request::gemini(channel_base_url, channel_key, id, gemini_version)
                 .map_err(worker::Error::RustError)?
         }
-        VideoProvider::Kling | VideoProvider::Jimeng | VideoProvider::Vertex => return Ok(None),
+        VideoProvider::Kling => {
+            let is_new_api_relay = channel_key.starts_with("sk-");
+            let token =
+                kling::create_jwt_token(channel_key, now).map_err(worker::Error::RustError)?;
+            poll_request::kling(channel_base_url, &token, &task.action, id, is_new_api_relay)
+        }
+        VideoProvider::Jimeng | VideoProvider::Vertex => return Ok(None),
     };
 
     let info = poll_task(provider, &request).await?;

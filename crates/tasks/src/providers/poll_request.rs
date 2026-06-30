@@ -87,6 +87,36 @@ pub fn hailuo(base_url: &str, key: &str, task_id: &str) -> PollRequest {
     )
 }
 
+/// Kling: `GET {base}[/kling]/v1/videos/{image2video|text2video}/{task_id}` with
+/// a pre-minted JWT bearer token. The path depends on the task action (`generate`
+/// is image-to-video); a new-api relay key routes through the `/kling` prefix.
+/// The caller mints `token` via `kling::create_jwt_token` (it needs the clock).
+pub fn kling(
+    base_url: &str,
+    token: &str,
+    action: &str,
+    task_id: &str,
+    is_new_api_relay: bool,
+) -> PollRequest {
+    let path = if action == "generate" {
+        "/v1/videos/image2video"
+    } else {
+        "/v1/videos/text2video"
+    };
+    let url = if is_new_api_relay {
+        format!("{base_url}/kling{path}/{task_id}")
+    } else {
+        format!("{base_url}{path}/{task_id}")
+    };
+    get(
+        url,
+        vec![
+            header("Accept", "application/json".to_string()),
+            header("Authorization", format!("Bearer {token}")),
+        ],
+    )
+}
+
 /// Gemini: `GET {base}/{version}/{operation-name}` with `x-goog-api-key`. The
 /// task id is a base64 local id that decodes back to the upstream operation
 /// name; `version` is the configured Gemini API version (e.g. `v1beta`).
@@ -152,6 +182,19 @@ mod tests {
             req.url,
             "https://api.minimax/v1/query/video_generation?task_id=tid"
         );
+    }
+
+    #[test]
+    fn kling_action_path_and_relay_prefix() {
+        // generate -> image2video; bearer token.
+        let req = kling("https://kl", "jwt123", "generate", "t9", false);
+        assert_eq!(req.url, "https://kl/v1/videos/image2video/t9");
+        assert!(req
+            .headers
+            .contains(&("Authorization".into(), "Bearer jwt123".into())));
+        // non-generate -> text2video; new-api relay -> /kling prefix.
+        let req = kling("https://kl", "jwt", "textGenerate", "t9", true);
+        assert_eq!(req.url, "https://kl/kling/v1/videos/text2video/t9");
     }
 
     #[test]

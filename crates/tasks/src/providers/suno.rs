@@ -82,10 +82,35 @@ pub fn task_needs_update(current: &CurrentTaskState, incoming: &SunoDataResponse
         || *current.data != incoming.data
 }
 
+/// Extract the upstream task id from a Suno submit response (Go `DoResponse`):
+/// the response is a `TaskResponse<String>` whose `data` is the task id; a
+/// non-`success` code is an error carrying `message`.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: TaskResponse<String> = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    if !resp.is_success() {
+        return Err(resp.message);
+    }
+    Ok(resp.data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn submit_response_returns_task_id_or_message() {
+        assert_eq!(
+            parse_submit_response(br#"{"code":"success","data":"suno_task_42"}"#).unwrap(),
+            "suno_task_42"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"code":"fail","message":"insufficient credits","data":""}"#)
+                .unwrap_err(),
+            "insufficient credits"
+        );
+    }
 
     #[test]
     fn envelope_is_success_only_on_success_code() {

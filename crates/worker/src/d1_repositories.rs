@@ -2600,7 +2600,10 @@ pub struct TypeCount {
 pub async fn find_channel_by_id(db: &D1Database, id: i64) -> worker::Result<Option<ChannelRow>> {
     let arg = D1Type::Integer(d1_i32(id));
     let sql = format!(
-        "SELECT {CHANNEL_ADMIN_COLUMNS} FROM channels WHERE id = ?1 AND deleted_at IS NULL LIMIT 1"
+        // Channels are hard-deleted in Go (the `Channel` model has no
+        // `gorm.DeletedAt`, unlike users/tokens), so there is no `deleted_at`
+        // column to filter on.
+        "SELECT {CHANNEL_ADMIN_COLUMNS} FROM channels WHERE id = ?1 LIMIT 1"
     );
     db.prepare(&sql)
         .bind_refs(&[arg])?
@@ -2961,7 +2964,8 @@ pub async fn fix_abilities(db: &D1Database) -> worker::Result<(usize, usize)> {
     }
     let empty: &[D1Type<'_>] = &[];
     let channels = db
-        .prepare(r#"SELECT id, models, "group", status, priority, weight FROM channels WHERE deleted_at IS NULL"#)
+        // Channels are hard-deleted (no `deleted_at` column); load them all.
+        .prepare(r#"SELECT id, models, "group", status, priority, weight FROM channels"#)
         .bind_refs(empty)?
         .all()
         .await?
@@ -3445,6 +3449,27 @@ pub async fn increase_user_quota(db: &D1Database, id: i64, delta: i64) -> worker
         .await?;
     let changes = result.meta()?.and_then(|m| m.changes).unwrap_or(0);
     Ok(changes > 0)
+}
+
+/// Refund a failed async task's reserve to the token (Go `taskAdjustTokenQuota`
+/// / `IncreaseTokenQuota(-delta)`): credit `remain_quota` and uncount
+/// `used_quota`. No-op for a zero quota or an unknown token (`token_id == 0`,
+/// e.g. legacy rows without a persisted token id). The user-funding half of
+/// `RefundTaskQuota` is handled separately by [`increase_user_quota`].
+pub async fn refund_task_token_quota(
+    db: &D1Database,
+    token_id: i64,
+    quota: i64,
+    accessed_time: i64,
+) -> worker::Result<()> {
+    let quota = quota_i32(quota)?;
+    if quota == 0 || token_id == 0 {
+        return Ok(());
+    }
+    credit_token_quota_usage_statement(db, token_id, quota, accessed_time)?
+        .run()
+        .await?;
+    Ok(())
 }
 
 /// Atomically subtract from a user's quota: `UPDATE users SET quota = quota - ?`.

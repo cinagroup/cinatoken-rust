@@ -54,6 +54,10 @@ pub struct NewTask<'a> {
     pub username: &'a str,
     pub group: &'a str,
     pub channel_id: i64,
+    /// The reserving token — persisted in `private_data` (Go
+    /// `TaskPrivateData.TokenId`, "令牌 ID，用于令牌额度退款") so a failed task's
+    /// reserve can be refunded to the token, not just the user.
+    pub token_id: i64,
     pub quota: i64,
     pub action: &'a str,
     pub status: TaskStatus,
@@ -72,6 +76,10 @@ pub struct TaskRow {
     pub platform: String,
     pub user_id: i64,
     pub channel_id: i64,
+    /// Reserving token id, read back from `private_data` (0 for legacy rows that
+    /// predate token-id persistence). Drives the token-quota refund on failure.
+    #[serde(default)]
+    pub token_id: i64,
     pub quota: i64,
     pub action: String,
     pub status: String,
@@ -90,6 +98,9 @@ impl TaskRow {
 /// Insert a new task (Go `Task.Insert`). The unique `task_id` enforces that a
 /// given public task is created once.
 pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<()> {
+    // Persist the reserving token id in private_data (Go `TaskPrivateData`), so
+    // the poller can refund the token on failure.
+    let private_data = format!(r#"{{"token_id":{}}}"#, task.token_id);
     let args = [
         D1Type::Text(task.task_id),
         D1Type::Text(task.upstream_task_id),
@@ -104,13 +115,15 @@ pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<
         D1Type::Integer(d1_i32(task.submit_time)),
         D1Type::Integer(d1_i32(task.created_at)),
         D1Type::Integer(d1_i32(task.updated_at)),
+        D1Type::Text(&private_data),
     ];
     db.prepare(
         r#"
         INSERT INTO tasks
           (task_id, upstream_task_id, platform, user_id, username, "group",
-           channel_id, quota, action, status, submit_time, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+           channel_id, quota, action, status, submit_time, created_at, updated_at,
+           private_data)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         "#,
     )
     .bind_refs(&args)?
@@ -127,6 +140,7 @@ pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Resul
     db.prepare(
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
+               COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
                quota, action, status, fail_reason, progress, finish_time
         FROM tasks
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
@@ -150,6 +164,7 @@ pub async fn find_task_by_task_id(
     db.prepare(
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
+               COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
                quota, action, status, fail_reason, progress, finish_time
         FROM tasks
         WHERE task_id = ?1
@@ -239,7 +254,10 @@ pub async fn apply_poll_result(
     )
     .await?;
     if won && matches!(settlement_for(from, info.status), TaskSettlement::Refund) {
+        // Go RefundTaskQuota refunds BOTH the user funding and the reserving
+        // token; the reserve debited both, so the refund must credit both.
         crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
+        crate::d1_repositories::refund_task_token_quota(db, task.token_id, task.quota, now).await?;
     }
     Ok(won)
 }
@@ -291,7 +309,9 @@ pub async fn apply_suno_poll_result(
     )
     .await?;
     if won && is_failure && !from.is_terminal() {
+        // Refund both user funding and the reserving token (Go RefundTaskQuota).
         crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
+        crate::d1_repositories::refund_task_token_quota(db, task.token_id, task.quota, now).await?;
     }
     Ok(won)
 }

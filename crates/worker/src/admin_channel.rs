@@ -36,6 +36,69 @@ pub async fn enabled_list_models(req: Request, env: Env) -> WorkerResult<Respons
     envelope_ok_response(&models)
 }
 
+/// A `{ "tag": "..." }` body (Go `ChannelTag`).
+#[derive(Debug, Deserialize, Default)]
+struct ChannelTagRequest {
+    #[serde(default)]
+    tag: String,
+}
+
+/// Read + validate a non-empty `tag` from the request body.
+async fn read_tag(req: &mut Request) -> Result<String, Response> {
+    let body = read_json_body(req).await?;
+    let payload: ChannelTagRequest =
+        serde_json::from_value(body).unwrap_or_default();
+    let tag = payload.tag.trim().to_string();
+    if tag.is_empty() {
+        return Err(envelope_error_response(400, "tag must not be empty"));
+    }
+    Ok(tag)
+}
+
+/// `POST /api/channel/tag/disabled`: manually disable all channels with a tag
+/// (Go `DisableTagChannels`). AdminAuth.
+pub async fn disable_tag_channels(mut req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let tag = match read_tag(&mut req).await {
+        Ok(tag) => tag,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    d1_repositories::set_channels_status_by_tag(&db, &tag, 2, false).await?;
+    invalidate_channel_cache(&env).await?;
+    envelope_ok_response(&serde_json::Value::Null)
+}
+
+/// `POST /api/channel/tag/enabled`: re-enable all channels with a tag (Go
+/// `EnableTagChannels`). AdminAuth.
+pub async fn enable_tag_channels(mut req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let tag = match read_tag(&mut req).await {
+        Ok(tag) => tag,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    d1_repositories::set_channels_status_by_tag(&db, &tag, 1, true).await?;
+    invalidate_channel_cache(&env).await?;
+    envelope_ok_response(&serde_json::Value::Null)
+}
+
+/// `DELETE /api/channel/disabled`: delete all disabled channels + their
+/// abilities (Go `DeleteDisabledChannel`). Returns the count deleted. AdminAuth.
+pub async fn delete_disabled_channels(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let db = env.d1("DB")?;
+    let count = d1_repositories::delete_disabled_channels(&db).await?;
+    invalidate_channel_cache(&env).await?;
+    envelope_ok_response(&count)
+}
+
 pub async fn list_channels(req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
         Ok(claims) => claims,

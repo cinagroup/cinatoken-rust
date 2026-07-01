@@ -2615,6 +2615,54 @@ pub async fn find_channel_by_id(db: &D1Database, id: i64) -> worker::Result<Opti
 // Channel writes
 // ---------------------------------------------------------------------------
 
+/// Set the status of every channel carrying `tag` and mirror the enabled flag
+/// onto their abilities (Go `DisableChannelByTag` / `EnableChannelByTag` +
+/// `UpdateAbilityStatusByTag`). `status` is 1 (enabled) or 2 (manually
+/// disabled); `abilities_enabled` matches.
+pub async fn set_channels_status_by_tag(
+    db: &D1Database,
+    tag: &str,
+    status: i32,
+    abilities_enabled: bool,
+) -> worker::Result<()> {
+    let channel_args = [D1Type::Integer(status), D1Type::Text(tag)];
+    db.prepare(r#"UPDATE channels SET status = ?1 WHERE tag = ?2"#)
+        .bind_refs(&channel_args)?
+        .run()
+        .await?;
+    let ability_args = [
+        D1Type::Integer(if abilities_enabled { 1 } else { 0 }),
+        D1Type::Text(tag),
+    ];
+    db.prepare(
+        r#"UPDATE abilities SET enabled = ?1
+           WHERE channel_id IN (SELECT id FROM channels WHERE tag = ?2)"#,
+    )
+    .bind_refs(&ability_args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Delete all disabled channels (status 2 manual or 3 auto) and their abilities
+/// (Go `DeleteDisabledChannel`). Returns the number of channels deleted.
+pub async fn delete_disabled_channels(db: &D1Database) -> worker::Result<i64> {
+    let empty: &[D1Type<'_>] = &[];
+    db.prepare(
+        r#"DELETE FROM abilities
+           WHERE channel_id IN (SELECT id FROM channels WHERE status IN (2, 3))"#,
+    )
+    .bind_refs(empty)?
+    .run()
+    .await?;
+    let result = db
+        .prepare(r#"DELETE FROM channels WHERE status IN (2, 3)"#)
+        .bind_refs(empty)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) as i64)
+}
+
 /// Fields for creating a channel (single mode only). Mirrors the Go
 /// `AddChannelRequest` with `mode="single"`.
 #[derive(Debug, Clone)]

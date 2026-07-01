@@ -177,6 +177,7 @@ pub async fn create_user(mut req: Request, env: Env) -> WorkerResult<Response> {
             group: "default",
             aff_code: &aff_code,
             quota: 0,
+            inviter_id: 0,
             created_at: now,
         },
     )
@@ -197,6 +198,195 @@ pub async fn create_user(mut req: Request, env: Env) -> WorkerResult<Response> {
     )
     .await;
     Ok(envelope_ok_response(&UserCreateResult { id: user_id })?)
+}
+
+// ---------------------------------------------------------------------------
+// Public self-registration
+// ---------------------------------------------------------------------------
+
+/// Registration request body. Go decodes into `model.User`; only these fields
+/// are meaningful for registration (`aff_code` is the *inviter's* code, not the
+/// new user's own).
+#[derive(Debug, Deserialize, Default)]
+pub struct RegisterRequest {
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub verification_code: String,
+    #[serde(default)]
+    pub aff_code: String,
+}
+
+/// Validate a registration request against Go `model.User`'s validator tags
+/// (`username max=20`, `password min=8,max=20`, `email max=50`), returning the
+/// first failure message. Pure, so it is unit-testable without a D1.
+pub fn validate_registration(username: &str, password: &str, email: &str) -> Result<(), String> {
+    if username.is_empty() {
+        return Err("username must not be empty".to_string());
+    }
+    if username.chars().count() > 20 {
+        return Err("username must be at most 20 characters".to_string());
+    }
+    let password_len = password.chars().count();
+    if !(8..=20).contains(&password_len) {
+        return Err("password must be between 8 and 20 characters".to_string());
+    }
+    if email.chars().count() > 50 {
+        return Err("email must be at most 50 characters".to_string());
+    }
+    Ok(())
+}
+
+/// Read a boolean option (Go stores `"true"`/`"false"`), falling back to
+/// `default` only when the option is absent.
+fn parse_bool_option(value: Option<&str>, default: bool) -> bool {
+    match value {
+        Some(raw) => raw == "1" || raw.eq_ignore_ascii_case("true"),
+        None => default,
+    }
+}
+
+/// Read an integer option, falling back to `default` when absent or unparseable.
+fn parse_int_option(value: Option<&str>, default: i64) -> i64 {
+    value
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .unwrap_or(default)
+}
+
+/// `POST /api/user/register`: public self-registration (Go `controller.Register`).
+///
+/// Honors the `RegisterEnabled` / `PasswordRegisterEnabled` gates (default
+/// true), validates against Go's `model.User` tags, rejects an existing
+/// username/email, links the inviter from the affiliation code, and applies the
+/// configured `QuotaForNewUser` / `QuotaForInvitee` grants plus inviter
+/// affiliation tracking. Does NOT auto-login — Go returns `{success:true}` and
+/// the client logs in separately.
+///
+/// Deferred parity (all off in the default config): Turnstile bot-check;
+/// email-verified registration (`EmailVerificationEnabled` — rejected here since
+/// the email send/verify subsystem is not ported); default-token generation
+/// (`GenerateDefaultToken`); the `IsPaymentComplianceConfirmed` sub-gate on the
+/// invitee reward; and the informational new-user/referral system-log entries.
+pub async fn register(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+
+    let opts = d1_repositories::option_values(
+        &db,
+        &[
+            "RegisterEnabled",
+            "PasswordRegisterEnabled",
+            "EmailVerificationEnabled",
+            "QuotaForNewUser",
+            "QuotaForInvitee",
+            "QuotaForInviter",
+        ],
+    )
+    .await?;
+    if !parse_bool_option(opts[0].as_deref(), true) {
+        return Ok(envelope_error_response(403, "registration is disabled"));
+    }
+    if !parse_bool_option(opts[1].as_deref(), true) {
+        return Ok(envelope_error_response(
+            403,
+            "password registration is disabled",
+        ));
+    }
+    let email_verification_enabled = parse_bool_option(opts[2].as_deref(), false);
+    let quota_for_new_user = parse_int_option(opts[3].as_deref(), 0);
+    let quota_for_invitee = parse_int_option(opts[4].as_deref(), 0);
+    let quota_for_inviter = parse_int_option(opts[5].as_deref(), 0);
+
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: RegisterRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid register request: {err}"),
+            ));
+        }
+    };
+    let username = payload.username.trim();
+    let email = payload.email.trim();
+    if let Err(message) = validate_registration(username, &payload.password, email) {
+        return Ok(envelope_error_response(400, &message));
+    }
+
+    if email_verification_enabled {
+        // Go requires a valid emailed code here; refuse rather than silently
+        // skip the check, because the email send/verify subsystem is unported.
+        return Ok(envelope_error_response(
+            400,
+            "email-verified registration is not supported by this deployment",
+        ));
+    }
+
+    // Reject an already-taken username or email (Go `CheckUserExistOrDeleted`).
+    if d1_repositories::find_user_by_username_or_email(&db, username)
+        .await?
+        .is_some()
+    {
+        return Ok(envelope_error_response(409, "user already exists"));
+    }
+    if !email.is_empty()
+        && d1_repositories::find_user_by_username_or_email(&db, email)
+            .await?
+            .is_some()
+    {
+        return Ok(envelope_error_response(409, "user already exists"));
+    }
+
+    let inviter_id = d1_repositories::find_user_id_by_aff_code(&db, payload.aff_code.trim())
+        .await?
+        .unwrap_or(0);
+
+    let password_hash = match hash_password(&payload.password) {
+        Ok(hash) => hash,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                500,
+                &format!("failed to hash password: {err}"),
+            ));
+        }
+    };
+    let now = unix_timestamp();
+    let aff_code = random_aff_code();
+    let user_id = d1_repositories::create_user(
+        &db,
+        d1_repositories::CreateUser {
+            username,
+            password_hash: &password_hash,
+            display_name: username,
+            role: ROLE_COMMON_USER,
+            group: "default",
+            aff_code: &aff_code,
+            quota: quota_for_new_user,
+            inviter_id,
+            created_at: now,
+        },
+    )
+    .await?;
+
+    // Affiliation rewards (Go `User.Insert`): the invitee's spendable quota is
+    // credited on top of the signup grant; the inviter only accrues affiliation
+    // counters (Go leaves the inviter's spendable-quota credit commented out).
+    if inviter_id != 0 {
+        if quota_for_invitee > 0 {
+            let _ = d1_repositories::increase_user_quota(&db, user_id, quota_for_invitee).await;
+        }
+        if quota_for_inviter > 0 {
+            let _ = d1_repositories::record_inviter_aff(&db, inviter_id, quota_for_inviter).await;
+        }
+    }
+
+    Ok(envelope_ok_response(&serde_json::Value::Null)?)
 }
 
 pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -783,5 +973,51 @@ mod tests {
         assert_eq!(parse_id_param(Some(&"  7 ".to_string())), Some(7));
         assert_eq!(parse_id_param(Some(&"abc".to_string())), None);
         assert_eq!(parse_id_param(None), None);
+    }
+
+    #[test]
+    fn register_validation_matches_go_user_tags() {
+        // Happy path.
+        assert!(validate_registration("alice", "password1", "a@b.co").is_ok());
+        // Empty username rejected.
+        assert!(validate_registration("", "password1", "").is_err());
+        // Username > 20 chars rejected (Go `max=20`).
+        assert!(validate_registration(&"u".repeat(21), "password1", "").is_err());
+        assert!(validate_registration(&"u".repeat(20), "password1", "").is_ok());
+        // Password 8..=20 (Go `min=8,max=20`).
+        assert!(validate_registration("bob", "short", "").is_err()); // 5 chars
+        assert!(validate_registration("bob", "eightchr", "").is_ok()); // 8 chars
+        assert!(validate_registration("bob", &"p".repeat(20), "").is_ok());
+        assert!(validate_registration("bob", &"p".repeat(21), "").is_err());
+        // Email > 50 chars rejected (Go `max=50`); empty email is fine.
+        assert!(validate_registration("bob", "password1", &"x".repeat(51)).is_err());
+        assert!(validate_registration("bob", "password1", "").is_ok());
+    }
+
+    #[test]
+    fn register_request_treats_all_fields_optional() {
+        // A minimal body parses; missing fields default to empty.
+        let req: RegisterRequest =
+            serde_json::from_str(r#"{"username":"alice","password":"password1"}"#).unwrap();
+        assert_eq!(req.username, "alice");
+        assert_eq!(req.password, "password1");
+        assert!(req.email.is_empty());
+        assert!(req.aff_code.is_empty());
+        assert!(req.verification_code.is_empty());
+    }
+
+    #[test]
+    fn option_parsers_default_only_when_absent() {
+        // Bool: Go stores "true"/"false"; "1" also truthy. Absent -> default.
+        assert!(parse_bool_option(Some("true"), false));
+        assert!(parse_bool_option(Some("1"), false));
+        assert!(!parse_bool_option(Some("false"), true)); // present overrides default
+        assert!(parse_bool_option(None, true));
+        assert!(!parse_bool_option(None, false));
+        // Int: parse, else default.
+        assert_eq!(parse_int_option(Some("500000"), 0), 500_000);
+        assert_eq!(parse_int_option(Some(" 42 "), 0), 42);
+        assert_eq!(parse_int_option(Some("nan"), 7), 7);
+        assert_eq!(parse_int_option(None, 0), 0);
     }
 }

@@ -3306,6 +3306,9 @@ pub struct CreateUser<'a> {
     pub group: &'a str,
     pub aff_code: &'a str,
     pub quota: i64,
+    /// The inviting user's id (Go `User.InviterId`), or 0 when there is no
+    /// inviter. Set from the registrant's affiliation code.
+    pub inviter_id: i64,
     pub created_at: i64,
 }
 
@@ -3319,6 +3322,7 @@ pub async fn create_user(db: &D1Database, params: CreateUser<'_>) -> worker::Res
         D1Type::Text(params.group),
         D1Type::Text(params.aff_code),
         D1Type::Integer(d1_i32(params.created_at)),
+        D1Type::Integer(d1_i32(params.inviter_id)),
     ];
     db.prepare(
         r#"
@@ -3327,7 +3331,7 @@ pub async fn create_user(db: &D1Database, params: CreateUser<'_>) -> worker::Res
           request_count, "group", aff_code, aff_count, aff_quota,
           aff_history, inviter_id, setting, created_at, last_login_at
         )
-        VALUES (?1, ?2, ?3, ?4, 1, ?5, 0, 0, ?6, ?7, 0, 0, 0, 0, '{}', ?8, 0)
+        VALUES (?1, ?2, ?3, ?4, 1, ?5, 0, 0, ?6, ?7, 0, 0, 0, ?9, '{}', ?8, 0)
         "#,
     )
     .bind_refs(&args)?
@@ -3346,6 +3350,57 @@ pub async fn create_user(db: &D1Database, params: CreateUser<'_>) -> worker::Res
     Ok(row
         .map(|r| r.id)
         .ok_or_else(|| worker::Error::RustError("user insert not found after create".into()))?)
+}
+
+/// Resolve an affiliation code to the owning user's id (Go
+/// `GetUserIdByAffCode`). An empty code or no match returns `None`.
+pub async fn find_user_id_by_aff_code(
+    db: &D1Database,
+    aff_code: &str,
+) -> worker::Result<Option<i64>> {
+    if aff_code.is_empty() {
+        return Ok(None);
+    }
+    #[derive(Deserialize)]
+    struct Id {
+        id: i64,
+    }
+    let arg = D1Type::Text(aff_code);
+    let row = db
+        .prepare("SELECT id FROM users WHERE aff_code = ?1 AND deleted_at IS NULL LIMIT 1")
+        .bind_refs(&[arg])?
+        .first::<Id>(None)
+        .await?;
+    Ok(row.map(|r| r.id))
+}
+
+/// Record an inviter's affiliation reward tracking on a successful referral
+/// (Go `inviteUser`): bump `aff_count` and accrue `aff_quota` / `aff_history`
+/// by `quota_for_inviter`. Note that Go does NOT credit the inviter's spendable
+/// quota here (that `IncreaseUserQuota` call is commented out upstream) — only
+/// the affiliation counters move.
+pub async fn record_inviter_aff(
+    db: &D1Database,
+    inviter_id: i64,
+    quota_for_inviter: i64,
+) -> worker::Result<()> {
+    let args = [
+        D1Type::Integer(d1_i32(quota_for_inviter)),
+        D1Type::Integer(d1_i32(inviter_id)),
+    ];
+    db.prepare(
+        r#"
+        UPDATE users
+        SET aff_count = aff_count + 1,
+            aff_quota = aff_quota + ?1,
+            aff_history = aff_history + ?1
+        WHERE id = ?2
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
 }
 
 /// Edit a subset of user fields. Mirrors Go `Edit`: only username,

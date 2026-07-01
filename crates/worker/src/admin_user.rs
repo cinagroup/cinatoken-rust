@@ -659,6 +659,198 @@ fn random_access_token() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Notification settings (Go UpdateUserSetting)
+// ---------------------------------------------------------------------------
+
+/// Request body for `PUT /api/user/setting` (Go `UpdateUserSettingRequest`).
+#[derive(Debug, Deserialize, Default)]
+pub struct UpdateUserSettingRequest {
+    #[serde(default, rename = "notify_type")]
+    pub notify_type: String,
+    #[serde(default)]
+    pub quota_warning_threshold: f64,
+    #[serde(default)]
+    pub webhook_url: String,
+    #[serde(default)]
+    pub webhook_secret: String,
+    #[serde(default)]
+    pub notification_email: String,
+    #[serde(default)]
+    pub bark_url: String,
+    #[serde(default)]
+    pub gotify_url: String,
+    #[serde(default)]
+    pub gotify_token: String,
+    #[serde(default)]
+    pub gotify_priority: i64,
+    #[serde(default)]
+    pub upstream_model_update_notify_enabled: Option<bool>,
+    #[serde(default)]
+    pub accept_unset_model_ratio_model: bool,
+    #[serde(default)]
+    pub record_ip_log: bool,
+}
+
+/// Validate a notification-settings request (Go `UpdateUserSetting` checks):
+/// notify_type in {email,webhook,bark,gotify}; threshold > 0; and the
+/// type-specific URL/email/token requirements. URL validation approximates Go's
+/// `url.ParseRequestURI` with a scheme (`://`) check, plus the explicit http(s)
+/// requirement for Bark. Pure, so it is unit-testable.
+pub fn validate_user_setting(req: &UpdateUserSettingRequest) -> Result<(), String> {
+    match req.notify_type.as_str() {
+        "email" | "webhook" | "bark" | "gotify" => {}
+        _ => return Err("invalid notify type".to_string()),
+    }
+    if req.quota_warning_threshold <= 0.0 {
+        return Err("quota warning threshold must be greater than zero".to_string());
+    }
+    match req.notify_type.as_str() {
+        "webhook" => {
+            if req.webhook_url.is_empty() {
+                return Err("webhook url is required".to_string());
+            }
+            if !req.webhook_url.contains("://") {
+                return Err("webhook url is invalid".to_string());
+            }
+        }
+        "email" => {
+            if !req.notification_email.is_empty() && !req.notification_email.contains('@') {
+                return Err("notification email is invalid".to_string());
+            }
+        }
+        "bark" => {
+            if req.bark_url.is_empty() {
+                return Err("bark url is required".to_string());
+            }
+            if !(req.bark_url.starts_with("http://") || req.bark_url.starts_with("https://")) {
+                return Err("bark url must start with http:// or https://".to_string());
+            }
+        }
+        "gotify" => {
+            if req.gotify_url.is_empty() {
+                return Err("gotify url is required".to_string());
+            }
+            if req.gotify_token.is_empty() {
+                return Err("gotify token is required".to_string());
+            }
+            if !req.gotify_url.contains("://") {
+                return Err("gotify url is invalid".to_string());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Build the persisted notification `setting` JSON from a validated request and
+/// the caller's (already admin-resolved) `upstream_notify` flag. Mirrors Go's
+/// fresh `dto.UserSetting` build: the common fields plus only the type-specific
+/// fields for the selected `notify_type`. Pure/testable. Note (Go-faithful):
+/// this REPLACES the setting, so sidebar_modules/language are dropped — same as
+/// Go's `SetSetting`.
+fn build_notify_setting(req: &UpdateUserSettingRequest, upstream_notify: bool) -> serde_json::Value {
+    let mut setting = serde_json::Map::new();
+    setting.insert("notify_type".into(), serde_json::json!(req.notify_type));
+    setting.insert(
+        "quota_warning_threshold".into(),
+        serde_json::json!(req.quota_warning_threshold),
+    );
+    setting.insert(
+        "upstream_model_update_notify_enabled".into(),
+        serde_json::json!(upstream_notify),
+    );
+    setting.insert(
+        "accept_unset_model_ratio_model".into(),
+        serde_json::json!(req.accept_unset_model_ratio_model),
+    );
+    setting.insert("record_ip_log".into(), serde_json::json!(req.record_ip_log));
+    match req.notify_type.as_str() {
+        "webhook" => {
+            setting.insert("webhook_url".into(), serde_json::json!(req.webhook_url));
+            if !req.webhook_secret.is_empty() {
+                setting.insert("webhook_secret".into(), serde_json::json!(req.webhook_secret));
+            }
+        }
+        "email" => {
+            if !req.notification_email.is_empty() {
+                setting.insert(
+                    "notification_email".into(),
+                    serde_json::json!(req.notification_email),
+                );
+            }
+        }
+        "bark" => {
+            setting.insert("bark_url".into(), serde_json::json!(req.bark_url));
+        }
+        "gotify" => {
+            setting.insert("gotify_url".into(), serde_json::json!(req.gotify_url));
+            setting.insert("gotify_token".into(), serde_json::json!(req.gotify_token));
+            // Gotify priority is 0-10; out-of-range falls back to the default 5.
+            let priority = if (0..=10).contains(&req.gotify_priority) {
+                req.gotify_priority
+            } else {
+                5
+            };
+            setting.insert("gotify_priority".into(), serde_json::json!(priority));
+        }
+        _ => {}
+    }
+    serde_json::Value::Object(setting)
+}
+
+/// `PUT /api/user/setting`: persist the caller's notification preferences (Go
+/// `UpdateUserSetting`). The `upstream_model_update_notify_enabled` flag is only
+/// honored for admins (else the existing value is kept). Note the actual
+/// notification dispatch (email/webhook/bark/gotify on quota warnings) is a
+/// separate, unported subsystem — this endpoint only stores the config.
+pub async fn update_user_setting(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: UpdateUserSettingRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid setting request: {err}"),
+            ));
+        }
+    };
+    if let Err(message) = validate_user_setting(&payload) {
+        return Ok(envelope_error_response(400, &message));
+    }
+
+    let db = env.d1("DB")?;
+    let existing = d1_repositories::get_user_setting(&db, claims.id)
+        .await?
+        .unwrap_or_default();
+    let existing_upstream = serde_json::from_str::<serde_json::Value>(existing.trim())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("upstream_model_update_notify_enabled")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false);
+    let upstream_notify = if claims.role >= ROLE_ADMIN_USER {
+        payload
+            .upstream_model_update_notify_enabled
+            .unwrap_or(existing_upstream)
+    } else {
+        existing_upstream
+    };
+
+    let setting = build_notify_setting(&payload, upstream_notify);
+    d1_repositories::update_user_setting(&db, claims.id, &setting.to_string()).await?;
+    Ok(envelope_ok_response(&serde_json::Value::Null)?)
+}
+
+// ---------------------------------------------------------------------------
 // Usable groups (Go GetUserGroups)
 // ---------------------------------------------------------------------------
 
@@ -1458,6 +1650,60 @@ mod tests {
         assert!(req.original_password.is_none());
         let empty: UpdateSelfRequest = serde_json::from_str("{}").unwrap();
         assert!(empty.username.is_none());
+    }
+
+    #[test]
+    fn user_setting_validation_matches_go() {
+        let mk = |ty: &str| UpdateUserSettingRequest {
+            notify_type: ty.to_string(),
+            quota_warning_threshold: 0.8,
+            ..Default::default()
+        };
+        // Bad type / non-positive threshold.
+        assert!(validate_user_setting(&mk("sms")).is_err());
+        let mut zero = mk("email");
+        zero.quota_warning_threshold = 0.0;
+        assert!(validate_user_setting(&zero).is_err());
+        // email: optional address, but must contain '@' when present.
+        assert!(validate_user_setting(&mk("email")).is_ok());
+        let mut bad_email = mk("email");
+        bad_email.notification_email = "no-at".to_string();
+        assert!(validate_user_setting(&bad_email).is_err());
+        // webhook requires a scheme'd url.
+        assert!(validate_user_setting(&mk("webhook")).is_err());
+        let mut wh = mk("webhook");
+        wh.webhook_url = "https://h/x".to_string();
+        assert!(validate_user_setting(&wh).is_ok());
+        // bark must be http(s).
+        let mut bark = mk("bark");
+        bark.bark_url = "ftp://x".to_string();
+        assert!(validate_user_setting(&bark).is_err());
+        bark.bark_url = "https://x".to_string();
+        assert!(validate_user_setting(&bark).is_ok());
+        // gotify needs url + token.
+        let mut go = mk("gotify");
+        go.gotify_url = "https://g".to_string();
+        assert!(validate_user_setting(&go).is_err()); // no token
+        go.gotify_token = "tok".to_string();
+        assert!(validate_user_setting(&go).is_ok());
+    }
+
+    #[test]
+    fn build_notify_setting_gotify_clamps_priority() {
+        let req = UpdateUserSettingRequest {
+            notify_type: "gotify".to_string(),
+            quota_warning_threshold: 0.9,
+            gotify_url: "https://g".to_string(),
+            gotify_token: "t".to_string(),
+            gotify_priority: 99, // out of 0..=10 -> default 5
+            ..Default::default()
+        };
+        let v = build_notify_setting(&req, true);
+        assert_eq!(v["gotify_priority"], serde_json::json!(5));
+        assert_eq!(v["gotify_url"], serde_json::json!("https://g"));
+        assert_eq!(v["upstream_model_update_notify_enabled"], serde_json::json!(true));
+        // Non-selected-type fields are absent (fresh build, Go-faithful).
+        assert!(v.get("webhook_url").is_none());
     }
 
     #[test]

@@ -482,6 +482,16 @@ Last checked: 2026-07-01
   401 "session user no longer exists", re-login → 401). 154 worker tests pass.
   Fixtures cleaned up.
 
+- **Self-profile update + public-info endpoints — staging-verified
+  (2026-07-01).** `PUT /api/user/self` (Go `UpdateSelf` profile branch) and
+  `GET /api/notice` / `/api/about` / `/api/home_page_content` (Go misc). Live:
+  a display_name update is reflected in `GET /api/user/self`; a password change
+  rejects a wrong `original_password` (400) and accepts the correct one (200),
+  after which the new password logs in (200) and the old one is rejected (401);
+  the info endpoints return their option value (set→"staging notice OK",
+  unset→""). 156 worker tests pass. Deferred: the `sidebar_modules`/`language`
+  user-setting branches of `UpdateSelf` (display-only, `setting` JSON unmanaged).
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

@@ -627,6 +627,121 @@ fn random_access_token() -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Usable groups (Go GetUserGroups)
+// ---------------------------------------------------------------------------
+
+/// Go `defaultUserUsableGroups` (group -> description).
+const DEFAULT_USABLE_GROUPS: &[(&str, &str)] = &[("default", "默认分组"), ("vip", "vip分组")];
+/// Go `defaultGroupRatio` (group -> ratio).
+const DEFAULT_GROUP_RATIOS: &[(&str, f64)] = &[("default", 1.0), ("vip", 1.0), ("svip", 1.0)];
+
+/// Parse the `UserUsableGroups` option (a JSON `{group: desc}` map). Go REPLACES
+/// the map on config, so a set option overrides the defaults entirely; an absent
+/// or unparseable option falls back to [`DEFAULT_USABLE_GROUPS`].
+fn parse_usable_groups(option: Option<&str>) -> std::collections::HashMap<String, String> {
+    if let Some(raw) = option {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            if let Ok(map) =
+                serde_json::from_str::<std::collections::HashMap<String, String>>(raw)
+            {
+                return map;
+            }
+        }
+    }
+    DEFAULT_USABLE_GROUPS
+        .iter()
+        .map(|(group, desc)| (group.to_string(), desc.to_string()))
+        .collect()
+}
+
+/// Parse the group-ratio option (JSON `{group: ratio}`) merged onto
+/// [`DEFAULT_GROUP_RATIOS`] (Go seeds the map with the defaults via `AddAll`,
+/// then loads the option on top). Ratio values may be numbers or numeric
+/// strings.
+fn parse_group_ratios(option: Option<&str>) -> std::collections::HashMap<String, f64> {
+    let mut ratios: std::collections::HashMap<String, f64> = DEFAULT_GROUP_RATIOS
+        .iter()
+        .map(|(group, ratio)| (group.to_string(), *ratio))
+        .collect();
+    if let Some(raw) = option {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            if let Ok(map) =
+                serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(raw)
+            {
+                for (group, value) in map {
+                    if let Some(ratio) = value
+                        .as_f64()
+                        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+                    {
+                        ratios.insert(group, ratio);
+                    }
+                }
+            }
+        }
+    }
+    ratios
+}
+
+/// Build the GetUserGroups response: the groups present in BOTH the ratio map
+/// and the usable map, each `{ratio, desc}`, plus the `auto` special entry
+/// (`ratio: "自动"`) when `auto` is usable. Pure, so it is unit-testable.
+fn build_user_groups(
+    usable: &std::collections::HashMap<String, String>,
+    ratios: &std::collections::HashMap<String, f64>,
+) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for (group, ratio) in ratios {
+        if let Some(desc) = usable.get(group) {
+            out.insert(group.clone(), serde_json::json!({ "ratio": ratio, "desc": desc }));
+        }
+    }
+    if let Some(desc) = usable.get("auto") {
+        out.insert(
+            "auto".to_string(),
+            serde_json::json!({ "ratio": "自动", "desc": desc }),
+        );
+    }
+    serde_json::Value::Object(out)
+}
+
+/// Shared GetUserGroups body. `user_group` only feeds the per-user-group ratio
+/// overrides / special usable-group `+:`/`-:` rules, both deferred (their Go
+/// defaults are example placeholders), so the default-config result is identical
+/// for the self and public variants.
+async fn user_groups_response(env: &Env) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+    let usable = parse_usable_groups(
+        d1_repositories::get_option(&db, "UserUsableGroups")
+            .await?
+            .as_deref(),
+    );
+    let ratio_option = match d1_repositories::get_option(&db, "group_ratio_setting.group_ratio")
+        .await?
+    {
+        Some(value) => Some(value),
+        None => d1_repositories::get_option(&db, "GroupRatio").await?,
+    };
+    let ratios = parse_group_ratios(ratio_option.as_deref());
+    Ok(envelope_ok_response(&build_user_groups(&usable, &ratios))?)
+}
+
+/// `GET /api/user/self/groups`: usable groups for the logged-in user.
+pub async fn get_self_groups(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_user_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    user_groups_response(&env).await
+}
+
+/// `GET /api/user/groups`: usable groups (public; anonymous callers see the
+/// default-config groups).
+pub async fn get_public_groups(_req: Request, env: Env) -> WorkerResult<Response> {
+    user_groups_response(&env).await
+}
+
 pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
         Ok(claims) => claims,
@@ -1268,6 +1383,55 @@ mod tests {
         assert!(req.original_password.is_none());
         let empty: UpdateSelfRequest = serde_json::from_str("{}").unwrap();
         assert!(empty.username.is_none());
+    }
+
+    #[test]
+    fn usable_groups_default_and_override() {
+        // Absent/empty -> Go defaults.
+        let d = parse_usable_groups(None);
+        assert_eq!(d.get("default").map(String::as_str), Some("默认分组"));
+        assert_eq!(d.get("vip").map(String::as_str), Some("vip分组"));
+        assert!(parse_usable_groups(Some("")).contains_key("default"));
+        // Set option REPLACES the map.
+        let o = parse_usable_groups(Some(r#"{"gold":"Gold tier"}"#));
+        assert_eq!(o.get("gold").map(String::as_str), Some("Gold tier"));
+        assert!(!o.contains_key("default"));
+    }
+
+    #[test]
+    fn group_ratios_merge_over_defaults() {
+        // Defaults present when unset.
+        let d = parse_group_ratios(None);
+        assert_eq!(d.get("default"), Some(&1.0));
+        assert_eq!(d.get("svip"), Some(&1.0));
+        // Option merges/overrides; numeric strings accepted.
+        let m = parse_group_ratios(Some(r#"{"vip":0.5,"gold":"2"}"#));
+        assert_eq!(m.get("vip"), Some(&0.5)); // overridden
+        assert_eq!(m.get("default"), Some(&1.0)); // default kept
+        assert_eq!(m.get("gold"), Some(&2.0)); // added from string
+    }
+
+    #[test]
+    fn build_user_groups_intersects_and_adds_auto() {
+        let usable: std::collections::HashMap<String, String> = [
+            ("default", "默认分组"),
+            ("vip", "vip分组"),
+            ("auto", "自动选择"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let ratios = parse_group_ratios(None); // default,vip,svip
+        let out = build_user_groups(&usable, &ratios);
+        let obj = out.as_object().unwrap();
+        // default+vip are in both maps; svip is rated but not usable -> excluded.
+        assert!(obj.contains_key("default"));
+        assert!(obj.contains_key("vip"));
+        assert!(!obj.contains_key("svip"));
+        assert_eq!(obj["default"]["ratio"], serde_json::json!(1.0));
+        assert_eq!(obj["default"]["desc"], serde_json::json!("默认分组"));
+        // auto is usable -> included with the "自动" ratio sentinel.
+        assert_eq!(obj["auto"]["ratio"], serde_json::json!("自动"));
     }
 
     #[test]

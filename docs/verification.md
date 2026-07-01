@@ -521,6 +521,13 @@ Last checked: 2026-07-01
   `PUT /api/user/setting` (UpdateUserSetting — notification prefs with
   webhook/bark/gotify validation) is a separate follow-up.
 
+- **`PUT /api/user/setting` (notification prefs) — staging-verified
+  (2026-07-01).** Ports Go `UpdateUserSetting`: notify-type + threshold +
+  type-specific URL/email/token validation, persisted as a fresh notification
+  `setting` JSON (Gotify priority clamped 0-10). Live: valid webhook→200; bad
+  type→400; webhook w/o url→400; gotify priority 99 stored as 5. 162 tests
+  pass. The notification *dispatch* subsystem is unported (config-only).
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

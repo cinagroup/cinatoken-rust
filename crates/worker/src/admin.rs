@@ -721,7 +721,10 @@ pub(crate) fn session_codec(
 }
 
 fn session_cookie(req: &Request) -> Option<String> {
-    let header = req.headers().get(COOKIE_NAME).ok().flatten()?;
+    // Cookies arrive in the `Cookie` request header (COOKIE_NAME is the cookie's
+    // own name, `session`, matched inside extract_session_cookie — NOT the
+    // header name).
+    let header = req.headers().get("Cookie").ok().flatten()?;
     extract_session_cookie(&header)
 }
 

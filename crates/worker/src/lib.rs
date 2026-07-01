@@ -120,6 +120,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/setup", |req, ctx| async move {
             admin::post_setup_handler(req, ctx.env).await
         })
+        // Public info strings (Go misc.go: OptionMap-backed).
+        .get_async("/api/notice", |req, ctx| async move {
+            admin::get_notice(req, ctx.env).await
+        })
+        .get_async("/api/about", |req, ctx| async move {
+            admin::get_about(req, ctx.env).await
+        })
+        .get_async("/api/home_page_content", |req, ctx| async move {
+            admin::get_home_page_content(req, ctx.env).await
+        })
         .post_async("/api/user/login", |req, ctx| async move {
             admin::login_handler(req, ctx.env).await
         })
@@ -152,6 +162,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             admin::self_handler(req, ctx.env).await
         })
         // Self-service account endpoints (Go user.go self-routes).
+        .put_async("/api/user/self", |req, ctx| async move {
+            admin_user::update_self(req, ctx.env).await
+        })
         .delete_async("/api/user/self", |req, ctx| async move {
             admin_user::delete_self(req, ctx.env).await
         })

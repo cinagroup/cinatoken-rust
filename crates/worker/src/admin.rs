@@ -423,6 +423,32 @@ pub async fn get_self(req: Request, env: Env) -> WorkerResult<Response> {
     Ok(envelope_ok_response(&SelfResponse::from_row(&user))?)
 }
 
+/// Return a single public option string as the envelope `data` (Go's
+/// `OptionMap[key]` misc endpoints). Absent option -> empty string.
+async fn public_option_string(env: &Env, key: &str) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+    let value = crate::d1_repositories::get_option(&db, key)
+        .await?
+        .unwrap_or_default();
+    envelope_ok_response(&value)
+}
+
+/// `GET /api/notice`: public notice text (Go `GetNotice`).
+pub async fn get_notice(_req: Request, env: Env) -> WorkerResult<Response> {
+    public_option_string(&env, "Notice").await
+}
+
+/// `GET /api/about`: public about text (Go `GetAbout`).
+pub async fn get_about(_req: Request, env: Env) -> WorkerResult<Response> {
+    public_option_string(&env, "About").await
+}
+
+/// `GET /api/home_page_content`: public home-page content (Go
+/// `GetHomePageContent`).
+pub async fn get_home_page_content(_req: Request, env: Env) -> WorkerResult<Response> {
+    public_option_string(&env, "HomePageContent").await
+}
+
 /// `GET /api/setup`: report whether initial bootstrap is still allowed.
 pub async fn get_setup(_req: Request, env: Env) -> WorkerResult<Response> {
     let db = env.d1("DB")?;

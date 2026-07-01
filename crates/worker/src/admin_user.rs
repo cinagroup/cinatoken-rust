@@ -16,8 +16,8 @@
 //! differing from the Go gateway's hard delete.
 
 use cinatoken_auth::{
-    hash_password, is_root, outranks, ROLE_ADMIN_USER, ROLE_COMMON_USER, ROLE_ROOT_USER,
-    USER_STATUS_DISABLED, USER_STATUS_ENABLED,
+    hash_password, is_root, outranks, verify_password, ROLE_ADMIN_USER, ROLE_COMMON_USER,
+    ROLE_ROOT_USER, USER_STATUS_DISABLED, USER_STATUS_ENABLED,
 };
 use serde::{Deserialize, Serialize};
 use worker::{Env, Request, Response, Result as WorkerResult};
@@ -488,6 +488,131 @@ pub async fn transfer_aff_quota(mut req: Request, env: Env) -> WorkerResult<Resp
     } else {
         Ok(envelope_error_response(400, "insufficient affiliation quota"))
     }
+}
+
+/// Self-profile update request (Go `UpdateSelf` profile branch). All fields are
+/// optional; changing the password requires the correct `original_password`.
+#[derive(Debug, Deserialize, Default)]
+pub struct UpdateSelfRequest {
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub original_password: Option<String>,
+}
+
+/// Validate optional self-profile fields against Go `model.User` tags
+/// (username / display_name `max=20`; password `min=8,max=20` only when a
+/// non-empty new password is supplied). Pure, so it is unit-testable.
+pub fn validate_self_update(
+    username: Option<&str>,
+    display_name: Option<&str>,
+    password: Option<&str>,
+) -> Result<(), String> {
+    if let Some(name) = username {
+        if name.chars().count() > 20 {
+            return Err("username must be at most 20 characters".to_string());
+        }
+    }
+    if let Some(name) = display_name {
+        if name.chars().count() > 20 {
+            return Err("display name must be at most 20 characters".to_string());
+        }
+    }
+    if let Some(pw) = password {
+        if !pw.is_empty() && !(8..=20).contains(&pw.chars().count()) {
+            return Err("password must be between 8 and 20 characters".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// `PUT /api/user/self`: update the caller's own username / display_name and,
+/// optionally, password (Go `UpdateSelf` profile branch). A password change
+/// verifies `original_password` first (unless the account has no password yet).
+/// Empty fields are left unchanged, matching Go's zero-value-skipping `Update`.
+///
+/// Deferred: the Go `sidebar_modules` / `language` user-setting branches
+/// (display-only preferences persisted in the `setting` JSON, which the Rust
+/// worker does not yet manage).
+pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: UpdateSelfRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid update request: {err}"),
+            ));
+        }
+    };
+    // Empty strings mean "no change" (Go's `Updates` skips zero values).
+    let username = payload
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let display_name = payload
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let new_password = payload.password.as_deref().unwrap_or("");
+    if let Err(message) = validate_self_update(username, display_name, payload.password.as_deref()) {
+        return Ok(envelope_error_response(400, &message));
+    }
+
+    let db = env.d1("DB")?;
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(envelope_error_response(401, "session user no longer exists"));
+    };
+
+    // Go `checkUpdatePassword`: a password change requires the correct current
+    // password (skipped only when the account has no password set yet); an empty
+    // new password leaves it unchanged.
+    let update_password = !new_password.is_empty();
+    if update_password && !user.password.is_empty() {
+        let original = payload.original_password.as_deref().unwrap_or("");
+        if !verify_password(original, &user.password).unwrap_or(false) {
+            return Ok(envelope_error_response(400, "original password is incorrect"));
+        }
+    }
+    let password_hash = if update_password {
+        match hash_password(new_password) {
+            Ok(hash) => Some(hash),
+            Err(err) => {
+                return Ok(envelope_error_response(
+                    500,
+                    &format!("failed to hash password: {err}"),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
+    d1_repositories::edit_user(
+        &db,
+        claims.id,
+        username,
+        display_name,
+        None,
+        None,
+        password_hash.as_deref(),
+    )
+    .await?;
+
+    Ok(envelope_ok_response(&serde_json::Value::Null)?)
 }
 
 /// A 32-char random access token from the same alphabet as [`random_aff_code`]
@@ -1117,6 +1242,32 @@ mod tests {
         assert!(req.email.is_empty());
         assert!(req.aff_code.is_empty());
         assert!(req.verification_code.is_empty());
+    }
+
+    #[test]
+    fn self_update_validation_matches_go_tags() {
+        // All-None (no changes) is valid.
+        assert!(validate_self_update(None, None, None).is_ok());
+        // username / display_name max=20.
+        assert!(validate_self_update(Some(&"u".repeat(20)), None, None).is_ok());
+        assert!(validate_self_update(Some(&"u".repeat(21)), None, None).is_err());
+        assert!(validate_self_update(None, Some(&"d".repeat(21)), None).is_err());
+        // password: empty means "no change" (valid); non-empty must be 8..=20.
+        assert!(validate_self_update(None, None, Some("")).is_ok());
+        assert!(validate_self_update(None, None, Some("short")).is_err());
+        assert!(validate_self_update(None, None, Some("eightchr")).is_ok());
+        assert!(validate_self_update(None, None, Some(&"p".repeat(21))).is_err());
+    }
+
+    #[test]
+    fn self_update_request_all_fields_optional() {
+        let req: UpdateSelfRequest = serde_json::from_str(r#"{"display_name":"Bob"}"#).unwrap();
+        assert_eq!(req.display_name.as_deref(), Some("Bob"));
+        assert!(req.username.is_none());
+        assert!(req.password.is_none());
+        assert!(req.original_password.is_none());
+        let empty: UpdateSelfRequest = serde_json::from_str("{}").unwrap();
+        assert!(empty.username.is_none());
     }
 
     #[test]

@@ -24,7 +24,7 @@ use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
-    unix_timestamp,
+    require_user_auth, unix_timestamp,
 };
 use crate::cache_invalidation::invalidate_token_cache;
 use crate::d1_repositories;
@@ -387,6 +387,119 @@ pub async fn register(mut req: Request, env: Env) -> WorkerResult<Response> {
     }
 
     Ok(envelope_ok_response(&serde_json::Value::Null)?)
+}
+
+// ---------------------------------------------------------------------------
+// Self-service account endpoints (require a logged-in session, act on self)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/user/aff`: return the caller's affiliation code, lazily generating
+/// and persisting a 4-char code when none is set yet (Go `GetAffCode`).
+pub async fn get_aff_code(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let Some(mut aff_code) = d1_repositories::get_user_aff_code(&db, claims.id).await? else {
+        return Ok(envelope_error_response(401, "session user no longer exists"));
+    };
+    if aff_code.is_empty() {
+        aff_code = random_aff_code();
+        d1_repositories::update_user_aff_code(&db, claims.id, &aff_code).await?;
+    }
+    Ok(envelope_ok_response(&aff_code)?)
+}
+
+/// `DELETE /api/user/self`: soft-delete the caller's own account (Go
+/// `DeleteSelf`). The root user cannot self-delete.
+pub async fn delete_self(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    if claims.role == ROLE_ROOT_USER {
+        return Ok(envelope_error_response(403, "cannot delete the root user"));
+    }
+    let db = env.d1("DB")?;
+    d1_repositories::soft_delete_user(&db, claims.id, unix_timestamp()).await?;
+    Ok(envelope_ok_response(&serde_json::Value::Null)?)
+}
+
+/// `GET /api/user/token`: (re)generate the caller's system access token (Go
+/// `GenerateAccessToken`) — a 32-char random key persisted on the user row and
+/// returned once. Distinct from relay API keys.
+pub async fn generate_access_token(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let token = random_access_token();
+    d1_repositories::update_user_access_token(&db, claims.id, &token).await?;
+    Ok(envelope_ok_response(&token)?)
+}
+
+/// Transfer request body (Go `TransferAffQuotaRequest`).
+#[derive(Debug, Deserialize, Default)]
+pub struct TransferAffQuotaRequest {
+    #[serde(default)]
+    pub quota: i64,
+}
+
+/// `POST /api/user/aff_transfer`: move affiliation quota into spendable quota
+/// (Go `TransferAffQuota` -> `TransferAffQuotaToQuota`). The minimum transfer is
+/// one `QuotaPerUnit`; the move is CAS-guarded on sufficient affiliation quota.
+/// (Go's `requirePaymentCompliance` pre-gate is deferred — see the register
+/// parity notes.)
+pub async fn transfer_aff_quota(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: TransferAffQuotaRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid transfer request: {err}"),
+            ));
+        }
+    };
+    let db = env.d1("DB")?;
+    let quota_per_unit = parse_int_option(
+        d1_repositories::get_option(&db, "QuotaPerUnit")
+            .await?
+            .as_deref(),
+        500_000,
+    );
+    if payload.quota < quota_per_unit {
+        return Ok(envelope_error_response(
+            400,
+            &format!("minimum transfer is {quota_per_unit}"),
+        ));
+    }
+    if d1_repositories::transfer_aff_quota(&db, claims.id, payload.quota).await? {
+        Ok(envelope_ok_response(&serde_json::Value::Null)?)
+    } else {
+        Ok(envelope_error_response(400, "insufficient affiliation quota"))
+    }
+}
+
+/// A 32-char random access token from the same alphabet as [`random_aff_code`]
+/// (Go `GenerateRandomKey`, length 29-32; we fix 32).
+fn random_access_token() -> String {
+    let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut out = String::with_capacity(32);
+    for _ in 0..32 {
+        let r = js_sys::Math::random() * (alphabet.len() as f64);
+        out.push(alphabet[r as usize] as char);
+    }
+    out
 }
 
 pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -1004,6 +1117,14 @@ mod tests {
         assert!(req.email.is_empty());
         assert!(req.aff_code.is_empty());
         assert!(req.verification_code.is_empty());
+    }
+
+    #[test]
+    fn transfer_request_parses_and_defaults_quota() {
+        let req: TransferAffQuotaRequest = serde_json::from_str(r#"{"quota":500000}"#).unwrap();
+        assert_eq!(req.quota, 500_000);
+        let empty: TransferAffQuotaRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.quota, 0); // below any QuotaPerUnit min -> rejected by handler
     }
 
     #[test]

@@ -151,6 +151,19 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/user/self", |req, ctx| async move {
             admin::self_handler(req, ctx.env).await
         })
+        // Self-service account endpoints (Go user.go self-routes).
+        .delete_async("/api/user/self", |req, ctx| async move {
+            admin_user::delete_self(req, ctx.env).await
+        })
+        .get_async("/api/user/aff", |req, ctx| async move {
+            admin_user::get_aff_code(req, ctx.env).await
+        })
+        .post_async("/api/user/aff_transfer", |req, ctx| async move {
+            admin_user::transfer_aff_quota(req, ctx.env).await
+        })
+        .get_async("/api/user/token", |req, ctx| async move {
+            admin_user::generate_access_token(req, ctx.env).await
+        })
         // Secure-verification step-up (item 2.3): re-auth -> 300s flow-state
         // marker gating sensitive operations (credential reveal).
         .post_async("/api/verify", |req, ctx| async move {

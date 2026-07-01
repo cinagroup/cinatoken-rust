@@ -3403,6 +3403,69 @@ pub async fn record_inviter_aff(
     Ok(())
 }
 
+/// Read a user's affiliation code (may be empty for legacy rows). `None` when
+/// the user does not exist / is soft-deleted.
+pub async fn get_user_aff_code(db: &D1Database, id: i64) -> worker::Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct AffCode {
+        aff_code: String,
+    }
+    let arg = D1Type::Integer(d1_i32(id));
+    let row = db
+        .prepare(r#"SELECT aff_code FROM users WHERE id = ?1 AND deleted_at IS NULL LIMIT 1"#)
+        .bind_refs(&[arg])?
+        .first::<AffCode>(None)
+        .await?;
+    Ok(row.map(|r| r.aff_code))
+}
+
+/// Set a user's affiliation code (used to lazily backfill an empty code).
+pub async fn update_user_aff_code(db: &D1Database, id: i64, aff_code: &str) -> worker::Result<()> {
+    let args = [D1Type::Text(aff_code), D1Type::Integer(d1_i32(id))];
+    db.prepare(r#"UPDATE users SET aff_code = ?1 WHERE id = ?2"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
+/// Move `amount` from a user's affiliation quota into their spendable quota
+/// (Go `TransferAffQuotaToQuota`). CAS-guarded on `aff_quota >= amount` so it is
+/// atomic without a lock: returns `true` iff the transfer applied (the guard
+/// held), `false` on insufficient affiliation quota.
+pub async fn transfer_aff_quota(db: &D1Database, id: i64, amount: i64) -> worker::Result<bool> {
+    let amount = quota_i32(amount)?;
+    let args = [
+        D1Type::Integer(amount),
+        D1Type::Integer(d1_i32(id)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE users
+            SET aff_quota = aff_quota - ?1,
+                quota = quota + ?1
+            WHERE id = ?2 AND aff_quota >= ?1
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|m| m.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
+/// Set a user's system access token (Go `GenerateAccessToken`). Distinct from
+/// relay API keys; stored in `users.access_token`.
+pub async fn update_user_access_token(db: &D1Database, id: i64, token: &str) -> worker::Result<()> {
+    let args = [D1Type::Text(token), D1Type::Integer(d1_i32(id))];
+    db.prepare(r#"UPDATE users SET access_token = ?1 WHERE id = ?2"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
 /// Edit a subset of user fields. Mirrors Go `Edit`: only username,
 /// display_name, group, remark, and (optionally) password are updated.
 /// role/status/quota are intentionally NOT touched here.

@@ -53,11 +53,14 @@ These are still faithful-to-Go ports that need no credential or decision — jus
 implementation time:
 
 - `PUT /api/channel/tag` (rename/edit a tag's channels — multi-field edit).
-- `POST /api/option/payment_compliance` (option flag write).
-- `GET/DELETE /api/option/channel_affinity_cache` (DO cache read/clear).
+- `GET/DELETE /api/option/channel_affinity_cache` — needs `ChannelAffinity` DO
+  RPC to enumerate/clear per-key state (DO-internals, more involved than a
+  plain option write).
 
-Done since first draft: `POST /api/channel/tag/{disabled,enabled}` +
-`DELETE /api/channel/disabled` (commit `0540e7a`, staging-verified).
+Done since first draft (staging-verified): `POST /api/channel/tag/{disabled,
+enabled}` + `DELETE /api/channel/disabled` (`0540e7a`);
+`POST /api/option/rest_model_ratio` (`b463534`);
+`POST /api/option/payment_compliance` (`36ef615`).
 
 ## Blocked — needs an external dependency or a decision (the user's call)
 

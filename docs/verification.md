@@ -547,7 +547,9 @@ Last checked: 2026-07-01
   `POST /api/channel/tag/{disabled,enabled}` (toggles channels + their
   abilities 2/2) and `DELETE /api/channel/disabled` (deleted exactly the 2
   disabled channels + abilities, data=2, leaving the enabled mocks intact;
-  empty tag→400).
+  empty tag→400). `POST /api/option/payment_compliance` (admin: persists the 5
+  `payment_setting.compliance_*` options incl. confirming user id + client IP;
+  confirmed:false→400; common→403).
 
 ## Local Notes
 

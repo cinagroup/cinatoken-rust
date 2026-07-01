@@ -742,6 +742,30 @@ pub async fn get_public_groups(_req: Request, env: Env) -> WorkerResult<Response
     user_groups_response(&env).await
 }
 
+/// `GET /api/user/models`: the distinct enabled models available across the
+/// caller's usable groups (Go `GetUserModels`). Uses the default-config usable
+/// groups (per-user-group special rules deferred, as in GetUserGroups).
+pub async fn get_self_models(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_user_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let db = env.d1("DB")?;
+    let usable = parse_usable_groups(
+        d1_repositories::get_option(&db, "UserUsableGroups")
+            .await?
+            .as_deref(),
+    );
+    let mut models: Vec<String> = Vec::new();
+    for group in usable.keys() {
+        for model in d1_repositories::distinct_enabled_models_for_group(&db, group).await? {
+            if !models.contains(&model) {
+                models.push(model);
+            }
+        }
+    }
+    Ok(envelope_ok_response(&models)?)
+}
+
 pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
         Ok(claims) => claims,

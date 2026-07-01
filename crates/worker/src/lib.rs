@@ -184,6 +184,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/user/groups", |req, ctx| async move {
             admin_user::get_public_groups(req, ctx.env).await
         })
+        .get_async("/api/user/models", |req, ctx| async move {
+            admin_user::get_self_models(req, ctx.env).await
+        })
         // Secure-verification step-up (item 2.3): re-auth -> 300s flow-state
         // marker gating sensitive operations (credential reveal).
         .post_async("/api/verify", |req, ctx| async move {

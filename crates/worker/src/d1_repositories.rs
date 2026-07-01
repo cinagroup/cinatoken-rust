@@ -3455,6 +3455,28 @@ pub async fn transfer_aff_quota(db: &D1Database, id: i64, amount: i64) -> worker
     Ok(changes > 0)
 }
 
+/// Distinct enabled model names available to a group (Go
+/// `GetGroupEnabledModels`): `SELECT DISTINCT model FROM abilities WHERE
+/// group_name = ? AND enabled = 1`. Ordered for a stable display list.
+pub async fn distinct_enabled_models_for_group(
+    db: &D1Database,
+    group: &str,
+) -> worker::Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct ModelRow {
+        model: String,
+    }
+    let arg = D1Type::Text(group);
+    db.prepare(
+        r#"SELECT DISTINCT model FROM abilities WHERE group_name = ?1 AND enabled = 1 ORDER BY model"#,
+    )
+    .bind_refs(&[arg])?
+    .all()
+    .await?
+    .results::<ModelRow>()
+    .map(|rows| rows.into_iter().map(|row| row.model).collect())
+}
+
 /// Set a user's system access token (Go `GenerateAccessToken`). Distinct from
 /// relay API keys; stored in `users.access_token`.
 pub async fn update_user_access_token(db: &D1Database, id: i64, token: &str) -> worker::Result<()> {

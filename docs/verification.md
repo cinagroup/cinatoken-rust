@@ -464,6 +464,24 @@ Last checked: 2026-07-01
   registration (email subsystem unported), default-token generation, the
   payment-compliance sub-gate, and informational system logs.
 
+- **Self-service account endpoints + a critical cookie-auth bugfix —
+  staging-verified (2026-07-01).** Added four Go `controller/user.go`
+  self-routes (`GET /api/user/aff`, `GET /api/user/token`,
+  `POST /api/user/aff_transfer`, `DELETE /api/user/self`). Smoking them with a
+  real session cookie surfaced a **showstopper latent bug**: `session_cookie()`
+  fetched the request header named `COOKIE_NAME` ("session") instead of the
+  `Cookie` header, so *every* cookie-authenticated endpoint (get_self,
+  require_user_auth, 2FA, secure-verify, admin-via-session, self-service)
+  always saw "not logged in" — cookie login persistence was entirely broken and
+  had never been integration-tested (only `extract_session_cookie` had unit
+  coverage). Fixed (commit `079c045`); `GET /api/user/self` went 401→200 with a
+  login cookie. Then all four self-service endpoints verified end-to-end: aff
+  code lazily generated + returned; 32-char access token minted; transfer
+  min-gate (400 "minimum transfer is 500000") and insufficient-affiliation-quota
+  CAS (400) both fire; `DELETE /api/user/self` soft-deletes (subsequent self →
+  401 "session user no longer exists", re-login → 401). 154 worker tests pass.
+  Fixtures cleaned up.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

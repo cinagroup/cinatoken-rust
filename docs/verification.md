@@ -528,6 +528,12 @@ Last checked: 2026-07-01
   type→400; webhook w/o url→400; gotify priority 99 stored as 5. 162 tests
   pass. The notification *dispatch* subsystem is unported (config-only).
 
+- **`GET /api/ratio_config` (exposed ratio tables) — staging-verified
+  (2026-07-01).** Ports Go `GetRatioConfig`/`GetExposedData`: 5 merged ratio
+  maps (default `cinatoken_core::default_ratios` tables + options override),
+  gated by `ExposeRatioEnabled` (off→403). Live: off→403; on→200 with
+  gpt-4o=0.5 default + a my-custom-model override merged. 163 tests pass.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

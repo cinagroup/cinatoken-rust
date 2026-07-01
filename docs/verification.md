@@ -534,6 +534,13 @@ Last checked: 2026-07-01
   gated by `ExposeRatioEnabled` (off→403). Live: off→403; on→200 with
   gpt-4o=0.5 default + a my-custom-model override merged. 163 tests pass.
 
+- **Legal/midjourney public info + admin enabled-models — staging-verified
+  (2026-07-01).** `GET /api/user-agreement`, `/api/privacy-policy`,
+  `/api/midjourney` (option-backed strings, verified returning set values); and
+  `GET /api/channel/models_enabled` (Go `EnabledListModels`, admin-only) —
+  verified returning `[gpt-4o, smoke-enabled-model]` for an admin and 403 for a
+  common user.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

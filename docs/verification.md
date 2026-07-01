@@ -512,6 +512,15 @@ Last checked: 2026-07-01
   (DashboardListModels) intentionally not ported (returns per-adaptor static
   model lists baked into Go, not a DB query). 159 worker tests pass.
 
+- **UpdateSelf setting branches (sidebar_modules / language) — staging-verified
+  (2026-07-01).** Completes `PUT /api/user/self` to Go parity: preference fields
+  merge into the user `setting` JSON (preserving others), separate from the
+  profile branch. Live: sidebar_modules then language merged incrementally
+  (`{sidebar_modules,language}`); a later display_name update changed the
+  profile while the setting JSON survived. 160 worker tests pass. The full
+  `PUT /api/user/setting` (UpdateUserSetting — notification prefs with
+  webhook/bark/gotify validation) is a separate follow-up.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

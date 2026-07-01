@@ -449,6 +449,22 @@ pub async fn get_home_page_content(_req: Request, env: Env) -> WorkerResult<Resp
     public_option_string(&env, "HomePageContent").await
 }
 
+/// `GET /api/user-agreement`: legal user-agreement text (Go `GetUserAgreement`;
+/// the `legal` config module stores string fields raw under `legal.<field>`).
+pub async fn get_user_agreement(_req: Request, env: Env) -> WorkerResult<Response> {
+    public_option_string(&env, "legal.user_agreement").await
+}
+
+/// `GET /api/privacy-policy`: legal privacy-policy text (Go `GetPrivacyPolicy`).
+pub async fn get_privacy_policy(_req: Request, env: Env) -> WorkerResult<Response> {
+    public_option_string(&env, "legal.privacy_policy").await
+}
+
+/// `GET /api/midjourney`: public Midjourney display config (Go `GetMidjourney`).
+pub async fn get_midjourney(_req: Request, env: Env) -> WorkerResult<Response> {
+    public_option_string(&env, "Midjourney").await
+}
+
 /// `GET /api/setup`: report whether initial bootstrap is still allowed.
 pub async fn get_setup(_req: Request, env: Env) -> WorkerResult<Response> {
     let db = env.d1("DB")?;

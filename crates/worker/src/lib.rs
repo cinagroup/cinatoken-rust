@@ -134,6 +134,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/ratio_config", |req, ctx| async move {
             admin_user::get_ratio_config(req, ctx.env).await
         })
+        // Legal text (Go misc.go).
+        .get_async("/api/user-agreement", |req, ctx| async move {
+            admin::get_user_agreement(req, ctx.env).await
+        })
+        .get_async("/api/privacy-policy", |req, ctx| async move {
+            admin::get_privacy_policy(req, ctx.env).await
+        })
+        .get_async("/api/midjourney", |req, ctx| async move {
+            admin::get_midjourney(req, ctx.env).await
+        })
         .post_async("/api/user/login", |req, ctx| async move {
             admin::login_handler(req, ctx.env).await
         })

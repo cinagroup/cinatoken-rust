@@ -3477,6 +3477,32 @@ pub async fn distinct_enabled_models_for_group(
     .map(|rows| rows.into_iter().map(|row| row.model).collect())
 }
 
+/// Read a user's `setting` JSON blob (Go `User.Setting`). `None` when the user
+/// does not exist / is soft-deleted; the column itself defaults to `{}`.
+pub async fn get_user_setting(db: &D1Database, id: i64) -> worker::Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct Setting {
+        setting: String,
+    }
+    let arg = D1Type::Integer(d1_i32(id));
+    let row = db
+        .prepare(r#"SELECT setting FROM users WHERE id = ?1 AND deleted_at IS NULL LIMIT 1"#)
+        .bind_refs(&[arg])?
+        .first::<Setting>(None)
+        .await?;
+    Ok(row.map(|r| r.setting))
+}
+
+/// Persist a user's `setting` JSON blob.
+pub async fn update_user_setting(db: &D1Database, id: i64, setting: &str) -> worker::Result<()> {
+    let args = [D1Type::Text(setting), D1Type::Integer(d1_i32(id))];
+    db.prepare(r#"UPDATE users SET setting = ?1 WHERE id = ?2"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
 /// Set a user's system access token (Go `GenerateAccessToken`). Distinct from
 /// relay API keys; stored in `users.access_token`.
 pub async fn update_user_access_token(db: &D1Database, id: i64, token: &str) -> worker::Result<()> {

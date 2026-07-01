@@ -538,6 +538,23 @@ pub fn validate_self_update(
 /// Deferred: the Go `sidebar_modules` / `language` user-setting branches
 /// (display-only preferences persisted in the `setting` JSON, which the Rust
 /// worker does not yet manage).
+/// Merge the `sidebar_modules` / `language` string fields from `body` into the
+/// existing user `setting` JSON, returning the new setting JSON string. A blank
+/// or non-object current setting is treated as `{}`. Pure, so it is
+/// unit-testable.
+fn merge_setting_fields(current_setting: &str, body: &serde_json::Value) -> String {
+    let mut setting = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+        current_setting.trim(),
+    )
+    .unwrap_or_default();
+    for field in ["sidebar_modules", "language"] {
+        if let Some(value) = body.get(field).and_then(serde_json::Value::as_str) {
+            setting.insert(field.to_string(), serde_json::Value::String(value.to_string()));
+        }
+    }
+    serde_json::Value::Object(setting).to_string()
+}
+
 pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_user_auth(&req, &env).await? {
         Ok(claims) => claims,
@@ -547,6 +564,20 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
         Ok(body) => body,
         Err(response) => return Ok(response),
     };
+
+    // User-setting branch (Go `UpdateSelf` sidebar_modules / language): merge the
+    // preference field(s) into the `setting` JSON and return, without touching
+    // the profile.
+    if body.get("sidebar_modules").is_some() || body.get("language").is_some() {
+        let db = env.d1("DB")?;
+        let current = d1_repositories::get_user_setting(&db, claims.id)
+            .await?
+            .unwrap_or_default();
+        let new_setting = merge_setting_fields(&current, &body);
+        d1_repositories::update_user_setting(&db, claims.id, &new_setting).await?;
+        return Ok(envelope_ok_response(&serde_json::Value::Null)?);
+    }
+
     let payload: UpdateSelfRequest = match serde_json::from_value(body) {
         Ok(payload) => payload,
         Err(err) => {
@@ -1396,6 +1427,26 @@ mod tests {
         assert!(validate_self_update(None, None, Some("short")).is_err());
         assert!(validate_self_update(None, None, Some("eightchr")).is_ok());
         assert!(validate_self_update(None, None, Some(&"p".repeat(21))).is_err());
+    }
+
+    #[test]
+    fn merge_setting_fields_updates_only_present_prefs() {
+        // From {}: sets sidebar_modules.
+        let s = merge_setting_fields("{}", &serde_json::json!({"sidebar_modules": "a,b,c"}));
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["sidebar_modules"], serde_json::json!("a,b,c"));
+        // Preserves existing fields; updates language only.
+        let s2 = merge_setting_fields(
+            r#"{"sidebar_modules":"x","language":"zh"}"#,
+            &serde_json::json!({"language": "en"}),
+        );
+        let v2: serde_json::Value = serde_json::from_str(&s2).unwrap();
+        assert_eq!(v2["sidebar_modules"], serde_json::json!("x")); // preserved
+        assert_eq!(v2["language"], serde_json::json!("en")); // updated
+        // Blank/invalid current setting is treated as {}.
+        let s3 = merge_setting_fields("", &serde_json::json!({"language": "en"}));
+        let v3: serde_json::Value = serde_json::from_str(&s3).unwrap();
+        assert_eq!(v3["language"], serde_json::json!("en"));
     }
 
     #[test]

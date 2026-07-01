@@ -3503,6 +3503,22 @@ pub async fn update_user_setting(db: &D1Database, id: i64, setting: &str) -> wor
     Ok(())
 }
 
+/// All distinct enabled model names across every group (Go `GetEnabledModels`):
+/// `SELECT DISTINCT model FROM abilities WHERE enabled = 1`. Ordered.
+pub async fn distinct_all_enabled_models(db: &D1Database) -> worker::Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct ModelRow {
+        model: String,
+    }
+    let empty: &[D1Type<'_>] = &[];
+    db.prepare(r#"SELECT DISTINCT model FROM abilities WHERE enabled = 1 ORDER BY model"#)
+        .bind_refs(empty)?
+        .all()
+        .await?
+        .results::<ModelRow>()
+        .map(|rows| rows.into_iter().map(|row| row.model).collect())
+}
+
 /// Set a user's system access token (Go `GenerateAccessToken`). Distinct from
 /// relay API keys; stored in `users.access_token`.
 pub async fn update_user_access_token(db: &D1Database, id: i64, token: &str) -> worker::Result<()> {

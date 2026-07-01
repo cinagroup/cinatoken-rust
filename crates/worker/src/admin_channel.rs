@@ -25,6 +25,17 @@ use crate::d1_repositories::{self, ChannelFilter, ChannelRow, CreateChannel, Upd
 // ---------------------------------------------------------------------------
 
 /// `GET /api/channel/`: admin channel list. AdminAuth.
+/// `GET /api/channel/models_enabled`: all distinct enabled model names across
+/// every group (Go `EnabledListModels` -> `GetEnabledModels`). AdminAuth.
+pub async fn enabled_list_models(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let db = env.d1("DB")?;
+    let models = d1_repositories::distinct_all_enabled_models(&db).await?;
+    envelope_ok_response(&models)
+}
+
 pub async fn list_channels(req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
         Ok(claims) => claims,

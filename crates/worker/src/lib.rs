@@ -314,6 +314,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/channel/search", |req, ctx| async move {
             admin_channel::search_channels(req, ctx.env).await
         })
+        .get_async("/api/channel/models_enabled", |req, ctx| async move {
+            admin_channel::enabled_list_models(req, ctx.env).await
+        })
         .post_async("/api/channel/", |req, ctx| async move {
             admin_channel::create_channel(req, ctx.env).await
         })

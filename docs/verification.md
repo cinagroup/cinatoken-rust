@@ -450,6 +450,20 @@ Last checked: 2026-07-01
   provider key) were deleted from staging D1 after verification; the key was
   never committed and lives only in the throwaway local scratchpad.
 
+- **User self-registration (`POST /api/user/register`) — implemented +
+  staging-verified (2026-07-01).** Ports Go `controller.Register`, the core
+  auth flow that was missing (the worker had admin user-create + login but no
+  self-signup). Live smoke on staging: a fresh register returned
+  `{success:true}` (200); an 8–20 password-length violation returned 400 with
+  the Go-matching message; a duplicate username returned 409; and the
+  register→login round-trip succeeded, proving the bcrypt hash is loginable.
+  The created row was role=common, group=default, 4-char aff_code,
+  inviter_id=0, 60-char bcrypt password (`QuotaForNewUser`=0 default). 153
+  worker lib tests pass (+3 new for validation/option-parsing). Deferred
+  parity (all off by default, noted in-code): Turnstile, email-verified
+  registration (email subsystem unported), default-token generation, the
+  payment-compliance sub-gate, and informational system logs.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

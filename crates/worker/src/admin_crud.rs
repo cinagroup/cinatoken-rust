@@ -300,6 +300,38 @@ pub async fn update_option(mut req: Request, env: Env) -> WorkerResult<Response>
     })?)
 }
 
+/// `POST /api/option/rest_model_ratio`: reset the `ModelRatio` option to the
+/// ported default table (Go `ResetModelRatio` -> `DefaultModelRatio2JSONString`).
+/// RootAuth; invalidates the option cache and audits (key only).
+pub async fn reset_model_ratio(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_root_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let defaults: std::collections::BTreeMap<&str, f64> =
+        cinatoken_core::default_ratios::DEFAULT_MODEL_RATIO
+            .iter()
+            .copied()
+            .collect();
+    let value = serde_json::to_string(&defaults).unwrap_or_else(|_| "{}".to_string());
+    let db = env.d1("DB")?;
+    d1_repositories::upsert_option_pub(&db, "ModelRatio", &value).await?;
+    crate::cache_invalidation::invalidate_option_cache(&env).await?;
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "option.reset_model_ratio",
+        &format!("admin {} reset ModelRatio to defaults", claims.username),
+        &serde_json::json!({"key": "ModelRatio"}),
+        &crate::admin::admin_audit_info(&claims, &req),
+        crate::admin::unix_timestamp(),
+    )
+    .await;
+    Ok(envelope_ok_response(&serde_json::Value::Null)?)
+}
+
 #[derive(Debug, Deserialize)]
 struct OptionUpdateRequest {
     key: String,

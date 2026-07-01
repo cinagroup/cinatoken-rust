@@ -426,6 +426,29 @@ Last checked: 2026-07-01
   final-chunk usage identically (another exact 150). No relay bugs found —
   the relay path (unlike the task poller) was already solid. Fixtures + echo
   worker + custom domain torn down after verification.
+- **End-to-end RELAY smoke against a REAL provider — DeepSeek, three families,
+  exact billing on real usage (2026-07-01).** The user supplied a real
+  DeepSeek key + endpoints, so the relay was exercised against a genuine
+  upstream (`api.deepseek.com`, no emulator, no 1042 — real provider, real
+  zone). A throwaway user/token + `ModelRatio {"deepseek-v4-pro":1}` were
+  seeded, with a channel per family holding the provider key. All three
+  returned HTTP 200 with the real upstream body and settled billing to the
+  exact unit on the provider-reported usage (charged to both user and token,
+  each with a type-2 consume audit-log row):
+  - `POST /v1/chat/completions` (type-1 channel, `base_url=https://api.deepseek.com`):
+    real usage prompt 12 / completion 39 (incl. 36 reasoning tokens) →
+    quota 51.
+  - `POST /v1/chat/completions` `stream:true` with `stream_options.include_usage`:
+    real SSE passed through unbuffered, final-chunk usage prompt 7 /
+    completion 100 → quota 107.
+  - `POST /v1/messages` (Anthropic Messages, type-14 channel,
+    `base_url=https://api.deepseek.com/anthropic`): native Anthropic
+    thinking+text response, usage input 7 / output 49 → quota 56.
+  Cumulative settled 214, matching the sum exactly. No bugs found — the
+  OpenAI-compatible and Anthropic relay adapters both work against a live
+  third-party provider. All fixtures (including the channel rows holding the
+  provider key) were deleted from staging D1 after verification; the key was
+  never committed and lives only in the throwaway local scratchpad.
 
 ## Local Notes
 
@@ -456,17 +479,15 @@ bun run check
   this Windows/shared-drive machine with `write EOF` from Wrangler's local D1
   process. The same schema and seed SQL pass SQLite execution.
 - `wrangler dev` has not been run end-to-end with a real D1 database binding.
-- Live end-to-end smokes now exist for both the async-task (video) path and
-  the relay (chat/completions non-stream + streaming) path (see the two
-  entries above), but both used protocol-faithful emulators on custom
-  domains, not real upstream providers — no real provider credentials are
-  available in this environment. A smoke against a genuine provider
-  (real key + real Sora/OpenAI/etc. endpoint) is still the user's step.
-- Relay families beyond chat/completions (embeddings, rerank, Anthropic
-  Messages, native Gemini, images, responses) still have compile/unit
-  coverage only — not yet exercised against a live upstream.
-- Streaming chat completion, completion, response, image generation, Anthropic
-  Messages, and native Gemini passthrough have compile/unit coverage only; they
-  have not been exercised against live upstream SSE responses yet.
+- The relay path now has a live smoke against a REAL provider (DeepSeek):
+  `/v1/chat/completions` non-stream + streaming and `/v1/messages` (Anthropic
+  Messages), all with exact billing on real usage (see the entry above). The
+  async-task (video) path's live smoke still used a protocol-faithful emulator
+  (no real video-provider credentials were supplied), so a real video-provider
+  task submit is the one untested live path.
+- Relay families beyond chat/completions and Anthropic Messages (embeddings,
+  rerank, native Gemini, image generation, responses) still have compile/unit
+  coverage only — not yet exercised against a live upstream (streaming and
+  Anthropic Messages ARE now live-verified via the DeepSeek smoke above).
 - No source SQLite file or SQL DSN is available in the current shell, so real
   source row counts have not been captured yet.

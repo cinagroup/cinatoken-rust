@@ -130,6 +130,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/home_page_content", |req, ctx| async move {
             admin::get_home_page_content(req, ctx.env).await
         })
+        // Exposed ratio config (Go GetRatioConfig; gated by ExposeRatioEnabled).
+        .get_async("/api/ratio_config", |req, ctx| async move {
+            admin_user::get_ratio_config(req, ctx.env).await
+        })
         .post_async("/api/user/login", |req, ctx| async move {
             admin::login_handler(req, ctx.env).await
         })

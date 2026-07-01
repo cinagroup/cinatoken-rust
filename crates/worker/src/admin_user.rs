@@ -659,6 +659,81 @@ fn random_access_token() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Exposed ratio config (Go GetRatioConfig)
+// ---------------------------------------------------------------------------
+
+/// Merge a default ratio table with the option override (Go seeds the in-memory
+/// map with the defaults, then loads the option on top). Values may be numbers
+/// or numeric strings. `BTreeMap` for a deterministic response ordering. Pure.
+fn merged_ratio_map(
+    defaults: &[(&str, f64)],
+    option: Option<&str>,
+) -> std::collections::BTreeMap<String, f64> {
+    let mut map: std::collections::BTreeMap<String, f64> = defaults
+        .iter()
+        .map(|(name, ratio)| (name.to_string(), *ratio))
+        .collect();
+    if let Some(raw) = option {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            if let Ok(overrides) =
+                serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(raw)
+            {
+                for (name, value) in overrides {
+                    if let Some(ratio) = value
+                        .as_f64()
+                        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+                    {
+                        map.insert(name, ratio);
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// `GET /api/ratio_config`: expose the merged model/completion/cache/price
+/// ratio tables (Go `GetRatioConfig` -> `GetExposedData`), gated by the
+/// `ExposeRatioEnabled` option (default off -> 403). Each map is the ported
+/// default table merged with its option override.
+pub async fn get_ratio_config(_req: Request, env: Env) -> WorkerResult<Response> {
+    use cinatoken_core::default_ratios as dr;
+    let db = env.d1("DB")?;
+    let enabled = parse_bool_option(
+        d1_repositories::get_option(&db, "ExposeRatioEnabled")
+            .await?
+            .as_deref(),
+        false,
+    );
+    if !enabled {
+        return Ok(envelope_error_response(
+            403,
+            "ratio config endpoint is not enabled",
+        ));
+    }
+    let opts = d1_repositories::option_values(
+        &db,
+        &[
+            "ModelRatio",
+            "CompletionRatio",
+            "CacheRatio",
+            "CreateCacheRatio",
+            "ModelPrice",
+        ],
+    )
+    .await?;
+    let data = serde_json::json!({
+        "model_ratio": merged_ratio_map(dr::DEFAULT_MODEL_RATIO, opts[0].as_deref()),
+        "completion_ratio": merged_ratio_map(dr::DEFAULT_COMPLETION_RATIO, opts[1].as_deref()),
+        "cache_ratio": merged_ratio_map(dr::DEFAULT_CACHE_RATIO, opts[2].as_deref()),
+        "create_cache_ratio": merged_ratio_map(dr::DEFAULT_CREATE_CACHE_RATIO, opts[3].as_deref()),
+        "model_price": merged_ratio_map(dr::DEFAULT_MODEL_PRICE, opts[4].as_deref()),
+    });
+    Ok(envelope_ok_response(&data)?)
+}
+
+// ---------------------------------------------------------------------------
 // Notification settings (Go UpdateUserSetting)
 // ---------------------------------------------------------------------------
 
@@ -1650,6 +1725,18 @@ mod tests {
         assert!(req.original_password.is_none());
         let empty: UpdateSelfRequest = serde_json::from_str("{}").unwrap();
         assert!(empty.username.is_none());
+    }
+
+    #[test]
+    fn merged_ratio_map_overrides_defaults() {
+        let defaults: &[(&str, f64)] = &[("a", 1.0), ("b", 2.0)];
+        let d = merged_ratio_map(defaults, None);
+        assert_eq!(d.get("a"), Some(&1.0));
+        assert_eq!(d.get("b"), Some(&2.0));
+        let m = merged_ratio_map(defaults, Some(r#"{"b":5,"c":"3"}"#));
+        assert_eq!(m.get("a"), Some(&1.0)); // default kept
+        assert_eq!(m.get("b"), Some(&5.0)); // overridden
+        assert_eq!(m.get("c"), Some(&3.0)); // added from numeric string
     }
 
     #[test]

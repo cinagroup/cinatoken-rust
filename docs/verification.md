@@ -1,6 +1,6 @@
 # Verification
 
-Last checked: 2026-06-22
+Last checked: 2026-07-01
 
 ## Passed
 
@@ -368,6 +368,45 @@ Last checked: 2026-06-22
   declares `[[queues.consumers]]` with `max_batch_size=100`,
   `max_batch_timeout=5`, `max_retries=3`, and a DLQ in all three
   environments.
+- **Staging deployment + operational verification (2026-07-01).** All D1
+  migrations (0001-0007) applied to the live staging database
+  (`cinatoken-rust-db-staging`). The current worker deployed to
+  `cinatoken-rust-api-staging` via `wrangler deploy --env staging` (host has
+  no linker for `worker-build`, so the build was replicated manually:
+  `cargo build --target wasm32-unknown-unknown --release`, then
+  `wasm-bindgen --target module` — not `bundler`, whose `__wbindgen_start`
+  glue expects a bundler to instantiate the wasm and fails workerd startup —
+  followed by worker-build's `import source ` → `import ` rewrite). Startup
+  succeeded (Worker Startup Time ~5ms, no exceptions). `GET /api/status`
+  returns `environment: staging` with `d1`/`session_auth`/`worker` features
+  enabled. The task poller cron (`* * * * *`) is live; `wrangler tail`
+  captured a real scheduled fire running all three drivers
+  (`poll_unfinished_{tasks,suno_tasks,midjourney_tasks}`) against the live D1
+  with `outcome: ok` and no exceptions.
+- **End-to-end async-task lifecycle smoke against a protocol-faithful
+  emulator (2026-07-01).** No real provider credentials are available in this
+  environment, so the Sora wire protocol (`POST {base}/v1/videos` →
+  `{"id":...}`, `GET {base}/v1/videos/{id}` → `{"status":...}`) was emulated
+  by a separate Worker on a real (non-`workers.dev`) custom domain — same-zone
+  `*.workers.dev` → `*.workers.dev` calls hit Cloudflare's same-zone
+  worker-to-worker block (`error code: 1042`), and Sora's submit/poll wire
+  shape is simple enough to emulate faithfully rather than mock. A throwaway
+  user/token/channel/ability were seeded in staging D1. Two real
+  `POST /v1/video/generations` submits (one designed to succeed, one to fail)
+  went through the full stack — auth, channel selection, billing
+  pre-charge/reserve, a genuine outbound HTTP call, response parsing, task
+  insert — then the live cron poller picked them up, made a genuine outbound
+  poll call, and settled both via the CAS: the success task reached `SUCCESS`
+  keeping its charge, the failure task reached `FAILURE` with the upstream
+  error message and refunded its reserve. Quota deltas were verified exactly
+  against both the user and the token rows before and after.
+  This smoke surfaced and fixed two real bugs (see the same-day source commit
+  for detail): `find_channel_by_id` and the abilities-rebuild query filtered
+  a non-existent `channels.deleted_at` column, silently breaking every poll
+  channel lookup; and the poll-failure refund only credited the user, not the
+  reserving token (Go's `RefundTaskQuota` credits both). Both fixed and
+  re-verified live. Test fixtures and the emulator/custom-domain route were
+  torn down after verification.
 
 ## Local Notes
 
@@ -398,7 +437,11 @@ bun run check
   this Windows/shared-drive machine with `write EOF` from Wrangler's local D1
   process. The same schema and seed SQL pass SQLite execution.
 - `wrangler dev` has not been run end-to-end with a real D1 database binding.
-- No live upstream provider request has been executed yet.
+- No live *relay* (chat/completions-family) upstream provider request has been
+  executed yet — only the async-task (video) path has a live-upstream smoke
+  so far (see above), and that used a protocol-faithful emulator rather than
+  a real provider (no provider credentials are available in this
+  environment).
 - Streaming chat completion, completion, response, image generation, Anthropic
   Messages, and native Gemini passthrough have compile/unit coverage only; they
   have not been exercised against live upstream SSE responses yet.

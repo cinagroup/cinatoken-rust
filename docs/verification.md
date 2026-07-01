@@ -492,6 +492,16 @@ Last checked: 2026-07-01
   unset→""). 156 worker tests pass. Deferred: the `sidebar_modules`/`language`
   user-setting branches of `UpdateSelf` (display-only, `setting` JSON unmanaged).
 
+- **Usable-groups endpoints (`GET /api/user/self/groups` + `/api/user/groups`)
+  — staging-verified (2026-07-01).** Ports Go `GetUserGroups` for the
+  default-config path (defaults baked in: GroupRatio {default,vip,svip}=1 merged
+  with the option; UserUsableGroups {default,vip} replaced by the option). Live:
+  public returns `{default:{ratio:1.0,desc:"默认分组"}, vip:{...}}` with `svip`
+  correctly excluded (rated but not usable); `/self/groups` is 401 without a
+  session, 200 with. 159 worker tests pass. Deferred: per-user-group ratio
+  overrides + `GroupSpecialUsableGroup` `+:`/`-:` rules (Go defaults are
+  placeholders; non-default configs only).
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

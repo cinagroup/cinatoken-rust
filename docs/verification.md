@@ -541,6 +541,14 @@ Last checked: 2026-07-01
   verified returning `[gpt-4o, smoke-enabled-model]` for an admin and 403 for a
   common user.
 
+- **Admin ratio-reset + channel tag ops — staging-verified (2026-07-01/02).**
+  `POST /api/option/rest_model_ratio` (root: rewrites ModelRatio from the
+  default table — verified 6657-byte value with gpt-4o; common→403);
+  `POST /api/channel/tag/{disabled,enabled}` (toggles channels + their
+  abilities 2/2) and `DELETE /api/channel/disabled` (deleted exactly the 2
+  disabled channels + abilities, data=2, leaving the enabled mocks intact;
+  empty tag→400).
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

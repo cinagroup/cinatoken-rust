@@ -52,12 +52,12 @@ or an unported subsystem — enumerated below.
 These are still faithful-to-Go ports that need no credential or decision — just
 implementation time:
 
-- Channel tag bulk ops: `POST /api/channel/tag/{disabled,enabled}`,
-  `PUT /api/channel/tag`, `DELETE /api/channel/disabled` (D1 mutations).
+- `PUT /api/channel/tag` (rename/edit a tag's channels — multi-field edit).
 - `POST /api/option/payment_compliance` (option flag write).
 - `GET/DELETE /api/option/channel_affinity_cache` (DO cache read/clear).
-- `POST /api/user/reset` password-reset **generation** is blocked (needs email),
-  but the reset-token verification half could be staged behind KV flow-state.
+
+Done since first draft: `POST /api/channel/tag/{disabled,enabled}` +
+`DELETE /api/channel/disabled` (commit `0540e7a`, staging-verified).
 
 ## Blocked — needs an external dependency or a decision (the user's call)
 

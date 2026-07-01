@@ -407,6 +407,25 @@ Last checked: 2026-07-01
   reserving token (Go's `RefundTaskQuota` credits both). Both fixed and
   re-verified live. Test fixtures and the emulator/custom-domain route were
   torn down after verification.
+- **End-to-end RELAY smoke — chat/completions, non-stream + streaming, with
+  exact billing (2026-07-01).** Closes the long-standing "no live relay
+  upstream request" gap on the core product path. An OpenAI-compatible echo
+  Worker (fixed usage `prompt=100, completion=50`) was deployed to a real
+  custom domain (same 1042 same-zone bypass as the task smoke; the CF token
+  lacks Workers-Routes permission so the custom domain was attached via the
+  `accounts/workers/domains` API rather than wrangler's route path). A
+  throwaway user/token + a type-1 (OpenAI-compatible) channel → the echo +
+  an ability + `ModelRatio {"echo-chat-1":1}` were seeded. A real
+  `POST /v1/chat/completions` through the live staging worker returned the
+  upstream response verbatim (HTTP 200) with usage parsed, and the flat
+  billing settled to the exact unit: quota `= (100 + 50×1)×1×1 = 150` charged
+  to **both** user and token (user.quota 1000000→999850, token.remain→999850,
+  both `used`→150), with a type-2 consume audit-log row (model, token counts,
+  quota 150). The streaming variant (`stream:true`) passed the SSE through
+  unbuffered (content chunk → final-usage chunk → `[DONE]`) and settled the
+  final-chunk usage identically (another exact 150). No relay bugs found —
+  the relay path (unlike the task poller) was already solid. Fixtures + echo
+  worker + custom domain torn down after verification.
 
 ## Local Notes
 
@@ -437,11 +456,15 @@ bun run check
   this Windows/shared-drive machine with `write EOF` from Wrangler's local D1
   process. The same schema and seed SQL pass SQLite execution.
 - `wrangler dev` has not been run end-to-end with a real D1 database binding.
-- No live *relay* (chat/completions-family) upstream provider request has been
-  executed yet — only the async-task (video) path has a live-upstream smoke
-  so far (see above), and that used a protocol-faithful emulator rather than
-  a real provider (no provider credentials are available in this
-  environment).
+- Live end-to-end smokes now exist for both the async-task (video) path and
+  the relay (chat/completions non-stream + streaming) path (see the two
+  entries above), but both used protocol-faithful emulators on custom
+  domains, not real upstream providers — no real provider credentials are
+  available in this environment. A smoke against a genuine provider
+  (real key + real Sora/OpenAI/etc. endpoint) is still the user's step.
+- Relay families beyond chat/completions (embeddings, rerank, Anthropic
+  Messages, native Gemini, images, responses) still have compile/unit
+  coverage only — not yet exercised against a live upstream.
 - Streaming chat completion, completion, response, image generation, Anthropic
   Messages, and native Gemini passthrough have compile/unit coverage only; they
   have not been exercised against live upstream SSE responses yet.

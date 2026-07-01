@@ -41,6 +41,7 @@ pub struct MjRow {
     pub quota: i64,
     pub status: String,
     pub progress: String,
+    pub submit_time: i64,
 }
 
 /// The poll-result fields merged onto a Midjourney row (from the upstream
@@ -96,7 +97,8 @@ pub async fn find_unfinished_midjourneys(
     let arg = D1Type::Integer(d1_i32(limit));
     db.prepare(
         r#"
-        SELECT id, code, user_id, mj_id, channel_id, quota, status, progress
+        SELECT id, code, user_id, mj_id, channel_id, quota, status, progress,
+               submit_time
         FROM midjourneys
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
           AND mj_id != ''

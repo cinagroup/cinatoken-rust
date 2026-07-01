@@ -259,6 +259,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/option/rest_model_ratio", |req, ctx| async move {
             admin_crud::reset_model_ratio(req, ctx.env).await
         })
+        .post_async("/api/option/payment_compliance", |req, ctx| async move {
+            admin_crud::confirm_payment_compliance(req, ctx.env).await
+        })
         // Tokens (user-scoped).
         .get_async("/api/token/", |req, ctx| async move {
             admin_crud::list_tokens(req, ctx.env).await

@@ -332,6 +332,50 @@ pub async fn reset_model_ratio(req: Request, env: Env) -> WorkerResult<Response>
     Ok(envelope_ok_response(&serde_json::Value::Null)?)
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct PaymentComplianceRequest {
+    #[serde(default)]
+    confirmed: bool,
+}
+
+/// `POST /api/option/payment_compliance`: record the operator's payment
+/// compliance confirmation (Go `ConfirmPaymentCompliance`). AdminAuth (session).
+/// Persists the `payment_setting.compliance_*` options (confirmed flag, terms
+/// version, timestamp, confirming user, IP) and invalidates the option cache.
+pub async fn confirm_payment_compliance(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let client_ip = crate::relay::client_ip(&req).unwrap_or_default();
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: PaymentComplianceRequest = serde_json::from_value(body).unwrap_or_default();
+    if !payload.confirmed {
+        return Ok(envelope_error_response(400, "compliance must be confirmed"));
+    }
+    let now = crate::admin::unix_timestamp();
+    let db = env.d1("DB")?;
+    let updates = [
+        ("payment_setting.compliance_confirmed", "true".to_string()),
+        ("payment_setting.compliance_terms_version", "v1".to_string()),
+        ("payment_setting.compliance_confirmed_at", now.to_string()),
+        ("payment_setting.compliance_confirmed_by", claims.id.to_string()),
+        ("payment_setting.compliance_confirmed_ip", client_ip),
+    ];
+    for (key, value) in updates {
+        d1_repositories::upsert_option_pub(&db, key, &value).await?;
+    }
+    crate::cache_invalidation::invalidate_option_cache(&env).await?;
+    Ok(envelope_ok_response(&serde_json::json!({
+        "confirmed": true,
+        "terms_version": "v1",
+        "confirmed_at": now,
+    }))?)
+}
+
 #[derive(Debug, Deserialize)]
 struct OptionUpdateRequest {
     key: String,

@@ -502,6 +502,16 @@ Last checked: 2026-07-01
   overrides + `GroupSpecialUsableGroup` `+:`/`-:` rules (Go defaults are
   placeholders; non-default configs only).
 
+- **`GET /api/user/models` (user's available models) — staging-verified
+  (2026-07-01).** Ports Go `GetUserModels`: distinct enabled models unioned
+  across the caller's usable groups (`SELECT DISTINCT model FROM abilities
+  WHERE group_name=? AND enabled=1` per usable group). Live: with abilities
+  seeded default(alpha)+vip(beta) enabled and default(disabled) off, returned
+  `[gpt-4o, smoke-model-alpha, smoke-model-beta]` — disabled excluded,
+  pre-existing gpt-4o included; no-auth → 401. `GET /api/models`
+  (DashboardListModels) intentionally not ported (returns per-adaptor static
+  model lists baked into Go, not a DB query). 159 worker tests pass.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

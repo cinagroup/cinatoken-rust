@@ -26,6 +26,7 @@ mod task_orchestration;
 // Midjourney subsystem persistence (separate `midjourneys` table). Foundation
 // ahead of the mj submit/poll wiring.
 mod mj_repository;
+mod model_meta_api;
 mod pricing_api;
 mod turnstile;
 
@@ -339,6 +340,51 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .put_async("/api/channel/tag", |req, ctx| async move {
             admin_channel::edit_tag_channels(req, ctx.env).await
+        })
+        // Model metadata + vendor CRUD (Go /api/models/* + /api/vendors/*,
+        // AdminAuth; backs the 0008 tables the pricing endpoint reads).
+        .get_async("/api/models/", |req, ctx| async move {
+            model_meta_api::list_models_meta(req, ctx.env).await
+        })
+        .get_async("/api/models/search", |req, ctx| async move {
+            model_meta_api::list_models_meta(req, ctx.env).await
+        })
+        .get_async("/api/models/missing", |req, ctx| async move {
+            model_meta_api::get_missing_models(req, ctx.env).await
+        })
+        .get_async("/api/models/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            model_meta_api::get_model_meta(req, ctx.env, id.as_ref()).await
+        })
+        .post_async("/api/models/", |req, ctx| async move {
+            model_meta_api::create_model_meta(req, ctx.env).await
+        })
+        .put_async("/api/models/", |req, ctx| async move {
+            model_meta_api::update_model_meta(req, ctx.env).await
+        })
+        .delete_async("/api/models/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            model_meta_api::delete_model_meta(req, ctx.env, id.as_ref()).await
+        })
+        .get_async("/api/vendors/", |req, ctx| async move {
+            model_meta_api::list_vendors(req, ctx.env).await
+        })
+        .get_async("/api/vendors/search", |req, ctx| async move {
+            model_meta_api::list_vendors(req, ctx.env).await
+        })
+        .get_async("/api/vendors/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            model_meta_api::get_vendor(req, ctx.env, id.as_ref()).await
+        })
+        .post_async("/api/vendors/", |req, ctx| async move {
+            model_meta_api::create_vendor(req, ctx.env).await
+        })
+        .put_async("/api/vendors/", |req, ctx| async move {
+            model_meta_api::update_vendor(req, ctx.env).await
+        })
+        .delete_async("/api/vendors/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            model_meta_api::delete_vendor(req, ctx.env, id.as_ref()).await
         })
         .delete_async("/api/channel/disabled", |req, ctx| async move {
             admin_channel::delete_disabled_channels(req, ctx.env).await

@@ -3752,6 +3752,354 @@ pub async fn list_vendors(db: &D1Database) -> worker::Result<Vec<VendorRow>> {
     .results::<VendorRow>()
 }
 
+/// A full `models` metadata row for the admin CRUD (Go `model.Model`).
+#[derive(Debug, Deserialize, serde::Serialize)]
+pub struct ModelMetaFull {
+    pub id: i64,
+    pub model_name: String,
+    pub description: String,
+    pub icon: String,
+    pub tags: String,
+    pub vendor_id: i64,
+    pub endpoints: String,
+    pub status: i32,
+    pub sync_official: i32,
+    pub name_rule: i32,
+    pub created_time: i64,
+    pub updated_time: i64,
+}
+
+const MODEL_META_COLUMNS: &str = r#"id, model_name, description, icon, tags, vendor_id,
+    endpoints, status, sync_official, name_rule, created_time, updated_time"#;
+
+/// Page of live model-metadata rows filtered by an optional keyword
+/// (model_name/description/tags LIKE) and an optional vendor id. Returns
+/// `(rows, total)` for the shared filter.
+pub async fn list_models_meta(
+    db: &D1Database,
+    keyword: Option<&str>,
+    vendor_id: Option<i64>,
+    offset: u32,
+    limit: u32,
+) -> worker::Result<(Vec<ModelMetaFull>, i64)> {
+    let mut wheres = vec!["deleted_at IS NULL".to_string()];
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    let pattern;
+    if let Some(keyword) = keyword.filter(|keyword| !keyword.is_empty()) {
+        pattern = format!("%{keyword}%");
+        args.push(D1Type::Text(&pattern));
+        let n = args.len();
+        wheres.push(format!(
+            "(model_name LIKE ?{n} OR description LIKE ?{n} OR tags LIKE ?{n})"
+        ));
+    }
+    if let Some(vendor_id) = vendor_id {
+        args.push(D1Type::Integer(d1_i32(vendor_id)));
+        wheres.push(format!("vendor_id = ?{}", args.len()));
+    }
+    let where_sql = wheres.join(" AND ");
+
+    #[derive(Deserialize)]
+    struct Count {
+        total: i64,
+    }
+    let total = db
+        .prepare(&format!("SELECT COUNT(*) AS total FROM models WHERE {where_sql}"))
+        .bind_refs(&args)?
+        .first::<Count>(None)
+        .await?
+        .map(|count| count.total)
+        .unwrap_or(0);
+
+    args.push(D1Type::Integer(d1_i32(i64::from(limit))));
+    let limit_n = args.len();
+    args.push(D1Type::Integer(d1_i32(i64::from(offset))));
+    let offset_n = args.len();
+    let rows = db
+        .prepare(&format!(
+            "SELECT {MODEL_META_COLUMNS} FROM models WHERE {where_sql}
+             ORDER BY id DESC LIMIT ?{limit_n} OFFSET ?{offset_n}"
+        ))
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<ModelMetaFull>()?;
+    Ok((rows, total))
+}
+
+/// One live model-metadata row by id.
+pub async fn get_model_meta(db: &D1Database, id: i64) -> worker::Result<Option<ModelMetaFull>> {
+    let arg = D1Type::Integer(d1_i32(id));
+    db.prepare(&format!(
+        "SELECT {MODEL_META_COLUMNS} FROM models WHERE id = ?1 AND deleted_at IS NULL LIMIT 1"
+    ))
+    .bind_refs(&[arg])?
+    .first::<ModelMetaFull>(None)
+    .await
+}
+
+/// Is a live model-metadata row (other than `exclude_id`) already using `name`?
+pub async fn model_meta_name_duplicated(
+    db: &D1Database,
+    exclude_id: i64,
+    name: &str,
+) -> worker::Result<bool> {
+    #[derive(Deserialize)]
+    struct Count {
+        total: i64,
+    }
+    let args = [D1Type::Text(name), D1Type::Integer(d1_i32(exclude_id))];
+    let total = db
+        .prepare(
+            r#"SELECT COUNT(*) AS total FROM models
+               WHERE model_name = ?1 AND id != ?2 AND deleted_at IS NULL"#,
+        )
+        .bind_refs(&args)?
+        .first::<Count>(None)
+        .await?
+        .map(|count| count.total)
+        .unwrap_or(0);
+    Ok(total > 0)
+}
+
+/// Insert a model-metadata row; returns the new id.
+pub async fn insert_model_meta(db: &D1Database, row: &ModelMetaFull) -> worker::Result<i64> {
+    let args = [
+        D1Type::Text(&row.model_name),
+        D1Type::Text(&row.description),
+        D1Type::Text(&row.icon),
+        D1Type::Text(&row.tags),
+        D1Type::Integer(d1_i32(row.vendor_id)),
+        D1Type::Text(&row.endpoints),
+        D1Type::Integer(row.status),
+        D1Type::Integer(row.sync_official),
+        D1Type::Integer(row.name_rule),
+        D1Type::Integer(d1_i32(row.created_time)),
+        D1Type::Integer(d1_i32(row.updated_time)),
+    ];
+    db.prepare(
+        r#"INSERT INTO models (model_name, description, icon, tags, vendor_id,
+             endpoints, status, sync_official, name_rule, created_time, updated_time)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    #[derive(Deserialize)]
+    struct Id {
+        id: i64,
+    }
+    let row = db
+        .prepare("SELECT id FROM models ORDER BY id DESC LIMIT 1")
+        .bind_refs(&[] as &[D1Type<'_>])?
+        .first::<Id>(None)
+        .await?;
+    Ok(row.map(|r| r.id).unwrap_or(0))
+}
+
+/// Full update of a model-metadata row (all mutable fields).
+pub async fn update_model_meta(db: &D1Database, row: &ModelMetaFull) -> worker::Result<()> {
+    let args = [
+        D1Type::Text(&row.model_name),
+        D1Type::Text(&row.description),
+        D1Type::Text(&row.icon),
+        D1Type::Text(&row.tags),
+        D1Type::Integer(d1_i32(row.vendor_id)),
+        D1Type::Text(&row.endpoints),
+        D1Type::Integer(row.status),
+        D1Type::Integer(row.sync_official),
+        D1Type::Integer(row.name_rule),
+        D1Type::Integer(d1_i32(row.updated_time)),
+        D1Type::Integer(d1_i32(row.id)),
+    ];
+    db.prepare(
+        r#"UPDATE models SET model_name = ?1, description = ?2, icon = ?3, tags = ?4,
+             vendor_id = ?5, endpoints = ?6, status = ?7, sync_official = ?8,
+             name_rule = ?9, updated_time = ?10
+           WHERE id = ?11 AND deleted_at IS NULL"#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Status-only update (Go `UpdateModelMeta?status_only=true`).
+pub async fn update_model_meta_status(
+    db: &D1Database,
+    id: i64,
+    status: i32,
+) -> worker::Result<()> {
+    let args = [D1Type::Integer(status), D1Type::Integer(d1_i32(id))];
+    db.prepare(r#"UPDATE models SET status = ?1 WHERE id = ?2 AND deleted_at IS NULL"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
+/// Soft-delete a model-metadata row (Go gorm soft delete).
+pub async fn soft_delete_model_meta(db: &D1Database, id: i64, now: i64) -> worker::Result<()> {
+    let args = [D1Type::Integer(d1_i32(now)), D1Type::Integer(d1_i32(id))];
+    db.prepare(r#"UPDATE models SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
+/// A full `vendors` row for the admin CRUD (Go `model.Vendor`).
+#[derive(Debug, Deserialize, serde::Serialize)]
+pub struct VendorFull {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub status: i32,
+    pub created_time: i64,
+    pub updated_time: i64,
+}
+
+/// Page of live vendors filtered by an optional keyword. `(rows, total)`.
+pub async fn list_vendors_page(
+    db: &D1Database,
+    keyword: Option<&str>,
+    offset: u32,
+    limit: u32,
+) -> worker::Result<(Vec<VendorFull>, i64)> {
+    let mut wheres = vec!["deleted_at IS NULL".to_string()];
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    let pattern;
+    if let Some(keyword) = keyword.filter(|keyword| !keyword.is_empty()) {
+        pattern = format!("%{keyword}%");
+        args.push(D1Type::Text(&pattern));
+        let n = args.len();
+        wheres.push(format!("(name LIKE ?{n} OR description LIKE ?{n})"));
+    }
+    let where_sql = wheres.join(" AND ");
+    #[derive(Deserialize)]
+    struct Count {
+        total: i64,
+    }
+    let total = db
+        .prepare(&format!("SELECT COUNT(*) AS total FROM vendors WHERE {where_sql}"))
+        .bind_refs(&args)?
+        .first::<Count>(None)
+        .await?
+        .map(|count| count.total)
+        .unwrap_or(0);
+    args.push(D1Type::Integer(d1_i32(i64::from(limit))));
+    let limit_n = args.len();
+    args.push(D1Type::Integer(d1_i32(i64::from(offset))));
+    let offset_n = args.len();
+    let rows = db
+        .prepare(&format!(
+            "SELECT id, name, description, icon, status, created_time, updated_time
+             FROM vendors WHERE {where_sql} ORDER BY id DESC LIMIT ?{limit_n} OFFSET ?{offset_n}"
+        ))
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<VendorFull>()?;
+    Ok((rows, total))
+}
+
+/// One live vendor by id.
+pub async fn get_vendor(db: &D1Database, id: i64) -> worker::Result<Option<VendorFull>> {
+    let arg = D1Type::Integer(d1_i32(id));
+    db.prepare(
+        r#"SELECT id, name, description, icon, status, created_time, updated_time
+           FROM vendors WHERE id = ?1 AND deleted_at IS NULL LIMIT 1"#,
+    )
+    .bind_refs(&[arg])?
+    .first::<VendorFull>(None)
+    .await
+}
+
+/// Is a live vendor (other than `exclude_id`) already using `name`?
+pub async fn vendor_name_duplicated(
+    db: &D1Database,
+    exclude_id: i64,
+    name: &str,
+) -> worker::Result<bool> {
+    #[derive(Deserialize)]
+    struct Count {
+        total: i64,
+    }
+    let args = [D1Type::Text(name), D1Type::Integer(d1_i32(exclude_id))];
+    let total = db
+        .prepare(
+            r#"SELECT COUNT(*) AS total FROM vendors
+               WHERE name = ?1 AND id != ?2 AND deleted_at IS NULL"#,
+        )
+        .bind_refs(&args)?
+        .first::<Count>(None)
+        .await?
+        .map(|count| count.total)
+        .unwrap_or(0);
+    Ok(total > 0)
+}
+
+/// Insert a vendor; returns the new id.
+pub async fn insert_vendor(db: &D1Database, row: &VendorFull) -> worker::Result<i64> {
+    let args = [
+        D1Type::Text(&row.name),
+        D1Type::Text(&row.description),
+        D1Type::Text(&row.icon),
+        D1Type::Integer(row.status),
+        D1Type::Integer(d1_i32(row.created_time)),
+        D1Type::Integer(d1_i32(row.updated_time)),
+    ];
+    db.prepare(
+        r#"INSERT INTO vendors (name, description, icon, status, created_time, updated_time)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    #[derive(Deserialize)]
+    struct Id {
+        id: i64,
+    }
+    let row = db
+        .prepare("SELECT id FROM vendors ORDER BY id DESC LIMIT 1")
+        .bind_refs(&[] as &[D1Type<'_>])?
+        .first::<Id>(None)
+        .await?;
+    Ok(row.map(|r| r.id).unwrap_or(0))
+}
+
+/// Full update of a vendor row.
+pub async fn update_vendor(db: &D1Database, row: &VendorFull) -> worker::Result<()> {
+    let args = [
+        D1Type::Text(&row.name),
+        D1Type::Text(&row.description),
+        D1Type::Text(&row.icon),
+        D1Type::Integer(row.status),
+        D1Type::Integer(d1_i32(row.updated_time)),
+        D1Type::Integer(d1_i32(row.id)),
+    ];
+    db.prepare(
+        r#"UPDATE vendors SET name = ?1, description = ?2, icon = ?3, status = ?4,
+             updated_time = ?5
+           WHERE id = ?6 AND deleted_at IS NULL"#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Soft-delete a vendor row.
+pub async fn soft_delete_vendor(db: &D1Database, id: i64, now: i64) -> worker::Result<()> {
+    let args = [D1Type::Integer(d1_i32(now)), D1Type::Integer(d1_i32(id))];
+    db.prepare(r#"UPDATE vendors SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
 /// All distinct enabled model names across every group (Go `GetEnabledModels`):
 /// `SELECT DISTINCT model FROM abilities WHERE enabled = 1`. Ordered.
 pub async fn distinct_all_enabled_models(db: &D1Database) -> worker::Result<Vec<String>> {

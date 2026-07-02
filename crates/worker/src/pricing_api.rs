@@ -101,7 +101,7 @@ fn endpoint_types_for(channel_type: i32, model: &str) -> Vec<&'static str> {
 /// Resolve each enabled model to its metadata row per Go's name rules: exact
 /// entries win, then prefix rules, then suffix, then contains — first rule hit
 /// sticks (Go fills `metaMap` in that order and never overwrites).
-fn match_meta<'m>(
+pub(crate) fn match_meta<'m>(
     models: &[String],
     meta_rows: &'m [ModelMetaRow],
 ) -> HashMap<String, &'m ModelMetaRow> {

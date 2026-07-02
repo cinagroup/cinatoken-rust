@@ -99,6 +99,137 @@ pub async fn delete_disabled_channels(req: Request, env: Env) -> WorkerResult<Re
     envelope_ok_response(&count)
 }
 
+/// Full edit-by-tag request (Go `ChannelTag`).
+#[derive(Debug, Deserialize, Default)]
+struct ChannelTagEditRequest {
+    #[serde(default)]
+    tag: String,
+    #[serde(default)]
+    new_tag: Option<String>,
+    #[serde(default)]
+    priority: Option<i64>,
+    #[serde(default)]
+    weight: Option<i64>,
+    #[serde(default)]
+    model_mapping: Option<String>,
+    #[serde(default)]
+    models: Option<String>,
+    #[serde(default)]
+    groups: Option<String>,
+    #[serde(default)]
+    param_override: Option<String>,
+    #[serde(default)]
+    header_override: Option<String>,
+}
+
+/// Validate that an optional override is blank or valid JSON (Go's `json.Valid`
+/// check), returning the trimmed value. Pure, so it is unit-testable.
+fn validate_override(value: &Option<String>, label: &str) -> Result<Option<String>, String> {
+    match value {
+        None => Ok(None),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty()
+                && serde_json::from_str::<serde_json::Value>(trimmed).is_err()
+            {
+                return Err(format!("{label} must be valid JSON"));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+}
+
+/// `PUT /api/channel/tag`: bulk-edit every channel carrying a tag (Go
+/// `EditTagChannels` -> `EditChannelByTag`). Optionally retags, and updates
+/// model_mapping / models / group / priority / weight / param+header override.
+/// When models or group change, abilities are rebuilt per channel; otherwise the
+/// abilities' priority/weight are updated. AdminAuth.
+pub async fn edit_tag_channels(mut req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: ChannelTagEditRequest = serde_json::from_value(body).unwrap_or_default();
+    let tag = payload.tag.trim().to_string();
+    if tag.is_empty() {
+        return Ok(envelope_error_response(400, "tag must not be empty"));
+    }
+    let param_override = match validate_override(&payload.param_override, "param_override") {
+        Ok(value) => value,
+        Err(message) => return Ok(envelope_error_response(400, &message)),
+    };
+    let header_override = match validate_override(&payload.header_override, "header_override") {
+        Ok(value) => value,
+        Err(message) => return Ok(envelope_error_response(400, &message)),
+    };
+
+    // Only retag when a different, non-empty tag is supplied.
+    let new_tag = payload
+        .new_tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty() && *candidate != tag)
+        .map(str::to_string);
+    // Go treats models/group as "changed" only when a non-empty value is given.
+    let models = payload
+        .models
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let groups = payload
+        .groups
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let should_recreate = models.is_some() || groups.is_some();
+    let updated_tag = new_tag.clone().unwrap_or_else(|| tag.clone());
+
+    let edit = d1_repositories::EditChannelsByTag {
+        new_tag: new_tag.as_deref(),
+        model_mapping: payload.model_mapping.as_deref(),
+        models: models.as_deref(),
+        group: groups.as_deref(),
+        priority: payload.priority,
+        weight: payload.weight,
+        param_override: param_override.as_deref(),
+        header_override: header_override.as_deref(),
+    };
+    let db = env.d1("DB")?;
+    d1_repositories::edit_channels_by_tag(&db, &tag, &edit).await?;
+
+    if should_recreate {
+        // Rebuild abilities from each (retagged) channel's current models × group.
+        for channel in d1_repositories::channels_by_tag(&db, &updated_tag).await? {
+            let _ = d1_repositories::update_abilities_for_channel(
+                &db,
+                channel.id,
+                &channel.models,
+                &channel.group,
+                channel.status,
+                channel.priority as i32,
+                channel.weight as i32,
+            )
+            .await;
+        }
+    } else {
+        d1_repositories::update_abilities_priority_weight_by_tag(
+            &db,
+            &updated_tag,
+            payload.priority,
+            payload.weight,
+        )
+        .await?;
+    }
+    invalidate_channel_cache(&env).await?;
+    envelope_ok_response(&serde_json::Value::Null)
+}
+
 pub async fn list_channels(req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
         Ok(claims) => claims,
@@ -780,6 +911,23 @@ struct ChannelBatchDeleteRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn override_validation_requires_json_or_blank() {
+        // None / blank -> Ok (blank normalized).
+        assert_eq!(validate_override(&None, "x").unwrap(), None);
+        assert_eq!(
+            validate_override(&Some("   ".to_string()), "x").unwrap(),
+            Some(String::new())
+        );
+        // Valid JSON -> Ok (trimmed).
+        assert_eq!(
+            validate_override(&Some(" {\"a\":1} ".to_string()), "x").unwrap(),
+            Some("{\"a\":1}".to_string())
+        );
+        // Invalid JSON -> Err.
+        assert!(validate_override(&Some("{not json".to_string()), "param_override").is_err());
+    }
 
     #[test]
     fn channel_response_never_exposes_key() {

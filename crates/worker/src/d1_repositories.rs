@@ -2644,6 +2644,133 @@ pub async fn set_channels_status_by_tag(
     Ok(())
 }
 
+/// Optional fields for a bulk edit of the channels carrying a tag (Go
+/// `EditChannelByTag`). `None` fields are left unchanged.
+#[derive(Debug, Default)]
+pub struct EditChannelsByTag<'a> {
+    pub new_tag: Option<&'a str>,
+    pub model_mapping: Option<&'a str>,
+    pub models: Option<&'a str>,
+    pub group: Option<&'a str>,
+    pub priority: Option<i64>,
+    pub weight: Option<i64>,
+    pub param_override: Option<&'a str>,
+    pub header_override: Option<&'a str>,
+}
+
+/// Apply an `EditChannelsByTag` to every channel with `tag` (dynamic SET of only
+/// the provided fields). No-op when nothing is set. `new_tag` retags the rows.
+pub async fn edit_channels_by_tag(
+    db: &D1Database,
+    tag: &str,
+    edit: &EditChannelsByTag<'_>,
+) -> worker::Result<()> {
+    let mut sets: Vec<String> = Vec::new();
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    if let Some(v) = edit.new_tag {
+        args.push(D1Type::Text(v));
+        sets.push(format!("tag = ?{}", args.len()));
+    }
+    if let Some(v) = edit.model_mapping {
+        args.push(D1Type::Text(v));
+        sets.push(format!("model_mapping = ?{}", args.len()));
+    }
+    if let Some(v) = edit.models {
+        args.push(D1Type::Text(v));
+        sets.push(format!("models = ?{}", args.len()));
+    }
+    if let Some(v) = edit.group {
+        args.push(D1Type::Text(v));
+        sets.push(format!("\"group\" = ?{}", args.len()));
+    }
+    if let Some(v) = edit.priority {
+        args.push(D1Type::Integer(d1_i32(v)));
+        sets.push(format!("priority = ?{}", args.len()));
+    }
+    if let Some(v) = edit.weight {
+        args.push(D1Type::Integer(d1_i32(v)));
+        sets.push(format!("weight = ?{}", args.len()));
+    }
+    if let Some(v) = edit.param_override {
+        args.push(D1Type::Text(v));
+        sets.push(format!("param_override = ?{}", args.len()));
+    }
+    if let Some(v) = edit.header_override {
+        args.push(D1Type::Text(v));
+        sets.push(format!("header_override = ?{}", args.len()));
+    }
+    if sets.is_empty() {
+        return Ok(());
+    }
+    args.push(D1Type::Text(tag));
+    let sql = format!(
+        "UPDATE channels SET {} WHERE tag = ?{}",
+        sets.join(", "),
+        args.len()
+    );
+    db.prepare(&sql).bind_refs(&args)?.run().await?;
+    Ok(())
+}
+
+/// A channel's ability-relevant fields, fetched by tag for rebuilds.
+#[derive(Debug, Deserialize)]
+pub struct ChannelAbilitySource {
+    pub id: i64,
+    pub models: String,
+    pub group: String,
+    pub status: i32,
+    pub priority: i64,
+    pub weight: i64,
+}
+
+/// Fetch the ability-relevant fields of every channel with `tag`.
+pub async fn channels_by_tag(
+    db: &D1Database,
+    tag: &str,
+) -> worker::Result<Vec<ChannelAbilitySource>> {
+    let arg = D1Type::Text(tag);
+    db.prepare(
+        r#"SELECT id, models, "group" AS "group", status, priority, weight
+           FROM channels WHERE tag = ?1"#,
+    )
+    .bind_refs(&[arg])?
+    .all()
+    .await?
+    .results::<ChannelAbilitySource>()
+}
+
+/// Update the `priority` / `weight` of the abilities for every channel with
+/// `tag` (Go `UpdateAbilityByTag`, minus the tag column the Rust abilities table
+/// does not carry). Only the provided fields are set; no-op when both are None.
+pub async fn update_abilities_priority_weight_by_tag(
+    db: &D1Database,
+    tag: &str,
+    priority: Option<i64>,
+    weight: Option<i64>,
+) -> worker::Result<()> {
+    let mut sets: Vec<String> = Vec::new();
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    if let Some(p) = priority {
+        args.push(D1Type::Integer(d1_i32(p)));
+        sets.push(format!("priority = ?{}", args.len()));
+    }
+    if let Some(w) = weight {
+        args.push(D1Type::Integer(d1_i32(w)));
+        sets.push(format!("weight = ?{}", args.len()));
+    }
+    if sets.is_empty() {
+        return Ok(());
+    }
+    args.push(D1Type::Text(tag));
+    let sql = format!(
+        "UPDATE abilities SET {} WHERE channel_id IN (SELECT id FROM channels WHERE tag = ?{})",
+        sets.join(", "),
+        args.len()
+    );
+    db.prepare(&sql).bind_refs(&args)?.run().await?;
+    Ok(())
+}
+
 /// Delete all disabled channels (status 2 manual or 3 auto) and their abilities
 /// (Go `DeleteDisabledChannel`). Returns the number of channels deleted.
 pub async fn delete_disabled_channels(db: &D1Database) -> worker::Result<i64> {

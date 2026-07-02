@@ -278,7 +278,10 @@ pub fn filter_by_usable_groups(
     rows.into_iter()
         .filter(|row| {
             row.enable_groups.iter().any(|group| group == "all")
-                || row.enable_groups.iter().any(|group| usable.contains_key(group))
+                || row
+                    .enable_groups
+                    .iter()
+                    .any(|group| usable.contains_key(group))
         })
         .collect()
 }
@@ -340,7 +343,10 @@ pub async fn get_pricing(_req: Request, env: Env) -> WorkerResult<Response> {
         .iter()
         .filter(|(endpoint, _)| used_endpoints.contains(endpoint))
         .map(|(endpoint, path)| {
-            (*endpoint, serde_json::json!({"path": path, "method": "POST"}))
+            (
+                *endpoint,
+                serde_json::json!({"path": path, "method": "POST"}),
+            )
         })
         .collect();
 
@@ -383,9 +389,18 @@ mod tests {
     #[test]
     fn endpoint_mapping_matches_go() {
         assert_eq!(endpoint_types_for(38, "jina-reranker"), vec!["jina-rerank"]);
-        assert_eq!(endpoint_types_for(14, "claude-3"), vec!["anthropic", "openai"]);
-        assert_eq!(endpoint_types_for(24, "gemini-pro"), vec!["gemini", "openai"]);
-        assert_eq!(endpoint_types_for(48, "grok-3"), vec!["openai", "openai-response"]);
+        assert_eq!(
+            endpoint_types_for(14, "claude-3"),
+            vec!["anthropic", "openai"]
+        );
+        assert_eq!(
+            endpoint_types_for(24, "gemini-pro"),
+            vec!["gemini", "openai"]
+        );
+        assert_eq!(
+            endpoint_types_for(48, "grok-3"),
+            vec!["openai", "openai-response"]
+        );
         assert_eq!(endpoint_types_for(55, "sora-2"), vec!["openai-video"]);
         // Default channel: response-only model -> openai-response.
         assert_eq!(endpoint_types_for(1, "o3-pro"), vec!["openai-response"]);
@@ -471,8 +486,10 @@ mod tests {
             name_rule: 0,
         }];
         let rows = build_pricing_rows(&abilities, &meta, &maps());
-        let by_name: HashMap<&str, &PricingRow> =
-            rows.iter().map(|row| (row.model_name.as_str(), row)).collect();
+        let by_name: HashMap<&str, &PricingRow> = rows
+            .iter()
+            .map(|row| (row.model_name.as_str(), row))
+            .collect();
         // Priced model -> quota_type 1 with the price.
         let dalle = by_name["dall-e-3"];
         assert_eq!(dalle.quota_type, 1);
@@ -489,8 +506,9 @@ mod tests {
 
     #[test]
     fn usable_group_filter_keeps_all_and_intersections() {
-        let usable: HashMap<String, String> =
-            [("default".to_string(), "d".to_string())].into_iter().collect();
+        let usable: HashMap<String, String> = [("default".to_string(), "d".to_string())]
+            .into_iter()
+            .collect();
         let mk = |name: &str, groups: &[&str]| PricingRow {
             model_name: name.to_string(),
             enable_groups: groups.iter().map(|s| s.to_string()).collect(),

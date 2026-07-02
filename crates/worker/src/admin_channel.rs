@@ -250,8 +250,7 @@ struct ChannelTagRequest {
 /// Read + validate a non-empty `tag` from the request body.
 async fn read_tag(req: &mut Request) -> Result<String, Response> {
     let body = read_json_body(req).await?;
-    let payload: ChannelTagRequest =
-        serde_json::from_value(body).unwrap_or_default();
+    let payload: ChannelTagRequest = serde_json::from_value(body).unwrap_or_default();
     let tag = payload.tag.trim().to_string();
     if tag.is_empty() {
         return Err(envelope_error_response(400, "tag must not be empty"));
@@ -333,9 +332,7 @@ fn validate_override(value: &Option<String>, label: &str) -> Result<Option<Strin
         None => Ok(None),
         Some(raw) => {
             let trimmed = raw.trim();
-            if !trimmed.is_empty()
-                && serde_json::from_str::<serde_json::Value>(trimmed).is_err()
-            {
+            if !trimmed.is_empty() && serde_json::from_str::<serde_json::Value>(trimmed).is_err() {
                 return Err(format!("{label} must be valid JSON"));
             }
             Ok(Some(trimmed.to_string()))

@@ -3645,10 +3645,7 @@ pub async fn update_user_aff_code(db: &D1Database, id: i64, aff_code: &str) -> w
 /// held), `false` on insufficient affiliation quota.
 pub async fn transfer_aff_quota(db: &D1Database, id: i64, amount: i64) -> worker::Result<bool> {
     let amount = quota_i32(amount)?;
-    let args = [
-        D1Type::Integer(amount),
-        D1Type::Integer(d1_i32(id)),
-    ];
+    let args = [D1Type::Integer(amount), D1Type::Integer(d1_i32(id))];
     let result = db
         .prepare(
             r#"
@@ -3778,13 +3775,11 @@ pub struct VendorRow {
 /// All live vendor rows.
 pub async fn list_vendors(db: &D1Database) -> worker::Result<Vec<VendorRow>> {
     let empty: &[D1Type<'_>] = &[];
-    db.prepare(
-        r#"SELECT id, name, description, icon FROM vendors WHERE deleted_at IS NULL"#,
-    )
-    .bind_refs(empty)?
-    .all()
-    .await?
-    .results::<VendorRow>()
+    db.prepare(r#"SELECT id, name, description, icon FROM vendors WHERE deleted_at IS NULL"#)
+        .bind_refs(empty)?
+        .all()
+        .await?
+        .results::<VendorRow>()
 }
 
 /// A full `models` metadata row for the admin CRUD (Go `model.Model`).
@@ -3839,7 +3834,9 @@ pub async fn list_models_meta(
         total: i64,
     }
     let total = db
-        .prepare(&format!("SELECT COUNT(*) AS total FROM models WHERE {where_sql}"))
+        .prepare(&format!(
+            "SELECT COUNT(*) AS total FROM models WHERE {where_sql}"
+        ))
         .bind_refs(&args)?
         .first::<Count>(None)
         .await?
@@ -3960,11 +3957,7 @@ pub async fn update_model_meta(db: &D1Database, row: &ModelMetaFull) -> worker::
 }
 
 /// Status-only update (Go `UpdateModelMeta?status_only=true`).
-pub async fn update_model_meta_status(
-    db: &D1Database,
-    id: i64,
-    status: i32,
-) -> worker::Result<()> {
+pub async fn update_model_meta_status(db: &D1Database, id: i64, status: i32) -> worker::Result<()> {
     let args = [D1Type::Integer(status), D1Type::Integer(d1_i32(id))];
     db.prepare(r#"UPDATE models SET status = ?1 WHERE id = ?2 AND deleted_at IS NULL"#)
         .bind_refs(&args)?
@@ -4017,7 +4010,9 @@ pub async fn list_vendors_page(
         total: i64,
     }
     let total = db
-        .prepare(&format!("SELECT COUNT(*) AS total FROM vendors WHERE {where_sql}"))
+        .prepare(&format!(
+            "SELECT COUNT(*) AS total FROM vendors WHERE {where_sql}"
+        ))
         .bind_refs(&args)?
         .first::<Count>(None)
         .await?

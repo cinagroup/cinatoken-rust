@@ -191,6 +191,7 @@ pub async fn update_task_status_cas(
     to: TaskStatus,
     fail_reason: &str,
     progress: &str,
+    result_url: &str,
     finish_time: i64,
     updated_at: i64,
 ) -> worker::Result<bool> {
@@ -198,18 +199,24 @@ pub async fn update_task_status_cas(
         D1Type::Text(to.as_str()),
         D1Type::Text(fail_reason),
         D1Type::Text(progress),
+        D1Type::Text(result_url),
         D1Type::Integer(d1_i32(finish_time)),
         D1Type::Integer(d1_i32(updated_at)),
         D1Type::Integer(d1_i32(id)),
         D1Type::Text(from.as_str()),
     ];
+    // `json_set` merges the result URL into private_data (Go
+    // `Task.PrivateData.ResultURL`) without clobbering the reserving token_id
+    // stored there at insert. An empty URL is written as-is (fetch falls back
+    // to fail_reason, matching Go `GetResultURL`).
     let result = db
         .prepare(
             r#"
             UPDATE tasks
             SET status = ?1, fail_reason = ?2, progress = ?3,
-                finish_time = ?4, updated_at = ?5
-            WHERE id = ?6 AND status = ?7
+                private_data = json_set(private_data, '$.result_url', ?4),
+                finish_time = ?5, updated_at = ?6
+            WHERE id = ?7 AND status = ?8
             "#,
         )
         .bind_refs(&args)?
@@ -217,6 +224,81 @@ pub async fn update_task_status_cas(
         .await?;
     let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
     Ok(changes == 1)
+}
+
+/// A full task row for the client-facing fetch endpoints (Go `dto.TaskDto`
+/// source fields). Distinct from the poller's lean [`TaskRow`].
+#[derive(Debug, serde::Deserialize)]
+pub struct TaskDtoRow {
+    pub id: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub task_id: String,
+    pub platform: String,
+    pub user_id: i64,
+    pub group: String,
+    pub channel_id: i64,
+    pub quota: i64,
+    pub action: String,
+    pub status: String,
+    pub fail_reason: String,
+    pub submit_time: i64,
+    pub start_time: i64,
+    pub finish_time: i64,
+    pub progress: String,
+    pub properties: String,
+    pub username: String,
+    pub data: String,
+    pub private_data: String,
+}
+
+const TASK_DTO_COLUMNS: &str = r#"id, created_at, updated_at, task_id, platform, user_id,
+    "group" AS "group", channel_id, quota, action, status, fail_reason,
+    submit_time, start_time, finish_time, progress, properties, username, data,
+    private_data"#;
+
+/// One task by public task id, scoped to its owner (Go `GetByTaskId`).
+pub async fn find_task_dto(
+    db: &D1Database,
+    user_id: i64,
+    task_id: &str,
+) -> worker::Result<Option<TaskDtoRow>> {
+    let args = [D1Type::Integer(d1_i32(user_id)), D1Type::Text(task_id)];
+    db.prepare(&format!(
+        "SELECT {TASK_DTO_COLUMNS} FROM tasks WHERE user_id = ?1 AND task_id = ?2 LIMIT 1"
+    ))
+    .bind_refs(&args)?
+    .first::<TaskDtoRow>(None)
+    .await
+}
+
+/// The owner's tasks matching a set of public task ids (Go `GetByTaskIds`).
+/// Chunked IN-list; order unspecified (Go's is too).
+pub async fn find_task_dtos(
+    db: &D1Database,
+    user_id: i64,
+    task_ids: &[String],
+) -> worker::Result<Vec<TaskDtoRow>> {
+    let mut rows = Vec::new();
+    for chunk in task_ids.chunks(50) {
+        let mut args: Vec<D1Type<'_>> = vec![D1Type::Integer(d1_i32(user_id))];
+        for task_id in chunk {
+            args.push(D1Type::Text(task_id));
+        }
+        let placeholders: Vec<String> = (0..chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "SELECT {TASK_DTO_COLUMNS} FROM tasks WHERE user_id = ?1 AND task_id IN ({})",
+            placeholders.join(", ")
+        );
+        rows.extend(
+            db.prepare(&sql)
+                .bind_refs(&args)?
+                .all()
+                .await?
+                .results::<TaskDtoRow>()?,
+        );
+    }
+    Ok(rows)
 }
 
 // The pure settlement-detection guard a caller pairs with a CAS win lives in
@@ -249,6 +331,7 @@ pub async fn apply_poll_result(
         info.status,
         &info.reason,
         &info.progress,
+        &info.url,
         finish_time,
         now,
     )
@@ -304,6 +387,7 @@ pub async fn apply_suno_poll_result(
         to,
         item_fail_reason,
         progress,
+        "",
         finish_time,
         now,
     )

@@ -402,7 +402,10 @@ pub async fn get_aff_code(req: Request, env: Env) -> WorkerResult<Response> {
     };
     let db = env.d1("DB")?;
     let Some(mut aff_code) = d1_repositories::get_user_aff_code(&db, claims.id).await? else {
-        return Ok(envelope_error_response(401, "session user no longer exists"));
+        return Ok(envelope_error_response(
+            401,
+            "session user no longer exists",
+        ));
     };
     if aff_code.is_empty() {
         aff_code = random_aff_code();
@@ -486,7 +489,10 @@ pub async fn transfer_aff_quota(mut req: Request, env: Env) -> WorkerResult<Resp
     if d1_repositories::transfer_aff_quota(&db, claims.id, payload.quota).await? {
         Ok(envelope_ok_response(&serde_json::Value::Null)?)
     } else {
-        Ok(envelope_error_response(400, "insufficient affiliation quota"))
+        Ok(envelope_error_response(
+            400,
+            "insufficient affiliation quota",
+        ))
     }
 }
 
@@ -543,13 +549,15 @@ pub fn validate_self_update(
 /// or non-object current setting is treated as `{}`. Pure, so it is
 /// unit-testable.
 fn merge_setting_fields(current_setting: &str, body: &serde_json::Value) -> String {
-    let mut setting = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
-        current_setting.trim(),
-    )
-    .unwrap_or_default();
+    let mut setting =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(current_setting.trim())
+            .unwrap_or_default();
     for field in ["sidebar_modules", "language"] {
         if let Some(value) = body.get(field).and_then(serde_json::Value::as_str) {
-            setting.insert(field.to_string(), serde_json::Value::String(value.to_string()));
+            setting.insert(
+                field.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
     }
     serde_json::Value::Object(setting).to_string()
@@ -599,13 +607,17 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let new_password = payload.password.as_deref().unwrap_or("");
-    if let Err(message) = validate_self_update(username, display_name, payload.password.as_deref()) {
+    if let Err(message) = validate_self_update(username, display_name, payload.password.as_deref())
+    {
         return Ok(envelope_error_response(400, &message));
     }
 
     let db = env.d1("DB")?;
     let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
-        return Ok(envelope_error_response(401, "session user no longer exists"));
+        return Ok(envelope_error_response(
+            401,
+            "session user no longer exists",
+        ));
     };
 
     // Go `checkUpdatePassword`: a password change requires the correct current
@@ -615,7 +627,10 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
     if update_password && !user.password.is_empty() {
         let original = payload.original_password.as_deref().unwrap_or("");
         if !verify_password(original, &user.password).unwrap_or(false) {
-            return Ok(envelope_error_response(400, "original password is incorrect"));
+            return Ok(envelope_error_response(
+                400,
+                "original password is incorrect",
+            ));
         }
     }
     let password_hash = if update_password {
@@ -823,7 +838,10 @@ pub fn validate_user_setting(req: &UpdateUserSettingRequest) -> Result<(), Strin
 /// fields for the selected `notify_type`. Pure/testable. Note (Go-faithful):
 /// this REPLACES the setting, so sidebar_modules/language are dropped — same as
 /// Go's `SetSetting`.
-fn build_notify_setting(req: &UpdateUserSettingRequest, upstream_notify: bool) -> serde_json::Value {
+fn build_notify_setting(
+    req: &UpdateUserSettingRequest,
+    upstream_notify: bool,
+) -> serde_json::Value {
     let mut setting = serde_json::Map::new();
     setting.insert("notify_type".into(), serde_json::json!(req.notify_type));
     setting.insert(
@@ -843,7 +861,10 @@ fn build_notify_setting(req: &UpdateUserSettingRequest, upstream_notify: bool) -
         "webhook" => {
             setting.insert("webhook_url".into(), serde_json::json!(req.webhook_url));
             if !req.webhook_secret.is_empty() {
-                setting.insert("webhook_secret".into(), serde_json::json!(req.webhook_secret));
+                setting.insert(
+                    "webhook_secret".into(),
+                    serde_json::json!(req.webhook_secret),
+                );
             }
         }
         "email" => {
@@ -937,12 +958,13 @@ const DEFAULT_GROUP_RATIOS: &[(&str, f64)] = &[("default", 1.0), ("vip", 1.0), (
 /// Parse the `UserUsableGroups` option (a JSON `{group: desc}` map). Go REPLACES
 /// the map on config, so a set option overrides the defaults entirely; an absent
 /// or unparseable option falls back to [`DEFAULT_USABLE_GROUPS`].
-pub(crate) fn parse_usable_groups(option: Option<&str>) -> std::collections::HashMap<String, String> {
+pub(crate) fn parse_usable_groups(
+    option: Option<&str>,
+) -> std::collections::HashMap<String, String> {
     if let Some(raw) = option {
         let raw = raw.trim();
         if !raw.is_empty() {
-            if let Ok(map) =
-                serde_json::from_str::<std::collections::HashMap<String, String>>(raw)
+            if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, String>>(raw)
             {
                 return map;
             }
@@ -993,7 +1015,10 @@ fn build_user_groups(
     let mut out = serde_json::Map::new();
     for (group, ratio) in ratios {
         if let Some(desc) = usable.get(group) {
-            out.insert(group.clone(), serde_json::json!({ "ratio": ratio, "desc": desc }));
+            out.insert(
+                group.clone(),
+                serde_json::json!({ "ratio": ratio, "desc": desc }),
+            );
         }
     }
     if let Some(desc) = usable.get("auto") {
@@ -1016,12 +1041,11 @@ async fn user_groups_response(env: &Env) -> WorkerResult<Response> {
             .await?
             .as_deref(),
     );
-    let ratio_option = match d1_repositories::get_option(&db, "group_ratio_setting.group_ratio")
-        .await?
-    {
-        Some(value) => Some(value),
-        None => d1_repositories::get_option(&db, "GroupRatio").await?,
-    };
+    let ratio_option =
+        match d1_repositories::get_option(&db, "group_ratio_setting.group_ratio").await? {
+            Some(value) => Some(value),
+            None => d1_repositories::get_option(&db, "GroupRatio").await?,
+        };
     let ratios = parse_group_ratios(ratio_option.as_deref());
     Ok(envelope_ok_response(&build_user_groups(&usable, &ratios))?)
 }
@@ -1710,7 +1734,7 @@ mod tests {
         let v2: serde_json::Value = serde_json::from_str(&s2).unwrap();
         assert_eq!(v2["sidebar_modules"], serde_json::json!("x")); // preserved
         assert_eq!(v2["language"], serde_json::json!("en")); // updated
-        // Blank/invalid current setting is treated as {}.
+                                                             // Blank/invalid current setting is treated as {}.
         let s3 = merge_setting_fields("", &serde_json::json!({"language": "en"}));
         let v3: serde_json::Value = serde_json::from_str(&s3).unwrap();
         assert_eq!(v3["language"], serde_json::json!("en"));
@@ -1788,7 +1812,10 @@ mod tests {
         let v = build_notify_setting(&req, true);
         assert_eq!(v["gotify_priority"], serde_json::json!(5));
         assert_eq!(v["gotify_url"], serde_json::json!("https://g"));
-        assert_eq!(v["upstream_model_update_notify_enabled"], serde_json::json!(true));
+        assert_eq!(
+            v["upstream_model_update_notify_enabled"],
+            serde_json::json!(true)
+        );
         // Non-selected-type fields are absent (fresh build, Go-faithful).
         assert!(v.get("webhook_url").is_none());
     }

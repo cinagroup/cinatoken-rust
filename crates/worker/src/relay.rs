@@ -446,6 +446,136 @@ pub async fn completions(req: Request, env: Env, context: Context) -> worker::Re
     .await
 }
 
+/// `POST /v1/moderations` (Go relay passthrough): OpenAI-compatible JSON
+/// relay. Moderations responses carry no usage; the missing-usage settlement
+/// path applies as configured.
+pub async fn moderations(req: Request, env: Env, context: Context) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "moderations",
+            cache_family: "openai_compatible",
+            upstream_path: "moderations".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        },
+        None,
+    )
+    .await
+}
+
+/// `POST /v1/edits` (Go relay passthrough): the legacy OpenAI edits endpoint.
+pub async fn edits(req: Request, env: Env, context: Context) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "edits",
+            cache_family: "openai_compatible",
+            upstream_path: "edits".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        },
+        None,
+    )
+    .await
+}
+
+/// `POST /v1/engines/:model/embeddings` (Go legacy alias): embeddings with the
+/// model taken from the path.
+pub async fn engines_embeddings(
+    req: Request,
+    env: Env,
+    context: Context,
+    model: String,
+) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "engines embeddings",
+            cache_family: "openai_compatible",
+            upstream_path: "embeddings".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        },
+        Some(model),
+    )
+    .await
+}
+
+/// `POST /v1/responses/compact` (Go relay passthrough).
+pub async fn responses_compact(
+    req: Request,
+    env: Env,
+    context: Context,
+) -> worker::Result<Response> {
+    relay_endpoint(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "responses compact",
+            cache_family: "openai_compatible",
+            upstream_path: "responses/compact".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: true,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        },
+        None,
+    )
+    .await
+}
+
+/// Go `RelayNotImplemented`: the structured 501 the unimplemented OpenAI
+/// surface (files, fine-tunes, image variations, model delete) returns.
+pub fn relay_not_implemented() -> worker::Result<Response> {
+    let body = serde_json::json!({
+        "error": {
+            "message": "API not implemented",
+            "type": "new_api_error",
+            "param": "",
+            "code": "api_not_implemented",
+        }
+    });
+    Response::from_json(&body).map(|response| response.with_status(501))
+}
+
 pub async fn responses(req: Request, env: Env, context: Context) -> worker::Result<Response> {
     relay_endpoint(
         req,
@@ -841,8 +971,7 @@ async fn relay_endpoint(
                                 "type": "invalid_request_error",
                             }
                         });
-                        Response::from_json(&error_body)
-                            .map(|response| response.with_status(400))
+                        Response::from_json(&error_body).map(|response| response.with_status(400))
                     } else {
                         let upstream_model = upstream_body
                             .get("model")

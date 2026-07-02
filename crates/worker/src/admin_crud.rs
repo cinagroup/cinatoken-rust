@@ -362,7 +362,10 @@ pub async fn confirm_payment_compliance(mut req: Request, env: Env) -> WorkerRes
         ("payment_setting.compliance_confirmed", "true".to_string()),
         ("payment_setting.compliance_terms_version", "v1".to_string()),
         ("payment_setting.compliance_confirmed_at", now.to_string()),
-        ("payment_setting.compliance_confirmed_by", claims.id.to_string()),
+        (
+            "payment_setting.compliance_confirmed_by",
+            claims.id.to_string(),
+        ),
         ("payment_setting.compliance_confirmed_ip", client_ip),
     ];
     for (key, value) in updates {

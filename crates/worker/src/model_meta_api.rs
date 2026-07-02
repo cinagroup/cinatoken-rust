@@ -336,7 +336,10 @@ pub async fn create_vendor(mut req: Request, env: Env) -> WorkerResult<Response>
     let payload: VendorRequest = serde_json::from_value(body).unwrap_or_default();
     let name = payload.name.trim();
     if name.is_empty() {
-        return Ok(envelope_error_response(400, "vendor name must not be empty"));
+        return Ok(envelope_error_response(
+            400,
+            "vendor name must not be empty",
+        ));
     }
     let db = env.d1("DB")?;
     if d1_repositories::vendor_name_duplicated(&db, 0, name).await? {
@@ -374,7 +377,10 @@ pub async fn update_vendor(mut req: Request, env: Env) -> WorkerResult<Response>
     }
     let name = payload.name.trim();
     if name.is_empty() {
-        return Ok(envelope_error_response(400, "vendor name must not be empty"));
+        return Ok(envelope_error_response(
+            400,
+            "vendor name must not be empty",
+        ));
     }
     let db = env.d1("DB")?;
     if d1_repositories::vendor_name_duplicated(&db, payload.id, name).await? {

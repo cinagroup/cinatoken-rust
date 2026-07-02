@@ -1092,3 +1092,154 @@ pub async fn poll_unfinished_midjourney_tasks(
     }
     Ok(settled)
 }
+
+// ---------------------------------------------------------------------------
+// Client-facing task fetch (Go RelayTaskFetch)
+// ---------------------------------------------------------------------------
+
+/// Serialize a stored task as Go `dto.TaskDto` (JSON field names preserved).
+/// `result_url` follows Go `Task.GetResultURL`: `private_data.result_url`,
+/// falling back to `fail_reason`. `properties`/`data` are re-emitted as raw
+/// JSON values (Go stores them as JSON blobs).
+fn task_dto_json(row: &crate::task_repository::TaskDtoRow) -> serde_json::Value {
+    let private: serde_json::Value =
+        serde_json::from_str(&row.private_data).unwrap_or(serde_json::Value::Null);
+    let result_url = private
+        .get("result_url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|url| !url.is_empty())
+        .unwrap_or(&row.fail_reason)
+        .to_string();
+    let properties: serde_json::Value =
+        serde_json::from_str(&row.properties).unwrap_or(serde_json::Value::Null);
+    let data: serde_json::Value =
+        serde_json::from_str(&row.data).unwrap_or(serde_json::Value::Null);
+    let mut dto = serde_json::json!({
+        "id": row.id,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "task_id": row.task_id,
+        "platform": row.platform,
+        "user_id": row.user_id,
+        "group": row.group,
+        "channel_id": row.channel_id,
+        "quota": row.quota,
+        "action": row.action,
+        "status": row.status,
+        "fail_reason": row.fail_reason,
+        "submit_time": row.submit_time,
+        "start_time": row.start_time,
+        "finish_time": row.finish_time,
+        "progress": row.progress,
+        "properties": properties,
+        "data": data,
+    });
+    // Go marks result_url/username omitempty.
+    if !result_url.is_empty() {
+        dto["result_url"] = serde_json::json!(result_url);
+    }
+    if !row.username.is_empty() {
+        dto["username"] = serde_json::json!(row.username);
+    }
+    dto
+}
+
+/// Go `dto.TaskError` response shape.
+fn task_error_response(code: &str, message: &str, status: u16) -> worker::Result<Response> {
+    crate::json_with_status(
+        &serde_json::json!({"code": code, "message": message, "data": null}),
+        status,
+    )
+}
+
+/// Shared auth for the fetch endpoints (same token auth as task submit).
+async fn authenticate_fetch(
+    req: &Request,
+    db: &worker::D1Database,
+) -> worker::Result<std::result::Result<cinatoken_storage::AuthenticatedToken, Response>> {
+    let Some(api_key) = crate::relay::extract_api_key(req) else {
+        return Ok(Err(task_error_response(
+            "unauthorized",
+            "missing api key",
+            401,
+        )?));
+    };
+    match crate::d1_repositories::authenticate_token(db, &api_key).await? {
+        Some(auth) => Ok(Ok(auth)),
+        None => Ok(Err(task_error_response(
+            "unauthorized",
+            "invalid api key",
+            401,
+        )?)),
+    }
+}
+
+/// `GET /v1/video/generations/:task_id` + `GET /suno/fetch/:id` (Go
+/// `RelayTaskFetch` by-id): the owner's task as a `{code:"success", data:
+/// TaskDto}` envelope. Bounded vs Go (documented): the Gemini/Vertex
+/// realtime-refetch and the `/v1/videos/*` OpenAI-video conversion branches
+/// are not ported; the DB-backed TaskDto (kept current by the poller cron) is
+/// authoritative here.
+pub async fn handle_task_fetch_by_id(
+    req: Request,
+    env: Env,
+    task_id: Option<&String>,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+    let auth = match authenticate_fetch(&req, &db).await? {
+        Ok(auth) => auth,
+        Err(response) => return Ok(response),
+    };
+    let Some(task_id) = task_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return task_error_response("invalid_request", "missing task id", 400);
+    };
+    let Some(row) = crate::task_repository::find_task_dto(&db, auth.user_id, task_id).await? else {
+        return task_error_response("task_not_exist", "task_not_exist", 400);
+    };
+    crate::json_with_status(
+        &serde_json::json!({"code": "success", "data": task_dto_json(&row)}),
+        200,
+    )
+}
+
+/// `POST /suno/fetch` (Go `sunoFetchRespBodyBuilder`): batch fetch by public
+/// task ids; unknown ids are simply absent from the result.
+pub async fn handle_task_fetch_batch(mut req: Request, env: Env) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+    let auth = match authenticate_fetch(&req, &db).await? {
+        Ok(auth) => auth,
+        Err(response) => return Ok(response),
+    };
+    #[derive(serde::Deserialize, Default)]
+    struct FetchReq {
+        #[serde(default)]
+        ids: Vec<serde_json::Value>,
+    }
+    let body: FetchReq = match req.json().await {
+        Ok(body) => body,
+        Err(_) => return task_error_response("invalid_request", "invalid request body", 400),
+    };
+    // Go binds ids as []any (strings or numbers); normalize to strings.
+    let ids: Vec<String> = body
+        .ids
+        .iter()
+        .filter_map(|value| match value {
+            serde_json::Value::String(id) => Some(id.clone()),
+            serde_json::Value::Number(id) => Some(id.to_string()),
+            _ => None,
+        })
+        .collect();
+    let tasks: Vec<serde_json::Value> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        crate::task_repository::find_task_dtos(&db, auth.user_id, &ids)
+            .await?
+            .iter()
+            .map(task_dto_json)
+            .collect()
+    };
+    crate::json_with_status(&serde_json::json!({"code": "success", "data": tasks}), 200)
+}

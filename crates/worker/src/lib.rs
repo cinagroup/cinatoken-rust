@@ -281,6 +281,20 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/data/users", |req, ctx| async move {
             admin_data::quota_trend_by_user(req, ctx.env).await
         })
+        // OpenAI-compatible billing views (Go billing.go; token Bearer auth).
+        .get_async("/dashboard/billing/subscription", |req, ctx| async move {
+            admin_data::billing_subscription(req, ctx.env).await
+        })
+        .get_async(
+            "/v1/dashboard/billing/subscription",
+            |req, ctx| async move { admin_data::billing_subscription(req, ctx.env).await },
+        )
+        .get_async("/dashboard/billing/usage", |req, ctx| async move {
+            admin_data::billing_usage(req, ctx.env).await
+        })
+        .get_async("/v1/dashboard/billing/usage", |req, ctx| async move {
+            admin_data::billing_usage(req, ctx.env).await
+        })
         .get_async("/api/usage/token/", |req, ctx| async move {
             admin_data::token_usage(req, ctx.env).await
         })
@@ -448,6 +462,19 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             task_orchestration::handle_task_submit(req, env, now).await
         })
         // Suno task submit (platform "suno"): POST /suno/submit/:action.
+        // Client-facing async-task fetch (Go RelayTaskFetch): the owner's
+        // stored TaskDto, kept current by the poller cron.
+        .get_async("/v1/video/generations/:task_id", |req, ctx| async move {
+            let task_id = ctx.param("task_id").cloned();
+            task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await
+        })
+        .get_async("/suno/fetch/:id", |req, ctx| async move {
+            let task_id = ctx.param("id").cloned();
+            task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await
+        })
+        .post_async("/suno/fetch", |req, ctx| async move {
+            task_orchestration::handle_task_fetch_batch(req, ctx.env).await
+        })
         .post_async("/suno/submit/:action", |req, ctx| async move {
             let action = ctx.param("action").cloned().unwrap_or_default();
             let now = (worker::Date::now().as_millis() / 1000) as i64;
@@ -464,6 +491,48 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let event_ctx = ctx.data;
             relay::responses(req, env, event_ctx).await
         })
+        .post_async("/v1/responses/compact", |req, ctx| async move {
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::responses_compact(req, env, event_ctx).await
+        })
+        .post_async("/v1/moderations", |req, ctx| async move {
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::moderations(req, env, event_ctx).await
+        })
+        .post_async("/v1/edits", |req, ctx| async move {
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::edits(req, env, event_ctx).await
+        })
+        .post_async("/v1/engines/:model/embeddings", |req, ctx| async move {
+            let model = ctx.param("model").cloned().unwrap_or_default();
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::engines_embeddings(req, env, event_ctx, model).await
+        })
+        // Go RelayNotImplemented surface: structured 501s instead of 404s.
+        .post("/v1/images/variations", |_, _| {
+            relay::relay_not_implemented()
+        })
+        .get("/v1/files", |_, _| relay::relay_not_implemented())
+        .post("/v1/files", |_, _| relay::relay_not_implemented())
+        .delete("/v1/files/:id", |_, _| relay::relay_not_implemented())
+        .get("/v1/files/:id", |_, _| relay::relay_not_implemented())
+        .get("/v1/files/:id/content", |_, _| {
+            relay::relay_not_implemented()
+        })
+        .post("/v1/fine-tunes", |_, _| relay::relay_not_implemented())
+        .get("/v1/fine-tunes", |_, _| relay::relay_not_implemented())
+        .get("/v1/fine-tunes/:id", |_, _| relay::relay_not_implemented())
+        .post("/v1/fine-tunes/:id/cancel", |_, _| {
+            relay::relay_not_implemented()
+        })
+        .get("/v1/fine-tunes/:id/events", |_, _| {
+            relay::relay_not_implemented()
+        })
+        .delete("/v1/models/:model", |_, _| relay::relay_not_implemented())
         .post_async("/v1/messages", |req, ctx| async move {
             let env = ctx.env;
             let event_ctx = ctx.data;
@@ -745,7 +814,17 @@ fn is_supported_preflight(method: &Method) -> bool {
 /// that needs to change when the API surface grows.
 fn is_static_asset_path(path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
-    for prefix in ["/api/", "/v1/", "/v1beta/", "/mj/", "/suno/", "/pg/"] {
+    for prefix in [
+        "/api/",
+        "/v1/",
+        "/v1beta/",
+        "/mj/",
+        "/suno/",
+        "/pg/",
+        // OpenAI-compatible billing views (Go dashboard.go) — API, not the SPA
+        // `/dashboard` route.
+        "/dashboard/billing/",
+    ] {
         if path.starts_with(prefix) {
             return false;
         }

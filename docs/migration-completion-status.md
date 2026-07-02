@@ -75,9 +75,15 @@ input; stubbing them would be worse than leaving them explicit.
 2. **Passkey / WebAuthn** (`/passkey/*` register/login/verify): a runtime
    decision — a WASM WebAuthn verifier vs a Cloudflare Container. Cannot be
    built without choosing and provisioning that.
-3. **`GET /api/pricing`**: needs a `models` **metadata** table (name-rule
-   matching, vendors, icons, endpoint types) that the D1 schema does not have —
-   a schema migration + data import.
+3. ~~`GET /api/pricing`~~ — **UNBLOCKED + DONE (2026-07-02, commit `3ba57ca`)**:
+   the models metadata table is operator-populated at runtime (like channels),
+   so the schema was portable after all. Migration `0008_model_meta.sql` adds
+   `models` + `vendors` (applied to staging); `pricing_api.rs` ports
+   GetPricing/updatePricing (abilities × groups × endpoint mapping, merged
+   ratio maps, name-rule metadata enrichment, usable-group filtering, vendors,
+   auto_groups). Staging-verified anonymously with priced/ratio/metadata/
+   filtered cases. Remaining sub-item: the models/vendors **admin CRUD** to
+   populate the tables via API (operators can also seed rows directly).
 4. **`GET /api/models`** (DashboardListModels): returns per-provider adaptor
    static `GetModelList()` tables baked into Go code; there is no DB source, so
    there is no faithful worker equivalent.

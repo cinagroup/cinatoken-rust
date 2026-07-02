@@ -550,6 +550,16 @@ Last checked: 2026-07-01
   empty tag→400). `POST /api/option/payment_compliance` (admin: persists the 5
   `payment_setting.compliance_*` options incl. confirming user id + client IP;
   confirmed:false→400; common→403).
+- **`GET /api/pricing` + 0008 models/vendors schema — staging-verified
+  (2026-07-02).** Ports Go `GetPricing`/`updatePricing`; migration 0008 applied
+  to staging D1. Anonymous smoke: priced model → quota_type 1/price 0.25; ratio
+  model → ratio 3.5 with full metadata enrichment (desc/icon/tags/vendor_id via
+  exact name-rule) and vip group; pre-existing gpt-4o → default-table ratio
+  1.25, hardcoded completion 4.0, cache 0.5; a restricted-group model was
+  filtered out; vendors/auto_groups/group_ratio (usable-only)/
+  supported_endpoint/pricing_version all correct. 168 worker tests pass (+4:
+  endpoint mapping, name-rule priority, price-vs-ratio + disabled-meta,
+  usable-group filter).
 - **`PUT /api/channel/tag` (bulk edit by tag) — staging-verified (2026-07-02).**
   Ports Go `EditTagChannels`/`EditChannelByTag`. All three paths live-verified:
   priority/weight-only edit propagated to both channels and their abilities

@@ -26,6 +26,7 @@ mod task_orchestration;
 // Midjourney subsystem persistence (separate `midjourneys` table). Foundation
 // ahead of the mj submit/poll wiring.
 mod mj_repository;
+mod pricing_api;
 mod turnstile;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
@@ -133,6 +134,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Exposed ratio config (Go GetRatioConfig; gated by ExposeRatioEnabled).
         .get_async("/api/ratio_config", |req, ctx| async move {
             admin_user::get_ratio_config(req, ctx.env).await
+        })
+        // Public pricing table (Go GetPricing; abilities x ratio maps + 0008
+        // model/vendor metadata).
+        .get_async("/api/pricing", |req, ctx| async move {
+            pricing_api::get_pricing(req, ctx.env).await
         })
         // Legal text (Go misc.go).
         .get_async("/api/user-agreement", |req, ctx| async move {

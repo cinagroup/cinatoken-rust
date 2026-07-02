@@ -665,7 +665,7 @@ fn random_access_token() -> String {
 /// Merge a default ratio table with the option override (Go seeds the in-memory
 /// map with the defaults, then loads the option on top). Values may be numbers
 /// or numeric strings. `BTreeMap` for a deterministic response ordering. Pure.
-fn merged_ratio_map(
+pub(crate) fn merged_ratio_map(
     defaults: &[(&str, f64)],
     option: Option<&str>,
 ) -> std::collections::BTreeMap<String, f64> {
@@ -937,7 +937,7 @@ const DEFAULT_GROUP_RATIOS: &[(&str, f64)] = &[("default", 1.0), ("vip", 1.0), (
 /// Parse the `UserUsableGroups` option (a JSON `{group: desc}` map). Go REPLACES
 /// the map on config, so a set option overrides the defaults entirely; an absent
 /// or unparseable option falls back to [`DEFAULT_USABLE_GROUPS`].
-fn parse_usable_groups(option: Option<&str>) -> std::collections::HashMap<String, String> {
+pub(crate) fn parse_usable_groups(option: Option<&str>) -> std::collections::HashMap<String, String> {
     if let Some(raw) = option {
         let raw = raw.trim();
         if !raw.is_empty() {
@@ -958,7 +958,7 @@ fn parse_usable_groups(option: Option<&str>) -> std::collections::HashMap<String
 /// [`DEFAULT_GROUP_RATIOS`] (Go seeds the map with the defaults via `AddAll`,
 /// then loads the option on top). Ratio values may be numbers or numeric
 /// strings.
-fn parse_group_ratios(option: Option<&str>) -> std::collections::HashMap<String, f64> {
+pub(crate) fn parse_group_ratios(option: Option<&str>) -> std::collections::HashMap<String, f64> {
     let mut ratios: std::collections::HashMap<String, f64> = DEFAULT_GROUP_RATIOS
         .iter()
         .map(|(group, ratio)| (group.to_string(), *ratio))

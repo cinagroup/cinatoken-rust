@@ -3678,6 +3678,80 @@ pub async fn update_user_setting(db: &D1Database, id: i64, setting: &str) -> wor
     Ok(())
 }
 
+/// One enabled ability row joined with its channel's type (Go
+/// `GetAllEnableAbilityWithChannels`, trimmed to the pricing-relevant fields).
+#[derive(Debug, Deserialize)]
+pub struct AbilityWithChannelType {
+    pub model: String,
+    pub group_name: String,
+    pub channel_type: i32,
+}
+
+/// All enabled abilities with their channel type (pricing source query).
+pub async fn enabled_abilities_with_channel_type(
+    db: &D1Database,
+) -> worker::Result<Vec<AbilityWithChannelType>> {
+    let empty: &[D1Type<'_>] = &[];
+    db.prepare(
+        r#"SELECT a.model AS model, a.group_name AS group_name,
+                  COALESCE(c.type, 0) AS channel_type
+           FROM abilities a LEFT JOIN channels c ON a.channel_id = c.id
+           WHERE a.enabled = 1"#,
+    )
+    .bind_refs(empty)?
+    .all()
+    .await?
+    .results::<AbilityWithChannelType>()
+}
+
+/// A live `models` metadata row (Go `model.Model`, pricing-relevant fields).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelMetaRow {
+    pub model_name: String,
+    pub description: String,
+    pub icon: String,
+    pub tags: String,
+    pub vendor_id: i64,
+    pub endpoints: String,
+    pub status: i32,
+    pub name_rule: i32,
+}
+
+/// All live model-metadata rows.
+pub async fn list_model_meta(db: &D1Database) -> worker::Result<Vec<ModelMetaRow>> {
+    let empty: &[D1Type<'_>] = &[];
+    db.prepare(
+        r#"SELECT model_name, description, icon, tags, vendor_id, endpoints,
+                  status, name_rule
+           FROM models WHERE deleted_at IS NULL"#,
+    )
+    .bind_refs(empty)?
+    .all()
+    .await?
+    .results::<ModelMetaRow>()
+}
+
+/// A live `vendors` row (Go `model.Vendor`, pricing-relevant fields).
+#[derive(Debug, Deserialize, serde::Serialize)]
+pub struct VendorRow {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+}
+
+/// All live vendor rows.
+pub async fn list_vendors(db: &D1Database) -> worker::Result<Vec<VendorRow>> {
+    let empty: &[D1Type<'_>] = &[];
+    db.prepare(
+        r#"SELECT id, name, description, icon FROM vendors WHERE deleted_at IS NULL"#,
+    )
+    .bind_refs(empty)?
+    .all()
+    .await?
+    .results::<VendorRow>()
+}
+
 /// All distinct enabled model names across every group (Go `GetEnabledModels`):
 /// `SELECT DISTINCT model FROM abilities WHERE enabled = 1`. Ordered.
 pub async fn distinct_all_enabled_models(db: &D1Database) -> worker::Result<Vec<String>> {

@@ -34,12 +34,35 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 Evidence is mixed E2-E4 depending on subsystem; see the audit before relying on
 any individual claim.
 
+## Route Review Closures (2026-07-02, second pass)
+
+A full diff of every Go-registered route against the Rust worker closed these
+(commits `aca6772`, `22edffb`; staging-verified, see `docs/verification.md`):
+
+- Client-facing async-task fetch (Go `RelayTaskFetch`):
+  `GET /v1/video/generations/:task_id`, `GET /suno/fetch/:id`,
+  `POST /suno/fetch` — owner-scoped `TaskDto`, Go error shapes. The review
+  also found and fixed a poll-path bug: the parsed result URL was never
+  persisted (now `json_set` into `private_data.result_url`).
+- Midjourney client fetch (Go `RelayMidjourneyTask`):
+  `GET /mj/task/:id/fetch`, `POST /mj/task/list-by-condition`.
+- Dashboard billing reads (Go `billing.go`):
+  `GET /dashboard/billing/{subscription,usage}` + `/v1` aliases.
+- Relay passthroughs: `POST /v1/moderations`, `/v1/edits`,
+  `/v1/responses/compact`.
+- Go `RelayNotImplemented` parity: structured 501s for files / fine-tunes /
+  image-variations / model-delete, plus the PaLM-era Gemini-format legacy
+  aliases (`/v1/engines/:model/embeddings`, which Go relays in Gemini format —
+  a wrong-format OpenAI relay would be worse than an honest 501).
+
 ## In Progress
 
 - Frontend staging deployment and browser/API contract smoke.
-- Model-list/retrieve protocol negotiation and remaining JSON relay aliases.
-- Task fetch/read/content APIs.
-- Dashboard billing compatibility reads.
+- Model-list/retrieve protocol negotiation.
+- Video content proxy (`GET /v1/videos/:task_id/content`, dual-auth) and the
+  OpenAI-video/kling/jimeng native-shape aliases (per-adaptor conversions).
+- Playground (`POST /pg/chat/completions`) — needs a session→relay auth
+  bridge (synthetic zero-id token) through the billing-critical relay core.
 - Real production Go SQLite -> D1 export/import/reconciliation.
 - Billing shadow comparison and exact tokenizer/media parity.
 - Frontend lint cleanup and bundle-size reduction.

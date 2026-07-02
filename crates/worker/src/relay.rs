@@ -500,38 +500,6 @@ pub async fn edits(req: Request, env: Env, context: Context) -> worker::Result<R
     .await
 }
 
-/// `POST /v1/engines/:model/embeddings` (Go legacy alias): embeddings with the
-/// model taken from the path.
-pub async fn engines_embeddings(
-    req: Request,
-    env: Env,
-    context: Context,
-    model: String,
-) -> worker::Result<Response> {
-    relay_endpoint(
-        req,
-        env,
-        Some(context),
-        RelayEndpoint {
-            display_name: "engines embeddings",
-            cache_family: "openai_compatible",
-            upstream_path: "embeddings".to_string(),
-            upstream_query: None,
-            gemini_route: None,
-            provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
-            supports_streaming: false,
-            force_streaming: false,
-            stream_not_implemented_feature: None,
-            parse_non_stream_usage: true,
-            request_body_mode: RelayRequestBodyMode::Json,
-            request_validator: None,
-        },
-        Some(model),
-    )
-    .await
-}
-
 /// `POST /v1/responses/compact` (Go relay passthrough).
 pub async fn responses_compact(
     req: Request,

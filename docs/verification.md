@@ -611,6 +611,21 @@ Last checked: 2026-07-02
   rebuilt abilities exactly (4 new rows = 2 channels × 2 models, 0 stale).
   164 worker tests pass.
 
+- **Route-review batches 1+2 — staging-verified (2026-07-02).** A full diff of
+  every Go route against the Rust router. Closed + live-smoked: task fetch
+  (`GET /v1/video/generations/:task_id` → full TaskDto incl. `result_url`
+  from private_data and parsed `data`; `GET/POST /suno/fetch` by-id + batch;
+  unknown → `task_not_exist` 400; no-auth 401); mj client fetch
+  (`/mj/task/:id/fetch` + `list-by-condition` → exact MidjourneyDto with
+  parsed buttons/properties; unknown → `{code:4}`); billing views
+  (subscription hard_limit 2.0 and usage 50.0 exactly matching a seeded
+  750k/250k token); passthroughs routed (moderations/edits/responses-compact
+  → 401 auth gate, not 404); `GET /v1/files` → Go-shaped 501. Also FOUND+FIXED
+  the poll path never persisting the task result URL, and caught (via the
+  canonical route inventory) that Go relays `/v1/engines/:model/embeddings`
+  in GEMINI format — the initial OpenAI-shaped port was reverted to a
+  structured 501 rather than ship a wrong-format relay. 174 worker tests pass.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the

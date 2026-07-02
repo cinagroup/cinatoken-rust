@@ -1243,3 +1243,109 @@ pub async fn handle_task_fetch_batch(mut req: Request, env: Env) -> worker::Resu
     };
     crate::json_with_status(&serde_json::json!({"code": "success", "data": tasks}), 200)
 }
+
+/// Serialize a midjourneys row as Go `dto.MidjourneyDto` (exact JSON tags;
+/// `buttons`/`videoUrls`/`properties` re-emitted as parsed JSON when present).
+/// Bounded vs Go (documented): the `MjForwardUrlEnabled` image-URL rewrite to
+/// a local `/mj/image/:id` proxy is not ported (no image proxy); the stored
+/// upstream URL is returned as-is.
+fn mj_dto_json(row: &crate::mj_repository::MjDtoRow) -> serde_json::Value {
+    let parse_or_null = |raw: &str| -> serde_json::Value {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(trimmed).unwrap_or(serde_json::Value::Null)
+        }
+    };
+    serde_json::json!({
+        "id": row.mj_id,
+        "action": row.action,
+        "customId": "",
+        "botType": "",
+        "prompt": row.prompt,
+        "promptEn": row.prompt_en,
+        "description": row.description,
+        "state": row.state,
+        "submitTime": row.submit_time,
+        "startTime": row.start_time,
+        "finishTime": row.finish_time,
+        "imageUrl": row.image_url,
+        "videoUrl": row.video_url,
+        "videoUrls": parse_or_null(&row.video_urls),
+        "status": row.status,
+        "progress": row.progress,
+        "failReason": row.fail_reason,
+        "buttons": parse_or_null(&row.buttons),
+        "maskBase64": "",
+        "properties": parse_or_null(&row.properties),
+    })
+}
+
+/// `GET /mj/task/:id/fetch` (Go `RelayMidjourneyTask` fetch mode): the owner's
+/// Midjourney task as a raw `MidjourneyDto`. Unknown id returns Go's
+/// `{code:4, description:"task_no_found"}` shape.
+pub async fn handle_mj_task_fetch(
+    req: Request,
+    env: Env,
+    mj_id: Option<&String>,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+    let auth = match authenticate_fetch(&req, &db).await? {
+        Ok(auth) => auth,
+        Err(response) => return Ok(response),
+    };
+    let Some(mj_id) = mj_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return crate::json_with_status(
+            &serde_json::json!({"code": 4, "description": "task_no_found"}),
+            400,
+        );
+    };
+    let Some(row) = crate::mj_repository::find_mj_dto(&db, auth.user_id, mj_id).await? else {
+        return crate::json_with_status(
+            &serde_json::json!({"code": 4, "description": "task_no_found"}),
+            400,
+        );
+    };
+    crate::json_with_status(&mj_dto_json(&row), 200)
+}
+
+/// `POST /mj/task/list-by-condition` (Go fetch-by-condition mode): the owner's
+/// Midjourney tasks matching `{ids: [...]}` as a raw `MidjourneyDto` array.
+pub async fn handle_mj_task_list_by_condition(
+    mut req: Request,
+    env: Env,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+    let auth = match authenticate_fetch(&req, &db).await? {
+        Ok(auth) => auth,
+        Err(response) => return Ok(response),
+    };
+    #[derive(serde::Deserialize, Default)]
+    struct Condition {
+        #[serde(default)]
+        ids: Vec<String>,
+    }
+    let condition: Condition = match req.json().await {
+        Ok(condition) => condition,
+        Err(_) => {
+            return crate::json_with_status(
+                &serde_json::json!({"code": 4, "description": "do_request_failed"}),
+                400,
+            )
+        }
+    };
+    let tasks: Vec<serde_json::Value> = if condition.ids.is_empty() {
+        Vec::new()
+    } else {
+        crate::mj_repository::find_mj_dtos(&db, auth.user_id, &condition.ids)
+            .await?
+            .iter()
+            .map(mj_dto_json)
+            .collect()
+    };
+    crate::json_with_status(&tasks, 200)
+}

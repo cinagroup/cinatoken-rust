@@ -486,6 +486,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let now = (worker::Date::now().as_millis() / 1000) as i64;
             task_orchestration::handle_mj_submit(req, ctx.env, &action, now).await
         })
+        // Client-facing Midjourney task fetch (Go RelayMidjourneyTask).
+        .get_async("/mj/task/:id/fetch", |req, ctx| async move {
+            let mj_id = ctx.param("id").cloned();
+            task_orchestration::handle_mj_task_fetch(req, ctx.env, mj_id.as_ref()).await
+        })
+        .post_async("/mj/task/list-by-condition", |req, ctx| async move {
+            task_orchestration::handle_mj_task_list_by_condition(req, ctx.env).await
+        })
         .post_async("/v1/responses", |req, ctx| async move {
             let env = ctx.env;
             let event_ctx = ctx.data;

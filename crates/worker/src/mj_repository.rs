@@ -156,3 +156,73 @@ pub async fn apply_midjourney_poll_result(
     }
     Ok(won)
 }
+
+/// A full midjourneys row for the client-facing fetch (Go `dto.MidjourneyDto`
+/// source fields).
+#[derive(Debug, serde::Deserialize)]
+pub struct MjDtoRow {
+    pub mj_id: String,
+    pub action: String,
+    pub prompt: String,
+    pub prompt_en: String,
+    pub description: String,
+    pub state: String,
+    pub submit_time: i64,
+    pub start_time: i64,
+    pub finish_time: i64,
+    pub image_url: String,
+    pub video_url: String,
+    pub video_urls: String,
+    pub status: String,
+    pub progress: String,
+    pub fail_reason: String,
+    pub buttons: String,
+    pub properties: String,
+}
+
+const MJ_DTO_COLUMNS: &str = r#"mj_id, action, prompt, prompt_en, description, state,
+    submit_time, start_time, finish_time, image_url, video_url, video_urls,
+    status, progress, fail_reason, buttons, properties"#;
+
+/// One Midjourney task by public mj id, owner-scoped (Go `GetByMJId`).
+pub async fn find_mj_dto(
+    db: &D1Database,
+    user_id: i64,
+    mj_id: &str,
+) -> worker::Result<Option<MjDtoRow>> {
+    let args = [D1Type::Integer(d1_i32(user_id)), D1Type::Text(mj_id)];
+    db.prepare(&format!(
+        "SELECT {MJ_DTO_COLUMNS} FROM midjourneys WHERE user_id = ?1 AND mj_id = ?2 LIMIT 1"
+    ))
+    .bind_refs(&args)?
+    .first::<MjDtoRow>(None)
+    .await
+}
+
+/// The owner's Midjourney tasks matching a set of mj ids (Go `GetByMJIds`).
+pub async fn find_mj_dtos(
+    db: &D1Database,
+    user_id: i64,
+    mj_ids: &[String],
+) -> worker::Result<Vec<MjDtoRow>> {
+    let mut rows = Vec::new();
+    for chunk in mj_ids.chunks(50) {
+        let mut args: Vec<D1Type<'_>> = vec![D1Type::Integer(d1_i32(user_id))];
+        for mj_id in chunk {
+            args.push(D1Type::Text(mj_id));
+        }
+        let placeholders: Vec<String> = (0..chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "SELECT {MJ_DTO_COLUMNS} FROM midjourneys WHERE user_id = ?1 AND mj_id IN ({})",
+            placeholders.join(", ")
+        );
+        rows.extend(
+            db.prepare(&sql)
+                .bind_refs(&args)?
+                .all()
+                .await?
+                .results::<MjDtoRow>()?,
+        );
+    }
+    Ok(rows)
+}

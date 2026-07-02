@@ -833,16 +833,31 @@ async fn option_value(db: &D1Database, key: &str) -> worker::Result<Option<Strin
         .map(|row| row.map(|row| row.value))
 }
 
-/// Read multiple option values in one call. Used by the non-tiered billing
-/// path to load ModelRatio / CompletionRatio / ModelPrice / CacheRatio /
-/// QuotaPerUnit / group_ratio in a single D1 round-trip rather than 6
-/// separate queries.
+/// Read multiple option values in one D1 round-trip, preserving the caller's
+/// key order and returning `None` for absent rows. Used by billing and the
+/// public frontend-status whitelist.
 pub async fn option_values(db: &D1Database, keys: &[&str]) -> worker::Result<Vec<Option<String>>> {
-    let mut results = Vec::with_capacity(keys.len());
-    for key in keys {
-        results.push(option_value(db, key).await?);
+    if keys.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(results)
+    let placeholders = (1..=keys.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let args = keys.iter().map(|key| D1Type::Text(key)).collect::<Vec<_>>();
+    let rows = db
+        .prepare(&format!(
+            r#"SELECT "key", value FROM options WHERE "key" IN ({placeholders})"#
+        ))
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<OptionRow>()?;
+    let values = rows
+        .into_iter()
+        .map(|row| (row.key, row.value))
+        .collect::<HashMap<_, _>>();
+    Ok(keys.iter().map(|key| values.get(*key).cloned()).collect())
 }
 
 fn resolve_tiered_billing_expr_for_model(

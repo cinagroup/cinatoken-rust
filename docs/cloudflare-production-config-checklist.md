@@ -251,7 +251,7 @@ safe.
 | `SESSION_SECRET` | secret | Session cookie HMAC | Required for any login; rotating it forces re-auth |
 | `FRONTEND_BASE_URL` | var | OAuth redirect target | Must be the real frontend origin in staging/prod, not `localhost` |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | id=var, secret=secret | GitHub OAuth | Both required or GitHub login is inert |
-| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_TOKEN_URL` / `OIDC_USERINFO_URL` / `OIDC_REDIRECT_URI` | ids/URLs=var, secret=secret | Generic OIDC (incl. Google) | All five required or OIDC login is inert |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_TOKEN_URL` / `OIDC_USERINFO_URL` / `OIDC_REDIRECT_URI` / `OIDC_AUTHORIZATION_ENDPOINT` | ids/URLs=var, secret=secret | Generic OIDC (incl. Google) | First five configure the callback; the authorization endpoint must come from the env var or migrated D1 `oidc.authorization_endpoint` before the frontend advertises OIDC |
 | `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` / `DISCORD_REDIRECT_URI` | id/URI=var, secret=secret | Discord OAuth | All three required or Discord login is inert |
 | `TURNSTILE_SECRET` | secret | Turnstile verification | Unset ⇒ Turnstile checks are skipped (no-op), per `require_turnstile` |
 

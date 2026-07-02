@@ -112,10 +112,11 @@ G3 smoke, G4 shadow clean, G6 core (rate limit + redaction).
 | 2.4 | Turnstile server-side siteverify (KV/DO once-per-session flag) on register/login/reset/email/checkin | G6 | security-middleware | 2.1 |
 | 2.5 | CORS fail-closed (env `CORS_ORIGINS`, no credentialed wildcard, SSE expose-headers) | G6 | security-middleware | 0.1 |
 | 2.6 | Admin CRUD APIs (token/channel/user/log/option/model/vendor) + cache invalidation on mutation (token/channel/ability/ratio/option) | G5 | route-inventory / admin-frontend-runbook | 2.2 |
-| 2.7 | Frontend Workers Static Assets build/deploy (same-origin), SPA fallback, API-path precedence, bundle redaction | G5 | migration-plan §21.6 | 0.1 |
+| 2.7 | `PARTIAL` Frontend source + Bun frozen build + Workers Static Assets (same-origin), SPA fallback, API-path precedence, bundle redaction. Source/build are E2; deployed browser smoke is pending | G5 | migration-plan §21.6/§22; frontend-deploy | 0.1 |
+| 2.8 | Frontend-to-Worker contract gate: inventory every browser request, hide unsupported modules, test status/setup envelopes, and fail CI when a visible workflow calls a missing route | G5 | migration-progress-audit-2026-07-02 | 2.6, 2.7 |
 
 Scenario B gate: G5 report (operator CRUD without DB edits, auth/session smoke,
-cache invalidation, audit, frontend deploy).
+cache invalidation, audit, frontend deploy, and visible-route contract pass).
 
 ## Phase 3 — Payments + Billing Ownership (Scenario C: G4-apply, G7-payments)
 

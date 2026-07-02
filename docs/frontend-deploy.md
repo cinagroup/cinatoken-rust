@@ -1,31 +1,57 @@
 # Frontend Deploy
 
-Date: 2026-06-22
+Date: 2026-07-02
 
-Status: deploy pipeline foundation. The wrangler `[assets]` block, the Worker
-SPA fallback, and the build scripts are in place; the actual frontend bundle
-build and end-to-end staging smoke happen during G1 (see
-`docs/staging-smoke-runbook.md` Phase 8).
+Status: source migrated and local production build verified; staging browser
+smoke and full frontend/API parity remain open.
 
-## Source frontend
+## Source
 
-The React dashboard lives in the Go repository at `web/default`. It is a
-single-page application (Rsbuild + React 19 + TanStack Router) with **zero
-build-time dependency on the backend**: no SSR, no Go templates, no `embed.FS`.
-All backend calls go through an axios client (`web/default/src/lib/api.ts`)
-that defaults to same-origin.
+The complete Bun workspace is tracked at `apps/web/source/`:
 
-The frontend is **not** copied into this repository. Only the built `dist/`
-artifacts land in `apps/web/dist/` so the Worker can serve them.
+- `default/`: React 19 + TypeScript + Rsbuild production frontend.
+- `classic/`: retained workspace package.
+- `bun.lock`: frozen dependency graph.
 
-## Deploy model
+The imported source baseline is Go repository commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703` (2026-06-16). Future source syncs
+must be reviewed as normal repository changes; deployment no longer depends on
+an untracked `robocopy` step.
 
-**Worker static assets** (chosen over Cloudflare Pages) so the frontend and
-API share one origin. This sidesteps credentialed-CORS complexity: the React
-app's `withCredentials: true` axios calls send the `session` cookie to the
-same origin that issued it.
+## Build
 
-`wrangler.toml` carries the `[assets]` block in each environment:
+From the repository root:
+
+```powershell
+bun run build:web
+```
+
+`tools/build_web.mjs`:
+
+1. runs `bun install --frozen-lockfile` in `apps/web/source`;
+2. runs `bun run typecheck` and `bun run build` in
+   `apps/web/source/default`;
+3. replaces `apps/web/dist/` with the built bundle.
+
+Contract/build verification:
+
+```powershell
+bun run check:web
+```
+
+Strict source quality verification:
+
+```powershell
+bun run check:web:quality
+```
+
+As of 2026-07-02, build/typecheck pass. Strict lint still reports 101 errors and
+4 warnings; this is tracked debt and the lint rules must not be weakened to
+hide it.
+
+## Hosting
+
+The Worker serves the SPA through Static Assets:
 
 ```toml
 [assets]
@@ -34,77 +60,85 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 ```
 
-`not_found_handling = "single-page-application"` makes Cloudflare serve
-`index.html` for any path that does not match a static file, so client-side
-routes like `/dashboard`, `/channels`, `/keys`, `/sign-in` survive a hard
-refresh.
+API prefixes are routed before the asset binding, while browser routes use SPA
+fallback. The production frontend uses an empty
+`VITE_REACT_APP_SERVER_URL`, so API and secure session cookies remain
+same-origin.
 
-## Worker fallback routing
+## API Compatibility Boundary
 
-The Worker's `fetch` handler (`crates/worker/src/lib.rs`) checks
-`is_static_asset_path(&path)` before consulting the Router. API prefixes
-(`/api/`, `/v1/`, `/v1beta/`, `/mj/`, `/suno/`, `/pg/`) and the exact-match
-API endpoints (`/api/status`, `/v1/models`, ...) are routed to the API
-router; everything else falls through to `env.assets("ASSETS")` when that
-binding is configured. When the binding is absent (local dev without a built
-frontend) the request falls through to the router and 404s — `cargo test`
-and `cargo check` still work without a built frontend.
+The React application expects Go-style envelopes:
 
-## Build commands
-
-Added to `package.json`:
-
-- `bun run build:web` — runs `bun install` + `bun run build` inside
-  `apps/web/web-default` and copies the produced `dist/` to `apps/web/dist/`.
-- `bun run build:all` — `build:web` then `build:worker`.
-
-The source must first be synced from the Go repository (see
-`apps/web/README.md` for the `robocopy` recipe). End-to-end build + smoke is
-a G1 staging step.
-
-## Auth model
-
-Same-origin cookie sessions (see `docs/admin-frontend-parity-runbook.md`).
-The frontend's existing axios client (`web/default/src/lib/api.ts`) keeps
-working without changes because:
-
-- the cookie name is still `session` (`cinatoken_session::COOKIE_NAME`);
-- the session cookie is still `HttpOnly` + `SameSite=Strict`;
-- `/api/user/login`, `/api/user/self`, `/api/user/logout` return the same
-  `{success, message, data}` envelope the React app expects;
-- `withCredentials: true` sends the cookie automatically on every request.
-
-## Secret hygiene
-
-The static bundle may only contain **public** configuration values. Allowed
-examples: `VITE_REACT_APP_VERSION`, a Turnstile **site** key (public). Never
-bake API keys, webhook secrets, OAuth client secrets, session secrets, or
-provider credentials into the bundle. After every build, scan the output:
-
-```powershell
-rg -n "UPSTASH|SECRET|TOKEN|PRIVATE|CLIENT_SECRET|WEBHOOK|API_KEY" dist
+```json
+{"success":true,"message":"","data":{}}
 ```
 
-Use an allowlist for public names; rotate any value that leaks. Full
-redaction policy: `docs/observability-slo-security-runbook.md` "Redaction".
+The Worker `/api/status` now returns this envelope and exposes D1-backed public
+configuration plus runtime features. `/api/setup.data.status` follows the Go
+meaning: `true` means initialization is complete.
 
-## Differences from the Go deployment
+Until all API families are migrated, the status response clamps
+`HeaderNavModules` and `SidebarModulesAdmin` so unsupported pages are not
+advertised:
 
-| Area | Go gateway | Rust Worker |
-| --- | --- | --- |
-| Frontend origin | Same-origin, served by Gin | Same-origin, served by Worker static assets |
-| Cookie `Secure` flag | `false` (`main.go:205`) | `true` (hardened) |
-| Session format | gin-contrib cookie store (gob + AES) | HMAC-signed JSON (this repo's `crates/session`) |
-| Cross-session portability | — | Go-issued cookies do NOT verify in Rust; forced re-auth on first Rust visit |
-| `New-Api-User` header | Required as anti-CSRF | NOT required (SameSite=Strict + HttpOnly + Secure is the defense) |
-| `VITE_REACT_APP_SERVER_URL` | Optional cross-origin | Empty / same-origin only |
+- rankings;
+- playground;
+- wallet/top-up;
+- Midjourney/task logs;
+- redemption;
+- subscriptions;
+- io.net model deployments.
 
-## Open follow-ups (tracked in `docs/admin-frontend-parity-runbook.md`)
+This is a temporary product boundary. It does not replace route migration or
+direct-URL error handling.
 
-- Run the real `bun run build:web` against the source frontend and verify the
-  bundle contains no secrets (G1 staging smoke Phase 8 FRONTEND-001/004).
-- Hard-refresh SPA routes against the deployed Worker (FRONTEND-002).
-- Wire the `require_admin_auth` / `require_root_auth` helpers (already in
-  `crates/worker/src/admin.rs`) to the token/channel/user/log/option CRUD
-  routes in the next G5 batch.
-- OAuth / 2FA / Passkey (deferred per G5 forced re-auth policy).
+## Bundle Budget
+
+The verified production build is approximately:
+
+- 18.9 MB total uncompressed;
+- 4.4 MB total gzip;
+- largest chunks approximately 5.3 MB, 2.7 MB and 1.9 MB.
+
+Before production G5 approval, record a bundle budget and split heavy,
+route-specific dependencies. A successful build alone is not a performance
+gate.
+
+## Auth
+
+- Cookie name: `session`.
+- Rust session format is HMAC-signed and is not compatible with Go's cookie
+  store; first Rust visit requires re-authentication.
+- Cookies are `HttpOnly`, `Secure`, and `SameSite=Strict`.
+- Login, self and logout use the Go-compatible envelope.
+- OAuth buttons are advertised only when the corresponding runtime settings are
+  complete.
+
+## Secret Hygiene
+
+Only public configuration may appear in `apps/web/dist/`. OAuth client secrets,
+provider keys, session secrets, webhook secrets, and Cloudflare credentials
+must never be compiled into the bundle.
+
+Run a bundle scan after every production build and review matches rather than
+blindly allowlisting broad words:
+
+```powershell
+rg -n "CLIENT_SECRET|PRIVATE_KEY|SESSION_SECRET|WEBHOOK_SECRET|UPSTASH_REDIS_REST_TOKEN" apps/web/dist
+```
+
+## Required Staging Evidence
+
+Before marking frontend hosting complete:
+
+1. Deploy the current bundle and Worker together.
+2. Hard-refresh `/`, `/setup`, `/sign-in`, `/dashboard`, `/keys`, `/channels`,
+   `/users`, `/usage-logs`, `/models`, `/system-settings`, and `/profile`.
+3. Exercise setup status, login/logout/self, role gating, CRUD mutations and
+   expired-session behavior.
+4. Capture browser network failures and prove every visible page calls only
+   implemented routes.
+5. Scan the deployed artifact for secrets and localhost/cross-origin API URLs.
+6. Record desktop/mobile console errors and basic loading/performance evidence.
+
+Completion evidence belongs in `docs/verification.md` and the G5 runbook.

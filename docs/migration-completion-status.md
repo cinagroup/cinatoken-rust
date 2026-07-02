@@ -1,147 +1,76 @@
 # Migration Completion Status
 
-Date: 2026-07-01
+Date: 2026-07-02
 
-This document is the current, honest state of the cinatoken Go→Rust
-(Cloudflare Workers) migration: what is **done and staging-verified**, what is
-**bounded/portable follow-up**, and what is **blocked on an external
-dependency or decision** an autonomous agent cannot supply. It complements
-`docs/production-migration-execution-plan.md` (gates) and
-`docs/parity-implementation-backlog.md` (sequencing).
+This is the short status page. The evidence-based audit is
+`docs/migration-progress-audit-2026-07-02.md`; the canonical Go route list is
+`docs/source-route-inventory.md`.
 
 ## Headline
 
-The **deployable, verified core of the migration is complete on staging.** The
-product's two hearts — the relay and the async-task system — plus the whole
-authentication, user self-service, and admin-management API surface are ported,
-deployed to `cinatoken-rust-api-staging`, and exercised end-to-end against the
-live environment (see `docs/verification.md` for the evidence log). The
-remaining work is a long tail that is either a small bounded follow-up or is
-blocked on a credential, a runtime/architecture decision, a new schema table,
-or an unported subsystem — enumerated below.
+The Rust/Cloudflare migration has a **substantial deployable core**, but the
+full Go product migration is **not complete** and an all-traffic production
+cutover is not yet approved.
 
-## Done + staging-verified
+Do not interpret code presence, passing unit tests, or a subsystem staging smoke
+as production completion. Production requires data reconciliation, frontend
+runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 
-- **Relay** — `/v1/chat/completions` (non-stream + streaming), `/v1/messages`
-  (Anthropic Messages), with exact billing (reserve/settle) on real usage.
-  **Verified against a real third-party provider (DeepSeek).**
-- **Async-task system** — all 9 video providers + Suno + Midjourney,
-  submit → cron-poll → CAS-settle → refund. Verified end-to-end (a real bug in
-  the channel lookup and a token-refund gap were found here and fixed).
-- **Auth** — register, login, login/2fa, logout, session cookie (a
-  showstopper cookie-header bug that broke ALL session auth was found and
-  fixed here), secure-verify step-up.
-- **User self-service** — `GET/PUT/DELETE /api/user/self` (profile +
-  sidebar/language settings), `/api/user/aff`, `/api/user/aff_transfer`,
-  `/api/user/token`, `/api/user/groups`, `/api/user/self/groups`,
-  `/api/user/models`, `PUT /api/user/setting` (notification prefs).
-- **Admin CRUD** — user, token, channel, log, option management; plus
-  `GET /api/channel/models_enabled` and `POST /api/option/rest_model_ratio`.
-- **Public info** — status, setup, notice, about, home_page_content,
-  user-agreement, privacy-policy, midjourney, `GET /api/ratio_config`.
-- **2FA** (TOTP + backup codes), **OAuth** (GitHub / Discord / OIDC),
-  **Stripe topup** (checkout + webhook), CORS fail-closed, native rate limits,
-  cache invalidation, admin audit logging.
-- **Deployment** — the worker is built (manual worker-build replication:
-  `wasm-bindgen --target module`, since this box has no host linker) and
-  deployed to staging; all D1 migrations applied; the async-task poller cron is
-  live.
+## Substantial And Verified
 
-## Bounded / portable follow-ups (no external dependency)
+- Rust workspace, Cloudflare Worker entrypoint, D1 repositories and migrations.
+- Major OpenAI-compatible JSON/SSE relay routes, Anthropic Messages, native
+  Gemini actions, rerank, image generation, audio speech, Workers AI.
+- Token authentication, channel selection/retry, model mapping, cache, rate
+  limits, audit logging, reserve/settle/refund and tiered billing expressions.
+- Session auth, registration, core user self-service, 2FA,
+  GitHub/Discord/OIDC, Turnstile, secure verification.
+- Core admin user/token/channel/log/option/model/vendor APIs with audit and cache
+  invalidation.
+- Task submit/poll/CAS-settlement foundations and scheduled polling.
+- Stripe top-up reference flow.
+- Tracked React/Bun source plus a successful production typecheck/build.
 
-**None remaining.** Everything in this category has been completed and
-staging-verified: `POST /api/channel/tag/{disabled,enabled}` +
-`DELETE /api/channel/disabled` (`0540e7a`); `POST /api/option/rest_model_ratio`
-(`b463534`); `POST /api/option/payment_compliance` (`36ef615`);
-`PUT /api/channel/tag` (`5de4205` — dynamic multi-field edit with per-channel
-ability rebuild on models/group change, priority/weight propagation otherwise).
+Evidence is mixed E2-E4 depending on subsystem; see the audit before relying on
+any individual claim.
 
-Reclassified as blocked: `GET/DELETE /api/option/channel_affinity_cache` — the
-Rust affinity store is per-key Durable Object instances addressed by
-`id_from_name` with **no key registry**, so enumerate-stats / clear-all cannot
-be implemented faithfully without an architecture change (a KV/DO key index).
-The affinity feature itself is flag-gated off by default
-(`RELAY_CHANNEL_AFFINITY_ENABLED`), so the ops endpoints have no live state to
-manage until that design call is made. Moved to item 14 below.
+## In Progress
 
-## Blocked — needs an external dependency or a decision (the user's call)
+- Frontend staging deployment and browser/API contract smoke.
+- Model-list/retrieve protocol negotiation and remaining JSON relay aliases.
+- Task fetch/read/content APIs.
+- Dashboard billing compatibility reads.
+- Real production Go SQLite -> D1 export/import/reconciliation.
+- Billing shadow comparison and exact tokenizer/media parity.
+- Frontend lint cleanup and bundle-size reduction.
 
-Each of these cannot be faithfully completed by an agent without the noted
-input; stubbing them would be worse than leaving them explicit.
+## Incomplete Product Families
 
-1. **Non-Stripe payments** (epay / creem / waffo / waffo-pancake): real
-   provider credentials, webhook secrets, and per-provider quota/signature
-   integration. Stripe topup is done as the reference.
-2. **Passkey / WebAuthn** (`/passkey/*` register/login/verify): a runtime
-   decision — a WASM WebAuthn verifier vs a Cloudflare Container. Cannot be
-   built without choosing and provisioning that.
-3. ~~`GET /api/pricing`~~ — **UNBLOCKED + DONE (2026-07-02, commit `3ba57ca`)**:
-   the models metadata table is operator-populated at runtime (like channels),
-   so the schema was portable after all. Migration `0008_model_meta.sql` adds
-   `models` + `vendors` (applied to staging); `pricing_api.rs` ports
-   GetPricing/updatePricing (abilities × groups × endpoint mapping, merged
-   ratio maps, name-rule metadata enrichment, usable-group filtering, vendors,
-   auto_groups). Staging-verified anonymously with priced/ratio/metadata/
-   filtered cases. The models/vendors **admin CRUD** is also done
-   (`fbc7424`): list/search/get/create/update(+status_only)/soft-delete for
-   both tables + `GET /api/models/missing`, lifecycle staging-verified
-   including live pricing enrichment and disabled-meta hiding. Still deferred
-   within this vertical: list display enrichment (bound_channels/
-   enable_groups/quota_types per row, vendor counts) and `sync_upstream*`
-   (live provider I/O).
-4. **`GET /api/models`** (DashboardListModels): returns per-provider adaptor
-   static `GetModelList()` tables baked into Go code; there is no DB source, so
-   there is no faithful worker equivalent.
-5. **Email flows** — email verification, password-reset send, and the
-   notification **dispatch** subsystem (email/webhook/bark/gotify on quota
-   warnings; the config-storage half is done): need an email/HTTP-notify sender
-   + provider credentials.
-6. **OAuth wechat / telegram / email-bind**: provider-specific OAuth flows +
-   credentials.
-7. ~~Channel `test` / `fetch_models`~~ — **UNBLOCKED + DONE (2026-07-02,
-   `98b454b` + `8a4f755`)**: these use the channel's OWN stored key against its
-   own base_url (like the relay), so no new credentials were needed.
-   `GET /api/channel/test/:id` (1-token chat probe, latency recorded to
-   `response_time`/`test_time`, Go's test-model fallback chain),
-   `GET /api/channel/fetch_models/:id`, and `POST /api/channel/fetch_models`
-   (pre-create probe, key first-line trim) — all staging-verified via an echo
-   upstream incl. the failure path. Bounded to OpenAI-compatible probing
-   (documented). Still blocked here: `update_balance` (provider-specific
-   billing APIs, mostly deprecated upstream) and `codex` (provider-specific).
-8. **Realtime `/v1/realtime` WebSocket**: a Durable-Object-hibernation or
-   Container design decision.
-9. **Long-tail providers** (AWS Bedrock, Vertex-via-container, Tencent, io.net):
-   Cloudflare Containers.
-10. **Uptime Kuma status proxy**: an external monitoring integration + URL.
-11. **Production data migration** (users/tokens/channels/logs from the Go/VPS
-    source): the real source export (G7 in the execution plan) + operator
-    sign-off.
-12. **Real *video-provider* task smoke**: a real Sora/Vertex/Kling-family key
-    (the relay path already has a real-provider smoke via DeepSeek).
-13. **Production deploy**: G8-gated — `wrangler.toml` still holds
-    `REPLACE_WITH_PRODUCTION_*` placeholders pending the operator.
-14. **Affinity-cache ops endpoints** (`GET/DELETE
-    /api/option/channel_affinity_cache`): need a key registry (KV index or a
-    directory DO) the per-key `ChannelAffinity` DO design deliberately does not
-    have — an architecture decision, and moot while the affinity flag is off.
+- Multipart image/audio relay.
+- OpenAI Realtime WebSocket.
+- Subscriptions, redemption and check-in.
+- Email verification/reset/bind and Passkey.
+- Non-Stripe payment providers.
+- Custom OAuth management and several provider-specific OAuth flows.
+- Long-tail provider/channel operations, performance/ratio-sync, io.net
+  deployment management.
 
-## Cloudflare-native enhancements (beyond Go parity)
+## Production Blockers
 
-- **Workers AI integration (2026-07-02, `63cb66e`)**: type-39 channels run
-  models natively over the `AI` binding when keyed `internal` (no egress, no
-  API token) — verified live with real llama-4-scout inference + exact
-  billing; Go-parity REST/gateway URL routing for token-keyed type-39
-  channels. `/api/status` exposes `workers_ai`.
-- **AI Gateway integration**: `AI_GATEWAY_ID` routes binding calls through an
-  AI Gateway (3-arg `run` via reflection); REST channels use gateway
-  workers-ai routes as `base_url`. Code-complete + config-gated; live
-  verification needs a gateway created in the dashboard (the staging token
-  lacks AI Gateway permissions). `/api/status` exposes `ai_gateway`.
+1. `wrangler.toml` production resources still contain
+   `REPLACE_WITH_PRODUCTION_*` placeholders.
+2. Production source data has not completed freeze/export/import/hash and
+   relationship reconciliation.
+3. The tracked frontend has not passed a deployed browser smoke across all
+   visible workflows.
+4. Billing/payment production shadow and replay thresholds are not signed off.
+5. Capacity, cost, security, SLO, canary and rollback evidence are incomplete.
+6. Missing routes must be implemented, intentionally retired with compatible
+   responses, or retained behind a documented fallback.
 
-## What "finished" means here
+## Current Safe Statement
 
-Everything portable without a third-party credential, a runtime/architecture
-decision, a new schema table + data, or an unported subsystem is **done and
-staging-verified**. The residual above is, by construction, the set of items
-that require one of those four inputs — which are the user's/operator's calls,
-not an agent's.
+The current system can support staged and scoped Rust/Cloudflare validation.
+It cannot yet be described as a complete replacement for the Go/VPS deployment,
+and the Go deployment must remain available for rollback until the production
+gates close.

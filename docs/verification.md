@@ -1,13 +1,28 @@
 # Verification
 
-Last checked: 2026-07-01
+Last checked: 2026-07-02
 
 ## Passed
 
 - `cargo fmt --all`
 - `cargo test --workspace --exclude cinatoken-worker`
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
-- `bun run check` from `C:\cinagroup\cinatoken-rust`.
+- `cargo test -p cinatoken-worker --lib`: 174 passed after the frontend status
+  envelope and setup-status compatibility fixes.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes after
+  the same compatibility fixes.
+- `bun install --frozen-lockfile` in `apps/web/source`: 2841 packages installed
+  from the tracked workspace lockfile.
+- `bun run build:web`: TypeScript and Rsbuild production build pass; the real
+  bundle is copied to `apps/web/dist/`.
+- `bun run check:web`: frontend type/build contract passes.
+- `bunx eslint src/features/models/index.tsx` passes for the Rust capability
+  gating added to the imported frontend.
+- `bun run format:check` in `apps/web/source/default` passes.
+- `/api/status` compatibility tests prove the Go-style envelope data retains
+  Rust runtime diagnostics and clamps unsupported sidebar modules.
+- `/api/setup` compatibility test proves `data.status=true` means setup is
+  complete, matching Go and the React router.
 - `cargo test -p cinatoken-relay` covering OpenAI-compatible relay helpers,
   generalized `/v1/...` upstream URL generation, Anthropic Messages URL
   generation, native Gemini path parsing and upstream URL generation, relay
@@ -614,6 +629,15 @@ bun run check
 ```
 
 ## Still Pending
+
+- `bun run check:web:quality` remains red: strict ESLint reports 101 errors and
+  4 warnings in the imported frontend source. The rules have not been weakened.
+- Frontend staging deployment and browser smoke are still pending. A local
+  production build does not prove hard refresh, session, role, CRUD, or API
+  contract behavior against the deployed Worker.
+- The production bundle is about 18.9 MB uncompressed / 4.4 MB gzip; the
+  largest chunks are about 5.3 MB, 2.7 MB and 1.9 MB. Define and enforce a
+  bundle budget before G5 production approval.
 
 - `worker-build` installation previously exceeded the local command timeout.
   Install it with `bun run install:worker-build`, then run `bun run dev` and

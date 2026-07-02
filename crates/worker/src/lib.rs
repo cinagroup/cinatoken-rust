@@ -83,45 +83,8 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
 
     let response = Router::with_data(ctx)
-        .get("/api/status", |_, ctx| {
-            let environment = ctx
-                .var("ENVIRONMENT")
-                .map(|value| value.to_string())
-                .unwrap_or_else(|_| "development".to_string());
-            let mut status = cinatoken_api::status(environment);
-            set_feature(&mut status, "d1", ctx.env.d1("DB").is_ok());
-            set_feature(
-                &mut status,
-                "upstash_redis",
-                cache::upstash_redis_configured(&ctx.env),
-            );
-            set_feature(
-                &mut status,
-                "relay_rate_limit",
-                relay::relay_rate_limit_configured(&ctx.env),
-            );
-            set_feature(
-                &mut status,
-                "relay_read_cache",
-                relay::relay_read_cache_configured(&ctx.env),
-            );
-            set_feature(
-                &mut status,
-                "session_auth",
-                admin::session_auth_configured(&ctx.env),
-            );
-            // Workers AI binding (type-39 `internal` channels run in-platform).
-            set_feature(&mut status, "workers_ai", ctx.env.ai("AI").is_ok());
-            // AI Gateway routing for binding calls (AI_GATEWAY_ID var).
-            set_feature(
-                &mut status,
-                "ai_gateway",
-                ctx.env
-                    .var("AI_GATEWAY_ID")
-                    .map(|value| !value.to_string().trim().is_empty())
-                    .unwrap_or(false),
-            );
-            json_with_status(&status, 200)
+        .get_async("/api/status", |req, ctx| async move {
+            admin::get_status(req, ctx.env).await
         })
         .get("/v1/models", |_, _| {
             json_with_status(&cinatoken_api::models(), 200)
@@ -767,16 +730,6 @@ fn upgrade_cors_for_origin(response: &mut Response, allow_origin: Option<&str>) 
         let _ = headers.set("Access-Control-Allow-Origin", origin);
         let _ = headers.set("Access-Control-Allow-Credentials", "true");
         let _ = headers.set("Vary", "Origin");
-    }
-}
-
-fn set_feature(status: &mut cinatoken_core::StatusResponse, name: &'static str, enabled: bool) {
-    if let Some(feature) = status
-        .features
-        .iter_mut()
-        .find(|feature| feature.name == name)
-    {
-        feature.enabled = enabled;
     }
 }
 

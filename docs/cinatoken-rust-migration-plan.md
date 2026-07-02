@@ -1556,3 +1556,92 @@ Midjourney/Suno/视频上游）、自动重试、`waitForEvent`（等 Stripe/Cre
 - `docs/observability-slo-security-runbook.md`：原生限流可观测性（Analytics Engine）。
 - `docs/performance-capacity-cost-runbook.md`：读副本、原生限流、Containers active-CPU 成本。
 - `docs/cutover-rollback-runbook.md`：Gradual Deployments 切流/回滚。
+
+## 22. 2026-07-02 执行审计与修订后的推进基线
+
+本节不是新的目标架构，而是对前述计划的执行状态复核。详细证据、缺口与优先级见
+`docs/migration-progress-audit-2026-07-02.md`。从本日期起，任何“完成”判断必须区分：
+
+1. 已盘点源码行为；
+2. 已存在 Rust 实现；
+3. 已通过单元测试、类型检查或构建；
+4. 已在 staging 使用真实 Cloudflare 资源验证；
+5. 已通过生产 canary、回滚和数据对账。
+
+前四项中的任何一项都不能单独替代第五项。
+
+### 22.1 原计划 Phase 状态复核
+
+| 原 Phase | 当前判断 | 说明 |
+| --- | --- | --- |
+| Phase 0 盘点与冻结 | 基本完成 | 已有 canonical route/provider/schema/billing 清单；生产数据量与 secret 名称清单仍待导出 |
+| Phase 1 Workspace 与基础设施 | 大部完成 | Workspace、Worker、D1、Static Assets、Queue/Cron 基础已存在；生产配置仍有占位符 |
+| Phase 2 数据层与迁移工具 | 部分完成 | D1 schema、repository、SQLite 导出/导入工具已存在；真实生产数据全量迁移与校验未完成 |
+| Phase 3 Relay MVP | 大部完成 | 主流 JSON/SSE、鉴权、选路、计费已实现；model negotiation、multipart、Realtime、部分 alias/501 仍缺 |
+| Phase 4 管理后台核心 | 部分完成 | 核心 auth/user/token/channel/log/option/model/vendor 已实现；完整前端契约和若干管理族仍缺 |
+| Phase 5 Provider 扩展 | 部分完成 | OpenAI-like、Anthropic、Gemini、Jina/Cohere、Workers AI 已覆盖；复杂签名和长尾 provider 未完成 |
+| Phase 6 计费、订阅、支付 | 部分完成 | 计费表达式与 Stripe 参考链路较完整；生产 shadow、订阅和非 Stripe 支付未完成 |
+| Phase 7 异步与长尾 | 部分完成 | task submit/poll/CAS settle 基础较强；fetch/read/content、真实 provider 和 R2 产物链路仍缺 |
+| Phase 8 灰度上线 | 未达门槛 | 有 staging 子系统证据，但没有完整前端、数据、容量和回滚证据包 |
+| Phase 9 正式切换 | 未开始 | 生产 binding 占位符、生产数据迁移和 operator sign-off 未完成 |
+| Phase 10 收尾 | 未开始 | Go/VPS 不能退役 |
+
+### 22.2 前端迁移状态修订
+
+`apps/web/source/` 现在跟踪完整 Bun workspace，不再依赖部署前从 Go 仓库临时
+`robocopy`。默认前端已完成 frozen install、TypeScript 检查和 Rsbuild 生产构建，
+构建产物由 `tools/build_web.mjs` 复制到 `apps/web/dist/`，并保持同源 API。
+
+首次真实构建审计同时证明“静态资源能构建”不等于“前端已迁移完成”：
+
+- `/api/status` 原先不是 Go-compatible envelope，前端无法读取系统配置；
+- `/api/setup` 的完成状态方向与 Go/前端相反；
+- 钱包、任务、兑换码、订阅等页面仍调用未迁移 API；
+- 严格 lint 仍有 101 errors / 4 warnings；
+- bundle 约 18.9 MB（gzip 约 4.4 MB），需要性能预算和拆包。
+
+状态与安装契约已修正并加入测试。当前 Worker 会通过 `HeaderNavModules` 与
+`SidebarModulesAdmin` 能力收敛隐藏未支持模块；这是过渡期防护，不是这些模块已经完成。
+
+### 22.3 修订后的近期执行波次
+
+**Wave A：可验证的 G5 产品切片**
+
+- 将前端、`/api/status`、`/api/setup` 修复部署到 staging；
+- 浏览器验证 setup、登录、dashboard、keys、channels、users、logs、models、
+  settings、profile 和 hard refresh；
+- 建立前端请求到 Worker route 的自动契约清单；
+- 修复 P0 运行时错误，记录隐藏模块及恢复条件。
+
+**Wave B：高价值、低架构风险的兼容缺口**
+
+- model list/retrieve 协商；
+- Responses compact、moderations、engines embeddings 等 JSON alias；
+- task fetch/read/content；
+- dashboard billing read compatibility；
+- Go SQLite 到 D1 的真实导出、导入、行数、哈希和关系校验。
+
+**Wave C：完整产品族**
+
+- subscription/redemption/check-in；
+- multipart image/audio；
+- email/reset/bind、Passkey；
+- 非 Stripe payment；
+- Realtime 和复杂 provider/Container 路径。
+
+**Wave D：生产切换**
+
+- 清除所有 production placeholder；
+- 完成 billing shadow、支付 replay、容量/成本、安全和 SLO 证据；
+- 演练 D1 restore 与流量回滚；
+- internal-token canary -> percentage canary -> freeze/reconcile -> promote。
+
+### 22.4 当前结论
+
+当前项目应标记为：
+
+> Rust/Cloudflare 核心迁移已形成可部署切片，完整 Go 产品等价迁移仍在进行中。
+
+在 canonical route inventory、生产数据迁移、前端运行时契约、支付/订阅、生产配置与
+cutover evidence 全部闭环前，不得再使用“所有可迁移工作已完成”或“可直接全量替换
+Go/VPS”的结论。

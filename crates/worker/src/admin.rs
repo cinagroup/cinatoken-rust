@@ -13,6 +13,8 @@
 //! plugs into the same `require_user_auth` / `require_admin_auth` /
 //! `require_root_auth` helpers added here.
 
+use std::collections::HashMap;
+
 use cinatoken_auth::{
     hash_password, is_admin, is_root, verify_password, ROLE_ROOT_USER, USER_STATUS_DISABLED,
 };
@@ -22,7 +24,7 @@ use cinatoken_session::{
     COOKIE_NAME, MIN_SECRET_BYTES,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::d1_repositories::AdminAuditInfo;
@@ -48,10 +50,99 @@ const SETUP_PASSWORD_MIN_LEN: usize = 8;
 const SETUP_DEFAULT_ROOT_QUOTA: i64 = 100_000_000;
 const SETUP_DEFAULT_DISPLAY_NAME: &str = "Root User";
 const ADMIN_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const PUBLIC_STATUS_OPTION_KEYS: &[&str] = &[
+    "SystemName",
+    "Logo",
+    "Footer",
+    "DocsLink",
+    "general_setting.docs_link",
+    "general_setting.quota_display_type",
+    "general_setting.custom_currency_symbol",
+    "general_setting.custom_currency_exchange_rate",
+    "RegisterEnabled",
+    "PasswordLoginEnabled",
+    "PasswordRegisterEnabled",
+    "TurnstileSiteKey",
+    "QuotaPerUnit",
+    "DisplayInCurrencyEnabled",
+    "USDExchangeRate",
+    "DisplayTokenStatEnabled",
+    "DemoSiteEnabled",
+    "SelfUseModeEnabled",
+    "legal.user_agreement",
+    "legal.privacy_policy",
+    "HeaderNavModules",
+    "SidebarModulesAdmin",
+    "oidc.authorization_endpoint",
+];
 
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
+
+/// `GET /api/status`: expose the Go-compatible public configuration envelope
+/// consumed by the React application, while retaining Rust runtime diagnostics.
+pub async fn get_status(_req: Request, env: Env) -> WorkerResult<Response> {
+    let environment = env
+        .var("ENVIRONMENT")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "development".to_string());
+    let mut runtime_status = cinatoken_api::status(environment);
+
+    let db = env.d1("DB").ok();
+    set_runtime_feature(&mut runtime_status, "d1", db.is_some());
+    set_runtime_feature(
+        &mut runtime_status,
+        "upstash_redis",
+        crate::cache::upstash_redis_configured(&env),
+    );
+    set_runtime_feature(
+        &mut runtime_status,
+        "relay_rate_limit",
+        crate::relay::relay_rate_limit_configured(&env),
+    );
+    set_runtime_feature(
+        &mut runtime_status,
+        "relay_read_cache",
+        crate::relay::relay_read_cache_configured(&env),
+    );
+    set_runtime_feature(
+        &mut runtime_status,
+        "session_auth",
+        session_auth_configured(&env),
+    );
+    set_runtime_feature(&mut runtime_status, "workers_ai", env.ai("AI").is_ok());
+    set_runtime_feature(
+        &mut runtime_status,
+        "ai_gateway",
+        runtime_value(&env, "AI_GATEWAY_ID").is_some(),
+    );
+
+    let mut options = HashMap::new();
+    let mut setup_completed = false;
+    if let Some(db) = db {
+        match crate::d1_repositories::option_values(&db, PUBLIC_STATUS_OPTION_KEYS).await {
+            Ok(values) => {
+                for (key, value) in PUBLIC_STATUS_OPTION_KEYS.iter().zip(values) {
+                    if let Some(value) = value {
+                        options.insert((*key).to_string(), value);
+                    }
+                }
+            }
+            Err(err) => {
+                worker::console_warn!("failed to read public status options: {}", err);
+            }
+        }
+        match crate::d1_repositories::setup_completed(&db).await {
+            Ok(completed) => setup_completed = completed,
+            Err(err) => worker::console_warn!("failed to read setup status: {}", err),
+        }
+    }
+
+    let public_runtime = PublicRuntimeConfig::from_env(&env);
+    let data = build_frontend_status(runtime_status, &options, setup_completed, &public_runtime)?;
+    envelope_ok_response(&data)
+}
 
 /// `POST /api/user/login`: authenticate by username/email + password, then
 /// issue a signed session cookie and return the user summary.
@@ -470,11 +561,7 @@ pub async fn get_setup(_req: Request, env: Env) -> WorkerResult<Response> {
     let db = env.d1("DB")?;
     let root_init = crate::d1_repositories::root_user_exists(&db).await?;
     let completed = crate::d1_repositories::setup_completed(&db).await?;
-    let body = SetupStatusResponse {
-        status: !completed,
-        root_init,
-        database_type: "d1".to_string(),
-    };
+    let body = build_setup_status(completed, root_init);
     Ok(envelope_ok_response(&body)?)
 }
 
@@ -711,6 +798,14 @@ struct SetupStatusResponse {
     database_type: String,
 }
 
+fn build_setup_status(completed: bool, root_init: bool) -> SetupStatusResponse {
+    SetupStatusResponse {
+        status: completed,
+        root_init,
+        database_type: "d1".to_string(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct SetupRequest {
     username: String,
@@ -723,6 +818,298 @@ struct SetupRequest {
 struct SetupCompleteResponse {
     username: String,
     role: i32,
+}
+
+#[derive(Debug, Default)]
+struct PublicRuntimeConfig {
+    github_client_id: Option<String>,
+    github_oauth: bool,
+    discord_client_id: Option<String>,
+    discord_oauth: bool,
+    oidc_client_id: Option<String>,
+    oidc_authorization_endpoint: Option<String>,
+    oidc_backend_configured: bool,
+    turnstile_site_key: Option<String>,
+    turnstile_check: bool,
+}
+
+impl PublicRuntimeConfig {
+    fn from_env(env: &Env) -> Self {
+        let github_client_id = runtime_value(env, "GITHUB_CLIENT_ID");
+        let github_oauth =
+            github_client_id.is_some() && runtime_value(env, "GITHUB_CLIENT_SECRET").is_some();
+
+        let discord_client_id = runtime_value(env, "DISCORD_CLIENT_ID");
+        let discord_oauth = discord_client_id.is_some()
+            && runtime_value(env, "DISCORD_CLIENT_SECRET").is_some()
+            && runtime_value(env, "DISCORD_REDIRECT_URI").is_some();
+
+        let oidc_client_id = runtime_value(env, "OIDC_CLIENT_ID");
+        let oidc_authorization_endpoint = runtime_value(env, "OIDC_AUTHORIZATION_ENDPOINT");
+        let oidc_backend_configured = oidc_client_id.is_some()
+            && runtime_value(env, "OIDC_CLIENT_SECRET").is_some()
+            && runtime_value(env, "OIDC_TOKEN_URL").is_some()
+            && runtime_value(env, "OIDC_USERINFO_URL").is_some()
+            && runtime_value(env, "OIDC_REDIRECT_URI").is_some();
+
+        Self {
+            github_client_id,
+            github_oauth,
+            discord_client_id,
+            discord_oauth,
+            oidc_client_id,
+            oidc_authorization_endpoint,
+            oidc_backend_configured,
+            turnstile_site_key: runtime_value(env, "TURNSTILE_SITE_KEY"),
+            turnstile_check: runtime_value(env, "TURNSTILE_SECRET").is_some(),
+        }
+    }
+}
+
+fn runtime_value(env: &Env, name: &str) -> Option<String> {
+    env.secret(name)
+        .map(|value| value.to_string())
+        .ok()
+        .or_else(|| env.var(name).map(|value| value.to_string()).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn set_runtime_feature(
+    status: &mut cinatoken_core::StatusResponse,
+    name: &'static str,
+    enabled: bool,
+) {
+    if let Some(feature) = status
+        .features
+        .iter_mut()
+        .find(|feature| feature.name == name)
+    {
+        feature.enabled = enabled;
+    }
+}
+
+fn option_string(options: &HashMap<String, String>, key: &str, default: &str) -> String {
+    options
+        .get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn option_bool(options: &HashMap<String, String>, key: &str, default: bool) -> bool {
+    options
+        .get(key)
+        .map(|value| {
+            let value = value.trim();
+            value == "1" || value.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(default)
+}
+
+fn option_number(options: &HashMap<String, String>, key: &str, default: f64) -> f64 {
+    options
+        .get(key)
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(default)
+}
+
+fn configured_sidebar_bool(
+    configured: Option<&Value>,
+    section: &str,
+    field: &str,
+    default: bool,
+) -> bool {
+    configured
+        .and_then(|value| value.get(section))
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_bool)
+        .unwrap_or(default)
+}
+
+fn configured_header_bool(
+    configured: Option<&Value>,
+    field: &str,
+    nested_field: Option<&str>,
+    default: bool,
+) -> bool {
+    let value = configured.and_then(|value| value.get(field));
+    match nested_field {
+        Some(nested) => value
+            .and_then(|value| value.get(nested))
+            .and_then(Value::as_bool)
+            .unwrap_or(default),
+        None => value.and_then(Value::as_bool).unwrap_or(default),
+    }
+}
+
+fn capability_clamped_header(raw: Option<&str>) -> String {
+    let configured = raw
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let configured = configured.as_ref();
+
+    serde_json::json!({
+        "home": configured_header_bool(configured, "home", None, true),
+        "console": configured_header_bool(configured, "console", None, true),
+        "pricing": {
+            "enabled": configured_header_bool(configured, "pricing", Some("enabled"), true),
+            "requireAuth": configured_header_bool(configured, "pricing", Some("requireAuth"), false)
+        },
+        "rankings": {
+            "enabled": false,
+            "requireAuth": true
+        },
+        "docs": configured_header_bool(configured, "docs", None, true),
+        "about": configured_header_bool(configured, "about", None, true)
+    })
+    .to_string()
+}
+
+/// Preserve operator choices for supported modules, but never advertise pages
+/// whose backing APIs are not yet available in the Rust deployment.
+fn capability_clamped_sidebar(raw: Option<&str>) -> String {
+    let configured = raw
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let configured = configured.as_ref();
+
+    serde_json::json!({
+        "chat": {
+            "enabled": configured_sidebar_bool(configured, "chat", "enabled", true),
+            "playground": false,
+            "chat": configured_sidebar_bool(configured, "chat", "chat", true)
+        },
+        "console": {
+            "enabled": configured_sidebar_bool(configured, "console", "enabled", true),
+            "detail": configured_sidebar_bool(configured, "console", "detail", true),
+            "token": configured_sidebar_bool(configured, "console", "token", true),
+            "log": configured_sidebar_bool(configured, "console", "log", true),
+            "midjourney": false,
+            "task": false
+        },
+        "personal": {
+            "enabled": configured_sidebar_bool(configured, "personal", "enabled", true),
+            "topup": false,
+            "personal": configured_sidebar_bool(configured, "personal", "personal", true)
+        },
+        "admin": {
+            "enabled": configured_sidebar_bool(configured, "admin", "enabled", true),
+            "channel": configured_sidebar_bool(configured, "admin", "channel", true),
+            "models": configured_sidebar_bool(configured, "admin", "models", true),
+            "redemption": false,
+            "user": configured_sidebar_bool(configured, "admin", "user", true),
+            "setting": configured_sidebar_bool(configured, "admin", "setting", true),
+            "subscription": false
+        }
+    })
+    .to_string()
+}
+
+fn build_frontend_status(
+    runtime_status: cinatoken_core::StatusResponse,
+    options: &HashMap<String, String>,
+    setup_completed: bool,
+    runtime: &PublicRuntimeConfig,
+) -> WorkerResult<Value> {
+    let mut data = match serde_json::to_value(runtime_status).map_err(|err| {
+        worker::Error::RustError(format!("failed to encode runtime status: {err}"))
+    })? {
+        Value::Object(data) => data,
+        _ => Map::new(),
+    };
+
+    let register_enabled = option_bool(options, "RegisterEnabled", true);
+    let password_register_enabled = option_bool(options, "PasswordRegisterEnabled", true);
+    let sidebar =
+        capability_clamped_sidebar(options.get("SidebarModulesAdmin").map(String::as_str));
+    let header = capability_clamped_header(options.get("HeaderNavModules").map(String::as_str));
+    let turnstile_site_key = runtime
+        .turnstile_site_key
+        .clone()
+        .unwrap_or_else(|| option_string(options, "TurnstileSiteKey", ""));
+    let oidc_authorization_endpoint = runtime
+        .oidc_authorization_endpoint
+        .clone()
+        .or_else(|| options.get("oidc.authorization_endpoint").cloned())
+        .filter(|value| !value.trim().is_empty());
+    let oidc_enabled = runtime.oidc_backend_configured && oidc_authorization_endpoint.is_some();
+    let oauth_register_enabled =
+        register_enabled && (runtime.github_oauth || runtime.discord_oauth || oidc_enabled);
+    let docs_link = options
+        .get("general_setting.docs_link")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| option_string(options, "DocsLink", "https://docs.cinatoken.com"));
+    let quota_display_type = options
+        .get("general_setting.quota_display_type")
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| matches!(value.as_str(), "USD" | "CNY" | "TOKENS" | "CUSTOM"))
+        .unwrap_or_else(|| {
+            if option_bool(options, "DisplayInCurrencyEnabled", true) {
+                "USD".to_string()
+            } else {
+                "TOKENS".to_string()
+            }
+        });
+    let custom_currency_symbol =
+        option_string(options, "general_setting.custom_currency_symbol", "$");
+    let custom_currency_exchange_rate = option_number(
+        options,
+        "general_setting.custom_currency_exchange_rate",
+        1.0,
+    );
+
+    let compatibility = serde_json::json!({
+        "system_name": option_string(options, "SystemName", "CinaToken"),
+        "logo": option_string(options, "Logo", "/logo.png"),
+        "footer_html": option_string(options, "Footer", ""),
+        "docs_link": docs_link,
+        "setup": setup_completed,
+        "register_enabled": register_enabled,
+        "password_login_enabled": option_bool(options, "PasswordLoginEnabled", true),
+        "password_register_enabled": password_register_enabled,
+        "email_verification": false,
+        "github_oauth": runtime.github_oauth,
+        "github_client_id": runtime.github_client_id,
+        "discord_oauth": runtime.discord_oauth,
+        "discord_client_id": runtime.discord_client_id,
+        "oidc_enabled": oidc_enabled,
+        "oidc_client_id": runtime.oidc_client_id,
+        "oidc_authorization_endpoint": oidc_authorization_endpoint,
+        "linuxdo_oauth": false,
+        "telegram_oauth": false,
+        "wechat_login": false,
+        "passkey_login": false,
+        "oauth_register_enabled": oauth_register_enabled,
+        "turnstile_check": runtime.turnstile_check,
+        "turnstile_site_key": turnstile_site_key,
+        "quota_per_unit": option_number(options, "QuotaPerUnit", 500_000.0),
+        "display_in_currency": quota_display_type != "TOKENS",
+        "quota_display_type": quota_display_type,
+        "usd_exchange_rate": option_number(options, "USDExchangeRate", 7.3),
+        "custom_currency_symbol": custom_currency_symbol,
+        "custom_currency_exchange_rate": custom_currency_exchange_rate,
+        "display_token_stat_enabled": option_bool(options, "DisplayTokenStatEnabled", true),
+        "demo_site_enabled": option_bool(options, "DemoSiteEnabled", false),
+        "self_use_mode_enabled": option_bool(options, "SelfUseModeEnabled", false),
+        "user_agreement_enabled": options.get("legal.user_agreement").is_some_and(|value| !value.trim().is_empty()),
+        "privacy_policy_enabled": options.get("legal.privacy_policy").is_some_and(|value| !value.trim().is_empty()),
+        "checkin_enabled": false,
+        "enable_drawing": false,
+        "enable_task": false,
+        "enable_data_export": false,
+        "enable_deployments": false,
+        "HeaderNavModules": header,
+        "SidebarModulesAdmin": sidebar
+    });
+    if let Value::Object(compatibility) = compatibility {
+        data.extend(compatibility);
+    }
+    Ok(Value::Object(data))
 }
 
 fn session_secret(env: &Env) -> WorkerResult<Option<Vec<u8>>> {
@@ -875,6 +1262,170 @@ mod tests {
         assert_eq!(SETUP_PASSWORD_MIN_LEN, 8);
         assert_eq!(SETUP_DEFAULT_ROOT_QUOTA, 100_000_000);
         assert_eq!(SETUP_DEFAULT_DISPLAY_NAME, "Root User");
+    }
+
+    #[test]
+    fn public_status_option_whitelist_excludes_secrets() {
+        assert!(PUBLIC_STATUS_OPTION_KEYS.contains(&"SystemName"));
+        assert!(PUBLIC_STATUS_OPTION_KEYS.contains(&"SidebarModulesAdmin"));
+        for forbidden in [
+            "StripeApiSecret",
+            "StripeWebhookSecret",
+            "OIDCClientSecret",
+            "TurnstileSecretKey",
+            "SMTPToken",
+            "WorkerValidKey",
+        ] {
+            assert!(
+                !PUBLIC_STATUS_OPTION_KEYS.contains(&forbidden),
+                "{forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_status_true_means_initialization_is_complete() {
+        let complete = build_setup_status(true, true);
+        assert!(complete.status);
+        assert!(complete.root_init);
+        assert_eq!(complete.database_type, "d1");
+
+        let pending = build_setup_status(false, false);
+        assert!(!pending.status);
+        assert!(!pending.root_init);
+    }
+
+    #[test]
+    fn frontend_status_preserves_runtime_diagnostics_and_go_fields() {
+        let mut options = HashMap::new();
+        options.insert("SystemName".to_string(), "Production CinaToken".to_string());
+        options.insert("RegisterEnabled".to_string(), "false".to_string());
+        options.insert("QuotaPerUnit".to_string(), "750000".to_string());
+        options.insert(
+            "general_setting.docs_link".to_string(),
+            "https://docs.example.test".to_string(),
+        );
+        options.insert(
+            "general_setting.quota_display_type".to_string(),
+            "CUSTOM".to_string(),
+        );
+        options.insert(
+            "general_setting.custom_currency_symbol".to_string(),
+            "C".to_string(),
+        );
+        options.insert(
+            "general_setting.custom_currency_exchange_rate".to_string(),
+            "2.5".to_string(),
+        );
+
+        let data = build_frontend_status(
+            cinatoken_api::status("test"),
+            &options,
+            true,
+            &PublicRuntimeConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(data["service"], "cinatoken-rust");
+        assert_eq!(data["environment"], "test");
+        assert_eq!(data["system_name"], "Production CinaToken");
+        assert_eq!(data["register_enabled"], false);
+        assert_eq!(data["quota_per_unit"], 750_000.0);
+        assert_eq!(data["docs_link"], "https://docs.example.test");
+        assert_eq!(data["quota_display_type"], "CUSTOM");
+        assert_eq!(data["display_in_currency"], true);
+        assert_eq!(data["custom_currency_symbol"], "C");
+        assert_eq!(data["custom_currency_exchange_rate"], 2.5);
+        assert_eq!(data["setup"], true);
+        assert_eq!(data["enable_deployments"], false);
+        assert!(data["features"].is_array());
+    }
+
+    #[test]
+    fn sidebar_status_never_reenables_unported_modules() {
+        let raw = serde_json::json!({
+            "chat": {"enabled": true, "playground": true, "chat": false},
+            "console": {
+                "enabled": true,
+                "detail": false,
+                "token": true,
+                "log": true,
+                "midjourney": true,
+                "task": true
+            },
+            "personal": {"enabled": true, "topup": true, "personal": true},
+            "admin": {
+                "enabled": true,
+                "channel": true,
+                "models": true,
+                "redemption": true,
+                "user": true,
+                "setting": true,
+                "subscription": true
+            }
+        })
+        .to_string();
+        let clamped: Value = serde_json::from_str(&capability_clamped_sidebar(Some(&raw))).unwrap();
+
+        assert_eq!(clamped["chat"]["chat"], false);
+        assert_eq!(clamped["console"]["detail"], false);
+        assert_eq!(clamped["console"]["token"], true);
+        assert_eq!(clamped["chat"]["playground"], false);
+        assert_eq!(clamped["console"]["midjourney"], false);
+        assert_eq!(clamped["console"]["task"], false);
+        assert_eq!(clamped["personal"]["topup"], false);
+        assert_eq!(clamped["admin"]["redemption"], false);
+        assert_eq!(clamped["admin"]["subscription"], false);
+    }
+
+    #[test]
+    fn header_status_never_advertises_unported_rankings() {
+        let raw = serde_json::json!({
+            "home": false,
+            "console": true,
+            "pricing": {"enabled": false, "requireAuth": true},
+            "rankings": {"enabled": true, "requireAuth": false},
+            "docs": true,
+            "about": true
+        })
+        .to_string();
+        let clamped: Value = serde_json::from_str(&capability_clamped_header(Some(&raw))).unwrap();
+
+        assert_eq!(clamped["home"], false);
+        assert_eq!(clamped["pricing"]["enabled"], false);
+        assert_eq!(clamped["pricing"]["requireAuth"], true);
+        assert_eq!(clamped["rankings"]["enabled"], false);
+        assert_eq!(clamped["rankings"]["requireAuth"], true);
+    }
+
+    #[test]
+    fn oidc_is_advertised_only_with_backend_and_authorization_endpoint() {
+        let mut options = HashMap::new();
+        options.insert(
+            "oidc.authorization_endpoint".to_string(),
+            "https://issuer.example/authorize".to_string(),
+        );
+        let runtime = PublicRuntimeConfig {
+            oidc_client_id: Some("client".to_string()),
+            oidc_backend_configured: true,
+            ..PublicRuntimeConfig::default()
+        };
+        let data =
+            build_frontend_status(cinatoken_api::status("test"), &options, true, &runtime).unwrap();
+        assert_eq!(data["oidc_enabled"], true);
+        assert_eq!(
+            data["oidc_authorization_endpoint"],
+            "https://issuer.example/authorize"
+        );
+
+        let disabled = build_frontend_status(
+            cinatoken_api::status("test"),
+            &options,
+            true,
+            &PublicRuntimeConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(disabled["oidc_enabled"], false);
     }
 
     #[test]

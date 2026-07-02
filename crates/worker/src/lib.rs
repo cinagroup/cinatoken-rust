@@ -341,6 +341,15 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .put_async("/api/channel/tag", |req, ctx| async move {
             admin_channel::edit_tag_channels(req, ctx.env).await
         })
+        // Channel connectivity ops (use the channel's own stored key).
+        .get_async("/api/channel/test/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_channel::test_channel(req, ctx.env, id.as_ref()).await
+        })
+        .get_async("/api/channel/fetch_models/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_channel::fetch_upstream_models(req, ctx.env, id.as_ref()).await
+        })
         // Model metadata + vendor CRUD (Go /api/models/* + /api/vendors/*,
         // AdminAuth; backs the 0008 tables the pricing endpoint reads).
         .get_async("/api/models/", |req, ctx| async move {

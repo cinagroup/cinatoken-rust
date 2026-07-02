@@ -2644,6 +2644,26 @@ pub async fn set_channels_status_by_tag(
     Ok(())
 }
 
+/// Record a successful channel test (Go `TestChannel`): latency in ms +
+/// test timestamp.
+pub async fn record_channel_test(
+    db: &D1Database,
+    id: i64,
+    response_time_ms: i64,
+    tested_at: i64,
+) -> worker::Result<()> {
+    let args = [
+        D1Type::Integer(d1_i32(response_time_ms)),
+        D1Type::Integer(d1_i32(tested_at)),
+        D1Type::Integer(d1_i32(id)),
+    ];
+    db.prepare(r#"UPDATE channels SET response_time = ?1, test_time = ?2 WHERE id = ?3"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
 /// Optional fields for a bulk edit of the channels carrying a tag (Go
 /// `EditChannelByTag`). `None` fields are left unchanged.
 #[derive(Debug, Default)]

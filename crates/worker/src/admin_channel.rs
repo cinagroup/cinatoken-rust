@@ -36,6 +36,173 @@ pub async fn enabled_list_models(req: Request, env: Env) -> WorkerResult<Respons
     envelope_ok_response(&models)
 }
 
+/// `GET /api/channel/test/:id?model=`: send a minimal chat completion through
+/// the channel with its own stored key and record the latency (Go
+/// `TestChannel`). Test model precedence: query param > channel `test_model` >
+/// first of the channel's `models` CSV > `gpt-4o-mini` (Go's fallback chain).
+/// On success the channel's `response_time`/`test_time` are updated and the
+/// elapsed seconds returned. Bounded subset vs Go (documented): tests the
+/// OpenAI-compatible chat endpoint only (no per-endpoint-type dispatch /
+/// embedding / rerank variants).
+pub async fn test_channel(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let Some(id) = parse_id_param(id_param) else {
+        return Ok(envelope_error_response(400, "invalid channel id"));
+    };
+    let db = env.d1("DB")?;
+    let Some(channel) = d1_repositories::find_channel_by_id(&db, id).await? else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+    let query_model = parse_query_string(&req, "model");
+    let test_model = query_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            channel
+                .test_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            channel
+                .models
+                .split(',')
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+
+    let url = format!(
+        "{}/v1/chat/completions",
+        channel.base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "model": test_model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    });
+    let mut headers = worker::Headers::new();
+    headers.set("Content-Type", "application/json")?;
+    headers.set("Authorization", &format!("Bearer {}", channel.key))?;
+    let mut init = worker::RequestInit::new();
+    init.with_method(worker::Method::Post)
+        .with_headers(headers)
+        .with_body(Some(body.to_string().into()));
+    let outbound = Request::new_with_init(&url, &init)?;
+
+    let started = js_sys::Date::now();
+    let result = worker::Fetch::Request(outbound).send().await;
+    let elapsed_ms = (js_sys::Date::now() - started).max(0.0);
+    let mut upstream = match result {
+        Ok(response) => response,
+        Err(err) => {
+            return Response::from_json(&serde_json::json!({
+                "success": false,
+                "message": format!("channel request failed: {err}"),
+                "time": 0.0,
+            }));
+        }
+    };
+    if upstream.status_code() < 200 || upstream.status_code() >= 300 {
+        let detail = upstream.text().await.unwrap_or_default();
+        let truncated: String = detail.chars().take(300).collect();
+        return Response::from_json(&serde_json::json!({
+            "success": false,
+            "message": format!(
+                "upstream status {}: {truncated}",
+                upstream.status_code()
+            ),
+            "time": 0.0,
+        }));
+    }
+    // Record the measured latency on the channel (Go updates response_time in
+    // ms + test_time).
+    d1_repositories::record_channel_test(&db, id, elapsed_ms as i64, unix_timestamp()).await?;
+    Response::from_json(&serde_json::json!({
+        "success": true,
+        "message": "",
+        "time": elapsed_ms / 1000.0,
+    }))
+}
+
+/// `GET /api/channel/fetch_models/:id`: list the upstream's available model ids
+/// by calling `{base_url}/v1/models` with the channel's own key (Go
+/// `FetchUpstreamModels`, OpenAI-compatible shape).
+pub async fn fetch_upstream_models(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let Some(id) = parse_id_param(id_param) else {
+        return Ok(envelope_error_response(400, "invalid channel id"));
+    };
+    let db = env.d1("DB")?;
+    let Some(channel) = d1_repositories::find_channel_by_id(&db, id).await? else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+    let url = format!("{}/v1/models", channel.base_url.trim_end_matches('/'));
+    let mut headers = worker::Headers::new();
+    headers.set("Authorization", &format!("Bearer {}", channel.key))?;
+    let mut init = worker::RequestInit::new();
+    init.with_method(worker::Method::Get).with_headers(headers);
+    let outbound = Request::new_with_init(&url, &init)?;
+    let mut upstream = match worker::Fetch::Request(outbound).send().await {
+        Ok(response) => response,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                502,
+                &format!("failed to fetch upstream models: {err}"),
+            ));
+        }
+    };
+    if upstream.status_code() < 200 || upstream.status_code() >= 300 {
+        return Ok(envelope_error_response(
+            502,
+            &format!("upstream status {}", upstream.status_code()),
+        ));
+    }
+    #[derive(serde::Deserialize)]
+    struct ModelsList {
+        #[serde(default)]
+        data: Vec<ModelEntry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ModelEntry {
+        #[serde(default)]
+        id: String,
+    }
+    let parsed: ModelsList = match upstream.json().await {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                502,
+                &format!("unparseable upstream models response: {err}"),
+            ));
+        }
+    };
+    let ids: Vec<String> = parsed
+        .data
+        .into_iter()
+        .map(|entry| entry.id)
+        .filter(|id| !id.is_empty())
+        .collect();
+    envelope_ok_response(&ids)
+}
+
 /// A `{ "tag": "..." }` body (Go `ChannelTag`).
 #[derive(Debug, Deserialize, Default)]
 struct ChannelTagRequest {

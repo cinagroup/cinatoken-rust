@@ -15,6 +15,13 @@ pub const CHANNEL_TYPE_SILICONFLOW: i32 = 40;
 pub const CHANNEL_TYPE_MISTRAL: i32 = 42;
 pub const CHANNEL_TYPE_DEEPSEEK: i32 = 43;
 pub const CHANNEL_TYPE_MOKAAI: i32 = 44;
+/// Cloudflare Workers AI (Go `ChannelCloudflare`). Speaks the OpenAI wire
+/// format via the Workers AI REST endpoint (`{account base}/ai/v1/...`, the
+/// account-scoped base configured on the channel) or an AI Gateway workers-ai
+/// route; the worker additionally executes these channels natively over the
+/// `AI` binding when the channel key is `internal` (see
+/// `relay.rs::forward_workers_ai_binding`).
+pub const CHANNEL_TYPE_CLOUDFLARE: i32 = 39;
 pub const CHANNEL_TYPE_XAI: i32 = 48;
 pub const CHANNEL_TYPE_SUBMODEL: i32 = 53;
 
@@ -38,6 +45,7 @@ pub const OPENAI_COMPATIBLE_CHANNEL_TYPES: &[i32] = &[
     CHANNEL_TYPE_MISTRAL,     // 42 Mistral
     CHANNEL_TYPE_DEEPSEEK,    // 43 DeepSeek
     CHANNEL_TYPE_MOKAAI,      // 44 MokaAI
+    CHANNEL_TYPE_CLOUDFLARE,  // 39 Cloudflare Workers AI (REST/gateway/binding)
     CHANNEL_TYPE_XAI,         // 48 xAI (Grok)
     CHANNEL_TYPE_SUBMODEL,    // 53 Submodel
 ];
@@ -345,6 +353,11 @@ pub fn default_base_url(channel_type: i32) -> &'static str {
         CHANNEL_TYPE_MOKAAI => "https://api.moka.ai",
         CHANNEL_TYPE_XAI => "https://api.x.ai",
         CHANNEL_TYPE_SUBMODEL => "https://llm.submodel.ai",
+        // Cloudflare Workers AI: the account-scoped OpenAI-compatible root is
+        // `https://api.cloudflare.com/client/v4/accounts/{account}/ai`, which
+        // must be configured per channel (there is no account-independent
+        // default). Go likewise defaults ChannelCloudflare to the API host.
+        CHANNEL_TYPE_CLOUDFLARE => "https://api.cloudflare.com",
         CHANNEL_TYPE_COHERE => "https://api.cohere.ai",
         CHANNEL_TYPE_JINA => "https://api.jina.ai",
         CHANNEL_TYPE_GEMINI => "https://generativelanguage.googleapis.com",
@@ -1302,6 +1315,31 @@ mod tests {
                 "channel type {channel_type} should map to its default base URL"
             );
         }
+    }
+
+    #[test]
+    fn cloudflare_workers_ai_channel_routes_like_go() {
+        // Type 39 is selectable as OpenAI-compatible.
+        assert!(OPENAI_COMPATIBLE_CHANNEL_TYPES.contains(&CHANNEL_TYPE_CLOUDFLARE));
+        // The account-scoped Workers AI REST root (channel base_url) builds
+        // Go's `{base}/client/v4/accounts/{acct}/ai/v1/chat/completions`.
+        assert_eq!(
+            upstream_v1_url(
+                CHANNEL_TYPE_CLOUDFLARE,
+                Some("https://api.cloudflare.com/client/v4/accounts/acct123/ai"),
+                "chat/completions"
+            ),
+            "https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1/chat/completions"
+        );
+        // An AI Gateway workers-ai route (already version-suffixed) is honored.
+        assert_eq!(
+            upstream_v1_url(
+                CHANNEL_TYPE_CLOUDFLARE,
+                Some("https://gateway.ai.cloudflare.com/v1/acct123/my-gw/workers-ai/v1"),
+                "chat/completions"
+            ),
+            "https://gateway.ai.cloudflare.com/v1/acct123/my-gw/workers-ai/v1/chat/completions"
+        );
     }
 
     #[test]

@@ -825,15 +825,43 @@ async fn relay_endpoint(
                         should_relay_stream,
                     );
                 }
-                forward_relay_request(
-                    endpoint.provider,
-                    &upstream_url,
-                    &upstream_key,
-                    &channel,
-                    &upstream_body,
-                    &provider_headers,
-                )
-                .await
+                // Workers AI binding channels (type 39, key `internal`) run
+                // in-platform instead of over HTTP. Chat completions only;
+                // streaming is not supported by the synthesized path, so it is
+                // answered with an upstream-shaped 400 (flows the normal
+                // upstream-error handling, unbilled).
+                if is_workers_ai_binding_channel(&channel)
+                    && endpoint.provider == RelayProviderKind::OpenAiCompatible
+                    && endpoint.upstream_path == "chat/completions"
+                {
+                    if should_relay_stream {
+                        let error_body = serde_json::json!({
+                            "error": {
+                                "message": "streaming is not supported for Workers AI binding channels",
+                                "type": "invalid_request_error",
+                            }
+                        });
+                        Response::from_json(&error_body)
+                            .map(|response| response.with_status(400))
+                    } else {
+                        let upstream_model = upstream_body
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&model)
+                            .to_string();
+                        forward_workers_ai_binding(&env, &upstream_model, &upstream_body).await
+                    }
+                } else {
+                    forward_relay_request(
+                        endpoint.provider,
+                        &upstream_url,
+                        &upstream_key,
+                        &channel,
+                        &upstream_body,
+                        &provider_headers,
+                    )
+                    .await
+                }
             }
             RelayRequestBody::Raw {
                 bytes,
@@ -2426,6 +2454,107 @@ async fn forward_relay_request(
         }
         RelayProviderKind::GeminiNative => forward_gemini_native(url, upstream_key, body).await,
     }
+}
+
+/// Execute a Cloudflare Workers AI channel natively over the `AI` binding —
+/// no egress, no API token (the binding is authenticated by the deployment).
+/// Selected when a type-39 (Cloudflare) channel's key is the sentinel
+/// `internal`. The OpenAI body's `messages` + sampling params map onto the
+/// Workers AI native input, and the `{response, usage}` output is synthesized
+/// back into an OpenAI `chat.completion`, so the rest of the relay (usage
+/// parsing, billing, audit) applies unchanged. When `AI_GATEWAY_ID` is
+/// configured, the request is routed through that AI Gateway via the 3-arg
+/// `run(model, inputs, {gateway})` the JS binding exposes (workers-rs 0.5 only
+/// wraps the 2-arg form, hence the reflection). Non-stream only — the caller
+/// rejects stream requests for binding channels before getting here.
+async fn forward_workers_ai_binding(
+    env: &Env,
+    model: &str,
+    body: &Value,
+) -> worker::Result<Response> {
+    use wasm_bindgen::JsCast;
+
+    let mut input = serde_json::Map::new();
+    if let Some(messages) = body.get("messages") {
+        input.insert("messages".to_string(), messages.clone());
+    }
+    for key in ["max_tokens", "temperature", "top_p", "seed"] {
+        if let Some(value) = body.get(key) {
+            input.insert(key.to_string(), value.clone());
+        }
+    }
+    let input_js = js_sys::JSON::parse(&Value::Object(input).to_string())
+        .map_err(|_| worker::Error::RustError("workers-ai input encode failed".to_string()))?;
+
+    let ai = env.ai("AI")?;
+    let ai_js: &wasm_bindgen::JsValue = ai.as_ref();
+    let run_fn = js_sys::Reflect::get(ai_js, &wasm_bindgen::JsValue::from_str("run"))
+        .ok()
+        .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+        .ok_or_else(|| worker::Error::RustError("AI binding has no run()".to_string()))?;
+    let gateway_id = env
+        .var("AI_GATEWAY_ID")
+        .map(|value| value.to_string())
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let call_result = if let Some(gateway_id) = gateway_id {
+        let options =
+            js_sys::JSON::parse(&serde_json::json!({"gateway": {"id": gateway_id}}).to_string())
+                .map_err(|_| {
+                    worker::Error::RustError("workers-ai gateway options encode failed".to_string())
+                })?;
+        run_fn.call3(
+            ai_js,
+            &wasm_bindgen::JsValue::from_str(model),
+            &input_js,
+            &options,
+        )
+    } else {
+        run_fn.call2(ai_js, &wasm_bindgen::JsValue::from_str(model), &input_js)
+    };
+    let promise: js_sys::Promise = call_result
+        .map_err(|err| worker::Error::RustError(format!("workers-ai run failed: {err:?}")))?
+        .into();
+    let output = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|err| worker::Error::RustError(format!("workers-ai error: {err:?}")))?;
+    let output_json = js_sys::JSON::stringify(&output)
+        .ok()
+        .and_then(|value| value.as_string())
+        .ok_or_else(|| worker::Error::RustError("workers-ai output encode failed".to_string()))?;
+    let output: Value = serde_json::from_str(&output_json)
+        .map_err(|err| worker::Error::RustError(format!("workers-ai output parse: {err}")))?;
+
+    let content = output
+        .get("response")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    // Most Workers AI text models report token usage; absence flows the
+    // relay's normal missing-usage path (refund or local estimate).
+    let usage = output.get("usage").cloned().unwrap_or_else(
+        || serde_json::json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
+    );
+    let completion = serde_json::json!({
+        "id": "chatcmpl-workers-ai",
+        "object": "chat.completion",
+        "created": unix_timestamp(),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+        "usage": usage,
+    });
+    Response::from_json(&completion)
+}
+
+/// `true` when this channel executes over the Workers AI binding rather than
+/// an outbound HTTP upstream.
+fn is_workers_ai_binding_channel(channel: &RelayChannel) -> bool {
+    channel.channel_type == cinatoken_relay::openai_compatible::CHANNEL_TYPE_CLOUDFLARE
+        && channel.key.trim() == "internal"
 }
 
 async fn forward_openai_compatible(

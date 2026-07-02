@@ -49,6 +49,14 @@ impl StatusResponse {
                     name: "session_auth",
                     enabled: false,
                 },
+                RuntimeFeature {
+                    name: "workers_ai",
+                    enabled: false,
+                },
+                RuntimeFeature {
+                    name: "ai_gateway",
+                    enabled: false,
+                },
             ],
         }
     }

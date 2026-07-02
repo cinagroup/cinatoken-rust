@@ -110,6 +110,17 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
                 "session_auth",
                 admin::session_auth_configured(&ctx.env),
             );
+            // Workers AI binding (type-39 `internal` channels run in-platform).
+            set_feature(&mut status, "workers_ai", ctx.env.ai("AI").is_ok());
+            // AI Gateway routing for binding calls (AI_GATEWAY_ID var).
+            set_feature(
+                &mut status,
+                "ai_gateway",
+                ctx.env
+                    .var("AI_GATEWAY_ID")
+                    .map(|value| !value.to_string().trim().is_empty())
+                    .unwrap_or(false),
+            );
             json_with_status(&status, 200)
         })
         .get("/v1/models", |_, _| {

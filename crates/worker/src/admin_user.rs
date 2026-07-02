@@ -1030,6 +1030,23 @@ fn build_user_groups(
     serde_json::Value::Object(out)
 }
 
+fn sorted_group_names(ratios: &std::collections::HashMap<String, f64>) -> Vec<String> {
+    let mut groups: Vec<String> = ratios.keys().cloned().collect();
+    groups.sort();
+    groups
+}
+
+async fn configured_group_ratios(
+    db: &worker::D1Database,
+) -> WorkerResult<std::collections::HashMap<String, f64>> {
+    let ratio_option =
+        match d1_repositories::get_option(db, "group_ratio_setting.group_ratio").await? {
+            Some(value) => Some(value),
+            None => d1_repositories::get_option(db, "GroupRatio").await?,
+        };
+    Ok(parse_group_ratios(ratio_option.as_deref()))
+}
+
 /// Shared GetUserGroups body. `user_group` only feeds the per-user-group ratio
 /// overrides / special usable-group `+:`/`-:` rules, both deferred (their Go
 /// defaults are example placeholders), so the default-config result is identical
@@ -1041,13 +1058,18 @@ async fn user_groups_response(env: &Env) -> WorkerResult<Response> {
             .await?
             .as_deref(),
     );
-    let ratio_option =
-        match d1_repositories::get_option(&db, "group_ratio_setting.group_ratio").await? {
-            Some(value) => Some(value),
-            None => d1_repositories::get_option(&db, "GroupRatio").await?,
-        };
-    let ratios = parse_group_ratios(ratio_option.as_deref());
+    let ratios = configured_group_ratios(&db).await?;
     Ok(envelope_ok_response(&build_user_groups(&usable, &ratios))?)
+}
+
+/// `GET /api/group/`: all configured groups for channel/user admin forms.
+pub async fn get_groups(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let db = env.d1("DB")?;
+    let ratios = configured_group_ratios(&db).await?;
+    Ok(envelope_ok_response(&sorted_group_names(&ratios))?)
 }
 
 /// `GET /api/user/self/groups`: usable groups for the logged-in user.
@@ -1844,6 +1866,15 @@ mod tests {
         assert_eq!(m.get("vip"), Some(&0.5)); // overridden
         assert_eq!(m.get("default"), Some(&1.0)); // default kept
         assert_eq!(m.get("gold"), Some(&2.0)); // added from string
+    }
+
+    #[test]
+    fn group_names_are_stable_and_include_configured_groups() {
+        let ratios = parse_group_ratios(Some(r#"{"vip":0.5,"gold":"2"}"#));
+        assert_eq!(
+            sorted_group_names(&ratios),
+            vec!["default", "gold", "svip", "vip"]
+        );
     }
 
     #[test]

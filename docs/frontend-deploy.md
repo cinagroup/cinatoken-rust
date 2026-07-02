@@ -1,9 +1,10 @@
 # Frontend Deploy
 
-Date: 2026-07-02
+Date: 2026-07-03
 
-Status: source migrated and local production build verified; staging browser
-smoke and full frontend/API parity remain open.
+Status: source migrated, production build verified, and the deployed staging
+artifact/HTTP contract verified; authenticated browser smoke and full
+frontend/API parity remain open.
 
 ## Source
 
@@ -92,6 +93,36 @@ advertised:
 This is a temporary product boundary. It does not replace route migration or
 direct-URL error handling.
 
+## Automated Contract Audit
+
+The repository now has two complementary frontend checks:
+
+```powershell
+bun run audit:web:routes
+bun run check:web:staging
+```
+
+`audit:web:routes` parses the default frontend with the TypeScript compiler API
+and compares 212 distinct frontend calls with Worker router registrations. The
+2026-07-03 compatibility batch reduced unmatched calls from 122 to 115 by
+closing:
+
+- complete 2FA setup/enable/disable/status/backup-code contracts;
+- batch token-key reveal;
+- channel batch-tag and tag-model lookup;
+- admin group lookup;
+- the frontend spelling for admin 2FA reset.
+
+The remaining 115 calls include capability-hidden product families and real
+parity debt. They are not treated as implemented merely because navigation is
+hidden.
+
+`check:web:staging` verifies the public staging deployment without mutating
+state. Its seven checks cover status capability clamps, setup shape, 11 SPA
+hard-refresh paths, eight static assets, exact local/deployed `index.html`
+identity, ten public envelopes, and API-before-SPA routing. This is HTTP
+contract evidence, not rendered DOM or authenticated workflow evidence.
+
 ## Bundle Budget
 
 The verified production build is approximately:
@@ -131,8 +162,9 @@ rg -n "CLIENT_SECRET|PRIVATE_KEY|SESSION_SECRET|WEBHOOK_SECRET|UPSTASH_REDIS_RES
 
 Before marking frontend hosting complete:
 
-1. Deploy the current bundle and Worker together.
-2. Hard-refresh `/`, `/setup`, `/sign-in`, `/dashboard`, `/keys`, `/channels`,
+1. Deploy each backend compatibility batch together with the unchanged or
+   rebuilt frontend artifact.
+2. Render and hard-refresh `/`, `/setup`, `/sign-in`, `/dashboard`, `/keys`, `/channels`,
    `/users`, `/usage-logs`, `/models`, `/system-settings`, and `/profile`.
 3. Exercise setup status, login/logout/self, role gating, CRUD mutations and
    expired-session behavior.
@@ -140,5 +172,10 @@ Before marking frontend hosting complete:
    implemented routes.
 5. Scan the deployed artifact for secrets and localhost/cross-origin API URLs.
 6. Record desktop/mobile console errors and basic loading/performance evidence.
+
+The HTTP-only portions of items 1-2 have staging evidence. Rendered browser
+behavior and items 3-6 remain open because the current staging database is
+uninitialized and browser-control tooling was unavailable in the audit
+session. Do not initialize shared staging solely to make a smoke test pass.
 
 Completion evidence belongs in `docs/verification.md` and the G5 runbook.

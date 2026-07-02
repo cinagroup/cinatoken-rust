@@ -851,6 +851,70 @@ pub async fn delete_channels_batch(mut req: Request, env: Env) -> WorkerResult<R
     })?)
 }
 
+/// `POST /api/channel/batch/tag`: set or clear the tag on selected channels.
+/// Returns the number of requested ids, matching Go's frontend contract.
+pub async fn batch_set_channel_tag(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: ChannelBatchTagRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid channel batch tag request: {err}"),
+            ));
+        }
+    };
+    if let Err(message) = validate_batch_tag_ids(&payload.ids) {
+        return Ok(envelope_error_response(400, message));
+    }
+
+    let db = env.d1("DB")?;
+    let requested_count = payload.ids.len();
+    let updated_count =
+        d1_repositories::set_channels_tag_batch(&db, &payload.ids, payload.tag.as_deref()).await?;
+    invalidate_channel_cache(&env).await?;
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "channel.tag_batch_set",
+        &format!(
+            "admin {} batch-set tags on {} channels",
+            claims.username, requested_count
+        ),
+        &serde_json::json!({
+            "count": requested_count,
+            "updated_count": updated_count
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+    envelope_ok_response(&requested_count)
+}
+
+/// `GET /api/channel/tag/models?tag=...`: return the original models CSV from
+/// the same-tag channel with the most comma-separated items. AdminAuth.
+pub async fn get_tag_models(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let Some(tag) = parse_query_string(&req, "tag") else {
+        return Ok(envelope_error_response(400, "tag must not be empty"));
+    };
+    let db = env.d1("DB")?;
+    let models = d1_repositories::longest_channel_models_by_tag(&db, &tag).await?;
+    envelope_ok_response(&models)
+}
+
 /// `POST /api/channel/fix`: rebuild the entire abilities table. AdminAuth.
 pub async fn fix_abilities(req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
@@ -1109,6 +1173,23 @@ struct ChannelBatchDeleteRequest {
     ids: Vec<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChannelBatchTagRequest {
+    ids: Vec<i64>,
+    #[serde(default)]
+    tag: Option<String>,
+}
+
+fn validate_batch_tag_ids(ids: &[i64]) -> Result<(), &'static str> {
+    if ids.is_empty() {
+        return Err("channel ids must not be empty");
+    }
+    if ids.iter().any(|id| *id <= 0 || *id > i32::MAX as i64) {
+        return Err("channel ids must be positive 32-bit integers");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1220,6 +1301,27 @@ mod tests {
     fn channel_batch_delete_request_parses_ids() {
         let req: ChannelBatchDeleteRequest = serde_json::from_str(r#"{"ids":[1,2,3]}"#).unwrap();
         assert_eq!(req.ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn channel_batch_tag_request_accepts_value_and_null() {
+        let req: ChannelBatchTagRequest =
+            serde_json::from_str(r#"{"ids":[1,2],"tag":"prod"}"#).unwrap();
+        assert_eq!(req.ids, vec![1, 2]);
+        assert_eq!(req.tag.as_deref(), Some("prod"));
+
+        let req: ChannelBatchTagRequest =
+            serde_json::from_str(r#"{"ids":[3],"tag":null}"#).unwrap();
+        assert_eq!(req.tag, None);
+    }
+
+    #[test]
+    fn channel_batch_tag_ids_must_be_nonempty_positive_i32_values() {
+        assert!(validate_batch_tag_ids(&[1, i32::MAX as i64]).is_ok());
+        assert!(validate_batch_tag_ids(&[]).is_err());
+        assert!(validate_batch_tag_ids(&[0]).is_err());
+        assert!(validate_batch_tag_ids(&[-1]).is_err());
+        assert!(validate_batch_tag_ids(&[i32::MAX as i64 + 1]).is_err());
     }
 
     #[test]

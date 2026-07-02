@@ -626,6 +626,24 @@ Last checked: 2026-07-02
   in GEMINI format — the initial OpenAI-shaped port was reverted to a
   structured 501 rather than ship a wrong-format relay. 174 worker tests pass.
 
+- **Frontend contract audit + P0 compatibility batch — locally verified
+  (2026-07-03).** Added `tools/audit_frontend_routes.mjs` (TypeScript AST
+  frontend-call inventory) and `tools/verify_frontend_contract.mjs`
+  (non-mutating deployed contract smoke). The route audit covers 212 distinct
+  default-frontend calls and reduced unmatched calls from 122 to 115 after
+  adding complete 2FA frontend payload/lifecycle parity, batch token-key
+  reveal, channel batch-tag/tag-model routes, admin group lookup, and the
+  frontend admin-2FA-reset path. `cargo test -p cinatoken-worker --lib` passes
+  185 tests; wasm32 check and default frontend TypeScript/Rsbuild production
+  build pass.
+- **Staging static/public HTTP contract — verified (2026-07-02/03).**
+  `bun run check:web:staging` passes all seven groups against
+  `cinatoken-rust-api-staging.cinagroup.workers.dev`: capability-clamped
+  status, setup shape, 11 SPA hard-refresh routes, eight static assets, exact
+  deployed/local index identity, ten public envelopes, and API-before-SPA
+  precedence. This does not verify authenticated DOM workflows. The new
+  2026-07-03 backend compatibility routes still require redeployment.
+
 ## Local Notes
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
@@ -647,9 +665,10 @@ bun run check
 
 - `bun run check:web:quality` remains red: strict ESLint reports 101 errors and
   4 warnings in the imported frontend source. The rules have not been weakened.
-- Frontend staging deployment and browser smoke are still pending. A local
-  production build does not prove hard refresh, session, role, CRUD, or API
-  contract behavior against the deployed Worker.
+- The frontend artifact and public HTTP contract are deployed and verified.
+  Rendered browser smoke, authenticated session/role/CRUD/2FA flows, console
+  inspection, and the 2026-07-03 backend route batch deployment remain
+  pending.
 - The production bundle is about 18.9 MB uncompressed / 4.4 MB gzip; the
   largest chunks are about 5.3 MB, 2.7 MB and 1.9 MB. Define and enforce a
   bundle budget before G5 production approval.

@@ -59,7 +59,7 @@ production data correctness, capacity, cost, or rollback.
 | Async task submit/poll/settle | Substantial internals | E2-E4 | Public fetch/read/content routes, real provider smoke, R2 artifact policy |
 | Stripe top-up | Partial | E2-E4 | Production webhook replay/currency reconciliation and operator sign-off |
 | Non-Stripe payments/subscriptions | Incomplete | E0-E1 | Provider implementations, secrets, schemas, replay tests |
-| Frontend source and production build | Implemented | E2 | Staging SPA/API smoke, API parity, lint debt, bundle-size budget |
+| Frontend source and production build | Implemented; public staging contract verified | E2-E4 | Authenticated/rendered browser smoke, API parity, lint debt, bundle-size budget |
 | Production Cloudflare deployment | Incomplete | E0-E4 by subsystem | Replace production placeholders, migrate data, canary, rollback rehearsal |
 
 ## Backend Audit
@@ -139,6 +139,27 @@ Rankings, playground, wallet/top-up, task/Midjourney logs, redemption,
 subscriptions, and io.net model deployments remain hidden until their backend
 contracts are complete.
 
+### 2026-07-03 Frontend Contract Delta
+
+An AST-based audit now compares the default frontend's 212 distinct API calls
+with the Worker router. The first baseline found 122 unmatched calls. The first
+P0 compatibility batch reduced that number to 115 and added:
+
+- Go-compatible `/api/group` and `/api/group/`;
+- secure, user-scoped `POST /api/token/batch/keys`;
+- `POST /api/channel/batch/tag` and `GET /api/channel/tag/models`;
+- default-frontend aliases `/api/user/2fa/enable` and
+  `/api/user/2fa/backup_codes`;
+- complete setup/status/disable 2FA payload parity, including stable backup
+  codes, lock state, and remaining-code count;
+- `DELETE /api/user/:id/2fa` for the user-admin action.
+
+The public staging verifier passes seven non-mutating checks: status, setup,
+11 SPA routes, eight assets, artifact identity, public envelopes, and
+API-before-SPA precedence. This raises the static hosting/public HTTP slice to
+E4, but does not raise authenticated or rendered workflows above E2 because
+staging is uninitialized and no browser DOM session was available.
+
 ### Remaining Frontend Risks
 
 - Strict lint currently reports 101 errors and 4 warnings in the migrated source.
@@ -147,9 +168,10 @@ contracts are complete.
 - The production bundle is approximately 18.9 MB uncompressed / 4.4 MB gzip.
   The largest chunks are approximately 5.3 MB, 2.7 MB, and 1.9 MB. Route-level
   lazy loading and heavy dependency isolation need a defined budget before G5.
-- A local build is not a staging deployment. Hard-refresh, login, setup,
-  dashboard, keys, channels, users, logs, models, settings, and profile flows
-  still need browser smoke against the deployed Worker.
+- Public HTTP hard-refresh and artifact identity now pass on staging. Login,
+  setup mutations, role gating, CRUD, console/network inspection, and the
+  dashboard/keys/channels/users/logs/models/settings/profile rendered flows
+  still need browser smoke against an initialized staging environment.
 - Hidden navigation is a temporary compatibility boundary, not completion.
   Direct URLs must also fail predictably until their APIs are migrated.
 
@@ -172,12 +194,12 @@ from this evidence, not from commit count or implementation presence alone.
 
 ### P0: Make The Current Product Slice Honest And Deployable
 
-1. Deploy the tracked frontend plus status/setup fixes to staging.
+1. Deploy the current P0 backend compatibility batch to staging.
 2. Run browser smoke for setup, anonymous status, login/logout/current-user,
    dashboard, keys, channels, users, logs, models, settings, and profile.
-3. Record every frontend request and classify it as implemented, intentionally
-   hidden, or broken.
-4. Add an automated frontend-to-Worker route contract test so missing APIs
+3. Classify the remaining 115 unmatched frontend calls as visible P0,
+   capability-hidden, intentionally retired/fallback, or planned parity debt.
+4. Turn that classification into a regression gate so new unmatched calls
    cannot be masked by a successful static build.
 5. Replace all production `REPLACE_WITH_PRODUCTION_*` values before any canary.
 

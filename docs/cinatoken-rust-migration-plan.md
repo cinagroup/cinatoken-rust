@@ -1645,3 +1645,40 @@ Midjourney/Suno/视频上游）、自动重试、`waitForEvent`（等 Stripe/Cre
 在 canonical route inventory、生产数据迁移、前端运行时契约、支付/订阅、生产配置与
 cutover evidence 全部闭环前，不得再使用“所有可迁移工作已完成”或“可直接全量替换
 Go/VPS”的结论。
+
+### 22.5 2026-07-03 Wave A 契约收敛进展
+
+Wave A 已建立两条可重复执行的自动证据链：
+
+- `bun run audit:web:routes` 使用 TypeScript AST 扫描默认前端的 212 个不同 API 调用，
+  并与 Worker Router 对比；
+- `bun run check:web:staging` 对 staging 执行只读 HTTP 契约验证，覆盖 status/setup、
+  11 个 SPA hard-refresh 路径、8 个静态资源、构建产物同一性、公共 envelope 和
+  API/SPA 优先级。
+
+本批将 unmatched frontend calls 从 122 降至 115，完成：
+
+- 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
+- Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
+- Channel 批量标签与 tag models 查询；
+- 管理表单使用的 group 列表；
+- 用户管理页面使用的 2FA reset 方法/路径兼容。
+
+当前证据边界：
+
+- Worker 单元测试 185 项通过；
+- `wasm32-unknown-unknown` 检查通过；
+- 默认前端 TypeScript + Rsbuild production build 通过；
+- staging 公共 HTTP 契约 7 项通过；
+- 本批新增后端路由尚需重新部署并做已登录 CRUD/2FA 浏览器 smoke；
+- browser DOM、console、network、desktop/mobile 截图证据仍缺，不能将 HTTP shell
+  相等误报为真实页面已渲染。
+
+下一批 Wave A 优先级：
+
+1. `prefill_group` CRUD 与 D1 schema/repository；
+2. 可见渠道操作中的 balance、multi-key、Codex、Ollama 与 upstream updates；
+3. model upstream sync；
+4. 将剩余 115 个 unmatched calls 分类为 visible P0、capability-hidden、
+   fallback/retired 或 planned parity debt，并把“新增未分类调用”设为 CI 失败；
+5. 在初始化后的隔离 staging 上完成登录、角色、CRUD、2FA 和过期 session 浏览器证据。

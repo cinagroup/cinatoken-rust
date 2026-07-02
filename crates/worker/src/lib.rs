@@ -182,6 +182,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/user/models", |req, ctx| async move {
             admin_user::get_self_models(req, ctx.env).await
         })
+        // Admin forms use both spellings; keep the slashless alias because the
+        // default frontend also reuses this endpoint from subscription views.
+        .get_async("/api/group", |req, ctx| async move {
+            admin_user::get_groups(req, ctx.env).await
+        })
+        .get_async("/api/group/", |req, ctx| async move {
+            admin_user::get_groups(req, ctx.env).await
+        })
         // Notification preferences (Go UpdateUserSetting).
         .put_async("/api/user/setting", |req, ctx| async move {
             admin_user::update_user_setting(req, ctx.env).await
@@ -198,6 +206,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/user/2fa/confirm", |req, ctx| async move {
             admin_2fa::confirm(req, ctx.env).await
         })
+        .post_async("/api/user/2fa/enable", |req, ctx| async move {
+            admin_2fa::confirm(req, ctx.env).await
+        })
         .get_async("/api/user/2fa/status", |req, ctx| async move {
             admin_2fa::status(req, ctx.env).await
         })
@@ -206,6 +217,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .post_async("/api/user/2fa/backup-codes", |req, ctx| async move {
             admin_2fa::regenerate_backup_codes(req, ctx.env).await
+        })
+        .post_async("/api/user/2fa/backup_codes", |req, ctx| async move {
+            admin_2fa::regenerate_backup_codes_with_code(req, ctx.env).await
         })
         // Admin CRUD (G5 P0): logs, options, tokens.
         // Logs.
@@ -255,6 +269,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .put_async("/api/token/", |req, ctx| async move {
             admin_crud::update_token(req, ctx.env).await
+        })
+        .post_async("/api/token/batch/keys", |req, ctx| async move {
+            admin_crud::reveal_token_keys_batch(req, ctx.env).await
         })
         .get_async("/api/token/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
@@ -329,6 +346,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .put_async("/api/channel/tag", |req, ctx| async move {
             admin_channel::edit_tag_channels(req, ctx.env).await
         })
+        .get_async("/api/channel/tag/models", |req, ctx| async move {
+            admin_channel::get_tag_models(req, ctx.env).await
+        })
         // Channel connectivity ops (use the channel's own stored key).
         .get_async("/api/channel/test/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
@@ -398,6 +418,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/channel/batch", |req, ctx| async move {
             admin_channel::delete_channels_batch(req, ctx.env).await
         })
+        .post_async("/api/channel/batch/tag", |req, ctx| async move {
+            admin_channel::batch_set_channel_tag(req, ctx.env).await
+        })
         .post_async("/api/channel/fix", |req, ctx| async move {
             admin_channel::fix_abilities(req, ctx.env).await
         })
@@ -436,6 +459,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         // Admin account recovery: clear a target user's 2FA (item 4.6).
         .post_async("/api/user/:id/2fa/disable", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_user::admin_disable_2fa(req, ctx.env, id.as_ref()).await
+        })
+        .delete_async("/api/user/:id/2fa", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_user::admin_disable_2fa(req, ctx.env, id.as_ref()).await
         })

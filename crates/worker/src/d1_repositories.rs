@@ -1521,6 +1521,25 @@ pub async fn find_unused_backup_codes(
     Ok(rows)
 }
 
+/// Count unused backup codes for the 2FA status response.
+pub async fn count_unused_backup_codes(db: &D1Database, user_id: i64) -> worker::Result<i64> {
+    #[derive(Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+
+    Ok(db
+        .prepare(
+            "SELECT COUNT(*) AS count FROM two_fa_backup_codes \
+             WHERE user_id = ?1 AND is_used = 0",
+        )
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .first::<CountRow>(None)
+        .await?
+        .map(|row| row.count)
+        .unwrap_or(0))
+}
+
 /// Mark a backup code consumed (single-use).
 pub async fn mark_backup_code_used(db: &D1Database, id: i64, now: i64) -> worker::Result<()> {
     db.prepare("UPDATE two_fa_backup_codes SET is_used = 1, used_at = ?2 WHERE id = ?1")
@@ -1977,8 +1996,9 @@ pub fn is_sensitive_option_key(key: &str) -> bool {
 //
 // All queries are scoped by `user_id` so a user can only see and mutate their
 // own tokens. Mirrors Go `controller/token.go`. Keys are returned in full
-// only by `find_token_by_id_and_user` (used by the reveal endpoint); list and
-// search responses mask the key in the handler layer.
+// only by `find_token_by_id_and_user` and `find_token_keys_by_ids_and_user`
+// (used by reveal endpoints); list and search responses mask the key in the
+// handler layer.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, PartialEq, serde::Serialize)]
@@ -1999,6 +2019,16 @@ pub struct TokenRow {
     pub used_quota: i64,
     pub group: String,
     pub cross_group_retry: i32,
+}
+
+/// Minimal secret-bearing row for the batch key reveal endpoint. The name is
+/// included only so each successful reveal can be audited without recording
+/// the key itself.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct TokenKeyRow {
+    pub id: i64,
+    pub key: String,
+    pub name: String,
 }
 
 /// List a user's tokens, newest first, paginated. `page` is 1-indexed.
@@ -2113,6 +2143,50 @@ pub async fn find_token_by_id_and_user(
     .bind_refs(&args)?
     .first::<TokenRow>(None)
     .await
+}
+
+/// Find full keys for up to 100 token ids owned by `user_id`. Unknown,
+/// soft-deleted, and other users' ids are omitted, matching Go's batch reveal
+/// behavior without exposing whether an inaccessible token exists.
+pub async fn find_token_keys_by_ids_and_user(
+    db: &D1Database,
+    ids: &[i64],
+    user_id: i64,
+) -> worker::Result<Vec<TokenKeyRow>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if ids.len() > 100 {
+        return Err(worker::Error::RustError(
+            "at most 100 token ids are allowed".to_string(),
+        ));
+    }
+
+    let mut args = Vec::with_capacity(ids.len() + 1);
+    args.push(D1Type::Integer(d1_i32(user_id)));
+    args.extend(ids.iter().map(|id| D1Type::Integer(d1_i32(*id))));
+
+    Ok(db
+        .prepare(&token_keys_by_ids_query(ids.len()))
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<TokenKeyRow>()?)
+}
+
+fn token_keys_by_ids_query(id_count: usize) -> String {
+    let placeholders: Vec<String> = (0..id_count).map(|i| format!("?{}", i + 2)).collect();
+    format!(
+        r#"
+        SELECT id, "key", name
+        FROM tokens
+        WHERE user_id = ?1
+          AND deleted_at IS NULL
+          AND id IN ({})
+        ORDER BY id ASC
+        "#,
+        placeholders.join(", "),
+    )
 }
 
 /// Fields for creating a token. Mirrors Go `controller/token.go::AddToken`.
@@ -2624,6 +2698,77 @@ pub async fn find_channel_by_id(db: &D1Database, id: i64) -> worker::Result<Opti
         .bind_refs(&[arg])?
         .first::<ChannelRow>(None)
         .await
+}
+
+/// Set a nullable tag on the selected channels. Returns the number of rows
+/// updated across all chunks.
+pub async fn set_channels_tag_batch(
+    db: &D1Database,
+    ids: &[i64],
+    tag: Option<&str>,
+) -> worker::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total = 0usize;
+    for chunk in ids.chunks(50) {
+        let placeholders: Vec<String> = (0..chunk.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect();
+        let mut args: Vec<D1Type<'_>> = Vec::with_capacity(chunk.len() + 1);
+        args.push(tag.map(D1Type::Text).unwrap_or(D1Type::Null));
+        args.extend(chunk.iter().map(|id| D1Type::Integer(d1_i32(*id))));
+        let sql = format!(
+            "UPDATE channels SET tag = ?1 WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let result = db.prepare(&sql).bind_refs(&args)?.run().await?;
+        total += result
+            .meta()?
+            .and_then(|metadata| metadata.changes)
+            .unwrap_or(0) as usize;
+    }
+    Ok(total)
+}
+
+/// Return the original `models` CSV from the channel under `tag` with the
+/// greatest number of comma-separated items. Ties retain the first channel in
+/// Go's default channel order (priority descending).
+pub async fn longest_channel_models_by_tag(db: &D1Database, tag: &str) -> worker::Result<String> {
+    #[derive(Deserialize)]
+    struct ModelsRow {
+        models: String,
+    }
+
+    let rows = db
+        .prepare(
+            r#"SELECT COALESCE(models, '') AS models
+               FROM channels
+               WHERE tag = ?1
+               ORDER BY priority DESC"#,
+        )
+        .bind_refs(&[D1Type::Text(tag)])?
+        .all()
+        .await?
+        .results::<ModelsRow>()?;
+    Ok(longest_models_csv(rows.into_iter().map(|row| row.models)))
+}
+
+fn longest_models_csv(models_values: impl IntoIterator<Item = String>) -> String {
+    let mut longest = String::new();
+    let mut max_items = 0usize;
+    for models in models_values {
+        if models.is_empty() {
+            continue;
+        }
+        let item_count = models.split(',').count();
+        if item_count > max_items {
+            max_items = item_count;
+            longest = models;
+        }
+    }
+    longest
 }
 
 // ---------------------------------------------------------------------------
@@ -4693,6 +4838,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn token_keys_by_ids_query_is_user_scoped_and_parameterized() {
+        let sql = token_keys_by_ids_query(3);
+        assert!(sql.contains("user_id = ?1"));
+        assert!(sql.contains("deleted_at IS NULL"));
+        assert!(sql.contains("id IN (?2, ?3, ?4)"));
+        assert!(!sql.contains("SELECT id, user_id"));
+    }
+
+    #[test]
     fn parse_auto_groups_option_reads_json_array() {
         assert_eq!(
             parse_auto_groups_option(Some(r#"["default","vip"]"#)),
@@ -4825,6 +4979,28 @@ mod tests {
     fn channel_type_filter_sql_accepts_internal_type_lists_only() {
         assert_eq!(channel_type_filter_sql(&[1, 20, 53]).unwrap(), "1, 20, 53");
         assert!(channel_type_filter_sql(&[]).is_err());
+    }
+
+    #[test]
+    fn longest_models_csv_counts_comma_separated_items() {
+        assert_eq!(
+            longest_models_csv(vec![
+                String::new(),
+                "gpt-4o".to_string(),
+                "gpt-4o,claude-3-5-sonnet,gemini-2.5-pro".to_string(),
+                "a,b".to_string(),
+            ]),
+            "gpt-4o,claude-3-5-sonnet,gemini-2.5-pro"
+        );
+    }
+
+    #[test]
+    fn longest_models_csv_keeps_first_value_on_ties() {
+        assert_eq!(
+            longest_models_csv(vec!["first,model".to_string(), "second,model".to_string()]),
+            "first,model"
+        );
+        assert_eq!(longest_models_csv(Vec::<String>::new()), "");
     }
 
     #[test]

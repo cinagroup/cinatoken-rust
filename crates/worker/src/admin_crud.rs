@@ -513,6 +513,62 @@ pub async fn reveal_token_key(
     Ok(envelope_ok_response(&TokenKeyReveal { key: row.key })?)
 }
 
+/// `POST /api/token/batch/keys`: reveal full keys for up to 100 tokens owned by
+/// the current user. UserAuth + secure verification + ownership filtering.
+pub async fn reveal_token_keys_batch(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: TokenBatchKeysRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid token batch keys request: {err}"),
+            ));
+        }
+    };
+    if let Some(message) = validate_token_batch_key_ids(&payload.ids) {
+        return Ok(envelope_error_response(400, message));
+    }
+    if let Some(response) = crate::admin::require_secure_verification(&env, claims.id).await? {
+        return Ok(response);
+    }
+
+    let db = env.d1("DB")?;
+    let rows =
+        d1_repositories::find_token_keys_by_ids_and_user(&db, &payload.ids, claims.id).await?;
+    let mut keys = std::collections::BTreeMap::new();
+    let mut revealed = Vec::with_capacity(rows.len());
+    for row in rows {
+        revealed.push(serde_json::json!({"token_id": row.id, "token_name": row.name}));
+        keys.insert(row.id, row.key);
+    }
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        Some(&claims.username),
+        &claims.username,
+        "token.key_view_batch",
+        &format!(
+            "user {} revealed {} token keys",
+            claims.username,
+            revealed.len()
+        ),
+        &serde_json::json!({"count": revealed.len(), "tokens": revealed}),
+        &crate::admin::admin_audit_info(&claims, &req),
+        crate::admin::unix_timestamp(),
+    )
+    .await;
+
+    Ok(envelope_ok_response(&TokenBatchKeysResult { keys })?)
+}
+
 /// `POST /api/token/`: create a new token for the current user. UserAuth.
 pub async fn create_token(mut req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_user_auth(&req, &env).await? {
@@ -744,6 +800,11 @@ struct TokenKeyReveal {
 }
 
 #[derive(Debug, Serialize)]
+struct TokenBatchKeysResult {
+    keys: std::collections::BTreeMap<i64, String>,
+}
+
+#[derive(Debug, Serialize)]
 struct TokenCreateResult {
     id: i64,
     key: String,
@@ -803,6 +864,21 @@ struct TokenUpdateRequest {
 #[derive(Debug, Deserialize)]
 struct TokenBatchDeleteRequest {
     ids: Vec<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenBatchKeysRequest {
+    ids: Vec<i64>,
+}
+
+fn validate_token_batch_key_ids(ids: &[i64]) -> Option<&'static str> {
+    if ids.is_empty() {
+        Some("token ids must not be empty")
+    } else if ids.len() > 100 {
+        Some("at most 100 token ids are allowed")
+    } else {
+        None
+    }
 }
 
 fn parse_id_param(id_param: Option<&String>) -> Option<i64> {
@@ -915,6 +991,33 @@ mod tests {
     fn token_batch_delete_request_parses_ids() {
         let req: TokenBatchDeleteRequest = serde_json::from_str(r#"{"ids":[1,2,3]}"#).unwrap();
         assert_eq!(req.ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn token_batch_keys_request_requires_one_to_one_hundred_ids() {
+        let req: TokenBatchKeysRequest = serde_json::from_str(r#"{"ids":[1,2,3]}"#).unwrap();
+        assert_eq!(req.ids, vec![1, 2, 3]);
+        assert_eq!(validate_token_batch_key_ids(&req.ids), None);
+        assert_eq!(
+            validate_token_batch_key_ids(&[]),
+            Some("token ids must not be empty")
+        );
+        assert_eq!(validate_token_batch_key_ids(&vec![1; 100]), None);
+        assert_eq!(
+            validate_token_batch_key_ids(&vec![1; 101]),
+            Some("at most 100 token ids are allowed")
+        );
+    }
+
+    #[test]
+    fn token_batch_keys_result_serializes_frontend_shape() {
+        let result = TokenBatchKeysResult {
+            keys: [(7, "ct-secret".to_string())].into_iter().collect(),
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::json!({"keys":{"7":"ct-secret"}})
+        );
     }
 
     #[test]

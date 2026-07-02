@@ -125,6 +125,19 @@ input; stubbing them would be worse than leaving them explicit.
     directory DO) the per-key `ChannelAffinity` DO design deliberately does not
     have — an architecture decision, and moot while the affinity flag is off.
 
+## Cloudflare-native enhancements (beyond Go parity)
+
+- **Workers AI integration (2026-07-02, `63cb66e`)**: type-39 channels run
+  models natively over the `AI` binding when keyed `internal` (no egress, no
+  API token) — verified live with real llama-4-scout inference + exact
+  billing; Go-parity REST/gateway URL routing for token-keyed type-39
+  channels. `/api/status` exposes `workers_ai`.
+- **AI Gateway integration**: `AI_GATEWAY_ID` routes binding calls through an
+  AI Gateway (3-arg `run` via reflection); REST channels use gateway
+  workers-ai routes as `base_url`. Code-complete + config-gated; live
+  verification needs a gateway created in the dashboard (the staging token
+  lacks AI Gateway permissions). `/api/status` exposes `ai_gateway`.
+
 ## What "finished" means here
 
 Everything portable without a third-party credential, a runtime/architecture

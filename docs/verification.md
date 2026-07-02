@@ -566,6 +566,21 @@ Last checked: 2026-07-01
   `/api/pricing` live-enriched (tags/desc/vendor on gpt-4o) →
   `?status_only=true` status=0 hid gpt-4o from pricing → soft deletes → gets
   404 and gpt-4o returned to pricing → search keyword total=1; no-auth 401.
+- **Cloudflare Workers AI + AI Gateway integration — staging-verified with
+  REAL inference (2026-07-02).** Type-39 (Cloudflare) channels join the
+  OpenAI-compatible set with Go-parity REST/gateway URL routing
+  (host-tested), plus a NEW native path: key=`internal` channels execute over
+  the Workers AI `AI` binding in-platform (no egress, no API token). Live:
+  `@cf/meta/llama-4-scout-17b-16e-instruct` through the full relay → "pong",
+  real usage 86/2, billing settled exactly (88 = 86 + 2×1.0) with audit; a
+  second call billed cumulatively (181); a deprecated model's `AiError`
+  surfaced through the normal relay error path; stream on a binding channel →
+  clean 400; `/api/status` shows `workers_ai=true` / `ai_gateway=false`.
+  This is the first REAL-provider relay verification needing zero external
+  credentials. AI Gateway routing (`AI_GATEWAY_ID` + 3-arg binding `run` via
+  reflection) is code-complete but config-gated — verifying it needs a
+  gateway created in the dashboard (the staging token lacks AI Gateway
+  permissions).
 - **Channel connectivity ops — staging-verified (2026-07-02).**
   `GET /api/channel/test/:id` (1-token chat probe with the channel's own key:
   success time=0.033s, `response_time`/`test_time` persisted; unreachable

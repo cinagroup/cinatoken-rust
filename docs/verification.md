@@ -550,6 +550,13 @@ Last checked: 2026-07-01
   empty tag→400). `POST /api/option/payment_compliance` (admin: persists the 5
   `payment_setting.compliance_*` options incl. confirming user id + client IP;
   confirmed:false→400; common→403).
+- **`PUT /api/channel/tag` (bulk edit by tag) — staging-verified (2026-07-02).**
+  Ports Go `EditTagChannels`/`EditChannelByTag`. All three paths live-verified:
+  priority/weight-only edit propagated to both channels and their abilities
+  (2/2 each, no rebuild); invalid `param_override` → 400 ("must be valid
+  JSON"); models change + retag rewrote both channels (new tag + models) and
+  rebuilt abilities exactly (4 new rows = 2 channels × 2 models, 0 stale).
+  164 worker tests pass.
 
 ## Local Notes
 

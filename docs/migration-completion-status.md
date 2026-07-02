@@ -49,18 +49,20 @@ or an unported subsystem — enumerated below.
 
 ## Bounded / portable follow-ups (no external dependency)
 
-These are still faithful-to-Go ports that need no credential or decision — just
-implementation time:
+**None remaining.** Everything in this category has been completed and
+staging-verified: `POST /api/channel/tag/{disabled,enabled}` +
+`DELETE /api/channel/disabled` (`0540e7a`); `POST /api/option/rest_model_ratio`
+(`b463534`); `POST /api/option/payment_compliance` (`36ef615`);
+`PUT /api/channel/tag` (`5de4205` — dynamic multi-field edit with per-channel
+ability rebuild on models/group change, priority/weight propagation otherwise).
 
-- `PUT /api/channel/tag` (rename/edit a tag's channels — multi-field edit).
-- `GET/DELETE /api/option/channel_affinity_cache` — needs `ChannelAffinity` DO
-  RPC to enumerate/clear per-key state (DO-internals, more involved than a
-  plain option write).
-
-Done since first draft (staging-verified): `POST /api/channel/tag/{disabled,
-enabled}` + `DELETE /api/channel/disabled` (`0540e7a`);
-`POST /api/option/rest_model_ratio` (`b463534`);
-`POST /api/option/payment_compliance` (`36ef615`).
+Reclassified as blocked: `GET/DELETE /api/option/channel_affinity_cache` — the
+Rust affinity store is per-key Durable Object instances addressed by
+`id_from_name` with **no key registry**, so enumerate-stats / clear-all cannot
+be implemented faithfully without an architecture change (a KV/DO key index).
+The affinity feature itself is flag-gated off by default
+(`RELAY_CHANNEL_AFFINITY_ENABLED`), so the ops endpoints have no live state to
+manage until that design call is made. Moved to item 14 below.
 
 ## Blocked — needs an external dependency or a decision (the user's call)
 
@@ -99,6 +101,10 @@ input; stubbing them would be worse than leaving them explicit.
     (the relay path already has a real-provider smoke via DeepSeek).
 13. **Production deploy**: G8-gated — `wrangler.toml` still holds
     `REPLACE_WITH_PRODUCTION_*` placeholders pending the operator.
+14. **Affinity-cache ops endpoints** (`GET/DELETE
+    /api/option/channel_affinity_cache`): need a key registry (KV index or a
+    directory DO) the per-key `ChannelAffinity` DO design deliberately does not
+    have — an architecture decision, and moot while the affinity flag is off.
 
 ## What "finished" means here
 

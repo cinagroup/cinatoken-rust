@@ -560,6 +560,12 @@ Last checked: 2026-07-01
   supported_endpoint/pricing_version all correct. 168 worker tests pass (+4:
   endpoint mapping, name-rule priority, price-vs-ratio + disabled-meta,
   usable-group filter).
+- **Models/vendors admin CRUD (`/api/models/*`, `/api/vendors/*`) —
+  staging-verified (2026-07-02).** Full lifecycle over the 0008 tables:
+  missing=[gpt-4o] → vendor+meta created → duplicate name 409 → missing=[] →
+  `/api/pricing` live-enriched (tags/desc/vendor on gpt-4o) →
+  `?status_only=true` status=0 hid gpt-4o from pricing → soft deletes → gets
+  404 and gpt-4o returned to pricing → search keyword total=1; no-auth 401.
 - **`PUT /api/channel/tag` (bulk edit by tag) — staging-verified (2026-07-02).**
   Ports Go `EditTagChannels`/`EditChannelByTag`. All three paths live-verified:
   priority/weight-only edit propagated to both channels and their abilities

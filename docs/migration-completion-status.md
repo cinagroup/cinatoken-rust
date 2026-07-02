@@ -82,8 +82,13 @@ input; stubbing them would be worse than leaving them explicit.
    GetPricing/updatePricing (abilities × groups × endpoint mapping, merged
    ratio maps, name-rule metadata enrichment, usable-group filtering, vendors,
    auto_groups). Staging-verified anonymously with priced/ratio/metadata/
-   filtered cases. Remaining sub-item: the models/vendors **admin CRUD** to
-   populate the tables via API (operators can also seed rows directly).
+   filtered cases. The models/vendors **admin CRUD** is also done
+   (`fbc7424`): list/search/get/create/update(+status_only)/soft-delete for
+   both tables + `GET /api/models/missing`, lifecycle staging-verified
+   including live pricing enrichment and disabled-meta hiding. Still deferred
+   within this vertical: list display enrichment (bound_channels/
+   enable_groups/quota_types per row, vendor counts) and `sync_upstream*`
+   (live provider I/O).
 4. **`GET /api/models`** (DashboardListModels): returns per-provider adaptor
    static `GetModelList()` tables baked into Go code; there is no DB source, so
    there is no faithful worker equivalent.

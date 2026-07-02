@@ -566,6 +566,13 @@ Last checked: 2026-07-01
   `/api/pricing` live-enriched (tags/desc/vendor on gpt-4o) →
   `?status_only=true` status=0 hid gpt-4o from pricing → soft deletes → gets
   404 and gpt-4o returned to pricing → search keyword total=1; no-auth 401.
+- **Channel connectivity ops — staging-verified (2026-07-02).**
+  `GET /api/channel/test/:id` (1-token chat probe with the channel's own key:
+  success time=0.033s, `response_time`/`test_time` persisted; unreachable
+  base_url → `success:false` "upstream status 530"; no-auth 401),
+  `GET /api/channel/fetch_models/:id` → the echo upstream's two model ids, and
+  `POST /api/channel/fetch_models` (pre-create probe: multi-line key trimmed
+  to first line → ids; missing base_url → 400). Echo + fixtures torn down.
 - **`PUT /api/channel/tag` (bulk edit by tag) — staging-verified (2026-07-02).**
   Ports Go `EditTagChannels`/`EditChannelByTag`. All three paths live-verified:
   priority/weight-only edit propagated to both channels and their abilities

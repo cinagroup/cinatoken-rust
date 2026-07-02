@@ -98,8 +98,16 @@ input; stubbing them would be worse than leaving them explicit.
    + provider credentials.
 6. **OAuth wechat / telegram / email-bind**: provider-specific OAuth flows +
    credentials.
-7. **Channel `test` / `update_balance` / `fetch_models` / codex**: live
-   provider I/O and provider-specific balance/model APIs.
+7. ~~Channel `test` / `fetch_models`~~ — **UNBLOCKED + DONE (2026-07-02,
+   `98b454b` + `8a4f755`)**: these use the channel's OWN stored key against its
+   own base_url (like the relay), so no new credentials were needed.
+   `GET /api/channel/test/:id` (1-token chat probe, latency recorded to
+   `response_time`/`test_time`, Go's test-model fallback chain),
+   `GET /api/channel/fetch_models/:id`, and `POST /api/channel/fetch_models`
+   (pre-create probe, key first-line trim) — all staging-verified via an echo
+   upstream incl. the failure path. Bounded to OpenAI-compatible probing
+   (documented). Still blocked here: `update_balance` (provider-specific
+   billing APIs, mostly deprecated upstream) and `codex` (provider-specific).
 8. **Realtime `/v1/realtime` WebSocket**: a Durable-Object-hibernation or
    Container design decision.
 9. **Long-tail providers** (AWS Bedrock, Vertex-via-container, Tencent, io.net):

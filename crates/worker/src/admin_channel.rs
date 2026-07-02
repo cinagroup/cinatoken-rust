@@ -136,6 +136,49 @@ pub async fn test_channel(
     }))
 }
 
+/// Fetch `{base_url}/v1/models` with a bearer key and return the model ids
+/// (the OpenAI-compatible list shape). Shared by the by-id and by-body probes.
+async fn fetch_openai_model_ids(
+    base_url: &str,
+    key: &str,
+) -> std::result::Result<Vec<String>, String> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let mut headers = worker::Headers::new();
+    headers
+        .set("Authorization", &format!("Bearer {key}"))
+        .map_err(|err| err.to_string())?;
+    let mut init = worker::RequestInit::new();
+    init.with_method(worker::Method::Get).with_headers(headers);
+    let outbound = Request::new_with_init(&url, &init).map_err(|err| err.to_string())?;
+    let mut upstream = worker::Fetch::Request(outbound)
+        .send()
+        .await
+        .map_err(|err| format!("failed to fetch upstream models: {err}"))?;
+    if upstream.status_code() < 200 || upstream.status_code() >= 300 {
+        return Err(format!("upstream status {}", upstream.status_code()));
+    }
+    #[derive(serde::Deserialize)]
+    struct ModelsList {
+        #[serde(default)]
+        data: Vec<ModelEntry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ModelEntry {
+        #[serde(default)]
+        id: String,
+    }
+    let parsed: ModelsList = upstream
+        .json()
+        .await
+        .map_err(|err| format!("unparseable upstream models response: {err}"))?;
+    Ok(parsed
+        .data
+        .into_iter()
+        .map(|entry| entry.id)
+        .filter(|id| !id.is_empty())
+        .collect())
+}
+
 /// `GET /api/channel/fetch_models/:id`: list the upstream's available model ids
 /// by calling `{base_url}/v1/models` with the channel's own key (Go
 /// `FetchUpstreamModels`, OpenAI-compatible shape).
@@ -154,53 +197,47 @@ pub async fn fetch_upstream_models(
     let Some(channel) = d1_repositories::find_channel_by_id(&db, id).await? else {
         return Ok(envelope_error_response(404, "channel not found"));
     };
-    let url = format!("{}/v1/models", channel.base_url.trim_end_matches('/'));
-    let mut headers = worker::Headers::new();
-    headers.set("Authorization", &format!("Bearer {}", channel.key))?;
-    let mut init = worker::RequestInit::new();
-    init.with_method(worker::Method::Get).with_headers(headers);
-    let outbound = Request::new_with_init(&url, &init)?;
-    let mut upstream = match worker::Fetch::Request(outbound).send().await {
-        Ok(response) => response,
-        Err(err) => {
-            return Ok(envelope_error_response(
-                502,
-                &format!("failed to fetch upstream models: {err}"),
-            ));
-        }
+    match fetch_openai_model_ids(&channel.base_url, &channel.key).await {
+        Ok(ids) => envelope_ok_response(&ids),
+        Err(message) => Ok(envelope_error_response(502, &message)),
+    }
+}
+
+/// `POST /api/channel/fetch_models`: probe an upstream with a body-supplied
+/// `{base_url, key}` before the channel exists (Go `FetchModels`; the
+/// channel-create UI's "fetch models" button). Bounded subset vs Go
+/// (documented): OpenAI-compatible probing only — the per-type default
+/// base-URL table and the Ollama/Gemini-specific listers are not ported, so
+/// `base_url` is required here. The key is trimmed to its first line, as Go
+/// does for multi-key input.
+pub async fn fetch_models_probe(mut req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
     };
-    if upstream.status_code() < 200 || upstream.status_code() >= 300 {
+    #[derive(Deserialize, Default)]
+    struct Probe {
+        #[serde(default)]
+        base_url: String,
+        #[serde(default)]
+        key: String,
+    }
+    let probe: Probe = serde_json::from_value(body).unwrap_or_default();
+    let base_url = probe.base_url.trim();
+    if base_url.is_empty() {
         return Ok(envelope_error_response(
-            502,
-            &format!("upstream status {}", upstream.status_code()),
+            400,
+            "base_url is required (per-type default URLs are not supported)",
         ));
     }
-    #[derive(serde::Deserialize)]
-    struct ModelsList {
-        #[serde(default)]
-        data: Vec<ModelEntry>,
+    let key = probe.key.trim().lines().next().unwrap_or("").trim();
+    match fetch_openai_model_ids(base_url, key).await {
+        Ok(ids) => envelope_ok_response(&ids),
+        Err(message) => Ok(envelope_error_response(502, &message)),
     }
-    #[derive(serde::Deserialize)]
-    struct ModelEntry {
-        #[serde(default)]
-        id: String,
-    }
-    let parsed: ModelsList = match upstream.json().await {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            return Ok(envelope_error_response(
-                502,
-                &format!("unparseable upstream models response: {err}"),
-            ));
-        }
-    };
-    let ids: Vec<String> = parsed
-        .data
-        .into_iter()
-        .map(|entry| entry.id)
-        .filter(|id| !id.is_empty())
-        .collect();
-    envelope_ok_response(&ids)
 }
 
 /// A `{ "tag": "..." }` body (Go `ChannelTag`).

@@ -350,6 +350,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let id = ctx.param("id").cloned();
             admin_channel::fetch_upstream_models(req, ctx.env, id.as_ref()).await
         })
+        .post_async("/api/channel/fetch_models", |req, ctx| async move {
+            admin_channel::fetch_models_probe(req, ctx.env).await
+        })
         // Model metadata + vendor CRUD (Go /api/models/* + /api/vendors/*,
         // AdminAuth; backs the 0008 tables the pricing endpoint reads).
         .get_async("/api/models/", |req, ctx| async move {

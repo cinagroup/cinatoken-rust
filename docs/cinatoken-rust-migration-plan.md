@@ -2017,3 +2017,39 @@ Remaining boundary: Epay, Creem, Waffo, Waffo Pancake, and external
 subscription checkout/callback routes remain payment-deferred and hidden from
 the wallet until their provider-specific signature, idempotency, replay, and
 staging evidence is in place.
+
+### 22.12 2026-07-04 Legacy Online Amount Delta
+
+This increment supersedes the 22.11 route-debt number for the default frontend
+wallet audit. The Rust Worker now implements the read-only legacy online/Epay
+amount-estimation route consumed by the wallet before creating an online
+payment order:
+
+- `POST /api/user/amount` is UserAuth-protected, payment-compliance gated, and
+  rejects disabled or missing users before returning an amount.
+- The formula matches Go `controller/topup.go`: `MinTopUp` is multiplied by
+  `QuotaPerUnit` when `general_setting.quota_display_type` is `TOKENS`,
+  displayed token amounts are converted back by `QuotaPerUnit`, and the
+  payable amount applies `Price`, the caller's `TopupGroupRatio`, and
+  `payment_setting.amount_discount[amount]` when present and positive.
+- The implementation reads all settings from D1 `options`, accepts numeric or
+  numeric-string JSON values for group ratios and discounts, and defaults to
+  Go's legacy values (`Price = 7.3`, `QuotaPerUnit = 500000`, ratio/discount
+  `1`) when options are absent or malformed.
+- `GET /api/user/topup/info` still keeps `enable_online_topup = false`.
+  Estimation is available for frontend compatibility and route-debt reduction,
+  but Epay order creation/callback settlement is not exposed yet.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 231 Worker routes, 45 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  10 payment-deferred;
+- route-set SHA-256:
+  `b95c68040a3bf53e4c5890f216b224d925a3432e3f4ae2eca8addcc962c44604`;
+- `cargo test -p cinatoken-worker --lib`: 271 passed.
+
+Remaining boundary: `/api/user/pay`, Creem, Waffo, Waffo Pancake, and external
+subscription checkout/callback routes remain payment-deferred and hidden until
+their provider-specific order model, signature verification, idempotency,
+replay, and reconciliation evidence is in place.

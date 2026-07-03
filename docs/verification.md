@@ -4,10 +4,10 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 268 passed after adding public
-  redemption-code topup: `POST /api/user/topup`, D1 redemption `credited`
-  idempotency, topup log rows, and compliance-gated `topup/info`
-  `enable_redemption`.
+- `cargo test -p cinatoken-worker --lib`: 272 passed after adding legacy
+  online/Epay-style amount estimation at `POST /api/user/amount`, including
+  Go-compatible `MinTopUp`, token display, group ratio, and amount-discount
+  formula coverage with decimal intermediate calculation parity.
 - `cargo test -p cinatoken-worker --lib`: 268 passed after adding wallet/topup
   compatibility: Stripe amount estimation, frontend-compatible Stripe pay link,
   `topup/info`, self/admin topup history pagination, admin manual topup
@@ -16,13 +16,13 @@ Last checked: 2026-07-04
   `redemptions.credited` import/default boundary, including automatic
   `status=used -> credited=1` mapping for imported Go redemption rows.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 230 Worker routes, 46 missing calls, categories
-  13 auth-deferred / 22 capability-hidden-product / 11 payment-deferred,
-  SHA-256 `02ad77dc86420152ce55a972cd86faeaf8e1ae49e07783f1807ade8501aa57db`.
+  212 frontend calls, 231 Worker routes, 45 missing calls, categories
+  13 auth-deferred / 22 capability-hidden-product / 10 payment-deferred,
+  SHA-256 `b95c68040a3bf53e4c5890f216b224d925a3432e3f4ae2eca8addcc962c44604`.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
-  passes with the reviewed 46-call route-debt baseline.
+  passes with the reviewed 45-call route-debt baseline.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes
-  after the public redemption-code topup batch.
+  after the legacy online amount-estimation batch.
 - In-memory SQLite replay of `migrations/d1/0001_core.sql` plus
   `migrations/d1/0013_subscriptions.sql`, confirming
   `subscription_plans`, upgraded `subscription_orders`,
@@ -31,7 +31,7 @@ Last checked: 2026-07-04
   `credited` anchor and marks already-used imported Go rows as credited.
 - `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
   `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
-  worker wasm check all passed after the public redemption-code topup batch.
+  worker wasm check all passed after the legacy online amount-estimation batch.
 - `cargo test -p cinatoken-worker --lib`: 262 passed after adding public
   rankings, `HeaderNavModules.rankings` access enforcement, live `logs`
   aggregation, status capability exposure, and rankings unit coverage.

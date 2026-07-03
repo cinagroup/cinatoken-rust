@@ -28,6 +28,7 @@ console_error_panic_hook = "0.1"
 futures-util = { version = "0.3", default-features = false }
 js-sys = "0.3"
 regex.workspace = true
+rust_decimal = { version = "1", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true

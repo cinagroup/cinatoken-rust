@@ -493,6 +493,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/user/stripe/amount", |req, ctx| async move {
             admin_payment::stripe_amount(req, ctx.env).await
         })
+        .post_async("/api/user/amount", |req, ctx| async move {
+            admin_payment::online_amount(req, ctx.env).await
+        })
         .post_async("/api/stripe/webhook", |req, ctx| async move {
             admin_payment::stripe_webhook(req, ctx.env).await
         })

@@ -268,8 +268,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   rows, and `/api/user/self` affiliation fields consumed by the wallet rewards
   card. Public redemption-code topup now uses D1-backed, compliance-gated
   `POST /api/user/topup` with a durable `redemptions.credited` idempotency
-  anchor and topup log rows. Non-Stripe gateways remain hidden until their
-  Worker routes are implemented.
+  anchor and topup log rows. Legacy online/Epay-style amount estimation is
+  implemented at `POST /api/user/amount` with Go-compatible `MinTopUp`,
+  `Price`, `QuotaPerUnit`, `TopupGroupRatio`, token-display, and
+  `payment_setting.amount_discount` formula parity. Non-Stripe checkout,
+  callback, and order-creation gateways remain hidden until their Worker
+  routes are implemented.
 
 ## Next
 

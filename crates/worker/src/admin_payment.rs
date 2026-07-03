@@ -4,6 +4,7 @@
 //! - `POST /api/user/stripe/pay` creates a Stripe Checkout Session and returns
 //!   the frontend-compatible payment link. UserAuth.
 //! - `POST /api/user/stripe/amount` estimates the Stripe charge amount.
+//! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
 //! - `POST /api/user/topup` redeems a public redemption code.
@@ -11,9 +12,12 @@
 //! - `GET /api/user/topup` lists all topups for admins.
 //! - `POST /api/user/topup/complete` manually completes a pending topup.
 
+use cinatoken_auth::USER_STATUS_DISABLED;
 use cinatoken_payments::{
     verify_stripe_webhook, StripeWebhookError, STRIPE_WEBHOOK_TOLERANCE_SECONDS,
 };
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use worker::{Env, Fetch, Headers, Method, Request, Response, Result as WorkerResult};
@@ -29,6 +33,13 @@ const PAYMENT_COMPLIANCE_CONFIRMED_KEY: &str = "payment_setting.compliance_confi
 const PAYMENT_COMPLIANCE_TERMS_KEY: &str = "payment_setting.compliance_terms_version";
 const PAYMENT_AMOUNT_OPTIONS_KEY: &str = "payment_setting.amount_options";
 const PAYMENT_AMOUNT_DISCOUNT_KEY: &str = "payment_setting.amount_discount";
+const GENERAL_QUOTA_DISPLAY_TYPE_KEY: &str = "general_setting.quota_display_type";
+const PRICE_KEY: &str = "Price";
+const QUOTA_PER_UNIT_KEY: &str = "QuotaPerUnit";
+const TOPUP_GROUP_RATIO_KEY: &str = "TopupGroupRatio";
+const QUOTA_DISPLAY_TYPE_TOKENS: &str = "TOKENS";
+const DEFAULT_PRICE: &str = "7.3";
+const DEFAULT_QUOTA_PER_UNIT: &str = "500000";
 const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_CONFIRMED_KEY,
     PAYMENT_COMPLIANCE_TERMS_KEY,
@@ -37,6 +48,16 @@ const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     PAYMENT_AMOUNT_OPTIONS_KEY,
     PAYMENT_AMOUNT_DISCOUNT_KEY,
     "TopUpLink",
+];
+const ONLINE_AMOUNT_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    "MinTopUp",
+    PRICE_KEY,
+    QUOTA_PER_UNIT_KEY,
+    TOPUP_GROUP_RATIO_KEY,
+    GENERAL_QUOTA_DISPLAY_TYPE_KEY,
+    PAYMENT_AMOUNT_DISCOUNT_KEY,
 ];
 
 /// `POST /api/user/stripe/pay`: initiate a Stripe checkout session.
@@ -225,8 +246,69 @@ pub async fn stripe_amount(mut req: Request, env: Env) -> WorkerResult<Response>
     Ok(envelope_ok_response(&format!("{amount:.2}"))?)
 }
 
+/// `POST /api/user/amount`: estimate legacy online/Epay-style payment amount.
+pub async fn online_amount(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let amount = request_amount(&body);
+    if !amount.is_finite() || amount <= 0.0 || amount.fract() != 0.0 || amount > i64::MAX as f64 {
+        return Ok(envelope_error_response(
+            400,
+            "amount must be a positive integer",
+        ));
+    }
+    let amount = amount as i64;
+
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, ONLINE_AMOUNT_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    if !compliance_confirmed {
+        return Ok(envelope_error_response(
+            403,
+            "payment compliance is not confirmed",
+        ));
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(envelope_error_response(401, "user not found"));
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(envelope_error_response(403, "user is disabled"));
+    }
+
+    let settings = OnlineAmountSettings {
+        min_topup: parse_positive_i64(values[2].as_deref(), 1),
+        price: parse_positive_decimal(values[3].as_deref(), DEFAULT_PRICE),
+        quota_per_unit: parse_positive_decimal(values[4].as_deref(), DEFAULT_QUOTA_PER_UNIT),
+        topup_group_ratio: topup_group_ratio_for_group(&user.group, values[5].as_deref()),
+        quota_display_type: values[6].as_deref().unwrap_or("USD"),
+        discount: discount_for_amount(amount, values[7].as_deref()),
+    };
+
+    let min_topup = online_min_topup(&settings);
+    if amount < min_topup {
+        return Ok(envelope_error_response(
+            400,
+            &format!("minimum topup is {min_topup}"),
+        ));
+    }
+    let pay_money = online_pay_money(amount, &settings);
+    if pay_money <= Decimal::new(1, 2) {
+        return Ok(envelope_error_response(400, "amount is too small"));
+    }
+
+    Ok(envelope_ok_response(&format_pay_money(pay_money))?)
+}
+
 /// `POST /api/stripe/webhook`: receive and process a Stripe webhook.
-/// Public route — security relies on HMAC-SHA256 signature verification.
+/// Public route - security relies on HMAC-SHA256 signature verification.
 pub async fn stripe_webhook(mut req: Request, env: Env) -> WorkerResult<Response> {
     let db = env.d1("DB")?;
     let config = d1_repositories::load_stripe_config(&db).await?;
@@ -606,6 +688,16 @@ struct TopupInfoResponse {
     topup_link: String,
 }
 
+#[derive(Debug)]
+struct OnlineAmountSettings<'a> {
+    min_topup: i64,
+    price: Decimal,
+    quota_per_unit: Decimal,
+    topup_group_ratio: Decimal,
+    quota_display_type: &'a str,
+    discount: Decimal,
+}
+
 #[derive(Debug, Deserialize)]
 struct RedemptionRequest {
     key: String,
@@ -700,6 +792,87 @@ fn request_amount(body: &Value) -> f64 {
         .unwrap_or(0.0)
 }
 
+fn online_min_topup(settings: &OnlineAmountSettings<'_>) -> i64 {
+    if settings
+        .quota_display_type
+        .eq_ignore_ascii_case(QUOTA_DISPLAY_TYPE_TOKENS)
+    {
+        (Decimal::from(settings.min_topup) * settings.quota_per_unit)
+            .trunc()
+            .to_i64()
+            .unwrap_or(i64::MAX)
+    } else {
+        settings.min_topup
+    }
+}
+
+fn online_pay_money(amount: i64, settings: &OnlineAmountSettings<'_>) -> Decimal {
+    let mut display_amount = Decimal::from(amount);
+    if settings
+        .quota_display_type
+        .eq_ignore_ascii_case(QUOTA_DISPLAY_TYPE_TOKENS)
+    {
+        display_amount /= settings.quota_per_unit;
+    }
+    display_amount * settings.price * settings.topup_group_ratio * settings.discount
+}
+
+fn format_pay_money(value: Decimal) -> String {
+    format!("{:.2}", value.to_f64().unwrap_or(0.0))
+}
+
+fn topup_group_ratio_for_group(group: &str, raw: Option<&str>) -> Decimal {
+    let Some(raw) = raw else {
+        return Decimal::ONE;
+    };
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw) else {
+        return Decimal::ONE;
+    };
+    map.get(group)
+        .and_then(json_decimal)
+        .filter(|value| *value > Decimal::ZERO)
+        .unwrap_or(Decimal::ONE)
+}
+
+fn discount_for_amount(amount: i64, raw: Option<&str>) -> Decimal {
+    let Some(raw) = raw else {
+        return Decimal::ONE;
+    };
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw) else {
+        return Decimal::ONE;
+    };
+    map.get(&amount.to_string())
+        .and_then(json_decimal)
+        .filter(|value| *value > Decimal::ZERO)
+        .unwrap_or(Decimal::ONE)
+}
+
+fn json_decimal(value: &Value) -> Option<Decimal> {
+    match value {
+        Value::Number(number) => number.to_string().parse::<Decimal>().ok(),
+        Value::String(value) => value.trim().parse::<Decimal>().ok(),
+        _ => None,
+    }
+}
+
+fn parse_positive_decimal(value: Option<&str>, default: &str) -> Decimal {
+    value
+        .and_then(|value| value.trim().parse::<Decimal>().ok())
+        .filter(|value| *value > Decimal::ZERO)
+        .unwrap_or_else(|| {
+            default
+                .parse::<Decimal>()
+                .expect("default decimal constant must parse")
+        })
+}
+
+fn parse_positive_i64(value: Option<&str>, default: i64) -> i64 {
+    value
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 fn parse_pagination(req: &Request) -> (u32, u32) {
     let page = parse_query_u32(req, "p").unwrap_or(1).max(1);
     let page_size = parse_query_u32(req, "page_size")
@@ -791,7 +964,16 @@ fn parse_json_option(value: Option<&str>, default: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{request_amount, sanitize_like_pattern, topup_status_label};
+    use super::{
+        discount_for_amount, format_pay_money, online_min_topup, online_pay_money, request_amount,
+        sanitize_like_pattern, topup_group_ratio_for_group, topup_status_label,
+        OnlineAmountSettings,
+    };
+    use rust_decimal::Decimal;
+
+    fn decimal(value: &str) -> Decimal {
+        value.parse::<Decimal>().unwrap()
+    }
 
     #[test]
     fn topup_status_labels_match_go_strings() {
@@ -816,5 +998,78 @@ mod tests {
         assert_eq!(request_amount(&serde_json::json!({"amount": 1.5})), 1.5);
         assert_eq!(request_amount(&serde_json::json!({"amount": "2.25"})), 2.25);
         assert_eq!(request_amount(&serde_json::json!({})), 0.0);
+    }
+
+    #[test]
+    fn online_amount_matches_go_currency_formula() {
+        let settings = OnlineAmountSettings {
+            min_topup: 1,
+            price: decimal("7.3"),
+            quota_per_unit: decimal("500000"),
+            topup_group_ratio: decimal("1.5"),
+            quota_display_type: "USD",
+            discount: decimal("0.9"),
+        };
+
+        assert_eq!(online_min_topup(&settings), 1);
+        assert_eq!(format_pay_money(online_pay_money(100, &settings)), "985.50");
+    }
+
+    #[test]
+    fn online_amount_matches_go_tokens_formula() {
+        let settings = OnlineAmountSettings {
+            min_topup: 1,
+            price: decimal("7.3"),
+            quota_per_unit: decimal("500000"),
+            topup_group_ratio: Decimal::ONE,
+            quota_display_type: "TOKENS",
+            discount: Decimal::ONE,
+        };
+
+        assert_eq!(online_min_topup(&settings), 500_000);
+        assert_eq!(
+            format_pay_money(online_pay_money(500_000, &settings)),
+            "7.30"
+        );
+    }
+
+    #[test]
+    fn online_amount_formats_after_decimal_intermediate_like_go() {
+        let settings = OnlineAmountSettings {
+            min_topup: 1,
+            price: decimal("7.3"),
+            quota_per_unit: decimal("500000"),
+            topup_group_ratio: decimal("1.3"),
+            quota_display_type: "USD",
+            discount: decimal("1.5"),
+        };
+
+        assert_eq!(online_pay_money(1, &settings), decimal("14.235"));
+        assert_eq!(format_pay_money(online_pay_money(1, &settings)), "14.23");
+    }
+
+    #[test]
+    fn topup_group_ratio_and_discount_accept_numeric_or_string_values() {
+        assert_eq!(
+            topup_group_ratio_for_group("vip", Some(r#"{"default":1,"vip":"1.2"}"#)),
+            decimal("1.2")
+        );
+        assert_eq!(
+            topup_group_ratio_for_group("svip", Some(r#"{"default":1,"svip":1.5}"#)),
+            decimal("1.5")
+        );
+        assert_eq!(
+            topup_group_ratio_for_group("missing", Some(r#"{"default":1}"#)),
+            Decimal::ONE
+        );
+        assert_eq!(
+            discount_for_amount(100, Some(r#"{"100":"0.9"}"#)),
+            decimal("0.9")
+        );
+        assert_eq!(
+            discount_for_amount(200, Some(r#"{"200":0.8}"#)),
+            decimal("0.8")
+        );
+        assert_eq!(discount_for_amount(300, Some(r#"{"300":0}"#)), Decimal::ONE);
     }
 }

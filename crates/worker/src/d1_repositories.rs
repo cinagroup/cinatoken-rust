@@ -2879,6 +2879,36 @@ pub async fn update_multi_key_channel(
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
 }
 
+/// Atomically replace the upstream-model state guarded by the channel values
+/// used to calculate it. This prevents a detect/apply request from overwriting
+/// a concurrent channel edit or another upstream-model operation.
+pub async fn update_channel_upstream_model_state(
+    db: &D1Database,
+    id: i64,
+    expected_models: &str,
+    expected_settings: &str,
+    new_models: &str,
+    new_settings: &str,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(new_models),
+        D1Type::Text(new_settings),
+        D1Type::Integer(d1_i32(id)),
+        D1Type::Text(expected_models),
+        D1Type::Text(expected_settings),
+    ];
+    let result = db
+        .prepare(
+            r#"UPDATE channels
+               SET models = ?1, settings = ?2
+               WHERE id = ?3 AND models = ?4 AND settings = ?5"#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
 /// Optional fields for a bulk edit of the channels carrying a tag (Go
 /// `EditChannelByTag`). `None` fields are left unchanged.
 #[derive(Debug, Default)]

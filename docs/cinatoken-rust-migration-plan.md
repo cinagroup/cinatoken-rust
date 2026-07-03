@@ -1658,7 +1658,8 @@ Wave A 已建立三条可重复执行的自动证据链：
   11 个 SPA hard-refresh 路径、8 个静态资源、构建产物同一性、公共 envelope 和
   API/SPA 优先级。
 
-两批兼容工作和审计器校正已将 unmatched frontend calls 从 122 降至 108，完成：
+兼容工作、审计器校正和单通道 upstream model update 迁移已将 unmatched frontend
+calls 从 122 降至 106，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1670,14 +1671,18 @@ Wave A 已建立三条可重复执行的自动证据链：
   选择性覆盖和聚合审计；
 - Channel provider balance 查询与持久化，以及 multi-key 的状态、分页、启停、删除和
   重建索引操作；
+- Channel upstream model update 单通道 `detect`/`apply`，包括 bounded Worker
+  outbound fetch、provider URL 特例、Gemini 有限分页、regex ignored models、
+  model-mapping 别名保护、`models/settings` 乐观并发守卫、abilities rebuild、
+  cache invalidation 和 secret-safe audit；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
 - 缺口分类基线：24 auth-deferred、45 capability-hidden-product、11 operations-debt、
-  16 payment-deferred、12 visible-admin-debt。
+  16 payment-deferred、10 visible-admin-debt。
 
 当前证据边界：
 
-- Worker 单元测试 205 项通过；
+- Worker 单元测试 213 项通过；
 - D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；
@@ -1688,12 +1693,14 @@ Wave A 已建立三条可重复执行的自动证据链：
 
 下一批 Wave A 优先级：
 
-1. 收敛剩余 12 个 visible-admin-debt，优先 channel Codex、Ollama、upstream updates
-   与 channel-affinity 管理/诊断；
+1. 收敛剩余 10 个 visible-admin-debt，优先 channel Codex、Ollama、upstream updates
+   批处理与 channel-affinity 管理/诊断；
 2. 将 channel-affinity 从固定 Durable Object 子集升级为可枚举、可按规则清理和统计的
    Cloudflare 原生架构；不得用全零占位响应伪装 Go 管理语义；
-3. 将已分类的 auth、payment、operations 和 capability-hidden 家族逐项绑定 cutover
+3. 将 upstream `detect_all`/`apply_all` 迁移为 Queue/Workflow 编排，记录任务进度、
+   幂等键、失败 channel 集合和可重试边界，而不是在同步 Worker 请求里循环外部请求；
+4. 将已分类的 auth、payment、operations 和 capability-hidden 家族逐项绑定 cutover
    场景、负责人和恢复条件；
-4. 部署 migration 0009 和本批 Worker 到隔离 staging，完成已登录的 prefill、model
+5. 部署 migration 0009 和本批 Worker 到隔离 staging，完成已登录的 prefill、model
    sync、channel balance/multi-key smoke，并核查审计与无密钥泄漏；
-5. 在初始化后的隔离 staging 上完成登录、角色、CRUD、2FA 和过期 session 浏览器证据。
+6. 在初始化后的隔离 staging 上完成登录、角色、CRUD、2FA 和过期 session 浏览器证据。

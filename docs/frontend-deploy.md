@@ -105,7 +105,7 @@ bun run check:web:staging
 `audit:web:routes` parses the default frontend with a TypeScript
 Program/TypeChecker and compares 212 distinct frontend calls with Worker router
 registrations. The 2026-07-03 compatibility batches reduced unmatched calls
-from 122 to 108 by closing routes and removing one false-positive call:
+from 122 to 106 by closing routes and removing one false-positive call:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
 - batch token-key reveal;
@@ -114,13 +114,14 @@ from 122 to 108 by closing routes and removing one false-positive call:
 - the frontend spelling for admin 2FA reset;
 - prefill-group CRUD;
 - official model metadata preview/sync;
-- channel balance refresh and multi-key management.
+- channel balance refresh and multi-key management;
+- single-channel upstream model detect/apply.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-108 calls with a stable SHA-256 route-set digest and category counts. New
+106 calls with a stable SHA-256 route-set digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
-payment families, operations work, and 12 visible admin gaps. Local wrapper
+payment families, operations work, and 10 visible admin gaps. Local wrapper
 methods are inferred, while non-HTTP calls such as `endsWith('/v1')` are no
 longer counted. Hidden navigation still does not imply implementation.
 

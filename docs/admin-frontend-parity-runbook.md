@@ -474,6 +474,6 @@ Use this table until every row has a concrete owner and migration decision.
 | Performance/ratio sync ops | Keep on Go or service escape hatch | Scenario D |
 | Historical log archive | D1 recent logs first, R2/Queue archive later | G6/G7 |
 | Channel affinity control plane | Redesign the fixed per-key Durable Object subset so entries are enumerable, rule-aware, and invalidatable before exposing Go stats/clear routes | Scenario B affinity enablement |
-| Upstream model update batches | Implement single-channel detect/apply on bounded Worker fetches; move detect-all/apply-all to Queue/Workflow orchestration with progress and idempotency | Scenario B channel automation |
+| Upstream model update batches | Single-channel detect/apply is implemented on bounded Worker fetches; move detect-all/apply-all to Queue/Workflow orchestration with progress and idempotency | Scenario B channel automation |
 | Codex usage/credential refresh | Use bounded fixed-purpose outbound requests, atomic credential replacement, cache invalidation, and secret-safe audit | Scenario B Codex channels |
 | Ollama model management | Route through a Tunnel-protected management service, Container, or approved service binding; do not expose a VPS-local Ollama daemon to public Worker egress | Scenario D/local-provider support |

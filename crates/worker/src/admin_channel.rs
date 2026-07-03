@@ -306,52 +306,10 @@ pub async fn test_channel(
     }))
 }
 
-/// Fetch `{base_url}/v1/models` with a bearer key and return the model ids
-/// (the OpenAI-compatible list shape). Shared by the by-id and by-body probes.
-async fn fetch_openai_model_ids(
-    base_url: &str,
-    key: &str,
-) -> std::result::Result<Vec<String>, String> {
-    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-    let mut headers = worker::Headers::new();
-    headers
-        .set("Authorization", &format!("Bearer {key}"))
-        .map_err(|err| err.to_string())?;
-    let mut init = worker::RequestInit::new();
-    init.with_method(worker::Method::Get).with_headers(headers);
-    let outbound = Request::new_with_init(&url, &init).map_err(|err| err.to_string())?;
-    let mut upstream = worker::Fetch::Request(outbound)
-        .send()
-        .await
-        .map_err(|err| format!("failed to fetch upstream models: {err}"))?;
-    if upstream.status_code() < 200 || upstream.status_code() >= 300 {
-        return Err(format!("upstream status {}", upstream.status_code()));
-    }
-    #[derive(serde::Deserialize)]
-    struct ModelsList {
-        #[serde(default)]
-        data: Vec<ModelEntry>,
-    }
-    #[derive(serde::Deserialize)]
-    struct ModelEntry {
-        #[serde(default)]
-        id: String,
-    }
-    let parsed: ModelsList = upstream
-        .json()
-        .await
-        .map_err(|err| format!("unparseable upstream models response: {err}"))?;
-    Ok(parsed
-        .data
-        .into_iter()
-        .map(|entry| entry.id)
-        .filter(|id| !id.is_empty())
-        .collect())
-}
-
 /// `GET /api/channel/fetch_models/:id`: list the upstream's available model ids
-/// by calling `{base_url}/v1/models` with the channel's own key (Go
-/// `FetchUpstreamModels`, OpenAI-compatible shape).
+/// with the channel's provider-aware endpoint and stored key (Go
+/// `FetchUpstreamModels`). Uses the same bounded outbound policy as upstream
+/// update detection.
 pub async fn fetch_upstream_models(
     req: Request,
     env: Env,
@@ -367,9 +325,12 @@ pub async fn fetch_upstream_models(
     let Some(channel) = d1_repositories::find_channel_by_id(&db, id).await? else {
         return Ok(envelope_error_response(404, "channel not found"));
     };
-    match fetch_openai_model_ids(&channel.base_url, &channel.key).await {
+    match crate::channel_upstream_update::fetch_channel_model_ids(&channel).await {
         Ok(ids) => envelope_ok_response(&ids),
-        Err(message) => Ok(envelope_error_response(502, &message)),
+        Err(error) => Ok(envelope_error_response(
+            error.status_code(),
+            error.message(),
+        )),
     }
 }
 
@@ -404,9 +365,12 @@ pub async fn fetch_models_probe(mut req: Request, env: Env) -> WorkerResult<Resp
         ));
     }
     let key = probe.key.trim().lines().next().unwrap_or("").trim();
-    match fetch_openai_model_ids(base_url, key).await {
+    match crate::channel_upstream_update::fetch_openai_probe_model_ids(base_url, key).await {
         Ok(ids) => envelope_ok_response(&ids),
-        Err(message) => Ok(envelope_error_response(502, &message)),
+        Err(error) => Ok(envelope_error_response(
+            error.status_code(),
+            error.message(),
+        )),
     }
 }
 

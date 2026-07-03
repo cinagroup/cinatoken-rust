@@ -9,6 +9,7 @@ mod admin_user;
 mod affinity;
 mod cache;
 mod cache_invalidation;
+mod channel_upstream_update;
 mod d1_repositories;
 // Foundational mutable-flow-state substrate (item 2.1). Its consumers
 // (secure-verification step-up, Turnstile, OAuth/2FA/passkey) land in following
@@ -343,6 +344,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/channel/multi_key/manage", |req, ctx| async move {
             admin_channel::manage_multi_keys(req, ctx.env).await
         })
+        .post_async(
+            "/api/channel/upstream_updates/detect",
+            |req, ctx| async move { channel_upstream_update::detect(req, ctx.env).await },
+        )
+        .post_async(
+            "/api/channel/upstream_updates/apply",
+            |req, ctx| async move { channel_upstream_update::apply(req, ctx.env).await },
+        )
         // Channel tag bulk ops (Go DisableTagChannels / EnableTagChannels /
         // DeleteDisabledChannel).
         .post_async("/api/channel/tag/disabled", |req, ctx| async move {

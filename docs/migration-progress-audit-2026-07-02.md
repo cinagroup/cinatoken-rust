@@ -145,8 +145,9 @@ An AST-based audit now compares the default frontend's 212 distinct API calls
 with the Worker router. TypeChecker-based local-variable resolution found real
 calls the initial syntax-only scan missed; local helper-method inference then
 classified MJ/task reads and removed a false-positive `endsWith('/v1')` call.
-The first baseline found 122 unmatched calls. Two P0 compatibility batches and
-the parser correction reduced that number to 108 and added:
+The first baseline found 122 unmatched calls. Two P0 compatibility batches,
+the parser correction, and single-channel upstream update migration reduced
+that number to 106 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -158,11 +159,16 @@ the parser correction reduced that number to 108 and added:
 - `DELETE /api/user/:id/2fa` for the user-admin action;
 - D1-backed prefill-group CRUD;
 - fixed-origin official model metadata preview/sync;
-- provider balance refresh and multi-key channel management.
+- provider balance refresh and multi-key channel management;
+- single-channel `/api/channel/upstream_updates/detect` and
+  `/api/channel/upstream_updates/apply` with bounded outbound fetches,
+  provider URL special cases, regex ignored models, model-mapping alias
+  protection, optimistic `models/settings` persistence, ability rebuilds, and
+  audit logging for apply.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
 24 auth-deferred, 45 capability-hidden-product, 11 operations-debt, 16
-payment-deferred, and 12 visible-admin-debt. The root check fails on
+payment-deferred, and 10 visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 
 The public staging verifier passes seven non-mutating checks: status, setup,
@@ -208,12 +214,15 @@ from this evidence, not from commit count or implementation presence alone.
 1. Deploy the current P0 backend compatibility batch to staging.
 2. Run browser smoke for setup, anonymous status, login/logout/current-user,
    dashboard, keys, channels, users, logs, models, settings, and profile.
-3. Close or explicitly defer the remaining 12 visible-admin-debt calls,
-   beginning with channel Codex/Ollama/upstream operations and affinity tools.
-4. Replace the fixed Durable Object affinity subset with an enumerable,
+3. Close or explicitly defer the remaining 10 visible-admin-debt calls,
+   beginning with channel Codex/Ollama, upstream batch operations, and affinity
+   tools.
+4. Move upstream `detect_all`/`apply_all` to Queue/Workflow orchestration with
+   progress, idempotency, and failed-channel retry evidence.
+5. Replace the fixed Durable Object affinity subset with an enumerable,
    rule-aware Cloudflare design before exposing Go-compatible affinity stats
    and clear operations.
-5. Replace all production `REPLACE_WITH_PRODUCTION_*` values before any canary.
+6. Replace all production `REPLACE_WITH_PRODUCTION_*` values before any canary.
 
 ### P1: Close High-Value Route And Data Gaps
 

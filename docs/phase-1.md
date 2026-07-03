@@ -195,6 +195,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   write best-effort system logs, and run Turnstile on submit when configured.
   Migration `0011_checkins.sql` and the migration CLI import table set now
   include `checkins`.
+- Admin redemption-code compatibility (`crates/worker/src/admin_redemption.rs`):
+  `GET/POST/PUT /api/redemption`, `GET /api/redemption/search`,
+  `GET/DELETE /api/redemption/:id`, and
+  `DELETE /api/redemption/invalid` are D1-backed with Go-compatible
+  pagination, id/name-prefix search, create bounds, payment-compliance guard,
+  status-only updates, soft delete, admin audit, and the default frontend
+  response shapes. Migration `0012_redemptions.sql` and the migration CLI
+  import table set now include `redemptions`; public redemption/top-up payment
+  flows remain deferred.
 - `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
   role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
 - Worker admin auth surface (`crates/worker/src/admin.rs`): `POST

@@ -130,7 +130,8 @@ Minimum table-family inventory:
 | `Option` | Wave 0/1 | Required for billing expressions, ratios, feature flags, and limits. |
 | `Model`, `Vendor`, `PrefillGroup`, `Setup` | Wave 0/2 | Required before Rust admin can own model/vendor/operator views. |
 | `Log`, `QuotaData` | Wave 1/2 | Import only recent queryable windows unless archive strategy is ready. |
-| `TopUp`, `Redemption` | Wave 3 | Blocked until payment idempotency and reconciliation are proven. |
+| `Redemption` | Wave 2/3 | D1 schema/import support exists in `0012_redemptions.sql` for admin code management; public paid redemption/top-up traffic is still blocked until payment idempotency and reconciliation are proven. |
+| `TopUp` | Wave 3 | Blocked until payment idempotency and reconciliation are proven. |
 | `SubscriptionPlan`, `SubscriptionOrder`, `UserSubscription`, `SubscriptionPreConsumeRecord` | Wave 3 | Blocked until billing/payment ownership is approved. |
 | `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | Wave 4 | Migrate only with secure hash/secret handling; otherwise force re-auth/reset. |
 | `CustomOAuthProvider`, `UserOAuthBinding` | Wave 4 | D1 schema/import support exists in migration 0010; production traffic still requires provider secret policy evidence, redirect/SSRF checks, callback state replay checks, and account-binding smoke. |

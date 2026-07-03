@@ -86,7 +86,6 @@ advertised:
 - playground;
 - wallet/top-up;
 - Midjourney/task logs;
-- redemption;
 - subscriptions;
 - io.net model deployments.
 
@@ -105,7 +104,7 @@ bun run check:web:staging
 `audit:web:routes` parses the default frontend with a TypeScript
 Program/TypeChecker and compares 212 distinct frontend calls with Worker router
 registrations. The 2026-07-03 and 2026-07-04 compatibility batches reduced
-unmatched calls from 122 to 71 by closing routes and removing one
+unmatched calls from 122 to 64 by closing routes and removing one
 false-positive call:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
@@ -148,9 +147,16 @@ false-positive call:
   `GET /api/user/checkin` and `POST /api/user/checkin`. The routes use the
   Go-compatible frontend envelope, D1 `checkins` persistence, Turnstile on
   submit when configured, and a UTC day boundary for Cloudflare Workers.
+- Admin redemption-code management:
+  `GET/POST/PUT /api/redemption`, `GET /api/redemption/search`,
+  `GET/DELETE /api/redemption/:id`, and
+  `DELETE /api/redemption/invalid`. The routes are D1-backed, preserve
+  Go-style pagination/search/create/update/delete envelopes, require payment
+  compliance before code creation, soft-delete rows, and write admin audit
+  logs. Public top-up/payment redemption remains deferred.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-71 calls with a stable SHA-256 route-set digest and category counts. New
+64 calls with a stable SHA-256 route-set digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
 payment families; operations-debt is currently zero. Local wrapper methods are

@@ -113,7 +113,6 @@ for (const [section, module] of [
   ["console", "midjourney"],
   ["console", "task"],
   ["personal", "topup"],
-  ["admin", "redemption"],
   ["admin", "subscription"],
 ]) {
   assert(

@@ -525,6 +525,7 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "logs",
     "tasks",
     "checkins",
+    "redemptions",
     "subscription_orders",
     "vendors",
     "models",
@@ -684,6 +685,20 @@ const CHECKINS_D1_COLUMNS: &[&str] = &[
     "checkin_date",
     "quota_awarded",
     "created_at",
+];
+
+const REDEMPTIONS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "key",
+    "status",
+    "name",
+    "quota",
+    "created_time",
+    "redeemed_time",
+    "used_user_id",
+    "expired_time",
+    "deleted_at",
 ];
 
 const SUBSCRIPTION_ORDERS_D1_COLUMNS: &[&str] = &[
@@ -1414,6 +1429,13 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             column_map: &[],
             generate_missing_id: false,
         }),
+        "redemptions" => Ok(D1TableSpec {
+            source_name: "redemptions",
+            target_name: "redemptions",
+            target_columns: REDEMPTIONS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
         "subscription_orders" => Ok(D1TableSpec {
             source_name: "subscription_orders",
             target_name: "subscription_orders",
@@ -1771,6 +1793,29 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(config.tables, vec!["vendors", "models"]);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn import_config_accepts_checkins_and_redemptions() {
+        let temp = unique_temp_dir("import-checkins-redemptions");
+        let input = temp.join("core.cinatoken-export.json");
+        let output = temp.join("core.d1.sql");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(&input, "{}").unwrap();
+
+        let config = ImportConfig::from_args(vec![
+            "--input".to_string(),
+            input.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--table".to_string(),
+            "checkins".to_string(),
+            "--table".to_string(),
+            "redemptions".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(config.tables, vec!["checkins", "redemptions"]);
         fs::remove_dir_all(temp).unwrap();
     }
 

@@ -1039,7 +1039,7 @@ fn capability_clamped_sidebar(raw: Option<&str>) -> String {
             "enabled": configured_sidebar_bool(configured, "admin", "enabled", true),
             "channel": configured_sidebar_bool(configured, "admin", "channel", true),
             "models": configured_sidebar_bool(configured, "admin", "models", true),
-            "redemption": false,
+            "redemption": configured_sidebar_bool(configured, "admin", "redemption", true),
             "user": configured_sidebar_bool(configured, "admin", "user", true),
             "setting": configured_sidebar_bool(configured, "admin", "setting", true),
             "subscription": false
@@ -1435,7 +1435,7 @@ mod tests {
         assert_eq!(clamped["console"]["midjourney"], false);
         assert_eq!(clamped["console"]["task"], false);
         assert_eq!(clamped["personal"]["topup"], false);
-        assert_eq!(clamped["admin"]["redemption"], false);
+        assert_eq!(clamped["admin"]["redemption"], true);
         assert_eq!(clamped["admin"]["subscription"], false);
     }
 

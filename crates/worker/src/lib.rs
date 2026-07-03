@@ -12,6 +12,7 @@ mod admin_data;
 mod admin_oauth;
 mod admin_ollama;
 mod admin_payment;
+mod admin_redemption;
 mod admin_task_logs;
 mod admin_user;
 mod affinity;
@@ -410,6 +411,47 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .post_async("/api/token/batch", |req, ctx| async move {
             admin_crud::delete_tokens_batch(req, ctx.env).await
+        })
+        // Redemption codes (admin, Go controller/redemption.go compatibility).
+        .get_async("/api/redemption", |req, ctx| async move {
+            admin_redemption::list(req, ctx.env).await
+        })
+        .get_async("/api/redemption/", |req, ctx| async move {
+            admin_redemption::list(req, ctx.env).await
+        })
+        .get_async("/api/redemption/search", |req, ctx| async move {
+            admin_redemption::search(req, ctx.env).await
+        })
+        .post_async("/api/redemption", |req, ctx| async move {
+            admin_redemption::create(req, ctx.env).await
+        })
+        .post_async("/api/redemption/", |req, ctx| async move {
+            admin_redemption::create(req, ctx.env).await
+        })
+        .put_async("/api/redemption", |req, ctx| async move {
+            admin_redemption::update(req, ctx.env).await
+        })
+        .put_async("/api/redemption/", |req, ctx| async move {
+            admin_redemption::update(req, ctx.env).await
+        })
+        .delete_async("/api/redemption/invalid", |req, ctx| async move {
+            admin_redemption::delete_invalid(req, ctx.env).await
+        })
+        .get_async("/api/redemption/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_redemption::get(req, ctx.env, id.as_ref()).await
+        })
+        .get_async("/api/redemption/:id/", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_redemption::get(req, ctx.env, id.as_ref()).await
+        })
+        .delete_async("/api/redemption/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_redemption::delete(req, ctx.env, id.as_ref()).await
+        })
+        .delete_async("/api/redemption/:id/", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_redemption::delete(req, ctx.env, id.as_ref()).await
         })
         // Dashboard data endpoints (quota trends + token usage).
         .get_async("/api/data/", |req, ctx| async move {

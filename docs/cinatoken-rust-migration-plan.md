@@ -1795,3 +1795,45 @@ explicitly reset historical check-ins, run authenticated browser smoke for
 status, first submit, duplicate submit, disabled setting, and Turnstile-enabled
 submit, then capture row-count/quota-delta evidence before any production
 cutover.
+
+### 22.7 2026-07-04 Admin Redemption Compatibility Delta
+
+This increment supersedes the 22.6 route-debt number for the default frontend
+contract audit. The Rust Worker now implements the admin redemption-code
+management slice used by the default dashboard:
+
+- `GET /api/redemption` and `GET /api/redemption/` return Go-compatible
+  paginated live redemption rows ordered by newest id.
+- `GET /api/redemption/search` searches by exact numeric id or by name prefix,
+  matching the Go controller's frontend-facing behavior.
+- `GET /api/redemption/:id` returns one live row and preserves the
+  Go-compatible success envelope.
+- `POST /api/redemption` and `POST /api/redemption/` create 1-100 redemption
+  codes after checking `payment_setting.compliance_confirmed=true` and
+  `payment_setting.compliance_terms_version=v1`; generated keys use the same
+  32-character lowercase hex shape as the Go UUID-without-dashes helper.
+- `PUT /api/redemption` and `PUT /api/redemption/` support both field updates
+  and the frontend `?status_only=true` status toggle payload.
+- `DELETE /api/redemption/:id` soft-deletes one live row, and
+  `DELETE /api/redemption/invalid` soft-deletes used, disabled, or expired
+  live rows.
+- D1 migration `0012_redemptions.sql` adds the `redemptions` table, live-row
+  indexes, and a nullable `deleted_at` column for Go GORM soft-delete parity.
+  The migration CLI import table set now includes source `redemptions`.
+- `/api/status` no longer hard-hides `SidebarModulesAdmin.admin.redemption`;
+  operators can still disable the page through their normal sidebar option.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 212 Worker routes, 64 missing calls;
+- debt categories: 13 auth-deferred, 35 capability-hidden-product,
+  16 payment-deferred;
+- route-set SHA-256:
+  `b326864fa555cba7ba27e73a8a0b849a5511141f262f1723edbbd4d6baa7fbf7`;
+- `cargo test -p cinatoken-worker --lib`: 255 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Important boundary: this is the admin redemption-code management surface, not
+the public payment/top-up/redemption settlement chain. Before Rust owns paid
+redemption in production, the payment/idempotency and double-credit gates in
+the billing and data-migration runbooks still apply.

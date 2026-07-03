@@ -5314,6 +5314,305 @@ pub async fn insert_system_log(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Admin redemption-code management (Go model.Redemption).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+pub struct RedemptionRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub key: String,
+    pub status: i32,
+    pub name: String,
+    pub quota: i64,
+    pub created_time: i64,
+    pub redeemed_time: i64,
+    pub expired_time: i64,
+    pub used_user_id: i64,
+}
+
+#[derive(Debug)]
+pub struct CreateRedemption<'a> {
+    pub user_id: i64,
+    pub key: &'a str,
+    pub status: i32,
+    pub name: &'a str,
+    pub quota: i64,
+    pub created_time: i64,
+    pub expired_time: i64,
+}
+
+const REDEMPTION_COLUMNS: &str = r#"
+  id, user_id, "key", status, name, quota, created_time, redeemed_time,
+  expired_time, used_user_id
+"#;
+
+pub async fn list_redemptions(
+    db: &D1Database,
+    page: u32,
+    page_size: u32,
+) -> worker::Result<(Vec<RedemptionRow>, i64)> {
+    let limit = i64::from(page_size);
+    let offset = i64::from(page.saturating_sub(1).saturating_mul(page_size));
+    let args = [
+        D1Type::Integer(d1_i32(limit)),
+        D1Type::Integer(d1_i32(offset)),
+    ];
+    let rows = db
+        .prepare(&format!(
+            r#"
+            SELECT {REDEMPTION_COLUMNS}
+            FROM redemptions
+            WHERE deleted_at IS NULL
+            ORDER BY id DESC
+            LIMIT ?1 OFFSET ?2
+            "#
+        ))
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<RedemptionRow>()?;
+    let total = count_live_redemptions(db).await?;
+    Ok((rows, total))
+}
+
+pub async fn search_redemptions(
+    db: &D1Database,
+    keyword: &str,
+    page: u32,
+    page_size: u32,
+) -> worker::Result<(Vec<RedemptionRow>, i64)> {
+    let trimmed = keyword.trim();
+    let like = format!("{trimmed}%");
+    let limit = i64::from(page_size);
+    let offset = i64::from(page.saturating_sub(1).saturating_mul(page_size));
+    if let Ok(id) = trimmed.parse::<i64>() {
+        let args = [
+            D1Type::Integer(d1_i32(id)),
+            D1Type::Text(&like),
+            D1Type::Integer(d1_i32(limit)),
+            D1Type::Integer(d1_i32(offset)),
+        ];
+        let rows = db
+            .prepare(&format!(
+                r#"
+                SELECT {REDEMPTION_COLUMNS}
+                FROM redemptions
+                WHERE deleted_at IS NULL AND (id = ?1 OR name LIKE ?2)
+                ORDER BY id DESC
+                LIMIT ?3 OFFSET ?4
+                "#
+            ))
+            .bind_refs(&args)?
+            .all()
+            .await?
+            .results::<RedemptionRow>()?;
+        let total = count_search_redemptions_by_id_or_name(db, id, &like).await?;
+        Ok((rows, total))
+    } else {
+        let args = [
+            D1Type::Text(&like),
+            D1Type::Integer(d1_i32(limit)),
+            D1Type::Integer(d1_i32(offset)),
+        ];
+        let rows = db
+            .prepare(&format!(
+                r#"
+                SELECT {REDEMPTION_COLUMNS}
+                FROM redemptions
+                WHERE deleted_at IS NULL AND name LIKE ?1
+                ORDER BY id DESC
+                LIMIT ?2 OFFSET ?3
+                "#
+            ))
+            .bind_refs(&args)?
+            .all()
+            .await?
+            .results::<RedemptionRow>()?;
+        let total = count_search_redemptions_by_name(db, &like).await?;
+        Ok((rows, total))
+    }
+}
+
+pub async fn find_redemption_by_id(
+    db: &D1Database,
+    id: i64,
+) -> worker::Result<Option<RedemptionRow>> {
+    let arg = D1Type::Integer(d1_i32(id));
+    db.prepare(&format!(
+        r#"
+        SELECT {REDEMPTION_COLUMNS}
+        FROM redemptions
+        WHERE id = ?1 AND deleted_at IS NULL
+        LIMIT 1
+        "#
+    ))
+    .bind_refs(&arg)?
+    .first::<RedemptionRow>(None)
+    .await
+}
+
+pub async fn insert_redemption(db: &D1Database, row: &CreateRedemption<'_>) -> worker::Result<()> {
+    let args = [
+        D1Type::Integer(d1_i32(row.user_id)),
+        D1Type::Text(row.key),
+        D1Type::Integer(row.status),
+        D1Type::Text(row.name),
+        D1Type::Integer(d1_i32(row.quota)),
+        D1Type::Integer(d1_i32(row.created_time)),
+        D1Type::Integer(d1_i32(row.expired_time)),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO redemptions
+          (user_id, "key", status, name, quota, created_time, expired_time)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+pub async fn update_redemption_fields(
+    db: &D1Database,
+    id: i64,
+    name: &str,
+    quota: i64,
+    expired_time: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(name),
+        D1Type::Integer(d1_i32(quota)),
+        D1Type::Integer(d1_i32(expired_time)),
+        D1Type::Integer(d1_i32(id)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE redemptions
+               SET name = ?1, quota = ?2, expired_time = ?3
+             WHERE id = ?4 AND deleted_at IS NULL
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
+pub async fn update_redemption_status(
+    db: &D1Database,
+    id: i64,
+    status: i32,
+) -> worker::Result<bool> {
+    let args = [D1Type::Integer(status), D1Type::Integer(d1_i32(id))];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE redemptions
+               SET status = ?1
+             WHERE id = ?2 AND deleted_at IS NULL
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
+pub async fn soft_delete_redemption(
+    db: &D1Database,
+    id: i64,
+    deleted_at: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(d1_i32(deleted_at)),
+        D1Type::Integer(d1_i32(id)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE redemptions
+               SET deleted_at = ?1
+             WHERE id = ?2 AND deleted_at IS NULL
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
+pub async fn soft_delete_invalid_redemptions(db: &D1Database, now: i64) -> worker::Result<i64> {
+    let args = [D1Type::Integer(d1_i32(now)), D1Type::Integer(d1_i32(now))];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE redemptions
+               SET deleted_at = ?1
+             WHERE deleted_at IS NULL
+               AND (
+                 status IN (2, 3)
+                 OR (status = 1 AND expired_time != 0 AND expired_time < ?2)
+               )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) as i64)
+}
+
+async fn count_live_redemptions(db: &D1Database) -> worker::Result<i64> {
+    let row = db
+        .prepare("SELECT COUNT(*) AS count FROM redemptions WHERE deleted_at IS NULL")
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count).unwrap_or(0))
+}
+
+async fn count_search_redemptions_by_id_or_name(
+    db: &D1Database,
+    id: i64,
+    like: &str,
+) -> worker::Result<i64> {
+    let args = [D1Type::Integer(d1_i32(id)), D1Type::Text(like)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM redemptions
+            WHERE deleted_at IS NULL AND (id = ?1 OR name LIKE ?2)
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count).unwrap_or(0))
+}
+
+async fn count_search_redemptions_by_name(db: &D1Database, like: &str) -> worker::Result<i64> {
+    let arg = D1Type::Text(like);
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM redemptions
+            WHERE deleted_at IS NULL AND name LIKE ?1
+            "#,
+        )
+        .bind_refs(&arg)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count).unwrap_or(0))
+}
+
 /// Refund a failed async task's reserve to the token (Go `taskAdjustTokenQuota`
 /// / `IncreaseTokenQuota(-delta)`): credit `remain_quota` and uncount
 /// `used_quota`. No-op for a zero quota or an unknown token (`token_id == 0`,

@@ -4,23 +4,27 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 252 passed after adding
-  `GET /api/user/checkin` and `POST /api/user/checkin`, D1-backed check-in
-  records, status exposure, route protection, and UTC-day helper coverage.
-- `cargo test -p cinatoken-migration`: 20 passed after adding `checkins` to
-  the D1 import table set.
+- `cargo test -p cinatoken-worker --lib`: 255 passed after adding admin
+  redemption-code management routes, D1-backed redemptions, payment-compliance
+  create guard, status-only updates, sidebar exposure, and redemption request
+  validation coverage.
+- `cargo test -p cinatoken-migration`: 21 passed after adding `checkins` and
+  `redemptions` to the D1 import table set.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes
-  after the check-in batch.
+  after the admin redemption batch.
+- `bun tools/audit_frontend_routes.mjs --summary --details`: 212 frontend
+  calls, 212 Worker routes, 64 missing calls, categories 13 auth-deferred / 35
+  capability-hidden-product / 16 payment-deferred, SHA-256
+  `b326864fa555cba7ba27e73a8a0b849a5511141f262f1723edbbd4d6baa7fbf7`.
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
+  passes with the reviewed 64-call route-debt baseline.
 - `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
   `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
-  worker wasm check all passed after the check-in batch.
+  worker wasm check all passed after the admin redemption batch.
 - In-memory SQLite replay of `migrations/d1/0001_core.sql` plus
-  `migrations/d1/0011_checkins.sql`, confirming the `checkins` table, unique
-  daily guard, and `idx_checkins_user_date` index.
-- `bun tools/audit_frontend_routes.mjs --summary --details`: 212 frontend
-  calls, 200 Worker routes, 71 missing calls, categories 13 auth-deferred / 42
-  capability-hidden-product / 16 payment-deferred, SHA-256
-  `ec37c0cf67e953733ee7e43c291150f17f0d1f859073cc352e7d66b80865e677`.
+  `migrations/d1/0011_checkins.sql` plus
+  `migrations/d1/0012_redemptions.sql`, confirming the `checkins` and
+  `redemptions` tables plus their key live-row indexes.
 - `cargo fmt --all`
 - `cargo test --workspace --exclude cinatoken-worker`
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
@@ -683,14 +687,14 @@ Last checked: 2026-07-04
   `/api/status` enabled-provider exposure, custom OAuth binding list/unbind
   for self/admin users plus admin built-in binding clear, async
   Midjourney/task usage-log read lists at `/api/mj`, `/api/mj/self`,
-  `/api/task`, and `/api/task/self`, and D1-backed daily check-in at
-  `/api/user/checkin`.
+  `/api/task`, and `/api/task/self`, D1-backed daily check-in at
+  `/api/user/checkin`, and admin redemption-code management at
+  `/api/redemption`.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  71 missing calls, no unclassified entries, and no remaining visible-admin or
-  operations-debt
-  gaps. `cargo test -p cinatoken-worker --lib` passes
-  252 tests; migrations 0001-0011 replay including custom OAuth provider,
-  binding, and check-in tables. The wasm32 and default frontend
+  64 missing calls, no unclassified entries, and no remaining visible-admin or
+  operations-debt gaps. `cargo test -p cinatoken-worker --lib` passes 255
+  tests; migrations 0001-0012 replay including custom OAuth provider,
+  binding, check-in, and redemption tables. The wasm32 and default frontend
   TypeScript/Rsbuild checks pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**
   Channel create/update now carries the frontend `settings` JSON through the

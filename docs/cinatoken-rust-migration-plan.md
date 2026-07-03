@@ -2047,9 +2047,46 @@ Updated local evidence:
   10 payment-deferred;
 - route-set SHA-256:
   `b95c68040a3bf53e4c5890f216b224d925a3432e3f4ae2eca8addcc962c44604`;
-- `cargo test -p cinatoken-worker --lib`: 271 passed.
+- `cargo test -p cinatoken-worker --lib`: 272 passed.
 
 Remaining boundary: `/api/user/pay`, Creem, Waffo, Waffo Pancake, and external
 subscription checkout/callback routes remain payment-deferred and hidden until
 their provider-specific order model, signature verification, idempotency,
 replay, and reconciliation evidence is in place.
+
+### 22.13 2026-07-04 Waffo Pancake Amount Delta
+
+This increment supersedes the 22.12 route-debt number for the default frontend
+wallet audit. The Rust Worker now implements the Waffo Pancake read-only amount
+estimation route used by the wallet before hosted-checkout creation:
+
+- `POST /api/user/waffo-pancake/amount` is UserAuth-protected,
+  payment-compliance gated, and rejects disabled or missing users before
+  returning an amount.
+- The formula matches Go `controller/topup_waffo_pancake.go`: the minimum
+  threshold is the direct `WaffoPancakeMinTopUp` option, while
+  `general_setting.quota_display_type = TOKENS` converts the requested amount
+  by `QuotaPerUnit` only for the payable amount calculation.
+- The payable amount applies `WaffoPancakeUnitPrice`, the caller's
+  `TopupGroupRatio`, and `payment_setting.amount_discount[amount]` when
+  present and positive, using decimal intermediate calculation and Go-style
+  two-decimal response formatting.
+- `GET /api/user/topup/info` still keeps `enable_waffo_pancake_topup = false`.
+  Estimation is available for frontend compatibility and route-debt reduction,
+  but Waffo Pancake order creation/callback settlement is not exposed yet.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 232 Worker routes, 44 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  9 payment-deferred;
+- route-set SHA-256:
+  `88d9d14ee2bf04ed1f4736718b6442346ac437e6b97b263e0fc655f41c999a1f`;
+- `cargo test -p cinatoken-worker --lib`: 273 passed.
+
+Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
+`/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`, Waffo Pancake admin
+catalog/pair/save/product helper routes, and external subscription
+checkout/callback routes remain payment-deferred and hidden until their
+provider-specific order model, signature verification, idempotency, replay,
+and reconciliation evidence is in place.

@@ -271,7 +271,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   anchor and topup log rows. Legacy online/Epay-style amount estimation is
   implemented at `POST /api/user/amount` with Go-compatible `MinTopUp`,
   `Price`, `QuotaPerUnit`, `TopupGroupRatio`, token-display, and
-  `payment_setting.amount_discount` formula parity. Non-Stripe checkout,
+  `payment_setting.amount_discount` formula parity. Waffo Pancake amount
+  estimation is implemented at `POST /api/user/waffo-pancake/amount` with the
+  Go direct-minimum and token-display/unit-price formula. Non-Stripe checkout,
   callback, and order-creation gateways remain hidden until their Worker
   routes are implemented.
 

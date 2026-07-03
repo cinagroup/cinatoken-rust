@@ -5,6 +5,7 @@
 //!   the frontend-compatible payment link. UserAuth.
 //! - `POST /api/user/stripe/amount` estimates the Stripe charge amount.
 //! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
+//! - `POST /api/user/waffo-pancake/amount` estimates Waffo Pancake charge amount.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
 //! - `POST /api/user/topup` redeems a public redemption code.
@@ -37,9 +38,12 @@ const GENERAL_QUOTA_DISPLAY_TYPE_KEY: &str = "general_setting.quota_display_type
 const PRICE_KEY: &str = "Price";
 const QUOTA_PER_UNIT_KEY: &str = "QuotaPerUnit";
 const TOPUP_GROUP_RATIO_KEY: &str = "TopupGroupRatio";
+const WAFFO_PANCAKE_MIN_TOPUP_KEY: &str = "WaffoPancakeMinTopUp";
+const WAFFO_PANCAKE_UNIT_PRICE_KEY: &str = "WaffoPancakeUnitPrice";
 const QUOTA_DISPLAY_TYPE_TOKENS: &str = "TOKENS";
 const DEFAULT_PRICE: &str = "7.3";
 const DEFAULT_QUOTA_PER_UNIT: &str = "500000";
+const DEFAULT_WAFFO_PANCAKE_UNIT_PRICE: &str = "1";
 const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_CONFIRMED_KEY,
     PAYMENT_COMPLIANCE_TERMS_KEY,
@@ -54,6 +58,16 @@ const ONLINE_AMOUNT_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_TERMS_KEY,
     "MinTopUp",
     PRICE_KEY,
+    QUOTA_PER_UNIT_KEY,
+    TOPUP_GROUP_RATIO_KEY,
+    GENERAL_QUOTA_DISPLAY_TYPE_KEY,
+    PAYMENT_AMOUNT_DISCOUNT_KEY,
+];
+const WAFFO_PANCAKE_AMOUNT_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    WAFFO_PANCAKE_MIN_TOPUP_KEY,
+    WAFFO_PANCAKE_UNIT_PRICE_KEY,
     QUOTA_PER_UNIT_KEY,
     TOPUP_GROUP_RATIO_KEY,
     GENERAL_QUOTA_DISPLAY_TYPE_KEY,
@@ -299,6 +313,67 @@ pub async fn online_amount(mut req: Request, env: Env) -> WorkerResult<Response>
             &format!("minimum topup is {min_topup}"),
         ));
     }
+    let pay_money = online_pay_money(amount, &settings);
+    if pay_money <= Decimal::new(1, 2) {
+        return Ok(envelope_error_response(400, "amount is too small"));
+    }
+
+    Ok(envelope_ok_response(&format_pay_money(pay_money))?)
+}
+
+/// `POST /api/user/waffo-pancake/amount`: estimate Waffo Pancake payment amount.
+pub async fn waffo_pancake_amount(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let amount = request_amount(&body);
+    if !amount.is_finite() || amount <= 0.0 || amount.fract() != 0.0 || amount > i64::MAX as f64 {
+        return Ok(envelope_error_response(
+            400,
+            "amount must be a positive integer",
+        ));
+    }
+    let amount = amount as i64;
+
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, WAFFO_PANCAKE_AMOUNT_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    if !compliance_confirmed {
+        return Ok(envelope_error_response(
+            403,
+            "payment compliance is not confirmed",
+        ));
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(envelope_error_response(401, "user not found"));
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(envelope_error_response(403, "user is disabled"));
+    }
+
+    let min_topup = parse_positive_i64(values[2].as_deref(), 1);
+    if amount < min_topup {
+        return Ok(envelope_error_response(
+            400,
+            &format!("minimum topup is {min_topup}"),
+        ));
+    }
+    let settings = OnlineAmountSettings {
+        min_topup,
+        price: parse_positive_decimal(values[3].as_deref(), DEFAULT_WAFFO_PANCAKE_UNIT_PRICE),
+        quota_per_unit: parse_positive_decimal(values[4].as_deref(), DEFAULT_QUOTA_PER_UNIT),
+        topup_group_ratio: topup_group_ratio_for_group(&user.group, values[5].as_deref()),
+        quota_display_type: values[6].as_deref().unwrap_or("USD"),
+        discount: discount_for_amount(amount, values[7].as_deref()),
+    };
+
     let pay_money = online_pay_money(amount, &settings);
     if pay_money <= Decimal::new(1, 2) {
         return Ok(envelope_error_response(400, "amount is too small"));
@@ -1046,6 +1121,24 @@ mod tests {
 
         assert_eq!(online_pay_money(1, &settings), decimal("14.235"));
         assert_eq!(format_pay_money(online_pay_money(1, &settings)), "14.23");
+    }
+
+    #[test]
+    fn waffo_pancake_amount_matches_go_tokens_formula() {
+        let settings = OnlineAmountSettings {
+            min_topup: 1,
+            price: decimal("1"),
+            quota_per_unit: decimal("500000"),
+            topup_group_ratio: decimal("1.25"),
+            quota_display_type: "TOKENS",
+            discount: decimal("0.8"),
+        };
+
+        assert_eq!(settings.min_topup, 1);
+        assert_eq!(
+            format_pay_money(online_pay_money(500_000, &settings)),
+            "1.00"
+        );
     }
 
     #[test]

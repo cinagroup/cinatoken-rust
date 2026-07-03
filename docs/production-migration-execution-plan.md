@@ -210,8 +210,9 @@ Corrected production rules:
 - Read-heavy D1 access uses the Sessions API with read replicas and read-your-
   writes bookmarks; write-then-read admin paths reuse the same session.
 - WASM-incompatible or long-running workloads (Passkey/WebAuthn, complex AWS/
-  Vertex/Tencent signing, Realtime WebSocket bridge, Codex/io.net, heavy
-  tokenizers) run in Cloudflare Containers, not a separate VPS.
+  Vertex/Tencent signing, Realtime WebSocket bridge, Codex relay/runtime work
+  beyond the bounded Worker admin usage/refresh flow, io.net, heavy tokenizers)
+  run in Cloudflare Containers, not a separate VPS.
 - Multi-step async (media task polling, payment reconciliation) uses Workflows
   for durable, idempotent, replayable steps; Queues stay for high-volume fan-in.
 - Canary is driven primarily by Workers gradual deployments (version-percentage

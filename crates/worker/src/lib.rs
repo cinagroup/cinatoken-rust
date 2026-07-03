@@ -1,6 +1,7 @@
 mod admin;
 mod admin_2fa;
 mod admin_channel;
+mod admin_codex_channel;
 mod admin_crud;
 mod admin_data;
 mod admin_oauth;
@@ -459,6 +460,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .post_async("/api/channel/fix", |req, ctx| async move {
             admin_channel::fix_abilities(req, ctx.env).await
+        })
+        .get_async("/api/channel/:id/codex/usage", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_codex_channel::get_usage(req, ctx.env, id.as_ref()).await
+        })
+        .post_async("/api/channel/:id/codex/refresh", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_codex_channel::refresh_credential(req, ctx.env, id.as_ref()).await
         })
         .get_async("/api/channel/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();

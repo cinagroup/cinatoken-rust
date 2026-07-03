@@ -517,7 +517,7 @@ pub trait TaskAdapter {
 
 第五批：特殊业务。
 
-- Codex subscription channel。
+- Codex subscription channel（管理端 usage/refresh 已迁移；relay/runtime 仍需单独评估）。
 - Ollama 本地模型管理。
 - io.net deployment management。
 
@@ -1493,7 +1493,8 @@ options 读取）。
   Cloudflare**——无需独立 VPS、独立 DNS、跨网络 egress。
 - 适合放 Container 的工作负载：WebAuthn/Passkey（§7.12）、AWS/Vertex/Tencent 复杂签名、
   Realtime WebSocket 桥接（§7.11，配合 DO WebSocket Hibernation 管理空闲连接）、
-  Codex 订阅刷新 / io.net 部署管理、超大 tokenizer / CPU 密集转换。
+  Codex relay/runtime 长尾语义（bounded admin usage/refresh 已可留在 Worker）、
+  io.net 部署管理、超大 tokenizer / CPU 密集转换。
 - VPS 仅作为 Containers 也不适用时的最后退路。原方案 §1 的"单一 Cloudflare 云原生"目标因此
   得以保持。
 
@@ -1658,8 +1659,8 @@ Wave A 已建立三条可重复执行的自动证据链：
   11 个 SPA hard-refresh 路径、8 个静态资源、构建产物同一性、公共 envelope 和
   API/SPA 优先级。
 
-兼容工作、审计器校正和单通道 upstream model update 迁移已将 unmatched frontend
-calls 从 122 降至 106，完成：
+兼容工作、审计器校正、单通道 upstream model update 与 Codex 管理端 usage/refresh
+迁移已将 unmatched frontend calls 从 122 降至 104，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1675,14 +1676,19 @@ calls 从 122 降至 106，完成：
   outbound fetch、provider URL 特例、Gemini 有限分页、regex ignored models、
   model-mapping 别名保护、`models/settings` 乐观并发守卫、abilities rebuild、
   cache invalidation 和 secret-safe audit；
+- Codex channel 管理端 `GET /api/channel/:id/codex/usage` 与
+  `POST /api/channel/:id/codex/refresh`，包括 OAuth key JSON 校验、JWT
+  account/email 提取、401/403 自动 refresh 后重试、D1 CAS 凭证替换、best-effort cache
+  invalidation、secret-safe audit、HTTPS-only/443 outbound SSRF 防护、响应体上限和
+  Worker 不支持 Go VPS 本地 proxy 语义的显式 422；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
 - 缺口分类基线：24 auth-deferred、45 capability-hidden-product、11 operations-debt、
-  16 payment-deferred、10 visible-admin-debt。
+  16 payment-deferred、8 visible-admin-debt。
 
 当前证据边界：
 
-- Worker 单元测试 213 项通过；
+- Worker 单元测试 218 项通过；
 - D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；
@@ -1693,8 +1699,8 @@ calls 从 122 降至 106，完成：
 
 下一批 Wave A 优先级：
 
-1. 收敛剩余 10 个 visible-admin-debt，优先 channel Codex、Ollama、upstream updates
-   批处理与 channel-affinity 管理/诊断；
+1. 收敛剩余 8 个 visible-admin-debt，优先 Ollama、upstream updates 批处理与
+   channel-affinity 管理/诊断；
 2. 将 channel-affinity 从固定 Durable Object 子集升级为可枚举、可按规则清理和统计的
    Cloudflare 原生架构；不得用全零占位响应伪装 Go 管理语义；
 3. 将 upstream `detect_all`/`apply_all` 迁移为 Queue/Workflow 编排，记录任务进度、

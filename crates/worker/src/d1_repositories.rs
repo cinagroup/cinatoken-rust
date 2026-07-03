@@ -2879,6 +2879,32 @@ pub async fn update_multi_key_channel(
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
 }
 
+/// Atomically replace a channel key, guarded by the key value read before an
+/// external credential refresh. This prevents a refresh response from
+/// overwriting an admin's concurrent channel edit.
+pub async fn update_channel_key_if_current(
+    db: &D1Database,
+    id: i64,
+    expected_key: &str,
+    new_key: &str,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(new_key),
+        D1Type::Integer(d1_i32(id)),
+        D1Type::Text(expected_key),
+    ];
+    let result = db
+        .prepare(
+            r#"UPDATE channels
+               SET "key" = ?1
+               WHERE id = ?2 AND "key" = ?3"#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
 /// Atomically replace the upstream-model state guarded by the channel values
 /// used to calculate it. This prevents a detect/apply request from overwriting
 /// a concurrent channel edit or another upstream-model operation.

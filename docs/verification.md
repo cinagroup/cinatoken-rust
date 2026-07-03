@@ -631,15 +631,16 @@ Last checked: 2026-07-02
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
   covers 212 distinct default-frontend calls and reduced unmatched calls from
-  122 to 106 after
+  122 to 104 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
   metadata preview/sync, provider balance refresh, and multi-key channel
-  management, then single-channel upstream model detect/apply. The reviewed
-  route-debt baseline is enforced by `bun run check:web:routes`: 106 missing
-  calls, no unclassified entries, and 10 remaining visible-admin gaps. `cargo
-  test -p cinatoken-worker --lib` passes 213 tests; migrations 0001-0009 replay
+  management, then single-channel upstream model detect/apply and Codex
+  usage/credential refresh. The reviewed route-debt baseline is enforced by
+  `bun run check:web:routes`: 104 missing calls, no unclassified entries, and 8
+  remaining visible-admin gaps. `cargo test -p cinatoken-worker --lib` passes
+  218 tests; migrations 0001-0009 replay
   to 9 SQLite tables. The wasm32 and default frontend TypeScript/Rsbuild checks
   pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**
@@ -656,6 +657,19 @@ Last checked: 2026-07-02
   with `/api/channel/fetch_models/:id`; Ollama direct local-daemon access and
   batch detect/apply remain deferred to protected management/asynchronous
   designs.
+- **Codex channel usage and credential refresh — locally verified
+  (2026-07-03).** `GET /api/channel/:id/codex/usage` and `POST
+  /api/channel/:id/codex/refresh` now match the default frontend contract.
+  Stored OAuth credentials are validated as JSON objects; 401/403 usage
+  responses trigger at most one refresh/retry; refreshed keys use D1
+  compare-and-swap so a concurrent admin edit is not overwritten. The flow
+  attempts best-effort channel cache invalidation and writes an audit record
+  without tokens.
+  Outbound requests are HTTPS/443 only, redirect-disabled, timeout-bounded,
+  and body-size-bounded. Go VPS `setting.proxy` semantics are rejected
+  explicitly because Workers cannot attach a process-local proxy. Unit tests
+  cover parsing, JWT account/email extraction, SSRF targets, proxy rejection,
+  and identity preservation.
 - **Staging static/public HTTP contract — verified (2026-07-02/03).**
   `bun run check:web:staging` passes all seven groups against
   `cinatoken-rust-api-staging.cinagroup.workers.dev`: capability-clamped

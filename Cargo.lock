@@ -266,6 +266,7 @@ name = "cinatoken-worker"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "cinatoken-api",
  "cinatoken-auth",
  "cinatoken-billing",
@@ -284,6 +285,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "worker",

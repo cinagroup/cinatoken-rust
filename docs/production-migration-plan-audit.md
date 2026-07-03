@@ -599,7 +599,7 @@ Wave C, upload and task APIs:
 Wave D, specialized/long-tail:
 
 - Realtime WebSocket.
-- Codex subscription refresh.
+- Codex relay/runtime gaps beyond the bounded Worker admin usage/refresh flow.
 - io.net deployment management.
 - Any provider requiring native runtime fallback.
 

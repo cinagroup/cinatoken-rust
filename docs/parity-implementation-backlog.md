@@ -141,7 +141,7 @@ Scenario C gate: G4 apply, G7 payments (no double-credit), paid canary clean.
 | 4.5 | SSRF wiring on user-controlled-URL paths (webhook outbound, OAuth discovery, image/file/MJ proxy) + DNS-rebinding decision (DoH vs Container) | G6 | ssrf-parity | 2.1, 4.4 |
 | 4.6 | OAuth/2FA/Passkey enrollment (KV/DO single-use state); WebAuthn runtime (WASM vs Container); forced re-enroll policy | G5 | oauth-2fa-passkey | 2.1 |
 | 4.7 | Realtime `/v1/realtime` WebSocket (DO hibernation or Container bridge) | G7 | route-inventory / migration-plan §21.4 | 0.2 |
-| 4.8 | Long-tail providers needing complex signing/runtime → Cloudflare Containers (AWS/Vertex/Tencent, Codex, io.net) | G7 | provider-channel-matrix / migration-plan §21.4 | 4.4 |
+| 4.8 | Long-tail providers needing complex signing/runtime → Cloudflare Containers (AWS/Vertex/Tencent, Codex relay/runtime remainder after bounded admin usage/refresh, io.net) | G7 | provider-channel-matrix / migration-plan §21.4 | 4.4 |
 
 ## Ready-To-Wire Core Primitives (built 2026-06-25)
 

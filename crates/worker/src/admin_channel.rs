@@ -6,8 +6,9 @@
 //! the relay's `select_channels_from_abilities` finds new/edited channels.
 //!
 //! Tier 2 key reveal, tag, connectivity, and disabled-channel operations are
-//! implemented. Tier 3 now includes balance and multi-key management; Codex,
-//! Ollama, and upstream-update operations remain deferred.
+//! implemented. Tier 3 now includes balance and multi-key management. Codex
+//! usage/refresh lives in `admin_codex_channel`; Ollama and upstream batch
+//! operations remain deferred.
 
 use futures_util::future::{select, Either};
 use futures_util::TryStreamExt;

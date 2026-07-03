@@ -146,8 +146,8 @@ with the Worker router. TypeChecker-based local-variable resolution found real
 calls the initial syntax-only scan missed; local helper-method inference then
 classified MJ/task reads and removed a false-positive `endsWith('/v1')` call.
 The first baseline found 122 unmatched calls. Two P0 compatibility batches,
-the parser correction, and single-channel upstream update migration reduced
-that number to 106 and added:
+the parser correction, single-channel upstream update migration, and Codex
+admin usage/refresh migration reduced that number to 104 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -165,10 +165,14 @@ that number to 106 and added:
   provider URL special cases, regex ignored models, model-mapping alias
   protection, optimistic `models/settings` persistence, ability rebuilds, and
   audit logging for apply.
+- `/api/channel/:id/codex/usage` and `/api/channel/:id/codex/refresh` with
+  bounded HTTPS outbound, one 401/403 refresh/retry, JWT identity extraction,
+  D1 CAS credential replacement, best-effort cache invalidation, secret-safe
+  audit, and an explicit rejection of Go VPS local-proxy settings.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
 24 auth-deferred, 45 capability-hidden-product, 11 operations-debt, 16
-payment-deferred, and 10 visible-admin-debt. The root check fails on
+payment-deferred, and 8 visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 
 The public staging verifier passes seven non-mutating checks: status, setup,
@@ -214,9 +218,8 @@ from this evidence, not from commit count or implementation presence alone.
 1. Deploy the current P0 backend compatibility batch to staging.
 2. Run browser smoke for setup, anonymous status, login/logout/current-user,
    dashboard, keys, channels, users, logs, models, settings, and profile.
-3. Close or explicitly defer the remaining 10 visible-admin-debt calls,
-   beginning with channel Codex/Ollama, upstream batch operations, and affinity
-   tools.
+3. Close or explicitly defer the remaining 8 visible-admin-debt calls,
+   beginning with Ollama, upstream batch operations, and affinity tools.
 4. Move upstream `detect_all`/`apply_all` to Queue/Workflow orchestration with
    progress, idempotency, and failed-channel retry evidence.
 5. Replace the fixed Durable Object affinity subset with an enumerable,

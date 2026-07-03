@@ -1660,7 +1660,7 @@ Wave A 已建立三条可重复执行的自动证据链：
   API/SPA 优先级。
 
 兼容工作、审计器校正、单通道 upstream model update 与 Codex 管理端 usage/refresh
-迁移已将 unmatched frontend calls 从 122 降至 104，完成：
+迁移已将 unmatched frontend calls 从 122 降至 102，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1681,14 +1681,18 @@ Wave A 已建立三条可重复执行的自动证据链：
   account/email 提取、401/403 自动 refresh 后重试、D1 CAS 凭证替换、best-effort cache
   invalidation、secret-safe audit、HTTPS-only/443 outbound SSRF 防护、响应体上限和
   Worker 不支持 Go VPS 本地 proxy 语义的显式 422；
+- Channel affinity 管理端 `GET /api/option/channel_affinity_cache` 与
+  `DELETE /api/option/channel_affinity_cache`，覆盖 Rust Worker 当前真实写入的
+  KV-indexed Durable Object affinity 子集，支持 bounded stats/clear、AdminAuth 和
+  审计；Go 的 configurable rule-template 语义与 usage-stat cache 不用占位响应伪装；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
 - 缺口分类基线：24 auth-deferred、45 capability-hidden-product、11 operations-debt、
-  16 payment-deferred、8 visible-admin-debt。
+  16 payment-deferred、6 visible-admin-debt。
 
 当前证据边界：
 
-- Worker 单元测试 218 项通过；
+- Worker 单元测试 220 项通过；
 - D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；
@@ -1699,10 +1703,10 @@ Wave A 已建立三条可重复执行的自动证据链：
 
 下一批 Wave A 优先级：
 
-1. 收敛剩余 8 个 visible-admin-debt，优先 Ollama、upstream updates 批处理与
-   channel-affinity 管理/诊断；
-2. 将 channel-affinity 从固定 Durable Object 子集升级为可枚举、可按规则清理和统计的
-   Cloudflare 原生架构；不得用全零占位响应伪装 Go 管理语义；
+1. 收敛剩余 6 个 visible-admin-debt，优先 Ollama、upstream updates 批处理与
+   channel-affinity usage 诊断；
+2. 将 channel-affinity 从当前可枚举 Rust 子集继续升级为 rule-template aware 与
+   usage-stat aware 的 Cloudflare 原生架构；不得用全零占位响应伪装 Go 管理语义；
 3. 将 upstream `detect_all`/`apply_all` 迁移为 Queue/Workflow 编排，记录任务进度、
    幂等键、失败 channel 集合和可重试边界，而不是在同步 Worker 请求里循环外部请求；
 4. 将已分类的 auth、payment、operations 和 capability-hidden 家族逐项绑定 cutover

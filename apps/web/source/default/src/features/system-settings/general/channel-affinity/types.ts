@@ -45,6 +45,13 @@ export interface CacheStats {
   by_rule_name: Record<string, number>
   cache_capacity: number
   cache_algo: string
+  active?: number
+  expired?: number
+  malformed?: number
+  truncated?: boolean
+  scan_limit?: number
+  scope?: string
+  rust_rule_name?: string
 }
 
 export interface ChannelAffinitySettings {

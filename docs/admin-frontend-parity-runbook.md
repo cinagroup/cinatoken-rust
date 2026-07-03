@@ -473,7 +473,7 @@ Use this table until every row has a concrete owner and migration decision.
 | Async task/media admin | Keep on Go | Scenario D/G7 |
 | Performance/ratio sync ops | Keep on Go or service escape hatch | Scenario D |
 | Historical log archive | D1 recent logs first, R2/Queue archive later | G6/G7 |
-| Channel affinity control plane | Redesign the fixed per-key Durable Object subset so entries are enumerable, rule-aware, and invalidatable before exposing Go stats/clear routes | Scenario B affinity enablement |
+| Channel affinity control plane | Stats/clear for the Rust Worker indexed Durable Object subset are implemented with AdminAuth, bounded KV scans, and audit. Remaining: Go rule-template parity and `/api/log/channel_affinity_usage_cache` usage diagnostics | Scenario B affinity enablement |
 | Upstream model update batches | Single-channel detect/apply is implemented on bounded Worker fetches; move detect-all/apply-all to Queue/Workflow orchestration with progress and idempotency | Scenario B channel automation |
 | Codex usage/credential refresh | Implemented as bounded fixed-purpose Worker outbound requests with atomic credential replacement, best-effort cache invalidation, secret-safe audit, and explicit rejection of Go VPS proxy settings; live Codex subscription smoke remains required | Scenario B Codex channels |
 | Ollama model management | Route through a Tunnel-protected management service, Container, or approved service binding; do not expose a VPS-local Ollama daemon to public Worker egress | Scenario D/local-provider support |

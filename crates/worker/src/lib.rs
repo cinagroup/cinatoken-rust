@@ -1,5 +1,6 @@
 mod admin;
 mod admin_2fa;
+mod admin_affinity;
 mod admin_channel;
 mod admin_codex_channel;
 mod admin_crud;
@@ -254,6 +255,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .put_async("/api/option/", |req, ctx| async move {
             admin_crud::update_option(req, ctx.env).await
         })
+        .get_async(
+            "/api/option/channel_affinity_cache",
+            |req, ctx| async move { admin_affinity::get_cache_stats(req, ctx.env).await },
+        )
+        .delete_async(
+            "/api/option/channel_affinity_cache",
+            |req, ctx| async move { admin_affinity::clear_cache(req, ctx.env).await },
+        )
         .post_async("/api/option/rest_model_ratio", |req, ctx| async move {
             admin_crud::reset_model_ratio(req, ctx.env).await
         })

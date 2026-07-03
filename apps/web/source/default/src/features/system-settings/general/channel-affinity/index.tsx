@@ -531,8 +531,12 @@ export function ChannelAffinitySection(props: Props) {
           </Button>
           {cacheStats && (
             <span className='text-muted-foreground text-xs'>
-              {t('Cache Entries')}: {cacheStats.total} /{' '}
-              {cacheStats.cache_capacity}
+              {t('Cache Entries')}: {cacheStats.total}
+              {cacheStats.truncated ? '+' : ''}
+              {cacheStats.cache_capacity > 0
+                ? ` / ${cacheStats.cache_capacity}`
+                : ''}
+              {cacheStats.cache_algo ? ` (${cacheStats.cache_algo})` : ''}
             </span>
           )}
         </SettingsPageActionsPortal>

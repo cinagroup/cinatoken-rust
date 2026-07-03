@@ -6,6 +6,7 @@ mod admin_codex_channel;
 mod admin_crud;
 mod admin_data;
 mod admin_oauth;
+mod admin_ollama;
 mod admin_payment;
 mod admin_user;
 mod affinity;
@@ -374,6 +375,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             "/api/channel/upstream_updates/apply_all",
             |req, ctx| async move { channel_upstream_update::apply_all(req, ctx.env).await },
         )
+        .get_async("/api/channel/ollama/version/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_ollama::version(req, ctx.env, id.as_ref()).await
+        })
+        .delete_async("/api/channel/ollama/delete", |req, ctx| async move {
+            admin_ollama::delete_model(req, ctx.env).await
+        })
+        .post_async("/api/channel/ollama/pull/stream", |req, ctx| async move {
+            admin_ollama::pull_model_stream(req, ctx.env).await
+        })
         // Channel tag bulk ops (Go DisableTagChannels / EnableTagChannels /
         // DeleteDisabledChannel).
         .post_async("/api/channel/tag/disabled", |req, ctx| async move {

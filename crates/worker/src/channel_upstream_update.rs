@@ -732,10 +732,9 @@ pub(crate) async fn fetch_channel_model_ids(
     channel: &ChannelRow,
 ) -> Result<Vec<String>, ModelFetchError> {
     if channel.kind == CHANNEL_TYPE_OLLAMA {
-        return Err(ModelFetchError::Unsupported(
-            "Ollama model detection requires an approved Tunnel, Container, or service binding; direct local-daemon access is disabled"
-                .to_string(),
-        ));
+        return crate::admin_ollama::fetch_ollama_model_names_for_channel(channel)
+            .await
+            .map_err(map_ollama_model_error);
     }
     let key = channel
         .key
@@ -752,6 +751,13 @@ pub(crate) async fn fetch_channel_model_ids(
     let headers = channel_headers(channel, key)?;
     let value = fetch_json(&url, headers).await?;
     parse_openai_model_ids(&value)
+}
+
+fn map_ollama_model_error(error: crate::admin_ollama::OllamaAdminError) -> ModelFetchError {
+    match error.status_code() {
+        400 | 422 => ModelFetchError::Unsupported(error.message().to_string()),
+        _ => ModelFetchError::Upstream(error.message().to_string()),
+    }
 }
 
 pub(crate) async fn fetch_openai_probe_model_ids(

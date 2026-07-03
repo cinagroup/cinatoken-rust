@@ -8,7 +8,7 @@
 //! Tier 2 key reveal, tag, connectivity, and disabled-channel operations are
 //! implemented. Tier 3 now includes balance, multi-key management, and bounded
 //! upstream batch operations. Codex usage/refresh lives in
-//! `admin_codex_channel`; Ollama operations remain deferred.
+//! `admin_codex_channel`; Ollama model management lives in `admin_ollama`.
 
 use futures_util::future::{select, Either};
 use futures_util::TryStreamExt;
@@ -356,6 +356,8 @@ pub async fn fetch_models_probe(mut req: Request, env: Env) -> WorkerResult<Resp
         base_url: String,
         #[serde(default)]
         key: String,
+        #[serde(default, rename = "type")]
+        kind: i32,
     }
     let probe: Probe = serde_json::from_value(body).unwrap_or_default();
     let base_url = probe.base_url.trim();
@@ -366,6 +368,15 @@ pub async fn fetch_models_probe(mut req: Request, env: Env) -> WorkerResult<Resp
         ));
     }
     let key = probe.key.trim().lines().next().unwrap_or("").trim();
+    if probe.kind == 4 {
+        return match crate::admin_ollama::fetch_ollama_model_names(base_url, key).await {
+            Ok(ids) => envelope_ok_response(&ids),
+            Err(error) => Ok(envelope_error_response(
+                error.status_code(),
+                error.message(),
+            )),
+        };
+    }
     match crate::channel_upstream_update::fetch_openai_probe_model_ids(base_url, key).await {
         Ok(ids) => envelope_ok_response(&ids),
         Err(error) => Ok(envelope_error_response(

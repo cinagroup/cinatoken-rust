@@ -145,11 +145,11 @@ An AST-based audit now compares the default frontend's 212 distinct API calls
 with the Worker router. TypeChecker-based local-variable resolution found real
 calls the initial syntax-only scan missed; local helper-method inference then
 classified MJ/task reads and removed a false-positive `endsWith('/v1')` call.
-The first baseline found 122 unmatched calls. Two P0 compatibility batches,
+The first baseline found 122 unmatched calls. Successive P0 compatibility batches,
 the parser correction, single-channel upstream update migration, and Codex
 admin usage/refresh migration plus the Rust-native channel-affinity cache
-control surface, usage diagnostics, and bounded upstream batch slices reduced
-that number to 99 and added:
+control surface, usage diagnostics, bounded upstream batch slices, and Ollama
+admin model management reduced that number to 96 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -185,10 +185,15 @@ that number to 99 and added:
   slices. The default frontend now loops over cursors and aggregates
   Go-compatible counts, avoiding a single synchronous Worker request that
   scans every channel and calls every upstream.
+- `GET /api/channel/ollama/version/:id`, `DELETE /api/channel/ollama/delete`,
+  and `POST /api/channel/ollama/pull/stream`, plus Ollama `/api/tags` model
+  listing for probe and stored-channel fetch paths. Workers require HTTPS/443
+  base URLs reachable through Cloudflare-native ingress, not VPS-local daemon
+  access.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
 24 auth-deferred, 45 capability-hidden-product, 11 operations-debt, 16
-payment-deferred, and 3 visible-admin-debt. The root check fails on
+payment-deferred, and 0 visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 
 The public staging verifier passes seven non-mutating checks: status, setup,
@@ -234,11 +239,9 @@ from this evidence, not from commit count or implementation presence alone.
 1. Deploy the current P0 backend compatibility batch to staging.
 2. Run browser smoke for setup, anonymous status, login/logout/current-user,
    dashboard, keys, channels, users, logs, models, settings, and profile.
-3. Close or explicitly defer the remaining 3 visible-admin-debt calls, all in
-   Ollama local model management.
-4. Move bounded upstream `detect_all`/`apply_all` slices to Queue/Workflow
+3. Move bounded upstream `detect_all`/`apply_all` slices to Queue/Workflow
    orchestration with progress, idempotency, and failed-channel retry evidence.
-5. Upgrade affinity beyond the current enumerable Rust subset only when
+4. Upgrade affinity beyond the current enumerable Rust subset only when
    rule-template parity is implemented; do not expose
    placeholder all-zero Go-compatible usage stats.
 6. Replace all production `REPLACE_WITH_PRODUCTION_*` values before any canary.

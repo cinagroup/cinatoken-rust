@@ -631,19 +631,20 @@ Last checked: 2026-07-02
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
   covers 212 distinct default-frontend calls and reduced unmatched calls from
-  122 to 99 after
+  122 to 96 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
   metadata preview/sync, provider balance refresh, and multi-key channel
   management, then single-channel upstream model detect/apply, Codex
   usage/credential refresh, Rust-native channel-affinity cache stats/clear,
-  channel-affinity usage diagnostics, and bounded upstream batch
-  detect/apply slices.
+  channel-affinity usage diagnostics, bounded upstream batch
+  detect/apply slices, and Ollama version/delete/pull-stream/model-list
+  management through HTTPS/443 base URLs.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  99 missing calls, no unclassified entries, and 3 remaining visible-admin
+  96 missing calls, no unclassified entries, and no remaining visible-admin
   gaps. `cargo test -p cinatoken-worker --lib` passes
-  228 tests; migrations 0001-0009 replay
+  233 tests; migrations 0001-0009 replay
   to 9 SQLite tables. The wasm32 and default frontend TypeScript/Rsbuild checks
   pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**
@@ -680,6 +681,13 @@ Last checked: 2026-07-02
   5 and aggregates the Go-compatible counts, while each Worker request keeps a
   fixed amount of D1 and outbound model-list work. A future Queue/Workflow can
   reuse the same cursor contract for background orchestration.
+- **Ollama admin model management - locally verified (2026-07-03).**
+  `GET /api/channel/ollama/version/:id`, `DELETE /api/channel/ollama/delete`,
+  and `POST /api/channel/ollama/pull/stream` are implemented for Ollama
+  channels with HTTPS/443 base URLs. Pull progress is streamed from Ollama
+  NDJSON into the existing frontend SSE UI without buffering the full operation;
+  `POST /api/channel/fetch_models` and `GET /api/channel/fetch_models/:id`
+  also use Ollama `/api/tags` when channel type is 4.
 - **Channel affinity cache stats/clear - locally verified (2026-07-03).**
   `GET /api/option/channel_affinity_cache` and
   `DELETE /api/option/channel_affinity_cache` now cover the Rust Worker

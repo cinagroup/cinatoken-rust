@@ -1979,6 +1979,296 @@ pub async fn upsert_option_pub(db: &D1Database, key: &str, value: &str) -> worke
     upsert_option(db, key, value).await
 }
 
+// ---------------------------------------------------------------------------
+// Custom OAuth provider config (G5 auth-admin slice).
+//
+// Mirrors Go `model/custom_oauth_provider.go` and
+// `model/user_oauth_binding.go` for the root-admin provider CRUD surface. The
+// secret-bearing row stays internal; handler responses must not return
+// `client_secret`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CustomOAuthProviderRow {
+    pub id: i64,
+    pub name: String,
+    pub slug: String,
+    pub icon: String,
+    pub enabled: i32,
+    pub client_id: String,
+    pub client_secret: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub user_info_endpoint: String,
+    pub scopes: String,
+    pub user_id_field: String,
+    pub username_field: String,
+    pub display_name_field: String,
+    pub email_field: String,
+    pub well_known: String,
+    pub auth_style: i32,
+    pub access_policy: String,
+    pub access_denied_message: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const CUSTOM_OAUTH_PROVIDER_COLUMNS: &str = r#"
+  id, name, slug, icon, enabled, client_id, client_secret,
+  authorization_endpoint, token_endpoint, user_info_endpoint, scopes,
+  user_id_field, username_field, display_name_field, email_field, well_known,
+  auth_style, access_policy, access_denied_message, created_at, updated_at
+"#;
+
+#[derive(Debug, Clone)]
+pub struct CreateCustomOAuthProvider<'a> {
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub icon: &'a str,
+    pub enabled: bool,
+    pub client_id: &'a str,
+    pub client_secret: &'a str,
+    pub authorization_endpoint: &'a str,
+    pub token_endpoint: &'a str,
+    pub user_info_endpoint: &'a str,
+    pub scopes: &'a str,
+    pub user_id_field: &'a str,
+    pub username_field: &'a str,
+    pub display_name_field: &'a str,
+    pub email_field: &'a str,
+    pub well_known: &'a str,
+    pub auth_style: i32,
+    pub access_policy: &'a str,
+    pub access_denied_message: &'a str,
+    pub now: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UpdateCustomOAuthProvider<'a> {
+    pub id: i64,
+    pub name: Option<&'a str>,
+    pub slug: Option<&'a str>,
+    pub icon: Option<&'a str>,
+    pub enabled: Option<bool>,
+    pub client_id: Option<&'a str>,
+    pub client_secret: Option<&'a str>,
+    pub authorization_endpoint: Option<&'a str>,
+    pub token_endpoint: Option<&'a str>,
+    pub user_info_endpoint: Option<&'a str>,
+    pub scopes: Option<&'a str>,
+    pub user_id_field: Option<&'a str>,
+    pub username_field: Option<&'a str>,
+    pub display_name_field: Option<&'a str>,
+    pub email_field: Option<&'a str>,
+    pub well_known: Option<&'a str>,
+    pub auth_style: Option<i32>,
+    pub access_policy: Option<&'a str>,
+    pub access_denied_message: Option<&'a str>,
+    pub updated_at: i64,
+}
+
+pub async fn list_custom_oauth_providers(
+    db: &D1Database,
+) -> worker::Result<Vec<CustomOAuthProviderRow>> {
+    let sql = format!(
+        "SELECT {CUSTOM_OAUTH_PROVIDER_COLUMNS} FROM custom_oauth_providers ORDER BY id ASC"
+    );
+    Ok(db
+        .prepare(&sql)
+        .bind_refs(&[] as &[D1Type<'_>])?
+        .all()
+        .await?
+        .results::<CustomOAuthProviderRow>()?)
+}
+
+pub async fn list_enabled_custom_oauth_providers(
+    db: &D1Database,
+) -> worker::Result<Vec<CustomOAuthProviderRow>> {
+    let sql = format!(
+        "SELECT {CUSTOM_OAUTH_PROVIDER_COLUMNS} FROM custom_oauth_providers WHERE enabled = 1 ORDER BY id ASC"
+    );
+    Ok(db
+        .prepare(&sql)
+        .bind_refs(&[] as &[D1Type<'_>])?
+        .all()
+        .await?
+        .results::<CustomOAuthProviderRow>()?)
+}
+
+pub async fn find_custom_oauth_provider_by_id(
+    db: &D1Database,
+    id: i64,
+) -> worker::Result<Option<CustomOAuthProviderRow>> {
+    let arg = D1Type::Integer(d1_i32(id));
+    let sql = format!(
+        "SELECT {CUSTOM_OAUTH_PROVIDER_COLUMNS} FROM custom_oauth_providers WHERE id = ?1 LIMIT 1"
+    );
+    db.prepare(&sql)
+        .bind_refs(&[arg])?
+        .first::<CustomOAuthProviderRow>(None)
+        .await
+}
+
+pub async fn custom_oauth_slug_taken(
+    db: &D1Database,
+    slug: &str,
+    exclude_id: Option<i64>,
+) -> worker::Result<bool> {
+    #[derive(Deserialize)]
+    struct Count {
+        count: i64,
+    }
+    let mut args = vec![D1Type::Text(slug)];
+    let mut sql =
+        "SELECT COUNT(*) AS count FROM custom_oauth_providers WHERE slug = ?1".to_string();
+    if let Some(id) = exclude_id {
+        sql.push_str(" AND id != ?2");
+        args.push(D1Type::Integer(d1_i32(id)));
+    }
+    let row = db
+        .prepare(&sql)
+        .bind_refs(&args)?
+        .first::<Count>(None)
+        .await?;
+    Ok(row.map(|r| r.count).unwrap_or(0) > 0)
+}
+
+pub async fn create_custom_oauth_provider(
+    db: &D1Database,
+    params: CreateCustomOAuthProvider<'_>,
+) -> worker::Result<i64> {
+    let args = [
+        D1Type::Text(params.name),
+        D1Type::Text(params.slug),
+        D1Type::Text(params.icon),
+        D1Type::Integer(if params.enabled { 1 } else { 0 }),
+        D1Type::Text(params.client_id),
+        D1Type::Text(params.client_secret),
+        D1Type::Text(params.authorization_endpoint),
+        D1Type::Text(params.token_endpoint),
+        D1Type::Text(params.user_info_endpoint),
+        D1Type::Text(params.scopes),
+        D1Type::Text(params.user_id_field),
+        D1Type::Text(params.username_field),
+        D1Type::Text(params.display_name_field),
+        D1Type::Text(params.email_field),
+        D1Type::Text(params.well_known),
+        D1Type::Integer(params.auth_style),
+        D1Type::Text(params.access_policy),
+        D1Type::Text(params.access_denied_message),
+        D1Type::Integer(d1_i32(params.now)),
+        D1Type::Integer(d1_i32(params.now)),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO custom_oauth_providers (
+          name, slug, icon, enabled, client_id, client_secret,
+          authorization_endpoint, token_endpoint, user_info_endpoint, scopes,
+          user_id_field, username_field, display_name_field, email_field,
+          well_known, auth_style, access_policy, access_denied_message,
+          created_at, updated_at
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+          ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+        )
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    #[derive(Deserialize)]
+    struct Id {
+        id: i64,
+    }
+    let row = db
+        .prepare("SELECT id FROM custom_oauth_providers WHERE slug = ?1 LIMIT 1")
+        .bind_refs(&[D1Type::Text(params.slug)])?
+        .first::<Id>(None)
+        .await?;
+    Ok(row.map(|r| r.id).unwrap_or(0))
+}
+
+pub async fn update_custom_oauth_provider(
+    db: &D1Database,
+    params: UpdateCustomOAuthProvider<'_>,
+) -> worker::Result<bool> {
+    let mut sets: Vec<String> = Vec::new();
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+
+    macro_rules! push_text {
+        ($field:literal, $value:expr) => {
+            if let Some(value) = $value {
+                let idx = args.len() + 1;
+                sets.push(format!("{} = ?{}", $field, idx));
+                args.push(D1Type::Text(value));
+            }
+        };
+    }
+
+    push_text!("name", params.name);
+    push_text!("slug", params.slug);
+    push_text!("icon", params.icon);
+    if let Some(enabled) = params.enabled {
+        let idx = args.len() + 1;
+        sets.push(format!("enabled = ?{idx}"));
+        args.push(D1Type::Integer(if enabled { 1 } else { 0 }));
+    }
+    push_text!("client_id", params.client_id);
+    push_text!("client_secret", params.client_secret);
+    push_text!("authorization_endpoint", params.authorization_endpoint);
+    push_text!("token_endpoint", params.token_endpoint);
+    push_text!("user_info_endpoint", params.user_info_endpoint);
+    push_text!("scopes", params.scopes);
+    push_text!("user_id_field", params.user_id_field);
+    push_text!("username_field", params.username_field);
+    push_text!("display_name_field", params.display_name_field);
+    push_text!("email_field", params.email_field);
+    push_text!("well_known", params.well_known);
+    if let Some(auth_style) = params.auth_style {
+        let idx = args.len() + 1;
+        sets.push(format!("auth_style = ?{idx}"));
+        args.push(D1Type::Integer(auth_style));
+    }
+    push_text!("access_policy", params.access_policy);
+    push_text!("access_denied_message", params.access_denied_message);
+
+    let idx = args.len() + 1;
+    sets.push(format!("updated_at = ?{idx}"));
+    args.push(D1Type::Integer(d1_i32(params.updated_at)));
+
+    let id_index = args.len() + 1;
+    args.push(D1Type::Integer(d1_i32(params.id)));
+    let sql = format!(
+        "UPDATE custom_oauth_providers SET {} WHERE id = ?{}",
+        sets.join(", "),
+        id_index
+    );
+    let result = db.prepare(&sql).bind_refs(&args)?.run().await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn delete_custom_oauth_provider(db: &D1Database, id: i64) -> worker::Result<bool> {
+    let result = db
+        .prepare("DELETE FROM custom_oauth_providers WHERE id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(id))])?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn count_custom_oauth_bindings(db: &D1Database, provider_id: i64) -> worker::Result<i64> {
+    #[derive(Deserialize)]
+    struct Count {
+        count: i64,
+    }
+    let row = db
+        .prepare("SELECT COUNT(*) AS count FROM user_oauth_bindings WHERE provider_id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(provider_id))])?
+        .first::<Count>(None)
+        .await?;
+    Ok(row.map(|r| r.count).unwrap_or(0))
+}
+
 /// Return true when an option key likely guards a secret (API keys, OAuth
 /// client secrets, payment secrets, etc.). Mirrors the Go `GetOptions`
 /// sensitive-key filter regex.

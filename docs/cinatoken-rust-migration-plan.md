@@ -1660,7 +1660,7 @@ Wave A 已建立三条可重复执行的自动证据链：
   API/SPA 优先级。
 
 兼容工作、审计器校正、单通道 upstream model update 与 Codex 管理端 usage/refresh
-迁移已将 unmatched frontend calls 从 122 降至 85，完成：
+迁移已将 unmatched frontend calls 从 122 降至 79，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1706,15 +1706,24 @@ Wave A 已建立三条可重复执行的自动证据链：
   `/api.json`、ratio-config envelope 和 `/api/pricing` rows，并与本地
   default-plus-option ratio maps 生成前端 `differences`/`test_results` 契约，
   不返回上游密钥；
+- root-only custom OAuth provider 管理面：`GET/POST /api/custom-oauth-provider`
+  （含 trailing-slash alias）、`GET/PUT/DELETE /api/custom-oauth-provider/:id`
+  与 `POST /api/custom-oauth-provider/discovery`。D1 migration 0010 增加
+  `custom_oauth_providers`/`user_oauth_bindings`，migration CLI import 表同步支持
+  这两张表；Worker 响应不返回 `client_secret`，CRUD 写 admin audit，
+  discovery 使用 SSRF policy、redirect error、20s timeout 和 1 MiB 响应上限；
+  `/api/status` 现在对登录页公开已启用 provider 的非密字段，但自定义 OAuth
+  登录/绑定 callback 仍是后续 auth flow；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
-- 缺口分类基线：24 auth-deferred、45 capability-hidden-product、16 payment-deferred；
+- 缺口分类基线：18 auth-deferred、45 capability-hidden-product、16 payment-deferred；
   operations-debt 与 visible-admin-debt 已清零。
 
 当前证据边界：
 
-- Worker 单元测试 241 项通过；
-- D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
+- Worker 单元测试 248 项通过；
+- D1 migration 0001-0010 的 SQLite schema 重放通过，包括
+  `custom_oauth_providers` 与 `user_oauth_bindings`；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；
 - staging 公共 HTTP 契约 7 项通过；
@@ -1730,6 +1739,6 @@ Wave A 已建立三条可重复执行的自动证据链：
    记录任务进度、幂等键、失败 channel 集合和可重试边界；
 3. 将已分类的 auth、payment、operations 和 capability-hidden 家族逐项绑定 cutover
    场景、负责人和恢复条件；
-4. 部署 migration 0009 和本批 Worker 到隔离 staging，完成已登录的 prefill、model
-   sync、channel balance/multi-key smoke，并核查审计与无密钥泄漏；
+4. 部署 migration 0010 和本批 Worker 到隔离 staging，完成已登录的 prefill、model
+   sync、channel balance/multi-key/custom OAuth provider smoke，并核查审计与无密钥泄漏；
 5. 在初始化后的隔离 staging 上完成登录、角色、CRUD、2FA 和过期 session 浏览器证据。

@@ -133,7 +133,7 @@ Minimum table-family inventory:
 | `TopUp`, `Redemption` | Wave 3 | Blocked until payment idempotency and reconciliation are proven. |
 | `SubscriptionPlan`, `SubscriptionOrder`, `UserSubscription`, `SubscriptionPreConsumeRecord` | Wave 3 | Blocked until billing/payment ownership is approved. |
 | `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | Wave 4 | Migrate only with secure hash/secret handling; otherwise force re-auth/reset. |
-| `CustomOAuthProvider`, `UserOAuthBinding` | Wave 4 | Requires provider secret policy, redirect/SSRF checks, and state replay checks. |
+| `CustomOAuthProvider`, `UserOAuthBinding` | Wave 4 | D1 schema/import support exists in migration 0010; production traffic still requires provider secret policy evidence, redirect/SSRF checks, callback state replay checks, and account-binding smoke. |
 | `Checkin` | Wave 4 | Decide import versus reset; quota awards must be idempotent. |
 | `Midjourney`, `Task` | Wave 5 | Requires Queue/R2 task and artifact retention plan. |
 | `PerfMetric` | Wave 5 | Usually start fresh in Workers observability unless historical dashboards need it. |
@@ -156,12 +156,14 @@ field-level defects in `docs/source-d1-schema-parity.md`. In particular
 `abilities` must regain its `tag` column and `(group_name, model, channel_id)`
 uniqueness (verify dedup first), `users` needs its OAuth-id lookup indexes, and
 the `logs` admin-search index/strategy must be decided. The repository now
-carries migrations 0001-0009, including `0004_schema_parity.sql`,
-`0008_model_meta.sql`, and `0009_prefill_groups.sql`. Apply the complete ordered
+carries migrations 0001-0010, including `0004_schema_parity.sql`,
+`0008_model_meta.sql`, `0009_prefill_groups.sql`, and
+`0010_custom_oauth.sql`. Apply the complete ordered
 migration set to staging D1 and re-run the row/hash verification below before
 treating Wave 0 as passed. Local SQLite schema replay currently succeeds with
-all 9 target tables; that is not a substitute for source-row reconciliation or
-staging D1 evidence.
+the ordered migration set, including `custom_oauth_providers` and
+`user_oauth_bindings`; that is not a substitute for source-row reconciliation
+or staging D1 evidence.
 
 ## Export And Convert
 

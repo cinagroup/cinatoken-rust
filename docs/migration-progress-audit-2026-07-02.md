@@ -149,7 +149,8 @@ the parser correction, single-channel upstream update migration, and Codex
 admin usage/refresh migration plus the Rust-native channel-affinity cache
 control surface, usage diagnostics, bounded upstream batch slices, Ollama
 admin model management, Worker-native operations endpoints, and upstream
-ratio sync reduced that number to 85 and added:
+ratio sync plus custom OAuth provider admin management reduced that number to
+79 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -197,9 +198,18 @@ ratio sync reduced that number to 85 and added:
   models.dev, ratio-config, and `/api/pricing` payloads, and compares them
   against effective local default-plus-option ratio maps without returning
   upstream keys.
+- Root-admin custom OAuth provider CRUD/discovery:
+  `GET/POST /api/custom-oauth-provider`, trailing-slash aliases,
+  `GET/PUT/DELETE /api/custom-oauth-provider/:id`, and
+  `POST /api/custom-oauth-provider/discovery`. The Worker stores provider
+  config in D1 migration 0010/import tables, never returns `client_secret`,
+  writes secret-safe admin audit rows, exposes enabled non-secret providers via
+  `/api/status`, and bounds discovery with SSRF validation, redirect errors,
+  a 20s timeout, and a 1 MiB response cap. Custom OAuth login/bind callbacks
+  remain deferred to the auth-flow batch.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
-24 auth-deferred, 45 capability-hidden-product, 16 payment-deferred, and 0
+18 auth-deferred, 45 capability-hidden-product, 16 payment-deferred, and 0
 operations-debt / visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 

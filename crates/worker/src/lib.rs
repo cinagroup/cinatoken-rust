@@ -1,9 +1,12 @@
+#![recursion_limit = "256"]
+
 mod admin;
 mod admin_2fa;
 mod admin_affinity;
 mod admin_channel;
 mod admin_codex_channel;
 mod admin_crud;
+mod admin_custom_oauth;
 mod admin_data;
 mod admin_oauth;
 mod admin_ollama;
@@ -171,6 +174,34 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .get_async("/api/oauth/discord", |req, ctx| async move {
             admin_oauth::discord_oauth(req, ctx.env).await
+        })
+        .post_async(
+            "/api/custom-oauth-provider/discovery",
+            |req, ctx| async move { admin_custom_oauth::discover(req, ctx.env).await },
+        )
+        .get_async("/api/custom-oauth-provider", |req, ctx| async move {
+            admin_custom_oauth::list(req, ctx.env).await
+        })
+        .get_async("/api/custom-oauth-provider/", |req, ctx| async move {
+            admin_custom_oauth::list(req, ctx.env).await
+        })
+        .get_async("/api/custom-oauth-provider/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_custom_oauth::get(req, ctx.env, id.as_ref()).await
+        })
+        .post_async("/api/custom-oauth-provider", |req, ctx| async move {
+            admin_custom_oauth::create(req, ctx.env).await
+        })
+        .post_async("/api/custom-oauth-provider/", |req, ctx| async move {
+            admin_custom_oauth::create(req, ctx.env).await
+        })
+        .put_async("/api/custom-oauth-provider/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_custom_oauth::update(req, ctx.env, id.as_ref()).await
+        })
+        .delete_async("/api/custom-oauth-provider/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_custom_oauth::delete(req, ctx.env, id.as_ref()).await
         })
         .post_async("/api/user/logout", |req, ctx| async move {
             admin::logout_handler(req, ctx.env).await

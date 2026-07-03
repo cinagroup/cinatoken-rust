@@ -527,6 +527,8 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "subscription_orders",
     "vendors",
     "models",
+    "custom_oauth_providers",
+    "user_oauth_bindings",
 ];
 
 const D1_CORE_IMPORT_TABLES: &[&str] = &["users", "tokens", "channels", "abilities", "options"];
@@ -713,6 +715,38 @@ const MODELS_D1_COLUMNS: &[&str] = &[
     "updated_time",
     "name_rule",
     "deleted_at",
+];
+
+const CUSTOM_OAUTH_PROVIDERS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "name",
+    "slug",
+    "icon",
+    "enabled",
+    "client_id",
+    "client_secret",
+    "authorization_endpoint",
+    "token_endpoint",
+    "user_info_endpoint",
+    "scopes",
+    "user_id_field",
+    "username_field",
+    "display_name_field",
+    "email_field",
+    "well_known",
+    "auth_style",
+    "access_policy",
+    "access_denied_message",
+    "created_at",
+    "updated_at",
+];
+
+const USER_OAUTH_BINDINGS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "provider_id",
+    "provider_user_id",
+    "created_at",
 ];
 
 impl DevSeedConfig {
@@ -1382,6 +1416,20 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             source_name: "models",
             target_name: "models",
             target_columns: MODELS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: true,
+        }),
+        "custom_oauth_providers" => Ok(D1TableSpec {
+            source_name: "custom_oauth_providers",
+            target_name: "custom_oauth_providers",
+            target_columns: CUSTOM_OAUTH_PROVIDERS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: true,
+        }),
+        "user_oauth_bindings" => Ok(D1TableSpec {
+            source_name: "user_oauth_bindings",
+            target_name: "user_oauth_bindings",
+            target_columns: USER_OAUTH_BINDINGS_D1_COLUMNS,
             column_map: &[],
             generate_missing_id: true,
         }),

@@ -173,6 +173,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `/api/pricing` rows into the local sync schema, compares against effective
   default-plus-option ratio maps, and returns the frontend's
   `differences`/`test_results` contract without exposing upstream keys.
+- Custom OAuth provider admin compatibility
+  (`crates/worker/src/admin_custom_oauth.rs`): root-only provider
+  list/get/create/update/delete plus discovery fetch are implemented at the
+  default frontend paths. Migration 0010 adds `custom_oauth_providers` and
+  `user_oauth_bindings`, the migration CLI can import both tables, responses
+  never include `client_secret`, discovery is SSRF/timeout/body-limit guarded,
+  and `/api/status` exposes enabled provider metadata for the login page.
+  Custom OAuth login/bind callbacks remain a later auth-flow batch.
 - `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
   role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
 - Worker admin auth surface (`crates/worker/src/admin.rs`): `POST

@@ -160,7 +160,7 @@ selected cutover scenario, while keeping deferred rows explicit.
 | Redemptions/topups | `/api/redemption`, topup/pay routes | G4/G6 | Defer or migrate with double-credit prevention |
 | Performance/ratio sync | `/api/performance`, `/api/ratio_sync`, perf metrics | P2/G7 | Partial: Worker-native uptime/perf metrics, explicit no-op local maintenance responses, and upstream ratio sync implemented; authenticated staging smoke still required |
 | Async/tasks/media | `/api/task`, `/api/mj`, video routes | G7 | Queue/R2/Workflow design before cutover |
-| Custom OAuth providers | `/api/custom-oauth-provider` | P1/G6 | Root-admin only, SSRF controls, secret storage policy |
+| Custom OAuth providers | `/api/custom-oauth-provider` | P1/G6 | Partial: root-admin provider CRUD/discovery implemented with secret-redacted responses, D1 import/schema, admin audit, SSRF controls, and `/api/status` enabled-provider exposure; login/bind callbacks remain deferred |
 
 ## Frontend Deployment Policy
 
@@ -253,8 +253,9 @@ OAuth/Passkey/2FA choices:
   handling, replay protection, and reset flows.
 - If not migrated: require forced re-auth, forced rebind, or admin-assisted
   reset. Record customer/operator impact.
-- Custom OAuth provider URLs must pass SSRF-origin validation and callback
-  origin checks before enablement.
+- Custom OAuth provider discovery URLs pass SSRF-origin validation before
+  backend fetch. Callback/login enablement still needs state replay checks,
+  callback origin checks, and account-binding smoke before production use.
 
 ## Admin API Contract
 

@@ -120,6 +120,7 @@ pub async fn get_status(_req: Request, env: Env) -> WorkerResult<Response> {
 
     let mut options = HashMap::new();
     let mut setup_completed = false;
+    let mut custom_oauth_providers = Vec::new();
     if let Some(db) = db {
         match crate::d1_repositories::option_values(&db, PUBLIC_STATUS_OPTION_KEYS).await {
             Ok(values) => {
@@ -137,10 +138,34 @@ pub async fn get_status(_req: Request, env: Env) -> WorkerResult<Response> {
             Ok(completed) => setup_completed = completed,
             Err(err) => worker::console_warn!("failed to read setup status: {}", err),
         }
+        match crate::d1_repositories::list_enabled_custom_oauth_providers(&db).await {
+            Ok(rows) => {
+                for row in rows {
+                    match serde_json::to_value(crate::admin_custom_oauth::status_provider(row)) {
+                        Ok(value) => custom_oauth_providers.push(value),
+                        Err(err) => {
+                            worker::console_warn!(
+                                "failed to encode custom OAuth status provider: {}",
+                                err
+                            );
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                worker::console_warn!("failed to read custom OAuth providers: {}", err);
+            }
+        }
     }
 
     let public_runtime = PublicRuntimeConfig::from_env(&env);
-    let data = build_frontend_status(runtime_status, &options, setup_completed, &public_runtime)?;
+    let data = build_frontend_status(
+        runtime_status,
+        &options,
+        setup_completed,
+        &public_runtime,
+        &custom_oauth_providers,
+    )?;
     envelope_ok_response(&data)
 }
 
@@ -1013,6 +1038,7 @@ fn build_frontend_status(
     options: &HashMap<String, String>,
     setup_completed: bool,
     runtime: &PublicRuntimeConfig,
+    custom_oauth_providers: &[Value],
 ) -> WorkerResult<Value> {
     let mut data = match serde_json::to_value(runtime_status).map_err(|err| {
         worker::Error::RustError(format!("failed to encode runtime status: {err}"))
@@ -1036,8 +1062,11 @@ fn build_frontend_status(
         .or_else(|| options.get("oidc.authorization_endpoint").cloned())
         .filter(|value| !value.trim().is_empty());
     let oidc_enabled = runtime.oidc_backend_configured && oidc_authorization_endpoint.is_some();
-    let oauth_register_enabled =
-        register_enabled && (runtime.github_oauth || runtime.discord_oauth || oidc_enabled);
+    let oauth_register_enabled = register_enabled
+        && (runtime.github_oauth
+            || runtime.discord_oauth
+            || oidc_enabled
+            || !custom_oauth_providers.is_empty());
     let docs_link = options
         .get("general_setting.docs_link")
         .map(|value| value.trim())
@@ -1085,6 +1114,7 @@ fn build_frontend_status(
         "wechat_login": false,
         "passkey_login": false,
         "oauth_register_enabled": oauth_register_enabled,
+        "custom_oauth_providers": custom_oauth_providers,
         "turnstile_check": runtime.turnstile_check,
         "turnstile_site_key": turnstile_site_key,
         "quota_per_unit": option_number(options, "QuotaPerUnit", 500_000.0),
@@ -1323,6 +1353,7 @@ mod tests {
             &options,
             true,
             &PublicRuntimeConfig::default(),
+            &[],
         )
         .unwrap();
 
@@ -1411,7 +1442,8 @@ mod tests {
             ..PublicRuntimeConfig::default()
         };
         let data =
-            build_frontend_status(cinatoken_api::status("test"), &options, true, &runtime).unwrap();
+            build_frontend_status(cinatoken_api::status("test"), &options, true, &runtime, &[])
+                .unwrap();
         assert_eq!(data["oidc_enabled"], true);
         assert_eq!(
             data["oidc_authorization_endpoint"],
@@ -1423,9 +1455,34 @@ mod tests {
             &options,
             true,
             &PublicRuntimeConfig::default(),
+            &[],
         )
         .unwrap();
         assert_eq!(disabled["oidc_enabled"], false);
+    }
+
+    #[test]
+    fn custom_oauth_status_enables_oauth_registration_surface() {
+        let options = HashMap::new();
+        let providers = vec![serde_json::json!({
+            "id": 1,
+            "name": "Corp",
+            "slug": "corp",
+            "icon": "openid",
+            "client_id": "client",
+            "authorization_endpoint": "https://idp.example/auth",
+            "scopes": "openid profile email"
+        })];
+        let data = build_frontend_status(
+            cinatoken_api::status("test"),
+            &options,
+            true,
+            &PublicRuntimeConfig::default(),
+            &providers,
+        )
+        .unwrap();
+        assert_eq!(data["oauth_register_enabled"], true);
+        assert_eq!(data["custom_oauth_providers"][0]["slug"], "corp");
     }
 
     #[test]

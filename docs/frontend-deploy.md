@@ -105,7 +105,7 @@ bun run check:web:staging
 `audit:web:routes` parses the default frontend with a TypeScript
 Program/TypeChecker and compares 212 distinct frontend calls with Worker router
 registrations. The 2026-07-03 compatibility batches reduced unmatched calls
-from 122 to 85 by closing routes and removing one false-positive call:
+from 122 to 79 by closing routes and removing one false-positive call:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
 - batch token-key reveal;
@@ -132,9 +132,12 @@ from 122 to 85 by closing routes and removing one false-positive call:
   compatibility.
 - Upstream ratio sync channels/fetch endpoints for the default frontend's
   pricing sync dialog.
+- Custom OAuth provider admin CRUD/discovery endpoints and `/api/status`
+  enabled-provider exposure. The provider secret remains server-only; custom
+  OAuth login/bind callbacks are still deferred to the auth-flow batch.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-85 calls with a stable SHA-256 route-set digest and category counts. New
+79 calls with a stable SHA-256 route-set digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
 payment families; operations-debt is currently zero. Local wrapper methods are

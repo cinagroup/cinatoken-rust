@@ -1087,6 +1087,12 @@ pub struct AdminUserRow {
     pub role: i32,
     pub status: i32,
     pub email: String,
+    pub github_id: String,
+    pub discord_id: String,
+    pub oidc_id: String,
+    pub wechat_id: String,
+    pub telegram_id: String,
+    pub linux_do_id: String,
     pub password: String,
     pub quota: i64,
     pub used_quota: i64,
@@ -1101,8 +1107,9 @@ pub struct AdminUserRow {
 /// field-name changes. Sensitive columns (`password`, `access_token`,
 /// `remark`) are excluded from this projection.
 const ADMIN_USER_SELF_COLUMNS: &str = r#"
-  id, username, display_name, role, status, email, password, quota,
-  used_quota, request_count, "group", created_at, last_login_at
+  id, username, display_name, role, status, email, github_id, discord_id,
+  oidc_id, wechat_id, telegram_id, linux_do_id, password, quota, used_quota,
+  request_count, "group", created_at, last_login_at
 "#;
 
 /// Find an enabled user by username or email (login lookup). Mirrors Go
@@ -1350,6 +1357,35 @@ pub async fn find_user_by_id(db: &D1Database, id: i64) -> worker::Result<Option<
     .bind_refs(&[arg])?
     .first::<AdminUserRow>(None)
     .await
+}
+
+/// Clear a built-in account binding column (`users.github_id`, etc.) using the
+/// same binding type names as Go `User.ClearBinding`. The dynamic SQL column is
+/// selected from a closed whitelist before interpolation.
+pub async fn clear_user_builtin_binding(
+    db: &D1Database,
+    id: i64,
+    binding_type: &str,
+) -> worker::Result<Option<bool>> {
+    let column = match binding_type {
+        "email" => "email",
+        "github" => "github_id",
+        "discord" => "discord_id",
+        "oidc" => "oidc_id",
+        "wechat" => "wechat_id",
+        "telegram" => "telegram_id",
+        "linuxdo" => "linux_do_id",
+        _ => return Ok(None),
+    };
+    let sql = format!("UPDATE users SET {column} = '' WHERE id = ?1");
+    let result = db
+        .prepare(&sql)
+        .bind_refs(&[D1Type::Integer(d1_i32(id))])?
+        .run()
+        .await?;
+    Ok(Some(
+        result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2251,6 +2287,57 @@ pub async fn delete_custom_oauth_provider(db: &D1Database, id: i64) -> worker::R
     let result = db
         .prepare("DELETE FROM custom_oauth_providers WHERE id = ?1")
         .bind_refs(&[D1Type::Integer(d1_i32(id))])?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct UserOAuthBindingJoinedRow {
+    pub provider_id: i64,
+    pub provider_name: String,
+    pub provider_slug: String,
+    pub provider_icon: String,
+    pub provider_user_id: String,
+}
+
+pub async fn list_user_oauth_bindings(
+    db: &D1Database,
+    user_id: i64,
+) -> worker::Result<Vec<UserOAuthBindingJoinedRow>> {
+    Ok(db
+        .prepare(
+            r#"
+            SELECT
+              b.provider_id,
+              p.name AS provider_name,
+              p.slug AS provider_slug,
+              p.icon AS provider_icon,
+              b.provider_user_id
+            FROM user_oauth_bindings b
+            JOIN custom_oauth_providers p ON p.id = b.provider_id
+            WHERE b.user_id = ?1
+            ORDER BY b.provider_id ASC
+            "#,
+        )
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .all()
+        .await?
+        .results::<UserOAuthBindingJoinedRow>()?)
+}
+
+pub async fn delete_user_oauth_binding(
+    db: &D1Database,
+    user_id: i64,
+    provider_id: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(provider_id)),
+    ];
+    let result = db
+        .prepare("DELETE FROM user_oauth_bindings WHERE user_id = ?1 AND provider_id = ?2")
+        .bind_refs(&args)?
         .run()
         .await?;
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
@@ -3810,6 +3897,12 @@ pub struct AdminUserFullRow {
     pub role: i32,
     pub status: i32,
     pub email: String,
+    pub github_id: String,
+    pub discord_id: String,
+    pub oidc_id: String,
+    pub wechat_id: String,
+    pub telegram_id: String,
+    pub linux_do_id: String,
     pub quota: i64,
     pub used_quota: i64,
     pub request_count: i64,
@@ -3831,7 +3924,8 @@ pub struct AdminUserFullRow {
 /// absent; `access_token` is also absent (it is never useful in an admin
 /// response and would leak a credential).
 const ADMIN_USER_FULL_COLUMNS: &str = r#"
-  id, username, display_name, role, status, email, quota, used_quota,
+  id, username, display_name, role, status, email, github_id, discord_id,
+  oidc_id, wechat_id, telegram_id, linux_do_id, quota, used_quota,
   request_count, "group" AS channel_group, aff_code, aff_count, aff_quota,
   aff_history AS aff_history_quota, inviter_id, setting, remark,
   stripe_customer, created_at, last_login_at, deleted_at

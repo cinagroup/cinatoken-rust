@@ -7,22 +7,23 @@ Last checked: 2026-07-03
 - `cargo fmt --all`
 - `cargo test --workspace --exclude cinatoken-worker`
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
-- `cargo fmt --all --check` after the custom OAuth provider admin batch.
+- `cargo fmt --all --check` after the custom OAuth binding management batch.
 - `cargo test -p cinatoken-worker --lib`: 248 passed after adding custom OAuth
-  provider CRUD/discovery, status exposure, and guarded discovery helpers.
+  provider CRUD/discovery, custom OAuth binding list/unbind, built-in binding
+  clear, status exposure, and guarded discovery helpers.
 - `cargo test -p cinatoken-migration`: 20 passed after adding
   `custom_oauth_providers` and `user_oauth_bindings` to the D1 import table set.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` after the
-  custom OAuth provider admin batch.
+  custom OAuth binding management batch.
 - In-memory SQLite replay of migrations 0001-0010, confirming
   `custom_oauth_providers` and `user_oauth_bindings` exist.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified`:
-  212 frontend calls, 187 Worker routes, 79 missing calls, categories
-  18 auth-deferred / 45 capability-hidden-product / 16 payment-deferred,
-  SHA-256 `4e8bd5b6164a3ee433b6f85f24a83cc37b2bcf53f2fdc6680cfc653e567f666f`.
+  212 frontend calls, 192 Worker routes, 74 missing calls, categories
+  13 auth-deferred / 45 capability-hidden-product / 16 payment-deferred,
+  SHA-256 `67d3928ca41d88d6846665849c72afe4598091607d40f6ddc117ec83139c1e78`.
 - `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
   `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
-  worker wasm check all passed after the custom OAuth provider admin batch.
+  worker wasm check all passed after the custom OAuth binding management batch.
 - `cargo test -p cinatoken-worker --lib`: 174 passed after the frontend status
   envelope and setup-status compatibility fixes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes after
@@ -647,7 +648,7 @@ Last checked: 2026-07-03
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
   covers 212 distinct default-frontend calls and reduced unmatched calls from
-  122 to 79 after
+  122 to 74 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
@@ -661,9 +662,10 @@ Last checked: 2026-07-03
   `/api/performance/*` local-maintenance compatibility, upstream ratio
   sync for `/api/ratio_sync/channels` plus `/api/ratio_sync/fetch`, and
   root-admin custom OAuth provider CRUD/discovery with D1 schema/import and
-  `/api/status` enabled-provider exposure.
+  `/api/status` enabled-provider exposure, then custom OAuth binding list/unbind
+  for self/admin users plus admin built-in binding clear.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  79 missing calls, no unclassified entries, and no remaining visible-admin or
+  74 missing calls, no unclassified entries, and no remaining visible-admin or
   operations-debt
   gaps. `cargo test -p cinatoken-worker --lib` passes
   248 tests; migrations 0001-0010 replay including custom OAuth provider and

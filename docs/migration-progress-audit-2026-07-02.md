@@ -207,9 +207,18 @@ ratio sync plus custom OAuth provider admin management reduced that number to
   `/api/status`, and bounds discovery with SSRF validation, redirect errors,
   a 20s timeout, and a 1 MiB response cap. Custom OAuth login/bind callbacks
   remain deferred to the auth-flow batch.
+- Custom OAuth account-binding management:
+  `GET/DELETE /api/user/oauth/bindings/:provider_id`,
+  `GET/DELETE /api/user/:id/oauth/bindings/:provider_id`, and
+  `DELETE /api/user/:id/bindings/:binding_type`. The Worker lists bindings via
+  the D1 `user_oauth_bindings` table joined to custom providers, treats missing
+  bindings as successful unbinds like Go, audits self/admin unbind and built-in
+  binding-clear actions, and exposes built-in binding IDs in self/admin user
+  responses for the default profile/users UI. Custom OAuth callback/login flows,
+  WeChat, email reset, and Passkey remain deferred.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
-18 auth-deferred, 45 capability-hidden-product, 16 payment-deferred, and 0
+13 auth-deferred, 45 capability-hidden-product, 16 payment-deferred, and 0
 operations-debt / visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 

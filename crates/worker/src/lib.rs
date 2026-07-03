@@ -235,6 +235,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/user/models", |req, ctx| async move {
             admin_user::get_self_models(req, ctx.env).await
         })
+        .get_async("/api/user/oauth/bindings", |req, ctx| async move {
+            admin_user::list_self_oauth_bindings(req, ctx.env).await
+        })
+        .delete_async(
+            "/api/user/oauth/bindings/:provider_id",
+            |req, ctx| async move {
+                let provider_id = ctx.param("provider_id").cloned();
+                admin_user::unbind_self_oauth_binding(req, ctx.env, provider_id.as_ref()).await
+            },
+        )
         // Admin forms use both spellings; keep the slashless alias because the
         // default frontend also reuses this endpoint from subscription views.
         .get_async("/api/group", |req, ctx| async move {
@@ -598,6 +608,38 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .put_async("/api/user/", |req, ctx| async move {
             admin_user::update_user(req, ctx.env).await
         })
+        .get_async("/api/user/:id/oauth/bindings", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_user::list_user_oauth_bindings_by_admin(req, ctx.env, id.as_ref()).await
+        })
+        .delete_async(
+            "/api/user/:id/oauth/bindings/:provider_id",
+            |req, ctx| async move {
+                let id = ctx.param("id").cloned();
+                let provider_id = ctx.param("provider_id").cloned();
+                admin_user::unbind_user_oauth_binding_by_admin(
+                    req,
+                    ctx.env,
+                    id.as_ref(),
+                    provider_id.as_ref(),
+                )
+                .await
+            },
+        )
+        .delete_async(
+            "/api/user/:id/bindings/:binding_type",
+            |req, ctx| async move {
+                let id = ctx.param("id").cloned();
+                let binding_type = ctx.param("binding_type").cloned();
+                admin_user::clear_user_binding_by_admin(
+                    req,
+                    ctx.env,
+                    id.as_ref(),
+                    binding_type.as_ref(),
+                )
+                .await
+            },
+        )
         .get_async("/api/user/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_user::get_user(req, ctx.env, id.as_ref()).await

@@ -1110,6 +1110,163 @@ pub async fn get_self_models(req: Request, env: Env) -> WorkerResult<Response> {
     Ok(envelope_ok_response(&models)?)
 }
 
+// ---------------------------------------------------------------------------
+// Account bindings (custom OAuth + built-in binding clear)
+// ---------------------------------------------------------------------------
+
+pub async fn list_self_oauth_bindings(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let bindings = d1_repositories::list_user_oauth_bindings(&db, claims.id).await?;
+    envelope_ok_response(&oauth_binding_responses(bindings))
+}
+
+pub async fn unbind_self_oauth_binding(
+    req: Request,
+    env: Env,
+    provider_id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let provider_id = match parse_id_param(provider_id_param) {
+        Some(id) => id,
+        None => return Ok(envelope_error_response(400, "invalid provider id")),
+    };
+    let db = env.d1("DB")?;
+    let _deleted = d1_repositories::delete_user_oauth_binding(&db, claims.id, provider_id).await?;
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        Some(&claims.username),
+        &claims.username,
+        "user.oauth_unbind",
+        &format!(
+            "user {} unbound custom OAuth provider {}",
+            claims.username, provider_id
+        ),
+        &serde_json::json!({"provider_id": provider_id, "self_service": true}),
+        &crate::admin::admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+    envelope_ok_response(&serde_json::Value::Null)
+}
+
+pub async fn list_user_oauth_bindings_by_admin(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let target = match require_manage_target_user(&db, &claims, id_param).await {
+        Ok(target) => target,
+        Err(response) => return Ok(response),
+    };
+    let bindings = d1_repositories::list_user_oauth_bindings(&db, target.id).await?;
+    envelope_ok_response(&oauth_binding_responses(bindings))
+}
+
+pub async fn unbind_user_oauth_binding_by_admin(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+    provider_id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let provider_id = match parse_id_param(provider_id_param) {
+        Some(id) => id,
+        None => return Ok(envelope_error_response(400, "invalid provider id")),
+    };
+    let db = env.d1("DB")?;
+    let target = match require_manage_target_user(&db, &claims, id_param).await {
+        Ok(target) => target,
+        Err(response) => return Ok(response),
+    };
+    let _deleted = d1_repositories::delete_user_oauth_binding(&db, target.id, provider_id).await?;
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(target.id),
+        Some(&target.username),
+        &claims.username,
+        "user.oauth_unbind",
+        &format!(
+            "admin {} unbound custom OAuth provider {} for user {}",
+            claims.username, provider_id, target.id
+        ),
+        &serde_json::json!({
+            "id": target.id,
+            "username": &target.username,
+            "provider_id": provider_id
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+    envelope_ok_response(&serde_json::Value::Null)
+}
+
+pub async fn clear_user_binding_by_admin(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+    binding_type_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let binding_type = match binding_type_param {
+        Some(binding_type) => binding_type.trim().to_ascii_lowercase(),
+        None => String::new(),
+    };
+    if binding_type.is_empty() {
+        return Ok(envelope_error_response(400, "invalid binding type"));
+    }
+    let db = env.d1("DB")?;
+    let target = match require_manage_target_user(&db, &claims, id_param).await {
+        Ok(target) => target,
+        Err(response) => return Ok(response),
+    };
+    let cleared =
+        match d1_repositories::clear_user_builtin_binding(&db, target.id, &binding_type).await? {
+            Some(cleared) => cleared,
+            None => return Ok(envelope_error_response(400, "invalid binding type")),
+        };
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(target.id),
+        Some(&target.username),
+        &claims.username,
+        "user.binding_clear",
+        &format!(
+            "admin {} cleared {} binding for user {}",
+            claims.username, binding_type, target.id
+        ),
+        &serde_json::json!({
+            "id": target.id,
+            "username": &target.username,
+            "bindingType": binding_type,
+            "cleared": cleared
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+    envelope_ok_response(&serde_json::Value::Null)
+}
+
 pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
         Ok(claims) => claims,
@@ -1461,6 +1618,41 @@ fn forbidden() -> Response {
     envelope_error_response(403, "insufficient privileges to manage this user")
 }
 
+async fn require_manage_target_user(
+    db: &worker::D1Database,
+    claims: &cinatoken_session::SessionClaims,
+    id_param: Option<&String>,
+) -> std::result::Result<d1_repositories::AdminUserFullRow, Response> {
+    let id = parse_id_param(id_param)
+        .ok_or_else(|| envelope_error_response(400, "user id is required"))?;
+    let target = d1_repositories::find_user_role_status(db, id)
+        .await
+        .map_err(|err| envelope_error_response(500, &format!("failed to load user: {err}")))?
+        .ok_or_else(|| envelope_error_response(404, "user not found"))?;
+    if !is_root(claims.role) && !outranks(claims.role, target.role) {
+        return Err(forbidden());
+    }
+    d1_repositories::find_user_by_id_full(db, id)
+        .await
+        .map_err(|err| envelope_error_response(500, &format!("failed to load user: {err}")))?
+        .ok_or_else(|| envelope_error_response(404, "user not found"))
+}
+
+fn oauth_binding_responses(
+    rows: Vec<d1_repositories::UserOAuthBindingJoinedRow>,
+) -> Vec<OAuthBindingResponse> {
+    rows.into_iter()
+        .map(|row| OAuthBindingResponse {
+            provider_id: row.provider_id,
+            provider_name: row.provider_name,
+            provider_slug: row.provider_slug,
+            provider_icon: row.provider_icon,
+            provider_user_id: row.provider_user_id.clone(),
+            external_id: row.provider_user_id,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Helpers and DTOs
 // ---------------------------------------------------------------------------
@@ -1522,6 +1714,12 @@ struct UserResponse {
     role: i32,
     status: i32,
     email: String,
+    github_id: String,
+    discord_id: String,
+    oidc_id: String,
+    wechat_id: String,
+    telegram_id: String,
+    linux_do_id: String,
     quota: i64,
     used_quota: i64,
     request_count: i64,
@@ -1548,6 +1746,12 @@ fn user_response(row: d1_repositories::AdminUserFullRow) -> UserResponse {
         role: row.role,
         status: row.status,
         email: row.email,
+        github_id: row.github_id,
+        discord_id: row.discord_id,
+        oidc_id: row.oidc_id,
+        wechat_id: row.wechat_id,
+        telegram_id: row.telegram_id,
+        linux_do_id: row.linux_do_id,
         quota: row.quota,
         used_quota: row.used_quota,
         request_count: row.request_count,
@@ -1577,6 +1781,16 @@ struct UsersPage {
 #[derive(Debug, Serialize)]
 struct UserCreateResult {
     id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct OAuthBindingResponse {
+    provider_id: i64,
+    provider_name: String,
+    provider_slug: String,
+    provider_icon: String,
+    provider_user_id: String,
+    external_id: String,
 }
 
 #[derive(Debug, Serialize)]

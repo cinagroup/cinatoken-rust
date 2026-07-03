@@ -789,6 +789,12 @@ struct SelfResponse {
     role: i32,
     status: i32,
     email: String,
+    github_id: String,
+    discord_id: String,
+    oidc_id: String,
+    wechat_id: String,
+    telegram_id: String,
+    linux_do_id: String,
     group: String,
     quota: i64,
     used_quota: i64,
@@ -806,6 +812,12 @@ impl SelfResponse {
             role: row.role,
             status: row.status,
             email: row.email.clone(),
+            github_id: row.github_id.clone(),
+            discord_id: row.discord_id.clone(),
+            oidc_id: row.oidc_id.clone(),
+            wechat_id: row.wechat_id.clone(),
+            telegram_id: row.telegram_id.clone(),
+            linux_do_id: row.linux_do_id.clone(),
             group: row.group.clone(),
             quota: row.quota,
             used_quota: row.used_quota,
@@ -1494,6 +1506,12 @@ mod tests {
             role: 100,
             status: 1,
             email: "root@example.test".into(),
+            github_id: "octo".into(),
+            discord_id: "disc".into(),
+            oidc_id: "oidc-sub".into(),
+            wechat_id: "wechat".into(),
+            telegram_id: "telegram".into(),
+            linux_do_id: "linuxdo".into(),
             password: "secret-hash".into(), // must NOT appear in SelfResponse
             quota: 100,
             used_quota: 5,
@@ -1508,6 +1526,7 @@ mod tests {
         assert!(!serialized.contains("secret-hash"), "{serialized}");
         assert!(serialized.contains("\"username\":\"root\""));
         assert!(serialized.contains("\"role\":100"));
+        assert!(serialized.contains("\"github_id\":\"octo\""));
     }
 
     #[test]

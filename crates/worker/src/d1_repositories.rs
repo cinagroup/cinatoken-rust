@@ -1,7 +1,7 @@
 use cinatoken_core::format_matching_model_name;
 use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_contains};
 use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use worker::{D1Database, D1Result, D1Type};
@@ -5318,10 +5318,578 @@ pub async fn insert_system_log(
 }
 
 // ---------------------------------------------------------------------------
+// Subscriptions (Go model/subscription.go).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct SubscriptionPlanRow {
+    pub id: i64,
+    pub title: String,
+    pub subtitle: String,
+    pub price_amount: f64,
+    pub currency: String,
+    pub duration_unit: String,
+    pub duration_value: i64,
+    pub custom_seconds: i64,
+    pub enabled: i32,
+    pub sort_order: i64,
+    pub allow_balance_pay: i32,
+    pub stripe_price_id: String,
+    pub creem_product_id: String,
+    pub waffo_pancake_product_id: String,
+    pub max_purchase_per_user: i64,
+    pub upgrade_group: String,
+    pub total_amount: i64,
+    pub quota_reset_period: String,
+    pub quota_reset_custom_seconds: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscriptionPlanWrite<'a> {
+    pub title: &'a str,
+    pub subtitle: &'a str,
+    pub price_amount: f64,
+    pub currency: &'a str,
+    pub duration_unit: &'a str,
+    pub duration_value: i64,
+    pub custom_seconds: i64,
+    pub enabled: bool,
+    pub sort_order: i64,
+    pub allow_balance_pay: bool,
+    pub stripe_price_id: &'a str,
+    pub creem_product_id: &'a str,
+    pub waffo_pancake_product_id: &'a str,
+    pub max_purchase_per_user: i64,
+    pub upgrade_group: &'a str,
+    pub total_amount: i64,
+    pub quota_reset_period: &'a str,
+    pub quota_reset_custom_seconds: i64,
+    pub now: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct UserSubscriptionRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub plan_id: i64,
+    pub amount_total: i64,
+    pub amount_used: i64,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub status: String,
+    pub source: String,
+    pub last_reset_time: i64,
+    pub next_reset_time: i64,
+    pub upgrade_group: String,
+    pub prev_user_group: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserSubscriptionWrite<'a> {
+    pub user_id: i64,
+    pub plan_id: i64,
+    pub amount_total: i64,
+    pub amount_used: i64,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub status: &'a str,
+    pub source: &'a str,
+    pub last_reset_time: i64,
+    pub next_reset_time: i64,
+    pub upgrade_group: &'a str,
+    pub prev_user_group: &'a str,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubscriptionUserState {
+    pub quota: i64,
+    pub group_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscriptionOrderWrite<'a> {
+    pub user_id: i64,
+    pub plan_id: i64,
+    pub money: f64,
+    pub trade_no: &'a str,
+    pub payment_method: &'a str,
+    pub payment_provider: &'a str,
+    pub status: &'a str,
+    pub create_time: i64,
+    pub complete_time: i64,
+    pub provider_payload: &'a str,
+}
+
+const SUBSCRIPTION_PLAN_COLUMNS: &str = r#"
+  id, title, subtitle, price_amount, currency, duration_unit, duration_value,
+  custom_seconds, enabled, sort_order, allow_balance_pay, stripe_price_id,
+  creem_product_id, waffo_pancake_product_id, max_purchase_per_user,
+  upgrade_group, total_amount, quota_reset_period, quota_reset_custom_seconds,
+  created_at, updated_at
+"#;
+
+const USER_SUBSCRIPTION_COLUMNS: &str = r#"
+  id, user_id, plan_id, amount_total, amount_used, start_time, end_time,
+  status, source, last_reset_time, next_reset_time, upgrade_group,
+  prev_user_group, created_at, updated_at
+"#;
+
+pub async fn list_subscription_plans(
+    db: &D1Database,
+    include_disabled: bool,
+) -> worker::Result<Vec<SubscriptionPlanRow>> {
+    let sql = if include_disabled {
+        format!(
+            r#"
+            SELECT {SUBSCRIPTION_PLAN_COLUMNS}
+            FROM subscription_plans
+            ORDER BY sort_order DESC, id DESC
+            "#
+        )
+    } else {
+        format!(
+            r#"
+            SELECT {SUBSCRIPTION_PLAN_COLUMNS}
+            FROM subscription_plans
+            WHERE enabled = 1
+            ORDER BY sort_order DESC, id DESC
+            "#
+        )
+    };
+    db.prepare(&sql)
+        .all()
+        .await?
+        .results::<SubscriptionPlanRow>()
+}
+
+pub async fn find_subscription_plan_by_id(
+    db: &D1Database,
+    id: i64,
+) -> worker::Result<Option<SubscriptionPlanRow>> {
+    let arg = D1Type::Integer(d1_i32(id));
+    db.prepare(&format!(
+        r#"
+        SELECT {SUBSCRIPTION_PLAN_COLUMNS}
+        FROM subscription_plans
+        WHERE id = ?1
+        LIMIT 1
+        "#
+    ))
+    .bind_refs(&[arg])?
+    .first::<SubscriptionPlanRow>(None)
+    .await
+}
+
+pub async fn insert_subscription_plan(
+    db: &D1Database,
+    plan: &SubscriptionPlanWrite<'_>,
+) -> worker::Result<i64> {
+    let args = subscription_plan_write_args(plan, false, None)?;
+    let result = db
+        .prepare(
+            r#"
+            INSERT INTO subscription_plans (
+              title, subtitle, price_amount, currency, duration_unit,
+              duration_value, custom_seconds, enabled, sort_order,
+              allow_balance_pay, stripe_price_id, creem_product_id,
+              waffo_pancake_product_id, max_purchase_per_user, upgrade_group,
+              total_amount, quota_reset_period, quota_reset_custom_seconds,
+              created_at, updated_at
+            )
+            VALUES (
+              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+              ?15, ?16, ?17, ?18, ?19, ?20
+            )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    result
+        .meta()?
+        .and_then(|metadata| metadata.last_row_id)
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "D1 insert metadata did not include a subscription plan row id".to_string(),
+            )
+        })
+}
+
+pub async fn update_subscription_plan(
+    db: &D1Database,
+    id: i64,
+    plan: &SubscriptionPlanWrite<'_>,
+) -> worker::Result<bool> {
+    let args = subscription_plan_write_args(plan, true, Some(id))?;
+    let result = db
+        .prepare(
+            r#"
+            UPDATE subscription_plans
+               SET title = ?1,
+                   subtitle = ?2,
+                   price_amount = ?3,
+                   currency = ?4,
+                   duration_unit = ?5,
+                   duration_value = ?6,
+                   custom_seconds = ?7,
+                   enabled = ?8,
+                   sort_order = ?9,
+                   allow_balance_pay = ?10,
+                   stripe_price_id = ?11,
+                   creem_product_id = ?12,
+                   waffo_pancake_product_id = ?13,
+                   max_purchase_per_user = ?14,
+                   upgrade_group = ?15,
+                   total_amount = ?16,
+                   quota_reset_period = ?17,
+                   quota_reset_custom_seconds = ?18,
+                   updated_at = ?19
+             WHERE id = ?20
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn update_subscription_plan_status(
+    db: &D1Database,
+    id: i64,
+    enabled: bool,
+    updated_at: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(if enabled { 1 } else { 0 }),
+        D1Type::Integer(d1_i32(updated_at)),
+        D1Type::Integer(d1_i32(id)),
+    ];
+    let result = db
+        .prepare("UPDATE subscription_plans SET enabled = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+fn subscription_plan_write_args<'a>(
+    plan: &'a SubscriptionPlanWrite<'a>,
+    update: bool,
+    id: Option<i64>,
+) -> worker::Result<Vec<D1Type<'a>>> {
+    let mut args = vec![
+        D1Type::Text(plan.title),
+        D1Type::Text(plan.subtitle),
+        D1Type::Real(plan.price_amount),
+        D1Type::Text(plan.currency),
+        D1Type::Text(plan.duration_unit),
+        D1Type::Integer(d1_i32(plan.duration_value)),
+        D1Type::Integer(d1_i32(plan.custom_seconds)),
+        D1Type::Integer(if plan.enabled { 1 } else { 0 }),
+        D1Type::Integer(d1_i32(plan.sort_order)),
+        D1Type::Integer(if plan.allow_balance_pay { 1 } else { 0 }),
+        D1Type::Text(plan.stripe_price_id),
+        D1Type::Text(plan.creem_product_id),
+        D1Type::Text(plan.waffo_pancake_product_id),
+        D1Type::Integer(d1_i32(plan.max_purchase_per_user)),
+        D1Type::Text(plan.upgrade_group),
+        D1Type::Integer(d1_i32(plan.total_amount)),
+        D1Type::Text(plan.quota_reset_period),
+        D1Type::Integer(d1_i32(plan.quota_reset_custom_seconds)),
+    ];
+    if !update {
+        args.push(D1Type::Integer(d1_i32(plan.now)));
+    }
+    args.push(D1Type::Integer(d1_i32(plan.now)));
+    if let Some(id) = id {
+        args.push(D1Type::Integer(d1_i32(id)));
+    }
+    Ok(args)
+}
+
+pub async fn list_user_subscriptions(
+    db: &D1Database,
+    user_id: i64,
+    active_only: bool,
+    now: i64,
+) -> worker::Result<Vec<UserSubscriptionRow>> {
+    let (sql, args) = if active_only {
+        (
+            format!(
+                r#"
+                SELECT {USER_SUBSCRIPTION_COLUMNS}
+                FROM user_subscriptions
+                WHERE user_id = ?1 AND status = 'active' AND end_time > ?2
+                ORDER BY end_time DESC, id DESC
+                "#
+            ),
+            vec![
+                D1Type::Integer(d1_i32(user_id)),
+                D1Type::Integer(d1_i32(now)),
+            ],
+        )
+    } else {
+        (
+            format!(
+                r#"
+                SELECT {USER_SUBSCRIPTION_COLUMNS}
+                FROM user_subscriptions
+                WHERE user_id = ?1
+                ORDER BY end_time DESC, id DESC
+                "#
+            ),
+            vec![D1Type::Integer(d1_i32(user_id))],
+        )
+    };
+    db.prepare(&sql)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<UserSubscriptionRow>()
+}
+
+pub async fn count_user_subscriptions_by_plan(
+    db: &D1Database,
+    user_id: i64,
+    plan_id: i64,
+) -> worker::Result<i64> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(plan_id)),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM user_subscriptions
+            WHERE user_id = ?1 AND plan_id = ?2
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count).unwrap_or(0))
+}
+
+pub async fn find_user_subscription_by_id(
+    db: &D1Database,
+    id: i64,
+) -> worker::Result<Option<UserSubscriptionRow>> {
+    let arg = D1Type::Integer(d1_i32(id));
+    db.prepare(&format!(
+        r#"
+        SELECT {USER_SUBSCRIPTION_COLUMNS}
+        FROM user_subscriptions
+        WHERE id = ?1
+        LIMIT 1
+        "#
+    ))
+    .bind_refs(&[arg])?
+    .first::<UserSubscriptionRow>(None)
+    .await
+}
+
+pub async fn insert_user_subscription(
+    db: &D1Database,
+    sub: &UserSubscriptionWrite<'_>,
+) -> worker::Result<i64> {
+    let args = [
+        D1Type::Integer(d1_i32(sub.user_id)),
+        D1Type::Integer(d1_i32(sub.plan_id)),
+        D1Type::Integer(d1_i32(sub.amount_total)),
+        D1Type::Integer(d1_i32(sub.amount_used)),
+        D1Type::Integer(d1_i32(sub.start_time)),
+        D1Type::Integer(d1_i32(sub.end_time)),
+        D1Type::Text(sub.status),
+        D1Type::Text(sub.source),
+        D1Type::Integer(d1_i32(sub.last_reset_time)),
+        D1Type::Integer(d1_i32(sub.next_reset_time)),
+        D1Type::Text(sub.upgrade_group),
+        D1Type::Text(sub.prev_user_group),
+        D1Type::Integer(d1_i32(sub.created_at)),
+        D1Type::Integer(d1_i32(sub.updated_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            INSERT INTO user_subscriptions (
+              user_id, plan_id, amount_total, amount_used, start_time, end_time,
+              status, source, last_reset_time, next_reset_time, upgrade_group,
+              prev_user_group, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    result
+        .meta()?
+        .and_then(|metadata| metadata.last_row_id)
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "D1 insert metadata did not include a user subscription row id".to_string(),
+            )
+        })
+}
+
+pub async fn cancel_user_subscription(db: &D1Database, id: i64, now: i64) -> worker::Result<bool> {
+    let args = [D1Type::Integer(d1_i32(now)), D1Type::Integer(d1_i32(id))];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE user_subscriptions
+               SET status = 'cancelled', end_time = ?1, updated_at = ?1
+             WHERE id = ?2
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn delete_user_subscription(db: &D1Database, id: i64) -> worker::Result<bool> {
+    let result = db
+        .prepare("DELETE FROM user_subscriptions WHERE id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(id))])?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn active_upgrade_subscription_exists_excluding(
+    db: &D1Database,
+    user_id: i64,
+    excluding_id: i64,
+    now: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(excluding_id)),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM user_subscriptions
+            WHERE user_id = ?1
+              AND status = 'active'
+              AND end_time > ?2
+              AND id <> ?3
+              AND upgrade_group <> ''
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count > 0).unwrap_or(false))
+}
+
+pub async fn find_subscription_user_state(
+    db: &D1Database,
+    user_id: i64,
+) -> worker::Result<Option<SubscriptionUserState>> {
+    let arg = D1Type::Integer(d1_i32(user_id));
+    db.prepare(
+        r#"
+        SELECT quota, "group" AS group_name
+        FROM users
+        WHERE id = ?1 AND deleted_at IS NULL
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&[arg])?
+    .first::<SubscriptionUserState>(None)
+    .await
+}
+
+pub async fn update_user_group(db: &D1Database, user_id: i64, group: &str) -> worker::Result<bool> {
+    let args = [D1Type::Text(group), D1Type::Integer(d1_i32(user_id))];
+    let result = db
+        .prepare(r#"UPDATE users SET "group" = ?1 WHERE id = ?2 AND deleted_at IS NULL"#)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn decrease_user_quota_if_enough(
+    db: &D1Database,
+    user_id: i64,
+    quota: i64,
+) -> worker::Result<bool> {
+    let quota = quota_i32(quota)?;
+    let args = [D1Type::Integer(quota), D1Type::Integer(d1_i32(user_id))];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE users
+               SET quota = quota - ?1
+             WHERE id = ?2 AND deleted_at IS NULL AND quota >= ?1
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn insert_subscription_order(
+    db: &D1Database,
+    order: &SubscriptionOrderWrite<'_>,
+) -> worker::Result<i64> {
+    let amount = format!("{:.6}", order.money);
+    let args = [
+        D1Type::Integer(d1_i32(order.user_id)),
+        D1Type::Text(order.payment_provider),
+        D1Type::Text(order.trade_no),
+        D1Type::Integer(d1_i32(order.plan_id)),
+        D1Type::Text(order.status),
+        D1Type::Text(&amount),
+        D1Type::Text("USD"),
+        D1Type::Integer(d1_i32(order.create_time)),
+        D1Type::Integer(d1_i32(order.complete_time)),
+        D1Type::Real(order.money),
+        D1Type::Text(order.payment_method),
+        D1Type::Text(order.provider_payload),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            INSERT INTO subscription_orders (
+              user_id, provider, order_no, plan_id, status, amount, currency,
+              created_at, updated_at, money, trade_no, payment_method,
+              payment_provider, create_time, complete_time, provider_payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?3, ?11, ?2, ?8, ?9, ?12)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    result
+        .meta()?
+        .and_then(|metadata| metadata.last_row_id)
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "D1 insert metadata did not include a subscription order row id".to_string(),
+            )
+        })
+}
+
+// ---------------------------------------------------------------------------
 // Admin redemption-code management (Go model.Redemption).
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RedemptionRow {
     pub id: i64,
     pub user_id: i64,

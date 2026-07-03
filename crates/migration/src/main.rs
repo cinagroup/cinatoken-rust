@@ -526,7 +526,10 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "tasks",
     "checkins",
     "redemptions",
+    "subscription_plans",
     "subscription_orders",
+    "user_subscriptions",
+    "subscription_pre_consume_records",
     "vendors",
     "models",
     "custom_oauth_providers",
@@ -701,6 +704,30 @@ const REDEMPTIONS_D1_COLUMNS: &[&str] = &[
     "deleted_at",
 ];
 
+const SUBSCRIPTION_PLANS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "title",
+    "subtitle",
+    "price_amount",
+    "currency",
+    "duration_unit",
+    "duration_value",
+    "custom_seconds",
+    "enabled",
+    "sort_order",
+    "allow_balance_pay",
+    "stripe_price_id",
+    "creem_product_id",
+    "waffo_pancake_product_id",
+    "max_purchase_per_user",
+    "upgrade_group",
+    "total_amount",
+    "quota_reset_period",
+    "quota_reset_custom_seconds",
+    "created_at",
+    "updated_at",
+];
+
 const SUBSCRIPTION_ORDERS_D1_COLUMNS: &[&str] = &[
     "id",
     "user_id",
@@ -710,6 +737,50 @@ const SUBSCRIPTION_ORDERS_D1_COLUMNS: &[&str] = &[
     "status",
     "amount",
     "currency",
+    "created_at",
+    "updated_at",
+    "money",
+    "trade_no",
+    "payment_method",
+    "payment_provider",
+    "create_time",
+    "complete_time",
+    "provider_payload",
+];
+
+const SUBSCRIPTION_ORDERS_D1_COLUMN_MAP: &[(&str, &str)] = &[
+    ("provider", "payment_provider"),
+    ("order_no", "trade_no"),
+    ("amount", "money"),
+    ("created_at", "create_time"),
+    ("updated_at", "complete_time"),
+];
+
+const USER_SUBSCRIPTIONS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "plan_id",
+    "amount_total",
+    "amount_used",
+    "start_time",
+    "end_time",
+    "status",
+    "source",
+    "last_reset_time",
+    "next_reset_time",
+    "upgrade_group",
+    "prev_user_group",
+    "created_at",
+    "updated_at",
+];
+
+const SUBSCRIPTION_PRE_CONSUME_RECORDS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "request_id",
+    "user_id",
+    "user_subscription_id",
+    "pre_consumed",
+    "status",
     "created_at",
     "updated_at",
 ];
@@ -1436,10 +1507,31 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             column_map: &[],
             generate_missing_id: false,
         }),
+        "subscription_plans" => Ok(D1TableSpec {
+            source_name: "subscription_plans",
+            target_name: "subscription_plans",
+            target_columns: SUBSCRIPTION_PLANS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
         "subscription_orders" => Ok(D1TableSpec {
             source_name: "subscription_orders",
             target_name: "subscription_orders",
             target_columns: SUBSCRIPTION_ORDERS_D1_COLUMNS,
+            column_map: SUBSCRIPTION_ORDERS_D1_COLUMN_MAP,
+            generate_missing_id: false,
+        }),
+        "user_subscriptions" => Ok(D1TableSpec {
+            source_name: "user_subscriptions",
+            target_name: "user_subscriptions",
+            target_columns: USER_SUBSCRIPTIONS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
+        "subscription_pre_consume_records" => Ok(D1TableSpec {
+            source_name: "subscription_pre_consume_records",
+            target_name: "subscription_pre_consume_records",
+            target_columns: SUBSCRIPTION_PRE_CONSUME_RECORDS_D1_COLUMNS,
             column_map: &[],
             generate_missing_id: false,
         }),
@@ -1879,6 +1971,55 @@ mod tests {
         assert!(sql.contains("'default'"));
         assert!(sql.contains("'gpt-test'"));
         assert!(sql.contains("INSERT OR REPLACE INTO \"abilities\""));
+    }
+
+    #[test]
+    fn render_import_sql_maps_subscription_order_compat_columns() {
+        let bundle = r#"{
+          "format": "cinatoken-sqlite-export-v1",
+          "tables": {
+            "subscription_orders": {
+              "missing": false,
+              "columns": [
+                "id",
+                "user_id",
+                "plan_id",
+                "money",
+                "trade_no",
+                "payment_method",
+                "payment_provider",
+                "status",
+                "create_time",
+                "complete_time",
+                "provider_payload"
+              ],
+              "rows": [
+                {
+                  "id": 9,
+                  "user_id": 1,
+                  "plan_id": 3,
+                  "money": 12.5,
+                  "trade_no": "SUB123",
+                  "payment_method": "balance",
+                  "payment_provider": "balance",
+                  "status": "success",
+                  "create_time": 1710000000,
+                  "complete_time": 1710000010,
+                  "provider_payload": "charged_quota=6250000"
+                }
+              ]
+            }
+          }
+        }"#;
+        let sql =
+            render_d1_import_sql(bundle, &["subscription_orders".to_string()], false).unwrap();
+
+        assert!(sql.contains("\"order_no\""));
+        assert!(sql.contains("\"trade_no\""));
+        assert!(sql.contains("\"amount\""));
+        assert!(sql.contains("\"money\""));
+        assert!(sql.contains("'SUB123'"));
+        assert!(sql.contains("'charged_quota=6250000'"));
     }
 
     #[test]

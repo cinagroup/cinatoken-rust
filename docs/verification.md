@@ -4,6 +4,30 @@ Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 265 passed after adding the
+  balance-payable subscription core: D1 subscription schema/repositories,
+  admin plan CRUD, admin user-subscription bind/invalidate/delete,
+  self subscription summary, billing preference persistence, and
+  `/api/subscription/balance/pay`.
+- `cargo test -p cinatoken-migration`: 22 passed after adding
+  `subscription_plans`, Go-compatible `subscription_orders`,
+  `user_subscriptions`, and `subscription_pre_consume_records` to the D1 import
+  specs.
+- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
+  212 frontend calls, 225 Worker routes, 51 missing calls, categories
+  13 auth-deferred / 22 capability-hidden-product / 16 payment-deferred,
+  SHA-256 `448760251387dfa8e36b8663ea40ab985c22dad56cc4e37635b783d3f529e69b`.
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
+  passes with the reviewed 51-call route-debt baseline.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes
+  after the subscription core batch.
+- In-memory SQLite replay of `migrations/d1/0001_core.sql` plus
+  `migrations/d1/0013_subscriptions.sql`, confirming
+  `subscription_plans`, upgraded `subscription_orders`,
+  `subscription_pre_consume_records`, and `user_subscriptions` exist.
+- `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
+  `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
+  worker wasm check all passed after the subscription core batch.
 - `cargo test -p cinatoken-worker --lib`: 262 passed after adding public
   rankings, `HeaderNavModules.rankings` access enforcement, live `logs`
   aggregation, status capability exposure, and rankings unit coverage.

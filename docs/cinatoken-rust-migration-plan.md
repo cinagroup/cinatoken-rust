@@ -1879,3 +1879,62 @@ Remaining production gates: apply this Worker to isolated staging, seed enough
 `logs` rows to exercise every period and the `Others` grouping, verify public
 and `requireAuth=true` rankings behavior in browser, and confirm D1 read
 latency before enabling rankings on high-traffic production tenants.
+
+### 22.9 2026-07-04 Subscription Core And Balance Pay Delta
+
+This increment supersedes the 22.8 route-debt number for the default frontend
+contract audit. The Rust Worker now implements the subscription core needed by
+the default dashboard's admin user-subscription dialog, subscription plan
+management surface, self subscription summary, billing preference selector, and
+balance-pay purchase path:
+
+- D1 migration `0013_subscriptions.sql` adds Go-compatible
+  `subscription_plans`, `user_subscriptions`, and
+  `subscription_pre_consume_records`, and upgrades the original MVP
+  `subscription_orders` stub with Go fields (`money`, `trade_no`,
+  `payment_method`, `payment_provider`, `create_time`, `complete_time`, and
+  `provider_payload`). A partial unique index protects non-empty `trade_no`
+  values while preserving existing upgraded rows with empty defaults.
+- The migration CLI now imports `subscription_plans`, Go-compatible
+  `subscription_orders`, `user_subscriptions`, and
+  `subscription_pre_consume_records`; subscription orders also populate the
+  legacy `provider`/`order_no`/`amount`/`created_at`/`updated_at` compatibility
+  columns so fresh and already-migrated D1 databases converge.
+- `GET/POST/PUT/PATCH /api/subscription/admin/plans` provide plan list,
+  create, update, and status-toggle support. Writes require the same payment
+  compliance option pair as Go:
+  `payment_setting.compliance_confirmed=true` and
+  `payment_setting.compliance_terms_version=v1`.
+- `GET/POST /api/subscription/admin/users/:id/subscriptions`,
+  `POST /api/subscription/admin/user_subscriptions/:id/invalidate`, and
+  `DELETE /api/subscription/admin/user_subscriptions/:id` support the user-row
+  Manage Subscriptions dialog that was already visible from the imported
+  frontend.
+- `GET /api/subscription/plans`, `GET /api/subscription/self`, and
+  `PUT /api/subscription/self/preference` support the wallet subscription card,
+  including billing-preference normalization and JSON setting preservation.
+- `POST /api/subscription/balance/pay` implements the provider-independent
+  balance purchase path: `ceil(price_amount * QuotaPerUnit)` quota debit,
+  user subscription creation, success order record, system log, plan
+  duration/reset calculation, max-purchase guard, and user group
+  upgrade/downgrade metadata.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 225 Worker routes, 51 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  16 payment-deferred;
+- route-set SHA-256:
+  `448760251387dfa8e36b8663ea40ab985c22dad56cc4e37635b783d3f529e69b`;
+- `cargo test -p cinatoken-worker --lib`: 265 passed;
+- `cargo test -p cinatoken-migration`: 22 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- in-memory SQLite replay of `0001_core.sql` plus
+  `0013_subscriptions.sql`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: this is not the external subscription payment-provider
+cutover. Stripe, Creem, Epay, Waffo Pancake checkout/callback/product helper
+routes remain payment-deferred and `/subscriptions` / `/wallet` should stay
+capability-hidden until those provider paths have staging evidence or the UI is
+explicitly configured for balance-only operation.

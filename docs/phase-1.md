@@ -254,6 +254,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Tokenizer crate (`crates/tokenizer`): char-class estimator (OpenAI /
   Claude / Gemini family weights) used by the tiered preflight for prompt
   sizing. Settlement still uses provider-reported usage.
+- Subscription core (`crates/worker/src/admin_subscription.rs` +
+  `migrations/d1/0013_subscriptions.sql`): D1-compatible subscription plans,
+  Go-compatible subscription orders, user subscriptions, and pre-consume
+  idempotency records; admin plan CRUD; admin user-subscription
+  list/bind/invalidate/delete; self subscription summary and billing
+  preference persistence; balance-pay purchase with quota debit, order record,
+  plan duration/reset calculation, and group upgrade/downgrade parity.
 
 ## Next
 
@@ -296,3 +303,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
+- Complete the remaining subscription payment-provider routes
+  (`stripe`/`creem`/`epay`/`waffo-pancake`) and Waffo subscription product
+  helpers before exposing `/subscriptions` or `/wallet` broadly in production.

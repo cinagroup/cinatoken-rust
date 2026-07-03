@@ -13,6 +13,7 @@ mod admin_oauth;
 mod admin_ollama;
 mod admin_payment;
 mod admin_redemption;
+mod admin_subscription;
 mod admin_task_logs;
 mod admin_user;
 mod affinity;
@@ -495,6 +496,63 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/user/topup", |req, ctx| async move {
             admin_payment::list_topups(req, ctx.env).await
         })
+        // Subscription billing core (plans, self state, balance-pay, admin
+        // binding). External payment providers remain payment-deferred.
+        .get_async("/api/subscription/plans", |req, ctx| async move {
+            admin_subscription::public_plans(req, ctx.env).await
+        })
+        .get_async("/api/subscription/self", |req, ctx| async move {
+            admin_subscription::self_summary(req, ctx.env).await
+        })
+        .put_async("/api/subscription/self/preference", |req, ctx| async move {
+            admin_subscription::update_preference(req, ctx.env).await
+        })
+        .post_async("/api/subscription/balance/pay", |req, ctx| async move {
+            admin_subscription::balance_pay(req, ctx.env).await
+        })
+        .get_async("/api/subscription/admin/plans", |req, ctx| async move {
+            admin_subscription::admin_list_plans(req, ctx.env).await
+        })
+        .post_async("/api/subscription/admin/plans", |req, ctx| async move {
+            admin_subscription::admin_create_plan(req, ctx.env).await
+        })
+        .put_async("/api/subscription/admin/plans/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_subscription::admin_update_plan(req, ctx.env, id.as_ref()).await
+        })
+        .patch_async("/api/subscription/admin/plans/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_subscription::admin_update_plan_status(req, ctx.env, id.as_ref()).await
+        })
+        .get_async(
+            "/api/subscription/admin/users/:id/subscriptions",
+            |req, ctx| async move {
+                let id = ctx.param("id").cloned();
+                admin_subscription::admin_list_user_subscriptions(req, ctx.env, id.as_ref()).await
+            },
+        )
+        .post_async(
+            "/api/subscription/admin/users/:id/subscriptions",
+            |req, ctx| async move {
+                let id = ctx.param("id").cloned();
+                admin_subscription::admin_bind_user_subscription(req, ctx.env, id.as_ref()).await
+            },
+        )
+        .post_async(
+            "/api/subscription/admin/user_subscriptions/:id/invalidate",
+            |req, ctx| async move {
+                let id = ctx.param("id").cloned();
+                admin_subscription::admin_invalidate_user_subscription(req, ctx.env, id.as_ref())
+                    .await
+            },
+        )
+        .delete_async(
+            "/api/subscription/admin/user_subscriptions/:id",
+            |req, ctx| async move {
+                let id = ctx.param("id").cloned();
+                admin_subscription::admin_delete_user_subscription(req, ctx.env, id.as_ref()).await
+            },
+        )
         // Channels (admin, Tier 1 CRUD).
         .get_async("/api/channel/", |req, ctx| async move {
             admin_channel::list_channels(req, ctx.env).await

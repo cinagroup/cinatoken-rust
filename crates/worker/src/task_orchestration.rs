@@ -780,7 +780,10 @@ pub async fn handle_mj_submit(
         quota: base_quota,
         status: "SUBMITTED",
         progress: "0%",
-        submit_time: now,
+        // Go Midjourney rows store millisecond timestamps; usage-log filters
+        // and duration rendering expect that unit. The shared task pipeline
+        // keeps second timestamps, so only the mj subsystem multiplies here.
+        submit_time: now.saturating_mul(1000),
     };
     crate::mj_repository::insert_midjourney(&db, &new_mj).await?;
 

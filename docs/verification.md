@@ -7,23 +7,24 @@ Last checked: 2026-07-03
 - `cargo fmt --all`
 - `cargo test --workspace --exclude cinatoken-worker`
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
-- `cargo fmt --all --check` after the custom OAuth binding management batch.
-- `cargo test -p cinatoken-worker --lib`: 248 passed after adding custom OAuth
-  provider CRUD/discovery, custom OAuth binding list/unbind, built-in binding
-  clear, status exposure, and guarded discovery helpers.
+- `cargo fmt --all --check` after the async usage-log read batch.
+- `cargo test -p cinatoken-worker --lib`: 248 passed after adding
+  `/api/mj`, `/api/mj/self`, `/api/task`, and `/api/task/self` read-only
+  usage-log lists plus the Midjourney millisecond `submit_time`/`finish_time`
+  binding fixes.
 - `cargo test -p cinatoken-migration`: 20 passed after adding
   `custom_oauth_providers` and `user_oauth_bindings` to the D1 import table set.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` after the
-  custom OAuth binding management batch.
+  async usage-log read batch.
 - In-memory SQLite replay of migrations 0001-0010, confirming
   `custom_oauth_providers` and `user_oauth_bindings` exist.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified`:
-  212 frontend calls, 192 Worker routes, 74 missing calls, categories
-  13 auth-deferred / 45 capability-hidden-product / 16 payment-deferred,
-  SHA-256 `67d3928ca41d88d6846665849c72afe4598091607d40f6ddc117ec83139c1e78`.
+  212 frontend calls, 198 Worker routes, 72 missing calls, categories
+  13 auth-deferred / 43 capability-hidden-product / 16 payment-deferred,
+  SHA-256 `1d90106c0b01a7df716d40977b20651478e64bf746a05df3a92041a1ed07da9e`.
 - `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
   `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
-  worker wasm check all passed after the custom OAuth binding management batch.
+  worker wasm check all passed after the async usage-log read batch.
 - `cargo test -p cinatoken-worker --lib`: 174 passed after the frontend status
   envelope and setup-status compatibility fixes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes after
@@ -154,7 +155,7 @@ Last checked: 2026-07-03
 - `bun --version`: `1.3.14`
 - `wrangler --version`: `4.101.0`
 - Fetched latest `@cloudflare/workers-types` with `npm pack`; observed version
-  `4.20260621.1`.
+  `5.20260703.1`.
 - Refreshed the production migration plan against current official Cloudflare
   Workers best-practices, Workers limits, Workers observability, and D1 limits
   docs; detailed execution gates now live in
@@ -648,7 +649,7 @@ Last checked: 2026-07-03
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
   covers 212 distinct default-frontend calls and reduced unmatched calls from
-  122 to 74 after
+  122 to 72 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
@@ -662,10 +663,12 @@ Last checked: 2026-07-03
   `/api/performance/*` local-maintenance compatibility, upstream ratio
   sync for `/api/ratio_sync/channels` plus `/api/ratio_sync/fetch`, and
   root-admin custom OAuth provider CRUD/discovery with D1 schema/import and
-  `/api/status` enabled-provider exposure, then custom OAuth binding list/unbind
-  for self/admin users plus admin built-in binding clear.
+  `/api/status` enabled-provider exposure, custom OAuth binding list/unbind
+  for self/admin users plus admin built-in binding clear, and async
+  Midjourney/task usage-log read lists at `/api/mj`, `/api/mj/self`,
+  `/api/task`, and `/api/task/self`.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  74 missing calls, no unclassified entries, and no remaining visible-admin or
+  72 missing calls, no unclassified entries, and no remaining visible-admin or
   operations-debt
   gaps. `cargo test -p cinatoken-worker --lib` passes
   248 tests; migrations 0001-0010 replay including custom OAuth provider and

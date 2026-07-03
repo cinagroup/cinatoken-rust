@@ -301,6 +301,105 @@ pub async fn find_task_dtos(
     Ok(rows)
 }
 
+/// Filters shared by the admin (`GET /api/task`) and self (`GET /api/task/self`)
+/// usage-log pages.
+#[derive(Debug, Default)]
+pub struct TaskListFilter {
+    pub user_id: Option<i64>,
+    pub channel_id: Option<i64>,
+    pub platform: Option<String>,
+    pub task_id: Option<String>,
+    pub status: Option<String>,
+    pub action: Option<String>,
+    pub start_timestamp: Option<String>,
+    pub end_timestamp: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CountRow {
+    count: i64,
+}
+
+/// List unified task rows for the dashboard usage-log tables. Mirrors Go
+/// `TaskGetAllTasks` / `TaskGetAllUserTask`: optional platform/task/action/
+/// status/time filters, admin-only channel filter, ordered newest first.
+pub async fn list_tasks(
+    db: &D1Database,
+    filter: &TaskListFilter,
+    page: u32,
+    page_size: u32,
+) -> worker::Result<Vec<TaskDtoRow>> {
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    let where_sql = task_where_clause(filter, &mut args);
+    let limit_idx = args.len() + 1;
+    let offset_idx = args.len() + 2;
+    let offset = ((page.max(1) - 1) as i64) * page_size as i64;
+    args.push(D1Type::Integer(d1_i32(page_size as i64)));
+    args.push(D1Type::Integer(d1_i32(offset)));
+    let sql = format!(
+        "SELECT {TASK_DTO_COLUMNS} FROM tasks{where_sql} ORDER BY id DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+    );
+    db.prepare(&sql)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<TaskDtoRow>()
+}
+
+/// Count unified task rows matching the usage-log filters.
+pub async fn count_tasks(db: &D1Database, filter: &TaskListFilter) -> worker::Result<i64> {
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    let where_sql = task_where_clause(filter, &mut args);
+    let sql = format!("SELECT COUNT(*) AS count FROM tasks{where_sql}");
+    let row = db
+        .prepare(&sql)
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count).unwrap_or(0))
+}
+
+fn task_where_clause<'a>(filter: &'a TaskListFilter, args: &mut Vec<D1Type<'a>>) -> String {
+    let mut conditions = Vec::new();
+    if let Some(user_id) = filter.user_id {
+        args.push(D1Type::Integer(d1_i32(user_id)));
+        conditions.push(format!("user_id = ?{}", args.len()));
+    }
+    if let Some(channel_id) = filter.channel_id {
+        args.push(D1Type::Integer(d1_i32(channel_id)));
+        conditions.push(format!("channel_id = ?{}", args.len()));
+    }
+    if let Some(platform) = filter.platform.as_deref() {
+        args.push(D1Type::Text(platform));
+        conditions.push(format!("platform = ?{}", args.len()));
+    }
+    if let Some(task_id) = filter.task_id.as_deref() {
+        args.push(D1Type::Text(task_id));
+        conditions.push(format!("task_id = ?{}", args.len()));
+    }
+    if let Some(status) = filter.status.as_deref() {
+        args.push(D1Type::Text(status));
+        conditions.push(format!("status = ?{}", args.len()));
+    }
+    if let Some(action) = filter.action.as_deref() {
+        args.push(D1Type::Text(action));
+        conditions.push(format!("action = ?{}", args.len()));
+    }
+    if let Some(start) = filter.start_timestamp.as_deref() {
+        args.push(D1Type::Text(start));
+        conditions.push(format!("submit_time >= ?{}", args.len()));
+    }
+    if let Some(end) = filter.end_timestamp.as_deref() {
+        args.push(D1Type::Text(end));
+        conditions.push(format!("submit_time <= ?{}", args.len()));
+    }
+    if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conditions.join(" AND "))
+    }
+}
+
 // The pure settlement-detection guard a caller pairs with a CAS win lives in
 // `cinatoken_tasks::is_settlement_transition` (host-tested there, since this
 // wasm-only crate cannot run host unit tests).

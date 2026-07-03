@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use worker::{D1Database, D1Type};
 
 /// The fields stored when a Midjourney task is submitted. Columns not listed take
@@ -61,6 +61,10 @@ fn is_terminal(status: &str) -> bool {
 
 /// Insert a submitted Midjourney task (Go `Midjourney.Insert`).
 pub async fn insert_midjourney(db: &D1Database, mj: &NewMidjourney<'_>) -> worker::Result<()> {
+    // D1's Worker binding exposes integer parameters as i32. Midjourney
+    // submit_time is millisecond precision in Go, so bind it as text and let
+    // SQLite's INTEGER affinity store the full value instead of clamping it.
+    let submit_time = mj.submit_time.to_string();
     let args = [
         D1Type::Integer(d1_i32(mj.code)),
         D1Type::Integer(d1_i32(mj.user_id)),
@@ -72,7 +76,7 @@ pub async fn insert_midjourney(db: &D1Database, mj: &NewMidjourney<'_>) -> worke
         D1Type::Integer(d1_i32(mj.quota)),
         D1Type::Text(mj.status),
         D1Type::Text(mj.progress),
-        D1Type::Integer(d1_i32(mj.submit_time)),
+        D1Type::Text(submit_time.as_str()),
     ];
     db.prepare(
         r#"
@@ -127,13 +131,16 @@ pub async fn apply_midjourney_poll_result(
     row: &MjRow,
     result: &MjPollResult<'_>,
 ) -> worker::Result<bool> {
+    // Same D1 i32 binding limitation as submit_time: upstream Midjourney
+    // finishTime is millisecond precision.
+    let finish_time = result.finish_time.to_string();
     let args = [
         D1Type::Text(result.status),
         D1Type::Text(result.progress),
         D1Type::Text(result.fail_reason),
         D1Type::Text(result.image_url),
         D1Type::Text(result.video_url),
-        D1Type::Integer(d1_i32(result.finish_time)),
+        D1Type::Text(finish_time.as_str()),
         D1Type::Integer(d1_i32(row.id)),
     ];
     let update = db
@@ -225,4 +232,122 @@ pub async fn find_mj_dtos(
         );
     }
     Ok(rows)
+}
+
+/// Filters shared by the admin (`GET /api/mj`) and self (`GET /api/mj/self`)
+/// Midjourney log pages.
+#[derive(Debug, Default)]
+pub struct MjListFilter {
+    pub user_id: Option<i64>,
+    pub channel_id: Option<i64>,
+    pub mj_id: Option<String>,
+    /// Millisecond timestamp from the React usage-log filters.
+    pub start_timestamp: Option<String>,
+    /// Millisecond timestamp from the React usage-log filters.
+    pub end_timestamp: Option<String>,
+}
+
+/// Go `model.Midjourney` JSON shape for dashboard log lists (snake_case).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MjListRow {
+    pub id: i64,
+    pub code: i64,
+    pub user_id: i64,
+    pub action: String,
+    pub mj_id: String,
+    pub prompt: String,
+    pub prompt_en: String,
+    pub description: String,
+    pub state: String,
+    pub submit_time: i64,
+    pub start_time: i64,
+    pub finish_time: i64,
+    pub image_url: String,
+    pub video_url: String,
+    pub video_urls: String,
+    pub status: String,
+    pub progress: String,
+    pub fail_reason: String,
+    pub channel_id: i64,
+    pub quota: i64,
+    pub buttons: String,
+    pub properties: String,
+}
+
+const MJ_LIST_COLUMNS: &str = r#"id, code, user_id, action, mj_id, prompt, prompt_en,
+    description, state, submit_time, start_time, finish_time, image_url,
+    video_url, video_urls, status, progress, fail_reason, channel_id, quota,
+    buttons, properties"#;
+
+#[derive(Debug, Deserialize)]
+struct CountRow {
+    count: i64,
+}
+
+/// List Midjourney rows for the admin/self usage-log tables. Mirrors Go
+/// `GetAllTasks` / `GetAllUserTask`: optional channel (admin only at the
+/// handler), public mj id, and submit_time range filters, ordered newest first.
+pub async fn list_midjourneys(
+    db: &D1Database,
+    filter: &MjListFilter,
+    page: u32,
+    page_size: u32,
+) -> worker::Result<Vec<MjListRow>> {
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    let where_sql = mj_where_clause(filter, &mut args);
+    let limit_idx = args.len() + 1;
+    let offset_idx = args.len() + 2;
+    let offset = ((page.max(1) - 1) as i64) * page_size as i64;
+    args.push(D1Type::Integer(d1_i32(page_size as i64)));
+    args.push(D1Type::Integer(d1_i32(offset)));
+    let sql = format!(
+        "SELECT {MJ_LIST_COLUMNS} FROM midjourneys{where_sql} ORDER BY id DESC LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+    );
+    db.prepare(&sql)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<MjListRow>()
+}
+
+/// Count Midjourney rows matching the usage-log filters.
+pub async fn count_midjourneys(db: &D1Database, filter: &MjListFilter) -> worker::Result<i64> {
+    let mut args: Vec<D1Type<'_>> = Vec::new();
+    let where_sql = mj_where_clause(filter, &mut args);
+    let sql = format!("SELECT COUNT(*) AS count FROM midjourneys{where_sql}");
+    let row = db
+        .prepare(&sql)
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count).unwrap_or(0))
+}
+
+fn mj_where_clause<'a>(filter: &'a MjListFilter, args: &mut Vec<D1Type<'a>>) -> String {
+    let mut conditions = Vec::new();
+    if let Some(user_id) = filter.user_id {
+        args.push(D1Type::Integer(d1_i32(user_id)));
+        conditions.push(format!("user_id = ?{}", args.len()));
+    }
+    if let Some(channel_id) = filter.channel_id {
+        args.push(D1Type::Integer(d1_i32(channel_id)));
+        conditions.push(format!("channel_id = ?{}", args.len()));
+    }
+    if let Some(mj_id) = filter.mj_id.as_deref() {
+        args.push(D1Type::Text(mj_id));
+        conditions.push(format!("mj_id = ?{}", args.len()));
+    }
+    if let Some(start) = filter.start_timestamp.as_deref() {
+        args.push(D1Type::Text(start));
+        conditions.push(format!("submit_time >= ?{}", args.len()));
+    }
+    if let Some(end) = filter.end_timestamp.as_deref() {
+        args.push(D1Type::Text(end));
+        conditions.push(format!("submit_time <= ?{}", args.len()));
+    }
+    if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conditions.join(" AND "))
+    }
 }

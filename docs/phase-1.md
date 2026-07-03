@@ -181,6 +181,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   never include `client_secret`, discovery is SSRF/timeout/body-limit guarded,
   and `/api/status` exposes enabled provider metadata for the login page.
   Custom OAuth login/bind callbacks remain a later auth-flow batch.
+- Async usage-log read compatibility (`crates/worker/src/admin_task_logs.rs`):
+  `GET /api/mj`, `GET /api/mj/self`, `GET /api/task`, and
+  `GET /api/task/self` list D1 Midjourney/unified task rows with Go-compatible
+  pagination and filters. Self routes force the session user scope, task self
+  responses hide `channel_id`, and Midjourney `submit_time`/`finish_time`
+  writes preserve millisecond values to match Go/frontend filters.
 - `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
   role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
 - Worker admin auth surface (`crates/worker/src/admin.rs`): `POST

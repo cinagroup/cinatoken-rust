@@ -56,7 +56,7 @@ production data correctness, capacity, cost, or rollback.
 | Token/channel cache and rate limits | Implemented | E2-E4 | Final native-vs-Upstash production decision and failure-mode evidence |
 | Session auth and core user self-service | Substantial | E2-E4 | Email, Passkey, some OAuth, check-in, policy enforcement gaps |
 | Admin CRUD | Substantial core | E2-E4 | Long-tail channel ops, redemption, subscription, prefill/group, deployment ops |
-| Async task submit/poll/settle | Substantial internals | E2-E4 | Public fetch/read/content routes, real provider smoke, R2 artifact policy |
+| Async task submit/poll/settle | Substantial internals | E2-E4 | Remaining content/proxy routes, real provider smoke, R2 artifact policy |
 | Stripe top-up | Partial | E2-E4 | Production webhook replay/currency reconciliation and operator sign-off |
 | Non-Stripe payments/subscriptions | Incomplete | E0-E1 | Provider implementations, secrets, schemas, replay tests |
 | Frontend source and production build | Implemented; public staging contract verified | E2-E4 | Authenticated/rendered browser smoke, API parity, lint debt, bundle-size budget |
@@ -95,7 +95,7 @@ The following source route families are not yet equivalent:
 - Go's explicit 501 surface for files, fine-tunes, variations, and model delete.
 - Dashboard billing compatibility routes.
 - Public rankings and performance-summary routes.
-- Task result/read routes for Suno, Midjourney, and video content/fetch.
+- Remaining task result/content/proxy routes for Suno, Midjourney, and video.
 - Redemption, subscription, check-in, email/reset/bind, Passkey, custom OAuth,
   and non-Stripe payment families.
 - Deployment/io.net operations and several provider-specific channel operations.
@@ -134,9 +134,11 @@ defects:
    deployments back to `/setup`. The direction is corrected and tested.
 
 The status response now clamps navigation to APIs currently supported by Rust.
-Rankings, playground, wallet/top-up, task/Midjourney logs, redemption,
-subscriptions, and io.net model deployments remain hidden until their backend
-contracts are complete.
+Rankings, playground, wallet/top-up, redemption, subscriptions, and io.net model
+deployments remain hidden until their backend contracts are complete. Task and
+Midjourney usage-log read APIs now exist, but navigation remains conservative
+until authenticated browser smoke and the remaining task content/proxy routes
+are proven.
 
 ### 2026-07-03 Frontend Contract Delta
 
@@ -144,13 +146,13 @@ An AST-based audit now compares the default frontend's 212 distinct API calls
 with the Worker router. TypeChecker-based local-variable resolution found real
 calls the initial syntax-only scan missed; local helper-method inference then
 classified MJ/task reads and removed a false-positive `endsWith('/v1')` call.
-The first baseline found 122 unmatched calls. Successive P0 compatibility batches,
-the parser correction, single-channel upstream update migration, and Codex
-admin usage/refresh migration plus the Rust-native channel-affinity cache
-control surface, usage diagnostics, bounded upstream batch slices, Ollama
-admin model management, Worker-native operations endpoints, and upstream
-ratio sync plus custom OAuth provider admin management reduced that number to
-79 and added:
+The first baseline found 122 unmatched calls. Successive P0 compatibility
+batches, the parser correction, single-channel upstream update migration, Codex
+admin usage/refresh migration, the Rust-native channel-affinity cache control
+surface and usage diagnostics, bounded upstream batch slices, Ollama admin
+model management, Worker-native operations endpoints, upstream ratio sync,
+custom OAuth provider/binding management, and async task/Midjourney usage-log
+read migration reduced that number to 72 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -216,9 +218,18 @@ ratio sync plus custom OAuth provider admin management reduced that number to
   binding-clear actions, and exposes built-in binding IDs in self/admin user
   responses for the default profile/users UI. Custom OAuth callback/login flows,
   WeChat, email reset, and Passkey remain deferred.
+- Async usage-log read lists:
+  `GET /api/mj`, `GET /api/mj/self`, `GET /api/task`, and
+  `GET /api/task/self`. The Worker reads D1 `midjourneys`/`tasks` with
+  Go-compatible pagination and filters, scopes self routes to the session user,
+  hides task `channel_id` on self responses, and preserves Midjourney
+  `submit_time`/`finish_time` millisecond writes to match Go and the default
+  frontend.
+  Provider task submission, polling, and artifact/content routes still require
+  separate G7 smoke evidence.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
-13 auth-deferred, 45 capability-hidden-product, 16 payment-deferred, and 0
+13 auth-deferred, 43 capability-hidden-product, 16 payment-deferred, and 0
 operations-debt / visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 

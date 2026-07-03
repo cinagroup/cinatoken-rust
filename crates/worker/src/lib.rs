@@ -11,6 +11,7 @@ mod admin_data;
 mod admin_oauth;
 mod admin_ollama;
 mod admin_payment;
+mod admin_task_logs;
 mod admin_user;
 mod affinity;
 mod cache;
@@ -311,6 +312,26 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             "/api/log/channel_affinity_usage_cache",
             |req, ctx| async move { admin_affinity::get_usage_cache_stats(req, ctx.env).await },
         )
+        // Async task usage logs (Go midjourney.go/task.go read-only list
+        // surfaces): admin + self scopes for the React usage-log tabs.
+        .get_async("/api/mj", |req, ctx| async move {
+            admin_task_logs::list_midjourneys_admin(req, ctx.env).await
+        })
+        .get_async("/api/mj/", |req, ctx| async move {
+            admin_task_logs::list_midjourneys_admin(req, ctx.env).await
+        })
+        .get_async("/api/mj/self", |req, ctx| async move {
+            admin_task_logs::list_midjourneys_self(req, ctx.env).await
+        })
+        .get_async("/api/task", |req, ctx| async move {
+            admin_task_logs::list_tasks_admin(req, ctx.env).await
+        })
+        .get_async("/api/task/", |req, ctx| async move {
+            admin_task_logs::list_tasks_admin(req, ctx.env).await
+        })
+        .get_async("/api/task/self", |req, ctx| async move {
+            admin_task_logs::list_tasks_self(req, ctx.env).await
+        })
         // Options (root-only).
         .get_async("/api/option/", |req, ctx| async move {
             admin_crud::list_options(req, ctx.env).await

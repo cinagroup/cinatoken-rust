@@ -105,7 +105,7 @@ bun run check:web:staging
 `audit:web:routes` parses the default frontend with a TypeScript
 Program/TypeChecker and compares 212 distinct frontend calls with Worker router
 registrations. The 2026-07-03 compatibility batches reduced unmatched calls
-from 122 to 74 by closing routes and removing one false-positive call:
+from 122 to 72 by closing routes and removing one false-positive call:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
 - batch token-key reveal;
@@ -138,9 +138,14 @@ from 122 to 74 by closing routes and removing one false-positive call:
 - Custom OAuth account-binding management for self/admin users plus admin
   built-in binding clear. The route set now covers the default profile and user
   binding dialogs without opening the deferred callback/login flows.
+- Async usage-log read lists for Midjourney and unified tasks:
+  `GET /api/mj`, `GET /api/mj/self`, `GET /api/task`, and
+  `GET /api/task/self`. The routes are D1-backed, session-scoped for self
+  requests, and preserve Go's seconds-vs-milliseconds split between task and
+  Midjourney timestamps.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-74 calls with a stable SHA-256 route-set digest and category counts. New
+72 calls with a stable SHA-256 route-set digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
 payment families; operations-debt is currently zero. Local wrapper methods are

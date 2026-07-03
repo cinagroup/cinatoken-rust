@@ -1660,7 +1660,7 @@ Wave A 已建立三条可重复执行的自动证据链：
   API/SPA 优先级。
 
 兼容工作、审计器校正、单通道 upstream model update 与 Codex 管理端 usage/refresh
-迁移已将 unmatched frontend calls 从 122 降至 74，完成：
+迁移已将 unmatched frontend calls 从 122 降至 72，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1720,9 +1720,14 @@ Wave A 已建立三条可重复执行的自动证据链：
   `user_oauth_bindings` join provider 配置返回绑定列表，解绑不存在也按 Go 语义成功，
   并为 self/admin unbind 与内置绑定清除写入 audit；自定义 OAuth callback/login、WeChat、
   email reset 与 Passkey 仍留在后续 auth flow；
+- async usage-log read 管理面：`GET /api/mj`、`GET /api/mj/self`、
+  `GET /api/task` 与 `GET /api/task/self`。Worker 基于 D1
+  `midjourneys`/`tasks` 提供 Go-compatible pagination/filter，self 路径强制会话
+  user scope 且不暴露 task `channel_id`；Midjourney `submit_time`/`finish_time`
+  写入保留毫秒值，与 Go 和默认前端筛选单位一致；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
-- 缺口分类基线：13 auth-deferred、45 capability-hidden-product、16 payment-deferred；
+- 缺口分类基线：13 auth-deferred、43 capability-hidden-product、16 payment-deferred；
   operations-debt 与 visible-admin-debt 已清零。
 
 当前证据边界：

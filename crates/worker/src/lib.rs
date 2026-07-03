@@ -27,6 +27,7 @@ mod task_orchestration;
 // ahead of the mj submit/poll wiring.
 mod mj_repository;
 mod model_meta_api;
+mod prefill_group_api;
 mod pricing_api;
 mod turnstile;
 
@@ -335,6 +336,13 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/channel/models_enabled", |req, ctx| async move {
             admin_channel::enabled_list_models(req, ctx.env).await
         })
+        .get_async("/api/channel/update_balance/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_channel::update_channel_balance(req, ctx.env, id.as_ref()).await
+        })
+        .post_async("/api/channel/multi_key/manage", |req, ctx| async move {
+            admin_channel::manage_multi_keys(req, ctx.env).await
+        })
         // Channel tag bulk ops (Go DisableTagChannels / EnableTagChannels /
         // DeleteDisabledChannel).
         .post_async("/api/channel/tag/disabled", |req, ctx| async move {
@@ -372,6 +380,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/models/missing", |req, ctx| async move {
             model_meta_api::get_missing_models(req, ctx.env).await
         })
+        .get_async("/api/models/sync_upstream/preview", |req, ctx| async move {
+            model_meta_api::preview_upstream_models(req, ctx.env).await
+        })
+        .post_async("/api/models/sync_upstream", |req, ctx| async move {
+            model_meta_api::sync_upstream_models(req, ctx.env).await
+        })
         .get_async("/api/models/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             model_meta_api::get_model_meta(req, ctx.env, id.as_ref()).await
@@ -405,6 +419,19 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .delete_async("/api/vendors/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             model_meta_api::delete_vendor(req, ctx.env, id.as_ref()).await
+        })
+        .get_async("/api/prefill_group", |req, ctx| async move {
+            prefill_group_api::get_prefill_groups(req, ctx.env).await
+        })
+        .post_async("/api/prefill_group", |req, ctx| async move {
+            prefill_group_api::create_prefill_group(req, ctx.env).await
+        })
+        .put_async("/api/prefill_group", |req, ctx| async move {
+            prefill_group_api::update_prefill_group(req, ctx.env).await
+        })
+        .delete_async("/api/prefill_group/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            prefill_group_api::delete_prefill_group(req, ctx.env, id.as_ref()).await
         })
         .delete_async("/api/channel/disabled", |req, ctx| async move {
             admin_channel::delete_disabled_channels(req, ctx.env).await

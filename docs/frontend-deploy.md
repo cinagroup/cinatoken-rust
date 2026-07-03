@@ -102,20 +102,26 @@ bun run audit:web:routes
 bun run check:web:staging
 ```
 
-`audit:web:routes` parses the default frontend with the TypeScript compiler API
-and compares 212 distinct frontend calls with Worker router registrations. The
-2026-07-03 compatibility batch reduced unmatched calls from 122 to 115 by
-closing:
+`audit:web:routes` parses the default frontend with a TypeScript
+Program/TypeChecker and compares 214 distinct frontend calls with Worker router
+registrations. The 2026-07-03 compatibility batches reduced unmatched calls
+from 122 to 109 by closing:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
 - batch token-key reveal;
 - channel batch-tag and tag-model lookup;
 - admin group lookup;
-- the frontend spelling for admin 2FA reset.
+- the frontend spelling for admin 2FA reset;
+- prefill-group CRUD;
+- official model metadata preview/sync;
+- channel balance refresh and multi-key management.
 
-The remaining 115 calls include capability-hidden product families and real
-parity debt. They are not treated as implemented merely because navigation is
-hidden.
+`bun run check:web:routes` additionally enforces the reviewed debt baseline:
+109 calls with a stable SHA-256 route-set digest and category counts. New
+unclassified calls or an unreviewed route-set change fail the check. The
+remaining calls include capability-hidden product families, deferred auth and
+payment families, operations work, parser limitations, and 12 visible admin
+gaps. They are not treated as implemented merely because navigation is hidden.
 
 `check:web:staging` verifies the public staging deployment without mutating
 state. Its seven checks cover status capability clamps, setup shape, 11 SPA

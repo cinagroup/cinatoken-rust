@@ -1,0 +1,12 @@
+{
+  "missing_calls": 109,
+  "missing_sha256": "9517da6d1d544100e79e6a1b511b162d340a6c52e1cb52dd35596ef931770687",
+  "categories": {
+    "auth-deferred": 24,
+    "capability-hidden-product": 43,
+    "operations-debt": 11,
+    "parser-limitation": 3,
+    "payment-deferred": 16,
+    "visible-admin-debt": 12
+  }
+}

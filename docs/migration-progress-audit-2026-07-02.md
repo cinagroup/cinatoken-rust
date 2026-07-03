@@ -141,9 +141,11 @@ contracts are complete.
 
 ### 2026-07-03 Frontend Contract Delta
 
-An AST-based audit now compares the default frontend's 212 distinct API calls
-with the Worker router. The first baseline found 122 unmatched calls. The first
-P0 compatibility batch reduced that number to 115 and added:
+An AST-based audit now compares the default frontend's 214 distinct API calls
+with the Worker router. TypeChecker-based local-variable resolution found two
+calls the initial syntax-only scan missed. The first baseline found 122
+unmatched calls. Two P0 compatibility batches reduced that number to 109 and
+added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -152,7 +154,15 @@ P0 compatibility batch reduced that number to 115 and added:
   `/api/user/2fa/backup_codes`;
 - complete setup/status/disable 2FA payload parity, including stable backup
   codes, lock state, and remaining-code count;
-- `DELETE /api/user/:id/2fa` for the user-admin action.
+- `DELETE /api/user/:id/2fa` for the user-admin action;
+- D1-backed prefill-group CRUD;
+- fixed-origin official model metadata preview/sync;
+- provider balance refresh and multi-key channel management.
+
+The missing-route set is now classified and stored as a SHA-256 baseline:
+24 auth-deferred, 43 capability-hidden-product, 11 operations-debt, 3
+parser-limitation, 16 payment-deferred, and 12 visible-admin-debt. The root
+check fails on unclassified additions or unreviewed baseline changes.
 
 The public staging verifier passes seven non-mutating checks: status, setup,
 11 SPA routes, eight assets, artifact identity, public envelopes, and
@@ -197,10 +207,10 @@ from this evidence, not from commit count or implementation presence alone.
 1. Deploy the current P0 backend compatibility batch to staging.
 2. Run browser smoke for setup, anonymous status, login/logout/current-user,
    dashboard, keys, channels, users, logs, models, settings, and profile.
-3. Classify the remaining 115 unmatched frontend calls as visible P0,
-   capability-hidden, intentionally retired/fallback, or planned parity debt.
-4. Turn that classification into a regression gate so new unmatched calls
-   cannot be masked by a successful static build.
+3. Close or explicitly defer the remaining 12 visible-admin-debt calls,
+   beginning with channel Codex/Ollama/upstream operations and affinity tools.
+4. Resolve the three parser-limitation calls by AST support or reviewed manual
+   mapping.
 5. Replace all production `REPLACE_WITH_PRODUCTION_*` values before any canary.
 
 ### P1: Close High-Value Route And Data Gaps

@@ -151,9 +151,9 @@ selected cutover scenario, while keeping deferred rows explicit.
 | Passkey/2FA self-service | `/api/user/passkey/*`, `/api/user/2fa/*` | P1/P2 | 2FA setup/enable/status/disable/backup-code frontend contract implemented and unit-verified; Passkey remains deferred pending credential/import policy |
 | User admin | `/api/user`, `/api/user/search`, `/api/user/manage`, binding reset routes | P0 | Partial: list/search/get/create/edit/delete + `POST /api/user/manage` 8-action switch (disable/enable/delete/promote/demote/quota add/subtract/override) implemented in `admin_user.rs`; permission tiers match Go, quota mutations atomic, DELETE soft-deletes with token cache invalidation; binding reset routes deferred (OAuth batch) |
 | Token/key admin | `/api/token`, `/api/token/search`, key reveal, batch delete | P0 | Implemented: list/search/get/create/update/delete/batch/reveal plus secure user-scoped batch-key reveal (100-id limit), ownership checks, masking, audit, and cache invalidation |
-| Channel admin | `/api/channel`, test, key reveal, tags, balance, model fetch | P0 | Partial: CRUD, key reveal, test/fetch-models, tag enable/disable/edit, batch-tag, tag-model lookup, abilities sync and cache invalidation implemented; balance, multi-key, codex, Ollama and upstream-update operations remain |
+| Channel admin | `/api/channel`, test, key reveal, tags, balance, model fetch | P0 | Partial: CRUD, key reveal, test/fetch-models, tag enable/disable/edit, batch-tag, tag-model lookup, provider balance refresh, multi-key management, abilities sync and cache invalidation implemented; Codex, Ollama and upstream-update operations remain |
 | Logs and usage | `/api/log`, `/api/log/search`, `/api/log/self`, `/api/usage/*` | P0/P1 | Logs: list/stat/delete (admin + self) implemented in `crates/worker/src/admin_crud.rs`; `/api/usage/*` still Planned |
-| Groups/models/vendors/prefill | `/api/group`, `/api/models`, `/api/vendors`, `/api/prefill_group` | P1 | Group lookup and model/vendor CRUD implemented; prefill-group CRUD and upstream model sync remain |
+| Groups/models/vendors/prefill | `/api/group`, `/api/models`, `/api/vendors`, `/api/prefill_group` | P1 | Group lookup, model/vendor CRUD, D1-backed prefill-group CRUD, and fixed-origin official model metadata preview/sync implemented |
 | Options/settings | `/api/option/*`, setup/system settings | P0/P1 | Option list (root-only, sensitive filtered) + update (root-only upsert) implemented; per-key validation (OAuth/ratio/console_setting) deferred to next batch |
 | Dashboard billing | `/dashboard/billing/*`, `/v1/dashboard/billing/*` | P1/G4 | Read-only billing dashboard or Go-owned until G4 evidence exists |
 | Subscriptions/payments | `/api/subscription/*`, payment callbacks | G4/G6 | Defer or migrate only with signature/idempotency/replay evidence |
@@ -365,6 +365,11 @@ G5 must pass these before Scenario B:
   otherwise unsafe URLs unless a documented allowlist exception exists.
 - User-controlled URLs in channel/model/provider tools are SSRF-reviewed before
   enablement.
+- Channel balance refresh rejects literal private/special IPs, localhost and
+  internal suffixes, credentials, fragments, non-80/443 ports, and redirects.
+  Worker URL validation cannot resolve admin-supplied hostnames before fetch,
+  so DNS rebinding remains a documented residual risk until production uses an
+  outbound allowlist, controlled channel domains, or equivalent egress policy.
 
 ## Evidence Template
 

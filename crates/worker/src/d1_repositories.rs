@@ -2824,6 +2824,61 @@ pub async fn record_channel_test(
     Ok(())
 }
 
+/// Persist a successfully fetched upstream balance and its refresh timestamp.
+/// Returns false when the channel disappeared before the write completed.
+pub async fn update_channel_balance(
+    db: &D1Database,
+    id: i64,
+    balance: f64,
+    updated_at: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Real(balance),
+        D1Type::Integer(d1_i32(updated_at)),
+        D1Type::Integer(d1_i32(id)),
+    ];
+    let result = db
+        .prepare(
+            "UPDATE channels
+             SET balance = ?1, balance_updated_time = ?2
+             WHERE id = ?3",
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+/// Atomically replace a multi-key channel's key payload and channel-info JSON.
+/// The old values form an optimistic concurrency guard so two admin actions
+/// cannot silently overwrite one another.
+pub async fn update_multi_key_channel(
+    db: &D1Database,
+    id: i64,
+    expected_key: &str,
+    expected_channel_info: &str,
+    new_key: &str,
+    new_channel_info: &str,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(new_key),
+        D1Type::Text(new_channel_info),
+        D1Type::Integer(d1_i32(id)),
+        D1Type::Text(expected_key),
+        D1Type::Text(expected_channel_info),
+    ];
+    let result = db
+        .prepare(
+            r#"UPDATE channels
+               SET "key" = ?1, channel_info = ?2
+               WHERE id = ?3 AND "key" = ?4 AND channel_info = ?5"#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
 /// Optional fields for a bulk edit of the channels carrying a tag (Go
 /// `EditChannelByTag`). `None` fields are left unchanged.
 #[derive(Debug, Default)]
@@ -4275,6 +4330,225 @@ pub async fn soft_delete_vendor(db: &D1Database, id: i64, now: i64) -> worker::R
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Prefill groups
+// ---------------------------------------------------------------------------
+
+/// A live reusable prefill group (Go `model.PrefillGroup`).
+///
+/// D1 returns the JSON `items` column as text. The custom deserializer restores
+/// the original JSON shape so arrays remain arrays and JSON strings remain
+/// strings in the frontend response.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
+pub struct PrefillGroup {
+    pub id: i64,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub group_type: String,
+    #[serde(default, deserialize_with = "deserialize_prefill_group_items")]
+    pub items: Value,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    pub created_time: i64,
+    pub updated_time: i64,
+}
+
+fn deserialize_prefill_group_items<'de, D>(deserializer: D) -> std::result::Result<Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(raw) => serde_json::from_str(&raw).map_err(serde::de::Error::custom),
+        value => Ok(value),
+    }
+}
+
+const PREFILL_GROUP_COLUMNS: &str =
+    "id, name, type, items, description, created_time, updated_time";
+
+fn list_prefill_groups_sql(filtered: bool) -> String {
+    let type_filter = if filtered { " AND type = ?1" } else { "" };
+    format!(
+        "SELECT {PREFILL_GROUP_COLUMNS} FROM prefill_groups \
+         WHERE deleted_at IS NULL{type_filter} ORDER BY updated_time DESC"
+    )
+}
+
+/// All live prefill groups, optionally filtered by exact type.
+pub async fn list_prefill_groups(
+    db: &D1Database,
+    group_type: Option<&str>,
+) -> worker::Result<Vec<PrefillGroup>> {
+    let sql = list_prefill_groups_sql(group_type.is_some());
+    let args = group_type
+        .map(|group_type| vec![D1Type::Text(group_type)])
+        .unwrap_or_default();
+    db.prepare(&sql)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<PrefillGroup>()
+}
+
+/// One live prefill group by id.
+pub async fn get_prefill_group(db: &D1Database, id: i64) -> worker::Result<Option<PrefillGroup>> {
+    let arg = D1Type::Integer(d1_i32(id));
+    db.prepare(&format!(
+        "SELECT {PREFILL_GROUP_COLUMNS} FROM prefill_groups \
+         WHERE id = ?1 AND deleted_at IS NULL LIMIT 1"
+    ))
+    .bind_refs(&[arg])?
+    .first::<PrefillGroup>(None)
+    .await
+}
+
+/// Is a live group other than `exclude_id` already using `name`?
+pub async fn prefill_group_name_duplicated(
+    db: &D1Database,
+    exclude_id: i64,
+    name: &str,
+) -> worker::Result<bool> {
+    if name.is_empty() {
+        return Ok(false);
+    }
+
+    #[derive(Deserialize)]
+    struct Count {
+        total: i64,
+    }
+
+    let args = [D1Type::Text(name), D1Type::Integer(d1_i32(exclude_id))];
+    let total = db
+        .prepare(
+            r#"SELECT COUNT(*) AS total FROM prefill_groups
+               WHERE name = ?1 AND id != ?2 AND deleted_at IS NULL"#,
+        )
+        .bind_refs(&args)?
+        .first::<Count>(None)
+        .await?
+        .map(|count| count.total)
+        .unwrap_or(0);
+    Ok(total > 0)
+}
+
+fn serialize_prefill_group_items(items: &Value) -> Option<String> {
+    match items {
+        Value::Null => None,
+        value => Some(value.to_string()),
+    }
+}
+
+/// Insert a prefill group. A non-zero id is retained for Go database imports
+/// and direct API parity; zero uses SQLite's auto-generated row id.
+pub async fn insert_prefill_group(db: &D1Database, row: &PrefillGroup) -> worker::Result<i64> {
+    let items_json = serialize_prefill_group_items(&row.items);
+    let items_arg = items_json
+        .as_deref()
+        .map(D1Type::Text)
+        .unwrap_or(D1Type::Null);
+    let common_args = [
+        D1Type::Text(&row.name),
+        D1Type::Text(&row.group_type),
+        items_arg,
+        D1Type::Text(&row.description),
+        D1Type::Integer(d1_i32(row.created_time)),
+        D1Type::Integer(d1_i32(row.updated_time)),
+    ];
+
+    if row.id == 0 {
+        let result = db
+            .prepare(
+                r#"INSERT INTO prefill_groups
+                   (name, type, items, description, created_time, updated_time)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+            )
+            .bind_refs(&common_args)?
+            .run()
+            .await?;
+        return result
+            .meta()?
+            .and_then(|metadata| metadata.last_row_id)
+            .ok_or_else(|| {
+                worker::Error::RustError(
+                    "D1 insert metadata did not include a prefill group row id".to_string(),
+                )
+            });
+    }
+
+    let args = [
+        D1Type::Integer(d1_i32(row.id)),
+        D1Type::Text(&row.name),
+        D1Type::Text(&row.group_type),
+        items_json
+            .as_deref()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        D1Type::Text(&row.description),
+        D1Type::Integer(d1_i32(row.created_time)),
+        D1Type::Integer(d1_i32(row.updated_time)),
+    ];
+    db.prepare(
+        r#"INSERT INTO prefill_groups
+           (id, name, type, items, description, created_time, updated_time)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(row.id)
+}
+
+/// Save all fields for a prefill group, matching Go's `gorm.DB.Save` update
+/// semantics (including insertion when the supplied id does not yet exist).
+pub async fn save_prefill_group(db: &D1Database, row: &PrefillGroup) -> worker::Result<()> {
+    let items_json = serialize_prefill_group_items(&row.items);
+    let args = [
+        D1Type::Integer(d1_i32(row.id)),
+        D1Type::Text(&row.name),
+        D1Type::Text(&row.group_type),
+        items_json
+            .as_deref()
+            .map(D1Type::Text)
+            .unwrap_or(D1Type::Null),
+        D1Type::Text(&row.description),
+        D1Type::Integer(d1_i32(row.created_time)),
+        D1Type::Integer(d1_i32(row.updated_time)),
+    ];
+    db.prepare(
+        r#"INSERT INTO prefill_groups
+           (id, name, type, items, description, created_time, updated_time)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             type = excluded.type,
+             items = excluded.items,
+             description = excluded.description,
+             created_time = excluded.created_time,
+             updated_time = excluded.updated_time,
+             deleted_at = NULL"#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Soft-delete a prefill group. Missing/already-deleted ids are successful,
+/// matching GORM's `Delete` behavior.
+pub async fn soft_delete_prefill_group(db: &D1Database, id: i64, now: i64) -> worker::Result<()> {
+    let args = [D1Type::Integer(d1_i32(now)), D1Type::Integer(d1_i32(id))];
+    db.prepare(
+        r#"UPDATE prefill_groups
+           SET deleted_at = ?1
+           WHERE id = ?2 AND deleted_at IS NULL"#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
 /// All distinct enabled model names across every group (Go `GetEnabledModels`):
 /// `SELECT DISTINCT model FROM abilities WHERE enabled = 1`. Ordered.
 pub async fn distinct_all_enabled_models(db: &D1Database) -> worker::Result<Vec<String>> {
@@ -5009,5 +5283,75 @@ mod tests {
         assert_eq!(quota_i32(i64::from(i32::MAX)).unwrap(), i32::MAX);
         assert!(quota_i32(-1).is_err());
         assert!(quota_i32(i64::from(i32::MAX) + 1).is_err());
+    }
+
+    #[test]
+    fn prefill_group_list_sql_filters_live_rows_and_orders_like_go() {
+        let all = list_prefill_groups_sql(false);
+        assert!(all.contains("WHERE deleted_at IS NULL"));
+        assert!(!all.contains("type = ?1"));
+        assert!(all.ends_with("ORDER BY updated_time DESC"));
+
+        let filtered = list_prefill_groups_sql(true);
+        assert!(filtered.contains("AND type = ?1"));
+        assert!(filtered.ends_with("ORDER BY updated_time DESC"));
+    }
+
+    #[test]
+    fn prefill_group_items_restore_native_json_shape() {
+        let array: PrefillGroup = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "name": "models",
+            "type": "model",
+            "items": "[\"gpt-4o\",\"o3\"]",
+            "description": "",
+            "created_time": 10,
+            "updated_time": 20
+        }))
+        .unwrap();
+        assert_eq!(array.items, serde_json::json!(["gpt-4o", "o3"]));
+
+        let string: PrefillGroup = serde_json::from_value(serde_json::json!({
+            "id": 2,
+            "name": "endpoint",
+            "type": "endpoint",
+            "items": "\"{\\\"chat\\\":true}\"",
+            "description": "endpoint defaults",
+            "created_time": 10,
+            "updated_time": 20
+        }))
+        .unwrap();
+        assert_eq!(string.items, serde_json::json!("{\"chat\":true}"));
+    }
+
+    #[test]
+    fn prefill_group_serialization_matches_frontend_fields() {
+        let row = PrefillGroup {
+            id: 7,
+            name: "tags".to_string(),
+            group_type: "tag".to_string(),
+            items: serde_json::json!(["reasoning"]),
+            description: String::new(),
+            created_time: 10,
+            updated_time: 20,
+        };
+        assert_eq!(
+            serde_json::to_value(row).unwrap(),
+            serde_json::json!({
+                "id": 7,
+                "name": "tags",
+                "type": "tag",
+                "items": ["reasoning"],
+                "created_time": 10,
+                "updated_time": 20
+            })
+        );
+    }
+
+    #[test]
+    fn prefill_group_migration_enforces_unique_live_names() {
+        let migration = include_str!("../../../migrations/d1/0009_prefill_groups.sql");
+        assert!(migration.contains("CREATE UNIQUE INDEX IF NOT EXISTS uk_prefill_name"));
+        assert!(migration.contains("WHERE deleted_at IS NULL"));
     }
 }

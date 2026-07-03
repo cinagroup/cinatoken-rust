@@ -1648,37 +1648,49 @@ Go/VPS”的结论。
 
 ### 22.5 2026-07-03 Wave A 契约收敛进展
 
-Wave A 已建立两条可重复执行的自动证据链：
+Wave A 已建立三条可重复执行的自动证据链：
 
-- `bun run audit:web:routes` 使用 TypeScript AST 扫描默认前端的 212 个不同 API 调用，
-  并与 Worker Router 对比；
+- `bun run audit:web:routes` 使用 TypeScript Program/TypeChecker 扫描默认前端的
+  214 个不同 API 调用，并与 Worker Router 对比；
+- `bun run check:web:routes` 校验已分类缺口的数量、分类计数和 SHA-256 路由集合摘要，
+  新增未分类调用或未经审查的集合变化会使检查失败；
 - `bun run check:web:staging` 对 staging 执行只读 HTTP 契约验证，覆盖 status/setup、
   11 个 SPA hard-refresh 路径、8 个静态资源、构建产物同一性、公共 envelope 和
   API/SPA 优先级。
 
-本批将 unmatched frontend calls 从 122 降至 115，完成：
+两批兼容工作已将 unmatched frontend calls 从 122 降至 109，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
 - Channel 批量标签与 tag models 查询；
 - 管理表单使用的 group 列表；
-- 用户管理页面使用的 2FA reset 方法/路径兼容。
+- 用户管理页面使用的 2FA reset 方法/路径兼容；
+- `prefill_group` D1 schema、repository、AdminAuth CRUD、软删除和唯一存活名称约束；
+- 官方 model metadata 的 preview/sync，固定 HTTPS 上游、超时、5 MiB 响应上限、
+  选择性覆盖和聚合审计；
+- Channel provider balance 查询与持久化，以及 multi-key 的状态、分页、启停、删除和
+  重建索引操作；
+- 缺口分类基线：24 auth-deferred、43 capability-hidden-product、11 operations-debt、
+  3 parser-limitation、16 payment-deferred、12 visible-admin-debt。
 
 当前证据边界：
 
-- Worker 单元测试 185 项通过；
+- Worker 单元测试 204 项通过；
+- D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；
 - staging 公共 HTTP 契约 7 项通过；
-- 本批新增后端路由尚需重新部署并做已登录 CRUD/2FA 浏览器 smoke；
+- 2026-07-03 两批新增后端路由尚需重新部署并做已登录 CRUD/2FA 浏览器 smoke；
 - browser DOM、console、network、desktop/mobile 截图证据仍缺，不能将 HTTP shell
   相等误报为真实页面已渲染。
 
 下一批 Wave A 优先级：
 
-1. `prefill_group` CRUD 与 D1 schema/repository；
-2. 可见渠道操作中的 balance、multi-key、Codex、Ollama 与 upstream updates；
-3. model upstream sync；
-4. 将剩余 115 个 unmatched calls 分类为 visible P0、capability-hidden、
-   fallback/retired 或 planned parity debt，并把“新增未分类调用”设为 CI 失败；
+1. 收敛剩余 12 个 visible-admin-debt，优先 channel Codex、Ollama、upstream updates
+   与 channel-affinity 管理/诊断；
+2. 对 3 个 parser-limitation 做人工映射或增强 AST 解析，确保它们不是隐藏运行时缺口；
+3. 将已分类的 auth、payment、operations 和 capability-hidden 家族逐项绑定 cutover
+   场景、负责人和恢复条件；
+4. 部署 migration 0009 和本批 Worker 到隔离 staging，完成已登录的 prefill、model
+   sync、channel balance/multi-key smoke，并核查审计与无密钥泄漏；
 5. 在初始化后的隔离 staging 上完成登录、角色、CRUD、2FA 和过期 session 浏览器证据。

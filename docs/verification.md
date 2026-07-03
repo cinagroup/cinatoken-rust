@@ -626,16 +626,21 @@ Last checked: 2026-07-02
   in GEMINI format — the initial OpenAI-shaped port was reverted to a
   structured 501 rather than ship a wrong-format relay. 174 worker tests pass.
 
-- **Frontend contract audit + P0 compatibility batch — locally verified
+- **Frontend contract audit + two P0 compatibility batches — locally verified
   (2026-07-03).** Added `tools/audit_frontend_routes.mjs` (TypeScript AST
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
-  (non-mutating deployed contract smoke). The route audit covers 212 distinct
-  default-frontend calls and reduced unmatched calls from 122 to 115 after
+  (non-mutating deployed contract smoke). TypeChecker-based resolution now
+  covers 214 distinct default-frontend calls and reduced unmatched calls from
+  122 to 109 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
-  frontend admin-2FA-reset path. `cargo test -p cinatoken-worker --lib` passes
-  185 tests; wasm32 check and default frontend TypeScript/Rsbuild production
-  build pass.
+  frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
+  metadata preview/sync, provider balance refresh, and multi-key channel
+  management. The reviewed route-debt baseline is enforced by
+  `bun run check:web:routes`: 109 missing calls, no unclassified entries, and
+  12 remaining visible-admin gaps. `cargo test -p cinatoken-worker --lib`
+  passes 204 tests; migrations 0001-0009 replay to 9 SQLite tables. The wasm32
+  and default frontend TypeScript/Rsbuild checks pass.
 - **Staging static/public HTTP contract — verified (2026-07-02/03).**
   `bun run check:web:staging` passes all seven groups against
   `cinatoken-rust-api-staging.cinagroup.workers.dev`: capability-clamped

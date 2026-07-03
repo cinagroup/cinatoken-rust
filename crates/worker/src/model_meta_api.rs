@@ -5,11 +5,20 @@
 //! Deferred vs Go (documented): the list responses return the base rows
 //! without the batch display enrichment (`bound_channels` / `enable_groups` /
 //! `quota_types` per row and the vendor model-counts) — display extras the Go
-//! frontend tolerates missing; and `sync_upstream*` (fetches provider model
-//! lists from upstream — live provider I/O, see the completion-status doc).
+//! frontend tolerates missing.
 
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+use futures_util::future::{select, Either};
+use futures_util::TryStreamExt;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use worker::{Env, Request, Response, Result as WorkerResult};
+use serde_json::Value;
+use worker::{
+    AbortController, D1Database, Delay, Env, Fetch, Headers, Method, Request, RequestInit,
+    RequestRedirect, Response, Result as WorkerResult,
+};
 
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
@@ -263,6 +272,809 @@ pub async fn get_missing_models(req: Request, env: Env) -> WorkerResult<Response
 }
 
 // ---------------------------------------------------------------------------
+// Official upstream metadata sync
+// ---------------------------------------------------------------------------
+
+// This Worker intentionally supports the public official repository only.
+// Keeping the origin compile-time fixed avoids turning an admin endpoint into
+// an SSRF primitive through a request or environment supplied base URL.
+const OFFICIAL_UPSTREAM_BASE: &str = "https://basellm.github.io/llm-metadata";
+const SYNC_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const UPSTREAM_BODY_LIMIT_BYTES: usize = 5 * 1024 * 1024;
+const DEFAULT_SYNC_TIMEOUT_SECONDS: u64 = 15;
+const MAX_SYNC_TIMEOUT_SECONDS: u64 = 30;
+const MAX_OVERWRITE_MODELS: usize = 500;
+const MODEL_PAGE_SIZE: u32 = 100;
+const OVERWRITE_FIELDS: [&str; 6] = [
+    "description",
+    "icon",
+    "tags",
+    "vendor",
+    "name_rule",
+    "status",
+];
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+struct SyncOverwrite {
+    #[serde(default)]
+    model_name: String,
+    #[serde(default)]
+    fields: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SyncUpstreamRequest {
+    #[serde(default)]
+    locale: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    overwrite: Vec<SyncOverwrite>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct UpstreamModel {
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    icon: String,
+    #[serde(default)]
+    model_name: String,
+    #[serde(default)]
+    name_rule: i32,
+    #[serde(default)]
+    status: i32,
+    #[serde(default)]
+    tags: String,
+    #[serde(default)]
+    vendor_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct UpstreamVendor {
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    icon: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    status: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpstreamEnvelope<T> {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    message: String,
+    #[serde(default = "empty_vec")]
+    data: Vec<T>,
+}
+
+fn empty_vec<T>() -> Vec<T> {
+    Vec::new()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncLocale {
+    Default,
+    Zh,
+    En,
+    Ja,
+}
+
+impl SyncLocale {
+    fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" => Ok(Self::Default),
+            "zh" | "zh-cn" | "zh-tw" => Ok(Self::Zh),
+            "en" => Ok(Self::En),
+            "ja" => Ok(Self::Ja),
+            _ => Err("unsupported sync locale; expected zh, zh-CN, zh-TW, en, or ja".to_string()),
+        }
+    }
+
+    fn response_value(self) -> &'static str {
+        match self {
+            Self::Default => "",
+            Self::Zh => "zh",
+            Self::En => "en",
+            Self::Ja => "ja",
+        }
+    }
+
+    fn path_segment(self) -> Option<&'static str> {
+        match self {
+            // The official repository has no zh-CN/zh-TW newapi path. The Go
+            // controller also falls back to the default URL for frontend
+            // locale "zh".
+            Self::Default | Self::Zh => None,
+            Self::En => Some("en"),
+            Self::Ja => Some("ja"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SyncSourceInfo {
+    locale: &'static str,
+    source: &'static str,
+    models_url: String,
+    vendors_url: String,
+}
+
+impl SyncSourceInfo {
+    fn official(locale: SyncLocale) -> Self {
+        let (models_url, vendors_url) = official_upstream_urls(locale);
+        Self {
+            locale: locale.response_value(),
+            source: "official",
+            models_url,
+            vendors_url,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SyncResult {
+    created_models: usize,
+    created_vendors: usize,
+    updated_models: usize,
+    skipped_models: Vec<String>,
+    created_list: Vec<String>,
+    updated_list: Vec<String>,
+    source: SyncSourceInfo,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct ConflictField {
+    field: &'static str,
+    local: Value,
+    upstream: Value,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct ConflictItem {
+    model_name: String,
+    fields: Vec<ConflictField>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewResult {
+    missing: Vec<String>,
+    conflicts: Vec<ConflictItem>,
+    source: SyncSourceInfo,
+}
+
+fn official_upstream_urls(locale: SyncLocale) -> (String, String) {
+    let prefix = match locale.path_segment() {
+        Some(segment) => format!("{OFFICIAL_UPSTREAM_BASE}/api/i18n/{segment}/newapi"),
+        None => format!("{OFFICIAL_UPSTREAM_BASE}/api/newapi"),
+    };
+    (
+        format!("{prefix}/models.json"),
+        format!("{prefix}/vendors.json"),
+    )
+}
+
+fn validate_source(value: &str) -> std::result::Result<(), String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "official" => Ok(()),
+        "config" => {
+            Err("sync source 'config' is not supported by the Worker deployment".to_string())
+        }
+        _ => Err("unsupported sync source; expected official".to_string()),
+    }
+}
+
+fn normalize_overwrites(
+    overwrites: Vec<SyncOverwrite>,
+) -> std::result::Result<Vec<SyncOverwrite>, String> {
+    if overwrites.len() > MAX_OVERWRITE_MODELS {
+        return Err(format!(
+            "too many overwrite entries; maximum is {MAX_OVERWRITE_MODELS}"
+        ));
+    }
+
+    let mut normalized = Vec::<SyncOverwrite>::new();
+    let mut positions = HashMap::<String, usize>::new();
+    for overwrite in overwrites {
+        let model_name = overwrite.model_name.trim();
+        if model_name.is_empty() {
+            return Err("overwrite model_name must not be empty".to_string());
+        }
+        if model_name.len() > 512 {
+            return Err("overwrite model_name is too long".to_string());
+        }
+
+        let position = if let Some(position) = positions.get(model_name) {
+            *position
+        } else {
+            let position = normalized.len();
+            positions.insert(model_name.to_string(), position);
+            normalized.push(SyncOverwrite {
+                model_name: model_name.to_string(),
+                fields: Vec::new(),
+            });
+            position
+        };
+        for field in overwrite.fields {
+            let field = field.trim().to_ascii_lowercase();
+            if OVERWRITE_FIELDS.contains(&field.as_str())
+                && !normalized[position].fields.contains(&field)
+            {
+                normalized[position].fields.push(field);
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn parse_sync_request(bytes: &[u8]) -> std::result::Result<SyncUpstreamRequest, String> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(SyncUpstreamRequest::default());
+    }
+    serde_json::from_slice(bytes).map_err(|err| format!("request body is not valid JSON: {err}"))
+}
+
+async fn read_sync_request(
+    req: &mut Request,
+) -> std::result::Result<SyncUpstreamRequest, Response> {
+    let bytes = req.bytes().await.map_err(|err| {
+        envelope_error_response(400, &format!("failed to read request body: {err}"))
+    })?;
+    if bytes.len() > SYNC_BODY_LIMIT_BYTES {
+        return Err(envelope_error_response(413, "sync request body too large"));
+    }
+    parse_sync_request(&bytes).map_err(|message| envelope_error_response(400, &message))
+}
+
+fn sync_timeout(env: &Env) -> Duration {
+    let seconds = env
+        .var("SYNC_HTTP_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.to_string().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SYNC_TIMEOUT_SECONDS)
+        .clamp(1, MAX_SYNC_TIMEOUT_SECONDS);
+    Duration::from_secs(seconds)
+}
+
+fn parse_upstream_payload<T: DeserializeOwned>(
+    bytes: &[u8],
+) -> std::result::Result<Vec<T>, String> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|err| format!("invalid JSON: {err}"))?;
+    if value.is_array() {
+        return serde_json::from_value(value).map_err(|err| format!("invalid data array: {err}"));
+    }
+
+    let envelope: UpstreamEnvelope<T> =
+        serde_json::from_value(value).map_err(|err| format!("invalid response envelope: {err}"))?;
+    if !envelope.success && envelope.data.is_empty() && !envelope.message.is_empty() {
+        return Err(format!("upstream rejected request: {}", envelope.message));
+    }
+    Ok(envelope.data)
+}
+
+async fn fetch_official_json<T: DeserializeOwned>(
+    url: &str,
+    timeout: Duration,
+) -> std::result::Result<Vec<T>, String> {
+    // Build a fresh request with only an Accept header. In particular, admin
+    // Authorization/Cookie headers and any provider keys are never forwarded.
+    let mut headers = Headers::new();
+    headers
+        .set("Accept", "application/json")
+        .map_err(|err| err.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Get)
+        .with_headers(headers)
+        .with_redirect(RequestRedirect::Error);
+    let outbound = Request::new_with_init(url, &init).map_err(|err| err.to_string())?;
+
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let fetch = Fetch::Request(outbound);
+    let operation = async move {
+        let mut response = fetch
+            .send_with_signal(&signal)
+            .await
+            .map_err(|err| format!("upstream request failed: {err}"))?;
+        if !(200..300).contains(&response.status_code()) {
+            return Err(format!(
+                "upstream returned status {}",
+                response.status_code()
+            ));
+        }
+        if let Some(content_length) = response
+            .headers()
+            .get("Content-Length")
+            .map_err(|err| err.to_string())?
+        {
+            if content_length
+                .parse::<usize>()
+                .ok()
+                .is_some_and(|length| length > UPSTREAM_BODY_LIMIT_BYTES)
+            {
+                return Err("upstream response exceeds 5 MiB limit".to_string());
+            }
+        }
+
+        let bytes = response
+            .stream()
+            .map_err(|err| format!("failed to read upstream response: {err}"))?
+            .try_fold(Vec::new(), |mut bytes, chunk| async move {
+                if bytes.len().saturating_add(chunk.len()) > UPSTREAM_BODY_LIMIT_BYTES {
+                    return Err(worker::Error::RustError(
+                        "upstream response exceeds 5 MiB limit".to_string(),
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+                Ok(bytes)
+            })
+            .await
+            .map_err(|err| format!("failed to read upstream response: {err}"))?;
+        parse_upstream_payload(&bytes)
+    };
+    let timeout_future = Box::pin(Delay::from(timeout));
+    match select(Box::pin(operation), timeout_future).await {
+        Either::Left((result, _)) => result,
+        Either::Right((_, pending_operation)) => {
+            drop(pending_operation);
+            controller.abort();
+            Err(format!(
+                "upstream request timed out after {} seconds",
+                timeout.as_secs()
+            ))
+        }
+    }
+}
+
+async fn load_all_models(db: &D1Database) -> WorkerResult<Vec<ModelMetaFull>> {
+    let mut rows = Vec::new();
+    loop {
+        let offset = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+        let (mut page, total) =
+            d1_repositories::list_models_meta(db, None, None, offset, MODEL_PAGE_SIZE).await?;
+        let page_len = page.len();
+        rows.append(&mut page);
+        if page_len == 0 || i64::try_from(rows.len()).unwrap_or(i64::MAX) >= total {
+            break;
+        }
+    }
+    Ok(rows)
+}
+
+fn exact_missing_models(enabled: &[String], locals: &[ModelMetaFull]) -> Vec<String> {
+    let existing: HashSet<&str> = locals.iter().map(|row| row.model_name.as_str()).collect();
+    enabled
+        .iter()
+        .filter(|name| !existing.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn choose_status(primary: i32, fallback: i32) -> i32 {
+    if primary != 0 {
+        primary
+    } else if fallback != 0 {
+        fallback
+    } else {
+        1
+    }
+}
+
+fn upstream_models_by_name(models: Vec<UpstreamModel>) -> HashMap<String, UpstreamModel> {
+    models
+        .into_iter()
+        .filter(|model| !model.model_name.trim().is_empty())
+        .map(|mut model| {
+            model.model_name = model.model_name.trim().to_string();
+            (model.model_name.clone(), model)
+        })
+        .collect()
+}
+
+fn upstream_vendors_by_name(vendors: Vec<UpstreamVendor>) -> HashMap<String, UpstreamVendor> {
+    vendors
+        .into_iter()
+        .filter(|vendor| !vendor.name.trim().is_empty())
+        .map(|mut vendor| {
+            vendor.name = vendor.name.trim().to_string();
+            (vendor.name.clone(), vendor)
+        })
+        .collect()
+}
+
+fn conflict_fields(
+    local: &ModelMetaFull,
+    upstream: &UpstreamModel,
+    local_vendor_name: &str,
+) -> Vec<ConflictField> {
+    let mut fields = Vec::new();
+    if local.description.trim() != upstream.description.trim() {
+        fields.push(ConflictField {
+            field: "description",
+            local: Value::String(local.description.clone()),
+            upstream: Value::String(upstream.description.clone()),
+        });
+    }
+    if local.icon.trim() != upstream.icon.trim() {
+        fields.push(ConflictField {
+            field: "icon",
+            local: Value::String(local.icon.clone()),
+            upstream: Value::String(upstream.icon.clone()),
+        });
+    }
+    if local.tags.trim() != upstream.tags.trim() {
+        fields.push(ConflictField {
+            field: "tags",
+            local: Value::String(local.tags.clone()),
+            upstream: Value::String(upstream.tags.clone()),
+        });
+    }
+    if local_vendor_name.trim() != upstream.vendor_name.trim() {
+        fields.push(ConflictField {
+            field: "vendor",
+            local: Value::String(local_vendor_name.to_string()),
+            upstream: Value::String(upstream.vendor_name.clone()),
+        });
+    }
+    if local.name_rule != upstream.name_rule {
+        fields.push(ConflictField {
+            field: "name_rule",
+            local: Value::from(local.name_rule),
+            upstream: Value::from(upstream.name_rule),
+        });
+    }
+    if local.status != choose_status(upstream.status, local.status) {
+        fields.push(ConflictField {
+            field: "status",
+            local: Value::from(local.status),
+            upstream: Value::from(upstream.status),
+        });
+    }
+    fields
+}
+
+fn build_preview(
+    enabled: &[String],
+    locals: &[ModelMetaFull],
+    upstream_models: &HashMap<String, UpstreamModel>,
+    vendor_names: &HashMap<i64, String>,
+) -> (Vec<String>, Vec<ConflictItem>) {
+    let missing = exact_missing_models(enabled, locals)
+        .into_iter()
+        .filter(|name| upstream_models.contains_key(name))
+        .collect();
+    let conflicts = locals
+        .iter()
+        .filter(|local| local.sync_official != 0)
+        .filter_map(|local| {
+            let upstream = upstream_models.get(&local.model_name)?;
+            let vendor_name = vendor_names
+                .get(&local.vendor_id)
+                .map(String::as_str)
+                .unwrap_or("");
+            let fields = conflict_fields(local, upstream, vendor_name);
+            (!fields.is_empty()).then(|| ConflictItem {
+                model_name: local.model_name.clone(),
+                fields,
+            })
+        })
+        .collect();
+    (missing, conflicts)
+}
+
+fn apply_overwrite(
+    local: &mut ModelMetaFull,
+    upstream: &UpstreamModel,
+    fields: &[String],
+    upstream_vendor_id: i64,
+) -> bool {
+    let mut changed = false;
+    for field in fields {
+        match field.as_str() {
+            "description" => local.description = upstream.description.clone(),
+            "icon" => local.icon = upstream.icon.clone(),
+            "tags" => local.tags = upstream.tags.clone(),
+            "vendor" => local.vendor_id = upstream_vendor_id,
+            "name_rule" => local.name_rule = upstream.name_rule,
+            "status" => local.status = choose_status(upstream.status, local.status),
+            _ => continue,
+        }
+        changed = true;
+    }
+    changed
+}
+
+async fn ensure_vendor_id(
+    db: &D1Database,
+    vendor_name: &str,
+    upstream_vendors: &HashMap<String, UpstreamVendor>,
+    vendor_ids: &mut HashMap<String, i64>,
+    created_vendors: &mut usize,
+) -> i64 {
+    let vendor_name = vendor_name.trim();
+    if vendor_name.is_empty() {
+        return 0;
+    }
+    if let Some(id) = vendor_ids.get(vendor_name) {
+        return *id;
+    }
+
+    let upstream = upstream_vendors
+        .get(vendor_name)
+        .cloned()
+        .unwrap_or_default();
+    let now = unix_timestamp();
+    let result = d1_repositories::insert_vendor(
+        db,
+        &VendorFull {
+            id: 0,
+            name: vendor_name.to_string(),
+            description: upstream.description,
+            icon: upstream.icon,
+            status: choose_status(upstream.status, 1),
+            created_time: now,
+            updated_time: now,
+        },
+    )
+    .await;
+    match result {
+        Ok(id) => {
+            *created_vendors += 1;
+            vendor_ids.insert(vendor_name.to_string(), id);
+            id
+        }
+        Err(err) => {
+            worker::console_error!("failed to create sync vendor '{}': {}", vendor_name, err);
+            vendor_ids.insert(vendor_name.to_string(), 0);
+            0
+        }
+    }
+}
+
+/// `GET /api/models/sync_upstream/preview?locale&source`: preview official
+/// metadata additions and selectable conflicts without modifying D1.
+pub async fn preview_upstream_models(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let locale =
+        match SyncLocale::parse(parse_query_string(&req, "locale").as_deref().unwrap_or("")) {
+            Ok(locale) => locale,
+            Err(message) => return Ok(envelope_error_response(400, &message)),
+        };
+    if let Err(message) =
+        validate_source(parse_query_string(&req, "source").as_deref().unwrap_or(""))
+    {
+        return Ok(envelope_error_response(400, &message));
+    }
+
+    let source = SyncSourceInfo::official(locale);
+    let timeout = sync_timeout(&env);
+    let (models_result, vendors_result) = futures_util::join!(
+        fetch_official_json::<UpstreamModel>(&source.models_url, timeout),
+        fetch_official_json::<UpstreamVendor>(&source.vendors_url, timeout)
+    );
+    let upstream_models = match models_result {
+        Ok(models) => upstream_models_by_name(models),
+        Err(message) => {
+            return Ok(envelope_error_response(
+                502,
+                &format!("failed to fetch upstream models: {message}"),
+            ));
+        }
+    };
+    // The Go endpoint treats vendor metadata as optional. Model rows still
+    // carry vendor names, so preview remains useful if vendors.json is down.
+    let _upstream_vendors = vendors_result.unwrap_or_default();
+
+    let db = env.d1("DB")?;
+    let enabled = d1_repositories::distinct_all_enabled_models(&db).await?;
+    let locals = load_all_models(&db).await?;
+    let vendor_names: HashMap<i64, String> = d1_repositories::list_vendors(&db)
+        .await?
+        .into_iter()
+        .map(|vendor| (vendor.id, vendor.name))
+        .collect();
+    let (missing, conflicts) = build_preview(&enabled, &locals, &upstream_models, &vendor_names);
+    envelope_ok_response(&PreviewResult {
+        missing,
+        conflicts,
+        source,
+    })
+}
+
+/// `POST /api/models/sync_upstream`: create exact-name missing metadata and
+/// optionally overwrite selected fields on rows with `sync_official != 0`.
+pub async fn sync_upstream_models(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let request = match read_sync_request(&mut req).await {
+        Ok(request) => request,
+        Err(response) => return Ok(response),
+    };
+    if let Err(message) = validate_source(&request.source) {
+        return Ok(envelope_error_response(400, &message));
+    }
+    let locale = match SyncLocale::parse(&request.locale) {
+        Ok(locale) => locale,
+        Err(message) => return Ok(envelope_error_response(400, &message)),
+    };
+    let overwrites = match normalize_overwrites(request.overwrite) {
+        Ok(overwrites) => overwrites,
+        Err(message) => return Ok(envelope_error_response(400, &message)),
+    };
+    let source = SyncSourceInfo::official(locale);
+
+    let db = env.d1("DB")?;
+    let enabled = d1_repositories::distinct_all_enabled_models(&db).await?;
+    let mut locals = load_all_models(&db).await?;
+    let missing = exact_missing_models(&enabled, &locals);
+    if missing.is_empty() && overwrites.is_empty() {
+        return envelope_ok_response(&SyncResult {
+            created_models: 0,
+            created_vendors: 0,
+            updated_models: 0,
+            skipped_models: Vec::new(),
+            created_list: Vec::new(),
+            updated_list: Vec::new(),
+            source,
+        });
+    }
+
+    let timeout = sync_timeout(&env);
+    let (models_result, vendors_result) = futures_util::join!(
+        fetch_official_json::<UpstreamModel>(&source.models_url, timeout),
+        fetch_official_json::<UpstreamVendor>(&source.vendors_url, timeout)
+    );
+    let upstream_models = match models_result {
+        Ok(models) => upstream_models_by_name(models),
+        Err(message) => {
+            return Ok(envelope_error_response(
+                502,
+                &format!("failed to fetch upstream models: {message}"),
+            ));
+        }
+    };
+    let upstream_vendors = upstream_vendors_by_name(vendors_result.unwrap_or_default());
+    let mut vendor_ids: HashMap<String, i64> = d1_repositories::list_vendors(&db)
+        .await?
+        .into_iter()
+        .map(|vendor| (vendor.name, vendor.id))
+        .collect();
+
+    let mut created_models = 0;
+    let mut created_vendors = 0;
+    let mut updated_models = 0;
+    let mut skipped_models = Vec::new();
+    let mut created_list = Vec::new();
+    let mut updated_list = Vec::new();
+
+    for name in missing {
+        let Some(upstream) = upstream_models.get(&name) else {
+            skipped_models.push(name);
+            continue;
+        };
+        let vendor_id = ensure_vendor_id(
+            &db,
+            &upstream.vendor_name,
+            &upstream_vendors,
+            &mut vendor_ids,
+            &mut created_vendors,
+        )
+        .await;
+        let now = unix_timestamp();
+        let row = ModelMetaFull {
+            id: 0,
+            model_name: name.clone(),
+            description: upstream.description.clone(),
+            icon: upstream.icon.clone(),
+            tags: upstream.tags.clone(),
+            vendor_id,
+            endpoints: String::new(),
+            status: choose_status(upstream.status, 1),
+            // Go's Model.Insert preserves this zero value for sync-created
+            // rows, so later official overwrites remain opt-in.
+            sync_official: 0,
+            name_rule: upstream.name_rule,
+            created_time: now,
+            updated_time: now,
+        };
+        match d1_repositories::insert_model_meta(&db, &row).await {
+            Ok(id) => {
+                locals.push(ModelMetaFull { id, ..row });
+                created_models += 1;
+                created_list.push(name);
+            }
+            Err(err) => {
+                worker::console_error!("failed to create synced model '{}': {}", name, err);
+                skipped_models.push(name);
+            }
+        }
+    }
+
+    let local_positions: HashMap<String, usize> = locals
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.model_name.clone(), index))
+        .collect();
+    for overwrite in overwrites {
+        let Some(upstream) = upstream_models.get(&overwrite.model_name) else {
+            continue;
+        };
+        let Some(index) = local_positions.get(&overwrite.model_name).copied() else {
+            continue;
+        };
+        if locals[index].sync_official == 0 {
+            continue;
+        }
+
+        // Match the Go controller: resolving the upstream vendor happens for
+        // every accepted overwrite item, even when "vendor" is not selected.
+        let vendor_id = ensure_vendor_id(
+            &db,
+            &upstream.vendor_name,
+            &upstream_vendors,
+            &mut vendor_ids,
+            &mut created_vendors,
+        )
+        .await;
+        if apply_overwrite(&mut locals[index], upstream, &overwrite.fields, vendor_id) {
+            locals[index].updated_time = unix_timestamp();
+            match d1_repositories::update_model_meta(&db, &locals[index]).await {
+                Ok(()) => {
+                    updated_models += 1;
+                    updated_list.push(overwrite.model_name);
+                }
+                Err(err) => {
+                    worker::console_error!(
+                        "failed to update synced model '{}': {}",
+                        overwrite.model_name,
+                        err
+                    );
+                }
+            }
+        }
+    }
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "model.sync_upstream",
+        &format!("admin {} synced official model metadata", claims.username),
+        &serde_json::json!({
+            "created_models": created_models,
+            "created_vendors": created_vendors,
+            "updated_models": updated_models,
+            "skipped_models": skipped_models.len(),
+            "locale": source.locale,
+            "source": source.source
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+
+    envelope_ok_response(&SyncResult {
+        created_models,
+        created_vendors,
+        updated_models,
+        skipped_models,
+        created_list,
+        updated_list,
+        source,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Vendors CRUD
 // ---------------------------------------------------------------------------
 
@@ -417,4 +1229,152 @@ pub async fn delete_vendor(
     let db = env.d1("DB")?;
     d1_repositories::soft_delete_vendor(&db, id, unix_timestamp()).await?;
     envelope_ok_response(&serde_json::Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(name: &str) -> ModelMetaFull {
+        ModelMetaFull {
+            id: 1,
+            model_name: name.to_string(),
+            description: "local description".to_string(),
+            icon: "local-icon".to_string(),
+            tags: "local,tags".to_string(),
+            vendor_id: 7,
+            endpoints: r#"[{"type":"openai"}]"#.to_string(),
+            status: 0,
+            sync_official: 1,
+            name_rule: 0,
+            created_time: 10,
+            updated_time: 20,
+        }
+    }
+
+    fn upstream(name: &str) -> UpstreamModel {
+        UpstreamModel {
+            model_name: name.to_string(),
+            description: "upstream description".to_string(),
+            icon: "upstream-icon".to_string(),
+            tags: "upstream,tags".to_string(),
+            vendor_name: "Upstream Vendor".to_string(),
+            status: 1,
+            name_rule: 2,
+        }
+    }
+
+    #[test]
+    fn official_urls_are_fixed_and_locale_is_enumerated() {
+        let locale = SyncLocale::parse("zh").unwrap();
+        let (models, vendors) = official_upstream_urls(locale);
+        assert_eq!(
+            models,
+            "https://basellm.github.io/llm-metadata/api/newapi/models.json"
+        );
+        assert_eq!(
+            vendors,
+            "https://basellm.github.io/llm-metadata/api/newapi/vendors.json"
+        );
+        assert!(SyncLocale::parse("https://127.0.0.1/").is_err());
+        assert!(validate_source("config").is_err());
+        assert!(validate_source("official").is_ok());
+    }
+
+    #[test]
+    fn sync_request_allows_empty_body_and_normalizes_overwrites() {
+        assert!(parse_sync_request(b" \r\n\t").unwrap().overwrite.is_empty());
+        let request = parse_sync_request(
+            br#"{"locale":"en","source":"official","overwrite":[
+                {"model_name":" model-a ","fields":["Description","unknown"]},
+                {"model_name":"model-a","fields":["description","vendor"]}
+            ]}"#,
+        )
+        .unwrap();
+        let overwrites = normalize_overwrites(request.overwrite).unwrap();
+        assert_eq!(
+            overwrites,
+            vec![SyncOverwrite {
+                model_name: "model-a".to_string(),
+                fields: vec!["description".to_string(), "vendor".to_string()],
+            }]
+        );
+        assert!(parse_sync_request(b"{").is_err());
+    }
+
+    #[test]
+    fn upstream_payload_accepts_envelope_and_array() {
+        let envelope = br#"{"success":true,"data":[{"model_name":"model-a"}]}"#;
+        let array = br#"[{"model_name":"model-b"}]"#;
+        let from_envelope: Vec<UpstreamModel> = parse_upstream_payload(envelope).unwrap();
+        let from_array: Vec<UpstreamModel> = parse_upstream_payload(array).unwrap();
+        assert_eq!(from_envelope[0].model_name, "model-a");
+        assert_eq!(from_array[0].model_name, "model-b");
+    }
+
+    #[test]
+    fn missing_models_use_exact_names_like_source_controller() {
+        let enabled = vec!["gpt-4".to_string(), "gpt-4o".to_string()];
+        let mut prefix = model("gpt-");
+        prefix.name_rule = 1;
+        assert_eq!(exact_missing_models(&enabled, &[prefix]), enabled);
+    }
+
+    #[test]
+    fn preview_reports_fields_and_skips_opted_out_rows() {
+        let enabled = vec!["missing".to_string()];
+        let local = model("existing");
+        let mut opted_out = model("opted-out");
+        opted_out.sync_official = 0;
+        let upstream_models = upstream_models_by_name(vec![
+            upstream("missing"),
+            upstream("existing"),
+            upstream("opted-out"),
+        ]);
+        let vendor_names = HashMap::from([(7, "Local Vendor".to_string())]);
+        let (missing, conflicts) = build_preview(
+            &enabled,
+            &[local, opted_out],
+            &upstream_models,
+            &vendor_names,
+        );
+        assert_eq!(missing, vec!["missing"]);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].model_name, "existing");
+        assert!(conflicts[0]
+            .fields
+            .iter()
+            .any(|field| field.field == "vendor"));
+        assert!(!conflicts[0]
+            .fields
+            .iter()
+            .any(|field| field.field == "endpoints"));
+    }
+
+    #[test]
+    fn overwrite_updates_selected_fields_only() {
+        let mut local = model("existing");
+        let old_icon = local.icon.clone();
+        let old_endpoints = local.endpoints.clone();
+        let old_sync_official = local.sync_official;
+        let changed = apply_overwrite(
+            &mut local,
+            &upstream("existing"),
+            &["description".to_string(), "vendor".to_string()],
+            99,
+        );
+        assert!(changed);
+        assert_eq!(local.description, "upstream description");
+        assert_eq!(local.vendor_id, 99);
+        assert_eq!(local.icon, old_icon);
+        assert_eq!(local.endpoints, old_endpoints);
+        assert_eq!(local.sync_official, old_sync_official);
+    }
+
+    #[test]
+    fn zero_upstream_status_preserves_nonzero_local_status() {
+        assert_eq!(choose_status(0, -1), -1);
+        assert_eq!(choose_status(0, 0), 1);
+        assert_eq!(choose_status(2, 1), 2);
+    }
 }

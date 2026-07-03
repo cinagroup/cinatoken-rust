@@ -5,13 +5,21 @@
 //! abilities. Every write operation keeps the `abilities` table in sync so
 //! the relay's `select_channels_from_abilities` finds new/edited channels.
 //!
-//! Tier 2 (key reveal, copy, tag ops, fetch_models, delete disabled) and
-//! Tier 3 (test, billing, multi-key, codex, ollama, upstream_updates) are
-//! deferred to later batches.
+//! Tier 2 key reveal, tag, connectivity, and disabled-channel operations are
+//! implemented. Tier 3 now includes balance and multi-key management; Codex,
+//! Ollama, and upstream-update operations remain deferred.
 
+use futures_util::future::{select, Either};
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use worker::{Env, Request, Response, Result as WorkerResult};
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
+use wasm_bindgen::JsValue;
+use worker::{
+    AbortController, Delay, Env, Request, RequestRedirect, Response, Result as WorkerResult,
+};
 
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
@@ -34,6 +42,168 @@ pub async fn enabled_list_models(req: Request, env: Env) -> WorkerResult<Respons
     let db = env.d1("DB")?;
     let models = d1_repositories::distinct_all_enabled_models(&db).await?;
     envelope_ok_response(&models)
+}
+
+/// `GET /api/channel/update_balance/:id`: query the provider's authoritative
+/// balance and persist it only after a fully validated response. AdminAuth.
+pub async fn update_channel_balance(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let Some(id) = parse_id_param(id_param).filter(|id| *id > 0 && *id <= i32::MAX as i64) else {
+        return Ok(envelope_error_response(400, "invalid channel id"));
+    };
+    let db = env.d1("DB")?;
+    let Some(channel) = d1_repositories::find_channel_by_id(&db, id).await? else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+    match parse_channel_info(&channel.channel_info) {
+        Ok(info) if is_multi_key_info(&info) => {
+            return Ok(envelope_error_response(
+                422,
+                "multi-key channels do not support balance queries",
+            ));
+        }
+        Err(message) => return Ok(envelope_error_response(500, &message)),
+        _ => {}
+    }
+    if channel.key.trim().is_empty() {
+        return Ok(envelope_error_response(422, "channel key is empty"));
+    }
+
+    let balance = match fetch_channel_balance(&db, &channel).await {
+        Ok(balance) => balance,
+        Err(message) => return Ok(envelope_error_response(502, &message)),
+    };
+    if !balance.is_finite() {
+        return Ok(envelope_error_response(
+            502,
+            "upstream returned an invalid balance",
+        ));
+    }
+    let now = unix_timestamp();
+    if !d1_repositories::update_channel_balance(&db, id, balance, now).await? {
+        return Ok(envelope_error_response(
+            409,
+            "channel changed during balance update",
+        ));
+    }
+    invalidate_channel_cache(&env).await?;
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "channel.balance_update",
+        &format!("admin {} updated channel {} balance", claims.username, id),
+        &serde_json::json!({"id": id, "type": channel.kind, "balance": balance}),
+        &crate::admin::admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    let mut response = Response::from_json(&ChannelBalanceResponse {
+        success: true,
+        message: "",
+        balance,
+    })?
+    .with_status(200);
+    crate::set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+/// `POST /api/channel/multi_key/manage`: complete compatibility surface for
+/// the default frontend's seven multi-key actions. Channel keys are never
+/// returned or written to logs/audit records.
+pub async fn manage_multi_keys(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: MultiKeyManageRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return Ok(envelope_error_response(
+                400,
+                "invalid multi-key management request",
+            ));
+        }
+    };
+    if payload.channel_id <= 0 || payload.channel_id > i32::MAX as i64 {
+        return Ok(envelope_error_response(400, "invalid channel id"));
+    }
+
+    let db = env.d1("DB")?;
+    let Some(channel) = d1_repositories::find_channel_by_id(&db, payload.channel_id).await? else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+    let operation = match apply_multi_key_action(&channel.key, &channel.channel_info, &payload) {
+        Ok(operation) => operation,
+        Err(error) => return Ok(envelope_error_response(error.status, &error.message)),
+    };
+
+    match operation {
+        MultiKeyOperation::Read(data) => envelope_ok_response(&data),
+        MultiKeyOperation::Write(write) => {
+            let changed = d1_repositories::update_multi_key_channel(
+                &db,
+                channel.id,
+                &channel.key,
+                &channel.channel_info,
+                &write.key,
+                &write.channel_info,
+            )
+            .await?;
+            if !changed {
+                return Ok(envelope_error_response(
+                    409,
+                    "channel changed; reload key status and retry",
+                ));
+            }
+            invalidate_channel_cache(&env).await?;
+            let now = unix_timestamp();
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                None,
+                None,
+                &claims.username,
+                "channel.multi_key_manage",
+                &format!(
+                    "admin {} performed {} on channel {}",
+                    claims.username, payload.action, channel.id
+                ),
+                &serde_json::json!({
+                    "action": payload.action,
+                    "id": channel.id,
+                    "key_index": payload.key_index
+                }),
+                &crate::admin::admin_audit_info(&claims, &req),
+                now,
+            )
+            .await;
+            match write.data {
+                Some(data) => envelope_ok_response(&data),
+                None => {
+                    let mut response = Response::from_json(&serde_json::json!({
+                        "success": true,
+                        "message": write.message
+                    }))?
+                    .with_status(200);
+                    crate::set_cors_headers(&mut response)?;
+                    Ok(response)
+                }
+            }
+        }
+    }
 }
 
 /// `GET /api/channel/test/:id?model=`: send a minimal chat completion through
@@ -935,6 +1105,776 @@ pub async fn fix_abilities(req: Request, env: Env) -> WorkerResult<Response> {
 // Helpers and DTOs
 // ---------------------------------------------------------------------------
 
+const CHANNEL_OUTBOUND_TIMEOUT: Duration = Duration::from_secs(15);
+const CHANNEL_BALANCE_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+const MULTI_KEY_PAGE_SIZE_MAX: i64 = 200;
+
+#[derive(Debug, Serialize)]
+struct ChannelBalanceResponse<'a> {
+    success: bool,
+    message: &'a str,
+    balance: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultiKeyManageRequest {
+    channel_id: i64,
+    action: String,
+    #[serde(default)]
+    key_index: Option<i64>,
+    #[serde(default)]
+    page: i64,
+    #[serde(default)]
+    page_size: i64,
+    #[serde(default)]
+    status: Option<i32>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct MultiKeyStatusData {
+    keys: Vec<MultiKeyStatus>,
+    total: usize,
+    page: usize,
+    page_size: usize,
+    total_pages: usize,
+    enabled_count: usize,
+    manual_disabled_count: usize,
+    auto_disabled_count: usize,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct MultiKeyStatus {
+    index: usize,
+    status: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disabled_time: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    key_preview: &'static str,
+}
+
+enum MultiKeyOperation {
+    Read(MultiKeyStatusData),
+    Write(MultiKeyWrite),
+}
+
+struct MultiKeyWrite {
+    key: String,
+    channel_info: String,
+    message: &'static str,
+    data: Option<Value>,
+}
+
+#[derive(Debug, PartialEq)]
+struct MultiKeyActionError {
+    status: u16,
+    message: String,
+}
+
+impl MultiKeyActionError {
+    fn new(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
+fn parse_channel_info(raw: &str) -> Result<Map<String, Value>, String> {
+    let value: Value = serde_json::from_str(if raw.trim().is_empty() { "{}" } else { raw })
+        .map_err(|_| "channel_info is not valid JSON".to_string())?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "channel_info must be a JSON object".to_string())
+}
+
+fn is_multi_key_info(info: &Map<String, Value>) -> bool {
+    info.get("is_multi_key")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn parse_multi_keys(raw: &str) -> Vec<String> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let trimmed = raw.trim();
+    if trimmed.starts_with('[') {
+        if let Ok(values) = serde_json::from_str::<Vec<Value>>(trimmed) {
+            return values.into_iter().map(|value| value.to_string()).collect();
+        }
+    }
+    raw.trim_matches('\n')
+        .split('\n')
+        .map(str::to_string)
+        .collect()
+}
+
+fn indexed_i32_map(value: Option<&Value>) -> BTreeMap<usize, i32> {
+    value
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(index, value)| {
+                    let value = value.as_i64()?;
+                    Some((index.parse::<usize>().ok()?, i32::try_from(value).ok()?))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn indexed_i64_map(value: Option<&Value>) -> BTreeMap<usize, i64> {
+    value
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(index, value)| Some((index.parse::<usize>().ok()?, value.as_i64()?)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn indexed_string_map(value: Option<&Value>) -> BTreeMap<usize, String> {
+    value
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(index, value)| {
+                    Some((index.parse::<usize>().ok()?, value.as_str()?.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn store_multi_key_state(
+    info: &mut Map<String, Value>,
+    key_count: usize,
+    statuses: &BTreeMap<usize, i32>,
+    disabled_times: &BTreeMap<usize, i64>,
+    disabled_reasons: &BTreeMap<usize, String>,
+) {
+    info.insert(
+        "multi_key_size".to_string(),
+        Value::Number((key_count as u64).into()),
+    );
+    info.insert(
+        "multi_key_status_list".to_string(),
+        serde_json::to_value(statuses).unwrap_or_else(|_| serde_json::json!({})),
+    );
+    info.insert(
+        "multi_key_disabled_time".to_string(),
+        serde_json::to_value(disabled_times).unwrap_or_else(|_| serde_json::json!({})),
+    );
+    info.insert(
+        "multi_key_disabled_reason".to_string(),
+        serde_json::to_value(disabled_reasons).unwrap_or_else(|_| serde_json::json!({})),
+    );
+}
+
+fn require_key_index(
+    request: &MultiKeyManageRequest,
+    key_count: usize,
+) -> Result<usize, MultiKeyActionError> {
+    let index = request
+        .key_index
+        .ok_or_else(|| MultiKeyActionError::new(400, "key_index is required"))?;
+    let index = usize::try_from(index)
+        .map_err(|_| MultiKeyActionError::new(400, "key_index is out of range"))?;
+    if index >= key_count {
+        return Err(MultiKeyActionError::new(400, "key_index is out of range"));
+    }
+    Ok(index)
+}
+
+fn apply_multi_key_action(
+    raw_key: &str,
+    raw_channel_info: &str,
+    request: &MultiKeyManageRequest,
+) -> Result<MultiKeyOperation, MultiKeyActionError> {
+    let mut info = parse_channel_info(raw_channel_info)
+        .map_err(|message| MultiKeyActionError::new(500, message))?;
+    if !is_multi_key_info(&info) {
+        return Err(MultiKeyActionError::new(
+            422,
+            "channel is not in multi-key mode",
+        ));
+    }
+
+    let mut keys = parse_multi_keys(raw_key);
+    let mut statuses = indexed_i32_map(info.get("multi_key_status_list"));
+    let mut disabled_times = indexed_i64_map(info.get("multi_key_disabled_time"));
+    let mut disabled_reasons = indexed_string_map(info.get("multi_key_disabled_reason"));
+    statuses.retain(|index, _| *index < keys.len());
+    disabled_times.retain(|index, _| *index < keys.len());
+    disabled_reasons.retain(|index, _| *index < keys.len());
+
+    if request.action == "get_key_status" {
+        if let Some(status) = request.status {
+            if !matches!(status, 1..=3) {
+                return Err(MultiKeyActionError::new(400, "status must be 1, 2, or 3"));
+            }
+        }
+        let mut enabled_count = 0;
+        let mut manual_disabled_count = 0;
+        let mut auto_disabled_count = 0;
+        let mut filtered = Vec::new();
+        for index in 0..keys.len() {
+            let status = statuses.get(&index).copied().unwrap_or(1);
+            match status {
+                1 => enabled_count += 1,
+                2 => manual_disabled_count += 1,
+                3 => auto_disabled_count += 1,
+                _ => {}
+            }
+            if request.status.is_some_and(|filter| filter != status) {
+                continue;
+            }
+            filtered.push(MultiKeyStatus {
+                index,
+                status,
+                disabled_time: (status != 1)
+                    .then(|| disabled_times.get(&index).copied())
+                    .flatten(),
+                reason: (status != 1)
+                    .then(|| disabled_reasons.get(&index).cloned())
+                    .flatten(),
+                key_preview: "********",
+            });
+        }
+        let page_size = if request.page_size <= 0 {
+            50
+        } else {
+            request.page_size.min(MULTI_KEY_PAGE_SIZE_MAX)
+        } as usize;
+        let total = filtered.len();
+        let total_pages = total.div_ceil(page_size).max(1);
+        let requested_page = if request.page <= 0 {
+            1
+        } else {
+            request.page as usize
+        };
+        let page = requested_page.min(total_pages);
+        let start = (page - 1) * page_size;
+        let keys = filtered.into_iter().skip(start).take(page_size).collect();
+        return Ok(MultiKeyOperation::Read(MultiKeyStatusData {
+            keys,
+            total,
+            page,
+            page_size,
+            total_pages,
+            enabled_count,
+            manual_disabled_count,
+            auto_disabled_count,
+        }));
+    }
+
+    let (new_key, message, data) = match request.action.as_str() {
+        "disable_key" => {
+            let index = require_key_index(request, keys.len())?;
+            statuses.insert(index, 2);
+            (raw_key.to_string(), "key disabled", None)
+        }
+        "enable_key" => {
+            let index = require_key_index(request, keys.len())?;
+            statuses.remove(&index);
+            disabled_times.remove(&index);
+            disabled_reasons.remove(&index);
+            (raw_key.to_string(), "key enabled", None)
+        }
+        "enable_all_keys" => {
+            let changed = (0..keys.len())
+                .filter(|index| statuses.get(index).copied().unwrap_or(1) != 1)
+                .count();
+            statuses.clear();
+            disabled_times.clear();
+            disabled_reasons.clear();
+            (
+                raw_key.to_string(),
+                "all keys enabled",
+                Some(serde_json::json!(changed)),
+            )
+        }
+        "disable_all_keys" => {
+            let mut changed = 0usize;
+            for index in 0..keys.len() {
+                if statuses.get(&index).copied().unwrap_or(1) == 1 {
+                    statuses.insert(index, 2);
+                    changed += 1;
+                }
+            }
+            if changed == 0 {
+                return Err(MultiKeyActionError::new(409, "no enabled keys to disable"));
+            }
+            (
+                raw_key.to_string(),
+                "all keys disabled",
+                Some(serde_json::json!(changed)),
+            )
+        }
+        "delete_key" => {
+            let deleted = require_key_index(request, keys.len())?;
+            if keys.len() == 1 {
+                return Err(MultiKeyActionError::new(409, "cannot delete the last key"));
+            }
+            let (new_statuses, new_times, new_reasons) = reindex_multi_key_maps(
+                keys.len(),
+                |index| index != deleted,
+                &statuses,
+                &disabled_times,
+                &disabled_reasons,
+            );
+            keys.remove(deleted);
+            statuses = new_statuses;
+            disabled_times = new_times;
+            disabled_reasons = new_reasons;
+            (keys.join("\n"), "key deleted", None)
+        }
+        "delete_disabled_keys" => {
+            let keep = |index: usize| statuses.get(&index).copied().unwrap_or(1) != 3;
+            let deleted = (0..keys.len()).filter(|index| !keep(*index)).count();
+            if deleted == 0 {
+                return Err(MultiKeyActionError::new(
+                    409,
+                    "no auto-disabled keys to delete",
+                ));
+            }
+            let (new_statuses, new_times, new_reasons) = reindex_multi_key_maps(
+                keys.len(),
+                keep,
+                &statuses,
+                &disabled_times,
+                &disabled_reasons,
+            );
+            keys = keys
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, key)| keep(index).then_some(key))
+                .collect();
+            statuses = new_statuses;
+            disabled_times = new_times;
+            disabled_reasons = new_reasons;
+            (
+                keys.join("\n"),
+                "auto-disabled keys deleted",
+                Some(serde_json::json!(deleted)),
+            )
+        }
+        _ => {
+            return Err(MultiKeyActionError::new(
+                400,
+                "unsupported multi-key action",
+            ));
+        }
+    };
+
+    store_multi_key_state(
+        &mut info,
+        keys.len(),
+        &statuses,
+        &disabled_times,
+        &disabled_reasons,
+    );
+    let channel_info = serde_json::to_string(&info)
+        .map_err(|_| MultiKeyActionError::new(500, "failed to encode channel_info"))?;
+    Ok(MultiKeyOperation::Write(MultiKeyWrite {
+        key: new_key,
+        channel_info,
+        message,
+        data,
+    }))
+}
+
+fn reindex_multi_key_maps<F>(
+    key_count: usize,
+    keep: F,
+    statuses: &BTreeMap<usize, i32>,
+    disabled_times: &BTreeMap<usize, i64>,
+    disabled_reasons: &BTreeMap<usize, String>,
+) -> (
+    BTreeMap<usize, i32>,
+    BTreeMap<usize, i64>,
+    BTreeMap<usize, String>,
+)
+where
+    F: Fn(usize) -> bool,
+{
+    let mut new_statuses = BTreeMap::new();
+    let mut new_times = BTreeMap::new();
+    let mut new_reasons = BTreeMap::new();
+    let mut new_index = 0usize;
+    for old_index in 0..key_count {
+        if !keep(old_index) {
+            continue;
+        }
+        if let Some(status) = statuses
+            .get(&old_index)
+            .copied()
+            .filter(|status| *status != 1)
+        {
+            new_statuses.insert(new_index, status);
+        }
+        if let Some(disabled_time) = disabled_times.get(&old_index) {
+            new_times.insert(new_index, *disabled_time);
+        }
+        if let Some(reason) = disabled_reasons.get(&old_index) {
+            new_reasons.insert(new_index, reason.clone());
+        }
+        new_index += 1;
+    }
+    (new_statuses, new_times, new_reasons)
+}
+
+#[derive(Clone, Copy)]
+enum BalanceAuth {
+    Bearer,
+    ApiKey,
+}
+
+async fn fetch_channel_balance(
+    db: &worker::D1Database,
+    channel: &ChannelRow,
+) -> Result<f64, String> {
+    match channel.kind {
+        1 | 8 => fetch_openai_compatible_balance(channel).await,
+        10 => {
+            let value = fetch_balance_json(
+                "https://aiproxy.io/api/report/getUserOverview",
+                &channel.key,
+                BalanceAuth::ApiKey,
+            )
+            .await?;
+            if value.get("success").and_then(Value::as_bool) != Some(true) {
+                return Err("upstream rejected the balance query".to_string());
+            }
+            required_number(&value, "/data/totalPoints")
+        }
+        12 => {
+            let value = fetch_balance_json(
+                "https://api.api2gpt.com/dashboard/billing/credit_grants",
+                &channel.key,
+                BalanceAuth::Bearer,
+            )
+            .await?;
+            required_number(&value, "/total_remaining")
+        }
+        13 => {
+            let value = fetch_balance_json(
+                "https://api.aigc2d.com/dashboard/billing/credit_grants",
+                &channel.key,
+                BalanceAuth::Bearer,
+            )
+            .await?;
+            required_number(&value, "/total_available")
+        }
+        20 => {
+            let value = fetch_balance_json(
+                "https://openrouter.ai/api/v1/credits",
+                &channel.key,
+                BalanceAuth::Bearer,
+            )
+            .await?;
+            Ok(required_number(&value, "/data/total_credits")?
+                - required_number(&value, "/data/total_usage")?)
+        }
+        25 => {
+            let value = fetch_balance_json(
+                "https://api.moonshot.cn/v1/users/me/balance",
+                &channel.key,
+                BalanceAuth::Bearer,
+            )
+            .await?;
+            if value.get("status").and_then(Value::as_bool) != Some(true)
+                || value.get("code").and_then(Value::as_i64) != Some(0)
+            {
+                return Err("upstream rejected the balance query".to_string());
+            }
+            let cny = required_number(&value, "/data/available_balance")?;
+            let price = d1_repositories::get_option(db, "Price")
+                .await
+                .map_err(|_| "failed to load the balance exchange rate".to_string())?
+                .as_deref()
+                .unwrap_or("7.3")
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| "balance exchange rate is invalid".to_string())?;
+            if !price.is_finite() || price <= 0.0 {
+                return Err("balance exchange rate must be positive".to_string());
+            }
+            Ok(cny / price)
+        }
+        40 => {
+            let value = fetch_balance_json(
+                "https://api.siliconflow.cn/v1/user/info",
+                &channel.key,
+                BalanceAuth::Bearer,
+            )
+            .await?;
+            if value.get("code").and_then(Value::as_i64) != Some(20_000) {
+                return Err("upstream rejected the balance query".to_string());
+            }
+            required_number(&value, "/data/totalBalance")
+        }
+        43 => {
+            let value = fetch_balance_json(
+                "https://api.deepseek.com/user/balance",
+                &channel.key,
+                BalanceAuth::Bearer,
+            )
+            .await?;
+            value
+                .get("balance_infos")
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find(|item| item.get("currency").and_then(Value::as_str) == Some("CNY"))
+                })
+                .ok_or_else(|| "upstream response has no CNY balance".to_string())
+                .and_then(|item| required_number(item, "/total_balance"))
+        }
+        _ => Err(format!(
+            "balance query is not supported for channel type {}",
+            channel.kind
+        )),
+    }
+}
+
+async fn fetch_openai_compatible_balance(channel: &ChannelRow) -> Result<f64, String> {
+    let base_url = if channel.base_url.trim().is_empty() {
+        if channel.kind == 1 {
+            "https://api.openai.com"
+        } else {
+            return Err("custom channels require base_url for balance queries".to_string());
+        }
+    } else {
+        channel.base_url.trim()
+    };
+    let subscription_url = validated_channel_url(base_url, "/v1/dashboard/billing/subscription")?;
+    let subscription =
+        fetch_balance_json(&subscription_url, &channel.key, BalanceAuth::Bearer).await?;
+    let hard_limit = required_number(&subscription, "/hard_limit_usd")?;
+    let has_payment_method = subscription
+        .get("has_payment_method")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "upstream subscription response is incomplete".to_string())?;
+    let (start_date, end_date) = openai_usage_dates(has_payment_method)?;
+    let usage_url = validated_channel_url(
+        base_url,
+        &format!("/v1/dashboard/billing/usage?start_date={start_date}&end_date={end_date}"),
+    )?;
+    let usage = fetch_balance_json(&usage_url, &channel.key, BalanceAuth::Bearer).await?;
+    Ok(hard_limit - required_number(&usage, "/total_usage")? / 100.0)
+}
+
+fn openai_usage_dates(has_payment_method: bool) -> Result<(String, String), String> {
+    let now = js_sys::Date::now();
+    let end_date = iso_date(now)?;
+    let start_date = if has_payment_method {
+        format!("{}-01", &end_date[..7])
+    } else {
+        iso_date(now - 100.0 * 86_400_000.0)?
+    };
+    Ok((start_date, end_date))
+}
+
+fn iso_date(milliseconds: f64) -> Result<String, String> {
+    let date = js_sys::Date::new(&JsValue::from_f64(milliseconds));
+    let iso = date
+        .to_iso_string()
+        .as_string()
+        .ok_or_else(|| "failed to format billing date".to_string())?;
+    iso.get(..10)
+        .map(str::to_string)
+        .ok_or_else(|| "failed to format billing date".to_string())
+}
+
+fn validated_channel_url(base_url: &str, suffix: &str) -> Result<String, String> {
+    let raw = format!("{}{}", base_url.trim_end_matches('/'), suffix);
+    validate_channel_outbound_url(&raw)?;
+    Ok(raw)
+}
+
+fn validate_channel_outbound_url(raw: &str) -> Result<(), String> {
+    let parsed = worker::Url::parse(raw).map_err(|_| "channel URL is invalid".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("channel URL scheme is not allowed".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("channel URL must not contain credentials".to_string());
+    }
+    if parsed.fragment().is_some() {
+        return Err("channel URL must not contain a fragment".to_string());
+    }
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| "channel URL port is invalid".to_string())?;
+    if !matches!(port, 80 | 443) {
+        return Err("channel URL port is not allowed".to_string());
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "channel URL is missing a host".to_string())?
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    if matches!(
+        host.as_str(),
+        "localhost" | "metadata.google.internal" | "metadata.internal"
+    ) || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+    {
+        return Err("channel URL host is not allowed".to_string());
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_private_or_special_ip(ip) {
+            return Err("channel URL IP address is not allowed".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn is_private_or_special_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_private_or_special_ipv4(ip),
+        IpAddr::V6(ip) => is_private_or_special_ipv6(ip),
+    }
+}
+
+fn is_private_or_special_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    a == 0
+        || a == 10
+        || (a == 100 && (64..=127).contains(&b))
+        || a == 127
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 0 && matches!(c, 0 | 2))
+        || (a == 192 && b == 168)
+        || (a == 198 && matches!(b, 18 | 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 224
+}
+
+fn is_private_or_special_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(v4) = ip.to_ipv4() {
+        return is_private_or_special_ipv4(v4);
+    }
+    let segments = ip.segments();
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_multicast()
+        || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] == 0x64 && segments[1] == 0xff9b)
+        || (segments[0] == 0x100 && segments[1] == 0)
+        || (segments[0] == 0x2001 && (segments[1] & 0xfe00) == 0)
+}
+
+async fn fetch_balance_json(url: &str, key: &str, auth: BalanceAuth) -> Result<Value, String> {
+    validate_channel_outbound_url(url)?;
+    let mut headers = worker::Headers::new();
+    let header_value = match auth {
+        BalanceAuth::Bearer => format!("Bearer {key}"),
+        BalanceAuth::ApiKey => key.to_string(),
+    };
+    headers
+        .set(
+            match auth {
+                BalanceAuth::Bearer => "Authorization",
+                BalanceAuth::ApiKey => "Api-Key",
+            },
+            &header_value,
+        )
+        .map_err(|_| "channel key is not valid for an HTTP header".to_string())?;
+    headers
+        .set("Accept", "application/json")
+        .map_err(|_| "failed to build upstream request".to_string())?;
+    let mut init = worker::RequestInit::new();
+    init.with_method(worker::Method::Get)
+        .with_headers(headers)
+        .with_redirect(RequestRedirect::Error);
+    let request = Request::new_with_init(url, &init)
+        .map_err(|_| "failed to build upstream request".to_string())?;
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let outbound = worker::Fetch::Request(request);
+    let fetch = outbound.send_with_signal(&signal);
+    let delay = Delay::from(CHANNEL_OUTBOUND_TIMEOUT);
+    futures_util::pin_mut!(fetch);
+    futures_util::pin_mut!(delay);
+    let mut response = match select(fetch, delay).await {
+        Either::Left((result, _)) => {
+            result.map_err(|_| "upstream balance request failed".to_string())?
+        }
+        Either::Right(((), _)) => {
+            controller.abort();
+            return Err("upstream balance request timed out".to_string());
+        }
+    };
+    if !(200..300).contains(&response.status_code()) {
+        return Err(format!(
+            "upstream balance request returned status {}",
+            response.status_code()
+        ));
+    }
+    let content_type = response
+        .headers()
+        .get("Content-Type")
+        .map_err(|_| "failed to inspect upstream response headers".to_string())?
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.is_empty()
+        && !content_type.contains("application/json")
+        && !content_type.contains("+json")
+    {
+        return Err("upstream balance response is not JSON".to_string());
+    }
+    if response
+        .headers()
+        .get("Content-Length")
+        .map_err(|_| "failed to inspect upstream response headers".to_string())?
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > CHANNEL_BALANCE_BODY_LIMIT_BYTES)
+    {
+        return Err("upstream balance response exceeds 1 MiB limit".to_string());
+    }
+    let bytes = response
+        .stream()
+        .map_err(|_| "failed to read upstream balance response".to_string())?
+        .try_fold(Vec::new(), |mut bytes, chunk| async move {
+            if bytes.len().saturating_add(chunk.len()) > CHANNEL_BALANCE_BODY_LIMIT_BYTES {
+                return Err(worker::Error::RustError(
+                    "upstream balance response exceeds 1 MiB limit".to_string(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+            Ok(bytes)
+        })
+        .await
+        .map_err(|err| err.to_string())?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| "upstream balance response is not valid JSON".to_string())
+}
+
+fn required_number(value: &Value, pointer: &str) -> Result<f64, String> {
+    let candidate = value
+        .pointer(pointer)
+        .ok_or_else(|| "upstream balance response is incomplete".to_string())?;
+    let number = candidate
+        .as_f64()
+        .or_else(|| candidate.as_str().and_then(|raw| raw.trim().parse().ok()))
+        .ok_or_else(|| "upstream balance response contains an invalid number".to_string())?;
+    if number.is_finite() {
+        Ok(number)
+    } else {
+        Err("upstream balance response contains an invalid number".to_string())
+    }
+}
+
 fn parse_channel_filter(req: &Request) -> ChannelFilter {
     ChannelFilter {
         group: parse_query_string(req, "group"),
@@ -1330,5 +2270,218 @@ mod tests {
         assert_eq!(parse_id_param(Some(&"  7 ".to_string())), Some(7));
         assert_eq!(parse_id_param(Some(&"abc".to_string())), None);
         assert_eq!(parse_id_param(None), None);
+    }
+
+    fn multi_key_request(action: &str, key_index: Option<i64>) -> MultiKeyManageRequest {
+        MultiKeyManageRequest {
+            channel_id: 7,
+            action: action.to_string(),
+            key_index,
+            page: 1,
+            page_size: 50,
+            status: None,
+        }
+    }
+
+    fn multi_key_info() -> &'static str {
+        r#"{
+            "is_multi_key":true,
+            "multi_key_size":3,
+            "multi_key_mode":"polling",
+            "future_field":{"keep":true},
+            "multi_key_status_list":{"1":2,"2":3},
+            "multi_key_disabled_time":{"1":1700000000,"2":1700000001},
+            "multi_key_disabled_reason":{"1":"manual","2":"upstream"}
+        }"#
+    }
+
+    #[test]
+    fn multi_key_status_is_compatible_and_never_exposes_keys() {
+        let operation = apply_multi_key_action(
+            "sk-secret-one\nsk-secret-two\nsk-secret-three",
+            multi_key_info(),
+            &multi_key_request("get_key_status", None),
+        )
+        .unwrap();
+        let MultiKeyOperation::Read(data) = operation else {
+            panic!("expected read operation");
+        };
+        assert_eq!(data.total, 3);
+        assert_eq!(data.enabled_count, 1);
+        assert_eq!(data.manual_disabled_count, 1);
+        assert_eq!(data.auto_disabled_count, 1);
+        assert_eq!(data.keys[0].key_preview, "********");
+        assert_eq!(data.keys[1].disabled_time, Some(1_700_000_000));
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert!(!encoded.contains("sk-secret"));
+        assert!(encoded.contains("\"key_preview\":\"********\""));
+    }
+
+    #[test]
+    fn multi_key_status_filter_and_pagination_match_frontend_contract() {
+        let mut request = multi_key_request("get_key_status", None);
+        request.status = Some(2);
+        request.page = 99;
+        request.page_size = 1_000;
+        let operation =
+            apply_multi_key_action("key-1\nkey-2\nkey-3", multi_key_info(), &request).unwrap();
+        let MultiKeyOperation::Read(data) = operation else {
+            panic!("expected read operation");
+        };
+        assert_eq!(data.total, 1);
+        assert_eq!(data.page, 1);
+        assert_eq!(data.page_size, MULTI_KEY_PAGE_SIZE_MAX as usize);
+        assert_eq!(data.total_pages, 1);
+        assert_eq!(data.keys[0].index, 1);
+    }
+
+    #[test]
+    fn delete_multi_key_reindexes_status_and_preserves_unknown_info() {
+        let operation = apply_multi_key_action(
+            "key-one\nkey-two\nkey-three",
+            multi_key_info(),
+            &multi_key_request("delete_key", Some(1)),
+        )
+        .unwrap();
+        let MultiKeyOperation::Write(write) = operation else {
+            panic!("expected write operation");
+        };
+        assert_eq!(write.key, "key-one\nkey-three");
+        let info: Value = serde_json::from_str(&write.channel_info).unwrap();
+        assert_eq!(info["multi_key_size"], 2);
+        assert_eq!(info["multi_key_status_list"], serde_json::json!({"1": 3}));
+        assert_eq!(
+            info["multi_key_disabled_reason"],
+            serde_json::json!({"1": "upstream"})
+        );
+        assert_eq!(info["future_field"], serde_json::json!({"keep": true}));
+    }
+
+    #[test]
+    fn multi_key_mutation_actions_update_only_compatible_state() {
+        let disabled = apply_multi_key_action(
+            "key-one\nkey-two\nkey-three",
+            multi_key_info(),
+            &multi_key_request("disable_key", Some(0)),
+        )
+        .unwrap();
+        let MultiKeyOperation::Write(disabled) = disabled else {
+            panic!("expected write operation");
+        };
+        let info: Value = serde_json::from_str(&disabled.channel_info).unwrap();
+        assert_eq!(info["multi_key_status_list"]["0"], 2);
+
+        let enabled = apply_multi_key_action(
+            &disabled.key,
+            &disabled.channel_info,
+            &multi_key_request("enable_key", Some(1)),
+        )
+        .unwrap();
+        let MultiKeyOperation::Write(enabled) = enabled else {
+            panic!("expected write operation");
+        };
+        let info: Value = serde_json::from_str(&enabled.channel_info).unwrap();
+        assert!(info["multi_key_status_list"].get("1").is_none());
+
+        let enabled_all = apply_multi_key_action(
+            &enabled.key,
+            &enabled.channel_info,
+            &multi_key_request("enable_all_keys", None),
+        )
+        .unwrap();
+        let MultiKeyOperation::Write(enabled_all) = enabled_all else {
+            panic!("expected write operation");
+        };
+        let disable_all = apply_multi_key_action(
+            &enabled_all.key,
+            &enabled_all.channel_info,
+            &multi_key_request("disable_all_keys", None),
+        )
+        .unwrap();
+        let MultiKeyOperation::Write(disable_all) = disable_all else {
+            panic!("expected write operation");
+        };
+        let info: Value = serde_json::from_str(&disable_all.channel_info).unwrap();
+        assert_eq!(
+            info["multi_key_status_list"],
+            serde_json::json!({"0": 2, "1": 2, "2": 2})
+        );
+    }
+
+    #[test]
+    fn delete_auto_disabled_keys_keeps_manual_disabled_keys() {
+        let operation = apply_multi_key_action(
+            "key-one\nkey-two\nkey-three",
+            multi_key_info(),
+            &multi_key_request("delete_disabled_keys", None),
+        )
+        .unwrap();
+        let MultiKeyOperation::Write(write) = operation else {
+            panic!("expected write operation");
+        };
+        assert_eq!(write.key, "key-one\nkey-two");
+        assert_eq!(write.data, Some(serde_json::json!(1)));
+        let info: Value = serde_json::from_str(&write.channel_info).unwrap();
+        assert_eq!(info["multi_key_status_list"], serde_json::json!({"1": 2}));
+        assert_eq!(info["multi_key_size"], 2);
+    }
+
+    #[test]
+    fn multi_key_rejects_non_multi_channels_and_unknown_actions() {
+        let error = apply_multi_key_action("key", "{}", &multi_key_request("get_key_status", None))
+            .err()
+            .unwrap();
+        assert_eq!(error.status, 422);
+
+        let error = apply_multi_key_action(
+            "key-one\nkey-two\nkey-three",
+            multi_key_info(),
+            &multi_key_request("rotate_keys", None),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.status, 400);
+    }
+
+    #[test]
+    fn channel_outbound_url_validation_blocks_ssrf_targets() {
+        assert!(validate_channel_outbound_url("https://example.com/v1/balance").is_ok());
+        assert!(validate_channel_outbound_url("https://1.1.1.1/v1/balance").is_ok());
+        for rejected in [
+            "file:///etc/passwd",
+            "http://127.0.0.1/balance",
+            "http://169.254.169.254/latest/meta-data",
+            "https://10.0.0.1/balance",
+            "https://[::1]/balance",
+            "https://metadata.google.internal/computeMetadata/v1",
+            "https://user:secret@example.com/balance",
+            "https://example.com:8443/balance",
+        ] {
+            assert!(
+                validate_channel_outbound_url(rejected).is_err(),
+                "{rejected} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn required_balance_number_accepts_number_or_string_but_not_missing() {
+        assert_eq!(
+            required_number(
+                &serde_json::json!({"data": {"balance": 12.5}}),
+                "/data/balance"
+            )
+            .unwrap(),
+            12.5
+        );
+        assert_eq!(
+            required_number(
+                &serde_json::json!({"data": {"balance": " 7.25 "}}),
+                "/data/balance"
+            )
+            .unwrap(),
+            7.25
+        );
+        assert!(required_number(&serde_json::json!({}), "/data/balance").is_err());
     }
 }

@@ -155,9 +155,13 @@ Schema parity prerequisite (2026-06-25): before Wave 0 import, resolve the
 field-level defects in `docs/source-d1-schema-parity.md`. In particular
 `abilities` must regain its `tag` column and `(group_name, model, channel_id)`
 uniqueness (verify dedup first), `users` needs its OAuth-id lookup indexes, and
-the `logs` admin-search index/strategy must be decided. The proposed
-`migrations/d1/0004_schema_parity.sql` lives in that doc; apply it to staging D1
-and re-run the row/hash verification below before treating Wave 0 as passed.
+the `logs` admin-search index/strategy must be decided. The repository now
+carries migrations 0001-0009, including `0004_schema_parity.sql`,
+`0008_model_meta.sql`, and `0009_prefill_groups.sql`. Apply the complete ordered
+migration set to staging D1 and re-run the row/hash verification below before
+treating Wave 0 as passed. Local SQLite schema replay currently succeeds with
+all 9 target tables; that is not a substitute for source-row reconciliation or
+staging D1 evidence.
 
 ## Export And Convert
 

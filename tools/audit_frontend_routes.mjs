@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +22,11 @@ const workerRouterPath = path.join(
   "worker",
   "src",
   "lib.rs",
+);
+const debtBaselinePath = path.join(
+  repoRoot,
+  "tools",
+  "frontend_route_debt_baseline.json",
 );
 const require = createRequire(import.meta.url);
 const ts = require(
@@ -66,9 +72,29 @@ async function sourceFiles(directory) {
   return nested.flat();
 }
 
-function expressionText(node) {
+function expressionText(node, checker, seen = new Set()) {
   if (!node) return null;
   if (ts.isStringLiteralLike(node)) return node.text;
+  if (ts.isIdentifier(node) && checker) {
+    const symbol = checker.getSymbolAtLocation(node);
+    if (symbol && !seen.has(symbol)) {
+      const nextSeen = new Set(seen);
+      nextSeen.add(symbol);
+      for (const declaration of symbol.declarations ?? []) {
+        if (
+          ts.isVariableDeclaration(declaration) &&
+          declaration.initializer
+        ) {
+          const resolved = expressionText(
+            declaration.initializer,
+            checker,
+            nextSeen,
+          );
+          if (resolved != null) return resolved;
+        }
+      }
+    }
+  }
   if (ts.isTemplateExpression(node)) {
     let value = node.head.text;
     for (const span of node.templateSpans) {
@@ -81,10 +107,18 @@ function expressionText(node) {
     ts.isBinaryExpression(node) &&
     node.operatorToken.kind === ts.SyntaxKind.PlusToken
   ) {
-    const left = expressionText(node.left);
-    const right = expressionText(node.right);
+    const left = expressionText(node.left, checker, seen);
+    const right = expressionText(node.right, checker, seen);
     if (left == null && right == null) return null;
     return `${left ?? ":param"}${right ?? ":param"}`;
+  }
+  if (ts.isConditionalExpression(node)) {
+    const whenTrue = expressionText(node.whenTrue, checker, seen);
+    const whenFalse = expressionText(node.whenFalse, checker, seen);
+    if (whenTrue === whenFalse) return whenTrue;
+    const truePath = whenTrue?.split(/[?#]/, 1)[0];
+    const falsePath = whenFalse?.split(/[?#]/, 1)[0];
+    if (truePath && truePath === falsePath) return truePath;
   }
   return null;
 }
@@ -99,26 +133,30 @@ function objectProperty(object, name) {
   return null;
 }
 
-function methodFromCall(node) {
+function methodFromCall(node, checker) {
   if (ts.isPropertyAccessExpression(node.expression)) {
     return methodNames.get(node.expression.name.text) ?? "ANY";
   }
   if (ts.isElementAccessExpression(node.expression)) {
-    const key = expressionText(node.expression.argumentExpression);
+    const key = expressionText(node.expression.argumentExpression, checker);
     return methodNames.get(key) ?? "ANY";
   }
   if (ts.isIdentifier(node.expression) && node.expression.text === "fetch") {
-    const method = expressionText(objectProperty(node.arguments[1], "method"));
+    const method = expressionText(
+      objectProperty(node.arguments[1], "method"),
+      checker,
+    );
     return method?.toUpperCase() ?? "GET";
   }
   return "ANY";
 }
 
-function pathFromCall(node) {
-  const direct = node.arguments[0] && expressionText(node.arguments[0]);
+function pathFromCall(node, checker) {
+  const direct =
+    node.arguments[0] && expressionText(node.arguments[0], checker);
   if (direct) return direct;
   const config = node.arguments.find(ts.isObjectLiteralExpression);
-  return expressionText(objectProperty(config, "url"));
+  return expressionText(objectProperty(config, "url"), checker);
 }
 
 function normalizePath(value) {
@@ -137,20 +175,25 @@ function lineOf(sourceFile, node) {
 
 async function frontendCalls() {
   const calls = new Map();
-  for (const file of await sourceFiles(frontendRoot)) {
-    const source = await readFile(file, "utf8");
-    const sourceFile = ts.createSourceFile(
-      file,
-      source,
-      ts.ScriptTarget.Latest,
-      true,
-      file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-    );
+  const files = await sourceFiles(frontendRoot);
+  const program = ts.createProgram(files, {
+    allowJs: true,
+    jsx: ts.JsxEmit.ReactJSX,
+    noLib: true,
+    noEmit: true,
+    noResolve: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.Latest,
+  });
+  const checker = program.getTypeChecker();
+  for (const file of files) {
+    const sourceFile = program.getSourceFile(file);
+    if (!sourceFile) continue;
     const visit = (node) => {
       if (ts.isCallExpression(node)) {
-        const route = normalizePath(pathFromCall(node));
+        const route = normalizePath(pathFromCall(node, checker));
         if (route) {
-          const method = methodFromCall(node);
+          const method = methodFromCall(node, checker);
           const key = `${method} ${route}`;
           const location = `${path.relative(repoRoot, file).replaceAll("\\", "/")}:${lineOf(sourceFile, node)}`;
           if (!calls.has(key)) calls.set(key, []);
@@ -198,13 +241,113 @@ function isRegistered(call, routes) {
   );
 }
 
+function routePath(call) {
+  return call.slice(call.indexOf(" ") + 1);
+}
+
+function startsWithAny(value, prefixes) {
+  return prefixes.some(
+    (prefix) => value === prefix || value.startsWith(`${prefix}/`),
+  );
+}
+
+function classifyMissing(call) {
+  const [method] = call.split(" ", 1);
+  const route = routePath(call);
+  if (method === "ANY") return "parser-limitation";
+
+  if (
+    startsWithAny(route, [
+      "/api/rankings",
+      "/api/redemption",
+      "/api/subscription",
+      "/api/deployments",
+      "/api/user/checkin",
+    ])
+  ) {
+    return "capability-hidden-product";
+  }
+
+  if (
+    startsWithAny(route, [
+      "/api/prefill_group",
+      "/api/channel",
+      "/api/models/sync_upstream",
+      "/api/option/channel_affinity_cache",
+      "/api/log/channel_affinity_usage_cache",
+    ])
+  ) {
+    return "visible-admin-debt";
+  }
+
+  if (
+    startsWithAny(route, [
+      "/api/perf-metrics",
+      "/api/performance",
+      "/api/ratio_sync",
+      "/api/uptime",
+    ])
+  ) {
+    return "operations-debt";
+  }
+
+  if (
+    startsWithAny(route, [
+      "/api/custom-oauth-provider",
+      "/api/oauth",
+      "/api/reset_password",
+      "/api/verification",
+      "/api/user/passkey",
+      "/api/user/oauth",
+    ]) ||
+    /^\/api\/user\/:param\/(?:bindings|oauth\/bindings|reset_passkey)/.test(
+      route,
+    ) ||
+    route === "/api/user/reset"
+  ) {
+    return "auth-deferred";
+  }
+
+  if (
+    startsWithAny(route, [
+      "/api/option/waffo-pancake",
+      "/api/user/topup",
+    ]) ||
+    /^\/api\/user\/(?:amount|pay|stripe\/amount|creem\/pay|waffo(?:-pancake)?\/(?:amount|pay))$/.test(
+      route,
+    )
+  ) {
+    return "payment-deferred";
+  }
+
+  return "unclassified";
+}
+
+function sha256(values) {
+  return createHash("sha256").update(values.join("\n")).digest("hex");
+}
+
 const calls = await frontendCalls();
 const routerSource = await readFile(workerRouterPath, "utf8");
 const routes = workerRoutes(routerSource);
 const missing = [...calls.entries()]
   .filter(([call]) => !isRegistered(call, routes))
-  .map(([call, locations]) => ({ call, locations }))
+  .map(([call, locations]) => ({
+    call,
+    category: classifyMissing(call),
+    locations,
+  }))
   .sort((left, right) => left.call.localeCompare(right.call));
+const categoryCounts = Object.fromEntries(
+  [...new Set(missing.map((entry) => entry.category))]
+    .sort()
+    .map((category) => [
+      category,
+      missing.filter((entry) => entry.category === category).length,
+    ]),
+);
+const missingDigest = sha256(missing.map((entry) => entry.call));
+const summaryOnly = process.argv.includes("--summary");
 
 console.log(
   JSON.stringify(
@@ -212,7 +355,9 @@ console.log(
       frontend_calls: calls.size,
       worker_routes: routes.length,
       missing_calls: missing.length,
-      missing,
+      missing_sha256: missingDigest,
+      categories: categoryCounts,
+      ...(summaryOnly ? {} : { missing }),
     },
     null,
     2,
@@ -221,4 +366,40 @@ console.log(
 
 if (process.argv.includes("--fail-on-missing") && missing.length > 0) {
   process.exitCode = 1;
+}
+
+if (
+  process.argv.includes("--fail-on-unclassified") &&
+  categoryCounts.unclassified
+) {
+  process.exitCode = 1;
+}
+
+if (process.argv.includes("--check-baseline")) {
+  const baseline = JSON.parse(await readFile(debtBaselinePath, "utf8"));
+  const errors = [];
+  if (baseline.missing_calls !== missing.length) {
+    errors.push(
+      `missing_calls changed: expected ${baseline.missing_calls}, received ${missing.length}`,
+    );
+  }
+  if (baseline.missing_sha256 !== missingDigest) {
+    errors.push(
+      `missing route set changed: expected ${baseline.missing_sha256}, received ${missingDigest}`,
+    );
+  }
+  if (
+    JSON.stringify(baseline.categories) !== JSON.stringify(categoryCounts)
+  ) {
+    errors.push(
+      `category counts changed: expected ${JSON.stringify(baseline.categories)}, received ${JSON.stringify(categoryCounts)}`,
+    );
+  }
+  if (errors.length > 0) {
+    for (const error of errors) console.error(`route debt baseline: ${error}`);
+    console.error(
+      "Review the route delta, then update tools/frontend_route_debt_baseline.json intentionally.",
+    );
+    process.exitCode = 1;
+  }
 }

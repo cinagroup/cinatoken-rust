@@ -1085,6 +1085,17 @@ async fn relay_endpoint(
             .await;
         }
     }
+    let affinity_audit = affinity_key.as_deref().map(|key| {
+        affinity::affinity_audit_context(
+            key,
+            &model,
+            &group,
+            &selected_group,
+            &endpoint.upstream_path,
+            channel.id,
+            affinity::AFFINITY_TTL_SECONDS,
+        )
+    });
 
     // Single pre-consume prompt estimate for the request, reused by the
     // missing-usage fallback. Prefer the tiered preflight's frozen value (the
@@ -1113,6 +1124,7 @@ async fn relay_endpoint(
         estimated_prompt_tokens,
         missing_usage_estimate_enabled: missing_usage_estimate_enabled(&env),
         usage_locally_estimated: false,
+        affinity: affinity_audit,
     };
 
     if should_relay_stream {
@@ -3424,6 +3436,9 @@ struct RelayAuditContext {
     /// missing-usage fallback fired) rather than reported by the upstream. Drives
     /// the `usage_source` audit field (Go `ContextKeyLocalCountTokens`).
     usage_locally_estimated: bool,
+    /// Fixed-rule channel affinity diagnostics for usage-log UI and upstream
+    /// cache-hit stats. `None` when affinity is disabled or unavailable.
+    affinity: Option<affinity::AffinityAuditContext>,
 }
 
 async fn record_relay_audit(
@@ -3460,6 +3475,15 @@ async fn record_relay_audit(
         "total_tokens": usage.total_tokens,
         "usage_source": if audit.usage_locally_estimated { "local_estimate" } else { "upstream" },
     });
+    if let Some(affinity_context) = audit.affinity.as_ref() {
+        set_json_value(
+            &mut other,
+            "admin_info",
+            json!({
+                "channel_affinity": affinity::affinity_log_info(affinity_context),
+            }),
+        );
+    }
     let mut quota = 0;
     let mut billing_applied = false;
     let mut billing_resolved = false;
@@ -3634,6 +3658,17 @@ async fn record_relay_audit(
                     "flat_billing_error",
                     format!("non-tiered billing failed: {err}"),
                 );
+            }
+        }
+    }
+
+    if upstream_status < 400 && usage_present {
+        if let Some(affinity_context) = audit.affinity.as_ref() {
+            let mode = affinity_cached_token_rate_mode(endpoint_path, channel.channel_type);
+            if let Err(err) =
+                affinity::observe_affinity_usage_cache(env, affinity_context, usage, mode).await
+            {
+                worker::console_warn!("failed to observe channel affinity usage cache: {err}");
             }
         }
     }
@@ -4022,6 +4057,19 @@ fn stream_options_inject_enabled(env: &Env) -> bool {
         optional_env_var(env, STREAM_OPTIONS_INJECT_ENV).as_deref(),
         Some("true") | Some("1")
     )
+}
+
+fn affinity_cached_token_rate_mode(endpoint_path: &str, channel_type: i32) -> &'static str {
+    if ANTHROPIC_CHANNEL_TYPES.contains(&channel_type) || endpoint_path == "messages" {
+        affinity::CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT_PLUS_CACHED
+    } else if matches!(
+        endpoint_path,
+        "chat/completions" | "completions" | "responses" | "images/generations"
+    ) {
+        affinity::CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT
+    } else {
+        ""
+    }
 }
 
 /// Resolve a streaming chat usage, applying Go's missing-usage estimate fallback
@@ -5024,6 +5072,19 @@ fn quota_mutation_error_status(err: &worker::Error) -> u16 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn affinity_cached_token_rate_mode_matches_relay_families() {
+        assert_eq!(
+            affinity_cached_token_rate_mode("messages", 14),
+            affinity::CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT_PLUS_CACHED
+        );
+        assert_eq!(
+            affinity_cached_token_rate_mode("chat/completions", 1),
+            affinity::CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT
+        );
+        assert_eq!(affinity_cached_token_rate_mode("embeddings", 1), "");
+    }
 
     #[test]
     fn model_limit_disabled_allows_anything() {

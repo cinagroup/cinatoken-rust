@@ -14,7 +14,10 @@
 //! falls back to normal selection.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use cinatoken_relay::UsageSummary;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha1::{Digest, Sha1};
 use std::collections::BTreeMap;
 use worker::{durable_object, Env, Request, Response, Result, State};
 
@@ -31,6 +34,9 @@ pub const AFFINITY_TTL_SECONDS: u64 = 600;
 pub const AFFINITY_INDEX_KV_BINDING: &str = "CACHE_KV";
 /// Namespaced KV prefix for affinity index entries.
 pub const AFFINITY_INDEX_PREFIX: &str = "affinity:index:";
+/// Namespaced KV prefix for upstream cache-hit diagnostics keyed by the
+/// frontend-visible `(rule_name, using_group, key_fp)` tuple.
+pub const AFFINITY_USAGE_PREFIX: &str = "affinity:usage:";
 /// Rust's current fixed-rule name. Go supports configurable rules; this subset
 /// intentionally exposes its single built-in rule so the admin UI can be honest.
 pub const AFFINITY_RULE_NAME: &str = "rust-minimal-user-model-group";
@@ -39,6 +45,10 @@ pub const AFFINITY_SCOPE: &str = "rust_minimal_user_model_group";
 /// Bound admin list/clear calls so a Worker request never becomes a long scan.
 pub const AFFINITY_INDEX_SCAN_LIMIT: usize = 1_000;
 const AFFINITY_INDEX_PAGE_LIMIT: u64 = 100;
+pub const CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT: &str = "cached_over_prompt";
+pub const CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT_PLUS_CACHED: &str =
+    "cached_over_prompt_plus_cached";
+pub const CACHE_TOKEN_RATE_MODE_MIXED: &str = "mixed";
 
 #[derive(Serialize, Deserialize)]
 struct AffinityRecord {
@@ -116,6 +126,60 @@ pub struct AffinityClearResult {
     pub scope: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct AffinityAuditContext {
+    pub rule_name: String,
+    pub using_group: String,
+    pub selected_group: String,
+    pub model: String,
+    pub request_path: String,
+    pub channel_id: i64,
+    pub key_source: String,
+    pub key_key: String,
+    pub key_path: String,
+    pub key_hint: String,
+    pub key_fp: String,
+    pub ttl_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AffinityUsageCacheStats {
+    pub rule_name: String,
+    pub using_group: String,
+    #[serde(rename = "key_fp")]
+    pub key_fingerprint: String,
+    #[serde(default)]
+    pub cached_token_rate_mode: String,
+    #[serde(default)]
+    pub hit: i64,
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub window_seconds: i64,
+    #[serde(default)]
+    pub prompt_tokens: i64,
+    #[serde(default)]
+    pub completion_tokens: i64,
+    #[serde(default)]
+    pub total_tokens: i64,
+    #[serde(default)]
+    pub cached_tokens: i64,
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: i64,
+    #[serde(default)]
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AffinityUsageObservation {
+    hit: bool,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    total_tokens: i64,
+    cached_tokens: i64,
+    prompt_cache_hit_tokens: i64,
+}
+
 /// Per-key Durable Object holding one preferred-channel record. Addressed by
 /// [`affinity_key`] via `id_from_name`, so each `(user, model, group)` maps to
 /// its own instance. Internal RPC uses GET `/get` and GET `/put?channel&ttl`
@@ -190,6 +254,75 @@ pub fn affinity_key(user_id: i64, model: &str, group: &str) -> String {
 
 pub fn affinity_index_key(key: &str) -> String {
     format!("{AFFINITY_INDEX_PREFIX}{}", URL_SAFE_NO_PAD.encode(key))
+}
+
+pub fn affinity_key_fingerprint(key: &str) -> String {
+    let digest = Sha1::digest(key.as_bytes());
+    digest
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn affinity_usage_cache_key(
+    rule_name: &str,
+    using_group: &str,
+    key_fingerprint: &str,
+) -> Option<String> {
+    let rule_name = rule_name.trim();
+    let using_group = using_group.trim();
+    let key_fingerprint = key_fingerprint.trim();
+    if rule_name.is_empty() || key_fingerprint.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{AFFINITY_USAGE_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(format!("{rule_name}\n{using_group}\n{key_fingerprint}"))
+    ))
+}
+
+pub fn affinity_audit_context(
+    key: &str,
+    model: &str,
+    using_group: &str,
+    selected_group: &str,
+    request_path: &str,
+    channel_id: i64,
+    ttl_seconds: u64,
+) -> AffinityAuditContext {
+    AffinityAuditContext {
+        rule_name: AFFINITY_RULE_NAME.to_string(),
+        using_group: using_group.to_string(),
+        selected_group: selected_group.to_string(),
+        model: model.to_string(),
+        request_path: request_path.to_string(),
+        channel_id,
+        key_source: "rust_context".to_string(),
+        key_key: "user_model_group".to_string(),
+        key_path: String::new(),
+        key_hint: affinity_key_hint(model, using_group),
+        key_fp: affinity_key_fingerprint(key),
+        ttl_seconds,
+    }
+}
+
+pub fn affinity_log_info(context: &AffinityAuditContext) -> Value {
+    json!({
+        "reason": context.rule_name,
+        "rule_name": context.rule_name,
+        "using_group": context.using_group,
+        "selected_group": context.selected_group,
+        "model": context.model,
+        "request_path": context.request_path,
+        "channel_id": context.channel_id,
+        "key_source": context.key_source,
+        "key_key": context.key_key,
+        "key_path": context.key_path,
+        "key_hint": context.key_hint,
+        "key_fp": context.key_fp,
+        "scope": AFFINITY_SCOPE,
+    })
 }
 
 /// Move the affinity-preferred entry to the front of `items` if it is present
@@ -391,6 +524,110 @@ pub async fn clear_affinity_cache(
     Ok(result)
 }
 
+pub async fn get_affinity_usage_cache_stats(
+    env: &Env,
+    rule_name: &str,
+    using_group: &str,
+    key_fingerprint: &str,
+) -> Result<AffinityUsageCacheStats> {
+    let rule_name = rule_name.trim();
+    let using_group = using_group.trim();
+    let key_fingerprint = key_fingerprint.trim();
+    let empty = AffinityUsageCacheStats {
+        rule_name: rule_name.to_string(),
+        using_group: using_group.to_string(),
+        key_fingerprint: key_fingerprint.to_string(),
+        cached_token_rate_mode: String::new(),
+        hit: 0,
+        total: 0,
+        window_seconds: 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        cached_tokens: 0,
+        prompt_cache_hit_tokens: 0,
+        last_seen_at: 0,
+    };
+    let Some(key) = affinity_usage_cache_key(rule_name, using_group, key_fingerprint) else {
+        return Ok(empty);
+    };
+    let kv = env.kv(AFFINITY_INDEX_KV_BINDING)?;
+    kv.get(&key)
+        .json::<AffinityUsageCacheStats>()
+        .await
+        .map(|value| value.unwrap_or(empty))
+        .map_err(|err| worker::Error::RustError(format!("channel-affinity usage KV get: {err}")))
+}
+
+pub async fn observe_affinity_usage_cache(
+    env: &Env,
+    context: &AffinityAuditContext,
+    usage: &UsageSummary,
+    cached_token_rate_mode: &str,
+) -> Result<()> {
+    let Some(key) =
+        affinity_usage_cache_key(&context.rule_name, &context.using_group, &context.key_fp)
+    else {
+        return Ok(());
+    };
+    let ttl_seconds = context.ttl_seconds.max(60);
+    let kv = env.kv(AFFINITY_INDEX_KV_BINDING)?;
+    let mut stats = kv
+        .get(&key)
+        .json::<AffinityUsageCacheStats>()
+        .await
+        .map_err(|err| worker::Error::RustError(format!("channel-affinity usage KV get: {err}")))?
+        .unwrap_or_else(|| AffinityUsageCacheStats {
+            rule_name: context.rule_name.clone(),
+            using_group: context.using_group.clone(),
+            key_fingerprint: context.key_fp.clone(),
+            cached_token_rate_mode: String::new(),
+            hit: 0,
+            total: 0,
+            window_seconds: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cached_tokens: 0,
+            prompt_cache_hit_tokens: 0,
+            last_seen_at: 0,
+        });
+    stats.rule_name = context.rule_name.clone();
+    stats.using_group = context.using_group.clone();
+    stats.key_fingerprint = context.key_fp.clone();
+    merge_cached_token_rate_mode(&mut stats, cached_token_rate_mode);
+
+    let observation = affinity_usage_observation(usage);
+    stats.total = stats.total.saturating_add(1);
+    if observation.hit {
+        stats.hit = stats.hit.saturating_add(1);
+    }
+    stats.window_seconds = ttl_seconds as i64;
+    stats.last_seen_at = (js_sys::Date::now() / 1000.0) as i64;
+    stats.prompt_tokens = stats
+        .prompt_tokens
+        .saturating_add(observation.prompt_tokens);
+    stats.completion_tokens = stats
+        .completion_tokens
+        .saturating_add(observation.completion_tokens);
+    stats.total_tokens = stats.total_tokens.saturating_add(observation.total_tokens);
+    stats.cached_tokens = stats
+        .cached_tokens
+        .saturating_add(observation.cached_tokens);
+    stats.prompt_cache_hit_tokens = stats
+        .prompt_cache_hit_tokens
+        .saturating_add(observation.prompt_cache_hit_tokens);
+
+    let value = serde_json::to_string(&stats)
+        .map_err(|err| worker::Error::RustError(format!("channel-affinity usage encode: {err}")))?;
+    kv.put(&key, &value)
+        .map_err(|err| worker::Error::RustError(format!("channel-affinity usage KV put: {err}")))?
+        .expiration_ttl(ttl_seconds)
+        .execute()
+        .await
+        .map_err(|err| worker::Error::RustError(format!("channel-affinity usage KV put: {err}")))
+}
+
 async fn record_affinity_index(
     env: &Env,
     key: &str,
@@ -496,6 +733,66 @@ fn matches_rule_filter(rule_name: Option<&str>, entry_rule_name: &str) -> bool {
         .unwrap_or(true)
 }
 
+fn affinity_key_hint(model: &str, group: &str) -> String {
+    let value = format!("model:{} group:{}", model.trim(), group.trim())
+        .replace(['\n', '\r'], " ")
+        .trim()
+        .to_string();
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= 32 {
+        value
+    } else {
+        let prefix = chars.iter().take(14).copied().collect::<String>();
+        let suffix_start = chars.len().saturating_sub(14);
+        let suffix = chars[suffix_start..].iter().copied().collect::<String>();
+        format!("{prefix}...{suffix}")
+    }
+}
+
+fn merge_cached_token_rate_mode(stats: &mut AffinityUsageCacheStats, mode: &str) {
+    let mode = normalize_cached_token_rate_mode(mode);
+    if mode.is_empty() {
+        return;
+    }
+    if stats.cached_token_rate_mode.is_empty() {
+        stats.cached_token_rate_mode = mode.to_string();
+    } else if stats.cached_token_rate_mode != mode
+        && stats.cached_token_rate_mode != CACHE_TOKEN_RATE_MODE_MIXED
+    {
+        stats.cached_token_rate_mode = CACHE_TOKEN_RATE_MODE_MIXED.to_string();
+    }
+}
+
+pub fn normalize_cached_token_rate_mode(mode: &str) -> &str {
+    match mode {
+        CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT => CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT,
+        CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT_PLUS_CACHED => {
+            CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT_PLUS_CACHED
+        }
+        CACHE_TOKEN_RATE_MODE_MIXED => CACHE_TOKEN_RATE_MODE_MIXED,
+        _ => "",
+    }
+}
+
+fn affinity_usage_observation(usage: &UsageSummary) -> AffinityUsageObservation {
+    let prompt_tokens = i64::from(usage.prompt_tokens.max(0));
+    let completion_tokens = i64::from(usage.completion_tokens.max(0));
+    let total_tokens = if usage.total_tokens > 0 {
+        i64::from(usage.total_tokens)
+    } else {
+        prompt_tokens.saturating_add(completion_tokens)
+    };
+    let cached_tokens = i64::from(usage.cached_tokens.max(0));
+    AffinityUsageObservation {
+        hit: cached_tokens > 0,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        prompt_cache_hit_tokens: 0,
+    }
+}
+
 fn default_affinity_rule_name() -> String {
     AFFINITY_RULE_NAME.to_string()
 }
@@ -531,6 +828,52 @@ mod tests {
         let encoded = index_key.trim_start_matches(AFFINITY_INDEX_PREFIX);
         assert!(!encoded.contains('|'));
         assert!(!encoded.contains(':'));
+    }
+
+    #[test]
+    fn affinity_fingerprint_and_usage_key_are_stable() {
+        let key = affinity_key(7, "gpt-4o", "default");
+        assert_eq!(affinity_key_fingerprint(&key).len(), 8);
+        let usage_key = affinity_usage_cache_key(
+            AFFINITY_RULE_NAME,
+            "default",
+            &affinity_key_fingerprint(&key),
+        )
+        .expect("valid usage key");
+        assert!(usage_key.starts_with(AFFINITY_USAGE_PREFIX));
+        assert!(affinity_usage_cache_key("", "default", "abcd").is_none());
+        assert!(affinity_usage_cache_key(AFFINITY_RULE_NAME, "default", "").is_none());
+    }
+
+    #[test]
+    fn affinity_audit_context_matches_frontend_log_shape() {
+        let key = affinity_key(7, "very-long-model-name-for-hint", "default");
+        let context = affinity_audit_context(
+            &key,
+            "very-long-model-name-for-hint",
+            "default",
+            "vip",
+            "chat/completions",
+            42,
+            AFFINITY_TTL_SECONDS,
+        );
+        let info = affinity_log_info(&context);
+        assert_eq!(info["rule_name"], AFFINITY_RULE_NAME);
+        assert_eq!(info["using_group"], "default");
+        assert_eq!(info["selected_group"], "vip");
+        assert_eq!(info["channel_id"], 42);
+        assert_eq!(info["key_fp"].as_str().unwrap().len(), 8);
+        assert!(!info["key_hint"].as_str().unwrap().contains("u:7"));
+    }
+
+    #[test]
+    fn affinity_key_hint_truncates_unicode_safely() {
+        let hint = affinity_key_hint(
+            "\u{6a21}\u{578b}\u{6a21}\u{578b}\u{6a21}\u{578b}\u{6a21}\u{578b}\u{6a21}\u{578b}\u{6a21}\u{578b}\u{6a21}\u{578b}\u{6a21}\u{578b}",
+            "\u{9ed8}\u{8ba4}\u{9ed8}\u{8ba4}\u{9ed8}\u{8ba4}\u{9ed8}\u{8ba4}\u{9ed8}\u{8ba4}\u{9ed8}\u{8ba4}",
+        );
+        assert!(hint.contains("..."));
+        assert!(hint.len() > 3);
     }
 
     #[test]
@@ -582,5 +925,67 @@ mod tests {
             Some("custom-go-rule"),
             AFFINITY_RULE_NAME
         ));
+    }
+
+    #[test]
+    fn usage_observation_counts_cached_tokens_as_hits_only() {
+        let hit = affinity_usage_observation(&UsageSummary {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            total_tokens: 12,
+            cached_tokens: 4,
+            ..UsageSummary::default()
+        });
+        assert_eq!(
+            hit,
+            AffinityUsageObservation {
+                hit: true,
+                prompt_tokens: 10,
+                completion_tokens: 2,
+                total_tokens: 12,
+                cached_tokens: 4,
+                prompt_cache_hit_tokens: 0,
+            }
+        );
+        let creation_only = affinity_usage_observation(&UsageSummary {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            total_tokens: 12,
+            cache_creation_tokens: 4,
+            ..UsageSummary::default()
+        });
+        assert!(!creation_only.hit);
+        assert_eq!(creation_only.cached_tokens, 0);
+    }
+
+    #[test]
+    fn cached_token_rate_mode_merges_to_mixed() {
+        let mut stats = AffinityUsageCacheStats {
+            rule_name: AFFINITY_RULE_NAME.to_string(),
+            using_group: "default".to_string(),
+            key_fingerprint: "abcd1234".to_string(),
+            cached_token_rate_mode: String::new(),
+            hit: 0,
+            total: 0,
+            window_seconds: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cached_tokens: 0,
+            prompt_cache_hit_tokens: 0,
+            last_seen_at: 0,
+        };
+        merge_cached_token_rate_mode(&mut stats, CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT);
+        assert_eq!(
+            stats.cached_token_rate_mode,
+            CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT
+        );
+        merge_cached_token_rate_mode(
+            &mut stats,
+            CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT_PLUS_CACHED,
+        );
+        assert_eq!(stats.cached_token_rate_mode, CACHE_TOKEN_RATE_MODE_MIXED);
+        merge_cached_token_rate_mode(&mut stats, "unknown");
+        assert_eq!(stats.cached_token_rate_mode, CACHE_TOKEN_RATE_MODE_MIXED);
     }
 }

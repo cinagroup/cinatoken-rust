@@ -29,6 +29,7 @@ js-sys = "0.3"
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 url.workspace = true
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

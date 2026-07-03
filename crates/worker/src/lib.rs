@@ -248,6 +248,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/log/self/search", |req, ctx| async move {
             admin_crud::deprecated_log_search(req, ctx.env).await
         })
+        .get_async(
+            "/api/log/channel_affinity_usage_cache",
+            |req, ctx| async move { admin_affinity::get_usage_cache_stats(req, ctx.env).await },
+        )
         // Options (root-only).
         .get_async("/api/option/", |req, ctx| async move {
             admin_crud::list_options(req, ctx.env).await

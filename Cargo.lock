@@ -285,6 +285,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha1",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",

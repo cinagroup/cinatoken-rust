@@ -90,12 +90,39 @@ pub async fn clear_cache(req: Request, env: Env) -> WorkerResult<Response> {
     envelope_ok_response(&result)
 }
 
+pub async fn get_usage_cache_stats(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let query = query_map(&req)?;
+    let Some(rule_name) = trimmed_query(&query, "rule_name") else {
+        return Ok(envelope_error_response(400, "missing param: rule_name"));
+    };
+    let Some(key_fingerprint) = trimmed_query(&query, "key_fp") else {
+        return Ok(envelope_error_response(400, "missing param: key_fp"));
+    };
+    let using_group = trimmed_query(&query, "using_group").unwrap_or_default();
+    let stats =
+        affinity::get_affinity_usage_cache_stats(&env, &rule_name, &using_group, &key_fingerprint)
+            .await?;
+    envelope_ok_response(&stats)
+}
+
 fn query_map(req: &Request) -> WorkerResult<HashMap<String, String>> {
     Ok(req
         .url()?
         .query_pairs()
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect())
+}
+
+fn trimmed_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
+    query
+        .get(key)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn bounded_limit(value: Option<&str>) -> usize {

@@ -631,17 +631,18 @@ Last checked: 2026-07-02
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
   covers 212 distinct default-frontend calls and reduced unmatched calls from
-  122 to 102 after
+  122 to 101 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
   metadata preview/sync, provider balance refresh, and multi-key channel
   management, then single-channel upstream model detect/apply, Codex
-  usage/credential refresh, and Rust-native channel-affinity cache stats/clear.
+  usage/credential refresh, Rust-native channel-affinity cache stats/clear,
+  and channel-affinity usage diagnostics.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  102 missing calls, no unclassified entries, and 6 remaining visible-admin
+  101 missing calls, no unclassified entries, and 5 remaining visible-admin
   gaps. `cargo test -p cinatoken-worker --lib` passes
-  220 tests; migrations 0001-0009 replay
+  226 tests; migrations 0001-0009 replay
   to 9 SQLite tables. The wasm32 and default frontend TypeScript/Rsbuild checks
   pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**
@@ -681,6 +682,12 @@ Last checked: 2026-07-02
   request, and the response explicitly labels the scope as the Rust minimal
   user/model/group rule rather than synthesizing Go's rule-template or
   usage-stat caches.
+- **Channel affinity usage diagnostics - locally verified (2026-07-03).**
+  `GET /api/log/channel_affinity_usage_cache` now serves the default
+  usage-log dialog for the Rust fixed-rule subset. Relay success audits attach
+  `other.admin_info.channel_affinity` metadata with a frontend-visible key
+  fingerprint, and successful upstream usage responses update TTL-bounded
+  `CACHE_KV` hit/total/token counters without exposing the raw affinity key.
 - **Staging static/public HTTP contract — verified (2026-07-02/03).**
   `bun run check:web:staging` passes all seven groups against
   `cinatoken-rust-api-staging.cinagroup.workers.dev`: capability-clamped

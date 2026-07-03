@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -702,6 +702,7 @@ const REDEMPTIONS_D1_COLUMNS: &[&str] = &[
     "used_user_id",
     "expired_time",
     "deleted_at",
+    "credited",
 ];
 
 const SUBSCRIPTION_PLANS_D1_COLUMNS: &[&str] = &[
@@ -1588,6 +1589,18 @@ fn project_d1_row(
             continue;
         }
 
+        if spec.target_name == "redemptions"
+            && *target_column == "credited"
+            && !row.contains_key(source_column)
+        {
+            let credited = matches!(row.get("status").and_then(Value::as_i64), Some(3));
+            projected.push((
+                (*target_column).to_string(),
+                Value::Number(Number::from(if credited { 1 } else { 0 })),
+            ));
+            continue;
+        }
+
         let Some(value) = row.get(source_column) else {
             continue;
         };
@@ -2020,6 +2033,63 @@ mod tests {
         assert!(sql.contains("\"money\""));
         assert!(sql.contains("'SUB123'"));
         assert!(sql.contains("'charged_quota=6250000'"));
+    }
+
+    #[test]
+    fn render_import_sql_marks_used_redemptions_as_credited() {
+        let bundle = r#"{
+          "format": "cinatoken-sqlite-export-v1",
+          "tables": {
+            "redemptions": {
+              "missing": false,
+              "columns": [
+                "id",
+                "user_id",
+                "key",
+                "status",
+                "name",
+                "quota",
+                "created_time",
+                "redeemed_time",
+                "used_user_id",
+                "expired_time"
+              ],
+              "rows": [
+                {
+                  "id": 1,
+                  "user_id": 1,
+                  "key": "used-code",
+                  "status": 3,
+                  "name": "used",
+                  "quota": 100,
+                  "created_time": 1710000000,
+                  "redeemed_time": 1710000010,
+                  "used_user_id": 2,
+                  "expired_time": 0
+                },
+                {
+                  "id": 2,
+                  "user_id": 1,
+                  "key": "fresh-code",
+                  "status": 1,
+                  "name": "fresh",
+                  "quota": 100,
+                  "created_time": 1710000000,
+                  "redeemed_time": 0,
+                  "used_user_id": 0,
+                  "expired_time": 0
+                }
+              ]
+            }
+          }
+        }"#;
+        let sql = render_d1_import_sql(bundle, &["redemptions".to_string()], false).unwrap();
+
+        assert!(sql.contains("\"credited\""));
+        assert!(sql.contains("'used-code'"));
+        assert!(sql.contains("'fresh-code'"));
+        assert!(sql.contains("'used', 100, 1710000000, 1710000010, 2, 0, 1)"));
+        assert!(sql.contains("'fresh', 100, 1710000000, 0, 0, 0, 0)"));
     }
 
     #[test]

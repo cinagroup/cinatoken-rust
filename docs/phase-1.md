@@ -266,7 +266,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `topup/info`, self/admin topup history pagination with Go's 30-day self
   window, string status mapping, admin manual completion for pending Stripe
   rows, and `/api/user/self` affiliation fields consumed by the wallet rewards
-  card. Non-Stripe gateways and public redemption remain hidden until their
+  card. Public redemption-code topup now uses D1-backed, compliance-gated
+  `POST /api/user/topup` with a durable `redemptions.credited` idempotency
+  anchor and topup log rows. Non-Stripe gateways remain hidden until their
   Worker routes are implemented.
 
 ## Next
@@ -310,7 +312,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
-- Complete public redemption plus the remaining topup/subscription payment
-  provider routes (`epay`/`creem`/`waffo`/`waffo-pancake`, and external
-  subscription checkout/callback helpers) before exposing those payment
-  methods broadly in production.
+- Complete the remaining topup/subscription payment provider routes
+  (`epay`/`creem`/`waffo`/`waffo-pancake`, and external subscription
+  checkout/callback helpers) before exposing those payment methods broadly in
+  production.

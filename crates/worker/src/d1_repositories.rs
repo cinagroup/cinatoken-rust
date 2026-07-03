@@ -5907,6 +5907,14 @@ pub struct RedemptionRow {
     pub used_user_id: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedeemRedemptionResult {
+    Credited { id: i64, quota: i64 },
+    Invalid,
+    Used,
+    Expired,
+}
+
 #[derive(Debug)]
 pub struct CreateRedemption<'a> {
     pub user_id: i64,
@@ -5918,6 +5926,8 @@ pub struct CreateRedemption<'a> {
     pub expired_time: i64,
 }
 
+const REDEMPTION_STATUS_ENABLED: i32 = 1;
+const REDEMPTION_STATUS_USED: i32 = 3;
 const REDEMPTION_COLUMNS: &str = r#"
   id, user_id, "key", status, name, quota, created_time, redeemed_time,
   expired_time, used_user_id
@@ -6028,6 +6038,24 @@ pub async fn find_redemption_by_id(
     .await
 }
 
+async fn find_redemption_by_key(
+    db: &D1Database,
+    key: &str,
+) -> worker::Result<Option<RedemptionRow>> {
+    let arg = D1Type::Text(key);
+    db.prepare(&format!(
+        r#"
+        SELECT {REDEMPTION_COLUMNS}
+        FROM redemptions
+        WHERE "key" = ?1 AND deleted_at IS NULL
+        LIMIT 1
+        "#
+    ))
+    .bind_refs(&arg)?
+    .first::<RedemptionRow>(None)
+    .await
+}
+
 pub async fn insert_redemption(db: &D1Database, row: &CreateRedemption<'_>) -> worker::Result<()> {
     let args = [
         D1Type::Integer(d1_i32(row.user_id)),
@@ -6089,7 +6117,11 @@ pub async fn update_redemption_status(
         .prepare(
             r#"
             UPDATE redemptions
-               SET status = ?1
+               SET status = ?1,
+                   credited = CASE
+                     WHEN status = 3 OR ?1 = 3 THEN 1
+                     ELSE credited
+                   END
              WHERE id = ?2 AND deleted_at IS NULL
             "#,
         )
@@ -6142,6 +6174,158 @@ pub async fn soft_delete_invalid_redemptions(db: &D1Database, now: i64) -> worke
         .run()
         .await?;
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) as i64)
+}
+
+/// Atomically redeem a public redemption code and credit the user's quota.
+///
+/// The `credited` column is a D1-only idempotency anchor. It avoids the
+/// same-second replay problem that timestamp-only guards have: statement 2
+/// credits only while `credited = 0`, and statement 3 flips the anchor in the
+/// same D1 batch. A replay or concurrent request observes `credited = 1` and
+/// no-ops.
+pub async fn redeem_redemption_code(
+    db: &D1Database,
+    key: &str,
+    user_id: i64,
+    now: i64,
+) -> worker::Result<RedeemRedemptionResult> {
+    let trimmed = key.trim();
+    let Some(row) = find_redemption_by_key(db, trimmed).await? else {
+        return Ok(RedeemRedemptionResult::Invalid);
+    };
+    if row.status != REDEMPTION_STATUS_ENABLED {
+        return Ok(RedeemRedemptionResult::Used);
+    }
+    if row.expired_time != 0 && row.expired_time < now {
+        return Ok(RedeemRedemptionResult::Expired);
+    }
+    if row.quota <= 0 || row.quota > i64::from(i32::MAX) {
+        return Ok(RedeemRedemptionResult::Invalid);
+    }
+    let quota = row.quota as i32;
+
+    let redeem_args = [
+        D1Type::Integer(REDEMPTION_STATUS_USED),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(row.id)),
+        D1Type::Integer(REDEMPTION_STATUS_ENABLED),
+        D1Type::Integer(d1_i32(now)),
+    ];
+    let redeem_stmt = db
+        .prepare(
+            r#"
+            UPDATE redemptions
+               SET status = ?1,
+                   redeemed_time = ?2,
+                   used_user_id = ?3
+             WHERE id = ?4
+               AND status = ?5
+               AND deleted_at IS NULL
+               AND (expired_time = 0 OR expired_time >= ?6)
+               AND credited = 0
+            "#,
+        )
+        .bind_refs(&redeem_args)?;
+
+    let credit_args = [
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(row.id)),
+        D1Type::Integer(REDEMPTION_STATUS_USED),
+    ];
+    let credit_stmt = db
+        .prepare(
+            r#"
+            UPDATE users
+               SET quota = quota + ?1
+             WHERE id = ?2
+               AND EXISTS (
+                 SELECT 1 FROM redemptions
+                  WHERE id = ?3
+                    AND status = ?4
+                    AND used_user_id = ?2
+                    AND credited = 0
+                    AND deleted_at IS NULL
+               )
+            "#,
+        )
+        .bind_refs(&credit_args)?;
+
+    let mark_args = [
+        D1Type::Integer(d1_i32(row.id)),
+        D1Type::Integer(REDEMPTION_STATUS_USED),
+        D1Type::Integer(d1_i32(user_id)),
+    ];
+    let mark_stmt = db
+        .prepare(
+            r#"
+            UPDATE redemptions
+               SET credited = 1
+             WHERE id = ?1
+               AND status = ?2
+               AND used_user_id = ?3
+               AND credited = 0
+               AND deleted_at IS NULL
+            "#,
+        )
+        .bind_refs(&mark_args)?;
+
+    let results = db.batch(vec![redeem_stmt, credit_stmt, mark_stmt]).await?;
+    let redeemed = batch_changed(&results, 0)?;
+    let credited = batch_changed(&results, 1)?;
+    let marked = batch_changed(&results, 2)?;
+    if redeemed && credited && marked {
+        return Ok(RedeemRedemptionResult::Credited {
+            id: row.id,
+            quota: row.quota,
+        });
+    }
+
+    let Some(current) = find_redemption_by_key(db, trimmed).await? else {
+        return Ok(RedeemRedemptionResult::Invalid);
+    };
+    if current.status != REDEMPTION_STATUS_ENABLED {
+        Ok(RedeemRedemptionResult::Used)
+    } else if current.expired_time != 0 && current.expired_time < now {
+        Ok(RedeemRedemptionResult::Expired)
+    } else {
+        Ok(RedeemRedemptionResult::Invalid)
+    }
+}
+
+/// Log type constant for top-up events. Mirrors Go `LogTypeTopup`.
+pub const LOG_TYPE_TOPUP: i32 = 1;
+
+pub async fn insert_topup_log(
+    db: &D1Database,
+    user_id: i64,
+    username: &str,
+    content: &str,
+    ip: &str,
+    other: &serde_json::Value,
+    now: i64,
+) -> worker::Result<()> {
+    let other = serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string());
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(LOG_TYPE_TOPUP),
+        D1Type::Text(content),
+        D1Type::Text(username),
+        D1Type::Text(ip),
+        D1Type::Text(&other),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO logs (user_id, created_at, type, content, username, ip, other)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
 }
 
 async fn count_live_redemptions(db: &D1Database) -> worker::Result<i64> {

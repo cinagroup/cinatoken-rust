@@ -6,6 +6,7 @@
 //! - `POST /api/user/stripe/amount` estimates the Stripe charge amount.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
+//! - `POST /api/user/topup` redeems a public redemption code.
 //! - `GET /api/user/topup/self` lists the current user's recent topups.
 //! - `GET /api/user/topup` lists all topups for admins.
 //! - `POST /api/user/topup/complete` manually completes a pending topup.
@@ -389,7 +390,7 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         enable_creem_topup: false,
         enable_waffo_topup: false,
         enable_waffo_pancake_topup: false,
-        enable_redemption: false,
+        enable_redemption: compliance_confirmed,
         payment_compliance_confirmed: compliance_confirmed,
         payment_compliance_terms_version: CURRENT_COMPLIANCE_TERMS_VERSION.to_string(),
         waffo_pay_methods: Value::Null,
@@ -403,6 +404,69 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         discount,
         topup_link,
     })?)
+}
+
+/// `POST /api/user/topup`: redeem a public redemption code.
+pub async fn redeem_topup_code(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    if !payment_compliance_confirmed(&db).await? {
+        return Ok(envelope_error_response(
+            200,
+            "payment compliance is required",
+        ));
+    }
+
+    let payload: RedemptionRequest = match read_json_body(&mut req).await.and_then(|value| {
+        serde_json::from_value(value).map_err(|err| {
+            envelope_error_response(400, &format!("invalid redemption request: {err}"))
+        })
+    }) {
+        Ok(payload) => payload,
+        Err(response) => return Ok(response),
+    };
+    let key = payload.key.trim();
+    if key.is_empty() {
+        return Ok(envelope_error_response(200, "redemption code is required"));
+    }
+
+    let now = unix_timestamp();
+    match d1_repositories::redeem_redemption_code(&db, key, claims.id, now).await? {
+        d1_repositories::RedeemRedemptionResult::Credited { id, quota } => {
+            let ip = crate::relay::client_ip(&req).unwrap_or_default();
+            let _ = d1_repositories::insert_topup_log(
+                &db,
+                claims.id,
+                &claims.username,
+                &format!("Redeemed code {id}, credited quota {quota}"),
+                &ip,
+                &serde_json::json!({
+                    "admin_info": {
+                        "caller_ip": ip,
+                        "payment_method": "redemption",
+                        "callback_payment_method": "redemption",
+                        "version": "rust-worker",
+                    }
+                }),
+                now,
+            )
+            .await;
+            Ok(envelope_ok_response(&quota)?)
+        }
+        d1_repositories::RedeemRedemptionResult::Invalid => {
+            Ok(envelope_error_response(200, "invalid redemption code"))
+        }
+        d1_repositories::RedeemRedemptionResult::Used => Ok(envelope_error_response(
+            200,
+            "redemption code has been used",
+        )),
+        d1_repositories::RedeemRedemptionResult::Expired => {
+            Ok(envelope_error_response(200, "redemption code has expired"))
+        }
+    }
 }
 
 /// `GET /api/user/topup/self`: list the current user's recent topup records.
@@ -540,6 +604,11 @@ struct TopupInfoResponse {
     amount_options: Value,
     discount: Value,
     topup_link: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedemptionRequest {
+    key: String,
 }
 
 #[derive(Debug, Serialize)]

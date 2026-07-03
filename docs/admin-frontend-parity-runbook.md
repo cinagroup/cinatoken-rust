@@ -158,7 +158,7 @@ selected cutover scenario, while keeping deferred rows explicit.
 | Options/settings | `/api/option/*`, setup/system settings | P0/P1 | Option list (root-only, sensitive filtered) + update (root-only upsert) implemented; per-key validation (OAuth/ratio/console_setting) deferred to next batch |
 | Dashboard billing | `/dashboard/billing/*`, `/v1/dashboard/billing/*` | P1/G4 | Read-only billing dashboard or Go-owned until G4 evidence exists |
 | Subscriptions/payments | `/api/subscription/*`, payment callbacks | G4/G6 | Partial: subscription core, admin/user subscription state, billing preference, and balance-pay are implemented. External subscription checkout/callback providers remain deferred pending provider-specific signature/idempotency/replay evidence |
-| Redemptions/topups | `/api/redemption`, topup/pay routes | P1/G4/G6 | Partial: admin redemption-code management is implemented at `/api/redemption`; Stripe topup info/amount/pay link, self/admin topup history, and admin manual completion are implemented. Public redemption-code topup and non-Stripe topup providers remain deferred until double-credit prevention, webhook idempotency, and reconciliation evidence exist |
+| Redemptions/topups | `/api/redemption`, topup/pay routes | P1/G4/G6 | Partial: admin redemption-code management is implemented at `/api/redemption`; public redemption-code topup is implemented at `POST /api/user/topup` with D1 `credited` idempotency; Stripe topup info/amount/pay link, self/admin topup history, and admin manual completion are implemented. Non-Stripe topup providers remain deferred until provider-specific signature, webhook idempotency, and reconciliation evidence exist |
 | Performance/ratio sync | `/api/performance`, `/api/ratio_sync`, perf metrics | P2/G7 | Partial: Worker-native uptime/perf metrics, explicit no-op local maintenance responses, and upstream ratio sync implemented; authenticated staging smoke still required |
 | Async/tasks/media | `/api/task`, `/api/mj`, video routes | G7 | Partial: read-only `/api/task` and `/api/mj` usage-log lists are implemented for the admin frontend; task submit/poll/content/proxy ownership still requires Queue/R2/Workflow design and G7 smoke before cutover |
 | Custom OAuth providers | `/api/custom-oauth-provider` | P1/G6 | Partial: root-admin provider CRUD/discovery implemented with secret-redacted responses, D1 import/schema, admin audit, SSRF controls, and `/api/status` enabled-provider exposure; login/bind callbacks remain deferred |
@@ -470,7 +470,7 @@ Use this table until every row has a concrete owner and migration decision.
 | Public registration/password reset | Defer unless Rust owns public auth | Scenario B public launch |
 | OAuth login/bind/custom providers | Defer or forced rebind | Scenario B if auth moves |
 | Passkey/2FA migration | Forced reset unless secure import is proven | Scenario B auth cutover |
-| Payment callbacks/topups/public redemption | Keep on Go | Scenario C |
+| Non-Stripe payment callbacks/topups | Keep on Go | Scenario C |
 | Subscriptions/pre-consume records | Use billing runbook | Scenario C |
 | Async task/media admin | Keep on Go | Scenario D/G7 |
 | Performance/ratio sync ops | Keep on Go or service escape hatch | Scenario D |

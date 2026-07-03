@@ -1982,3 +1982,38 @@ Epay, Creem, Waffo, Waffo Pancake, or external subscription checkout/callback
 routes. The wallet keeps those methods hidden through `topup/info`; production
 must not turn them on until their provider-specific idempotency, signature, and
 staging replay evidence exists.
+
+### 22.11 2026-07-04 Public Redemption Topup Delta
+
+This increment supersedes the 22.10 route-debt number for the default frontend
+wallet audit. The Rust Worker now owns the public redemption-code topup path
+that the React wallet calls through `redeemTopupCode()`:
+
+- `POST /api/user/topup` is UserAuth-protected, payment-compliance gated, and
+  accepts the default frontend `{ "key": "..." }` request shape.
+- D1 migration `0014_redemptions_credited.sql` adds a Worker-only
+  `redemptions.credited` idempotency anchor. Imported Go rows with
+  `status = used` are marked credited immediately, while new Rust redemptions
+  start with `credited = 0`.
+- `redeem_redemption_code` uses a D1 batch to compare-and-swap enabled codes
+  to used, credit the user's quota only while `credited = 0`, and then mark
+  the code credited. This replaces Go's process-local user lock with a
+  Cloudflare-safe durable guard and prevents same-second replay double-credit.
+- Successful redemptions write a topup log row with Go-compatible log type
+  `1` and caller/payment metadata in `other`.
+- `GET /api/user/topup/info` now exposes `enable_redemption` when payment
+  compliance is confirmed, because the underlying public route exists.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 230 Worker routes, 46 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  11 payment-deferred;
+- route-set SHA-256:
+  `02ad77dc86420152ce55a972cd86faeaf8e1ae49e07783f1807ade8501aa57db`;
+- `cargo test -p cinatoken-worker --lib`: 268 passed.
+
+Remaining boundary: Epay, Creem, Waffo, Waffo Pancake, and external
+subscription checkout/callback routes remain payment-deferred and hidden from
+the wallet until their provider-specific signature, idempotency, replay, and
+staging evidence is in place.

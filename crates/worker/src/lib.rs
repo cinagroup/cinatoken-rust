@@ -499,6 +499,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/user/topup/info", |req, ctx| async move {
             admin_payment::topup_info(req, ctx.env).await
         })
+        .post_async("/api/user/topup", |req, ctx| async move {
+            admin_payment::redeem_topup_code(req, ctx.env).await
+        })
         .get_async("/api/user/topup/self", |req, ctx| async move {
             admin_payment::list_self_topups(req, ctx.env).await
         })

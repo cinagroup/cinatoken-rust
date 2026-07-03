@@ -1,9 +1,26 @@
 # Verification
 
-Last checked: 2026-07-03
+Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 252 passed after adding
+  `GET /api/user/checkin` and `POST /api/user/checkin`, D1-backed check-in
+  records, status exposure, route protection, and UTC-day helper coverage.
+- `cargo test -p cinatoken-migration`: 20 passed after adding `checkins` to
+  the D1 import table set.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes
+  after the check-in batch.
+- `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
+  `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
+  worker wasm check all passed after the check-in batch.
+- In-memory SQLite replay of `migrations/d1/0001_core.sql` plus
+  `migrations/d1/0011_checkins.sql`, confirming the `checkins` table, unique
+  daily guard, and `idx_checkins_user_date` index.
+- `bun tools/audit_frontend_routes.mjs --summary --details`: 212 frontend
+  calls, 200 Worker routes, 71 missing calls, categories 13 auth-deferred / 42
+  capability-hidden-product / 16 payment-deferred, SHA-256
+  `ec37c0cf67e953733ee7e43c291150f17f0d1f859073cc352e7d66b80865e677`.
 - `cargo fmt --all`
 - `cargo test --workspace --exclude cinatoken-worker`
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
@@ -19,9 +36,9 @@ Last checked: 2026-07-03
 - In-memory SQLite replay of migrations 0001-0010, confirming
   `custom_oauth_providers` and `user_oauth_bindings` exist.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified`:
-  212 frontend calls, 198 Worker routes, 72 missing calls, categories
-  13 auth-deferred / 43 capability-hidden-product / 16 payment-deferred,
-  SHA-256 `1d90106c0b01a7df716d40977b20651478e64bf746a05df3a92041a1ed07da9e`.
+  212 frontend calls, 200 Worker routes, 71 missing calls, categories
+  13 auth-deferred / 42 capability-hidden-product / 16 payment-deferred,
+  SHA-256 `ec37c0cf67e953733ee7e43c291150f17f0d1f859073cc352e7d66b80865e677`.
 - `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
   `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
   worker wasm check all passed after the async usage-log read batch.
@@ -664,15 +681,17 @@ Last checked: 2026-07-03
   sync for `/api/ratio_sync/channels` plus `/api/ratio_sync/fetch`, and
   root-admin custom OAuth provider CRUD/discovery with D1 schema/import and
   `/api/status` enabled-provider exposure, custom OAuth binding list/unbind
-  for self/admin users plus admin built-in binding clear, and async
+  for self/admin users plus admin built-in binding clear, async
   Midjourney/task usage-log read lists at `/api/mj`, `/api/mj/self`,
-  `/api/task`, and `/api/task/self`.
+  `/api/task`, and `/api/task/self`, and D1-backed daily check-in at
+  `/api/user/checkin`.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  72 missing calls, no unclassified entries, and no remaining visible-admin or
+  71 missing calls, no unclassified entries, and no remaining visible-admin or
   operations-debt
   gaps. `cargo test -p cinatoken-worker --lib` passes
-  248 tests; migrations 0001-0010 replay including custom OAuth provider and
-  binding tables. The wasm32 and default frontend TypeScript/Rsbuild checks pass.
+  252 tests; migrations 0001-0011 replay including custom OAuth provider,
+  binding, and check-in tables. The wasm32 and default frontend
+  TypeScript/Rsbuild checks pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**
   Channel create/update now carries the frontend `settings` JSON through the
   request and D1 repository instead of silently replacing it with an empty

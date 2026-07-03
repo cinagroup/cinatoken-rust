@@ -4,6 +4,7 @@ mod admin;
 mod admin_2fa;
 mod admin_affinity;
 mod admin_channel;
+mod admin_checkin;
 mod admin_codex_channel;
 mod admin_crud;
 mod admin_custom_oauth;
@@ -209,6 +210,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .get_async("/api/user/self", |req, ctx| async move {
             admin::self_handler(req, ctx.env).await
+        })
+        .get_async("/api/user/checkin", |req, ctx| async move {
+            admin_checkin::status(req, ctx.env).await
+        })
+        .post_async("/api/user/checkin", |req, ctx| async move {
+            admin_checkin::perform(req, ctx.env).await
         })
         // Self-service account endpoints (Go user.go self-routes).
         .put_async("/api/user/self", |req, ctx| async move {
@@ -1176,6 +1183,7 @@ mod tests {
             "/api/setup",
             "/api/user/login",
             "/api/user/self",
+            "/api/user/checkin",
             "/api/token/",
             "/api/channel/",
             "/api/log/",

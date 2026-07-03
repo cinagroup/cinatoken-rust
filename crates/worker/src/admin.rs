@@ -71,6 +71,9 @@ const PUBLIC_STATUS_OPTION_KEYS: &[&str] = &[
     "SelfUseModeEnabled",
     "legal.user_agreement",
     "legal.privacy_policy",
+    "checkin_setting.enabled",
+    "checkin_setting.min_quota",
+    "checkin_setting.max_quota",
     "HeaderNavModules",
     "SidebarModulesAdmin",
     "oidc.authorization_endpoint",
@@ -1140,7 +1143,7 @@ fn build_frontend_status(
         "self_use_mode_enabled": option_bool(options, "SelfUseModeEnabled", false),
         "user_agreement_enabled": options.get("legal.user_agreement").is_some_and(|value| !value.trim().is_empty()),
         "privacy_policy_enabled": options.get("legal.privacy_policy").is_some_and(|value| !value.trim().is_empty()),
-        "checkin_enabled": false,
+        "checkin_enabled": option_bool(options, "checkin_setting.enabled", false),
         "enable_drawing": false,
         "enable_task": false,
         "enable_data_export": false,
@@ -1310,6 +1313,9 @@ mod tests {
     fn public_status_option_whitelist_excludes_secrets() {
         assert!(PUBLIC_STATUS_OPTION_KEYS.contains(&"SystemName"));
         assert!(PUBLIC_STATUS_OPTION_KEYS.contains(&"SidebarModulesAdmin"));
+        assert!(PUBLIC_STATUS_OPTION_KEYS.contains(&"checkin_setting.enabled"));
+        assert!(PUBLIC_STATUS_OPTION_KEYS.contains(&"checkin_setting.min_quota"));
+        assert!(PUBLIC_STATUS_OPTION_KEYS.contains(&"checkin_setting.max_quota"));
         for forbidden in [
             "StripeApiSecret",
             "StripeWebhookSecret",
@@ -1380,8 +1386,20 @@ mod tests {
         assert_eq!(data["custom_currency_symbol"], "C");
         assert_eq!(data["custom_currency_exchange_rate"], 2.5);
         assert_eq!(data["setup"], true);
+        assert_eq!(data["checkin_enabled"], false);
         assert_eq!(data["enable_deployments"], false);
         assert!(data["features"].is_array());
+
+        options.insert("checkin_setting.enabled".to_string(), "true".to_string());
+        let data = build_frontend_status(
+            cinatoken_api::status("test"),
+            &options,
+            true,
+            &PublicRuntimeConfig::default(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(data["checkin_enabled"], true);
     }
 
     #[test]

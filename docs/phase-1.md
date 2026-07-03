@@ -187,6 +187,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   pagination and filters. Self routes force the session user scope, task self
   responses hide `channel_id`, and Midjourney `submit_time`/`finish_time`
   writes preserve millisecond values to match Go/frontend filters.
+- User daily check-in compatibility (`crates/worker/src/admin_checkin.rs`):
+  `GET /api/user/checkin` and `POST /api/user/checkin` use D1
+  `checkins` rows plus `checkin_setting.*` options, expose
+  `checkin_enabled` through `/api/status`, enforce one check-in per user per
+  UTC day with a unique D1 guard, increment quota with rollback on failure,
+  write best-effort system logs, and run Turnstile on submit when configured.
+  Migration `0011_checkins.sql` and the migration CLI import table set now
+  include `checkins`.
 - `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
   role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
 - Worker admin auth surface (`crates/worker/src/admin.rs`): `POST

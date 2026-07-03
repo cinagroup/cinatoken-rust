@@ -1624,7 +1624,8 @@ Midjourney/Suno/视频上游）、自动重试、`waitForEvent`（等 Stripe/Cre
 
 **Wave C：完整产品族**
 
-- subscription/redemption/check-in；
+- subscription/redemption；
+- check-in historical import/reset policy and authenticated staging smoke；
 - multipart image/audio；
 - email/reset/bind、Passkey；
 - 非 Stripe payment；
@@ -1727,7 +1728,7 @@ Wave A 已建立三条可重复执行的自动证据链：
   写入保留毫秒值，与 Go 和默认前端筛选单位一致；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
-- 缺口分类基线：13 auth-deferred、43 capability-hidden-product、16 payment-deferred；
+- 缺口分类基线：13 auth-deferred、42 capability-hidden-product、16 payment-deferred；
   operations-debt 与 visible-admin-debt 已清零。
 
 当前证据边界：
@@ -1753,3 +1754,44 @@ Wave A 已建立三条可重复执行的自动证据链：
 4. 部署 migration 0010 和本批 Worker 到隔离 staging，完成已登录的 prefill、model
    sync、channel balance/multi-key/custom OAuth provider smoke，并核查审计与无密钥泄漏；
 5. 在初始化后的隔离 staging 上完成登录、角色、CRUD、2FA 和过期 session 浏览器证据。
+
+### 22.6 2026-07-04 Check-In Compatibility Delta
+
+This increment supersedes the 22.5 route-debt number for the default frontend
+contract audit. The Rust Worker now implements the profile daily check-in slice:
+
+- `GET /api/user/checkin` returns the current user's monthly check-in status,
+  monthly records, total count, total awarded quota, min/max award settings,
+  and today's checked state.
+- `POST /api/user/checkin` performs the daily award, runs Turnstile when the
+  deployment has it configured, inserts the D1 record first, increments user
+  quota, rolls the record back if quota mutation fails, and writes a best-effort
+  system log.
+- D1 migration `0011_checkins.sql` adds `checkins` with a unique
+  `(user_id, checkin_date)` guard and an indexed `(user_id, checkin_date)` read
+  path. The migration CLI can now import the Go `checkins` table.
+- `/api/status` now exposes `checkin_enabled` from
+  `checkin_setting.enabled`, so the default profile UI can keep the card hidden
+  unless operators enable the feature.
+- Cloudflare Workers use UTC dates for the daily boundary. The Go/VPS version
+  used the server-local day; production cutover must either accept UTC or add an
+  explicit product-timezone option before importing historical check-ins.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 200 Worker routes, 71 missing calls;
+- debt categories: 13 auth-deferred, 42 capability-hidden-product,
+  16 payment-deferred;
+- route-set SHA-256:
+  `ec37c0cf67e953733ee7e43c291150f17f0d1f859073cc352e7d66b80865e677`;
+- `cargo test -p cinatoken-worker --lib`: 252 passed;
+- `cargo test -p cinatoken-migration`: 20 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed;
+- in-memory SQLite replay of `0001_core.sql` + `0011_checkins.sql`: passed.
+
+Remaining production gates: apply migration 0011 to isolated staging, import or
+explicitly reset historical check-ins, run authenticated browser smoke for
+status, first submit, duplicate submit, disabled setting, and Turnstile-enabled
+submit, then capture row-count/quota-delta evidence before any production
+cutover.

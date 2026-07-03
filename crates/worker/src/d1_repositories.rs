@@ -5151,6 +5151,169 @@ pub async fn increase_user_quota(db: &D1Database, id: i64, delta: i64) -> worker
     Ok(changes > 0)
 }
 
+// ---------------------------------------------------------------------------
+// User daily check-in (Go model.Checkin).
+// ---------------------------------------------------------------------------
+
+/// Log type constant for user/system events. Mirrors Go `LogTypeSystem`.
+pub const LOG_TYPE_SYSTEM: i32 = 4;
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+pub struct CheckinRecordRow {
+    pub checkin_date: String,
+    pub quota_awarded: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CountRow {
+    count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SumRow {
+    total: i64,
+}
+
+pub async fn list_user_checkins(
+    db: &D1Database,
+    user_id: i64,
+    start_date: &str,
+    end_date: &str,
+) -> worker::Result<Vec<CheckinRecordRow>> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Text(start_date),
+        D1Type::Text(end_date),
+    ];
+    db.prepare(
+        r#"
+        SELECT checkin_date, quota_awarded
+        FROM checkins
+        WHERE user_id = ?1 AND checkin_date >= ?2 AND checkin_date <= ?3
+        ORDER BY checkin_date DESC
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<CheckinRecordRow>()
+}
+
+pub async fn has_user_checkin(
+    db: &D1Database,
+    user_id: i64,
+    checkin_date: &str,
+) -> worker::Result<bool> {
+    let args = [D1Type::Integer(d1_i32(user_id)), D1Type::Text(checkin_date)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM checkins
+            WHERE user_id = ?1 AND checkin_date = ?2
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count > 0).unwrap_or(false))
+}
+
+pub async fn count_user_checkins(db: &D1Database, user_id: i64) -> worker::Result<i64> {
+    let arg = D1Type::Integer(d1_i32(user_id));
+    let row = db
+        .prepare("SELECT COUNT(*) AS count FROM checkins WHERE user_id = ?1")
+        .bind_refs(&arg)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count).unwrap_or(0))
+}
+
+pub async fn sum_user_checkin_quota(db: &D1Database, user_id: i64) -> worker::Result<i64> {
+    let arg = D1Type::Integer(d1_i32(user_id));
+    let row = db
+        .prepare(
+            r#"
+            SELECT COALESCE(SUM(quota_awarded), 0) AS total
+            FROM checkins
+            WHERE user_id = ?1
+            "#,
+        )
+        .bind_refs(&arg)?
+        .first::<SumRow>(None)
+        .await?;
+    Ok(row.map(|row| row.total).unwrap_or(0))
+}
+
+/// Insert one daily check-in row. Returns `false` when the unique daily guard
+/// already exists.
+pub async fn insert_user_checkin(
+    db: &D1Database,
+    user_id: i64,
+    checkin_date: &str,
+    quota_awarded: i64,
+    created_at: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Text(checkin_date),
+        D1Type::Integer(d1_i32(quota_awarded)),
+        D1Type::Integer(d1_i32(created_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            INSERT OR IGNORE INTO checkins
+              (user_id, checkin_date, quota_awarded, created_at)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
+pub async fn delete_user_checkin(
+    db: &D1Database,
+    user_id: i64,
+    checkin_date: &str,
+) -> worker::Result<()> {
+    let args = [D1Type::Integer(d1_i32(user_id)), D1Type::Text(checkin_date)];
+    db.prepare("DELETE FROM checkins WHERE user_id = ?1 AND checkin_date = ?2")
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(())
+}
+
+pub async fn insert_system_log(
+    db: &D1Database,
+    user_id: i64,
+    username: &str,
+    content: &str,
+    now: i64,
+) -> worker::Result<()> {
+    let args = [
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(LOG_TYPE_SYSTEM),
+        D1Type::Text(content),
+        D1Type::Text(username),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO logs (user_id, created_at, type, content, username)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
 /// Refund a failed async task's reserve to the token (Go `taskAdjustTokenQuota`
 /// / `IncreaseTokenQuota(-delta)`): credit `remain_quota` and uncount
 /// `used_quota`. No-op for a zero quota or an unknown token (`token_id == 0`,

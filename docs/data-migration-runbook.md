@@ -134,7 +134,7 @@ Minimum table-family inventory:
 | `SubscriptionPlan`, `SubscriptionOrder`, `UserSubscription`, `SubscriptionPreConsumeRecord` | Wave 3 | Blocked until billing/payment ownership is approved. |
 | `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | Wave 4 | Migrate only with secure hash/secret handling; otherwise force re-auth/reset. |
 | `CustomOAuthProvider`, `UserOAuthBinding` | Wave 4 | D1 schema/import support exists in migration 0010; production traffic still requires provider secret policy evidence, redirect/SSRF checks, callback state replay checks, and account-binding smoke. |
-| `Checkin` | Wave 4 | Decide import versus reset; quota awards must be idempotent. |
+| `Checkin` | Wave 4 | D1 schema/import support exists in `0011_checkins.sql`; decide import versus reset, preserve/verify quota awards, and smoke duplicate-submit idempotency. |
 | `Midjourney`, `Task` | Wave 5 | Requires Queue/R2 task and artifact retention plan. |
 | `PerfMetric` | Wave 5 | Usually start fresh in Workers observability unless historical dashboards need it. |
 

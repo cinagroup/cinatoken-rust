@@ -54,7 +54,7 @@ production data correctness, capacity, cost, or rollback.
 | Streaming | Implemented for major relay paths | E2-E4 | Abort/disconnect and provider-family canary matrix still required |
 | Billing and quota settlement | Substantial core | E2-E4 | Production shadow report, exact tokenizer/media parity, subscription ownership |
 | Token/channel cache and rate limits | Implemented | E2-E4 | Final native-vs-Upstash production decision and failure-mode evidence |
-| Session auth and core user self-service | Substantial | E2-E4 | Email, Passkey, some OAuth, check-in, policy enforcement gaps |
+| Session auth and core user self-service | Substantial | E2-E4 | Email, Passkey, some OAuth, check-in staging/import policy, policy enforcement gaps |
 | Admin CRUD | Substantial core | E2-E4 | Long-tail channel ops, redemption, subscription, prefill/group, deployment ops |
 | Async task submit/poll/settle | Substantial internals | E2-E4 | Remaining content/proxy routes, real provider smoke, R2 artifact policy |
 | Stripe top-up | Partial | E2-E4 | Production webhook replay/currency reconciliation and operator sign-off |
@@ -96,7 +96,7 @@ The following source route families are not yet equivalent:
 - Dashboard billing compatibility routes.
 - Public rankings and performance-summary routes.
 - Remaining task result/content/proxy routes for Suno, Midjourney, and video.
-- Redemption, subscription, check-in, email/reset/bind, Passkey, custom OAuth,
+- Redemption, subscription, email/reset/bind, Passkey, custom OAuth,
   and non-Stripe payment families.
 - Deployment/io.net operations and several provider-specific channel operations.
 
@@ -151,8 +151,9 @@ batches, the parser correction, single-channel upstream update migration, Codex
 admin usage/refresh migration, the Rust-native channel-affinity cache control
 surface and usage diagnostics, bounded upstream batch slices, Ollama admin
 model management, Worker-native operations endpoints, upstream ratio sync,
-custom OAuth provider/binding management, and async task/Midjourney usage-log
-read migration reduced that number to 72 and added:
+custom OAuth provider/binding management, async task/Midjourney usage-log read
+migration, and user daily check-in migration reduced that number to 71 and
+added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -227,9 +228,19 @@ read migration reduced that number to 72 and added:
   frontend.
   Provider task submission, polling, and artifact/content routes still require
   separate G7 smoke evidence.
+- User daily check-in:
+  `GET /api/user/checkin` and `POST /api/user/checkin`. The Worker reads
+  `checkin_setting.enabled`, `checkin_setting.min_quota`, and
+  `checkin_setting.max_quota` from D1 options, exposes `checkin_enabled` via
+  `/api/status`, persists daily records in the new D1 `checkins` table, applies
+  a unique `(user_id, checkin_date)` guard, increments user quota atomically
+  after insert, rolls the record back on quota-update failure, writes a
+  best-effort system log, and runs Turnstile on submit when configured. The
+  Worker uses UTC dates for the daily boundary because Cloudflare Workers do
+  not have a stable deployment-local VPS timezone.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
-13 auth-deferred, 43 capability-hidden-product, 16 payment-deferred, and 0
+13 auth-deferred, 42 capability-hidden-product, 16 payment-deferred, and 0
 operations-debt / visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 

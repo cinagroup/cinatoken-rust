@@ -244,7 +244,7 @@ Corrected production rules:
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
 | Observability/SRE | Partial | Logs, traces, metrics, alerts, runbooks, and incident ownership | Dashboard and alert checklist |
 | Security/compliance | Partial | Secret isolation, CORS/WAF/rate limits, SSRF controls, admin audit, OAuth/webhook checks | Security checklist and smoke evidence |
-| Admin/frontend | Planned | Cloudflare-deployed operator UI with auth, token, channel, billing/log/settings flows, redaction, audit, and cache invalidation | Redacted G5 report from `docs/admin-frontend-parity-runbook.md` |
+| Admin/frontend | Partial | Cloudflare-deployed operator UI with auth, token, channel, billing/log/settings flows, redaction, audit, and cache invalidation | Redacted G5 report from `docs/admin-frontend-parity-runbook.md`; authenticated browser smoke for the 71-call route-debt baseline |
 | Async/tasks/payments | Planned | Queue/R2/Workflow-backed async processing and idempotent payment flows | Replay/idempotency tests |
 | Performance/cost | Planned | Load-tested SLOs, capacity budget, D1/Redis/Queue/R2 cost forecast, and bottleneck owners | Redacted report from `docs/performance-capacity-cost-runbook.md` |
 | Release/cutover | Planned | Canary, rollback, cutover, and decommission runbooks | Rehearsed cutover checklist |
@@ -316,7 +316,7 @@ Table families:
 | Relay config | channels, model mappings, groups | Partial | Provider-family compatibility, encrypted key handling, fallback behavior |
 | Quota and logs | user/token quotas, usage logs, quota history | Partial | Pre/post consume parity, replay-safe settlement, archive strategy |
 | Billing/subscription | pricing options, subscriptions, pre-consume records | Partial | Go/Rust parity, idempotent import, shadow billing report |
-| Auth/security | OAuth, Passkey, 2FA, sessions | Planned | Session migration or forced re-auth policy |
+| Auth/security | OAuth, Passkey, 2FA, sessions, checkins | Partial: session auth, 2FA frontend contract, custom OAuth provider/binding admin surfaces, and D1-backed daily check-in exist; OAuth callbacks, Passkey, public reset/email flows, and forced re-auth policy remain | Session migration or forced re-auth policy; check-in history import/reset decision and duplicate-submit staging smoke |
 | Payments | payment orders, webhook events, balance records | Planned | Webhook idempotency and double-credit prevention |
 | Tasks/files | async task records, generated files | Planned | R2 object mapping, task replay policy |
 | Admin/config | setup/config tables, system settings | Planned | Operator-visible staging verification |

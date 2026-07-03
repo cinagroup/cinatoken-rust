@@ -524,6 +524,7 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "options",
     "logs",
     "tasks",
+    "checkins",
     "subscription_orders",
     "vendors",
     "models",
@@ -675,6 +676,14 @@ const TASKS_D1_COLUMNS: &[&str] = &[
     "data",
     "created_at",
     "updated_at",
+];
+
+const CHECKINS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "checkin_date",
+    "quota_awarded",
+    "created_at",
 ];
 
 const SUBSCRIPTION_ORDERS_D1_COLUMNS: &[&str] = &[
@@ -1395,6 +1404,13 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             source_name: "tasks",
             target_name: "tasks",
             target_columns: TASKS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
+        "checkins" => Ok(D1TableSpec {
+            source_name: "checkins",
+            target_name: "checkins",
+            target_columns: CHECKINS_D1_COLUMNS,
             column_map: &[],
             generate_missing_id: false,
         }),

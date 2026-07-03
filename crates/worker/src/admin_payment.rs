@@ -6,6 +6,7 @@
 //! - `POST /api/user/stripe/amount` estimates the Stripe charge amount.
 //! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
 //! - `POST /api/user/waffo-pancake/amount` estimates Waffo Pancake charge amount.
+//! - `POST /api/option/waffo-pancake/save` persists Waffo Pancake admin config.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
 //! - `POST /api/user/topup` redeems a public redemption code.
@@ -25,7 +26,7 @@ use worker::{Env, Fetch, Headers, Method, Request, Response, Result as WorkerRes
 
 use crate::admin::{
     admin_audit_info, envelope_error_response, envelope_ok_response, read_json_body,
-    require_admin_auth, require_user_auth, unix_timestamp,
+    require_admin_auth, require_root_auth, require_user_auth, unix_timestamp,
 };
 use crate::d1_repositories;
 
@@ -38,6 +39,11 @@ const GENERAL_QUOTA_DISPLAY_TYPE_KEY: &str = "general_setting.quota_display_type
 const PRICE_KEY: &str = "Price";
 const QUOTA_PER_UNIT_KEY: &str = "QuotaPerUnit";
 const TOPUP_GROUP_RATIO_KEY: &str = "TopupGroupRatio";
+const WAFFO_PANCAKE_MERCHANT_ID_KEY: &str = "WaffoPancakeMerchantID";
+const WAFFO_PANCAKE_PRIVATE_KEY_KEY: &str = "WaffoPancakePrivateKey";
+const WAFFO_PANCAKE_RETURN_URL_KEY: &str = "WaffoPancakeReturnURL";
+const WAFFO_PANCAKE_STORE_ID_KEY: &str = "WaffoPancakeStoreID";
+const WAFFO_PANCAKE_PRODUCT_ID_KEY: &str = "WaffoPancakeProductID";
 const WAFFO_PANCAKE_MIN_TOPUP_KEY: &str = "WaffoPancakeMinTopUp";
 const WAFFO_PANCAKE_UNIT_PRICE_KEY: &str = "WaffoPancakeUnitPrice";
 const QUOTA_DISPLAY_TYPE_TOKENS: &str = "TOKENS";
@@ -380,6 +386,63 @@ pub async fn waffo_pancake_amount(mut req: Request, env: Env) -> WorkerResult<Re
     }
 
     Ok(envelope_ok_response(&format_pay_money(pay_money))?)
+}
+
+/// `POST /api/option/waffo-pancake/save`: persist Waffo Pancake admin config.
+///
+/// Mirrors Go `SaveWaffoPancakeConfig`: merchant/store/product are required,
+/// return URL is trimmed, and a blank private key means "keep the existing key".
+pub async fn save_waffo_pancake_config(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_root_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: SaveWaffoPancakeConfigRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid Waffo Pancake config request: {err}"),
+            ));
+        }
+    };
+    let updates = match waffo_pancake_config_updates(&payload) {
+        Ok(updates) => updates,
+        Err(message) => return Ok(envelope_error_response(400, message)),
+    };
+    let private_key_updated = !payload.private_key.trim().is_empty();
+    let store_id = payload.store_id.trim().to_string();
+    let product_id = payload.product_id.trim().to_string();
+
+    let db = env.d1("DB")?;
+    d1_repositories::upsert_options_pub(&db, &updates).await?;
+    crate::cache_invalidation::invalidate_option_cache(&env).await?;
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "option.waffo_pancake.save",
+        &format!("admin {} saved Waffo Pancake config", claims.username),
+        &serde_json::json!({
+            "store_id": store_id.as_str(),
+            "product_id": product_id.as_str(),
+            "private_key_updated": private_key_updated,
+        }),
+        &admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+
+    Ok(envelope_ok_response(&WaffoPancakeConfigSaveResponse {
+        product_id,
+        store_id,
+    })?)
 }
 
 /// `POST /api/stripe/webhook`: receive and process a Stripe webhook.
@@ -805,6 +868,52 @@ struct CompleteTopupRequest {
     trade_no: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct SaveWaffoPancakeConfigRequest {
+    #[serde(default)]
+    merchant_id: String,
+    #[serde(default)]
+    private_key: String,
+    #[serde(default)]
+    return_url: String,
+    #[serde(default)]
+    store_id: String,
+    #[serde(default)]
+    product_id: String,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct WaffoPancakeConfigSaveResponse {
+    product_id: String,
+    store_id: String,
+}
+
+fn waffo_pancake_config_updates(
+    payload: &SaveWaffoPancakeConfigRequest,
+) -> std::result::Result<Vec<(&'static str, String)>, &'static str> {
+    let merchant_id = payload.merchant_id.trim();
+    let store_id = payload.store_id.trim();
+    let product_id = payload.product_id.trim();
+    if merchant_id.is_empty() || store_id.is_empty() || product_id.is_empty() {
+        return Err("merchant id, store id, and product id are required");
+    }
+
+    let mut updates = vec![
+        (WAFFO_PANCAKE_MERCHANT_ID_KEY, merchant_id.to_string()),
+        (
+            WAFFO_PANCAKE_RETURN_URL_KEY,
+            payload.return_url.trim().to_string(),
+        ),
+        (WAFFO_PANCAKE_STORE_ID_KEY, store_id.to_string()),
+        (WAFFO_PANCAKE_PRODUCT_ID_KEY, product_id.to_string()),
+    ];
+    let private_key = payload.private_key.trim();
+    if !private_key.is_empty() {
+        updates.push((WAFFO_PANCAKE_PRIVATE_KEY_KEY, private_key.to_string()));
+    }
+    Ok(updates)
+}
+
 fn topups_page(
     rows: Vec<d1_repositories::TopupRow>,
     total: i64,
@@ -1042,7 +1151,9 @@ mod tests {
     use super::{
         discount_for_amount, format_pay_money, online_min_topup, online_pay_money, request_amount,
         sanitize_like_pattern, topup_group_ratio_for_group, topup_status_label,
-        OnlineAmountSettings,
+        waffo_pancake_config_updates, OnlineAmountSettings, SaveWaffoPancakeConfigRequest,
+        WAFFO_PANCAKE_MERCHANT_ID_KEY, WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY,
+        WAFFO_PANCAKE_RETURN_URL_KEY, WAFFO_PANCAKE_STORE_ID_KEY,
     };
     use rust_decimal::Decimal;
 
@@ -1164,5 +1275,63 @@ mod tests {
             decimal("0.8")
         );
         assert_eq!(discount_for_amount(300, Some(r#"{"300":0}"#)), Decimal::ONE);
+    }
+
+    #[test]
+    fn waffo_pancake_save_trims_and_keeps_existing_private_key_when_blank() {
+        let updates = waffo_pancake_config_updates(&SaveWaffoPancakeConfigRequest {
+            merchant_id: " merchant ".to_string(),
+            private_key: "   ".to_string(),
+            return_url: " https://example.test/return ".to_string(),
+            store_id: " store_123 ".to_string(),
+            product_id: " prod_456 ".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            updates,
+            vec![
+                (WAFFO_PANCAKE_MERCHANT_ID_KEY, "merchant".to_string()),
+                (
+                    WAFFO_PANCAKE_RETURN_URL_KEY,
+                    "https://example.test/return".to_string()
+                ),
+                (WAFFO_PANCAKE_STORE_ID_KEY, "store_123".to_string()),
+                (WAFFO_PANCAKE_PRODUCT_ID_KEY, "prod_456".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn waffo_pancake_save_includes_non_blank_private_key() {
+        let updates = waffo_pancake_config_updates(&SaveWaffoPancakeConfigRequest {
+            merchant_id: "merchant".to_string(),
+            private_key: " secret ".to_string(),
+            return_url: String::new(),
+            store_id: "store".to_string(),
+            product_id: "product".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            updates.last(),
+            Some(&(WAFFO_PANCAKE_PRIVATE_KEY_KEY, "secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn waffo_pancake_save_requires_merchant_store_and_product() {
+        let missing = SaveWaffoPancakeConfigRequest {
+            merchant_id: "merchant".to_string(),
+            private_key: String::new(),
+            return_url: String::new(),
+            store_id: " ".to_string(),
+            product_id: "product".to_string(),
+        };
+
+        assert_eq!(
+            waffo_pancake_config_updates(&missing).unwrap_err(),
+            "merchant id, store id, and product id are required"
+        );
     }
 }

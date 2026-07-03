@@ -2086,7 +2086,45 @@ Updated local evidence:
 
 Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
 `/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`, Waffo Pancake admin
-catalog/pair/save/product helper routes, and external subscription
-checkout/callback routes remain payment-deferred and hidden until their
-provider-specific order model, signature verification, idempotency, replay,
-and reconciliation evidence is in place.
+catalog/pair/product helper routes, and external subscription checkout/callback
+routes remain payment-deferred and hidden until their provider-specific order
+model, signature verification, idempotency, replay, and reconciliation evidence
+is in place.
+
+### 22.14 2026-07-04 Waffo Pancake Config Save Delta
+
+This increment supersedes the 22.13 route-debt number for the default frontend
+payment-settings audit. The Rust Worker now implements the root-only config
+save endpoint used after an operator has selected or manually entered Waffo
+Pancake merchant/store/product settings:
+
+- `POST /api/option/waffo-pancake/save` requires root session auth and writes
+  `WaffoPancakeMerchantID`, `WaffoPancakeReturnURL`,
+  `WaffoPancakeStoreID`, and `WaffoPancakeProductID` through the D1 repository
+  option boundary.
+- `WaffoPancakePrivateKey` is persisted only when the request value is
+  non-blank, matching Go `SaveWaffoPancakeConfig` and the frontend UX where
+  `GET /api/option/` never re-exposes the stored key.
+- Merchant, store, and product IDs are required before saving. The response
+  returns the saved `product_id` and `store_id` expected by the default
+  frontend.
+- The handler invalidates option cache and records admin audit metadata without
+  logging the private key.
+- This does not enable Waffo Pancake checkout or webhook settlement; wallet
+  `topup/info` still keeps `enable_waffo_pancake_topup = false`.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 233 Worker routes, 43 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  8 payment-deferred;
+- route-set SHA-256:
+  `b47be2c9dd3177daa5792806208451ad73653c2e2c8218bb5cea2f28c2213272`;
+- `cargo test -p cinatoken-worker --lib`: 276 passed.
+
+Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
+`/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`, Waffo Pancake admin
+catalog/pair/product helper routes, and external subscription checkout/callback
+routes remain payment-deferred and hidden until their provider-specific order
+model, signature verification, idempotency, replay, and reconciliation evidence
+is in place.

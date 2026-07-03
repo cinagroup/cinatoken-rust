@@ -2022,6 +2022,29 @@ pub async fn upsert_option_pub(db: &D1Database, key: &str, value: &str) -> worke
     upsert_option(db, key, value).await
 }
 
+/// Upsert multiple option values in one D1 batch.
+pub async fn upsert_options_pub(db: &D1Database, values: &[(&str, String)]) -> worker::Result<()> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    let mut statements = Vec::with_capacity(values.len());
+    for (key, value) in values {
+        let args = [D1Type::Text(*key), D1Type::Text(value.as_str())];
+        statements.push(
+            db.prepare(
+                r#"
+                INSERT INTO options ("key", value)
+                VALUES (?1, ?2)
+                ON CONFLICT("key") DO UPDATE SET value = excluded.value
+                "#,
+            )
+            .bind_refs(&args)?,
+        );
+    }
+    db.batch(statements).await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Custom OAuth provider config (G5 auth-admin slice).
 //

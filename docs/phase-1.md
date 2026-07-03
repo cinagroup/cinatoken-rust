@@ -273,7 +273,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `Price`, `QuotaPerUnit`, `TopupGroupRatio`, token-display, and
   `payment_setting.amount_discount` formula parity. Waffo Pancake amount
   estimation is implemented at `POST /api/user/waffo-pancake/amount` with the
-  Go direct-minimum and token-display/unit-price formula. Non-Stripe checkout,
+  Go direct-minimum and token-display/unit-price formula. Waffo Pancake admin
+  config save is implemented at `POST /api/option/waffo-pancake/save` with
+  root-only auth, option-cache invalidation, redacted audit details, and the Go
+  "blank private key keeps current key" behavior. Non-Stripe checkout,
   callback, and order-creation gateways remain hidden until their Worker
   routes are implemented.
 

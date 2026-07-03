@@ -31,6 +31,7 @@ mod task_orchestration;
 // ahead of the mj submit/poll wiring.
 mod mj_repository;
 mod model_meta_api;
+mod operations;
 mod prefill_group_api;
 mod pricing_api;
 mod turnstile;
@@ -119,6 +120,15 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // model/vendor metadata).
         .get_async("/api/pricing", |req, ctx| async move {
             pricing_api::get_pricing(req, ctx.env).await
+        })
+        .get_async("/api/uptime/status", |req, ctx| async move {
+            operations::uptime_status(req, ctx.env).await
+        })
+        .get_async("/api/perf-metrics/summary", |req, ctx| async move {
+            operations::perf_metrics_summary(req, ctx.env).await
+        })
+        .get_async("/api/perf-metrics", |req, ctx| async move {
+            operations::perf_metrics(req, ctx.env).await
         })
         // Legal text (Go misc.go).
         .get_async("/api/user-agreement", |req, ctx| async move {
@@ -273,6 +283,26 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .post_async("/api/option/payment_compliance", |req, ctx| async move {
             admin_crud::confirm_payment_compliance(req, ctx.env).await
+        })
+        // Worker-native operational compatibility. Local disk/GC actions are
+        // explicit no-ops; Uptime and perf metrics above are real read paths.
+        .get_async("/api/performance/stats", |req, ctx| async move {
+            operations::performance_stats(req, ctx.env).await
+        })
+        .delete_async("/api/performance/disk_cache", |req, ctx| async move {
+            operations::clear_disk_cache(req, ctx.env).await
+        })
+        .post_async("/api/performance/reset_stats", |req, ctx| async move {
+            operations::reset_performance_stats(req, ctx.env).await
+        })
+        .post_async("/api/performance/gc", |req, ctx| async move {
+            operations::force_gc(req, ctx.env).await
+        })
+        .get_async("/api/performance/logs", |req, ctx| async move {
+            operations::log_files(req, ctx.env).await
+        })
+        .delete_async("/api/performance/logs", |req, ctx| async move {
+            operations::cleanup_log_files(req, ctx.env).await
         })
         // Tokens (user-scoped).
         .get_async("/api/token/", |req, ctx| async move {

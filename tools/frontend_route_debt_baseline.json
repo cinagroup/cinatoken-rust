@@ -1,10 +1,10 @@
 {
-  "missing_calls": 96,
-  "missing_sha256": "506ce49cdba1eee9ac8bb82e1cef1e1aa8fd51b66cc7756e1eaeff9d6e43db12",
+  "missing_calls": 87,
+  "missing_sha256": "1d58005c2ab0b3ba1c1a8e3afc54bdd3af3fe7258432cdc196c9a3e09712fe1a",
   "categories": {
     "auth-deferred": 24,
     "capability-hidden-product": 45,
-    "operations-debt": 11,
+    "operations-debt": 2,
     "payment-deferred": 16
   }
 }

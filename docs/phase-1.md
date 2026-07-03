@@ -157,6 +157,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   round-trip, tamper/expiry rejection, and secret-length enforcement. Cookie
   name is `session` and attributes are `HttpOnly; SameSite=Strict; Secure`,
   matching the React dashboard's expectations.
+- Operational dashboard compatibility (`crates/worker/src/operations.rs`):
+  `GET /api/uptime/status` reads Uptime Kuma group options and performs
+  bounded outbound JSON fetches with timeout/body limits and SSRF guardrails;
+  `GET /api/perf-metrics/summary` and `GET /api/perf-metrics` aggregate D1
+  `logs` into the frontend's model-performance schema; root-only
+  `/api/performance/*` routes return explicit Worker-native no-op responses
+  for local disk/GC maintenance while preserving admin audit logs.
 - `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
   role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
 - Worker admin auth surface (`crates/worker/src/admin.rs`): `POST

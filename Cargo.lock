@@ -275,6 +275,7 @@ dependencies = [
  "cinatoken-payments",
  "cinatoken-relay",
  "cinatoken-session",
+ "cinatoken-ssrf",
  "cinatoken-storage",
  "cinatoken-tasks",
  "cinatoken-tokenizer",

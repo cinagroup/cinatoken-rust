@@ -192,7 +192,7 @@ admin model management reduced that number to 96 and added:
   access.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
-24 auth-deferred, 45 capability-hidden-product, 11 operations-debt, 16
+24 auth-deferred, 45 capability-hidden-product, 2 operations-debt, 16
 payment-deferred, and 0 visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 

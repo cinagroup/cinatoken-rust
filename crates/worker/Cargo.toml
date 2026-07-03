@@ -20,6 +20,7 @@ cinatoken-core = { path = "../core" }
 cinatoken-payments = { path = "../payments" }
 cinatoken-relay = { path = "../relay" }
 cinatoken-session = { path = "../session" }
+cinatoken-ssrf = { path = "../ssrf" }
 cinatoken-storage = { path = "../storage" }
 cinatoken-tasks = { path = "../tasks" }
 cinatoken-tokenizer = { path = "../tokenizer" }

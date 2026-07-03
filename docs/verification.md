@@ -640,11 +640,13 @@ Last checked: 2026-07-02
   usage/credential refresh, Rust-native channel-affinity cache stats/clear,
   channel-affinity usage diagnostics, bounded upstream batch
   detect/apply slices, and Ollama version/delete/pull-stream/model-list
-  management through HTTPS/443 base URLs.
+  management through HTTPS/443 base URLs, followed by Worker-native operations
+  endpoints for Uptime Kuma, model performance metrics, and explicit no-op
+  `/api/performance/*` local-maintenance compatibility.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  96 missing calls, no unclassified entries, and no remaining visible-admin
+  87 missing calls, no unclassified entries, and no remaining visible-admin
   gaps. `cargo test -p cinatoken-worker --lib` passes
-  233 tests; migrations 0001-0009 replay
+  236 tests; migrations 0001-0009 replay
   to 9 SQLite tables. The wasm32 and default frontend TypeScript/Rsbuild checks
   pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**

@@ -1696,14 +1696,18 @@ Wave A 已建立三条可重复执行的自动证据链：
   以及 `fetch_models`/`fetch_models/:id` 的 `/api/tags` 模型列表。Worker 只接受
   HTTPS/443 base_url（Tunnel/Container/service-facing gateway），并将 Ollama
   NDJSON pull 进度转换为前端已有 SSE UI，不恢复 VPS 时代的本地 daemon 假设；
+- 运维面 `GET /api/uptime/status`、`GET /api/perf-metrics/summary`、`GET /api/perf-metrics`
+  与 root-only `/api/performance/*`：Uptime Kuma 使用有超时、1 MiB 响应上限和 SSRF
+  防线的 Worker outbound fetch；性能指标从 D1 `logs` 聚合到前端 schema；VPS 本地磁盘
+  cache/GC/log 文件操作在 Worker 上以显式 no-op 兼容响应和 admin audit 表达，不伪装本地文件系统；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
-- 缺口分类基线：24 auth-deferred、45 capability-hidden-product、11 operations-debt、
+- 缺口分类基线：24 auth-deferred、45 capability-hidden-product、2 operations-debt、
   16 payment-deferred；visible-admin-debt 已清零。
 
 当前证据边界：
 
-- Worker 单元测试 233 项通过；
+- Worker 单元测试 236 项通过；
 - D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；

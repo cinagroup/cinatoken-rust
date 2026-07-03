@@ -141,11 +141,12 @@ contracts are complete.
 
 ### 2026-07-03 Frontend Contract Delta
 
-An AST-based audit now compares the default frontend's 214 distinct API calls
-with the Worker router. TypeChecker-based local-variable resolution found two
-calls the initial syntax-only scan missed. The first baseline found 122
-unmatched calls. Two P0 compatibility batches reduced that number to 109 and
-added:
+An AST-based audit now compares the default frontend's 212 distinct API calls
+with the Worker router. TypeChecker-based local-variable resolution found real
+calls the initial syntax-only scan missed; local helper-method inference then
+classified MJ/task reads and removed a false-positive `endsWith('/v1')` call.
+The first baseline found 122 unmatched calls. Two P0 compatibility batches and
+the parser correction reduced that number to 108 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -160,9 +161,9 @@ added:
 - provider balance refresh and multi-key channel management.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
-24 auth-deferred, 43 capability-hidden-product, 11 operations-debt, 3
-parser-limitation, 16 payment-deferred, and 12 visible-admin-debt. The root
-check fails on unclassified additions or unreviewed baseline changes.
+24 auth-deferred, 45 capability-hidden-product, 11 operations-debt, 16
+payment-deferred, and 12 visible-admin-debt. The root check fails on
+unclassified additions or unreviewed baseline changes.
 
 The public staging verifier passes seven non-mutating checks: status, setup,
 11 SPA routes, eight assets, artifact identity, public envelopes, and
@@ -209,8 +210,9 @@ from this evidence, not from commit count or implementation presence alone.
    dashboard, keys, channels, users, logs, models, settings, and profile.
 3. Close or explicitly defer the remaining 12 visible-admin-debt calls,
    beginning with channel Codex/Ollama/upstream operations and affinity tools.
-4. Resolve the three parser-limitation calls by AST support or reviewed manual
-   mapping.
+4. Replace the fixed Durable Object affinity subset with an enumerable,
+   rule-aware Cloudflare design before exposing Go-compatible affinity stats
+   and clear operations.
 5. Replace all production `REPLACE_WITH_PRODUCTION_*` values before any canary.
 
 ### P1: Close High-Value Route And Data Gaps

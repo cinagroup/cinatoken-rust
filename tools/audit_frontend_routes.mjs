@@ -133,13 +133,53 @@ function objectProperty(object, name) {
   return null;
 }
 
+function methodFromLocalHelper(node, checker) {
+  if (!ts.isIdentifier(node.expression)) return null;
+  const symbol = checker.getSymbolAtLocation(node.expression);
+  if (!symbol) return null;
+
+  const methods = new Set();
+  const inspect = (candidate) => {
+    if (ts.isCallExpression(candidate)) {
+      if (ts.isPropertyAccessExpression(candidate.expression)) {
+        const method = methodNames.get(candidate.expression.name.text);
+        if (method) methods.add(method);
+      } else if (
+        ts.isIdentifier(candidate.expression) &&
+        candidate.expression.text === "fetch"
+      ) {
+        const method = expressionText(
+          objectProperty(candidate.arguments[1], "method"),
+          checker,
+        );
+        methods.add(method?.toUpperCase() ?? "GET");
+      }
+    }
+    ts.forEachChild(candidate, inspect);
+  };
+
+  for (const declaration of symbol.declarations ?? []) {
+    if (ts.isFunctionDeclaration(declaration) && declaration.body) {
+      inspect(declaration.body);
+    } else if (
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer &&
+      (ts.isArrowFunction(declaration.initializer) ||
+        ts.isFunctionExpression(declaration.initializer))
+    ) {
+      inspect(declaration.initializer.body);
+    }
+  }
+  return methods.size === 1 ? [...methods][0] : null;
+}
+
 function methodFromCall(node, checker) {
   if (ts.isPropertyAccessExpression(node.expression)) {
-    return methodNames.get(node.expression.name.text) ?? "ANY";
+    return methodNames.get(node.expression.name.text) ?? null;
   }
   if (ts.isElementAccessExpression(node.expression)) {
     const key = expressionText(node.expression.argumentExpression, checker);
-    return methodNames.get(key) ?? "ANY";
+    return methodNames.get(key) ?? null;
   }
   if (ts.isIdentifier(node.expression) && node.expression.text === "fetch") {
     const method = expressionText(
@@ -148,7 +188,7 @@ function methodFromCall(node, checker) {
     );
     return method?.toUpperCase() ?? "GET";
   }
-  return "ANY";
+  return methodFromLocalHelper(node, checker);
 }
 
 function pathFromCall(node, checker) {
@@ -194,6 +234,10 @@ async function frontendCalls() {
         const route = normalizePath(pathFromCall(node, checker));
         if (route) {
           const method = methodFromCall(node, checker);
+          if (!method) {
+            ts.forEachChild(node, visit);
+            return;
+          }
           const key = `${method} ${route}`;
           const location = `${path.relative(repoRoot, file).replaceAll("\\", "/")}:${lineOf(sourceFile, node)}`;
           if (!calls.has(key)) calls.set(key, []);
@@ -263,6 +307,8 @@ function classifyMissing(call) {
       "/api/subscription",
       "/api/deployments",
       "/api/user/checkin",
+      "/api/mj",
+      "/api/task",
     ])
   ) {
     return "capability-hidden-product";

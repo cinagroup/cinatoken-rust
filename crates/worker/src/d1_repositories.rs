@@ -3047,6 +3047,7 @@ pub struct CreateChannel<'a> {
     pub status_code_mapping: &'a str,
     pub other_info: &'a str,
     pub setting: Option<&'a str>,
+    pub settings: &'a str,
     pub param_override: Option<&'a str>,
     pub header_override: Option<&'a str>,
     pub remark: Option<&'a str>,
@@ -3090,7 +3091,7 @@ pub async fn create_channel(db: &D1Database, params: CreateChannel<'_>) -> worke
             .unwrap_or(D1Type::Null),
         params.remark.map(D1Type::Text).unwrap_or(D1Type::Null),
         D1Type::Text("{}"), // channel_info
-        D1Type::Text(""),   // settings
+        D1Type::Text(params.settings),
     ];
     let sql = r#"
         INSERT INTO channels (
@@ -3143,6 +3144,7 @@ pub struct UpdateChannel<'a> {
     pub status_code_mapping: Option<&'a str>,
     pub other_info: Option<&'a str>,
     pub setting: Option<Option<&'a str>>,
+    pub settings: Option<&'a str>,
     pub param_override: Option<Option<&'a str>>,
     pub header_override: Option<Option<&'a str>>,
     pub remark: Option<Option<&'a str>>,
@@ -3200,6 +3202,7 @@ pub async fn update_channel(db: &D1Database, params: UpdateChannel<'_>) -> worke
     set_text!(params.status_code_mapping, "status_code_mapping");
     set_text!(params.other_info, "other_info");
     set_opt_text!(params.setting, "setting");
+    set_text!(params.settings, "settings");
     set_opt_text!(params.param_override, "param_override");
     set_opt_text!(params.header_override, "header_override");
     set_opt_text!(params.remark, "remark");

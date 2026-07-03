@@ -792,6 +792,7 @@ pub async fn create_channel(mut req: Request, env: Env) -> WorkerResult<Response
             status_code_mapping: payload.status_code_mapping.as_deref().unwrap_or(""),
             other_info: payload.other_info.as_deref().unwrap_or(""),
             setting: payload.setting.as_deref(),
+            settings: payload.settings.as_deref().unwrap_or(""),
             param_override: payload.param_override.as_deref(),
             header_override: payload.header_override.as_deref(),
             remark: payload.remark.as_deref(),
@@ -881,6 +882,7 @@ pub async fn update_channel(mut req: Request, env: Env) -> WorkerResult<Response
             status_code_mapping: payload.status_code_mapping.as_deref(),
             other_info: payload.other_info.as_deref(),
             setting: payload.setting.as_ref().map(|o| o.as_deref()),
+            settings: payload.settings.as_deref(),
             param_override: payload.param_override.as_ref().map(|o| o.as_deref()),
             header_override: payload.header_override.as_ref().map(|o| o.as_deref()),
             remark: payload.remark.as_ref().map(|o| o.as_deref()),
@@ -2054,6 +2056,8 @@ struct ChannelCreateRequest {
     #[serde(default)]
     setting: Option<String>,
     #[serde(default)]
+    settings: Option<String>,
+    #[serde(default)]
     param_override: Option<String>,
     #[serde(default)]
     header_override: Option<String>,
@@ -2096,6 +2100,8 @@ struct ChannelUpdateRequest {
     other_info: Option<String>,
     #[serde(default)]
     setting: Option<Option<String>>,
+    #[serde(default)]
+    settings: Option<String>,
     #[serde(default)]
     param_override: Option<Option<String>>,
     #[serde(default)]
@@ -2207,6 +2213,7 @@ mod tests {
         assert!(req.models.is_none());
         assert!(req.group.is_none());
         assert!(req.priority.is_none());
+        assert!(req.settings.is_none());
     }
 
     #[test]
@@ -2216,6 +2223,27 @@ mod tests {
         assert!(req.kind.is_none());
         assert!(req.key.is_none());
         assert!(req.tag.is_none());
+        assert!(req.settings.is_none());
+    }
+
+    #[test]
+    fn channel_requests_preserve_frontend_settings_json() {
+        let settings = r#"{"upstream_model_update_check_enabled":true,"upstream_model_update_ignored_models":["legacy"]}"#;
+        let create: ChannelCreateRequest = serde_json::from_value(serde_json::json!({
+            "type": 1,
+            "key": "sk-abc",
+            "name": "openai",
+            "settings": settings
+        }))
+        .unwrap();
+        assert_eq!(create.settings.as_deref(), Some(settings));
+
+        let update: ChannelUpdateRequest = serde_json::from_value(serde_json::json!({
+            "id": 42,
+            "settings": settings
+        }))
+        .unwrap();
+        assert_eq!(update.settings.as_deref(), Some(settings));
     }
 
     #[test]

@@ -103,9 +103,9 @@ bun run check:web:staging
 ```
 
 `audit:web:routes` parses the default frontend with a TypeScript
-Program/TypeChecker and compares 214 distinct frontend calls with Worker router
+Program/TypeChecker and compares 212 distinct frontend calls with Worker router
 registrations. The 2026-07-03 compatibility batches reduced unmatched calls
-from 122 to 109 by closing:
+from 122 to 108 by closing routes and removing one false-positive call:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
 - batch token-key reveal;
@@ -117,11 +117,12 @@ from 122 to 109 by closing:
 - channel balance refresh and multi-key management.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-109 calls with a stable SHA-256 route-set digest and category counts. New
+108 calls with a stable SHA-256 route-set digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
-payment families, operations work, parser limitations, and 12 visible admin
-gaps. They are not treated as implemented merely because navigation is hidden.
+payment families, operations work, and 12 visible admin gaps. Local wrapper
+methods are inferred, while non-HTTP calls such as `endsWith('/v1')` are no
+longer counted. Hidden navigation still does not imply implementation.
 
 `check:web:staging` verifies the public staging deployment without mutating
 state. Its seven checks cover status capability clamps, setup shape, 11 SPA

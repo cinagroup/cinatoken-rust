@@ -1651,14 +1651,14 @@ Go/VPS”的结论。
 Wave A 已建立三条可重复执行的自动证据链：
 
 - `bun run audit:web:routes` 使用 TypeScript Program/TypeChecker 扫描默认前端的
-  214 个不同 API 调用，并与 Worker Router 对比；
+  212 个不同 API 调用，并与 Worker Router 对比；
 - `bun run check:web:routes` 校验已分类缺口的数量、分类计数和 SHA-256 路由集合摘要，
   新增未分类调用或未经审查的集合变化会使检查失败；
 - `bun run check:web:staging` 对 staging 执行只读 HTTP 契约验证，覆盖 status/setup、
   11 个 SPA hard-refresh 路径、8 个静态资源、构建产物同一性、公共 envelope 和
   API/SPA 优先级。
 
-两批兼容工作已将 unmatched frontend calls 从 122 降至 109，完成：
+两批兼容工作和审计器校正已将 unmatched frontend calls 从 122 降至 108，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1670,12 +1670,14 @@ Wave A 已建立三条可重复执行的自动证据链：
   选择性覆盖和聚合审计；
 - Channel provider balance 查询与持久化，以及 multi-key 的状态、分页、启停、删除和
   重建索引操作；
-- 缺口分类基线：24 auth-deferred、43 capability-hidden-product、11 operations-debt、
-  3 parser-limitation、16 payment-deferred、12 visible-admin-debt。
+- 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
+  假阳性；
+- 缺口分类基线：24 auth-deferred、45 capability-hidden-product、11 operations-debt、
+  16 payment-deferred、12 visible-admin-debt。
 
 当前证据边界：
 
-- Worker 单元测试 204 项通过；
+- Worker 单元测试 205 项通过；
 - D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；
@@ -1688,7 +1690,8 @@ Wave A 已建立三条可重复执行的自动证据链：
 
 1. 收敛剩余 12 个 visible-admin-debt，优先 channel Codex、Ollama、upstream updates
    与 channel-affinity 管理/诊断；
-2. 对 3 个 parser-limitation 做人工映射或增强 AST 解析，确保它们不是隐藏运行时缺口；
+2. 将 channel-affinity 从固定 Durable Object 子集升级为可枚举、可按规则清理和统计的
+   Cloudflare 原生架构；不得用全零占位响应伪装 Go 管理语义；
 3. 将已分类的 auth、payment、operations 和 capability-hidden 家族逐项绑定 cutover
    场景、负责人和恢复条件；
 4. 部署 migration 0009 和本批 Worker 到隔离 staging，完成已登录的 prefill、model

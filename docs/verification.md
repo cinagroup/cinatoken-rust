@@ -630,17 +630,22 @@ Last checked: 2026-07-02
   (2026-07-03).** Added `tools/audit_frontend_routes.mjs` (TypeScript AST
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
-  covers 214 distinct default-frontend calls and reduced unmatched calls from
-  122 to 109 after
+  covers 212 distinct default-frontend calls and reduced unmatched calls from
+  122 to 108 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
   metadata preview/sync, provider balance refresh, and multi-key channel
   management. The reviewed route-debt baseline is enforced by
-  `bun run check:web:routes`: 109 missing calls, no unclassified entries, and
+  `bun run check:web:routes`: 108 missing calls, no unclassified entries, and
   12 remaining visible-admin gaps. `cargo test -p cinatoken-worker --lib`
-  passes 204 tests; migrations 0001-0009 replay to 9 SQLite tables. The wasm32
+  passes 205 tests; migrations 0001-0009 replay to 9 SQLite tables. The wasm32
   and default frontend TypeScript/Rsbuild checks pass.
+- **Channel settings persistence contract — locally verified (2026-07-03).**
+  Channel create/update now carries the frontend `settings` JSON through the
+  request and D1 repository instead of silently replacing it with an empty
+  string or ignoring updates. This unblocks persisted upstream-model detection
+  flags and ignore lists; the detect/apply routes themselves remain pending.
 - **Staging static/public HTTP contract — verified (2026-07-02/03).**
   `bun run check:web:staging` passes all seven groups against
   `cinatoken-rust-api-staging.cinagroup.workers.dev`: capability-clamped

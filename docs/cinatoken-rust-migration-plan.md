@@ -1660,7 +1660,7 @@ Wave A 已建立三条可重复执行的自动证据链：
   API/SPA 优先级。
 
 兼容工作、审计器校正、单通道 upstream model update 与 Codex 管理端 usage/refresh
-迁移已将 unmatched frontend calls 从 122 降至 96，完成：
+迁移已将 unmatched frontend calls 从 122 降至 85，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1700,14 +1700,20 @@ Wave A 已建立三条可重复执行的自动证据链：
   与 root-only `/api/performance/*`：Uptime Kuma 使用有超时、1 MiB 响应上限和 SSRF
   防线的 Worker outbound fetch；性能指标从 D1 `logs` 聚合到前端 schema；VPS 本地磁盘
   cache/GC/log 文件操作在 Worker 上以显式 no-op 兼容响应和 admin audit 表达，不伪装本地文件系统；
+- root-only `GET /api/ratio_sync/channels` 与 `POST /api/ratio_sync/fetch`：Worker
+  列出 D1 channels 和 Go-compatible official/models.dev presets，在 timeout/10 MiB
+  body limit 下抓取上游 pricing，兼容 OpenRouter `/v1/models`、models.dev
+  `/api.json`、ratio-config envelope 和 `/api/pricing` rows，并与本地
+  default-plus-option ratio maps 生成前端 `differences`/`test_results` 契约，
+  不返回上游密钥；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
-- 缺口分类基线：24 auth-deferred、45 capability-hidden-product、2 operations-debt、
-  16 payment-deferred；visible-admin-debt 已清零。
+- 缺口分类基线：24 auth-deferred、45 capability-hidden-product、16 payment-deferred；
+  operations-debt 与 visible-admin-debt 已清零。
 
 当前证据边界：
 
-- Worker 单元测试 236 项通过；
+- Worker 单元测试 241 项通过；
 - D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；

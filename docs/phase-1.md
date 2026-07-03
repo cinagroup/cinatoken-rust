@@ -164,6 +164,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `logs` into the frontend's model-performance schema; root-only
   `/api/performance/*` routes return explicit Worker-native no-op responses
   for local disk/GC maintenance while preserving admin audit logs.
+- Upstream ratio sync compatibility (`crates/worker/src/ratio_sync.rs`):
+  root-only `GET /api/ratio_sync/channels` and `POST /api/ratio_sync/fetch`
+  now back the default frontend's price-sync dialog. The Worker lists D1
+  channels plus the Go-compatible official and models.dev presets, fetches
+  selected upstream pricing with timeout/body limits, converts OpenRouter
+  `/v1/models`, models.dev `/api.json`, ratio-config envelopes, and
+  `/api/pricing` rows into the local sync schema, compares against effective
+  default-plus-option ratio maps, and returns the frontend's
+  `differences`/`test_results` contract without exposing upstream keys.
 - `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
   role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
 - Worker admin auth surface (`crates/worker/src/admin.rs`): `POST

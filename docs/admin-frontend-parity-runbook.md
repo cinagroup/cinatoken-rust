@@ -158,7 +158,7 @@ selected cutover scenario, while keeping deferred rows explicit.
 | Dashboard billing | `/dashboard/billing/*`, `/v1/dashboard/billing/*` | P1/G4 | Read-only billing dashboard or Go-owned until G4 evidence exists |
 | Subscriptions/payments | `/api/subscription/*`, payment callbacks | G4/G6 | Defer or migrate only with signature/idempotency/replay evidence |
 | Redemptions/topups | `/api/redemption`, topup/pay routes | G4/G6 | Defer or migrate with double-credit prevention |
-| Performance/ratio sync | `/api/performance`, `/api/ratio_sync`, perf metrics | P2/G7 | Keep on Go or move behind background/service path |
+| Performance/ratio sync | `/api/performance`, `/api/ratio_sync`, perf metrics | P2/G7 | Partial: Worker-native uptime/perf metrics, explicit no-op local maintenance responses, and upstream ratio sync implemented; authenticated staging smoke still required |
 | Async/tasks/media | `/api/task`, `/api/mj`, video routes | G7 | Queue/R2/Workflow design before cutover |
 | Custom OAuth providers | `/api/custom-oauth-provider` | P1/G6 | Root-admin only, SSRF controls, secret storage policy |
 

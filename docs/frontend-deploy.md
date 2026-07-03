@@ -105,7 +105,7 @@ bun run check:web:staging
 `audit:web:routes` parses the default frontend with a TypeScript
 Program/TypeChecker and compares 212 distinct frontend calls with Worker router
 registrations. The 2026-07-03 compatibility batches reduced unmatched calls
-from 122 to 96 by closing routes and removing one false-positive call:
+from 122 to 85 by closing routes and removing one false-positive call:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
 - batch token-key reveal;
@@ -127,14 +127,19 @@ from 122 to 96 by closing routes and removing one false-positive call:
   model listing for both probe and stored-channel fetch paths. Workers require
   HTTPS/443 base URLs reachable through Tunnel/Container/service-facing
   gateways instead of VPS-local daemon access.
+- Worker-native operations endpoints for Uptime Kuma, model performance
+  metrics, and explicit no-op `/api/performance/*` local-maintenance
+  compatibility.
+- Upstream ratio sync channels/fetch endpoints for the default frontend's
+  pricing sync dialog.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-96 calls with a stable SHA-256 route-set digest and category counts. New
+85 calls with a stable SHA-256 route-set digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
-payment families, and operations work. Local wrapper
-methods are inferred, while non-HTTP calls such as `endsWith('/v1')` are no
-longer counted. Hidden navigation still does not imply implementation.
+payment families; operations-debt is currently zero. Local wrapper methods are
+inferred, while non-HTTP calls such as `endsWith('/v1')` are no longer counted.
+Hidden navigation still does not imply implementation.
 
 `check:web:staging` verifies the public staging deployment without mutating
 state. Its seven checks cover status capability clamps, setup shape, 11 SPA

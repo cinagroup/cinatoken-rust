@@ -34,6 +34,7 @@ mod model_meta_api;
 mod operations;
 mod prefill_group_api;
 mod pricing_api;
+mod ratio_sync;
 mod turnstile;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
@@ -120,6 +121,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // model/vendor metadata).
         .get_async("/api/pricing", |req, ctx| async move {
             pricing_api::get_pricing(req, ctx.env).await
+        })
+        .get_async("/api/ratio_sync/channels", |req, ctx| async move {
+            ratio_sync::channels(req, ctx.env).await
+        })
+        .post_async("/api/ratio_sync/fetch", |req, ctx| async move {
+            ratio_sync::fetch(req, ctx.env).await
         })
         .get_async("/api/uptime/status", |req, ctx| async move {
             operations::uptime_status(req, ctx.env).await

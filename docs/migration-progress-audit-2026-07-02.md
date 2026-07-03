@@ -98,8 +98,7 @@ The following source route families are not yet equivalent:
 - Task result/read routes for Suno, Midjourney, and video content/fetch.
 - Redemption, subscription, check-in, email/reset/bind, Passkey, custom OAuth,
   and non-Stripe payment families.
-- Prefill/group management, performance endpoints, ratio sync, deployment/io.net
-  operations, and several provider-specific channel operations.
+- Deployment/io.net operations and several provider-specific channel operations.
 
 These gaps must remain visible in planning. A generic Worker 404 is not
 behavioral parity where Go intentionally returns a typed 501 or a specific
@@ -148,8 +147,9 @@ classified MJ/task reads and removed a false-positive `endsWith('/v1')` call.
 The first baseline found 122 unmatched calls. Successive P0 compatibility batches,
 the parser correction, single-channel upstream update migration, and Codex
 admin usage/refresh migration plus the Rust-native channel-affinity cache
-control surface, usage diagnostics, bounded upstream batch slices, and Ollama
-admin model management reduced that number to 96 and added:
+control surface, usage diagnostics, bounded upstream batch slices, Ollama
+admin model management, Worker-native operations endpoints, and upstream
+ratio sync reduced that number to 85 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -190,10 +190,17 @@ admin model management reduced that number to 96 and added:
   listing for probe and stored-channel fetch paths. Workers require HTTPS/443
   base URLs reachable through Cloudflare-native ingress, not VPS-local daemon
   access.
+- `GET /api/ratio_sync/channels` and `POST /api/ratio_sync/fetch` for the
+  default frontend's upstream price-sync dialog. The Worker lists D1 channels
+  plus the Go-compatible official/models.dev presets, fetches selected
+  upstreams with timeout and 10 MiB body limits, converts OpenRouter,
+  models.dev, ratio-config, and `/api/pricing` payloads, and compares them
+  against effective local default-plus-option ratio maps without returning
+  upstream keys.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
-24 auth-deferred, 45 capability-hidden-product, 2 operations-debt, 16
-payment-deferred, and 0 visible-admin-debt. The root check fails on
+24 auth-deferred, 45 capability-hidden-product, 16 payment-deferred, and 0
+operations-debt / visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 
 The public staging verifier passes seven non-mutating checks: status, setup,

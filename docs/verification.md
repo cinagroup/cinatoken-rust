@@ -1,6 +1,6 @@
 # Verification
 
-Last checked: 2026-07-02
+Last checked: 2026-07-03
 
 ## Passed
 
@@ -631,7 +631,7 @@ Last checked: 2026-07-02
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
   covers 212 distinct default-frontend calls and reduced unmatched calls from
-  122 to 96 after
+  122 to 85 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
@@ -641,12 +641,14 @@ Last checked: 2026-07-02
   channel-affinity usage diagnostics, bounded upstream batch
   detect/apply slices, and Ollama version/delete/pull-stream/model-list
   management through HTTPS/443 base URLs, followed by Worker-native operations
-  endpoints for Uptime Kuma, model performance metrics, and explicit no-op
-  `/api/performance/*` local-maintenance compatibility.
+  endpoints for Uptime Kuma, model performance metrics, explicit no-op
+  `/api/performance/*` local-maintenance compatibility, and upstream ratio
+  sync for `/api/ratio_sync/channels` plus `/api/ratio_sync/fetch`.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  87 missing calls, no unclassified entries, and no remaining visible-admin
+  85 missing calls, no unclassified entries, and no remaining visible-admin or
+  operations-debt
   gaps. `cargo test -p cinatoken-worker --lib` passes
-  236 tests; migrations 0001-0009 replay
+  241 tests; migrations 0001-0009 replay
   to 9 SQLite tables. The wasm32 and default frontend TypeScript/Rsbuild checks
   pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**

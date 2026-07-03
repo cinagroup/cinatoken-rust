@@ -2573,6 +2573,35 @@ pub async fn list_channels(
         .results::<ChannelRow>()?)
 }
 
+/// Enabled channels in ascending id order for bounded all-channel maintenance
+/// slices. Handlers request one extra row when they need a `has_more` signal.
+pub async fn list_enabled_channels_after_id(
+    db: &D1Database,
+    after_id: i64,
+    limit: u32,
+) -> worker::Result<Vec<ChannelRow>> {
+    let limit = limit.clamp(1, 101);
+    let args = [
+        D1Type::Integer(d1_i32(after_id.max(0))),
+        D1Type::Integer(limit as i32),
+    ];
+    let sql = format!(
+        r#"
+        SELECT {CHANNEL_ADMIN_COLUMNS}
+        FROM channels
+        WHERE deleted_at IS NULL AND status = 1 AND id > ?1
+        ORDER BY id ASC
+        LIMIT ?2
+        "#,
+    );
+    Ok(db
+        .prepare(&sql)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<ChannelRow>()?)
+}
+
 pub async fn search_channels(
     db: &D1Database,
     keyword: &str,

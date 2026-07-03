@@ -148,7 +148,8 @@ classified MJ/task reads and removed a false-positive `endsWith('/v1')` call.
 The first baseline found 122 unmatched calls. Two P0 compatibility batches,
 the parser correction, single-channel upstream update migration, and Codex
 admin usage/refresh migration plus the Rust-native channel-affinity cache
-control surface and usage diagnostics reduced that number to 101 and added:
+control surface, usage diagnostics, and bounded upstream batch slices reduced
+that number to 99 and added:
 
 - Go-compatible `/api/group` and `/api/group/`;
 - secure, user-scoped `POST /api/token/batch/keys`;
@@ -179,10 +180,15 @@ control surface and usage diagnostics reduced that number to 101 and added:
   affinity subset. Relay success logs now attach frontend-visible
   `other.admin_info.channel_affinity` metadata and update TTL-bounded
   cache-hit/token counters when upstream usage is present.
+- `POST /api/channel/upstream_updates/detect_all` and
+  `POST /api/channel/upstream_updates/apply_all` as after-id bounded Worker
+  slices. The default frontend now loops over cursors and aggregates
+  Go-compatible counts, avoiding a single synchronous Worker request that
+  scans every channel and calls every upstream.
 
 The missing-route set is now classified and stored as a SHA-256 baseline:
 24 auth-deferred, 45 capability-hidden-product, 11 operations-debt, 16
-payment-deferred, and 5 visible-admin-debt. The root check fails on
+payment-deferred, and 3 visible-admin-debt. The root check fails on
 unclassified additions or unreviewed baseline changes.
 
 The public staging verifier passes seven non-mutating checks: status, setup,
@@ -228,10 +234,10 @@ from this evidence, not from commit count or implementation presence alone.
 1. Deploy the current P0 backend compatibility batch to staging.
 2. Run browser smoke for setup, anonymous status, login/logout/current-user,
    dashboard, keys, channels, users, logs, models, settings, and profile.
-3. Close or explicitly defer the remaining 5 visible-admin-debt calls,
-   beginning with Ollama and upstream batch operations.
-4. Move upstream `detect_all`/`apply_all` to Queue/Workflow orchestration with
-   progress, idempotency, and failed-channel retry evidence.
+3. Close or explicitly defer the remaining 3 visible-admin-debt calls, all in
+   Ollama local model management.
+4. Move bounded upstream `detect_all`/`apply_all` slices to Queue/Workflow
+   orchestration with progress, idempotency, and failed-channel retry evidence.
 5. Upgrade affinity beyond the current enumerable Rust subset only when
    rule-template parity is implemented; do not expose
    placeholder all-zero Go-compatible usage stats.

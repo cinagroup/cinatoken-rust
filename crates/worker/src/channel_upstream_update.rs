@@ -1,8 +1,9 @@
-//! Single-channel upstream model detection and apply operations.
+//! Upstream model detection and apply operations.
 //!
-//! Go runs the all-channel variants synchronously. The Worker migration keeps
-//! this module deliberately single-channel so each request has bounded
-//! outbound work; batch orchestration belongs in Queue/Workflow.
+//! Go runs the all-channel variants synchronously. The Worker migration exposes
+//! bounded after-id slices for batch routes, and the frontend loops through the
+//! cursor so each request has a fixed amount of D1/outbound work. A future
+//! Queue/Workflow runner can reuse the same slice semantics.
 
 use futures_util::future::{select, Either};
 use futures_util::TryStreamExt;
@@ -12,8 +13,8 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::time::Duration;
 use worker::{
-    AbortController, Delay, Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect,
-    Response, Result as WorkerResult,
+    AbortController, D1Database, Delay, Env, Fetch, Headers, Method, Request, RequestInit,
+    RequestRedirect, Response, Result as WorkerResult,
 };
 
 use crate::admin::{
@@ -34,6 +35,8 @@ const CHANNEL_TYPE_VOLC_ENGINE: i32 = 45;
 const OUTBOUND_TIMEOUT: Duration = Duration::from_secs(15);
 const OUTBOUND_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const GEMINI_MAX_PAGES: usize = 10;
+const BATCH_SLICE_DEFAULT_LIMIT: u32 = 3;
+const BATCH_SLICE_MAX_LIMIT: u32 = 5;
 
 const LAST_CHECK_TIME: &str = "upstream_model_update_last_check_time";
 const LAST_DETECTED_MODELS: &str = "upstream_model_update_last_detected_models";
@@ -52,6 +55,13 @@ struct UpstreamUpdateRequest {
     ignore_models: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct BatchUpstreamUpdateRequest {
+    #[serde(default)]
+    after_id: i64,
+    limit: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 struct DetectResult {
     channel_id: i64,
@@ -60,6 +70,19 @@ struct DetectResult {
     remove_models: Vec<String>,
     last_check_time: i64,
     auto_added_models: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DetectAllResult {
+    processed_channels: usize,
+    failed_channel_ids: Vec<i64>,
+    detected_add_models: usize,
+    detected_remove_models: usize,
+    channel_detected_results: Vec<DetectResult>,
+    has_more: bool,
+    next_after_id: i64,
+    scanned_channels: usize,
+    slice_limit: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +95,44 @@ struct ApplyResult {
     remaining_remove_models: Vec<String>,
     models: String,
     settings: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ApplyAllResult {
+    processed_channels: usize,
+    added_models: usize,
+    removed_models: usize,
+    failed_channel_ids: Vec<i64>,
+    results: Vec<ApplyAllChannelResult>,
+    has_more: bool,
+    next_after_id: i64,
+    scanned_channels: usize,
+    slice_limit: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct ApplyAllChannelResult {
+    channel_id: i64,
+    channel_name: String,
+    added_models: Vec<String>,
+    removed_models: Vec<String>,
+    remaining_models: Vec<String>,
+    remaining_remove_models: Vec<String>,
+}
+
+#[derive(Debug)]
+enum UpstreamUpdateError {
+    Conflict(&'static str),
+    Fetch(ModelFetchError),
+}
+
+impl UpstreamUpdateError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Conflict(message) => envelope_error_response(409, message),
+            Self::Fetch(error) => envelope_error_response(error.status_code(), error.message()),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -108,15 +169,287 @@ pub async fn detect(mut req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(404, "channel not found"));
     };
 
+    let result = match detect_channel_updates(&db, &channel).await? {
+        Ok(result) => result,
+        Err(error) => {
+            invalidate_channel_cache(&env).await?;
+            return Ok(error.into_response());
+        }
+    };
+    invalidate_channel_cache(&env).await?;
+
+    envelope_ok_response(&result)
+}
+
+pub async fn apply(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let payload = match read_payload(&mut req).await {
+        Ok(payload) => payload,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let Some(channel) = d1_repositories::find_channel_by_id(&db, payload.id).await? else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+
+    let (result, models_changed) = match apply_channel_updates(
+        &db,
+        &channel,
+        &payload.add_models,
+        &payload.ignore_models,
+        &payload.remove_models,
+    )
+    .await?
+    {
+        Ok(result) => result,
+        Err(error) => return Ok(error.into_response()),
+    };
+    if models_changed {
+        d1_repositories::update_abilities_for_channel(
+            &db,
+            channel.id,
+            &result.models,
+            &channel.channel_group,
+            channel.status,
+            channel.priority,
+            channel.weight,
+        )
+        .await?;
+    }
+    invalidate_channel_cache(&env).await?;
+    let now = unix_timestamp();
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "channel.upstream_apply",
+        &format!(
+            "admin {} applied upstream model changes to channel {}",
+            claims.username, channel.id
+        ),
+        &serde_json::json!({
+            "id": channel.id,
+            "added_count": result.added_models.len(),
+            "removed_count": result.removed_models.len(),
+            "ignored_count": result.ignored_models.len()
+        }),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    envelope_ok_response(&result)
+}
+
+pub async fn detect_all(mut req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let payload = match read_batch_payload(&mut req).await {
+        Ok(payload) => payload,
+        Err(response) => return Ok(response),
+    };
+    let limit = batch_slice_limit(payload.limit);
+    let db = env.d1("DB")?;
+    let rows = d1_repositories::list_enabled_channels_after_id(
+        &db,
+        payload.after_id.max(0),
+        limit.saturating_add(1),
+    )
+    .await?;
+    let has_more = rows.len() > limit as usize;
+    let mut next_after_id = payload.after_id.max(0);
+    let mut processed_channels = 0usize;
+    let mut detected_add_models = 0usize;
+    let mut detected_remove_models = 0usize;
+    let mut failed_channel_ids = Vec::new();
+    let mut channel_detected_results = Vec::new();
+    let mut invalidate_needed = false;
+
+    for channel in rows.iter().take(limit as usize) {
+        next_after_id = channel.id;
+        if !upstream_model_update_check_enabled(&channel.settings) {
+            continue;
+        }
+        match detect_channel_updates(&db, channel).await? {
+            Ok(result) => {
+                invalidate_needed = true;
+                detected_add_models += result.add_models.len();
+                detected_remove_models += result.remove_models.len();
+                processed_channels += 1;
+                channel_detected_results.push(result);
+            }
+            Err(_) => {
+                invalidate_needed = true;
+                failed_channel_ids.push(channel.id);
+            }
+        }
+    }
+
+    if invalidate_needed {
+        invalidate_channel_cache(&env).await?;
+    }
+
+    envelope_ok_response(&DetectAllResult {
+        processed_channels,
+        failed_channel_ids,
+        detected_add_models,
+        detected_remove_models,
+        channel_detected_results,
+        has_more,
+        next_after_id,
+        scanned_channels: rows.len().min(limit as usize),
+        slice_limit: limit,
+    })
+}
+
+pub async fn apply_all(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let payload = match read_batch_payload(&mut req).await {
+        Ok(payload) => payload,
+        Err(response) => return Ok(response),
+    };
+    let limit = batch_slice_limit(payload.limit);
+    let db = env.d1("DB")?;
+    let rows = d1_repositories::list_enabled_channels_after_id(
+        &db,
+        payload.after_id.max(0),
+        limit.saturating_add(1),
+    )
+    .await?;
+    let has_more = rows.len() > limit as usize;
+    let mut next_after_id = payload.after_id.max(0);
+    let mut processed_channels = 0usize;
+    let mut added_models_count = 0usize;
+    let mut removed_models_count = 0usize;
+    let mut failed_channel_ids = Vec::new();
+    let mut results = Vec::new();
+    let mut invalidate_needed = false;
+
+    for channel in rows.iter().take(limit as usize) {
+        next_after_id = channel.id;
+        if !upstream_model_update_check_enabled(&channel.settings) {
+            continue;
+        }
+        let settings = parse_settings(&channel.settings);
+        let pending_add = settings_models(&settings, LAST_DETECTED_MODELS);
+        let pending_remove = settings_models(&settings, LAST_REMOVED_MODELS);
+        if pending_add.is_empty() && pending_remove.is_empty() {
+            continue;
+        }
+        match apply_channel_updates(&db, channel, &pending_add, &[], &pending_remove).await? {
+            Ok((result, models_changed)) => {
+                if models_changed {
+                    d1_repositories::update_abilities_for_channel(
+                        &db,
+                        channel.id,
+                        &result.models,
+                        &channel.channel_group,
+                        channel.status,
+                        channel.priority,
+                        channel.weight,
+                    )
+                    .await?;
+                    invalidate_needed = true;
+                }
+                added_models_count += result.added_models.len();
+                removed_models_count += result.removed_models.len();
+                processed_channels += 1;
+                results.push(ApplyAllChannelResult {
+                    channel_id: channel.id,
+                    channel_name: channel.name.clone(),
+                    added_models: result.added_models,
+                    removed_models: result.removed_models,
+                    remaining_models: result.remaining_models,
+                    remaining_remove_models: result.remaining_remove_models,
+                });
+            }
+            Err(_) => failed_channel_ids.push(channel.id),
+        }
+    }
+
+    if invalidate_needed {
+        invalidate_channel_cache(&env).await?;
+    }
+    let now = unix_timestamp();
+    if processed_channels > 0 || !failed_channel_ids.is_empty() {
+        let _ = d1_repositories::insert_admin_audit_log(
+            &db,
+            None,
+            None,
+            &claims.username,
+            "channel.upstream_apply_all",
+            &format!(
+                "admin {} applied upstream model changes to {} channels",
+                claims.username, processed_channels
+            ),
+            &serde_json::json!({
+                "count": processed_channels,
+                "added_models": added_models_count,
+                "removed_models": removed_models_count,
+                "failed_channel_ids": failed_channel_ids,
+                "has_more": has_more,
+                "next_after_id": next_after_id
+            }),
+            &admin_audit_info(&claims, &req),
+            now,
+        )
+        .await;
+    }
+
+    envelope_ok_response(&ApplyAllResult {
+        processed_channels,
+        added_models: added_models_count,
+        removed_models: removed_models_count,
+        failed_channel_ids,
+        results,
+        has_more,
+        next_after_id,
+        scanned_channels: rows.len().min(limit as usize),
+        slice_limit: limit,
+    })
+}
+
+async fn read_payload(req: &mut Request) -> Result<UpstreamUpdateRequest, Response> {
+    let body = read_json_body(req).await?;
+    let payload: UpstreamUpdateRequest = serde_json::from_value(body)
+        .map_err(|_| envelope_error_response(400, "invalid upstream update request"))?;
+    if payload.id <= 0 || payload.id > i32::MAX as i64 {
+        return Err(envelope_error_response(400, "invalid channel id"));
+    }
+    Ok(payload)
+}
+
+async fn read_batch_payload(req: &mut Request) -> Result<BatchUpstreamUpdateRequest, Response> {
+    let body = read_json_body(req).await?;
+    let payload: BatchUpstreamUpdateRequest = serde_json::from_value(body)
+        .map_err(|_| envelope_error_response(400, "invalid upstream batch update request"))?;
+    if payload.after_id < 0 || payload.after_id > i32::MAX as i64 {
+        return Err(envelope_error_response(400, "invalid after_id"));
+    }
+    Ok(payload)
+}
+
+async fn detect_channel_updates(
+    db: &D1Database,
+    channel: &ChannelRow,
+) -> WorkerResult<Result<DetectResult, UpstreamUpdateError>> {
     let now = unix_timestamp();
     let mut settings = parse_settings(&channel.settings);
-    let upstream_models = match fetch_channel_model_ids(&channel).await {
+    let upstream_models = match fetch_channel_model_ids(channel).await {
         Ok(models) => models,
         Err(error) => {
             settings.insert(LAST_CHECK_TIME.to_string(), Value::from(now));
             let next_settings = Value::Object(settings).to_string();
             let persisted = d1_repositories::update_channel_upstream_model_state(
-                &db,
+                db,
                 channel.id,
                 &channel.models,
                 &channel.settings,
@@ -125,16 +458,11 @@ pub async fn detect(mut req: Request, env: Env) -> WorkerResult<Response> {
             )
             .await?;
             if !persisted {
-                return Ok(envelope_error_response(
-                    409,
+                return Ok(Err(UpstreamUpdateError::Conflict(
                     "channel changed during upstream model detection; retry",
-                ));
+                )));
             }
-            invalidate_channel_cache(&env).await?;
-            return Ok(match error {
-                ModelFetchError::Unsupported(message) => envelope_error_response(422, &message),
-                ModelFetchError::Upstream(message) => envelope_error_response(502, &message),
-            });
+            return Ok(Err(UpstreamUpdateError::Fetch(error)));
         }
     };
 
@@ -157,7 +485,7 @@ pub async fn detect(mut req: Request, env: Env) -> WorkerResult<Response> {
     );
     let next_settings = Value::Object(settings).to_string();
     let persisted = d1_repositories::update_channel_upstream_model_state(
-        &db,
+        db,
         channel.id,
         &channel.models,
         &channel.settings,
@@ -166,45 +494,36 @@ pub async fn detect(mut req: Request, env: Env) -> WorkerResult<Response> {
     )
     .await?;
     if !persisted {
-        return Ok(envelope_error_response(
-            409,
+        return Ok(Err(UpstreamUpdateError::Conflict(
             "channel changed during upstream model detection; retry",
-        ));
+        )));
     }
-    invalidate_channel_cache(&env).await?;
 
-    envelope_ok_response(&DetectResult {
+    Ok(Ok(DetectResult {
         channel_id: channel.id,
-        channel_name: channel.name,
+        channel_name: channel.name.clone(),
         add_models,
         remove_models,
         last_check_time: now,
         // Manual detection intentionally does not auto-apply, matching Go.
         auto_added_models: 0,
-    })
+    }))
 }
 
-pub async fn apply(mut req: Request, env: Env) -> WorkerResult<Response> {
-    let claims = match require_admin_auth(&req, &env).await? {
-        Ok(claims) => claims,
-        Err(response) => return Ok(response),
-    };
-    let payload = match read_payload(&mut req).await {
-        Ok(payload) => payload,
-        Err(response) => return Ok(response),
-    };
-    let db = env.d1("DB")?;
-    let Some(channel) = d1_repositories::find_channel_by_id(&db, payload.id).await? else {
-        return Ok(envelope_error_response(404, "channel not found"));
-    };
-
+async fn apply_channel_updates(
+    db: &D1Database,
+    channel: &ChannelRow,
+    add_models: &[String],
+    ignore_models: &[String],
+    remove_models: &[String],
+) -> WorkerResult<Result<(ApplyResult, bool), UpstreamUpdateError>> {
     let mut settings = parse_settings(&channel.settings);
     let pending_add = settings_models(&settings, LAST_DETECTED_MODELS);
     let pending_remove = settings_models(&settings, LAST_REMOVED_MODELS);
-    let added_models = intersect_models(&payload.add_models, &pending_add);
-    let ignored_models = intersect_models(&payload.ignore_models, &pending_add);
+    let added_models = intersect_models(add_models, &pending_add);
+    let ignored_models = intersect_models(ignore_models, &pending_add);
     let removed_models = subtract_models(
-        &intersect_models(&payload.remove_models, &pending_remove),
+        &intersect_models(remove_models, &pending_remove),
         &added_models,
     );
 
@@ -238,7 +557,7 @@ pub async fn apply(mut req: Request, env: Env) -> WorkerResult<Response> {
     let next_settings = Value::Object(settings).to_string();
 
     let persisted = d1_repositories::update_channel_upstream_model_state(
-        &db,
+        db,
         channel.id,
         &channel.models,
         &channel.settings,
@@ -247,66 +566,37 @@ pub async fn apply(mut req: Request, env: Env) -> WorkerResult<Response> {
     )
     .await?;
     if !persisted {
-        return Ok(envelope_error_response(
-            409,
+        return Ok(Err(UpstreamUpdateError::Conflict(
             "channel changed while applying upstream model updates; reload and retry",
-        ));
+        )));
     }
 
-    if models_changed {
-        d1_repositories::update_abilities_for_channel(
-            &db,
-            channel.id,
-            &next_models_csv,
-            &channel.channel_group,
-            channel.status,
-            channel.priority,
-            channel.weight,
-        )
-        .await?;
-    }
-    invalidate_channel_cache(&env).await?;
-    let _ = d1_repositories::insert_admin_audit_log(
-        &db,
-        None,
-        None,
-        &claims.username,
-        "channel.upstream_apply",
-        &format!(
-            "admin {} applied upstream model changes to channel {}",
-            claims.username, channel.id
-        ),
-        &serde_json::json!({
-            "id": channel.id,
-            "added_count": added_models.len(),
-            "removed_count": removed_models.len(),
-            "ignored_count": ignored_models.len()
-        }),
-        &admin_audit_info(&claims, &req),
-        now,
-    )
-    .await;
-
-    envelope_ok_response(&ApplyResult {
-        id: channel.id,
-        added_models,
-        removed_models,
-        ignored_models,
-        remaining_models,
-        remaining_remove_models,
-        models: next_models_csv,
-        settings: next_settings,
-    })
+    Ok(Ok((
+        ApplyResult {
+            id: channel.id,
+            added_models,
+            removed_models,
+            ignored_models,
+            remaining_models,
+            remaining_remove_models,
+            models: next_models_csv,
+            settings: next_settings,
+        },
+        models_changed,
+    )))
 }
 
-async fn read_payload(req: &mut Request) -> Result<UpstreamUpdateRequest, Response> {
-    let body = read_json_body(req).await?;
-    let payload: UpstreamUpdateRequest = serde_json::from_value(body)
-        .map_err(|_| envelope_error_response(400, "invalid upstream update request"))?;
-    if payload.id <= 0 || payload.id > i32::MAX as i64 {
-        return Err(envelope_error_response(400, "invalid channel id"));
-    }
-    Ok(payload)
+fn batch_slice_limit(limit: Option<u32>) -> u32 {
+    limit
+        .unwrap_or(BATCH_SLICE_DEFAULT_LIMIT)
+        .clamp(1, BATCH_SLICE_MAX_LIMIT)
+}
+
+fn upstream_model_update_check_enabled(raw_settings: &str) -> bool {
+    parse_settings(raw_settings)
+        .get("upstream_model_update_check_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn parse_settings(raw: &str) -> Map<String, Value> {
@@ -939,6 +1229,24 @@ mod tests {
         settings.insert(LAST_CHECK_TIME.to_string(), Value::from(42));
         assert_eq!(settings.get("custom"), Some(&Value::Bool(true)));
         assert_eq!(settings_models(&settings, IGNORED_MODELS), strings(&["x"]));
+    }
+
+    #[test]
+    fn batch_slice_limit_is_tightly_bounded_for_workers() {
+        assert_eq!(batch_slice_limit(None), BATCH_SLICE_DEFAULT_LIMIT);
+        assert_eq!(batch_slice_limit(Some(0)), 1);
+        assert_eq!(batch_slice_limit(Some(99)), BATCH_SLICE_MAX_LIMIT);
+    }
+
+    #[test]
+    fn upstream_update_check_enabled_requires_boolean_true() {
+        assert!(upstream_model_update_check_enabled(
+            r#"{"upstream_model_update_check_enabled":true}"#
+        ));
+        assert!(!upstream_model_update_check_enabled(
+            r#"{"upstream_model_update_check_enabled":"true"}"#
+        ));
+        assert!(!upstream_model_update_check_enabled("{}"));
     }
 
     #[test]

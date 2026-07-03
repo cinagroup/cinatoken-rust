@@ -363,8 +363,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             |req, ctx| async move { channel_upstream_update::detect(req, ctx.env).await },
         )
         .post_async(
+            "/api/channel/upstream_updates/detect_all",
+            |req, ctx| async move { channel_upstream_update::detect_all(req, ctx.env).await },
+        )
+        .post_async(
             "/api/channel/upstream_updates/apply",
             |req, ctx| async move { channel_upstream_update::apply(req, ctx.env).await },
+        )
+        .post_async(
+            "/api/channel/upstream_updates/apply_all",
+            |req, ctx| async move { channel_upstream_update::apply_all(req, ctx.env).await },
         )
         // Channel tag bulk ops (Go DisableTagChannels / EnableTagChannels /
         // DeleteDisabledChannel).

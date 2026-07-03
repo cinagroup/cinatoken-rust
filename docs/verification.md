@@ -631,18 +631,19 @@ Last checked: 2026-07-02
   frontend-call inventory) and `tools/verify_frontend_contract.mjs`
   (non-mutating deployed contract smoke). TypeChecker-based resolution now
   covers 212 distinct default-frontend calls and reduced unmatched calls from
-  122 to 101 after
+  122 to 99 after
   adding complete 2FA frontend payload/lifecycle parity, batch token-key
   reveal, channel batch-tag/tag-model routes, admin group lookup, and the
   frontend admin-2FA-reset path, followed by prefill-group CRUD, official model
   metadata preview/sync, provider balance refresh, and multi-key channel
   management, then single-channel upstream model detect/apply, Codex
   usage/credential refresh, Rust-native channel-affinity cache stats/clear,
-  and channel-affinity usage diagnostics.
+  channel-affinity usage diagnostics, and bounded upstream batch
+  detect/apply slices.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  101 missing calls, no unclassified entries, and 5 remaining visible-admin
+  99 missing calls, no unclassified entries, and 3 remaining visible-admin
   gaps. `cargo test -p cinatoken-worker --lib` passes
-  226 tests; migrations 0001-0009 replay
+  228 tests; migrations 0001-0009 replay
   to 9 SQLite tables. The wasm32 and default frontend TypeScript/Rsbuild checks
   pass.
 - **Channel settings persistence contract — locally verified (2026-07-03).**
@@ -672,6 +673,13 @@ Last checked: 2026-07-02
   explicitly because Workers cannot attach a process-local proxy. Unit tests
   cover parsing, JWT account/email extraction, SSRF targets, proxy rejection,
   and identity preservation.
+- **Bounded upstream model batch updates - locally verified (2026-07-03).**
+  `POST /api/channel/upstream_updates/detect_all` and
+  `POST /api/channel/upstream_updates/apply_all` now expose after-id bounded
+  slices over enabled channels. The default frontend loops with a page limit of
+  5 and aggregates the Go-compatible counts, while each Worker request keeps a
+  fixed amount of D1 and outbound model-list work. A future Queue/Workflow can
+  reuse the same cursor contract for background orchestration.
 - **Channel affinity cache stats/clear - locally verified (2026-07-03).**
   `GET /api/option/channel_affinity_cache` and
   `DELETE /api/option/channel_affinity_cache` now cover the Rust Worker

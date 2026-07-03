@@ -1660,7 +1660,7 @@ Wave A 已建立三条可重复执行的自动证据链：
   API/SPA 优先级。
 
 兼容工作、审计器校正、单通道 upstream model update 与 Codex 管理端 usage/refresh
-迁移已将 unmatched frontend calls 从 122 降至 101，完成：
+迁移已将 unmatched frontend calls 从 122 降至 99，完成：
 
 - 2FA setup/enable/disable/status/backup-code 的完整默认前端契约；
 - Token 批量密钥查看的所有权、100 条上限、secure verification 和审计；
@@ -1688,14 +1688,17 @@ Wave A 已建立三条可重复执行的自动证据链：
 - Channel affinity usage 诊断 `GET /api/log/channel_affinity_usage_cache`，由 relay 成功
   审计写入 `other.admin_info.channel_affinity`，并在上游返回真实 usage 时累积
   KV TTL 窗口内的 hit/total/token 统计，供默认前端 usage log 弹窗读取；
+- Channel upstream model update 批处理 `POST /api/channel/upstream_updates/detect_all` 与
+  `POST /api/channel/upstream_updates/apply_all`，后端以 after-id bounded slice
+  处理启用通道，默认前端循环续页聚合结果，避免在单个 Worker 请求内同步扫全库/全上游；
 - 本地 API wrapper 的 HTTP method 推断，并移除将 `endsWith('/v1')` 误判为 API 调用的
   假阳性；
 - 缺口分类基线：24 auth-deferred、45 capability-hidden-product、11 operations-debt、
-  16 payment-deferred、5 visible-admin-debt。
+  16 payment-deferred、3 visible-admin-debt。
 
 当前证据边界：
 
-- Worker 单元测试 226 项通过；
+- Worker 单元测试 228 项通过；
 - D1 migration 0001-0009 的 SQLite schema 重放通过，共 9 张表；
 - `wasm32-unknown-unknown` 检查通过；
 - 默认前端 TypeScript + Rsbuild production build 通过；
@@ -1706,11 +1709,12 @@ Wave A 已建立三条可重复执行的自动证据链：
 
 下一批 Wave A 优先级：
 
-1. 收敛剩余 5 个 visible-admin-debt，优先 Ollama 与 upstream updates 批处理；
+1. 收敛剩余 3 个 visible-admin-debt，优先 Ollama 本地模型管理的 Tunnel/Container/service-binding
+   方案；不得在 Worker 中直连或伪装 VPS 本地 daemon；
 2. 将 channel-affinity 从当前可枚举 Rust 子集继续升级为 rule-template aware 与
    usage-stat aware 的 Cloudflare 原生架构；不得用全零占位响应伪装 Go 管理语义；
-3. 将 upstream `detect_all`/`apply_all` 迁移为 Queue/Workflow 编排，记录任务进度、
-   幂等键、失败 channel 集合和可重试边界，而不是在同步 Worker 请求里循环外部请求；
+3. 将 bounded upstream `detect_all`/`apply_all` slice 继续升级为 Queue/Workflow 编排，
+   记录任务进度、幂等键、失败 channel 集合和可重试边界；
 4. 将已分类的 auth、payment、operations 和 capability-hidden 家族逐项绑定 cutover
    场景、负责人和恢复条件；
 5. 部署 migration 0009 和本批 Worker 到隔离 staging，完成已登录的 prefill、model

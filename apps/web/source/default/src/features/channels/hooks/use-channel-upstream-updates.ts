@@ -27,6 +27,9 @@ const upstreamUpdateRequestConfig = {
   skipErrorHandler: true,
 } satisfies ApiRequestConfig
 
+const upstreamBatchPageLimit = 5
+const upstreamBatchMaxPages = 1000
+
 function getManualIgnoredModelCount(settings: unknown): number {
   let parsed: Record<string, unknown> | null = null
   if (settings && typeof settings === 'object')
@@ -164,29 +167,55 @@ export function useChannelUpstreamUpdates(refresh: () => Promise<void>) {
     applyAllRef.current = true
     setApplyAllLoading(true)
     try {
-      const res = await api.post(
-        '/api/channel/upstream_updates/apply_all',
-        {},
-        upstreamUpdateRequestConfig
-      )
-      const { success, message, data } = res.data || {}
-      if (!success) {
-        toast.error(message || t('Batch processing failed'))
-        return
+      let afterId = 0
+      let processedChannels = 0
+      let addedModels = 0
+      let removedModels = 0
+      const failedChannelIds: unknown[] = []
+
+      for (let page = 0; page < upstreamBatchMaxPages; page += 1) {
+        const res = await api.post(
+          '/api/channel/upstream_updates/apply_all',
+          { after_id: afterId, limit: upstreamBatchPageLimit },
+          upstreamUpdateRequestConfig
+        )
+        const { success, message, data } = res.data || {}
+        if (!success) {
+          toast.error(message || t('Batch processing failed'))
+          return
+        }
+
+        processedChannels += data?.processed_channels || 0
+        addedModels += data?.added_models || 0
+        removedModels += data?.removed_models || 0
+        if (Array.isArray(data?.failed_channel_ids))
+          failedChannelIds.push(...data.failed_channel_ids)
+
+        if (!data?.has_more) {
+          toast.success(
+            t(
+              'Batch upstream model updates applied: {{channels}} channels, {{added}} added, {{removed}} removed, {{fails}} failed',
+              {
+                channels: processedChannels,
+                added: addedModels,
+                removed: removedModels,
+                fails: failedChannelIds.length,
+              }
+            )
+          )
+          await refresh()
+          return
+        }
+
+        const nextAfterId = Number(data?.next_after_id || 0)
+        if (!Number.isFinite(nextAfterId) || nextAfterId <= afterId) {
+          toast.error(t('Batch processing failed'))
+          return
+        }
+        afterId = nextAfterId
       }
 
-      toast.success(
-        t(
-          'Batch upstream model updates applied: {{channels}} channels, {{added}} added, {{removed}} removed, {{fails}} failed',
-          {
-            channels: data?.processed_channels || 0,
-            added: data?.added_models || 0,
-            removed: data?.removed_models || 0,
-            fails: (data?.failed_channel_ids || []).length,
-          }
-        )
-      )
-      await refresh()
+      toast.error(t('Batch processing failed'))
     } catch (e: unknown) {
       const err = e as {
         response?: { data?: { message?: string } }
@@ -246,29 +275,55 @@ export function useChannelUpstreamUpdates(refresh: () => Promise<void>) {
     detectAllRef.current = true
     setDetectAllLoading(true)
     try {
-      const res = await api.post(
-        '/api/channel/upstream_updates/detect_all',
-        {},
-        upstreamUpdateRequestConfig
-      )
-      const { success, message, data } = res.data || {}
-      if (!success) {
-        toast.error(message || t('Batch detection failed'))
-        return
+      let afterId = 0
+      let processedChannels = 0
+      let detectedAddModels = 0
+      let detectedRemoveModels = 0
+      const failedChannelIds: unknown[] = []
+
+      for (let page = 0; page < upstreamBatchMaxPages; page += 1) {
+        const res = await api.post(
+          '/api/channel/upstream_updates/detect_all',
+          { after_id: afterId, limit: upstreamBatchPageLimit },
+          upstreamUpdateRequestConfig
+        )
+        const { success, message, data } = res.data || {}
+        if (!success) {
+          toast.error(message || t('Batch detection failed'))
+          return
+        }
+
+        processedChannels += data?.processed_channels || 0
+        detectedAddModels += data?.detected_add_models || 0
+        detectedRemoveModels += data?.detected_remove_models || 0
+        if (Array.isArray(data?.failed_channel_ids))
+          failedChannelIds.push(...data.failed_channel_ids)
+
+        if (!data?.has_more) {
+          toast.success(
+            t(
+              'Batch detection complete: {{channels}} channels, {{add}} to add, {{remove}} to remove, {{fails}} failed',
+              {
+                channels: processedChannels,
+                add: detectedAddModels,
+                remove: detectedRemoveModels,
+                fails: failedChannelIds.length,
+              }
+            )
+          )
+          await refresh()
+          return
+        }
+
+        const nextAfterId = Number(data?.next_after_id || 0)
+        if (!Number.isFinite(nextAfterId) || nextAfterId <= afterId) {
+          toast.error(t('Batch detection failed'))
+          return
+        }
+        afterId = nextAfterId
       }
 
-      toast.success(
-        t(
-          'Batch detection complete: {{channels}} channels, {{add}} to add, {{remove}} to remove, {{fails}} failed',
-          {
-            channels: data?.processed_channels || 0,
-            add: data?.detected_add_models || 0,
-            remove: data?.detected_remove_models || 0,
-            fails: (data?.failed_channel_ids || []).length,
-          }
-        )
-      )
-      await refresh()
+      toast.error(t('Batch detection failed'))
     } catch (e: unknown) {
       const err = e as {
         response?: { data?: { message?: string } }

@@ -802,6 +802,9 @@ struct SelfResponse {
     quota: i64,
     used_quota: i64,
     request_count: i64,
+    aff_quota: i64,
+    aff_history_quota: i64,
+    aff_count: i64,
     created_at: i64,
     last_login_at: i64,
 }
@@ -825,6 +828,9 @@ impl SelfResponse {
             quota: row.quota,
             used_quota: row.used_quota,
             request_count: row.request_count,
+            aff_quota: row.aff_quota,
+            aff_history_quota: row.aff_history_quota,
+            aff_count: row.aff_count,
             created_at: row.created_at,
             last_login_at: row.last_login_at,
         }
@@ -1575,6 +1581,9 @@ mod tests {
             used_quota: 5,
             request_count: 3,
             group: "default".into(),
+            aff_count: 2,
+            aff_quota: 50,
+            aff_history_quota: 150,
             created_at: 1_700_000_000,
             last_login_at: 1_700_000_100,
         };

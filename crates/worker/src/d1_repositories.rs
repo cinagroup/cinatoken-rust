@@ -1098,6 +1098,9 @@ pub struct AdminUserRow {
     pub used_quota: i64,
     pub request_count: i64,
     pub group: String,
+    pub aff_count: i64,
+    pub aff_quota: i64,
+    pub aff_history_quota: i64,
     pub created_at: i64,
     pub last_login_at: i64,
 }
@@ -1109,7 +1112,8 @@ pub struct AdminUserRow {
 const ADMIN_USER_SELF_COLUMNS: &str = r#"
   id, username, display_name, role, status, email, github_id, discord_id,
   oidc_id, wechat_id, telegram_id, linux_do_id, password, quota, used_quota,
-  request_count, "group", created_at, last_login_at
+  request_count, "group", aff_count, aff_quota, aff_history AS aff_history_quota,
+  created_at, last_login_at
 "#;
 
 /// Find an enabled user by username or email (login lookup). Mirrors Go
@@ -6246,6 +6250,9 @@ pub struct TopupRow {
     pub complete_time: i64,
 }
 
+const TOPUP_QUERY_WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
+const TOPUP_SEARCH_COUNT_HARD_LIMIT: i32 = 10_000;
+
 pub async fn create_topup(
     db: &D1Database,
     user_id: i64,
@@ -6466,6 +6473,108 @@ pub async fn list_user_topups(
         .all()
         .await?
         .results::<TopupRow>()?)
+}
+
+/// List a user's topups with Go-compatible paging.
+///
+/// Self-service history is limited to the most recent 30 days, mirroring
+/// Go `model.GetUserTopUps` / `SearchUserTopUps`.
+pub async fn list_user_topups_page(
+    db: &D1Database,
+    user_id: i64,
+    page: u32,
+    page_size: u32,
+    keyword_pattern: Option<&str>,
+    now: i64,
+) -> worker::Result<(Vec<TopupRow>, i64)> {
+    let cutoff = now.saturating_sub(TOPUP_QUERY_WINDOW_SECONDS);
+    let args = vec![
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(cutoff)),
+    ];
+    let where_sql = "user_id = ?1 AND create_time >= ?2".to_string();
+    list_topups_page(db, where_sql, args, page, page_size, keyword_pattern).await
+}
+
+/// List all topups for admin billing history. Unlike self-service history,
+/// this intentionally has no 30-day cutoff.
+pub async fn list_all_topups_page(
+    db: &D1Database,
+    page: u32,
+    page_size: u32,
+    keyword_pattern: Option<&str>,
+) -> worker::Result<(Vec<TopupRow>, i64)> {
+    list_topups_page(
+        db,
+        "1 = 1".to_string(),
+        Vec::new(),
+        page,
+        page_size,
+        keyword_pattern,
+    )
+    .await
+}
+
+async fn list_topups_page(
+    db: &D1Database,
+    mut where_sql: String,
+    mut args: Vec<D1Type<'_>>,
+    page: u32,
+    page_size: u32,
+    keyword_pattern: Option<&str>,
+) -> worker::Result<(Vec<TopupRow>, i64)> {
+    let has_keyword = keyword_pattern.is_some();
+    if let Some(pattern) = keyword_pattern {
+        let next = args.len() + 1;
+        where_sql.push_str(&format!(" AND trade_no LIKE ?{next} ESCAPE '!'"));
+        args.push(D1Type::Text(pattern));
+    }
+
+    #[derive(Deserialize)]
+    struct Count {
+        count: i64,
+    }
+
+    let count_sql = if has_keyword {
+        format!(
+            "SELECT COUNT(*) AS count FROM (SELECT 1 FROM topups WHERE {where_sql} LIMIT {TOPUP_SEARCH_COUNT_HARD_LIMIT})"
+        )
+    } else {
+        format!("SELECT COUNT(*) AS count FROM topups WHERE {where_sql}")
+    };
+    let total = db
+        .prepare(&count_sql)
+        .bind_refs(&args)?
+        .first::<Count>(None)
+        .await?
+        .map(|row| row.count)
+        .unwrap_or(0);
+
+    let page = page.max(1);
+    let page_size = page_size.clamp(1, 100);
+    let offset = page.saturating_sub(1).saturating_mul(page_size);
+    let limit_index = args.len() + 1;
+    let offset_index = args.len() + 2;
+    let mut list_args = args;
+    list_args.push(D1Type::Integer(d1_i32(i64::from(page_size))));
+    list_args.push(D1Type::Integer(d1_i32(i64::from(offset))));
+
+    let rows = db
+        .prepare(&format!(
+            r#"
+            SELECT id, user_id, amount, money, trade_no, payment_method, status, create_time, complete_time
+            FROM topups
+            WHERE {where_sql}
+            ORDER BY id DESC
+            LIMIT ?{limit_index} OFFSET ?{offset_index}
+            "#
+        ))
+        .bind_refs(&list_args)?
+        .all()
+        .await?
+        .results::<TopupRow>()?;
+
+    Ok((rows, total))
 }
 
 //

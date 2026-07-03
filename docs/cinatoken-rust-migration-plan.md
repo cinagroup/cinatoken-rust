@@ -1938,3 +1938,47 @@ cutover. Stripe, Creem, Epay, Waffo Pancake checkout/callback/product helper
 routes remain payment-deferred and `/subscriptions` / `/wallet` should stay
 capability-hidden until those provider paths have staging evidence or the UI is
 explicitly configured for balance-only operation.
+
+### 22.10 2026-07-04 Wallet Topup Compatibility Delta
+
+This increment supersedes the 22.9 route-debt number for the default frontend
+contract audit. The Rust Worker now implements the default wallet's Stripe
+topup and topup-history read path:
+
+- `GET /api/user/topup/info` returns the wallet payment capability/config
+  envelope consumed by the React wallet. It exposes only implemented Worker
+  payment methods: Stripe can be enabled when payment compliance and Stripe
+  secrets are configured; Epay, Creem, Waffo, Waffo Pancake, and public
+  redemption stay hidden until their Worker routes exist.
+- `POST /api/user/stripe/amount` returns the frontend-compatible estimated
+  charge string, guarded by UserAuth, payment compliance, Stripe config, and
+  minimum topup validation.
+- `POST /api/user/stripe/pay` now also returns `data.pay_link`, preserving the
+  existing `checkout_url`/`session_id` fields while matching the default
+  wallet's redirect code.
+- `GET /api/user/topup/self` returns the current user's recent topups with
+  Go-compatible pagination, optional sanitized `trade_no LIKE ... ESCAPE '!'`
+  search, the same 30-day self-service window as Go, and string topup statuses.
+- `GET /api/user/topup` is now the AdminAuth all-topups page consumed by the
+  wallet billing-history dialog; it has no 30-day cutoff.
+- `POST /api/user/topup/complete` lets admins manually complete a pending D1
+  topup row through the same atomic `complete_topup_and_credit` path used by
+  Stripe webhooks, with admin audit logging.
+- `/api/user/self` now includes `aff_quota`, `aff_history_quota`, and
+  `aff_count`, which the wallet referral rewards card consumes.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 229 Worker routes, 47 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  12 payment-deferred;
+- route-set SHA-256:
+  `6eecf1ca5d3bdff5200390e4d7251cb440fa8bd260516a7f3b3a5a86bfdcbb7a`;
+- `cargo test -p cinatoken-worker --lib`: 268 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining boundary: the Worker still does not own public redemption-code topup,
+Epay, Creem, Waffo, Waffo Pancake, or external subscription checkout/callback
+routes. The wallet keeps those methods hidden through `topup/info`; production
+must not turn them on until their provider-specific idempotency, signature, and
+staging replay evidence exists.

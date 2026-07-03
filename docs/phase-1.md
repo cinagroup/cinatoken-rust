@@ -261,6 +261,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   list/bind/invalidate/delete; self subscription summary and billing
   preference persistence; balance-pay purchase with quota debit, order record,
   plan duration/reset calculation, and group upgrade/downgrade parity.
+- Wallet/topup compatibility (`crates/worker/src/admin_payment.rs`): Stripe
+  amount estimation, frontend-compatible Stripe `pay_link`, wallet
+  `topup/info`, self/admin topup history pagination with Go's 30-day self
+  window, string status mapping, admin manual completion for pending Stripe
+  rows, and `/api/user/self` affiliation fields consumed by the wallet rewards
+  card. Non-Stripe gateways and public redemption remain hidden until their
+  Worker routes are implemented.
 
 ## Next
 
@@ -303,6 +310,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
-- Complete the remaining subscription payment-provider routes
-  (`stripe`/`creem`/`epay`/`waffo-pancake`) and Waffo subscription product
-  helpers before exposing `/subscriptions` or `/wallet` broadly in production.
+- Complete public redemption plus the remaining topup/subscription payment
+  provider routes (`epay`/`creem`/`waffo`/`waffo-pancake`, and external
+  subscription checkout/callback helpers) before exposing those payment
+  methods broadly in production.

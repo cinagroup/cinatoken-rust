@@ -1834,8 +1834,11 @@ fn log_filter_clause<'a>(filter: &'a LogFilter) -> (String, Vec<D1Type<'a>>) {
             args.push(D1Type::Text(trimmed));
         }
     }
-    conditions.push("deleted_at IS NULL".to_string());
-    let sql = format!("WHERE {}", conditions.join(" AND "));
+    let sql = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
     (sql, args)
 }
 
@@ -5924,6 +5927,21 @@ pub struct QuotaTrendRow {
 const LOG_TYPE_CONSUME_VALUE: i32 = 2;
 const SECONDS_PER_HOUR: i64 = 3600;
 
+/// Ranking totals grouped by model over one time window.
+#[derive(Debug, Clone, Deserialize, PartialEq, serde::Serialize)]
+pub struct RankingQuotaTotal {
+    pub model_name: String,
+    pub total_tokens: i64,
+}
+
+/// Ranking token totals grouped by model and bucket.
+#[derive(Debug, Clone, Deserialize, PartialEq, serde::Serialize)]
+pub struct RankingQuotaBucket {
+    pub model_name: String,
+    pub bucket: i64,
+    pub tokens: i64,
+}
+
 /// Quota trend grouped by model_name, hour-floored. Optional `username`
 /// filter narrows to a single user's usage.
 pub async fn quota_trend_by_model(
@@ -5932,7 +5950,7 @@ pub async fn quota_trend_by_model(
     end: i64,
     username_filter: Option<&str>,
 ) -> worker::Result<Vec<QuotaTrendRow>> {
-    let base_where = "type = ?1 AND created_at >= ?2 AND created_at <= ?3 AND deleted_at IS NULL";
+    let base_where = "type = ?1 AND created_at >= ?2 AND created_at <= ?3";
     let (where_sql, args) = if let Some(username) = username_filter {
         (
             format!("{base_where} AND username = ?4 GROUP BY model_name, hour"),
@@ -5992,7 +6010,7 @@ pub async fn quota_trend_by_user(
                SUM(prompt_tokens + completion_tokens) AS token_used,
                COUNT(*) AS count
         FROM logs
-        WHERE type = ?1 AND created_at >= ?2 AND created_at <= ?3 AND deleted_at IS NULL
+        WHERE type = ?1 AND created_at >= ?2 AND created_at <= ?3
         GROUP BY username, hour
         ORDER BY created_at ASC
         "#,
@@ -6028,7 +6046,6 @@ pub async fn quota_trend_by_user_id(
                COUNT(*) AS count
         FROM logs
         WHERE type = ?1 AND user_id = ?2 AND created_at >= ?3 AND created_at <= ?4
-          AND deleted_at IS NULL
         GROUP BY model_name, hour
         ORDER BY created_at ASC
         "#,
@@ -6039,6 +6056,75 @@ pub async fn quota_trend_by_user_id(
         .all()
         .await?
         .results::<QuotaTrendRow>()?)
+}
+
+/// Ranking totals over a period. This mirrors Go's `quota_data` aggregation,
+/// but uses the Worker-native live `logs` source just like the dashboard
+/// quota charts.
+pub async fn ranking_quota_totals(
+    db: &D1Database,
+    start: i64,
+    end: i64,
+) -> worker::Result<Vec<RankingQuotaTotal>> {
+    let args = [
+        D1Type::Integer(LOG_TYPE_CONSUME_VALUE),
+        D1Type::Integer(d1_i32(start)),
+        D1Type::Integer(d1_i32(end)),
+    ];
+    db.prepare(
+        r#"
+        SELECT model_name AS model_name,
+               COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens
+        FROM logs
+        WHERE type = ?1
+          AND created_at >= ?2
+          AND created_at <= ?3
+          AND TRIM(model_name) != ''
+        GROUP BY model_name
+        HAVING COALESCE(SUM(prompt_tokens + completion_tokens), 0) > 0
+        ORDER BY total_tokens DESC, model_name ASC
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RankingQuotaTotal>()
+}
+
+/// Ranking buckets over a period. `bucket_size` is supplied by the validated
+/// period config; clamp defensively so the generated SQL never divides by zero.
+pub async fn ranking_quota_buckets(
+    db: &D1Database,
+    start: i64,
+    end: i64,
+    bucket_size: i64,
+) -> worker::Result<Vec<RankingQuotaBucket>> {
+    let bucket_size = bucket_size.max(1);
+    let args = [
+        D1Type::Integer(LOG_TYPE_CONSUME_VALUE),
+        D1Type::Integer(d1_i32(start)),
+        D1Type::Integer(d1_i32(end)),
+    ];
+    let sql = format!(
+        r#"
+        SELECT model_name AS model_name,
+               (created_at / {bucket_size}) * {bucket_size} AS bucket,
+               COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+        FROM logs
+        WHERE type = ?1
+          AND created_at >= ?2
+          AND created_at <= ?3
+          AND TRIM(model_name) != ''
+        GROUP BY model_name, bucket
+        HAVING COALESCE(SUM(prompt_tokens + completion_tokens), 0) > 0
+        ORDER BY bucket ASC, tokens DESC, model_name ASC
+        "#
+    );
+    db.prepare(&sql)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<RankingQuotaBucket>()
 }
 
 #[cfg(test)]
@@ -6052,6 +6138,27 @@ mod tests {
         assert!(sql.contains("deleted_at IS NULL"));
         assert!(sql.contains("id IN (?2, ?3, ?4)"));
         assert!(!sql.contains("SELECT id, user_id"));
+    }
+
+    #[test]
+    fn log_filter_clause_matches_log_schema_without_soft_delete() {
+        let empty_filter = LogFilter::default();
+        let (empty_sql, empty_args) = log_filter_clause(&empty_filter);
+        assert_eq!(empty_sql, "");
+        assert!(empty_args.is_empty());
+
+        let filter = LogFilter {
+            kind: Some(LOG_TYPE_CONSUME),
+            start_timestamp: Some(100),
+            end_timestamp: Some(200),
+            ..LogFilter::default()
+        };
+        let (sql, args) = log_filter_clause(&filter);
+        assert!(sql.contains("type = ?1"));
+        assert!(sql.contains("created_at >= ?2"));
+        assert!(sql.contains("created_at <= ?3"));
+        assert!(!sql.contains("deleted_at"));
+        assert_eq!(args.len(), 3);
     }
 
     #[test]

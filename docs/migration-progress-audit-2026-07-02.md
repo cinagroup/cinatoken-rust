@@ -94,7 +94,8 @@ The following source route families are not yet equivalent:
 - `/v1/realtime` WebSocket.
 - Go's explicit 501 surface for files, fine-tunes, variations, and model delete.
 - Dashboard billing compatibility routes.
-- Public rankings and performance-summary routes.
+- Public performance-summary routes. Public rankings have since landed in the
+  Rust Worker via `GET /api/rankings`, backed by live D1 `logs` aggregation.
 - Remaining task result/content/proxy routes for Suno, Midjourney, and video.
 - Redemption, subscription, email/reset/bind, Passkey, custom OAuth,
   and non-Stripe payment families.
@@ -134,11 +135,12 @@ defects:
    deployments back to `/setup`. The direction is corrected and tested.
 
 The status response now clamps navigation to APIs currently supported by Rust.
-Rankings, playground, wallet/top-up, redemption, subscriptions, and io.net model
-deployments remain hidden until their backend contracts are complete. Task and
-Midjourney usage-log read APIs now exist, but navigation remains conservative
-until authenticated browser smoke and the remaining task content/proxy routes
-are proven.
+Playground, wallet/top-up, subscriptions, and io.net model deployments remain
+hidden until their backend contracts are complete. Rankings are no longer
+hard-hidden after the Rust `GET /api/rankings` migration. Task and Midjourney
+usage-log read APIs now exist, but navigation remains conservative until
+authenticated browser smoke and the remaining task content/proxy routes are
+proven.
 
 ### 2026-07-03 Frontend Contract Delta
 

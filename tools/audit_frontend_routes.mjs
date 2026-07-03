@@ -302,7 +302,6 @@ function classifyMissing(call) {
 
   if (
     startsWithAny(route, [
-      "/api/rankings",
       "/api/redemption",
       "/api/subscription",
       "/api/deployments",

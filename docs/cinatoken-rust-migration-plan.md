@@ -1837,3 +1837,45 @@ Important boundary: this is the admin redemption-code management surface, not
 the public payment/top-up/redemption settlement chain. Before Rust owns paid
 redemption in production, the payment/idempotency and double-credit gates in
 the billing and data-migration runbooks still apply.
+
+### 22.8 2026-07-04 Public Rankings Compatibility Delta
+
+This increment supersedes the 22.7 route-debt number for the default frontend
+contract audit. The Rust Worker now implements the public rankings page API:
+
+- `GET /api/rankings` returns the Go-compatible envelope consumed by the
+  default React rankings page.
+- Supported periods match Go: `today`, `week` (default), `month`, `year`, and
+  `all`; invalid periods return `400` with `invalid ranking period: ...`.
+- Access control mirrors Go `HeaderNavModuleAuth("rankings")`: empty or
+  malformed `HeaderNavModules` defaults to public access, legacy boolean/string
+  values control `enabled`, and object values support `enabled` plus
+  `requireAuth`.
+- `/api/status` no longer hard-hides `HeaderNavModules.rankings`; operators can
+  still disable it or require login through the normal header-nav option.
+- The snapshot includes model rankings, vendor rankings, top movers, top
+  droppers, model token history, and vendor share history with the same JSON
+  field names as the frontend types.
+- Go reads rankings from the background-fed `quota_data` table. The Worker
+  intentionally computes the public view from live D1 `logs`, matching the
+  existing Rust dashboard trend strategy and avoiding a new Cron/flush job in
+  this migration slice. A future high-traffic deployment can reintroduce a
+  Worker Cron + `quota_data` aggregate if D1 read cost requires it.
+- The D1 repository log filters were corrected for schema parity: `logs` does
+  not have Go GORM soft-delete semantics, so analytics queries no longer add
+  `deleted_at IS NULL` to `logs`.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 213 Worker routes, 63 missing calls;
+- debt categories: 13 auth-deferred, 34 capability-hidden-product,
+  16 payment-deferred;
+- route-set SHA-256:
+  `63b9b8f87ecdf6caa7cb15269c86be22c2cbeed1c27d3f6659258a37f146f6b1`;
+- `cargo test -p cinatoken-worker --lib`: 262 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining production gates: apply this Worker to isolated staging, seed enough
+`logs` rows to exercise every period and the `Others` grouping, verify public
+and `requireAuth=true` rankings behavior in browser, and confirm D1 read
+latency before enabling rankings on high-traffic production tenants.

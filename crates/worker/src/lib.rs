@@ -40,6 +40,7 @@ mod model_meta_api;
 mod operations;
 mod prefill_group_api;
 mod pricing_api;
+mod rankings_api;
 mod ratio_sync;
 mod turnstile;
 
@@ -462,6 +463,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .get_async("/api/data/users", |req, ctx| async move {
             admin_data::quota_trend_by_user(req, ctx.env).await
+        })
+        // Public rankings (Go controller/rankings.go compatibility).
+        .get_async("/api/rankings", |req, ctx| async move {
+            rankings_api::get_rankings(req, ctx.env).await
         })
         // OpenAI-compatible billing views (Go billing.go; token Bearer auth).
         .get_async("/dashboard/billing/subscription", |req, ctx| async move {

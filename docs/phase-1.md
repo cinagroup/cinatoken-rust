@@ -204,6 +204,17 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   response shapes. Migration `0012_redemptions.sql` and the migration CLI
   import table set now include `redemptions`; public redemption/top-up payment
   flows remain deferred.
+- Public rankings compatibility (`crates/worker/src/rankings_api.rs`):
+  `GET /api/rankings` now honors `HeaderNavModules.rankings`, including the
+  legacy boolean/string enabled form and `requireAuth`. The response preserves
+  the default frontend snapshot shape: model/vendor leaderboards, movers,
+  droppers, model history, and vendor share history. Go reads a background
+  `quota_data` table; the Worker computes the same public view from live D1
+  `logs`, matching the Rust dashboard trend strategy. The status endpoint no
+  longer hard-hides the rankings header module.
+- The D1 repository log filters were corrected to match the current D1 schema
+  and Go `model.Log`: `logs` is not a soft-delete table, so live log analytics
+  no longer add `deleted_at IS NULL` to `logs` queries.
 - `crates/auth` gained bcrypt password helpers (Go-compatible PHB format),
   role/status constants, and `is_admin`/`is_root`/`outranks` helpers.
 - Worker admin auth surface (`crates/worker/src/admin.rs`): `POST

@@ -977,11 +977,36 @@ fn configured_header_bool(
 ) -> bool {
     let value = configured.and_then(|value| value.get(field));
     match nested_field {
-        Some(nested) => value
-            .and_then(|value| value.get(nested))
-            .and_then(Value::as_bool)
-            .unwrap_or(default),
-        None => value.and_then(Value::as_bool).unwrap_or(default),
+        Some("enabled") => match value {
+            Some(Value::Object(_)) => {
+                json_bool(value.and_then(|value| value.get("enabled")), default)
+            }
+            Some(_) => json_bool(value, default),
+            None => default,
+        },
+        Some(nested) => json_bool(value.and_then(|value| value.get(nested)), default),
+        None => json_bool(value, default),
+    }
+}
+
+fn json_bool(value: Option<&Value>, default: bool) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => {
+            if value.as_i64() == Some(1) || value.as_f64() == Some(1.0) {
+                true
+            } else if value.as_i64() == Some(0) || value.as_f64() == Some(0.0) {
+                false
+            } else {
+                default
+            }
+        }
+        Some(Value::String(value)) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => default,
+        },
+        _ => default,
     }
 }
 
@@ -999,8 +1024,8 @@ fn capability_clamped_header(raw: Option<&str>) -> String {
             "requireAuth": configured_header_bool(configured, "pricing", Some("requireAuth"), false)
         },
         "rankings": {
-            "enabled": false,
-            "requireAuth": true
+            "enabled": configured_header_bool(configured, "rankings", Some("enabled"), true),
+            "requireAuth": configured_header_bool(configured, "rankings", Some("requireAuth"), false)
         },
         "docs": configured_header_bool(configured, "docs", None, true),
         "about": configured_header_bool(configured, "about", None, true)
@@ -1440,7 +1465,7 @@ mod tests {
     }
 
     #[test]
-    fn header_status_never_advertises_unported_rankings() {
+    fn header_status_advertises_ported_rankings_from_config() {
         let raw = serde_json::json!({
             "home": false,
             "console": true,
@@ -1455,8 +1480,23 @@ mod tests {
         assert_eq!(clamped["home"], false);
         assert_eq!(clamped["pricing"]["enabled"], false);
         assert_eq!(clamped["pricing"]["requireAuth"], true);
+        assert_eq!(clamped["rankings"]["enabled"], true);
+        assert_eq!(clamped["rankings"]["requireAuth"], false);
+    }
+
+    #[test]
+    fn header_status_preserves_legacy_boolean_access_config() {
+        let raw = serde_json::json!({
+            "pricing": false,
+            "rankings": "0"
+        })
+        .to_string();
+        let clamped: Value = serde_json::from_str(&capability_clamped_header(Some(&raw))).unwrap();
+
+        assert_eq!(clamped["pricing"]["enabled"], false);
+        assert_eq!(clamped["pricing"]["requireAuth"], false);
         assert_eq!(clamped["rankings"]["enabled"], false);
-        assert_eq!(clamped["rankings"]["requireAuth"], true);
+        assert_eq!(clamped["rankings"]["requireAuth"], false);
     }
 
     #[test]

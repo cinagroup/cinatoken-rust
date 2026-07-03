@@ -82,7 +82,6 @@ Until all API families are migrated, the status response clamps
 `HeaderNavModules` and `SidebarModulesAdmin` so unsupported pages are not
 advertised:
 
-- rankings;
 - playground;
 - wallet/top-up;
 - Midjourney/task logs;
@@ -104,7 +103,7 @@ bun run check:web:staging
 `audit:web:routes` parses the default frontend with a TypeScript
 Program/TypeChecker and compares 212 distinct frontend calls with Worker router
 registrations. The 2026-07-03 and 2026-07-04 compatibility batches reduced
-unmatched calls from 122 to 64 by closing routes and removing one
+unmatched calls from 122 to 63 by closing routes and removing one
 false-positive call:
 
 - complete 2FA setup/enable/disable/status/backup-code contracts;
@@ -154,9 +153,13 @@ false-positive call:
   Go-style pagination/search/create/update/delete envelopes, require payment
   compliance before code creation, soft-delete rows, and write admin audit
   logs. Public top-up/payment redemption remains deferred.
+- Public rankings:
+  `GET /api/rankings` now returns the default frontend's live rankings
+  snapshot from D1 `logs`, honors `HeaderNavModules.rankings`, and removes
+  rankings from the status capability clamp.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-64 calls with a stable SHA-256 route-set digest and category counts. New
+63 calls with a stable SHA-256 route-set digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
 payment families; operations-debt is currently zero. Local wrapper methods are

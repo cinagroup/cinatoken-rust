@@ -4,23 +4,29 @@ Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 262 passed after adding public
+  rankings, `HeaderNavModules.rankings` access enforcement, live `logs`
+  aggregation, status capability exposure, and rankings unit coverage.
+- `cargo test -p cinatoken-migration`: 21 passed after adding `checkins` and
+  `redemptions` to the D1 import table set.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes
+  after the public rankings batch.
+- `bun tools/audit_frontend_routes.mjs --summary --details`: 212 frontend
+  calls, 213 Worker routes, 63 missing calls, categories 13 auth-deferred / 34
+  capability-hidden-product / 16 payment-deferred, SHA-256
+  `63b9b8f87ecdf6caa7cb15269c86be22c2cbeed1c27d3f6659258a37f146f6b1`.
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
+  passes with the reviewed 63-call route-debt baseline.
+- `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
+  `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
+  worker wasm check all passed after the public rankings batch.
+- D1 log analytics queries now match the Go/D1 schema: `logs` has no
+  `deleted_at` column, so repository log filters and quota/ranking trend
+  queries do not add soft-delete predicates to `logs`.
 - `cargo test -p cinatoken-worker --lib`: 255 passed after adding admin
   redemption-code management routes, D1-backed redemptions, payment-compliance
   create guard, status-only updates, sidebar exposure, and redemption request
   validation coverage.
-- `cargo test -p cinatoken-migration`: 21 passed after adding `checkins` and
-  `redemptions` to the D1 import table set.
-- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes
-  after the admin redemption batch.
-- `bun tools/audit_frontend_routes.mjs --summary --details`: 212 frontend
-  calls, 212 Worker routes, 64 missing calls, categories 13 auth-deferred / 35
-  capability-hidden-product / 16 payment-deferred, SHA-256
-  `b326864fa555cba7ba27e73a8a0b849a5511141f262f1723edbbd4d6baa7fbf7`.
-- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
-  passes with the reviewed 64-call route-debt baseline.
-- `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
-  `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
-  worker wasm check all passed after the admin redemption batch.
 - In-memory SQLite replay of `migrations/d1/0001_core.sql` plus
   `migrations/d1/0011_checkins.sql` plus
   `migrations/d1/0012_redemptions.sql`, confirming the `checkins` and
@@ -688,11 +694,11 @@ Last checked: 2026-07-04
   for self/admin users plus admin built-in binding clear, async
   Midjourney/task usage-log read lists at `/api/mj`, `/api/mj/self`,
   `/api/task`, and `/api/task/self`, D1-backed daily check-in at
-  `/api/user/checkin`, and admin redemption-code management at
-  `/api/redemption`.
+  `/api/user/checkin`, admin redemption-code management at `/api/redemption`,
+  and public rankings at `/api/rankings`.
   The reviewed route-debt baseline is enforced by `bun run check:web:routes`:
-  64 missing calls, no unclassified entries, and no remaining visible-admin or
-  operations-debt gaps. `cargo test -p cinatoken-worker --lib` passes 255
+  63 missing calls, no unclassified entries, and no remaining visible-admin or
+  operations-debt gaps. `cargo test -p cinatoken-worker --lib` passes 262
   tests; migrations 0001-0012 replay including custom OAuth provider,
   binding, check-in, and redemption tables. The wasm32 and default frontend
   TypeScript/Rsbuild checks pass.

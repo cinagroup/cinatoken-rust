@@ -101,8 +101,8 @@ const header = parseJsonOption(
   "HeaderNavModules",
 );
 assert(
-  header.rankings?.enabled === false,
-  "rankings must remain capability-hidden",
+  header.rankings?.enabled === true && header.rankings?.requireAuth === false,
+  "rankings must be available by default",
 );
 const sidebar = parseJsonOption(
   status.data.SidebarModulesAdmin,
@@ -126,7 +126,7 @@ assert(
 );
 passed(
   "status capability contract",
-  `${status.data.environment}: unsupported modules hidden`,
+  `${status.data.environment}: rankings available; unsupported modules hidden`,
 );
 
 const setup = await jsonEnvelope("/api/setup");

@@ -6546,6 +6546,34 @@ pub async fn find_topup_by_trade_no(
 /// only if currently pending. Returns `true` when the row was updated (i.e.
 /// this is the first completion — the caller should credit quota). Returns
 /// `false` when already completed (idempotent skip).
+pub async fn update_pending_topup_status_for_provider(
+    db: &D1Database,
+    trade_no: &str,
+    expected_provider: &str,
+    target_status: i32,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(target_status),
+        D1Type::Text(trade_no),
+        D1Type::Text(expected_provider),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE topups
+            SET status = ?1
+            WHERE trade_no = ?2
+              AND payment_provider = ?3
+              AND status = 0
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|m| m.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
 pub async fn complete_topup(db: &D1Database, trade_no: &str, now: i64) -> worker::Result<bool> {
     let args = [D1Type::Integer(d1_i32(now)), D1Type::Text(trade_no)];
     let result = db

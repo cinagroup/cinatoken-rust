@@ -295,9 +295,21 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `POST /api/option/waffo-pancake/subscription-product` with root-only auth,
   signed REST actions, deterministic SDK-style idempotency keys,
   orphan-store surfacing, Go-compatible Waffo admin frontend envelopes, and
-  redacted admin audit. Creem, Waffo, Waffo Pancake checkout/callback gateways
-  and external subscription payment providers remain hidden until their Worker
-  routes are implemented.
+  redacted admin audit. Waffo Pancake wallet checkout is implemented at
+  `POST /api/user/waffo-pancake/pay`, creating the D1 pending topup before
+  signed authenticated checkout creation and using Go-compatible
+  `WAFFO_PANCAKE-{user}-{millis}-{rand}` order IDs, buyer identity
+  `cinatoken-user-{id}`, price snapshots, token-fragment checkout URLs, and
+  token-display quota normalization. `POST /api/waffo-pancake/webhook/:env`
+  verifies `X-Waffo-Signature` with RSA-SHA256/PKCS#1 v1.5 over
+  `timestamp.payload`, enforces the test/prod route env, checks local order
+  provider, buyer identity, and amount before crediting through the
+  provider-aware D1 credited-anchor batch. Wallet `topup/info` now exposes
+  Waffo Pancake only when payment compliance and merchant/private/product
+  settings are complete; subscription Waffo Pancake remains explicitly hidden
+  until its separate subscription order settlement route is migrated. Creem and
+  Waffo wallet gateways plus external subscription payment providers remain
+  hidden until their Worker routes are implemented.
 
 ## Next
 
@@ -341,6 +353,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
 - Complete the remaining topup/subscription payment provider routes
-  (`creem`/`waffo`/`waffo-pancake` checkout/callback helpers and external
-  subscription payment providers) before exposing those payment methods broadly
-  in production.
+  (`creem`/`waffo` wallet checkout/callback helpers and external subscription
+  payment providers, including Waffo Pancake subscription checkout/settlement)
+  before exposing those payment methods broadly in production.

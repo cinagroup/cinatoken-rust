@@ -190,11 +190,11 @@ options, and `money_to_quota`. Two parity notes:
 - **`money_to_quota` uses `.round()`** (`money * unit_price * 500_000` rounded),
   but Go truncates toward zero (`int(...)` / `decimal.IntPart()`). This is a real
   divergence — fix to truncate to match Go.
-- 2026-07-04 delta: Stripe wallet checkout/webhook and Epay wallet
-  checkout/callback now use provider-aware topup rows and D1 credited-anchor
-  settlement. Creem/Waffo/Waffo-Pancake wallet providers, subscription
-  checkout/callback providers, and `ValidateRedirectURL` parity are still
-  pending.
+- 2026-07-04 delta: Stripe wallet checkout/webhook, Epay wallet
+  checkout/callback, and Waffo Pancake wallet checkout/webhook now use
+  provider-aware topup rows and D1 credited-anchor settlement. Creem/Waffo
+  wallet providers, subscription checkout/callback providers, and
+  `ValidateRedirectURL` parity are still pending.
 
 Current Epay wallet details:
 
@@ -210,14 +210,44 @@ Current Epay wallet details:
   mismatches or partial complete/credit/mark batches return `"fail"` instead of
   being ACKed.
 
+Current Waffo Pancake wallet details:
+
+- `POST /api/user/waffo-pancake/pay` creates the D1 pending topup before
+  creating the external checkout session. It uses Go-compatible
+  `WAFFO_PANCAKE-{user}-{UnixMilli}-{rand6}` trade numbers,
+  `cinatoken-user-{id}` buyer identity, a two-decimal USD price snapshot, and
+  the SDK-compatible authenticated checkout pair
+  `/v1/actions/auth/issue-session-token` +
+  `/v1/actions/checkout/create-session`.
+- Rust keeps the D1 invariant that `topups.amount` is the final quota to
+  credit. For Waffo Pancake token-display mode this means order creation
+  reproduces Go's `normalizeWaffoPancakeTopUpAmount` + `RechargeWaffoPancake`
+  result: `max(IntPart(amount / QuotaPerUnit), 1) * QuotaPerUnit`.
+- `POST /api/waffo-pancake/webhook/:env` verifies `X-Waffo-Signature`
+  (`t=...,v1=...`) as RSA-SHA256/PKCS#1 v1.5 over `t + "." + raw_payload`,
+  enforces a 5-minute timestamp window, uses the Waffo test/prod public key for
+  the route env, and then enforces `event.mode == :env`.
+- Only `order.completed` wallet events credit. The handler rejects
+  signature-valid but unresolvable events with a recorded `payment_events` row
+  and `200 OK` (permanent mismatch, no provider retry), checks local
+  `payment_provider == "waffo_pancake"`, verifies
+  `merchantProvidedBuyerIdentity == cinatoken-user-{topup.user_id}`, and checks
+  the event amount against the stored order money when present.
+- First-time credits run through
+  `complete_topup_and_credit_for_provider`; duplicate successful deliveries are
+  replayed as `200 OK` no-ops only when the row is already success+credited with
+  matching provider/method/money. Waffo Pancake subscription events are recorded
+  as `subscription_deferred` until subscription settlement is migrated.
+
 Checklist:
 
-1. Keep per-provider signature verification before any write. Done for Stripe
-   and Epay wallet topups; pending for Creem/Waffo/Waffo-Pancake and
-   subscription providers.
+1. Keep per-provider signature verification before any write. Done for Stripe,
+   Epay wallet topups, and Waffo Pancake wallet topups; pending for
+   Creem/Waffo and subscription providers.
 2. Keep `payment_events` as non-gating audit/dedup evidence and anchor credit on
-   `topups` conditional credited batches. Done for Stripe and Epay wallet
-   topups; provider-specific replay fixtures still need staging D1 proof.
+   `topups` conditional credited batches. Done for Stripe, Epay wallet topups,
+   and Waffo Pancake wallet topups; provider-specific replay fixtures still
+   need staging D1 proof.
 3. Implement per-provider quota formulas with truncation. Done for Epay wallet
    order creation; Stripe `money_to_quota` still needs truncation parity review.
 4. Normalize webhook replays to 200 no-op and add replay tests that credit

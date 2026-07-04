@@ -383,6 +383,9 @@ Security cases:
 - CORS policy matches staging origin.
 - WAF/rate-limit rules are active on staging routes.
 - OAuth state/webhook signature tests pass for any enabled auth/payment route.
+- Waffo Pancake wallet smoke covers checkout URL creation, pending topup row,
+  signed `order.completed` webhook credit, duplicate webhook no-op, and
+  env/identity/amount mismatch no-credit cases before paid traffic.
 - Admin mutation routes write audit events before Scenario B/C.
 
 Pass criteria:

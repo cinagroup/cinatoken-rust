@@ -8,12 +8,14 @@
 //!   returns the signed form action/params. UserAuth.
 //! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
 //! - `POST /api/user/waffo-pancake/amount` estimates Waffo Pancake charge amount.
+//! - `POST /api/user/waffo-pancake/pay` creates a Waffo Pancake checkout session.
 //! - `POST /api/option/waffo-pancake/catalog` lists Waffo Pancake stores/products.
 //! - `POST /api/option/waffo-pancake/pair` creates a Waffo Pancake store/product pair.
 //! - `POST /api/option/waffo-pancake/save` persists Waffo Pancake admin config.
 //! - `POST /api/option/waffo-pancake/subscription-product` creates a plan product.
 //! - `POST /api/option/waffo-pancake/subscription-product-options` lists saved-store products.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
+//! - `POST /api/waffo-pancake/webhook/:env` verifies Waffo Pancake events and credits quota.
 //! - `GET/POST /api/user/epay/notify` verifies Epay callbacks and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
 //! - `POST /api/user/topup` redeems a public redemption code.
@@ -33,11 +35,11 @@ use futures_util::{
     future::{select, Either},
     TryStreamExt,
 };
-use rsa::pkcs1::DecodeRsaPrivateKey;
-use rsa::pkcs1v15::SigningKey;
-use rsa::pkcs8::DecodePrivateKey;
-use rsa::signature::{SignatureEncoding, Signer};
-use rsa::RsaPrivateKey;
+use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
+use rsa::pkcs1v15::{Signature as RsaSignature, SigningKey, VerifyingKey};
+use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+use rsa::signature::{SignatureEncoding, Signer, Verifier};
+use rsa::{RsaPrivateKey, RsaPublicKey};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -82,7 +84,9 @@ const DEFAULT_QUOTA_PER_UNIT: &str = "500000";
 const DEFAULT_WAFFO_PANCAKE_UNIT_PRICE: &str = "1";
 const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
 const PAYMENT_PROVIDER_EPAY: &str = "epay";
+const PAYMENT_PROVIDER_WAFFO_PANCAKE: &str = "waffo_pancake";
 const TOPUP_STATUS_SUCCESS: i32 = 1;
+const TOPUP_STATUS_FAILED: i32 = 2;
 const EPAY_SUBMIT_PATH: &str = "/submit.php";
 const EPAY_NOTIFY_BODY_LIMIT_BYTES: usize = 16 * 1024;
 const EPAY_RETURN_PATH: &str = "/usage-logs";
@@ -94,12 +98,35 @@ const WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH: &str =
     "/v1/actions/onetime-product/create-product";
 const WAFFO_PANCAKE_PUBLISH_ONETIME_PRODUCT_PATH: &str =
     "/v1/actions/onetime-product/publish-product";
+const WAFFO_PANCAKE_ISSUE_SESSION_TOKEN_PATH: &str = "/v1/actions/auth/issue-session-token";
+const WAFFO_PANCAKE_CREATE_CHECKOUT_SESSION_PATH: &str = "/v1/actions/checkout/create-session";
 const WAFFO_PANCAKE_FETCH_TIMEOUT: Duration = Duration::from_secs(12);
 const WAFFO_PANCAKE_GRAPHQL_RESPONSE_LIMIT_BYTES: usize = 512 * 1024;
 const WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const WAFFO_PANCAKE_WEBHOOK_TOLERANCE_MS: u64 = 5 * 60 * 1000;
+const WAFFO_PANCAKE_CHECKOUT_EXPIRES_SECONDS: i32 = 45 * 60;
 const DEFAULT_WAFFO_PANCAKE_STORE_NAME: &str = "cinatoken-store";
 const DEFAULT_WAFFO_PANCAKE_PRODUCT_NAME: &str = "cinatoken-charge-product";
 const WAFFO_PANCAKE_TAX_CATEGORY_SAAS: &str = "saas";
+const WAFFO_PANCAKE_BUILTIN_TEST_PUBLIC_KEY: &str = r#"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxnmRY6yMMA3lVqmAU6ZG
+b1sjL/+r/z6E+ZjkXaDAKiqOhk9rpazni0bNsGXwmftTPk9jy2wn+j6JHODD/WH/
+SCnSfvKkLIjy4Hk7BuCgB174C0ydan7J+KgXLkOwgCAxxB68t2tezldwo74ZpXgn
+F49opzMvQ9prEwIAWOE+kV9iK6gx/AckSMtHIHpUesoPDkldpmFHlB2qpf1vsFTZ
+5kD6DmGl+2GIVK01aChy2lk8pLv0yUMu18v44sLkO5M44TkGPJD9qG09wrvVG2wp
+OTVCn1n5pP8P+HRLcgzbUB3OlZVfdFurn6EZwtyL4ZD9kdkQ4EZE/9inKcp3c1h4
+xwIDAQAB
+-----END PUBLIC KEY-----"#;
+const WAFFO_PANCAKE_BUILTIN_PROD_PUBLIC_KEY: &str = r#"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz+xApdTIb4ua+DgZKQ54
+iBsD82ybyhGCLRETONW4Jgbb3A8DUM1LqBk6r/CmTOCHqLalTQHNigvP3R5zkDNX
+iRJz6gA4MJ/+8K0+mnEE2RISQzN+Qu65TNd6svb+INm/kMaftY4uIXr6y6kchtTJ
+dwnQhcKdAL2v7h7IFnkVelQsKxDdb2PqX8xX/qwd01iXvMcpCCaXovUwZsxH2QN5
+ZKBTseJivbhUeyJCco4fdUyxOMHe2ybCVhyvim2uxAl1nkvL5L8RCWMCAV55LLo0
+9OhmLahz/DYNu13YLVP6dvIT09ZFBYU6Owj1NxdinTynlJCFS9VYwBgmftosSE1U
+dwIDAQAB
+-----END PUBLIC KEY-----"#;
 const WAFFO_PANCAKE_CATALOG_QUERY: &str = r#"query {
     stores(limit: 100) {
         id
@@ -125,6 +152,10 @@ const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     EPAY_ID_KEY,
     EPAY_KEY_KEY,
     PAY_METHODS_KEY,
+    WAFFO_PANCAKE_MERCHANT_ID_KEY,
+    WAFFO_PANCAKE_PRIVATE_KEY_KEY,
+    WAFFO_PANCAKE_PRODUCT_ID_KEY,
+    WAFFO_PANCAKE_MIN_TOPUP_KEY,
 ];
 const ONLINE_AMOUNT_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_CONFIRMED_KEY,
@@ -160,6 +191,19 @@ const WAFFO_PANCAKE_AMOUNT_OPTION_KEYS: &[&str] = &[
     TOPUP_GROUP_RATIO_KEY,
     GENERAL_QUOTA_DISPLAY_TYPE_KEY,
     PAYMENT_AMOUNT_DISCOUNT_KEY,
+];
+const WAFFO_PANCAKE_TOPUP_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    WAFFO_PANCAKE_MIN_TOPUP_KEY,
+    WAFFO_PANCAKE_UNIT_PRICE_KEY,
+    QUOTA_PER_UNIT_KEY,
+    TOPUP_GROUP_RATIO_KEY,
+    GENERAL_QUOTA_DISPLAY_TYPE_KEY,
+    PAYMENT_AMOUNT_DISCOUNT_KEY,
+    WAFFO_PANCAKE_MERCHANT_ID_KEY,
+    WAFFO_PANCAKE_PRIVATE_KEY_KEY,
+    WAFFO_PANCAKE_PRODUCT_ID_KEY,
 ];
 const WAFFO_PANCAKE_CREDENTIAL_OPTION_KEYS: &[&str] =
     &[WAFFO_PANCAKE_MERCHANT_ID_KEY, WAFFO_PANCAKE_PRIVATE_KEY_KEY];
@@ -780,11 +824,155 @@ pub async fn waffo_pancake_amount(mut req: Request, env: Env) -> WorkerResult<Re
     };
 
     let pay_money = online_pay_money(amount, &settings);
-    if pay_money <= Decimal::new(1, 2) {
+    if pay_money < Decimal::new(1, 2) {
         return Ok(envelope_error_response(400, "amount is too small"));
     }
 
     Ok(envelope_ok_response(&format_pay_money(pay_money))?)
+}
+
+/// `POST /api/user/waffo-pancake/pay`: create a Waffo Pancake checkout session.
+pub async fn waffo_pancake_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let amount = request_amount(&body);
+    if !amount.is_finite() || amount <= 0.0 || amount.fract() != 0.0 || amount > i64::MAX as f64 {
+        return waffo_pancake_error_message_response(200, "amount must be a positive integer");
+    }
+    let amount = amount as i64;
+
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, WAFFO_PANCAKE_TOPUP_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    if !compliance_confirmed {
+        return waffo_pancake_error_message_response(200, "payment compliance is not confirmed");
+    }
+    let creds = match waffo_pancake_creds_from_parts(
+        values[8].as_deref().unwrap_or_default(),
+        values[9].as_deref().unwrap_or_default(),
+    ) {
+        Ok(creds) => creds,
+        Err(message) => return waffo_pancake_error_message_response(200, message),
+    };
+    let product_id = values[10].as_deref().unwrap_or_default().trim();
+    if let Err(message) = validate_waffo_pancake_short_id("productId", product_id, "PROD") {
+        return waffo_pancake_error_message_response(200, &message);
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return waffo_pancake_error_message_response(200, "user not found");
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return waffo_pancake_error_message_response(200, "user is disabled");
+    }
+
+    let min_topup = parse_positive_i64(values[2].as_deref(), 1);
+    if amount < min_topup {
+        return waffo_pancake_error_message_response(200, &format!("minimum topup is {min_topup}"));
+    }
+    let settings = OnlineAmountSettings {
+        min_topup,
+        price: parse_positive_decimal(values[3].as_deref(), DEFAULT_WAFFO_PANCAKE_UNIT_PRICE),
+        quota_per_unit: parse_positive_decimal(values[4].as_deref(), DEFAULT_QUOTA_PER_UNIT),
+        topup_group_ratio: topup_group_ratio_for_group(&user.group, values[5].as_deref()),
+        quota_display_type: values[6].as_deref().unwrap_or("USD"),
+        discount: discount_for_amount(amount, values[7].as_deref()),
+    };
+
+    let pay_money = online_pay_money(amount, &settings);
+    if pay_money < Decimal::new(1, 2) {
+        return waffo_pancake_error_message_response(200, "payment amount is too small");
+    }
+    let credit_quota = waffo_pancake_credit_quota(amount, &settings);
+    if credit_quota <= 0 {
+        return waffo_pancake_error_message_response(200, "credited quota is too small");
+    }
+
+    let money = format_pay_money(pay_money);
+    let money_value = money.parse::<f64>().unwrap_or(0.0);
+    let now = unix_timestamp();
+    let trade_no = match waffo_pancake_trade_no(claims.id) {
+        Some(value) => value,
+        None => return waffo_pancake_error_message_response(200, "failed to generate order id"),
+    };
+
+    if let Err(err) = d1_repositories::create_topup(
+        &db,
+        claims.id,
+        credit_quota,
+        money_value,
+        &trade_no,
+        PAYMENT_PROVIDER_WAFFO_PANCAKE,
+        PAYMENT_PROVIDER_WAFFO_PANCAKE,
+        now,
+    )
+    .await
+    {
+        worker::console_error!("failed to record Waffo Pancake pending topup {trade_no}: {err}");
+        return waffo_pancake_error_message_response(200, "failed to create topup order");
+    }
+
+    let buyer_identity = waffo_pancake_buyer_identity(claims.id);
+    let buyer_email = optional_waffo_pancake_string(&user.email);
+    let session = match create_waffo_pancake_checkout_session(
+        &creds,
+        product_id,
+        &buyer_identity,
+        buyer_email.as_deref(),
+        &money,
+        &trade_no,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(err) => {
+            worker::console_error!(
+                "failed to create Waffo Pancake checkout session user_id={} trade_no={} error={}",
+                claims.id,
+                trade_no,
+                err
+            );
+            let _ = d1_repositories::update_pending_topup_status_for_provider(
+                &db,
+                &trade_no,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                TOPUP_STATUS_FAILED,
+            )
+            .await;
+            return waffo_pancake_error_message_response(200, "failed to create checkout session");
+        }
+    };
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        None,
+        "user",
+        "topup.waffo_pancake.create",
+        &format!(
+            "user {} created Waffo Pancake topup {}",
+            claims.username, trade_no
+        ),
+        &serde_json::json!({
+            "trade_no": trade_no,
+            "amount": amount,
+            "credit_quota": credit_quota,
+            "money": money,
+            "session_id": session.session_id,
+        }),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    waffo_pancake_ok_response(&session)
 }
 
 /// `POST /api/option/waffo-pancake/catalog`: read Waffo Pancake store/product catalog.
@@ -1228,6 +1416,328 @@ pub async fn stripe_webhook(mut req: Request, env: Env) -> WorkerResult<Response
     Ok(Response::empty()?.with_status(200))
 }
 
+/// `POST /api/waffo-pancake/webhook/:env`: verify Waffo Pancake and credit quota.
+pub async fn waffo_pancake_webhook(
+    mut req: Request,
+    env: Env,
+    expected_env: Option<&String>,
+) -> WorkerResult<Response> {
+    let expected_env = expected_env
+        .map(String::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if expected_env != "test" && expected_env != "prod" {
+        return Ok(Response::error("unknown env", 404)?);
+    }
+
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(
+        &db,
+        &[
+            PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+            PAYMENT_COMPLIANCE_TERMS_KEY,
+            WAFFO_PANCAKE_MERCHANT_ID_KEY,
+            WAFFO_PANCAKE_PRIVATE_KEY_KEY,
+            WAFFO_PANCAKE_PRODUCT_ID_KEY,
+        ],
+    )
+    .await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    let gateway_configured = waffo_pancake_topup_configured(
+        values[2].as_deref().unwrap_or_default(),
+        values[3].as_deref().unwrap_or_default(),
+        values[4].as_deref().unwrap_or_default(),
+    );
+    if !compliance_confirmed || !gateway_configured {
+        worker::console_warn!("Waffo Pancake webhook rejected: gateway disabled");
+        return Ok(Response::error("webhook disabled", 403)?);
+    }
+
+    let signature = req
+        .headers()
+        .get("X-Waffo-Signature")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if let Err(message) = validate_waffo_pancake_webhook_content_length(
+        req.headers().get("Content-Length").ok().flatten(),
+    ) {
+        let status = if message.contains("too large") {
+            413
+        } else {
+            400
+        };
+        worker::console_warn!("Waffo Pancake webhook rejected: {message}");
+        return Ok(Response::error(&message, status)?);
+    }
+    let payload_bytes = req.bytes().await?;
+    if payload_bytes.len() > WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES {
+        return Ok(Response::error("webhook body too large", 413)?);
+    }
+    let payload = match String::from_utf8(payload_bytes) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(Response::error("invalid payload encoding", 400)?),
+    };
+
+    let event = match verify_waffo_pancake_webhook(&env, &payload, &signature, &expected_env) {
+        Ok(event) => event,
+        Err(message) => {
+            worker::console_warn!("Waffo Pancake webhook signature invalid: {message}");
+            return Ok(Response::error("invalid signature", 401)?);
+        }
+    };
+    let now = unix_timestamp();
+    let event_id = waffo_pancake_event_id(&event, &payload);
+    let raw_trade_no = event
+        .data
+        .order_merchant_external_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let event_order_id = if raw_trade_no.is_empty() {
+        event.data.order_id.trim()
+    } else {
+        raw_trade_no.as_str()
+    };
+
+    if !event.mode.trim().eq_ignore_ascii_case(&expected_env) {
+        worker::console_error!(
+            "Waffo Pancake webhook env mismatch expected={} actual={} event_id={} order_id={}",
+            expected_env,
+            event.mode,
+            event_id,
+            event_order_id
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            &event_id,
+            event_order_id,
+            "ignored",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+
+    if event.event_type != "order.completed" {
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            &event_id,
+            event_order_id,
+            "ignored",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+
+    if raw_trade_no.is_empty() {
+        worker::console_error!(
+            "Waffo Pancake webhook missing orderMerchantExternalId event_id={} order_id={}",
+            event_id,
+            event.data.order_id
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            &event_id,
+            event_order_id,
+            "unmatched",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    if raw_trade_no.starts_with("WAFFO_PANCAKE_SUB-") {
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            &event_id,
+            &raw_trade_no,
+            "subscription_deferred",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+
+    let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &raw_trade_no).await? else {
+        worker::console_error!(
+            "Waffo Pancake webhook topup not found event_id={} trade_no={} buyer_identity={}",
+            event_id,
+            raw_trade_no,
+            event
+                .data
+                .merchant_provided_buyer_identity
+                .as_deref()
+                .unwrap_or_default()
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            &event_id,
+            &raw_trade_no,
+            "unmatched",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    };
+    if topup.payment_provider != PAYMENT_PROVIDER_WAFFO_PANCAKE {
+        worker::console_error!(
+            "Waffo Pancake webhook provider mismatch event_id={} trade_no={} provider={}",
+            event_id,
+            raw_trade_no,
+            topup.payment_provider
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            &event_id,
+            &raw_trade_no,
+            "rejected",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    let expected_identity = waffo_pancake_buyer_identity(topup.user_id);
+    let actual_identity = event
+        .data
+        .merchant_provided_buyer_identity
+        .as_deref()
+        .unwrap_or_default()
+        .trim();
+    if actual_identity != expected_identity {
+        worker::console_error!(
+            "Waffo Pancake webhook buyer identity mismatch event_id={} trade_no={} expected={} actual={}",
+            event_id,
+            raw_trade_no,
+            expected_identity,
+            actual_identity
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            &event_id,
+            &raw_trade_no,
+            "rejected",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+
+    let event_money = parse_waffo_pancake_event_money(&event.data.amount);
+    if let Some(event_money) = event_money {
+        if (topup.money - event_money).abs() >= 0.000001 {
+            worker::console_error!(
+                "Waffo Pancake webhook amount mismatch event_id={} trade_no={} topup_money={} event_amount={}",
+                event_id,
+                raw_trade_no,
+                topup.money,
+                event.data.amount
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                &event_id,
+                &raw_trade_no,
+                "rejected",
+                &payload,
+                now,
+            )
+            .await;
+            return Response::ok("OK");
+        }
+    }
+    let expected_money = event_money.unwrap_or(topup.money);
+    let credit_result = d1_repositories::complete_topup_and_credit_for_provider(
+        &db,
+        &raw_trade_no,
+        PAYMENT_PROVIDER_WAFFO_PANCAKE,
+        PAYMENT_PROVIDER_WAFFO_PANCAKE,
+        expected_money,
+        now,
+    )
+    .await?;
+    let _ = d1_repositories::insert_payment_event(
+        &db,
+        PAYMENT_PROVIDER_WAFFO_PANCAKE,
+        &event_id,
+        &raw_trade_no,
+        "paid",
+        &payload,
+        now,
+    )
+    .await;
+
+    if credit_result.credited_now() {
+        if let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &raw_trade_no).await? {
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                Some(topup.user_id),
+                None,
+                "system",
+                "topup.credit",
+                &format!(
+                    "Waffo Pancake topup {} credited {} quota ({} paid)",
+                    topup.trade_no, topup.amount, topup.money
+                ),
+                &serde_json::json!({
+                    "trade_no": topup.trade_no,
+                    "amount": topup.amount,
+                    "money": topup.money,
+                    "payment_method": topup.payment_method,
+                    "payment_provider": PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                    "event_id": event_id,
+                    "order_id": event.data.order_id,
+                }),
+                &d1_repositories::AdminAuditInfo {
+                    admin_id: 0,
+                    admin_username: "waffo-pancake-webhook".to_string(),
+                    admin_role: 0,
+                    auth_method: "webhook".to_string(),
+                    ip: String::new(),
+                },
+                now,
+            )
+            .await;
+        }
+    } else if let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &raw_trade_no).await? {
+        if !is_completed_waffo_pancake_replay(&topup, expected_money) {
+            worker::console_error!(
+                "Waffo Pancake webhook verified but did not credit trade_no={} status={} credited={} provider={}",
+                raw_trade_no,
+                topup.status,
+                topup.credited,
+                topup.payment_provider
+            );
+            return Ok(Response::error("retry", 500)?);
+        }
+    } else {
+        worker::console_error!(
+            "Waffo Pancake webhook verified but topup disappeared trade_no={}",
+            raw_trade_no
+        );
+        return Ok(Response::error("retry", 500)?);
+    }
+
+    Response::ok("OK")
+}
+
 /// `GET /api/user/topup/info`: wallet payment capability/config summary.
 pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
     let _claims = match require_user_auth(&req, &env).await? {
@@ -1250,6 +1760,12 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
     let topup_link = values[6].clone().unwrap_or_default();
     let epay_configured = epay_config_from_values(&values[7], &values[8], &values[9]).is_some();
     let epay_pay_methods = parse_payment_methods(values[10].as_deref());
+    let waffo_pancake_min_topup = parse_positive_f64(values[14].as_deref(), 1.0);
+    let waffo_pancake_configured = waffo_pancake_topup_configured(
+        values[11].as_deref().unwrap_or_default(),
+        values[12].as_deref().unwrap_or_default(),
+        values[13].as_deref().unwrap_or_default(),
+    );
 
     // Only expose provider methods that have a Rust Worker implementation.
     // Creem/Waffo remain payment-deferred and stay hidden even if legacy option
@@ -1257,6 +1773,7 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
     let enable_stripe_topup = compliance_confirmed && config.is_enabled();
     let enable_online_topup =
         compliance_confirmed && epay_configured && !epay_pay_methods.is_empty();
+    let enable_waffo_pancake_topup = compliance_confirmed && waffo_pancake_configured;
     let mut pay_methods = if enable_online_topup {
         epay_pay_methods
     } else {
@@ -1275,13 +1792,27 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
             }));
         }
     }
+    if enable_waffo_pancake_topup {
+        let has_waffo_pancake = pay_methods.iter().any(|method| {
+            method.get("type").and_then(Value::as_str) == Some(PAYMENT_PROVIDER_WAFFO_PANCAKE)
+        });
+        if !has_waffo_pancake {
+            pay_methods.push(serde_json::json!({
+                "name": "Waffo Pancake",
+                "type": PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                "color": "rgba(var(--semi-blue-5), 1)",
+                "min_topup": waffo_pancake_min_topup,
+            }));
+        }
+    }
 
     Ok(envelope_ok_response(&TopupInfoResponse {
         enable_online_topup,
         enable_stripe_topup,
         enable_creem_topup: false,
         enable_waffo_topup: false,
-        enable_waffo_pancake_topup: false,
+        enable_waffo_pancake_topup,
+        enable_waffo_pancake_subscription: false,
         enable_redemption: compliance_confirmed,
         payment_compliance_confirmed: compliance_confirmed,
         payment_compliance_terms_version: CURRENT_COMPLIANCE_TERMS_VERSION.to_string(),
@@ -1291,7 +1822,7 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         min_topup,
         stripe_min_topup,
         waffo_min_topup: 1.0,
-        waffo_pancake_min_topup: 1.0,
+        waffo_pancake_min_topup,
         amount_options,
         discount,
         topup_link,
@@ -1511,6 +2042,7 @@ struct TopupInfoResponse {
     enable_creem_topup: bool,
     enable_waffo_topup: bool,
     enable_waffo_pancake_topup: bool,
+    enable_waffo_pancake_subscription: bool,
     enable_redemption: bool,
     payment_compliance_confirmed: bool,
     payment_compliance_terms_version: String,
@@ -1723,6 +2255,98 @@ struct WaffoPancakePriceInfo {
     amount: String,
     #[serde(rename = "taxCategory")]
     tax_category: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct WaffoPancakeIssueSessionTokenBody<'a> {
+    #[serde(rename = "productId")]
+    product_id: &'a str,
+    #[serde(rename = "buyerIdentity")]
+    buyer_identity: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaffoPancakeSessionTokenData {
+    token: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WaffoPancakeCheckoutSessionBody<'a> {
+    #[serde(rename = "productId")]
+    product_id: &'a str,
+    currency: &'static str,
+    #[serde(rename = "priceSnapshot")]
+    price_snapshot: WaffoPancakePriceInfo,
+    #[serde(rename = "buyerEmail", skip_serializing_if = "Option::is_none")]
+    buyer_email: Option<&'a str>,
+    #[serde(rename = "expiresInSeconds")]
+    expires_in_seconds: i32,
+    #[serde(rename = "orderMerchantExternalId")]
+    order_merchant_external_id: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaffoPancakeCheckoutSessionData {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "checkoutUrl")]
+    checkout_url: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WaffoPancakePayResponse {
+    checkout_url: String,
+    session_id: String,
+    expires_at: String,
+    order_id: String,
+    token: String,
+    token_expires_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct WaffoPancakeWebhookEvent {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    timestamp: String,
+    #[serde(rename = "eventType", default)]
+    event_type: String,
+    #[serde(rename = "eventId", default)]
+    event_id: String,
+    #[serde(rename = "storeId", default)]
+    store_id: String,
+    #[serde(rename = "storeName", default)]
+    store_name: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    data: WaffoPancakeWebhookData,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize)]
+struct WaffoPancakeWebhookData {
+    #[serde(rename = "orderId", default)]
+    order_id: String,
+    #[serde(rename = "orderMerchantExternalId", default)]
+    order_merchant_external_id: Option<String>,
+    #[serde(rename = "buyerEmail", default)]
+    buyer_email: String,
+    #[serde(rename = "merchantProvidedBuyerIdentity", default)]
+    merchant_provided_buyer_identity: Option<String>,
+    #[serde(default)]
+    currency: String,
+    #[serde(default)]
+    amount: String,
+    #[serde(rename = "taxAmount", default)]
+    tax_amount: String,
+    #[serde(rename = "productName", default)]
+    product_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2031,6 +2655,68 @@ async fn publish_waffo_pancake_onetime_product(
     Ok(data.product)
 }
 
+async fn create_waffo_pancake_checkout_session(
+    creds: &WaffoPancakeCreds,
+    product_id: &str,
+    buyer_identity: &str,
+    buyer_email: Option<&str>,
+    amount: &str,
+    trade_no: &str,
+) -> Result<WaffoPancakePayResponse, String> {
+    validate_waffo_pancake_short_id("productId", product_id, "PROD")?;
+    let buyer_identity = buyer_identity.trim();
+    if buyer_identity.is_empty() {
+        return Err("buyer identity is required".to_string());
+    }
+    let trade_no = trade_no.trim();
+    if trade_no.is_empty() {
+        return Err("order merchant external id is required".to_string());
+    }
+    validate_waffo_pancake_amount("priceSnapshot.amount", amount)?;
+
+    let token: WaffoPancakeSessionTokenData = post_waffo_pancake_action(
+        creds,
+        WAFFO_PANCAKE_ISSUE_SESSION_TOKEN_PATH,
+        &WaffoPancakeIssueSessionTokenBody {
+            product_id,
+            buyer_identity,
+        },
+    )
+    .await?;
+    if token.token.trim().is_empty() {
+        return Err("Waffo Pancake returned empty session token".to_string());
+    }
+
+    let session: WaffoPancakeCheckoutSessionData = post_waffo_pancake_action(
+        creds,
+        WAFFO_PANCAKE_CREATE_CHECKOUT_SESSION_PATH,
+        &WaffoPancakeCheckoutSessionBody {
+            product_id,
+            currency: "USD",
+            price_snapshot: WaffoPancakePriceInfo {
+                amount: amount.to_string(),
+                tax_category: WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
+            },
+            buyer_email,
+            expires_in_seconds: WAFFO_PANCAKE_CHECKOUT_EXPIRES_SECONDS,
+            order_merchant_external_id: trade_no,
+        },
+    )
+    .await?;
+    if session.session_id.trim().is_empty() || session.checkout_url.trim().is_empty() {
+        return Err("Waffo Pancake returned empty checkout session".to_string());
+    }
+
+    Ok(WaffoPancakePayResponse {
+        checkout_url: format!("{}#token={}", session.checkout_url, token.token),
+        session_id: session.session_id,
+        expires_at: session.expires_at,
+        order_id: trade_no.to_string(),
+        token: token.token,
+        token_expires_at: token.expires_at,
+    })
+}
+
 async fn post_waffo_pancake_action<T, B>(
     creds: &WaffoPancakeCreds,
     path: &str,
@@ -2292,6 +2978,90 @@ fn parse_waffo_pancake_private_key(raw: &str) -> Result<RsaPrivateKey, String> {
         .map_err(|err| format!("invalid Waffo Pancake private key: {err}"))
 }
 
+fn parse_waffo_pancake_public_key(raw: &str) -> Result<RsaPublicKey, String> {
+    let pem = normalize_waffo_pancake_public_key(raw)?;
+    RsaPublicKey::from_public_key_pem(&pem)
+        .or_else(|_| RsaPublicKey::from_pkcs1_pem(&pem))
+        .map_err(|err| format!("invalid Waffo Pancake public key: {err}"))
+}
+
+fn verify_waffo_pancake_webhook(
+    env: &Env,
+    payload: &str,
+    signature_header: &str,
+    expected_env: &str,
+) -> Result<WaffoPancakeWebhookEvent, String> {
+    if signature_header.trim().is_empty() {
+        return Err("missing X-Waffo-Signature header".to_string());
+    }
+    let (timestamp, signature_b64) = parse_waffo_pancake_signature_header(signature_header)?;
+    let timestamp_ms = timestamp
+        .parse::<i64>()
+        .map_err(|_| "invalid timestamp in X-Waffo-Signature header".to_string())?;
+    if unix_timestamp_millis().abs_diff(timestamp_ms) > WAFFO_PANCAKE_WEBHOOK_TOLERANCE_MS {
+        return Err("webhook timestamp outside tolerance window".to_string());
+    }
+
+    let public_key =
+        parse_waffo_pancake_public_key(&waffo_pancake_public_key_for_env(env, expected_env))?;
+    let signature_input = format!("{timestamp}.{payload}");
+    let signature_bytes = BASE64_STANDARD
+        .decode(signature_b64.as_bytes())
+        .map_err(|_| "invalid webhook signature encoding".to_string())?;
+    let signature = RsaSignature::try_from(signature_bytes.as_slice())
+        .map_err(|_| "invalid webhook signature length".to_string())?;
+    VerifyingKey::<Sha256>::new(public_key)
+        .verify(signature_input.as_bytes(), &signature)
+        .map_err(|_| format!("invalid webhook signature ({expected_env} key)"))?;
+
+    serde_json::from_str::<WaffoPancakeWebhookEvent>(payload)
+        .map_err(|err| format!("decode webhook event: {err}"))
+}
+
+fn parse_waffo_pancake_signature_header(header: &str) -> Result<(String, String), String> {
+    let mut timestamp = String::new();
+    let mut signature = String::new();
+    for part in header.split(',') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "t" => timestamp = value.trim().to_string(),
+            "v1" => signature = value.trim().to_string(),
+            _ => {}
+        }
+    }
+    if timestamp.is_empty() || signature.is_empty() {
+        return Err("malformed X-Waffo-Signature header: missing t or v1".to_string());
+    }
+    Ok((timestamp, signature))
+}
+
+fn waffo_pancake_public_key_for_env(env: &Env, expected_env: &str) -> String {
+    let per_env_key = if expected_env == "test" {
+        "WAFFO_WEBHOOK_TEST_PUBLIC_KEY"
+    } else {
+        "WAFFO_WEBHOOK_PROD_PUBLIC_KEY"
+    };
+    env.var(per_env_key)
+        .ok()
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env.var("WAFFO_WEBHOOK_PUBLIC_KEY")
+                .ok()
+                .map(|value| value.to_string())
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| {
+            if expected_env == "test" {
+                WAFFO_PANCAKE_BUILTIN_TEST_PUBLIC_KEY.to_string()
+            } else {
+                WAFFO_PANCAKE_BUILTIN_PROD_PUBLIC_KEY.to_string()
+            }
+        })
+}
+
 fn normalize_waffo_pancake_private_key(raw: &str) -> Result<String, String> {
     let mut pem = raw.replace("\\n", "\n").replace("\r\n", "\n");
     pem = pem.trim().to_string();
@@ -2331,6 +3101,49 @@ fn normalize_waffo_pancake_private_key(raw: &str) -> Result<String, String> {
         .map_err(|_| "Waffo Pancake private key is not valid PEM or base64".to_string())?;
     Ok(format!(
         "{PKCS8_HEADER}\n{}\n{PKCS8_FOOTER}",
+        wrap_key_base64(&stripped)
+    ))
+}
+
+fn normalize_waffo_pancake_public_key(raw: &str) -> Result<String, String> {
+    let mut pem = raw.replace("\\n", "\n").replace("\r\n", "\n");
+    pem = pem.trim().to_string();
+    if pem.is_empty() {
+        return Err("Waffo Pancake public key is empty".to_string());
+    }
+    const PKIX_HEADER: &str = "-----BEGIN PUBLIC KEY-----";
+    const PKIX_FOOTER: &str = "-----END PUBLIC KEY-----";
+    const PKCS1_HEADER: &str = "-----BEGIN RSA PUBLIC KEY-----";
+    const PKCS1_FOOTER: &str = "-----END RSA PUBLIC KEY-----";
+    let has_pkcs1 = pem.contains(PKCS1_HEADER);
+    let has_pkix = pem.contains(PKIX_HEADER);
+    if has_pkcs1 || has_pkix {
+        let mut stripped = pem
+            .replace(PKIX_HEADER, "")
+            .replace(PKIX_FOOTER, "")
+            .replace(PKCS1_HEADER, "")
+            .replace(PKCS1_FOOTER, "");
+        stripped = strip_key_whitespace(&stripped);
+        if stripped.is_empty() {
+            return Err("Waffo Pancake public key contains no key data".to_string());
+        }
+        let (header, footer) = if has_pkcs1 {
+            (PKCS1_HEADER, PKCS1_FOOTER)
+        } else {
+            (PKIX_HEADER, PKIX_FOOTER)
+        };
+        return Ok(format!(
+            "{header}\n{}\n{footer}",
+            wrap_key_base64(&stripped)
+        ));
+    }
+
+    let stripped = strip_key_whitespace(&pem);
+    BASE64_STANDARD
+        .decode(stripped.as_bytes())
+        .map_err(|_| "Waffo Pancake public key is not valid PEM or base64".to_string())?;
+    Ok(format!(
+        "{PKIX_HEADER}\n{}\n{PKIX_FOOTER}",
         wrap_key_base64(&stripped)
     ))
 }
@@ -2483,6 +3296,11 @@ fn epay_config_from_values(
     })
 }
 
+fn waffo_pancake_topup_configured(merchant_id: &str, private_key: &str, product_id: &str) -> bool {
+    waffo_pancake_creds_from_parts(merchant_id, private_key).is_ok()
+        && validate_waffo_pancake_short_id("productId", product_id.trim(), "PROD").is_ok()
+}
+
 fn parse_payment_methods(raw: Option<&str>) -> Vec<Value> {
     match raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) {
         Some(Value::Array(items)) => items,
@@ -2510,9 +3328,47 @@ fn epay_credit_quota(amount: i64, settings: &OnlineAmountSettings<'_>) -> i64 {
     }
 }
 
+fn waffo_pancake_credit_quota(amount: i64, settings: &OnlineAmountSettings<'_>) -> i64 {
+    if settings
+        .quota_display_type
+        .eq_ignore_ascii_case(QUOTA_DISPLAY_TYPE_TOKENS)
+    {
+        let normalized = (Decimal::from(amount) / settings.quota_per_unit)
+            .trunc()
+            .to_i64()
+            .unwrap_or(0)
+            .max(1);
+        (Decimal::from(normalized) * settings.quota_per_unit)
+            .trunc()
+            .to_i64()
+            .unwrap_or(i64::MAX)
+    } else {
+        (Decimal::from(amount) * settings.quota_per_unit)
+            .trunc()
+            .to_i64()
+            .unwrap_or(i64::MAX)
+    }
+}
+
 fn epay_trade_no(user_id: i64, now: i64) -> Option<String> {
     let suffix = random_base62(6)?;
     Some(format!("USR{user_id}NO{suffix}{now}"))
+}
+
+fn waffo_pancake_trade_no(user_id: i64) -> Option<String> {
+    let suffix = random_base62(6)?;
+    Some(format!(
+        "WAFFO_PANCAKE-{user_id}-{}-{suffix}",
+        unix_timestamp_millis()
+    ))
+}
+
+fn waffo_pancake_buyer_identity(user_id: i64) -> String {
+    format!("cinatoken-user-{user_id}")
+}
+
+fn unix_timestamp_millis() -> i64 {
+    js_sys::Date::now().floor() as i64
 }
 
 fn random_base62(len: usize) -> Option<String> {
@@ -2745,6 +3601,17 @@ fn is_completed_epay_replay(
         && (topup.money - expected_money).abs() < 0.000001
 }
 
+fn is_completed_waffo_pancake_replay(
+    topup: &d1_repositories::TopupRow,
+    expected_money: f64,
+) -> bool {
+    topup.status == TOPUP_STATUS_SUCCESS
+        && topup.credited == 1
+        && topup.payment_provider == PAYMENT_PROVIDER_WAFFO_PANCAKE
+        && topup.payment_method == PAYMENT_PROVIDER_WAFFO_PANCAKE
+        && (topup.money - expected_money).abs() < 0.000001
+}
+
 fn constant_time_str_eq(left: &str, right: &str) -> bool {
     let left = left.as_bytes();
     let right = right.as_bytes();
@@ -2758,6 +3625,23 @@ fn constant_time_str_eq(left: &str, right: &str) -> bool {
     diff == 0
 }
 
+fn validate_waffo_pancake_webhook_content_length(value: Option<String>) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let len = trimmed
+        .parse::<usize>()
+        .map_err(|_| "Waffo Pancake webhook Content-Length is invalid".to_string())?;
+    if len > WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES {
+        return Err("Waffo Pancake webhook body too large".to_string());
+    }
+    Ok(())
+}
+
 fn epay_event_id(info: &EpayNotifyInfo) -> String {
     let provider_trade = if info.trade_no.is_empty() {
         "unknown"
@@ -2768,6 +3652,26 @@ fn epay_event_id(info: &EpayNotifyInfo) -> String {
         "{}:{}:{}",
         info.out_trade_no, provider_trade, info.trade_status
     )
+}
+
+fn waffo_pancake_event_id(event: &WaffoPancakeWebhookEvent, payload: &str) -> String {
+    let id = event.id.trim();
+    if !id.is_empty() {
+        return id.to_string();
+    }
+    let event_id = event.event_id.trim();
+    if !event_id.is_empty() {
+        return event_id.to_string();
+    }
+    format!("payload:{}", hex_lower(&Sha256::digest(payload.as_bytes())))
+}
+
+fn parse_waffo_pancake_event_money(raw: &str) -> Option<f64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse::<f64>().ok().filter(|value| value.is_finite())
 }
 
 fn topup_status_label(status: i32) -> &'static str {
@@ -2981,21 +3885,27 @@ mod tests {
         constant_time_str_eq, discount_for_amount, epay_credit_quota, epay_payment_method_allowed,
         epay_purchase_params, epay_sign, epay_signing_string, epay_submit_url,
         filter_active_waffo_pancake_products, format_pay_money, is_completed_epay_replay,
-        normalize_waffo_pancake_private_key, online_min_topup, online_pay_money,
+        is_completed_waffo_pancake_replay, normalize_waffo_pancake_private_key,
+        normalize_waffo_pancake_public_key, online_min_topup, online_pay_money,
         optional_waffo_pancake_string, parse_form_params, parse_optional_json_bytes,
-        parse_payment_methods, request_amount, sanitize_like_pattern, topup_group_ratio_for_group,
-        topup_status_label, validate_epay_notify_content_length,
+        parse_payment_methods, parse_waffo_pancake_event_money,
+        parse_waffo_pancake_signature_header, request_amount, sanitize_like_pattern,
+        topup_group_ratio_for_group, topup_status_label, validate_epay_notify_content_length,
         validate_waffo_pancake_admin_content_length, validate_waffo_pancake_amount,
-        validate_waffo_pancake_short_id, verify_epay_notify, waffo_pancake_config_updates,
-        waffo_pancake_creds_from_parts, waffo_pancake_idempotency_key,
-        waffo_pancake_signature_input, waffo_pancake_subscription_options, EpayNotifyInfo,
+        validate_waffo_pancake_short_id, validate_waffo_pancake_webhook_content_length,
+        verify_epay_notify, waffo_pancake_buyer_identity, waffo_pancake_config_updates,
+        waffo_pancake_credit_quota, waffo_pancake_creds_from_parts, waffo_pancake_event_id,
+        waffo_pancake_idempotency_key, waffo_pancake_signature_input,
+        waffo_pancake_subscription_options, waffo_pancake_topup_configured, EpayNotifyInfo,
         EpayPurchaseInput, OnlineAmountSettings, SaveWaffoPancakeConfigRequest,
         WaffoPancakeCatalog, WaffoPancakeCatalogProduct, WaffoPancakeCatalogStore,
-        WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo, EPAY_NOTIFY_BODY_LIMIT_BYTES,
-        PAYMENT_PROVIDER_EPAY, TOPUP_STATUS_SUCCESS, WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES,
+        WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo, WaffoPancakeWebhookData,
+        WaffoPancakeWebhookEvent, EPAY_NOTIFY_BODY_LIMIT_BYTES, PAYMENT_PROVIDER_EPAY,
+        PAYMENT_PROVIDER_WAFFO_PANCAKE, TOPUP_STATUS_SUCCESS, WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES,
         WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH, WAFFO_PANCAKE_MERCHANT_ID_KEY,
         WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY, WAFFO_PANCAKE_RETURN_URL_KEY,
         WAFFO_PANCAKE_STORE_ID_KEY, WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
+        WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES,
     };
     use crate::d1_repositories::TopupRow;
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -3284,6 +4194,128 @@ mod tests {
     }
 
     #[test]
+    fn waffo_pancake_credit_quota_matches_go_recharge_normalization() {
+        let currency_settings = OnlineAmountSettings {
+            min_topup: 1,
+            price: decimal("1"),
+            quota_per_unit: decimal("500000"),
+            topup_group_ratio: Decimal::ONE,
+            quota_display_type: "USD",
+            discount: Decimal::ONE,
+        };
+        assert_eq!(waffo_pancake_credit_quota(2, &currency_settings), 1_000_000);
+
+        let token_settings = OnlineAmountSettings {
+            quota_display_type: "TOKENS",
+            ..currency_settings
+        };
+        assert_eq!(
+            waffo_pancake_credit_quota(499_999, &token_settings),
+            500_000
+        );
+        assert_eq!(
+            waffo_pancake_credit_quota(500_000, &token_settings),
+            500_000
+        );
+        assert_eq!(
+            waffo_pancake_credit_quota(1_250_000, &token_settings),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn waffo_pancake_identity_and_gateway_config_match_go_contract() {
+        assert_eq!(waffo_pancake_buyer_identity(42), "cinatoken-user-42");
+        assert!(waffo_pancake_topup_configured(
+            "MER_merchant",
+            "private",
+            "PROD_1234567890123456789012"
+        ));
+        assert!(!waffo_pancake_topup_configured(
+            "MER_merchant",
+            "",
+            "PROD_1234567890123456789012"
+        ));
+        assert!(!waffo_pancake_topup_configured(
+            "MER_merchant",
+            "private",
+            "not-a-product"
+        ));
+    }
+
+    #[test]
+    fn waffo_pancake_webhook_signature_header_and_limits_match_sdk_shape() {
+        let (timestamp, signature) =
+            parse_waffo_pancake_signature_header("t=1700000,v1=abc").unwrap();
+        assert_eq!(timestamp, "1700000");
+        assert_eq!(signature, "abc");
+        assert!(parse_waffo_pancake_signature_header("garbage").is_err());
+        assert!(validate_waffo_pancake_webhook_content_length(None).is_ok());
+        assert!(validate_waffo_pancake_webhook_content_length(Some("64".to_string())).is_ok());
+        assert!(validate_waffo_pancake_webhook_content_length(Some(
+            (WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES + 1).to_string()
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn waffo_pancake_webhook_event_helpers_are_stable() {
+        let payload = r#"{"eventType":"order.completed"}"#;
+        let event = WaffoPancakeWebhookEvent {
+            id: "evt_1".to_string(),
+            timestamp: String::new(),
+            event_type: "order.completed".to_string(),
+            event_id: "PAY_1".to_string(),
+            store_id: String::new(),
+            store_name: String::new(),
+            mode: "prod".to_string(),
+            data: WaffoPancakeWebhookData::default(),
+        };
+        assert_eq!(waffo_pancake_event_id(&event, payload), "evt_1");
+
+        let fallback = WaffoPancakeWebhookEvent {
+            id: String::new(),
+            event_id: String::new(),
+            ..event
+        };
+        assert!(waffo_pancake_event_id(&fallback, payload).starts_with("payload:"));
+        assert_eq!(parse_waffo_pancake_event_money("1.20"), Some(1.2));
+        assert_eq!(parse_waffo_pancake_event_money(""), None);
+        assert_eq!(parse_waffo_pancake_event_money("nan"), None);
+    }
+
+    #[test]
+    fn waffo_pancake_replay_requires_completed_provider_method_and_money() {
+        fn topup(provider: &str, money: f64) -> TopupRow {
+            TopupRow {
+                id: 1,
+                user_id: 2,
+                amount: 500_000,
+                money,
+                trade_no: "WAFFO_PANCAKE-2-1700000000000-abc123".to_string(),
+                payment_method: PAYMENT_PROVIDER_WAFFO_PANCAKE.to_string(),
+                payment_provider: provider.to_string(),
+                status: TOPUP_STATUS_SUCCESS,
+                create_time: 10,
+                complete_time: 20,
+                credited: 1,
+            }
+        }
+        assert!(is_completed_waffo_pancake_replay(
+            &topup(PAYMENT_PROVIDER_WAFFO_PANCAKE, 7.3),
+            7.3
+        ));
+        assert!(!is_completed_waffo_pancake_replay(
+            &topup(PAYMENT_PROVIDER_EPAY, 7.3),
+            7.3
+        ));
+        assert!(!is_completed_waffo_pancake_replay(
+            &topup(PAYMENT_PROVIDER_WAFFO_PANCAKE, 7.3),
+            7.31
+        ));
+    }
+
+    #[test]
     fn topup_group_ratio_and_discount_accept_numeric_or_string_values() {
         assert_eq!(
             topup_group_ratio_for_group("vip", Some(r#"{"default":1,"vip":"1.2"}"#)),
@@ -3432,6 +4464,14 @@ mod tests {
         let normalized = normalize_waffo_pancake_private_key(&raw).unwrap();
         assert!(normalized.starts_with("-----BEGIN PRIVATE KEY-----\n"));
         assert!(normalized.ends_with("\n-----END PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn waffo_pancake_public_key_normalization_accepts_raw_base64() {
+        let raw = BASE64_STANDARD.encode([1_u8, 2, 3, 4]);
+        let normalized = normalize_waffo_pancake_public_key(&raw).unwrap();
+        assert!(normalized.starts_with("-----BEGIN PUBLIC KEY-----\n"));
+        assert!(normalized.ends_with("\n-----END PUBLIC KEY-----"));
     }
 
     #[test]

@@ -4,6 +4,25 @@ Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 298 passed after adding Waffo
+  Pancake wallet checkout and webhook settlement at
+  `POST /api/user/waffo-pancake/pay` and
+  `POST /api/waffo-pancake/webhook/:env`, including authenticated checkout
+  session-token/session action helpers, Go-compatible buyer identity and order
+  IDs, token-display quota normalization into the Rust D1 final-quota
+  invariant, RSA-SHA256 webhook signature parsing, env/identity/amount replay
+  checks, provider-aware credited-anchor settlement, and route-gated frontend
+  subscription protection.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
+  the same Waffo Pancake wallet/webhook slice.
+- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
+  212 frontend calls, 242 Worker routes, 37 missing calls, categories
+  13 auth-deferred / 22 capability-hidden-product / 2 payment-deferred,
+  SHA-256 `15339560f12bfb286e08b72afe867ce802b72f7bd3fcd0d21ae741c089ba0af7`.
+
+Older entries below are historical evidence; their route-debt counts may be
+superseded by the current 37-call / 2 payment-deferred baseline above.
+
 - `cargo test -p cinatoken-worker --lib`: 292 passed after adding the
   Epay-compatible wallet topup path at `POST /api/user/pay` plus
   `GET/POST /api/user/epay/notify`, including MD5 SDK-signature parity,
@@ -16,10 +35,6 @@ Last checked: 2026-07-04
   212 frontend calls, 240 Worker routes, 38 missing calls, categories
   13 auth-deferred / 22 capability-hidden-product / 3 payment-deferred,
   SHA-256 `8968b7ebbb9422657492c9a67dc1177b414ccdebf80873bdfdb55f6503175b9c`.
-
-Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 38-call / 3 payment-deferred baseline above.
-
 - `cargo test -p cinatoken-worker --lib`: 286 passed after adding root-only
   Waffo Pancake signed action helpers at
   `POST /api/option/waffo-pancake/pair` and

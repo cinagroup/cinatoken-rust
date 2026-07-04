@@ -2271,3 +2271,62 @@ other external subscription checkout/callback routes remain payment-deferred or
 capability-hidden until their provider-specific order model, signature
 verification, amount/product/env match checks, idempotency, replay, and
 reconciliation evidence is in place.
+
+### 22.18 2026-07-04 Waffo Pancake Wallet Topup/Webhook Delta
+
+This increment supersedes the 22.17 route-debt number for the default frontend
+wallet audit. The Rust Worker now owns Waffo Pancake wallet checkout and
+webhook settlement while still keeping Waffo Pancake subscription checkout
+hidden until the subscription order settlement path is migrated:
+
+- `POST /api/user/waffo-pancake/pay` requires user session auth, payment
+  compliance, configured `WaffoPancakeMerchantID`,
+  `WaffoPancakePrivateKey`, and a valid `WaffoPancakeProductID`.
+- The payable amount reuses the Go-compatible Waffo Pancake formula:
+  `WaffoPancakeMinTopUp`, `WaffoPancakeUnitPrice`, `QuotaPerUnit`,
+  `TopupGroupRatio`, token-display mode, and
+  `payment_setting.amount_discount`.
+- The Worker writes the D1 pending topup before calling Waffo. Because Rust D1
+  defines `topups.amount` as final quota-to-credit, order creation translates
+  Go's Waffo Pancake token-display behavior into final quota:
+  `max(IntPart(amount / QuotaPerUnit), 1) * QuotaPerUnit`.
+- Checkout calls match the Go SDK's authenticated flow:
+  `/v1/actions/auth/issue-session-token` plus
+  `/v1/actions/checkout/create-session`, stable buyer identity
+  `cinatoken-user-{id}`, two-decimal USD price snapshot, `saas` tax category,
+  `45m` expiry, `orderMerchantExternalId = trade_no`, and response
+  `checkout_url` with `#token=...`.
+- If external checkout creation fails after the local row is created, the
+  Worker marks the pending Waffo Pancake topup failed for the expected provider,
+  matching Go's `Update` behavior and avoiding indefinite local pending rows.
+- `POST /api/waffo-pancake/webhook/:env` verifies `X-Waffo-Signature`
+  (`t=...,v1=...`) as RSA-SHA256/PKCS#1 v1.5 over `t + "." + raw_payload`,
+  enforces a 5-minute replay window, uses Waffo test/prod public keys keyed by
+  the route env, and then enforces `event.mode == :env`.
+- Only `order.completed` wallet events credit. The handler verifies local
+  provider, buyer identity, and amount before calling the provider-aware D1
+  credited-anchor batch. Signature-valid but permanent mismatches are recorded
+  in `payment_events` and ACKed with `OK`; partial credit failures return
+  `retry`.
+- `GET /api/user/topup/info` now exposes Waffo Pancake wallet topup only when
+  compliance and merchant/private/product configuration are complete. A new
+  frontend guard field keeps Waffo Pancake subscription checkout hidden even
+  when wallet checkout is enabled, preventing a broken
+  `/api/subscription/waffo-pancake/pay` button.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 242 Worker routes, 37 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  2 payment-deferred;
+- route-set SHA-256:
+  `15339560f12bfb286e08b72afe867ce802b72f7bd3fcd0d21ae741c089ba0af7`;
+- `cargo test -p cinatoken-worker --lib`: 298 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining boundary: `/api/user/creem/pay`, `/api/user/waffo/pay`,
+`/api/subscription/creem/pay`, `/api/subscription/waffo-pancake/pay`,
+subscription Epay checkout/callback, and other external subscription
+checkout/callback routes remain payment-deferred or capability-hidden until
+their provider-specific order model, signature verification, amount/product/env
+match checks, idempotency, replay, and reconciliation evidence is in place.

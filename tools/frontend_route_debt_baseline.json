@@ -1,9 +1,9 @@
 {
-  "missing_calls": 38,
-  "missing_sha256": "8968b7ebbb9422657492c9a67dc1177b414ccdebf80873bdfdb55f6503175b9c",
+  "missing_calls": 37,
+  "missing_sha256": "15339560f12bfb286e08b72afe867ce802b72f7bd3fcd0d21ae741c089ba0af7",
   "categories": {
     "auth-deferred": 13,
     "capability-hidden-product": 22,
-    "payment-deferred": 3
+    "payment-deferred": 2
   }
 }

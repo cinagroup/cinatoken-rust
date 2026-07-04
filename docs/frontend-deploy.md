@@ -83,7 +83,8 @@ Until all API families are migrated, the status response clamps
 advertised:
 
 - playground;
-- wallet/top-up;
+- remaining wallet/provider variants not yet owned by Rust (Creem, Waffo,
+  Waffo Pancake checkout/callbacks, and external subscription providers);
 - Midjourney/task logs;
 - subscriptions;
 - io.net model deployments.
@@ -146,20 +147,23 @@ false-positive call:
   `GET /api/user/checkin` and `POST /api/user/checkin`. The routes use the
   Go-compatible frontend envelope, D1 `checkins` persistence, Turnstile on
   submit when configured, and a UTC day boundary for Cloudflare Workers.
-- Admin redemption-code management:
+- Admin redemption-code management and public wallet top-up progress:
   `GET/POST/PUT /api/redemption`, `GET /api/redemption/search`,
   `GET/DELETE /api/redemption/:id`, and
   `DELETE /api/redemption/invalid`. The routes are D1-backed, preserve
   Go-style pagination/search/create/update/delete envelopes, require payment
   compliance before code creation, soft-delete rows, and write admin audit
-  logs. Public top-up/payment redemption remains deferred.
+  logs. Public redemption-code topup, Stripe wallet checkout, and Epay wallet
+  checkout/callback are implemented; Creem/Waffo/Waffo-Pancake checkout and
+  callback routes plus external subscription providers remain deferred.
 - Public rankings:
   `GET /api/rankings` now returns the default frontend's live rankings
   snapshot from D1 `logs`, honors `HeaderNavModules.rankings`, and removes
   rankings from the status capability clamp.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-63 calls with a stable SHA-256 route-set digest and category counts. New
+38 missing calls / 3 payment-deferred calls with a stable SHA-256 route-set
+digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families, deferred auth and
 payment families; operations-debt is currently zero. Local wrapper methods are

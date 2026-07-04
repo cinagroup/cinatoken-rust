@@ -2216,3 +2216,58 @@ Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
 external subscription checkout/callback routes remain payment-deferred and
 hidden until their provider-specific order model, signature verification,
 idempotency, replay, and reconciliation evidence is in place.
+
+### 22.17 2026-07-04 Epay Wallet Topup Delta
+
+This increment supersedes the 22.16 route-debt number for the default frontend
+wallet audit. The Rust Worker now implements the legacy online/Epay wallet
+checkout and callback pair without extending ownership to subscription Epay or
+other non-Stripe gateways:
+
+- `POST /api/user/pay` requires user session auth, payment-compliance
+  confirmation, configured `PayAddress` / `EpayId` / `EpayKey`, and a
+  `PayMethods` allowlist entry for the requested `payment_method`.
+- The payable amount reuses the Go-compatible `POST /api/user/amount` formula:
+  `MinTopUp`, `Price`, `QuotaPerUnit`, `TopupGroupRatio`, token-display mode,
+  and `payment_setting.amount_discount`.
+- The Worker precomputes D1 `topups.amount` as the final quota to credit. This
+  preserves the Rust D1 invariant established by Stripe/redemption paths while
+  matching Go's Epay settlement result (`amount * QuotaPerUnit`, or the original
+  token amount in token-display mode).
+- Epay purchase params match the Go SDK shape: `pid`, `type`, `out_trade_no`,
+  `notify_url`, `name`, `money`, `device=pc`, `return_url`, `sign_type=MD5`,
+  and `sign=md5(sorted_nonempty_params + EpayKey)`. The response keeps Go's
+  `{message:"success", data:<params>, url:<submit.php>}` contract used by the
+  default React form-submission helper.
+- Order IDs use Worker CSPRNG bytes in the Go-visible `USR{id}NO...` shape; the
+  existing Stripe topup suffix path now uses the same CSPRNG helper instead of
+  `Math.random()`.
+- `GET/POST /api/user/epay/notify` parses query/form callbacks under a 16 KiB
+  body guard, requires POST `Content-Length` before reading, verifies the same
+  MD5 signature with constant-time comparison before any state change, ignores
+  non-`TRADE_SUCCESS` events, records best-effort payment events, and credits
+  only through a provider-aware atomic D1 batch that verifies complete/credit/
+  mark changes before ACKing a first-time settlement.
+- `migrations/d1/0015_topups_payment_provider.sql` adds
+  `topups.payment_provider` (default/backfill `stripe`) plus a provider/status
+  index, so Epay and future Creem/Waffo callbacks can guard against
+  cross-gateway callback attacks.
+- `GET /api/user/topup/info` now exposes legacy online topup only when payment
+  compliance, Epay credentials, and non-empty `PayMethods` are all present.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 240 Worker routes, 38 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  3 payment-deferred;
+- route-set SHA-256:
+  `8968b7ebbb9422657492c9a67dc1177b414ccdebf80873bdfdb55f6503175b9c`;
+- `cargo test -p cinatoken-worker --lib`: 292 passed.
+
+Remaining boundary: `/api/user/creem/pay`, `/api/user/waffo/pay`,
+`/api/user/waffo-pancake/pay`, `/api/subscription/creem/pay`,
+`/api/subscription/waffo-pancake/pay`, subscription Epay checkout/callback, and
+other external subscription checkout/callback routes remain payment-deferred or
+capability-hidden until their provider-specific order model, signature
+verification, amount/product/env match checks, idempotency, replay, and
+reconciliation evidence is in place.

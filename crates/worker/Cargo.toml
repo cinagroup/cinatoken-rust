@@ -43,3 +43,4 @@ worker = { workspace = true, features = ["d1", "queue"] }
 # JS-based entropy source. Enable the `js` feature so bcrypt can run inside the
 # Worker when verifying passwords at login.
 getrandom = { version = "0.2", features = ["js"] }
+md5.workspace = true

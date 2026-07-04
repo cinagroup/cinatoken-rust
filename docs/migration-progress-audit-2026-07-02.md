@@ -2,6 +2,11 @@
 
 Date: 2026-07-02
 
+Status: historical snapshot. Later route-debt and payment-provider deltas are
+tracked in `docs/phase-1.md`, `docs/verification.md`, and
+`docs/cinatoken-rust-migration-plan.md`; do not use this file's route-debt
+counts as the current baseline without checking those newer files.
+
 Scope:
 
 - Source: `C:\cinagroup\cinatoken`

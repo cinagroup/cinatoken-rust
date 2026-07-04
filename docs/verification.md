@@ -4,6 +4,22 @@ Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 292 passed after adding the
+  Epay-compatible wallet topup path at `POST /api/user/pay` plus
+  `GET/POST /api/user/epay/notify`, including MD5 SDK-signature parity,
+  signed purchase-form parameters, CSPRNG order ids, constant-time Epay
+  signature comparison, Stripe order suffix CSPRNG hardening, provider-aware D1
+  topup writes, bounded notify parsing with required POST `Content-Length`,
+  replay-vs-mismatch callback handling, and atomic credited-anchor callback
+  settlement that verifies complete/credit/mark batch changes.
+- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
+  212 frontend calls, 240 Worker routes, 38 missing calls, categories
+  13 auth-deferred / 22 capability-hidden-product / 3 payment-deferred,
+  SHA-256 `8968b7ebbb9422657492c9a67dc1177b414ccdebf80873bdfdb55f6503175b9c`.
+
+Older entries below are historical evidence; their route-debt counts may be
+superseded by the current 38-call / 3 payment-deferred baseline above.
+
 - `cargo test -p cinatoken-worker --lib`: 286 passed after adding root-only
   Waffo Pancake signed action helpers at
   `POST /api/option/waffo-pancake/pair` and
@@ -16,7 +32,7 @@ Last checked: 2026-07-04
   13 auth-deferred / 22 capability-hidden-product / 4 payment-deferred,
   SHA-256 `a3ffcf011d892afb7b2a2388b3321b66c64456564271cddccb22e29735b4021c`.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
-  passes with the reviewed 39-call route-debt baseline.
+  passes with the reviewed 38-call route-debt baseline.
 - `cargo test -p cinatoken-worker --lib`: 283 passed after adding root-only
   Waffo Pancake catalog reads at `POST /api/option/waffo-pancake/catalog` and
   `POST /api/option/waffo-pancake/subscription-product-options`, including

@@ -1,6 +1,6 @@
 # Source Payment And Webhook Idempotency Parity (G4/G5/G7)
 
-Date: 2026-06-25
+Date: 2026-07-04
 
 Status: canonical, source-derived specification of the Go top-up / payment
 order model, the webhook credit flow, and the idempotency guarantees. Payment
@@ -66,8 +66,10 @@ cutover.**
   `UpdatePendingTopUpStatus`.
 - `controller/topup_stripe.go` etc. — webhook handlers and signature checks.
 - `model/subscription.go` — subscription order parallel.
-- D1: `migrations/d1/0003_topups.sql` (`topups`), `0001_core.sql`
-  (`payment_events`, `subscription_orders`).
+- D1: `migrations/d1/0003_topups.sql` (`topups`), `0005_topups_credited.sql`
+  (`credited` anchor), `0015_topups_payment_provider.sql`
+  (`payment_provider`), and `0001_core.sql` (`payment_events`,
+  `subscription_orders`).
 
 ## Order Model And State Machine
 
@@ -99,7 +101,8 @@ makes a replay a no-op (or error). Quota is added in the **same transaction** as
 the status flip, so credit and completion are atomic.
 
 **Rust/D1** already implements a stronger **two-layer** model (see
-`0003_topups.sql` header):
+`0003_topups.sql`, `0005_topups_credited.sql`, and
+`0015_topups_payment_provider.sql`):
 
 1. `payment_events` `UNIQUE(provider, event_id)` — insert the webhook event
    first; a duplicate event id is rejected, deduping provider re-deliveries at
@@ -108,7 +111,13 @@ the status flip, so credit and completion are atomic.
    WHERE trade_no=? AND status=0` — D1/SQLite serializes writes globally, so this
    single statement is an atomic compare-and-swap. **The handler must branch on
    rows-affected**: 1 row -> credit the user (same logical step); 0 rows ->
-   already completed, no-op. No `FOR UPDATE` is needed or available.
+already completed, no-op. No `FOR UPDATE` is needed or available.
+
+2026-07-04 update: the Worker must also verify that the same D1 batch changed
+the quota-credit statement and the `credited=1` marker. A status flip without a
+matching credit/mark is a partial completion error and must not be ACKed as a
+successful webhook. Provider callbacks such as Epay also guard the compare-and-
+swap on `payment_provider` and expected money.
 
 This is a deliberate, correct translation: Go's read-lock-check-write becomes
 D1's conditional-update-and-check-rows-affected, plus event-level dedup.
@@ -173,7 +182,7 @@ not round, the credited quota.
 
 ## Rust Status And Checklist
 
-Implementation status (verified 2026-06-25): `crates/payments/src/lib.rs` is a
+Historical status (verified 2026-06-25): `crates/payments/src/lib.rs` was a
 **Stripe foundation** — `parse_stripe_signature` + HMAC-SHA256 verify, the
 `STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300` window, the `PaymentEvent` +
 `was_processed`/`mark_processed` event-dedup trait, `StripeConfig` loaded from D1
@@ -181,21 +190,41 @@ options, and `money_to_quota`. Two parity notes:
 - **`money_to_quota` uses `.round()`** (`money * unit_price * 500_000` rounded),
   but Go truncates toward zero (`int(...)` / `decimal.IntPart()`). This is a real
   divergence — fix to truncate to match Go.
-- Only Stripe is present; Creem/Waffo/Waffo-Pancake/Epay, the `topups` conditional
-  credit (`WHERE status=0`, rows-affected), subscriptions, and `ValidateRedirectURL`
-  are still pending.
+- 2026-07-04 delta: Stripe wallet checkout/webhook and Epay wallet
+  checkout/callback now use provider-aware topup rows and D1 credited-anchor
+  settlement. Creem/Waffo/Waffo-Pancake wallet providers, subscription
+  checkout/callback providers, and `ValidateRedirectURL` parity are still
+  pending.
+
+Current Epay wallet details:
+
+- `POST /api/user/pay` precomputes `topups.amount` as the final quota to credit,
+  matching Go's token-display, group-ratio, unit-price, and discount rules at
+  order-creation time.
+- `GET/POST /api/user/epay/notify` verifies the MD5 signature before any write,
+  requires a `TRADE_SUCCESS` money/provider match, and calls
+  `complete_topup_and_credit_for_provider`. POST callbacks require a valid
+  `Content-Length` not exceeding 16 KiB before the Worker reads the body.
+- Verified replays are normalized to `"success"` no-op responses; staging D1
+  replay smoke is still required before paid-traffic cutover. Signature-valid
+  mismatches or partial complete/credit/mark batches return `"fail"` instead of
+  being ACKed.
 
 Checklist:
 
-1. Implement per-provider signature verification (Stripe HMAC, Creem, Waffo,
-   Waffo-Pancake `:env`, Epay MD5) before any write.
-2. Implement `payment_events` insert-dedup + `topups` conditional credit
-   (`WHERE status=0`, branch on rows-affected).
-3. Implement per-provider quota formulas with truncation; decide `amount`
-   precompute-at-creation vs compute-at-webhook and prove parity.
-4. Normalize replays to 200 no-op; add a webhook-replay test that credits exactly
-   once across N duplicate deliveries.
-5. Add amount/currency/product/env match checks.
+1. Keep per-provider signature verification before any write. Done for Stripe
+   and Epay wallet topups; pending for Creem/Waffo/Waffo-Pancake and
+   subscription providers.
+2. Keep `payment_events` as non-gating audit/dedup evidence and anchor credit on
+   `topups` conditional credited batches. Done for Stripe and Epay wallet
+   topups; provider-specific replay fixtures still need staging D1 proof.
+3. Implement per-provider quota formulas with truncation. Done for Epay wallet
+   order creation; Stripe `money_to_quota` still needs truncation parity review.
+4. Normalize webhook replays to 200 no-op and add replay tests that credit
+   exactly once across duplicate deliveries. Unit coverage exists for helper
+   parity; staging D1 replay smoke remains required.
+5. Add amount/currency/product/env match checks. Epay wallet checks provider and
+   money; currency/product/env checks apply to remaining providers.
 6. Mirror for `subscription_orders`; keep subscription settlement funding-source
    correct (`docs/billing-parity-runbook.md`).
 7. Admin manual-complete (`ManualCompleteTopUp`) and `AdminCompleteTopUp` route

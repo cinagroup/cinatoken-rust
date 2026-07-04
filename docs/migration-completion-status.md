@@ -1,6 +1,6 @@
 # Migration Completion Status
 
-Date: 2026-07-02
+Date: 2026-07-04
 
 This is the short status page. The evidence-based audit is
 `docs/migration-progress-audit-2026-07-02.md`; the canonical Go route list is
@@ -28,7 +28,9 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 - Core admin user/token/channel/log/option/model/vendor APIs with audit and cache
   invalidation.
 - Task submit/poll/CAS-settlement foundations and scheduled polling.
-- Stripe top-up reference flow.
+- Stripe top-up reference flow plus Epay wallet checkout/callback with D1
+  provider-aware credited-anchor settlement.
+- Public redemption-code topup and daily check-in core routes.
 - Tracked React/Bun source plus a successful production typecheck/build.
 
 Evidence is mixed E2-E4 depending on subsystem; see the audit before relying on
@@ -71,9 +73,12 @@ A full diff of every Go-registered route against the Rust worker closed these
 
 - Multipart image/audio relay.
 - OpenAI Realtime WebSocket.
-- Subscriptions, redemption and check-in.
+- Subscription core, redemption, and check-in still need production/staging
+  evidence for the full visible workflows, but their core Worker routes are no
+  longer entirely absent.
 - Email verification/reset/bind and Passkey.
-- Non-Stripe payment providers.
+- Remaining non-Stripe payment providers: Creem/Waffo/Waffo-Pancake wallet
+  checkout/callbacks and external subscription provider checkout/callbacks.
 - Custom OAuth management and several provider-specific OAuth flows.
 - Long-tail provider/channel operations, performance/ratio-sync, io.net
   deployment management.

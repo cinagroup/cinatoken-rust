@@ -4,6 +4,8 @@
 //! - `POST /api/user/stripe/pay` creates a Stripe Checkout Session and returns
 //!   the frontend-compatible payment link. UserAuth.
 //! - `POST /api/user/stripe/amount` estimates the Stripe charge amount.
+//! - `POST /api/user/pay` creates an Epay-compatible pending topup order and
+//!   returns the signed form action/params. UserAuth.
 //! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
 //! - `POST /api/user/waffo-pancake/amount` estimates Waffo Pancake charge amount.
 //! - `POST /api/option/waffo-pancake/catalog` lists Waffo Pancake stores/products.
@@ -12,6 +14,7 @@
 //! - `POST /api/option/waffo-pancake/subscription-product` creates a plan product.
 //! - `POST /api/option/waffo-pancake/subscription-product-options` lists saved-store products.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
+//! - `GET/POST /api/user/epay/notify` verifies Epay callbacks and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
 //! - `POST /api/user/topup` redeems a public redemption code.
 //! - `GET /api/user/topup/self` lists the current user's recent topups.
@@ -61,6 +64,11 @@ const GENERAL_QUOTA_DISPLAY_TYPE_KEY: &str = "general_setting.quota_display_type
 const PRICE_KEY: &str = "Price";
 const QUOTA_PER_UNIT_KEY: &str = "QuotaPerUnit";
 const TOPUP_GROUP_RATIO_KEY: &str = "TopupGroupRatio";
+const PAY_ADDRESS_KEY: &str = "PayAddress";
+const EPAY_ID_KEY: &str = "EpayId";
+const EPAY_KEY_KEY: &str = "EpayKey";
+const PAY_METHODS_KEY: &str = "PayMethods";
+const CUSTOM_CALLBACK_ADDRESS_KEY: &str = "CustomCallbackAddress";
 const WAFFO_PANCAKE_MERCHANT_ID_KEY: &str = "WaffoPancakeMerchantID";
 const WAFFO_PANCAKE_PRIVATE_KEY_KEY: &str = "WaffoPancakePrivateKey";
 const WAFFO_PANCAKE_RETURN_URL_KEY: &str = "WaffoPancakeReturnURL";
@@ -72,6 +80,12 @@ const QUOTA_DISPLAY_TYPE_TOKENS: &str = "TOKENS";
 const DEFAULT_PRICE: &str = "7.3";
 const DEFAULT_QUOTA_PER_UNIT: &str = "500000";
 const DEFAULT_WAFFO_PANCAKE_UNIT_PRICE: &str = "1";
+const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
+const PAYMENT_PROVIDER_EPAY: &str = "epay";
+const TOPUP_STATUS_SUCCESS: i32 = 1;
+const EPAY_SUBMIT_PATH: &str = "/submit.php";
+const EPAY_NOTIFY_BODY_LIMIT_BYTES: usize = 16 * 1024;
+const EPAY_RETURN_PATH: &str = "/usage-logs";
 const WAFFO_PANCAKE_API_BASE_URL: &str = "https://api.waffo.ai";
 const WAFFO_PANCAKE_GRAPHQL_URL: &str = "https://api.waffo.ai/v1/graphql";
 const WAFFO_PANCAKE_GRAPHQL_PATH: &str = "/v1/graphql";
@@ -107,6 +121,10 @@ const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     PAYMENT_AMOUNT_OPTIONS_KEY,
     PAYMENT_AMOUNT_DISCOUNT_KEY,
     "TopUpLink",
+    PAY_ADDRESS_KEY,
+    EPAY_ID_KEY,
+    EPAY_KEY_KEY,
+    PAY_METHODS_KEY,
 ];
 const ONLINE_AMOUNT_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_CONFIRMED_KEY,
@@ -117,6 +135,21 @@ const ONLINE_AMOUNT_OPTION_KEYS: &[&str] = &[
     TOPUP_GROUP_RATIO_KEY,
     GENERAL_QUOTA_DISPLAY_TYPE_KEY,
     PAYMENT_AMOUNT_DISCOUNT_KEY,
+];
+const EPAY_TOPUP_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    "MinTopUp",
+    PRICE_KEY,
+    QUOTA_PER_UNIT_KEY,
+    TOPUP_GROUP_RATIO_KEY,
+    GENERAL_QUOTA_DISPLAY_TYPE_KEY,
+    PAYMENT_AMOUNT_DISCOUNT_KEY,
+    PAY_ADDRESS_KEY,
+    EPAY_ID_KEY,
+    EPAY_KEY_KEY,
+    PAY_METHODS_KEY,
+    CUSTOM_CALLBACK_ADDRESS_KEY,
 ];
 const WAFFO_PANCAKE_AMOUNT_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_CONFIRMED_KEY,
@@ -191,17 +224,32 @@ pub async fn stripe_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
 
     let quota = config.money_to_quota(amount);
     let now = unix_timestamp();
-    // Fixed-width random suffix (avoids the degenerate "00000000" fallback when
-    // Math::random() renders to a short decimal).
-    let rand_suffix = format!("{:08x}", (js_sys::Math::random() * 4_294_967_296.0) as u32);
+    let rand_suffix = match random_base62(8) {
+        Some(value) => value,
+        None => {
+            return Ok(envelope_error_response(
+                500,
+                "failed to generate topup order id",
+            ));
+        }
+    };
     let trade_no = format!("ref_{}{}{}", claims.id, now, rand_suffix);
 
     // Persist the pending top-up BEFORE creating the Stripe session, and abort
     // if it fails: a paid checkout must always have a creditable record. An
     // orphaned pending row (if the Stripe call below fails) is harmless; a
     // paid-but-missing row is an unrecoverable missed credit.
-    if let Err(err) =
-        d1_repositories::create_topup(&db, claims.id, quota, amount, &trade_no, now).await
+    if let Err(err) = d1_repositories::create_topup(
+        &db,
+        claims.id,
+        quota,
+        amount,
+        &trade_no,
+        PAYMENT_PROVIDER_STRIPE,
+        PAYMENT_PROVIDER_STRIPE,
+        now,
+    )
+    .await
     {
         worker::console_error!("failed to record pending topup {trade_no}: {err}");
         return Ok(envelope_error_response(
@@ -387,6 +435,295 @@ pub async fn online_amount(mut req: Request, env: Env) -> WorkerResult<Response>
     }
 
     Ok(envelope_ok_response(&format_pay_money(pay_money))?)
+}
+
+/// `POST /api/user/pay`: create a legacy Epay-compatible topup order.
+pub async fn epay_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let frontend_base = match resolve_frontend_base_url(&env, &req) {
+        Ok(base) => base,
+        Err(message) => return Ok(epay_error_response(&message)?),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let amount = request_amount(&body);
+    if !amount.is_finite() || amount <= 0.0 || amount.fract() != 0.0 || amount > i64::MAX as f64 {
+        return Ok(epay_error_response("amount must be a positive integer")?);
+    }
+    let amount = amount as i64;
+    let payment_method = body
+        .get("payment_method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if payment_method.is_empty() {
+        return Ok(epay_error_response("payment method is required")?);
+    }
+
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, EPAY_TOPUP_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    if !compliance_confirmed {
+        return Ok(epay_error_response("payment compliance is not confirmed")?);
+    }
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(epay_error_response("user not found")?);
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(epay_error_response("user is disabled")?);
+    }
+
+    let pay_methods = parse_payment_methods(values[11].as_deref());
+    if !epay_payment_method_allowed(payment_method, &pay_methods) {
+        return Ok(epay_error_response("payment method does not exist")?);
+    }
+    let config = match epay_config_from_values(&values[8], &values[9], &values[10]) {
+        Some(config) => config,
+        None => return Ok(epay_error_response("Epay payment is not configured")?),
+    };
+
+    let settings = OnlineAmountSettings {
+        min_topup: parse_positive_i64(values[2].as_deref(), 1),
+        price: parse_positive_decimal(values[3].as_deref(), DEFAULT_PRICE),
+        quota_per_unit: parse_positive_decimal(values[4].as_deref(), DEFAULT_QUOTA_PER_UNIT),
+        topup_group_ratio: topup_group_ratio_for_group(&user.group, values[5].as_deref()),
+        quota_display_type: values[6].as_deref().unwrap_or("USD"),
+        discount: discount_for_amount(amount, values[7].as_deref()),
+    };
+    let min_topup = online_min_topup(&settings);
+    if amount < min_topup {
+        return Ok(epay_error_response(&format!(
+            "topup amount cannot be less than {min_topup}"
+        ))?);
+    }
+    let pay_money = online_pay_money(amount, &settings);
+    if pay_money <= Decimal::new(1, 2) {
+        return Ok(epay_error_response("payment amount is too small")?);
+    }
+    let credit_quota = epay_credit_quota(amount, &settings);
+    if credit_quota <= 0 {
+        return Ok(epay_error_response("credited quota is too small")?);
+    }
+
+    let callback_base = match resolve_callback_base_url(&env, &req, values[12].as_deref()) {
+        Ok(base) => base,
+        Err(message) => return Ok(epay_error_response(&message)?),
+    };
+    let notify_url = join_url_path(&callback_base, "/api/user/epay/notify");
+    let return_url = join_url_path(&frontend_base, EPAY_RETURN_PATH);
+    let now = unix_timestamp();
+    let trade_no = match epay_trade_no(claims.id, now) {
+        Some(value) => value,
+        None => return Ok(epay_error_response("failed to generate order id")?),
+    };
+    let money = format_pay_money(pay_money);
+    let submit_url = match epay_submit_url(&config.pay_address) {
+        Ok(url) => url,
+        Err(message) => return Ok(epay_error_response(&message)?),
+    };
+    let params = epay_purchase_params(EpayPurchaseInput {
+        partner_id: &config.partner_id,
+        key: &config.key,
+        payment_method,
+        trade_no: &trade_no,
+        name: &format!("TUC{amount}"),
+        money: &money,
+        notify_url: &notify_url,
+        return_url: &return_url,
+    });
+
+    if let Err(err) = d1_repositories::create_topup(
+        &db,
+        claims.id,
+        credit_quota,
+        money.parse::<f64>().unwrap_or(0.0),
+        &trade_no,
+        payment_method,
+        PAYMENT_PROVIDER_EPAY,
+        now,
+    )
+    .await
+    {
+        worker::console_error!("failed to record Epay pending topup {trade_no}: {err}");
+        return Ok(epay_error_response("failed to create topup order")?);
+    }
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        None,
+        "user",
+        "topup.epay.create",
+        &format!(
+            "user {} created Epay topup {} via {}",
+            claims.username, trade_no, payment_method
+        ),
+        &serde_json::json!({
+            "trade_no": trade_no,
+            "amount": amount,
+            "credit_quota": credit_quota,
+            "money": money,
+            "payment_method": payment_method,
+        }),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    epay_success_response(&submit_url, &params)
+}
+
+/// `GET/POST /api/user/epay/notify`: verify Epay callback and credit topup.
+pub async fn epay_notify(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(
+        &db,
+        &[
+            PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+            PAYMENT_COMPLIANCE_TERMS_KEY,
+            PAY_ADDRESS_KEY,
+            EPAY_ID_KEY,
+            EPAY_KEY_KEY,
+            PAY_METHODS_KEY,
+        ],
+    )
+    .await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    let config = epay_config_from_values(&values[2], &values[3], &values[4]);
+    let pay_methods = parse_payment_methods(values[5].as_deref());
+    if !compliance_confirmed || config.is_none() || pay_methods.is_empty() {
+        worker::console_warn!("Epay notify rejected: payment is not enabled");
+        return Response::ok("fail");
+    }
+    let config = config.expect("checked above");
+    let params = match epay_notify_params(&mut req).await {
+        Ok(params) => params,
+        Err(message) => {
+            worker::console_warn!("Epay notify rejected: {message}");
+            return Response::ok("fail");
+        }
+    };
+    if params.is_empty() {
+        worker::console_warn!("Epay notify rejected: empty params");
+        return Response::ok("fail");
+    }
+    let Some(info) = verify_epay_notify(&params, &config.key) else {
+        worker::console_warn!("Epay notify signature verification failed");
+        return Response::ok("fail");
+    };
+
+    if info.trade_status != "TRADE_SUCCESS" {
+        let raw = serde_json::to_string(&params).unwrap_or_default();
+        let event_id = epay_event_id(&info);
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_EPAY,
+            &event_id,
+            &info.out_trade_no,
+            "ignored",
+            &raw,
+            unix_timestamp(),
+        )
+        .await;
+        return Response::ok("success");
+    }
+
+    let expected_money = info.money.trim().parse::<f64>().unwrap_or(-1.0);
+    if expected_money < 0.0 {
+        worker::console_warn!(
+            "Epay notify rejected invalid money for trade_no={}",
+            info.out_trade_no
+        );
+        return Response::ok("fail");
+    }
+    let now = unix_timestamp();
+    let credit_result = d1_repositories::complete_topup_and_credit_for_provider(
+        &db,
+        &info.out_trade_no,
+        PAYMENT_PROVIDER_EPAY,
+        &info.payment_method,
+        expected_money,
+        now,
+    )
+    .await?;
+    let raw = serde_json::to_string(&params).unwrap_or_default();
+    let event_id = epay_event_id(&info);
+    let _ = d1_repositories::insert_payment_event(
+        &db,
+        PAYMENT_PROVIDER_EPAY,
+        &event_id,
+        &info.out_trade_no,
+        "paid",
+        &raw,
+        now,
+    )
+    .await;
+
+    if credit_result.credited_now() {
+        if let Some(topup) =
+            d1_repositories::find_topup_by_trade_no(&db, &info.out_trade_no).await?
+        {
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                Some(topup.user_id),
+                None,
+                "system",
+                "topup.credit",
+                &format!(
+                    "Epay topup {} credited {} quota ({} paid)",
+                    topup.trade_no, topup.amount, topup.money
+                ),
+                &serde_json::json!({
+                    "trade_no": topup.trade_no,
+                    "amount": topup.amount,
+                    "money": topup.money,
+                    "payment_method": topup.payment_method,
+                    "payment_provider": PAYMENT_PROVIDER_EPAY,
+                }),
+                &d1_repositories::AdminAuditInfo {
+                    admin_id: 0,
+                    admin_username: "epay-notify".to_string(),
+                    admin_role: 0,
+                    auth_method: "webhook".to_string(),
+                    ip: String::new(),
+                },
+                now,
+            )
+            .await;
+        }
+    } else if let Some(topup) =
+        d1_repositories::find_topup_by_trade_no(&db, &info.out_trade_no).await?
+    {
+        if !is_completed_epay_replay(&topup, &info, expected_money) {
+            worker::console_warn!(
+                "Epay notify verified but did not credit trade_no={} type={} money={} status={} credited={} provider={}",
+                info.out_trade_no,
+                info.payment_method,
+                info.money,
+                topup.status,
+                topup.credited,
+                topup.payment_provider
+            );
+            return Response::ok("fail");
+        }
+    } else {
+        worker::console_warn!(
+            "Epay notify verified but topup was not found trade_no={} type={} money={}",
+            info.out_trade_no,
+            info.payment_method,
+            info.money
+        );
+        return Response::ok("fail");
+    }
+
+    Response::ok("success")
 }
 
 /// `POST /api/user/waffo-pancake/amount`: estimate Waffo Pancake payment amount.
@@ -911,23 +1248,36 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
     );
     let discount = parse_json_option(values[5].as_deref(), serde_json::json!({}));
     let topup_link = values[6].clone().unwrap_or_default();
+    let epay_configured = epay_config_from_values(&values[7], &values[8], &values[9]).is_some();
+    let epay_pay_methods = parse_payment_methods(values[10].as_deref());
 
     // Only expose provider methods that have a Rust Worker implementation.
-    // Epay/Creem/Waffo remain payment-deferred and stay hidden even if legacy
-    // option keys are present, so the frontend never renders broken buttons.
+    // Creem/Waffo remain payment-deferred and stay hidden even if legacy option
+    // keys are present, so the frontend never renders broken buttons.
     let enable_stripe_topup = compliance_confirmed && config.is_enabled();
-    let mut pay_methods = Vec::new();
+    let enable_online_topup =
+        compliance_confirmed && epay_configured && !epay_pay_methods.is_empty();
+    let mut pay_methods = if enable_online_topup {
+        epay_pay_methods
+    } else {
+        Vec::new()
+    };
     if enable_stripe_topup {
-        pay_methods.push(serde_json::json!({
-            "name": "Stripe",
-            "type": "stripe",
-            "color": "rgba(var(--semi-purple-5), 1)",
-            "min_topup": stripe_min_topup,
-        }));
+        let has_stripe = pay_methods.iter().any(|method| {
+            method.get("type").and_then(Value::as_str) == Some(PAYMENT_PROVIDER_STRIPE)
+        });
+        if !has_stripe {
+            pay_methods.push(serde_json::json!({
+                "name": "Stripe",
+                "type": "stripe",
+                "color": "rgba(var(--semi-purple-5), 1)",
+                "min_topup": stripe_min_topup,
+            }));
+        }
     }
 
     Ok(envelope_ok_response(&TopupInfoResponse {
-        enable_online_topup: false,
+        enable_online_topup,
         enable_stripe_topup,
         enable_creem_topup: false,
         enable_waffo_topup: false,
@@ -1124,6 +1474,34 @@ struct StripePayResponse {
     checkout_url: String,
     session_id: String,
     trade_no: String,
+}
+
+#[derive(Debug, Clone)]
+struct EpayConfig {
+    pay_address: String,
+    partner_id: String,
+    key: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EpayPurchaseInput<'a> {
+    partner_id: &'a str,
+    key: &'a str,
+    payment_method: &'a str,
+    trade_no: &'a str,
+    name: &'a str,
+    money: &'a str,
+    notify_url: &'a str,
+    return_url: &'a str,
+}
+
+#[derive(Debug, Clone)]
+struct EpayNotifyInfo {
+    payment_method: String,
+    trade_no: String,
+    out_trade_no: String,
+    money: String,
+    trade_status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2074,7 +2452,7 @@ fn topups_page(
 
 fn topup_record(row: d1_repositories::TopupRow) -> TopupRecord {
     TopupRecord {
-        payment_provider: row.payment_method.clone(),
+        payment_provider: row.payment_provider,
         status: topup_status_label(row.status).to_string(),
         id: row.id,
         user_id: row.user_id,
@@ -2085,6 +2463,311 @@ fn topup_record(row: d1_repositories::TopupRow) -> TopupRecord {
         create_time: row.create_time,
         complete_time: row.complete_time,
     }
+}
+
+fn epay_config_from_values(
+    pay_address: &Option<String>,
+    partner_id: &Option<String>,
+    key: &Option<String>,
+) -> Option<EpayConfig> {
+    let pay_address = pay_address.as_deref()?.trim();
+    let partner_id = partner_id.as_deref()?.trim();
+    let key = key.as_deref()?.trim();
+    if pay_address.is_empty() || partner_id.is_empty() || key.is_empty() {
+        return None;
+    }
+    Some(EpayConfig {
+        pay_address: pay_address.to_string(),
+        partner_id: partner_id.to_string(),
+        key: key.to_string(),
+    })
+}
+
+fn parse_payment_methods(raw: Option<&str>) -> Vec<Value> {
+    match raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) {
+        Some(Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
+
+fn epay_payment_method_allowed(payment_method: &str, methods: &[Value]) -> bool {
+    methods
+        .iter()
+        .any(|method| method.get("type").and_then(Value::as_str) == Some(payment_method))
+}
+
+fn epay_credit_quota(amount: i64, settings: &OnlineAmountSettings<'_>) -> i64 {
+    if settings
+        .quota_display_type
+        .eq_ignore_ascii_case(QUOTA_DISPLAY_TYPE_TOKENS)
+    {
+        amount
+    } else {
+        (Decimal::from(amount) * settings.quota_per_unit)
+            .trunc()
+            .to_i64()
+            .unwrap_or(i64::MAX)
+    }
+}
+
+fn epay_trade_no(user_id: i64, now: i64) -> Option<String> {
+    let suffix = random_base62(6)?;
+    Some(format!("USR{user_id}NO{suffix}{now}"))
+}
+
+fn random_base62(len: usize) -> Option<String> {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut buf = vec![0u8; len.saturating_mul(2).max(16)];
+    getrandom::getrandom(&mut buf).ok()?;
+    let mut out = Vec::with_capacity(len);
+    for &byte in &buf {
+        if out.len() >= len {
+            break;
+        }
+        if byte < 248 {
+            out.push(ALPHABET[(byte % 62) as usize]);
+        }
+    }
+    if out.len() == len {
+        String::from_utf8(out).ok()
+    } else {
+        None
+    }
+}
+
+fn resolve_frontend_base_url(env: &Env, req: &Request) -> Result<String, String> {
+    let configured = env
+        .var("FRONTEND_BASE_URL")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    if !configured.trim().is_empty() {
+        return validate_http_base_url(configured.trim());
+    }
+    request_origin_base_url(req)
+}
+
+fn resolve_callback_base_url(
+    env: &Env,
+    req: &Request,
+    custom_callback_address: Option<&str>,
+) -> Result<String, String> {
+    if let Some(value) = custom_callback_address
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return validate_http_base_url(value);
+    }
+    resolve_frontend_base_url(env, req)
+}
+
+fn request_origin_base_url(req: &Request) -> Result<String, String> {
+    let url = req
+        .url()
+        .map_err(|err| format!("request URL is invalid: {err}"))?;
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err("request URL must use http or https".to_string());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "request URL is missing host".to_string())?;
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    validate_http_base_url(&format!("{scheme}://{host}{port}"))
+}
+
+fn validate_http_base_url(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw).map_err(|_| "payment base URL is invalid".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("payment base URL must use http or https".to_string());
+    }
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("payment base URL must be an absolute public URL".to_string());
+    }
+    Ok(raw.trim_end_matches('/').to_string())
+}
+
+fn join_url_path(base: &str, path: &str) -> String {
+    format!("{}{}", base.trim_end_matches('/'), path)
+}
+
+fn epay_submit_url(pay_address: &str) -> Result<String, String> {
+    let mut parsed =
+        url::Url::parse(pay_address).map_err(|_| "Epay pay address is invalid".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Epay pay address must use http or https".to_string());
+    }
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Epay pay address must be an absolute public URL".to_string());
+    }
+    let base_path = parsed.path().trim_end_matches('/');
+    let submit_path = if base_path.is_empty() {
+        EPAY_SUBMIT_PATH.to_string()
+    } else {
+        format!("{base_path}{EPAY_SUBMIT_PATH}")
+    };
+    parsed.set_path(&submit_path);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Ok(parsed.to_string())
+}
+
+fn epay_purchase_params(input: EpayPurchaseInput<'_>) -> BTreeMap<String, String> {
+    let mut params = BTreeMap::from([
+        ("pid".to_string(), input.partner_id.to_string()),
+        ("type".to_string(), input.payment_method.to_string()),
+        ("out_trade_no".to_string(), input.trade_no.to_string()),
+        ("notify_url".to_string(), input.notify_url.to_string()),
+        ("name".to_string(), input.name.to_string()),
+        ("money".to_string(), input.money.to_string()),
+        ("device".to_string(), "pc".to_string()),
+        ("sign_type".to_string(), "MD5".to_string()),
+        ("return_url".to_string(), input.return_url.to_string()),
+        ("sign".to_string(), String::new()),
+    ]);
+    let sign = epay_sign(&params, input.key);
+    params.insert("sign".to_string(), sign);
+    params
+}
+
+fn epay_sign(params: &BTreeMap<String, String>, key: &str) -> String {
+    let signing = epay_signing_string(params);
+    format!("{:x}", md5::compute(format!("{signing}{key}")))
+}
+
+fn epay_signing_string(params: &BTreeMap<String, String>) -> String {
+    params
+        .iter()
+        .filter(|(key, value)| {
+            key.as_str() != "sign" && key.as_str() != "sign_type" && !value.is_empty()
+        })
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn epay_success_response(url: &str, params: &BTreeMap<String, String>) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&serde_json::json!({
+        "message": "success",
+        "data": params,
+        "url": url,
+    }))?
+    .with_status(200);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn epay_error_response(message: &str) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&serde_json::json!({
+        "message": "error",
+        "data": message,
+    }))?
+    .with_status(200);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+async fn epay_notify_params(req: &mut Request) -> Result<BTreeMap<String, String>, String> {
+    if req.method() == Method::Post {
+        validate_epay_notify_content_length(req.headers().get("Content-Length").ok().flatten())?;
+        let bytes = req
+            .bytes()
+            .await
+            .map_err(|err| format!("failed to read Epay notify body: {err}"))?;
+        if bytes.len() > EPAY_NOTIFY_BODY_LIMIT_BYTES {
+            return Err(format!(
+                "Epay notify body exceeds {EPAY_NOTIFY_BODY_LIMIT_BYTES} byte limit"
+            ));
+        }
+        return Ok(parse_form_params(&bytes));
+    }
+
+    let url = req
+        .url()
+        .map_err(|err| format!("failed to read Epay notify URL: {err}"))?;
+    Ok(url
+        .query_pairs()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect())
+}
+
+fn validate_epay_notify_content_length(value: Option<String>) -> Result<(), String> {
+    let Some(value) = value else {
+        return Err("Epay notify Content-Length is required".to_string());
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Epay notify Content-Length is required".to_string());
+    }
+    let len = trimmed
+        .parse::<usize>()
+        .map_err(|_| "Epay notify Content-Length is invalid".to_string())?;
+    if len > EPAY_NOTIFY_BODY_LIMIT_BYTES {
+        return Err(format!(
+            "Epay notify body exceeds {EPAY_NOTIFY_BODY_LIMIT_BYTES} byte limit"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_form_params(bytes: &[u8]) -> BTreeMap<String, String> {
+    url::form_urlencoded::parse(bytes)
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+fn verify_epay_notify(params: &BTreeMap<String, String>, key: &str) -> Option<EpayNotifyInfo> {
+    let expected = epay_sign(params, key);
+    let provided = params.get("sign")?;
+    if !constant_time_str_eq(&expected, provided) {
+        return None;
+    }
+    Some(EpayNotifyInfo {
+        payment_method: params.get("type").cloned().unwrap_or_default(),
+        trade_no: params.get("trade_no").cloned().unwrap_or_default(),
+        out_trade_no: params.get("out_trade_no").cloned().unwrap_or_default(),
+        money: params.get("money").cloned().unwrap_or_default(),
+        trade_status: params.get("trade_status").cloned().unwrap_or_default(),
+    })
+}
+
+fn is_completed_epay_replay(
+    topup: &d1_repositories::TopupRow,
+    info: &EpayNotifyInfo,
+    expected_money: f64,
+) -> bool {
+    topup.status == TOPUP_STATUS_SUCCESS
+        && topup.credited == 1
+        && topup.payment_provider == PAYMENT_PROVIDER_EPAY
+        && topup.payment_method == info.payment_method
+        && (topup.money - expected_money).abs() < 0.000001
+}
+
+fn constant_time_str_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut diff = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+    for idx in 0..max_len {
+        let a = left.get(idx).copied().unwrap_or(0);
+        let b = right.get(idx).copied().unwrap_or(0);
+        diff |= usize::from(a ^ b);
+    }
+    diff == 0
+}
+
+fn epay_event_id(info: &EpayNotifyInfo) -> String {
+    let provider_trade = if info.trade_no.is_empty() {
+        "unknown"
+    } else {
+        &info.trade_no
+    };
+    format!(
+        "{}:{}:{}",
+        info.out_trade_no, provider_trade, info.trade_status
+    )
 }
 
 fn topup_status_label(status: i32) -> &'static str {
@@ -2295,20 +2978,26 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        discount_for_amount, filter_active_waffo_pancake_products, format_pay_money,
+        constant_time_str_eq, discount_for_amount, epay_credit_quota, epay_payment_method_allowed,
+        epay_purchase_params, epay_sign, epay_signing_string, epay_submit_url,
+        filter_active_waffo_pancake_products, format_pay_money, is_completed_epay_replay,
         normalize_waffo_pancake_private_key, online_min_topup, online_pay_money,
-        optional_waffo_pancake_string, parse_optional_json_bytes, request_amount,
-        sanitize_like_pattern, topup_group_ratio_for_group, topup_status_label,
+        optional_waffo_pancake_string, parse_form_params, parse_optional_json_bytes,
+        parse_payment_methods, request_amount, sanitize_like_pattern, topup_group_ratio_for_group,
+        topup_status_label, validate_epay_notify_content_length,
         validate_waffo_pancake_admin_content_length, validate_waffo_pancake_amount,
-        validate_waffo_pancake_short_id, waffo_pancake_config_updates,
+        validate_waffo_pancake_short_id, verify_epay_notify, waffo_pancake_config_updates,
         waffo_pancake_creds_from_parts, waffo_pancake_idempotency_key,
-        waffo_pancake_signature_input, waffo_pancake_subscription_options, OnlineAmountSettings,
-        SaveWaffoPancakeConfigRequest, WaffoPancakeCatalog, WaffoPancakeCatalogProduct,
-        WaffoPancakeCatalogStore, WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo,
-        WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES, WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH,
-        WAFFO_PANCAKE_MERCHANT_ID_KEY, WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY,
-        WAFFO_PANCAKE_RETURN_URL_KEY, WAFFO_PANCAKE_STORE_ID_KEY, WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
+        waffo_pancake_signature_input, waffo_pancake_subscription_options, EpayNotifyInfo,
+        EpayPurchaseInput, OnlineAmountSettings, SaveWaffoPancakeConfigRequest,
+        WaffoPancakeCatalog, WaffoPancakeCatalogProduct, WaffoPancakeCatalogStore,
+        WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo, EPAY_NOTIFY_BODY_LIMIT_BYTES,
+        PAYMENT_PROVIDER_EPAY, TOPUP_STATUS_SUCCESS, WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES,
+        WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH, WAFFO_PANCAKE_MERCHANT_ID_KEY,
+        WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY, WAFFO_PANCAKE_RETURN_URL_KEY,
+        WAFFO_PANCAKE_STORE_ID_KEY, WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
     };
+    use crate::d1_repositories::TopupRow;
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
@@ -2388,6 +3077,192 @@ mod tests {
 
         assert_eq!(online_pay_money(1, &settings), decimal("14.235"));
         assert_eq!(format_pay_money(online_pay_money(1, &settings)), "14.23");
+    }
+
+    #[test]
+    fn epay_sign_matches_go_sdk_md5_golden() {
+        let params = BTreeMap::from([
+            ("device".to_string(), "devicev".to_string()),
+            ("money".to_string(), "moneyv".to_string()),
+            ("sign".to_string(), String::new()),
+            ("sign_type".to_string(), "MD5".to_string()),
+        ]);
+
+        assert_eq!(epay_signing_string(&params), "device=devicev&money=moneyv");
+        assert_eq!(
+            epay_sign(&params, "1234567"),
+            "3854cc9f022e0fb821bd2e002260245d"
+        );
+    }
+
+    #[test]
+    fn epay_purchase_params_match_sdk_shape() {
+        let params = epay_purchase_params(EpayPurchaseInput {
+            partner_id: "pid",
+            key: "secret",
+            payment_method: "alipay",
+            trade_no: "USR1NOabc123",
+            name: "TUC100",
+            money: "7.30",
+            notify_url: "https://example.com/api/user/epay/notify",
+            return_url: "https://example.com/usage-logs",
+        });
+
+        assert_eq!(params["pid"], "pid");
+        assert_eq!(params["type"], "alipay");
+        assert_eq!(params["out_trade_no"], "USR1NOabc123");
+        assert_eq!(params["device"], "pc");
+        assert_eq!(params["sign_type"], "MD5");
+        assert_eq!(
+            epay_submit_url("https://pay.example.com/base").unwrap(),
+            "https://pay.example.com/base/submit.php"
+        );
+        assert!(!params["sign"].is_empty());
+    }
+
+    #[test]
+    fn epay_form_and_notify_helpers_match_sdk_filtering() {
+        let mut params = parse_form_params(
+            b"pid=pid&type=alipay&out_trade_no=NO1&money=7.30&trade_status=TRADE_SUCCESS&empty=",
+        );
+        let sign = epay_sign(&params, "key");
+        params.insert("sign".to_string(), sign);
+        params.insert("sign_type".to_string(), "MD5".to_string());
+
+        let info = verify_epay_notify(&params, "key").unwrap();
+        assert_eq!(info.payment_method, "alipay");
+        assert_eq!(info.out_trade_no, "NO1");
+        assert_eq!(info.money, "7.30");
+        assert_eq!(info.trade_status, "TRADE_SUCCESS");
+        assert!(validate_epay_notify_content_length(None).is_err());
+        assert!(validate_epay_notify_content_length(Some(" ".to_string())).is_err());
+        assert!(validate_epay_notify_content_length(Some(
+            EPAY_NOTIFY_BODY_LIMIT_BYTES.to_string()
+        ))
+        .is_ok());
+        assert!(validate_epay_notify_content_length(Some(
+            (EPAY_NOTIFY_BODY_LIMIT_BYTES + 1).to_string()
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn epay_notify_rejects_bad_signature_with_constant_time_helper() {
+        assert!(constant_time_str_eq(
+            "3854cc9f022e0fb821bd2e002260245d",
+            "3854cc9f022e0fb821bd2e002260245d"
+        ));
+        assert!(!constant_time_str_eq(
+            "3854cc9f022e0fb821bd2e002260245d",
+            "3854cc9f022e0fb821bd2e002260245e"
+        ));
+        assert!(!constant_time_str_eq(
+            "3854cc9f022e0fb821bd2e002260245d",
+            "short"
+        ));
+
+        let mut params = parse_form_params(
+            b"pid=pid&type=alipay&out_trade_no=NO1&money=7.30&trade_status=TRADE_SUCCESS",
+        );
+        params.insert("sign".to_string(), "bad-signature".to_string());
+
+        assert!(verify_epay_notify(&params, "key").is_none());
+    }
+
+    #[test]
+    fn epay_replay_requires_completed_credited_matching_topup() {
+        fn topup(provider: &str, method: &str, money: f64, status: i32, credited: i32) -> TopupRow {
+            TopupRow {
+                id: 1,
+                user_id: 2,
+                amount: 500_000,
+                money,
+                trade_no: "USR2NOabc123".to_string(),
+                payment_method: method.to_string(),
+                payment_provider: provider.to_string(),
+                status,
+                create_time: 10,
+                complete_time: 20,
+                credited,
+            }
+        }
+
+        let info = EpayNotifyInfo {
+            payment_method: "alipay".to_string(),
+            trade_no: "EPAY123".to_string(),
+            out_trade_no: "USR2NOabc123".to_string(),
+            money: "7.30".to_string(),
+            trade_status: "TRADE_SUCCESS".to_string(),
+        };
+
+        assert!(is_completed_epay_replay(
+            &topup(
+                PAYMENT_PROVIDER_EPAY,
+                "alipay",
+                7.30,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            &info,
+            7.30
+        ));
+        assert!(!is_completed_epay_replay(
+            &topup("stripe", "alipay", 7.30, TOPUP_STATUS_SUCCESS, 1),
+            &info,
+            7.30
+        ));
+        assert!(!is_completed_epay_replay(
+            &topup(
+                PAYMENT_PROVIDER_EPAY,
+                "wxpay",
+                7.30,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            &info,
+            7.30
+        ));
+        assert!(!is_completed_epay_replay(
+            &topup(
+                PAYMENT_PROVIDER_EPAY,
+                "alipay",
+                7.31,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            &info,
+            7.30
+        ));
+        assert!(!is_completed_epay_replay(
+            &topup(PAYMENT_PROVIDER_EPAY, "alipay", 7.30, 0, 0),
+            &info,
+            7.30
+        ));
+    }
+
+    #[test]
+    fn epay_method_allowlist_and_credit_quota_match_go_translation() {
+        let methods = parse_payment_methods(Some(
+            r#"[{"type":"alipay"},{"type":"wxpay","name":"WeChat"}]"#,
+        ));
+        assert!(epay_payment_method_allowed("alipay", &methods));
+        assert!(!epay_payment_method_allowed("stripe", &methods));
+
+        let currency_settings = OnlineAmountSettings {
+            min_topup: 1,
+            price: decimal("7.3"),
+            quota_per_unit: decimal("500000"),
+            topup_group_ratio: Decimal::ONE,
+            quota_display_type: "USD",
+            discount: Decimal::ONE,
+        };
+        assert_eq!(epay_credit_quota(2, &currency_settings), 1_000_000);
+
+        let token_settings = OnlineAmountSettings {
+            quota_display_type: "TOKENS",
+            ..currency_settings
+        };
+        assert_eq!(epay_credit_quota(500_000, &token_settings), 500_000);
     }
 
     #[test]

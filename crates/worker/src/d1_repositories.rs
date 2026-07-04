@@ -6452,9 +6452,28 @@ pub struct TopupRow {
     pub money: f64,
     pub trade_no: String,
     pub payment_method: String,
+    pub payment_provider: String,
     pub status: i32,
     pub create_time: i64,
     pub complete_time: i64,
+    pub credited: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopupCreditBatchResult {
+    pub completed: bool,
+    pub credited: bool,
+    pub marked: bool,
+}
+
+impl TopupCreditBatchResult {
+    pub fn credited_now(self) -> bool {
+        self.completed && self.credited && self.marked
+    }
+
+    pub fn partial_completion(self) -> bool {
+        self.completed && !self.credited_now()
+    }
 }
 
 const TOPUP_QUERY_WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -6466,6 +6485,8 @@ pub async fn create_topup(
     amount: i64,
     money: f64,
     trade_no: &str,
+    payment_method: &str,
+    payment_provider: &str,
     create_time: i64,
 ) -> worker::Result<i64> {
     let args = [
@@ -6473,12 +6494,17 @@ pub async fn create_topup(
         D1Type::Integer(d1_i32(amount)),
         D1Type::Real(money),
         D1Type::Text(trade_no),
+        D1Type::Text(payment_method),
+        D1Type::Text(payment_provider),
         D1Type::Integer(d1_i32(create_time)),
     ];
     db.prepare(
         r#"
-        INSERT INTO topups (user_id, amount, money, trade_no, payment_method, status, create_time, complete_time)
-        VALUES (?1, ?2, ?3, ?4, 'stripe', 0, ?5, 0)
+        INSERT INTO topups (
+            user_id, amount, money, trade_no, payment_method, payment_provider,
+            status, create_time, complete_time
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 0)
         "#,
     )
     .bind_refs(&args)?
@@ -6506,7 +6532,8 @@ pub async fn find_topup_by_trade_no(
     let arg = D1Type::Text(trade_no);
     db.prepare(
         r#"
-        SELECT id, user_id, amount, money, trade_no, payment_method, status, create_time, complete_time
+        SELECT id, user_id, amount, money, trade_no, payment_method, payment_provider,
+               status, create_time, complete_time, credited
         FROM topups WHERE trade_no = ?1 LIMIT 1
         "#,
     )
@@ -6580,13 +6607,100 @@ pub async fn complete_topup_and_credit(
     let results = db
         .batch(vec![complete_stmt, credit_stmt, mark_stmt])
         .await?;
-    // s1's affected-row count is the "completed this call" signal (lockstep
-    // with s3): 1 -> credited now, 0 -> already-completed replay no-op.
-    let changes = match results.first() {
-        Some(result) => result.meta()?.and_then(|m| m.changes).unwrap_or(0),
-        None => 0,
+    let result = TopupCreditBatchResult {
+        completed: batch_changed(&results, 0)?,
+        credited: batch_changed(&results, 1)?,
+        marked: batch_changed(&results, 2)?,
     };
-    Ok(changes > 0)
+    if result.partial_completion() {
+        return Err(worker::Error::RustError(format!(
+            "topup {trade_no} completed without matching credit/mark changes"
+        )));
+    }
+    Ok(result.credited_now())
+}
+
+/// Provider-aware top-up completion used by form/webhook gateways such as Epay.
+///
+/// The compare-and-swap statement checks the provider family and the expected
+/// order amount before flipping `status = 0 -> 1`; the following credit and
+/// mark statements are gated on the same `credited = 0` anchor as
+/// [`complete_topup_and_credit`]. `topups.amount` is already the final quota to
+/// credit in the Rust schema, so provider-specific quota formulas must run at
+/// order creation before calling [`create_topup`].
+pub async fn complete_topup_and_credit_for_provider(
+    db: &D1Database,
+    trade_no: &str,
+    expected_provider: &str,
+    actual_payment_method: &str,
+    expected_money: f64,
+    now: i64,
+) -> worker::Result<TopupCreditBatchResult> {
+    let args = [
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Text(trade_no),
+        D1Type::Text(expected_provider),
+        D1Type::Text(actual_payment_method),
+        D1Type::Real(expected_money),
+    ];
+    let complete_stmt = db
+        .prepare(
+            r#"
+            UPDATE topups
+            SET status = 1, complete_time = ?1, payment_method = ?4
+            WHERE trade_no = ?2
+              AND status = 0
+              AND payment_provider = ?3
+              AND ABS(money - ?5) < 0.000001
+            "#,
+        )
+        .bind_refs(&args)?;
+    let credit_stmt = db
+        .prepare(
+            r#"
+            UPDATE users
+            SET quota = quota + COALESCE(
+                (SELECT amount FROM topups
+                 WHERE trade_no = ?2
+                   AND status = 1
+                   AND payment_provider = ?3
+                   AND credited = 0), 0)
+            WHERE id = (
+                SELECT user_id FROM topups
+                WHERE trade_no = ?2
+                  AND status = 1
+                  AND payment_provider = ?3
+                  AND credited = 0
+            )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let mark_stmt = db
+        .prepare(
+            r#"
+            UPDATE topups
+            SET credited = 1
+            WHERE trade_no = ?2
+              AND status = 1
+              AND payment_provider = ?3
+              AND credited = 0
+            "#,
+        )
+        .bind_refs(&args)?;
+    let results = db
+        .batch(vec![complete_stmt, credit_stmt, mark_stmt])
+        .await?;
+    let result = TopupCreditBatchResult {
+        completed: batch_changed(&results, 0)?,
+        credited: batch_changed(&results, 1)?,
+        marked: batch_changed(&results, 2)?,
+    };
+    if result.partial_completion() {
+        return Err(worker::Error::RustError(format!(
+            "provider topup {trade_no} completed without matching credit/mark changes"
+        )));
+    }
+    Ok(result)
 }
 
 /// Insert a payment_event row for webhook idempotency. The UNIQUE
@@ -6672,7 +6786,8 @@ pub async fn list_user_topups(
     Ok(db
         .prepare(
             r#"
-            SELECT id, user_id, amount, money, trade_no, payment_method, status, create_time, complete_time
+            SELECT id, user_id, amount, money, trade_no, payment_method, payment_provider,
+                   status, create_time, complete_time, credited
             FROM topups WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2
             "#,
         )
@@ -6769,7 +6884,8 @@ async fn list_topups_page(
     let rows = db
         .prepare(&format!(
             r#"
-            SELECT id, user_id, amount, money, trade_no, payment_method, status, create_time, complete_time
+            SELECT id, user_id, amount, money, trade_no, payment_method, payment_provider,
+                   status, create_time, complete_time, credited
             FROM topups
             WHERE {where_sql}
             ORDER BY id DESC

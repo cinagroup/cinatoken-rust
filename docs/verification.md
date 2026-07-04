@@ -4,6 +4,26 @@ Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 308 passed after adding legacy Waffo
+  wallet checkout and webhook settlement at `POST /api/user/waffo/pay` and
+  `POST /api/waffo/webhook`, including Go SDK-compatible RSA-SHA256
+  request/response signature helpers, default Waffo pay-method parsing,
+  sandbox/prod credential selection, zero-decimal currency formatting,
+  webhook amount checks, provider-aware credited-anchor settlement, and replay
+  no-op checks.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
+  the same Waffo wallet/webhook slice.
+- `bun run check`: passed after the Waffo wallet/webhook slice, covering the
+  frontend TypeScript/build, route-debt baseline, Rust workspace tests
+  excluding the Worker, rustfmt check, and Worker wasm check.
+- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
+  212 frontend calls, 246 Worker routes, 35 missing calls, categories
+  13 auth-deferred / 22 capability-hidden-product, SHA-256
+  `47cecc965627ac5c9ee04118b842dad4d1aaa5416e607449998ffa64c45e79d5`.
+
+Older entries below are historical evidence; their route-debt counts may be
+superseded by the current 35-call / 0 payment-deferred baseline above.
+
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
   checkout and webhook settlement at `POST /api/user/creem/pay` and
   `POST /api/creem/webhook`, including Go-compatible `ref_` SHA1 order IDs,
@@ -19,9 +39,6 @@ Last checked: 2026-07-04
   212 frontend calls, 244 Worker routes, 36 missing calls, categories
   13 auth-deferred / 22 capability-hidden-product / 1 payment-deferred,
   SHA-256 `5cdffd5d02a44c03b55467410820893a988a9303d18be2cb1f03b55acb1409fd`.
-
-Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 36-call / 1 payment-deferred baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 298 passed after adding Waffo
   Pancake wallet checkout and webhook settlement at

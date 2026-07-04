@@ -155,20 +155,20 @@ false-positive call:
   Go-style pagination/search/create/update/delete envelopes, require payment
   compliance before code creation, soft-delete rows, and write admin audit
   logs. Public redemption-code topup, Stripe wallet checkout, Epay wallet
-  checkout/callback, Waffo Pancake wallet checkout/webhook, and Creem wallet
-  checkout/webhook are implemented; Waffo wallet routes plus external
-  subscription providers remain deferred.
+  checkout/callback, legacy Waffo wallet checkout/webhook, Waffo Pancake wallet
+  checkout/webhook, and Creem wallet checkout/webhook are implemented;
+  external subscription providers remain deferred.
 - Public rankings:
   `GET /api/rankings` now returns the default frontend's live rankings
   snapshot from D1 `logs`, honors `HeaderNavModules.rankings`, and removes
   rankings from the status capability clamp.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-36 missing calls / 1 payment-deferred call with a stable SHA-256 route-set
+35 missing calls / 0 payment-deferred calls with a stable SHA-256 route-set
 digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
-remaining calls include capability-hidden product families, deferred auth and
-payment families; operations-debt is currently zero. Local wrapper methods are
+remaining calls include capability-hidden product families and deferred auth
+families; operations-debt and payment-debt are currently zero. Local wrapper methods are
 inferred, while non-HTTP calls such as `endsWith('/v1')` are no longer counted.
 Hidden navigation still does not imply implementation.
 

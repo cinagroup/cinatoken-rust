@@ -2385,3 +2385,65 @@ subscription Epay checkout/callback, and other external subscription
 checkout/callback routes remain payment-deferred or capability-hidden until
 their provider-specific order model, signature verification, amount/product/env
 match checks, idempotency, replay, and reconciliation evidence is in place.
+
+### 22.20 2026-07-04 Legacy Waffo Wallet Topup/Webhook Delta
+
+This increment supersedes the 22.19 route-debt number for the default frontend
+wallet audit. The Rust Worker now owns legacy Waffo wallet checkout and webhook
+settlement while still keeping external subscription checkout providers hidden
+until their subscription order settlement paths are migrated:
+
+- `POST /api/user/waffo/pay` requires user session auth, payment compliance,
+  `WaffoEnabled`, active-mode sandbox/prod Waffo credentials, and a configured
+  public cert/private key/API key set.
+- The Worker mirrors Go's default Waffo pay-method contract: Card
+  (`CREDITCARD,DEBITCARD`), Apple Pay, and Google Pay are used when
+  `WaffoPayMethods` is empty or invalid; an explicit empty array disables
+  Waffo exposure in `topup/info`.
+- The payable amount uses the Go-compatible wallet formula:
+  `WaffoUnitPrice`, `WaffoMinTopUp`, `QuotaPerUnit`, `TopupGroupRatio`,
+  token-display mode, and `payment_setting.amount_discount`.
+- Rust D1 keeps `topups.amount` as final quota-to-credit. For Waffo
+  token-display mode, order creation translates Go `RechargeWaffo` semantics
+  into `max(IntPart(amount / QuotaPerUnit), 1) * QuotaPerUnit`.
+- Waffo order IDs keep the Go-visible
+  `WAFFO-{user}-{UnixMilli}-{rand6}` shape. The Worker creates the D1 pending
+  topup before calling Waffo and marks it failed if external order creation
+  fails after local row creation.
+- Outbound Waffo `/api/v1/order/create` requests sign the exact JSON body with
+  RSA-SHA256/PKCS#1 v1.5 using the merchant private key, send the Go SDK header
+  shape (`X-API-KEY`, `X-SIGNATURE`, `X-API-VERSION`, `X-SDK-VERSION`), reject
+  redirects, enforce a 30 second timeout, validate JSON response type, bound
+  response reads, and verify Waffo `X-SIGNATURE` response bodies when present.
+- `POST /api/waffo/webhook` verifies the raw-body `X-SIGNATURE` with the
+  configured Waffo public cert before parsing JSON. Only
+  `PAYMENT_NOTIFICATION` + `PAY_SUCCESS` wallet events credit; non-success
+  events mark pending Waffo topups failed for the expected provider.
+- The webhook verifies local provider and amount before calling the
+  provider-aware D1 credited-anchor batch. Permanent mismatches are recorded in
+  `payment_events` and signed as success/no-credit so provider retries do not
+  create retry storms; partial credit failures return a signed failed body.
+- Waffo webhook responses sign the exact Go-compatible JSON body
+  `{"message":"success"}` or `{"message":"failed"}` with the merchant private
+  key and return it in `X-SIGNATURE`.
+- `GET /api/user/topup/info` now exposes legacy Waffo wallet topup only when
+  compliance, active-mode Waffo credentials, and a non-empty method list are
+  complete. This removes the final `payment-deferred` frontend route-debt
+  category.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 246 Worker routes, 35 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  0 payment-deferred;
+- route-set SHA-256:
+  `47cecc965627ac5c9ee04118b842dad4d1aaa5416e607449998ffa64c45e79d5`;
+- `cargo test -p cinatoken-worker --lib`: 308 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining boundary: `/api/subscription/creem/pay`,
+`/api/subscription/waffo-pancake/pay`, subscription Epay checkout/callback, and
+other external subscription checkout/callback routes remain capability-hidden
+or auth-deferred until their provider-specific subscription order model,
+signature verification, amount/product/env match checks, idempotency, replay,
+and reconciliation evidence is in place.

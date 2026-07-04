@@ -7,6 +7,7 @@
 //! - `POST /api/user/pay` creates an Epay-compatible pending topup order and
 //!   returns the signed form action/params. UserAuth.
 //! - `POST /api/user/creem/pay` creates a Creem checkout session. UserAuth.
+//! - `POST /api/user/waffo/pay` creates a legacy Waffo checkout order. UserAuth.
 //! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
 //! - `POST /api/user/waffo-pancake/amount` estimates Waffo Pancake charge amount.
 //! - `POST /api/user/waffo-pancake/pay` creates a Waffo Pancake checkout session.
@@ -17,6 +18,7 @@
 //! - `POST /api/option/waffo-pancake/subscription-product-options` lists saved-store products.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
 //! - `POST /api/creem/webhook` verifies Creem events and credits quota.
+//! - `POST /api/waffo/webhook` verifies legacy Waffo events and credits quota.
 //! - `POST /api/waffo-pancake/webhook/:env` verifies Waffo Pancake events and credits quota.
 //! - `GET/POST /api/user/epay/notify` verifies Epay callbacks and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
@@ -81,6 +83,21 @@ const CREEM_API_KEY_KEY: &str = "CreemApiKey";
 const CREEM_PRODUCTS_KEY: &str = "CreemProducts";
 const CREEM_TEST_MODE_KEY: &str = "CreemTestMode";
 const CREEM_WEBHOOK_SECRET_KEY: &str = "CreemWebhookSecret";
+const WAFFO_ENABLED_KEY: &str = "WaffoEnabled";
+const WAFFO_API_KEY_KEY: &str = "WaffoApiKey";
+const WAFFO_PRIVATE_KEY_KEY: &str = "WaffoPrivateKey";
+const WAFFO_PUBLIC_CERT_KEY: &str = "WaffoPublicCert";
+const WAFFO_SANDBOX_PUBLIC_CERT_KEY: &str = "WaffoSandboxPublicCert";
+const WAFFO_SANDBOX_API_KEY_KEY: &str = "WaffoSandboxApiKey";
+const WAFFO_SANDBOX_PRIVATE_KEY_KEY: &str = "WaffoSandboxPrivateKey";
+const WAFFO_SANDBOX_KEY: &str = "WaffoSandbox";
+const WAFFO_MERCHANT_ID_KEY: &str = "WaffoMerchantId";
+const WAFFO_NOTIFY_URL_KEY: &str = "WaffoNotifyUrl";
+const WAFFO_RETURN_URL_KEY: &str = "WaffoReturnUrl";
+const WAFFO_CURRENCY_KEY: &str = "WaffoCurrency";
+const WAFFO_UNIT_PRICE_KEY: &str = "WaffoUnitPrice";
+const WAFFO_MIN_TOPUP_KEY: &str = "WaffoMinTopUp";
+const WAFFO_PAY_METHODS_KEY: &str = "WaffoPayMethods";
 const WAFFO_PANCAKE_MERCHANT_ID_KEY: &str = "WaffoPancakeMerchantID";
 const WAFFO_PANCAKE_PRIVATE_KEY_KEY: &str = "WaffoPancakePrivateKey";
 const WAFFO_PANCAKE_RETURN_URL_KEY: &str = "WaffoPancakeReturnURL";
@@ -91,10 +108,12 @@ const WAFFO_PANCAKE_UNIT_PRICE_KEY: &str = "WaffoPancakeUnitPrice";
 const QUOTA_DISPLAY_TYPE_TOKENS: &str = "TOKENS";
 const DEFAULT_PRICE: &str = "7.3";
 const DEFAULT_QUOTA_PER_UNIT: &str = "500000";
+const DEFAULT_WAFFO_UNIT_PRICE: &str = "1";
 const DEFAULT_WAFFO_PANCAKE_UNIT_PRICE: &str = "1";
 const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
 const PAYMENT_PROVIDER_EPAY: &str = "epay";
 const PAYMENT_PROVIDER_CREEM: &str = "creem";
+const PAYMENT_PROVIDER_WAFFO: &str = "waffo";
 const PAYMENT_PROVIDER_WAFFO_PANCAKE: &str = "waffo_pancake";
 const TOPUP_STATUS_SUCCESS: i32 = 1;
 const TOPUP_STATUS_FAILED: i32 = 2;
@@ -106,6 +125,16 @@ const CREEM_TEST_CHECKOUT_URL: &str = "https://test-api.creem.io/v1/checkouts";
 const CREEM_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const CREEM_RESPONSE_LIMIT_BYTES: usize = 64 * 1024;
 const CREEM_WEBHOOK_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const WAFFO_PROD_API_BASE_URL: &str = "https://api.waffo.com/api/v1";
+const WAFFO_SANDBOX_API_BASE_URL: &str = "https://api-sandbox.waffo.com/api/v1";
+const WAFFO_CREATE_ORDER_PATH: &str = "/order/create";
+const WAFFO_API_VERSION: &str = "1.0.0";
+const WAFFO_SDK_VERSION: &str = "waffo-go/1.3.1";
+const DEFAULT_WAFFO_CURRENCY: &str = "USD";
+const WAFFO_RETURN_PATH: &str = "/console/topup?show_history=true";
+const WAFFO_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const WAFFO_RESPONSE_LIMIT_BYTES: usize = 64 * 1024;
+const WAFFO_WEBHOOK_BODY_LIMIT_BYTES: usize = 64 * 1024;
 const WAFFO_PANCAKE_API_BASE_URL: &str = "https://api.waffo.ai";
 const WAFFO_PANCAKE_GRAPHQL_URL: &str = "https://api.waffo.ai/v1/graphql";
 const WAFFO_PANCAKE_GRAPHQL_PATH: &str = "/v1/graphql";
@@ -172,6 +201,19 @@ const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     EPAY_ID_KEY,
     EPAY_KEY_KEY,
     PAY_METHODS_KEY,
+    WAFFO_ENABLED_KEY,
+    WAFFO_API_KEY_KEY,
+    WAFFO_PRIVATE_KEY_KEY,
+    WAFFO_PUBLIC_CERT_KEY,
+    WAFFO_SANDBOX_PUBLIC_CERT_KEY,
+    WAFFO_SANDBOX_API_KEY_KEY,
+    WAFFO_SANDBOX_PRIVATE_KEY_KEY,
+    WAFFO_SANDBOX_KEY,
+    WAFFO_MERCHANT_ID_KEY,
+    WAFFO_CURRENCY_KEY,
+    WAFFO_UNIT_PRICE_KEY,
+    WAFFO_MIN_TOPUP_KEY,
+    WAFFO_PAY_METHODS_KEY,
     WAFFO_PANCAKE_MERCHANT_ID_KEY,
     WAFFO_PANCAKE_PRIVATE_KEY_KEY,
     WAFFO_PANCAKE_PRODUCT_ID_KEY,
@@ -217,6 +259,42 @@ const EPAY_TOPUP_OPTION_KEYS: &[&str] = &[
     EPAY_KEY_KEY,
     PAY_METHODS_KEY,
     CUSTOM_CALLBACK_ADDRESS_KEY,
+];
+const WAFFO_TOPUP_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    WAFFO_ENABLED_KEY,
+    WAFFO_API_KEY_KEY,
+    WAFFO_PRIVATE_KEY_KEY,
+    WAFFO_PUBLIC_CERT_KEY,
+    WAFFO_SANDBOX_PUBLIC_CERT_KEY,
+    WAFFO_SANDBOX_API_KEY_KEY,
+    WAFFO_SANDBOX_PRIVATE_KEY_KEY,
+    WAFFO_SANDBOX_KEY,
+    WAFFO_MERCHANT_ID_KEY,
+    WAFFO_NOTIFY_URL_KEY,
+    WAFFO_RETURN_URL_KEY,
+    WAFFO_CURRENCY_KEY,
+    WAFFO_UNIT_PRICE_KEY,
+    WAFFO_MIN_TOPUP_KEY,
+    WAFFO_PAY_METHODS_KEY,
+    QUOTA_PER_UNIT_KEY,
+    TOPUP_GROUP_RATIO_KEY,
+    GENERAL_QUOTA_DISPLAY_TYPE_KEY,
+    PAYMENT_AMOUNT_DISCOUNT_KEY,
+    CUSTOM_CALLBACK_ADDRESS_KEY,
+];
+const WAFFO_WEBHOOK_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    WAFFO_ENABLED_KEY,
+    WAFFO_API_KEY_KEY,
+    WAFFO_PRIVATE_KEY_KEY,
+    WAFFO_PUBLIC_CERT_KEY,
+    WAFFO_SANDBOX_PUBLIC_CERT_KEY,
+    WAFFO_SANDBOX_API_KEY_KEY,
+    WAFFO_SANDBOX_PRIVATE_KEY_KEY,
+    WAFFO_SANDBOX_KEY,
 ];
 const WAFFO_PANCAKE_AMOUNT_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_CONFIRMED_KEY,
@@ -791,6 +869,170 @@ pub async fn creem_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
 
     creem_ok_response(&CreemPayResponse {
         checkout_url: checkout.checkout_url,
+        order_id: trade_no,
+    })
+}
+
+/// `POST /api/user/waffo/pay`: create a legacy Waffo checkout order.
+pub async fn waffo_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let frontend_base = match resolve_frontend_base_url(&env, &req) {
+        Ok(base) => base,
+        Err(message) => return Ok(waffo_error_response(&message)?),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let amount = request_amount(&body);
+    if !amount.is_finite() || amount <= 0.0 || amount.fract() != 0.0 || amount > i64::MAX as f64 {
+        return Ok(waffo_error_response("amount must be a positive integer")?);
+    }
+    let amount = amount as i64;
+
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, WAFFO_TOPUP_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    if !compliance_confirmed {
+        return Ok(waffo_error_response("payment compliance is not confirmed")?);
+    }
+    let config = match waffo_config_from_values(&values, None, None) {
+        Ok(Some(config)) => config,
+        Ok(None) => return Ok(waffo_error_response("Waffo payment is not configured")?),
+        Err(message) => return Ok(waffo_error_response(&message)?),
+    };
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(waffo_error_response("user not found")?);
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(waffo_error_response("user is disabled")?);
+    }
+    if amount < config.min_topup {
+        return Ok(waffo_error_response(&format!(
+            "topup amount cannot be less than {}",
+            config.min_topup
+        ))?);
+    }
+
+    let methods = parse_waffo_pay_methods(values[16].as_deref());
+    let selected_method = match resolve_waffo_pay_method(&body, &methods) {
+        Ok(method) => method,
+        Err(message) => return Ok(waffo_error_response(message)?),
+    };
+    let settings = OnlineAmountSettings {
+        min_topup: config.min_topup,
+        price: parse_positive_decimal(values[14].as_deref(), DEFAULT_WAFFO_UNIT_PRICE),
+        quota_per_unit: parse_positive_decimal(values[17].as_deref(), DEFAULT_QUOTA_PER_UNIT),
+        topup_group_ratio: topup_group_ratio_for_group(&user.group, values[18].as_deref()),
+        quota_display_type: values[19].as_deref().unwrap_or("USD"),
+        discount: discount_for_amount(amount, values[20].as_deref()),
+    };
+    let pay_money = online_pay_money(amount, &settings);
+    if pay_money < Decimal::new(1, 2) {
+        return Ok(waffo_error_response("payment amount is too small")?);
+    }
+    let credit_quota = waffo_credit_quota(amount, &settings);
+    if credit_quota <= 0 {
+        return Ok(waffo_error_response("credited quota is too small")?);
+    }
+
+    let callback_base = match resolve_callback_base_url(&env, &req, values[21].as_deref()) {
+        Ok(base) => base,
+        Err(message) => return Ok(waffo_error_response(&message)?),
+    };
+    let notify_url = if config.notify_url.is_empty() {
+        join_url_path(&callback_base, "/api/waffo/webhook")
+    } else {
+        config.notify_url.clone()
+    };
+    let return_url = if config.return_url.is_empty() {
+        join_url_path(&frontend_base, WAFFO_RETURN_PATH)
+    } else {
+        config.return_url.clone()
+    };
+    let now = unix_timestamp();
+    let trade_no = match waffo_trade_no(claims.id) {
+        Some(value) => value,
+        None => return Ok(waffo_error_response("failed to generate order id")?),
+    };
+    let money = format_waffo_amount(pay_money, &config.currency);
+    let money_value = money.parse::<f64>().unwrap_or(0.0);
+
+    if let Err(err) = d1_repositories::create_topup(
+        &db,
+        claims.id,
+        credit_quota,
+        money_value,
+        &trade_no,
+        PAYMENT_PROVIDER_WAFFO,
+        PAYMENT_PROVIDER_WAFFO,
+        now,
+    )
+    .await
+    {
+        worker::console_error!("failed to record Waffo pending topup {trade_no}: {err}");
+        return Ok(waffo_error_response("failed to create topup order")?);
+    }
+
+    let checkout = match create_waffo_order(
+        &config,
+        &trade_no,
+        amount,
+        &money,
+        &notify_url,
+        &return_url,
+        &user,
+        selected_method.as_ref(),
+    )
+    .await
+    {
+        Ok(checkout) => checkout,
+        Err(err) => {
+            worker::console_error!(
+                "failed to create Waffo order user_id={} trade_no={} error={}",
+                claims.id,
+                trade_no,
+                err
+            );
+            let _ = d1_repositories::update_pending_topup_status_for_provider(
+                &db,
+                &trade_no,
+                PAYMENT_PROVIDER_WAFFO,
+                TOPUP_STATUS_FAILED,
+            )
+            .await;
+            return Ok(waffo_error_response("failed to create checkout order")?);
+        }
+    };
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        None,
+        "user",
+        "topup.waffo.create",
+        &format!("user {} created Waffo topup {}", claims.username, trade_no),
+        &serde_json::json!({
+            "trade_no": trade_no,
+            "amount": amount,
+            "credit_quota": credit_quota,
+            "money": money,
+            "sandbox": config.sandbox,
+            "pay_method_type": selected_method.as_ref().map(|m| m.pay_method_type.as_str()).unwrap_or(""),
+            "pay_method_name": selected_method.as_ref().map(|m| m.pay_method_name.as_str()).unwrap_or(""),
+        }),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    waffo_ok_response(&WaffoPayResponse {
+        payment_url: checkout.payment_url,
         order_id: trade_no,
     })
 }
@@ -1752,6 +1994,262 @@ pub async fn creem_webhook(mut req: Request, env: Env) -> WorkerResult<Response>
     Response::ok("OK")
 }
 
+/// `POST /api/waffo/webhook`: verify legacy Waffo events and credit wallet quota.
+pub async fn waffo_webhook(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, WAFFO_WEBHOOK_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    let config = match waffo_config_from_values(&values, None, None) {
+        Ok(Some(config)) if compliance_confirmed => config,
+        Ok(_) => {
+            worker::console_warn!("Waffo webhook rejected: gateway disabled");
+            return Ok(Response::error("webhook disabled", 403)?);
+        }
+        Err(message) => {
+            worker::console_warn!("Waffo webhook rejected: {message}");
+            return Ok(Response::error("webhook disabled", 403)?);
+        }
+    };
+
+    if let Err(message) = validate_creem_content_length(
+        req.headers().get("Content-Length").ok().flatten(),
+        WAFFO_WEBHOOK_BODY_LIMIT_BYTES,
+        "Waffo webhook",
+    ) {
+        let status = if message.contains("too large") {
+            413
+        } else {
+            400
+        };
+        worker::console_warn!("Waffo webhook rejected: {message}");
+        return Ok(Response::error(&message, status)?);
+    }
+    let signature = req
+        .headers()
+        .get("X-SIGNATURE")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if signature.trim().is_empty() {
+        worker::console_warn!("Waffo webhook rejected: missing signature");
+        return Ok(Response::error("missing signature", 400)?);
+    }
+    let payload_bytes = req.bytes().await?;
+    if payload_bytes.len() > WAFFO_WEBHOOK_BODY_LIMIT_BYTES {
+        return Ok(Response::error("Waffo webhook body too large", 413)?);
+    }
+    if !verify_waffo_signature(&payload_bytes, &signature, &config.public_cert) {
+        worker::console_warn!("Waffo webhook signature invalid");
+        return Ok(Response::error("invalid signature", 400)?);
+    }
+    let payload = match String::from_utf8(payload_bytes) {
+        Ok(payload) => payload,
+        Err(_) => return waffo_signed_response(&config, false),
+    };
+    let event: WaffoWebhookEvent = match serde_json::from_str(&payload) {
+        Ok(event) => event,
+        Err(err) => {
+            worker::console_warn!("Waffo webhook payload invalid: {err}");
+            return waffo_signed_response(&config, false);
+        }
+    };
+
+    let now = unix_timestamp();
+    let event_id = waffo_event_id(&event, &payload);
+    let trade_no = event.result.merchant_order_id.trim().to_string();
+    let order_id = if trade_no.is_empty() {
+        event.result.acquiring_order_id.trim()
+    } else {
+        trade_no.as_str()
+    };
+
+    if event.event_type != "PAYMENT_NOTIFICATION" {
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO,
+            &event_id,
+            order_id,
+            "ignored",
+            &payload,
+            now,
+        )
+        .await;
+        return waffo_signed_response(&config, true);
+    }
+    if event.result.order_status != "PAY_SUCCESS" {
+        if !trade_no.is_empty() {
+            let _ = d1_repositories::update_pending_topup_status_for_provider(
+                &db,
+                &trade_no,
+                PAYMENT_PROVIDER_WAFFO,
+                TOPUP_STATUS_FAILED,
+            )
+            .await;
+        }
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO,
+            &event_id,
+            order_id,
+            "ignored",
+            &payload,
+            now,
+        )
+        .await;
+        return waffo_signed_response(&config, true);
+    }
+    if trade_no.is_empty() {
+        worker::console_error!(
+            "Waffo webhook missing merchantOrderId event_id={} acquiring_order_id={}",
+            event_id,
+            event.result.acquiring_order_id
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO,
+            &event_id,
+            order_id,
+            "unmatched",
+            &payload,
+            now,
+        )
+        .await;
+        return waffo_signed_response(&config, true);
+    }
+
+    let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &trade_no).await? else {
+        worker::console_error!(
+            "Waffo webhook topup not found event_id={} trade_no={}",
+            event_id,
+            trade_no
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO,
+            &event_id,
+            &trade_no,
+            "unmatched",
+            &payload,
+            now,
+        )
+        .await;
+        return waffo_signed_response(&config, true);
+    };
+    if topup.payment_provider != PAYMENT_PROVIDER_WAFFO {
+        worker::console_error!(
+            "Waffo webhook provider mismatch event_id={} trade_no={} provider={}",
+            event_id,
+            trade_no,
+            topup.payment_provider
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO,
+            &event_id,
+            &trade_no,
+            "rejected",
+            &payload,
+            now,
+        )
+        .await;
+        return waffo_signed_response(&config, true);
+    }
+    if !waffo_amount_matches(topup.money, &event.result) {
+        worker::console_error!(
+            "Waffo webhook amount mismatch event_id={} trade_no={} topup_money={} order_amount={} final_deal_amount={} currency={}",
+            event_id,
+            trade_no,
+            topup.money,
+            event.result.order_amount,
+            event.result.final_deal_amount,
+            event.result.order_currency
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_WAFFO,
+            &event_id,
+            &trade_no,
+            "rejected",
+            &payload,
+            now,
+        )
+        .await;
+        return waffo_signed_response(&config, true);
+    }
+    let expected_money = topup.money;
+
+    let credit_result = d1_repositories::complete_topup_and_credit_for_provider(
+        &db,
+        &trade_no,
+        PAYMENT_PROVIDER_WAFFO,
+        PAYMENT_PROVIDER_WAFFO,
+        expected_money,
+        now,
+    )
+    .await?;
+    let _ = d1_repositories::insert_payment_event(
+        &db,
+        PAYMENT_PROVIDER_WAFFO,
+        &event_id,
+        &trade_no,
+        "paid",
+        &payload,
+        now,
+    )
+    .await;
+
+    if credit_result.credited_now() {
+        if let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &trade_no).await? {
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                Some(topup.user_id),
+                None,
+                "system",
+                "topup.credit",
+                &format!(
+                    "Waffo topup {} credited {} quota ({} paid)",
+                    topup.trade_no, topup.amount, topup.money
+                ),
+                &serde_json::json!({
+                    "trade_no": topup.trade_no,
+                    "amount": topup.amount,
+                    "money": topup.money,
+                    "payment_method": topup.payment_method,
+                    "payment_provider": PAYMENT_PROVIDER_WAFFO,
+                    "event_id": event_id,
+                    "acquiring_order_id": event.result.acquiring_order_id,
+                }),
+                &d1_repositories::AdminAuditInfo {
+                    admin_id: 0,
+                    admin_username: "waffo-webhook".to_string(),
+                    admin_role: 0,
+                    auth_method: "webhook".to_string(),
+                    ip: String::new(),
+                },
+                now,
+            )
+            .await;
+        }
+    } else if let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &trade_no).await? {
+        if !is_completed_waffo_replay(&topup, expected_money) {
+            worker::console_error!(
+                "Waffo webhook verified but did not credit trade_no={} status={} credited={} provider={}",
+                trade_no,
+                topup.status,
+                topup.credited,
+                topup.payment_provider
+            );
+            return waffo_signed_response(&config, false);
+        }
+    } else {
+        worker::console_error!("Waffo webhook verified but topup disappeared trade_no={trade_no}");
+        return waffo_signed_response(&config, false);
+    }
+
+    waffo_signed_response(&config, true)
+}
+
 /// `POST /api/stripe/webhook`: receive and process a Stripe webhook.
 /// Public route - security relies on HMAC-SHA256 signature verification.
 pub async fn stripe_webhook(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -2224,11 +2722,25 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         && !values[10].as_deref().unwrap_or_default().trim().is_empty();
     let epay_configured = epay_config_from_values(&values[11], &values[12], &values[13]).is_some();
     let epay_pay_methods = parse_payment_methods(values[14].as_deref());
-    let waffo_pancake_min_topup = parse_positive_f64(values[18].as_deref(), 1.0);
+    let waffo_sandbox = parse_bool(values[22].as_deref(), false);
+    let waffo_enabled = parse_bool(values[15].as_deref(), false);
+    let waffo_configured = waffo_enabled
+        && if waffo_sandbox {
+            !values[20].as_deref().unwrap_or_default().trim().is_empty()
+                && !values[21].as_deref().unwrap_or_default().trim().is_empty()
+                && !values[19].as_deref().unwrap_or_default().trim().is_empty()
+        } else {
+            !values[16].as_deref().unwrap_or_default().trim().is_empty()
+                && !values[17].as_deref().unwrap_or_default().trim().is_empty()
+                && !values[18].as_deref().unwrap_or_default().trim().is_empty()
+        };
+    let waffo_min_topup = parse_positive_f64(values[26].as_deref(), 1.0);
+    let waffo_pay_methods = parse_waffo_pay_methods(values[27].as_deref());
+    let waffo_pancake_min_topup = parse_positive_f64(values[31].as_deref(), 1.0);
     let waffo_pancake_configured = waffo_pancake_topup_configured(
-        values[15].as_deref().unwrap_or_default(),
-        values[16].as_deref().unwrap_or_default(),
-        values[17].as_deref().unwrap_or_default(),
+        values[28].as_deref().unwrap_or_default(),
+        values[29].as_deref().unwrap_or_default(),
+        values[30].as_deref().unwrap_or_default(),
     );
 
     // Only expose provider methods that have a Rust Worker implementation and a
@@ -2238,6 +2750,8 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
     let enable_creem_topup = compliance_confirmed && creem_configured;
     let enable_online_topup =
         compliance_confirmed && epay_configured && !epay_pay_methods.is_empty();
+    let enable_waffo_topup =
+        compliance_confirmed && waffo_configured && !waffo_pay_methods.is_empty();
     let enable_waffo_pancake_topup = compliance_confirmed && waffo_pancake_configured;
     let mut pay_methods = if enable_online_topup {
         epay_pay_methods
@@ -2254,6 +2768,19 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
                 "type": "stripe",
                 "color": "rgba(var(--semi-purple-5), 1)",
                 "min_topup": stripe_min_topup,
+            }));
+        }
+    }
+    if enable_waffo_topup {
+        let has_waffo = pay_methods.iter().any(|method| {
+            method.get("type").and_then(Value::as_str) == Some(PAYMENT_PROVIDER_WAFFO)
+        });
+        if !has_waffo {
+            pay_methods.push(serde_json::json!({
+                "name": "Waffo (Global Payment)",
+                "type": PAYMENT_PROVIDER_WAFFO,
+                "color": "rgba(var(--semi-blue-5), 1)",
+                "min_topup": waffo_min_topup,
             }));
         }
     }
@@ -2275,18 +2802,22 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         enable_online_topup,
         enable_stripe_topup,
         enable_creem_topup,
-        enable_waffo_topup: false,
+        enable_waffo_topup,
         enable_waffo_pancake_topup,
         enable_waffo_pancake_subscription: false,
         enable_redemption: compliance_confirmed,
         payment_compliance_confirmed: compliance_confirmed,
         payment_compliance_terms_version: CURRENT_COMPLIANCE_TERMS_VERSION.to_string(),
-        waffo_pay_methods: Value::Null,
+        waffo_pay_methods: if enable_waffo_topup {
+            serde_json::to_value(&waffo_pay_methods).unwrap_or(Value::Array(Vec::new()))
+        } else {
+            Value::Null
+        },
         creem_products: creem_products_value(&creem_products, enable_creem_topup),
         pay_methods,
         min_topup,
         stripe_min_topup,
-        waffo_min_topup: 1.0,
+        waffo_min_topup,
         waffo_pancake_min_topup,
         amount_options,
         discount,
@@ -2707,6 +3238,129 @@ struct CompleteTopupRequest {
     trade_no: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+struct WaffoPayMethod {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    icon: String,
+    #[serde(rename = "payMethodType", default)]
+    pay_method_type: String,
+    #[serde(rename = "payMethodName", default)]
+    pay_method_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct WaffoConfig {
+    api_key: String,
+    private_key: String,
+    public_cert: String,
+    sandbox: bool,
+    merchant_id: String,
+    notify_url: String,
+    return_url: String,
+    currency: String,
+    min_topup: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WaffoCreateOrderRequest {
+    payment_request_id: String,
+    merchant_order_id: String,
+    order_currency: String,
+    order_amount: String,
+    order_description: String,
+    order_requested_at: String,
+    success_redirect_url: String,
+    failed_redirect_url: String,
+    notify_url: String,
+    merchant_info: WaffoMerchantInfo,
+    user_info: WaffoUserInfo,
+    payment_info: WaffoPaymentInfo,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WaffoMerchantInfo {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    merchant_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WaffoUserInfo {
+    user_id: String,
+    user_email: String,
+    user_terminal: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WaffoPaymentInfo {
+    product_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pay_method_type: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pay_method_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaffoApiEnvelope<T> {
+    #[serde(default)]
+    code: String,
+    #[serde(rename = "msg", default)]
+    message: String,
+    #[serde(default)]
+    data: Option<T>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WaffoCreateOrderData {
+    #[serde(default)]
+    order_action: String,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct WaffoPayResponse {
+    payment_url: String,
+    order_id: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct WaffoCheckoutResponse {
+    payment_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WaffoWebhookEvent {
+    #[serde(default)]
+    event_type: String,
+    #[serde(default)]
+    result: WaffoPaymentNotificationResult,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WaffoPaymentNotificationResult {
+    #[serde(default)]
+    payment_request_id: String,
+    #[serde(default)]
+    merchant_order_id: String,
+    #[serde(default)]
+    acquiring_order_id: String,
+    #[serde(default)]
+    order_status: String,
+    #[serde(default)]
+    order_currency: String,
+    #[serde(default)]
+    order_amount: String,
+    #[serde(default)]
+    final_deal_amount: String,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct WaffoPancakeCredsRequest {
     #[serde(default)]
@@ -3111,6 +3765,485 @@ fn creem_error_response(message: &str) -> WorkerResult<Response> {
     .with_status(200);
     set_cors_headers(&mut response)?;
     Ok(response)
+}
+
+fn waffo_ok_response<T: Serialize>(data: &T) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&serde_json::json!({
+        "message": "success",
+        "data": data,
+    }))?
+    .with_status(200);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn waffo_error_response(message: &str) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&serde_json::json!({
+        "message": "error",
+        "data": message,
+    }))?
+    .with_status(200);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn waffo_signed_response(config: &WaffoConfig, success: bool) -> WorkerResult<Response> {
+    let body = if success {
+        r#"{"message":"success"}"#
+    } else {
+        r#"{"message":"failed"}"#
+    };
+    let signature = match sign_waffo_payload(body.as_bytes(), &config.private_key) {
+        Ok(signature) => signature,
+        Err(err) => {
+            worker::console_error!("failed to sign Waffo webhook response: {err}");
+            return Ok(Response::error(
+                "failed to sign Waffo webhook response",
+                500,
+            )?);
+        }
+    };
+    let mut response = Response::ok(body)?;
+    response
+        .headers_mut()
+        .set("Content-Type", "application/json")?;
+    response.headers_mut().set("X-SIGNATURE", &signature)?;
+    Ok(response)
+}
+
+fn waffo_config_from_values(
+    values: &[Option<String>],
+    notify_url: Option<String>,
+    return_url: Option<String>,
+) -> Result<Option<WaffoConfig>, String> {
+    if !parse_bool(option_value(values, 2), false) {
+        return Ok(None);
+    }
+    let sandbox = parse_bool(option_value(values, 9), false);
+    let (api_key, private_key, public_cert) = if sandbox {
+        (
+            option_string(values, 7),
+            option_string(values, 8),
+            option_string(values, 6),
+        )
+    } else {
+        (
+            option_string(values, 3),
+            option_string(values, 4),
+            option_string(values, 5),
+        )
+    };
+    if api_key.is_empty() || private_key.is_empty() || public_cert.is_empty() {
+        return Ok(None);
+    }
+    let currency = non_empty_or(&option_string(values, 13), DEFAULT_WAFFO_CURRENCY);
+    let notify_url = notify_url
+        .unwrap_or_else(|| option_string(values, 11))
+        .trim()
+        .to_string();
+    let return_url = return_url
+        .unwrap_or_else(|| option_string(values, 12))
+        .trim()
+        .to_string();
+    Ok(Some(WaffoConfig {
+        api_key,
+        private_key,
+        public_cert,
+        sandbox,
+        merchant_id: option_string(values, 10),
+        notify_url,
+        return_url,
+        currency,
+        min_topup: parse_positive_i64(option_value(values, 15), 1),
+    }))
+}
+
+fn option_value(values: &[Option<String>], index: usize) -> Option<&str> {
+    values
+        .get(index)
+        .and_then(|value| value.as_deref())
+        .map(str::trim)
+}
+
+fn option_string(values: &[Option<String>], index: usize) -> String {
+    option_value(values, index).unwrap_or_default().to_string()
+}
+
+fn default_waffo_pay_methods() -> Vec<WaffoPayMethod> {
+    vec![
+        WaffoPayMethod {
+            name: "Card".to_string(),
+            icon: "/pay-card.png".to_string(),
+            pay_method_type: "CREDITCARD,DEBITCARD".to_string(),
+            pay_method_name: String::new(),
+        },
+        WaffoPayMethod {
+            name: "Apple Pay".to_string(),
+            icon: "/pay-apple.png".to_string(),
+            pay_method_type: "APPLEPAY".to_string(),
+            pay_method_name: "APPLEPAY".to_string(),
+        },
+        WaffoPayMethod {
+            name: "Google Pay".to_string(),
+            icon: "/pay-google.png".to_string(),
+            pay_method_type: "GOOGLEPAY".to_string(),
+            pay_method_name: "GOOGLEPAY".to_string(),
+        },
+    ]
+}
+
+fn parse_waffo_pay_methods(raw: Option<&str>) -> Vec<WaffoPayMethod> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return default_waffo_pay_methods();
+    };
+    serde_json::from_str::<Vec<WaffoPayMethod>>(raw).unwrap_or_else(|_| default_waffo_pay_methods())
+}
+
+fn resolve_waffo_pay_method(
+    body: &Value,
+    methods: &[WaffoPayMethod],
+) -> Result<Option<WaffoPayMethod>, &'static str> {
+    if let Some(index) = body.get("pay_method_index").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str()?.parse::<i64>().ok())
+    }) {
+        let index = usize::try_from(index).map_err(|_| "unsupported payment method")?;
+        return methods
+            .get(index)
+            .cloned()
+            .map(Some)
+            .ok_or("unsupported payment method");
+    }
+
+    let pay_method_type = body
+        .get("pay_method_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if pay_method_type.is_empty() {
+        return Ok(None);
+    }
+    let pay_method_name = body
+        .get("pay_method_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    methods
+        .iter()
+        .find(|method| {
+            method.pay_method_type == pay_method_type && method.pay_method_name == pay_method_name
+        })
+        .cloned()
+        .map(Some)
+        .ok_or("unsupported payment method")
+}
+
+fn waffo_credit_quota(amount: i64, settings: &OnlineAmountSettings<'_>) -> i64 {
+    waffo_pancake_credit_quota(amount, settings)
+}
+
+fn waffo_trade_no(user_id: i64) -> Option<String> {
+    let suffix = random_base62(6)?;
+    Some(format!(
+        "WAFFO-{user_id}-{}-{suffix}",
+        unix_timestamp_millis()
+    ))
+}
+
+async fn create_waffo_order(
+    config: &WaffoConfig,
+    trade_no: &str,
+    amount: i64,
+    money: &str,
+    notify_url: &str,
+    return_url: &str,
+    user: &d1_repositories::AdminUserRow,
+    method: Option<&WaffoPayMethod>,
+) -> Result<WaffoCheckoutResponse, String> {
+    let request = WaffoCreateOrderRequest {
+        payment_request_id: trade_no.to_string(),
+        merchant_order_id: trade_no.to_string(),
+        order_currency: config.currency.clone(),
+        order_amount: money.to_string(),
+        order_description: format!("Recharge {amount} credits"),
+        order_requested_at: waffo_requested_at(),
+        success_redirect_url: return_url.to_string(),
+        failed_redirect_url: return_url.to_string(),
+        notify_url: notify_url.to_string(),
+        merchant_info: WaffoMerchantInfo {
+            merchant_id: config.merchant_id.clone(),
+        },
+        user_info: WaffoUserInfo {
+            user_id: user.id.to_string(),
+            user_email: waffo_user_email(user.id),
+            user_terminal: "WEB".to_string(),
+        },
+        payment_info: WaffoPaymentInfo {
+            product_name: "ONE_TIME_PAYMENT".to_string(),
+            pay_method_type: method
+                .map(|method| method.pay_method_type.clone())
+                .unwrap_or_default(),
+            pay_method_name: method
+                .map(|method| method.pay_method_name.clone())
+                .unwrap_or_default(),
+        },
+    };
+    let body = serde_json::to_vec(&request)
+        .map_err(|err| format!("failed to encode Waffo order request: {err}"))?;
+    let signature = sign_waffo_payload(&body, &config.private_key)?;
+
+    let mut headers = Headers::new();
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("Accept", "application/json")
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-API-KEY", &config.api_key)
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-SIGNATURE", &signature)
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-API-VERSION", WAFFO_API_VERSION)
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-SDK-VERSION", WAFFO_SDK_VERSION)
+        .map_err(|err| err.to_string())?;
+
+    let base_url = if config.sandbox {
+        WAFFO_SANDBOX_API_BASE_URL
+    } else {
+        WAFFO_PROD_API_BASE_URL
+    };
+    let url = format!("{base_url}{WAFFO_CREATE_ORDER_PATH}");
+    let mut response = fetch_waffo_json(&url, headers, &body).await?;
+    let response_signature = response
+        .headers()
+        .get("X-SIGNATURE")
+        .map_err(|err| format!("failed to inspect Waffo response headers: {err}"))?
+        .unwrap_or_default();
+    let status = response.status_code();
+    let bytes = read_limited_waffo_response_body(&mut response).await?;
+    if !response_signature.trim().is_empty()
+        && !verify_waffo_signature(&bytes, &response_signature, &config.public_cert)
+    {
+        return Err("Waffo response signature verification failed".to_string());
+    }
+    if status / 100 != 2 {
+        return Err(format!("Waffo order HTTP {status}"));
+    }
+    let envelope: WaffoApiEnvelope<WaffoCreateOrderData> = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("failed to parse Waffo order response: {err}"))?;
+    if envelope.code != "0" {
+        return Err(format!(
+            "Waffo order failed code={} message={}",
+            envelope.code, envelope.message
+        ));
+    }
+    let data = envelope
+        .data
+        .ok_or_else(|| "Waffo order response did not include data".to_string())?;
+    let payment_url = waffo_order_action_redirect(&data.order_action)
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or(data.order_action);
+    if payment_url.trim().is_empty() {
+        return Err("Waffo order response did not include payment url".to_string());
+    }
+    Ok(WaffoCheckoutResponse { payment_url })
+}
+
+async fn fetch_waffo_json(url: &str, headers: Headers, body: &[u8]) -> Result<Response, String> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(wasm_bindgen::JsValue::from(js_sys::Uint8Array::from(
+            body,
+        ))))
+        .with_redirect(RequestRedirect::Error);
+    let request = Request::new_with_init(url, &init)
+        .map_err(|err| format!("failed to build Waffo request: {err}"))?;
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let outbound = Fetch::Request(request);
+    let fetch = outbound.send_with_signal(&signal);
+    let delay = Delay::from(WAFFO_FETCH_TIMEOUT);
+    futures_util::pin_mut!(fetch);
+    futures_util::pin_mut!(delay);
+    let response = match select(fetch, delay).await {
+        Either::Left((result, _)) => {
+            result.map_err(|err| format!("failed to fetch Waffo request: {err}"))?
+        }
+        Either::Right(((), _)) => {
+            controller.abort();
+            return Err("Waffo request timed out".to_string());
+        }
+    };
+    let content_type = response
+        .headers()
+        .get("Content-Type")
+        .map_err(|err| format!("failed to inspect Waffo headers: {err}"))?
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.is_empty()
+        && !content_type.contains("application/json")
+        && !content_type.contains("+json")
+    {
+        return Err("Waffo response is not JSON".to_string());
+    }
+    Ok(response)
+}
+
+async fn read_limited_waffo_response_body(response: &mut Response) -> Result<Vec<u8>, String> {
+    validate_creem_content_length(
+        response
+            .headers()
+            .get("Content-Length")
+            .map_err(|err| format!("failed to inspect Waffo headers: {err}"))?,
+        WAFFO_RESPONSE_LIMIT_BYTES,
+        "Waffo response",
+    )?;
+    response
+        .stream()
+        .map_err(|err| format!("failed to read Waffo response: {err}"))?
+        .try_fold(Vec::new(), |mut bytes, chunk| async move {
+            if bytes.len().saturating_add(chunk.len()) > WAFFO_RESPONSE_LIMIT_BYTES {
+                return Err(worker::Error::RustError(
+                    "Waffo response body too large".to_string(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+            Ok(bytes)
+        })
+        .await
+        .map_err(|err| err.to_string())
+}
+
+fn sign_waffo_payload(payload: &[u8], private_key: &str) -> Result<String, String> {
+    let key = parse_waffo_private_key(private_key)?;
+    let signing_key = SigningKey::<Sha256>::new(key);
+    let signature = signing_key.sign(payload);
+    Ok(BASE64_STANDARD.encode(signature.to_bytes()))
+}
+
+fn verify_waffo_signature(payload: &[u8], signature: &str, public_cert: &str) -> bool {
+    let Ok(key) = parse_waffo_public_key(public_cert) else {
+        return false;
+    };
+    let Ok(signature_bytes) = BASE64_STANDARD.decode(signature.trim().as_bytes()) else {
+        return false;
+    };
+    let Ok(signature) = RsaSignature::try_from(signature_bytes.as_slice()) else {
+        return false;
+    };
+    VerifyingKey::<Sha256>::new(key)
+        .verify(payload, &signature)
+        .is_ok()
+}
+
+fn parse_waffo_private_key(raw: &str) -> Result<RsaPrivateKey, String> {
+    let bytes = BASE64_STANDARD
+        .decode(raw.trim().as_bytes())
+        .map_err(|_| "Waffo private key is not valid base64".to_string())?;
+    RsaPrivateKey::from_pkcs8_der(&bytes)
+        .map_err(|_| "Waffo private key is not valid PKCS#8 RSA".to_string())
+}
+
+fn parse_waffo_public_key(raw: &str) -> Result<RsaPublicKey, String> {
+    let bytes = BASE64_STANDARD
+        .decode(raw.trim().as_bytes())
+        .map_err(|_| "Waffo public cert is not valid base64".to_string())?;
+    RsaPublicKey::from_public_key_der(&bytes)
+        .map_err(|_| "Waffo public cert is not valid X.509 RSA".to_string())
+}
+
+fn waffo_requested_at() -> String {
+    js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_string())
+}
+
+fn waffo_user_email(user_id: i64) -> String {
+    format!("{user_id}@examples.com")
+}
+
+fn format_waffo_amount(value: Decimal, currency: &str) -> String {
+    if zero_decimal_waffo_currency(currency) {
+        format!("{:.0}", value.to_f64().unwrap_or(0.0))
+    } else {
+        format_pay_money(value)
+    }
+}
+
+fn zero_decimal_waffo_currency(currency: &str) -> bool {
+    matches!(currency.trim(), "IDR" | "JPY" | "KRW" | "VND")
+}
+
+fn waffo_order_action_redirect(action: &str) -> Option<String> {
+    let action = action.trim();
+    if action.is_empty() {
+        return None;
+    }
+    let value: Value = serde_json::from_str(action).ok()?;
+    if value.get("actionType").and_then(Value::as_str) == Some("DEEPLINK") {
+        if let Some(url) = value.get("deeplinkUrl").and_then(Value::as_str) {
+            if !url.trim().is_empty() {
+                return Some(url.to_string());
+            }
+        }
+    }
+    value
+        .get("webUrl")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn waffo_event_id(event: &WaffoWebhookEvent, payload: &str) -> String {
+    let trade_no = event.result.merchant_order_id.trim();
+    let payment_request_id = event.result.payment_request_id.trim();
+    let acquiring_order_id = event.result.acquiring_order_id.trim();
+    if !trade_no.is_empty() || !payment_request_id.is_empty() || !acquiring_order_id.is_empty() {
+        return format!(
+            "{}:{}:{}:{}",
+            event.event_type.trim(),
+            trade_no,
+            payment_request_id,
+            acquiring_order_id
+        );
+    }
+    format!("payload:{}", hex_lower(&Sha256::digest(payload.as_bytes())))
+}
+
+fn waffo_amount_matches(topup_money: f64, result: &WaffoPaymentNotificationResult) -> bool {
+    let paid = result
+        .final_deal_amount
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| *value > 0.0)
+        .or_else(|| {
+            result
+                .order_amount
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|value| *value > 0.0)
+        });
+    let Some(paid) = paid else {
+        return true;
+    };
+    (topup_money - paid).abs() < 0.000001
+}
+
+fn is_completed_waffo_replay(topup: &d1_repositories::TopupRow, expected_money: f64) -> bool {
+    topup.status == TOPUP_STATUS_SUCCESS
+        && topup.credited != 0
+        && topup.payment_provider == PAYMENT_PROVIDER_WAFFO
+        && topup.payment_method == PAYMENT_PROVIDER_WAFFO
+        && (topup.money - expected_money).abs() < 0.000001
 }
 
 async fn create_creem_checkout(
@@ -4729,30 +5862,36 @@ mod tests {
         constant_time_str_eq, creem_amount_paid_matches, creem_event_id, creem_products_enabled,
         creem_trade_no, discount_for_amount, epay_credit_quota, epay_payment_method_allowed,
         epay_purchase_params, epay_sign, epay_signing_string, epay_submit_url,
-        filter_active_waffo_pancake_products, format_pay_money, generate_creem_signature,
-        is_completed_creem_replay, is_completed_epay_replay, is_completed_waffo_pancake_replay,
+        filter_active_waffo_pancake_products, format_pay_money, format_waffo_amount,
+        generate_creem_signature, is_completed_creem_replay, is_completed_epay_replay,
+        is_completed_waffo_pancake_replay, is_completed_waffo_replay,
         normalize_waffo_pancake_private_key, normalize_waffo_pancake_public_key, online_min_topup,
         online_pay_money, optional_waffo_pancake_string, parse_creem_products, parse_form_params,
         parse_optional_json_bytes, parse_payment_methods, parse_waffo_pancake_event_money,
-        parse_waffo_pancake_signature_header, request_amount, sanitize_like_pattern,
+        parse_waffo_pancake_signature_header, parse_waffo_pay_methods, request_amount,
+        resolve_waffo_pay_method, sanitize_like_pattern, sign_waffo_payload,
         topup_group_ratio_for_group, topup_status_label, validate_creem_content_length,
         validate_epay_notify_content_length, validate_waffo_pancake_admin_content_length,
         validate_waffo_pancake_amount, validate_waffo_pancake_short_id,
         validate_waffo_pancake_webhook_content_length, verify_creem_signature, verify_epay_notify,
-        waffo_pancake_buyer_identity, waffo_pancake_config_updates, waffo_pancake_credit_quota,
-        waffo_pancake_creds_from_parts, waffo_pancake_event_id, waffo_pancake_idempotency_key,
-        waffo_pancake_signature_input, waffo_pancake_subscription_options,
-        waffo_pancake_topup_configured, CreemProduct, CreemWebhookEvent, CreemWebhookObject,
+        verify_waffo_signature, waffo_amount_matches, waffo_config_from_values, waffo_credit_quota,
+        waffo_event_id, waffo_order_action_redirect, waffo_pancake_buyer_identity,
+        waffo_pancake_config_updates, waffo_pancake_credit_quota, waffo_pancake_creds_from_parts,
+        waffo_pancake_event_id, waffo_pancake_idempotency_key, waffo_pancake_signature_input,
+        waffo_pancake_subscription_options, waffo_pancake_topup_configured,
+        zero_decimal_waffo_currency, CreemProduct, CreemWebhookEvent, CreemWebhookObject,
         CreemWebhookOrder, EpayNotifyInfo, EpayPurchaseInput, OnlineAmountSettings,
         SaveWaffoPancakeConfigRequest, WaffoPancakeCatalog, WaffoPancakeCatalogProduct,
         WaffoPancakeCatalogStore, WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo,
-        WaffoPancakeWebhookData, WaffoPancakeWebhookEvent, CREEM_WEBHOOK_BODY_LIMIT_BYTES,
-        EPAY_NOTIFY_BODY_LIMIT_BYTES, PAYMENT_PROVIDER_CREEM, PAYMENT_PROVIDER_EPAY,
+        WaffoPancakeWebhookData, WaffoPancakeWebhookEvent, WaffoPaymentNotificationResult,
+        WaffoWebhookEvent, CREEM_WEBHOOK_BODY_LIMIT_BYTES, EPAY_NOTIFY_BODY_LIMIT_BYTES,
+        PAYMENT_PROVIDER_CREEM, PAYMENT_PROVIDER_EPAY, PAYMENT_PROVIDER_WAFFO,
         PAYMENT_PROVIDER_WAFFO_PANCAKE, TOPUP_STATUS_SUCCESS, WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES,
         WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH, WAFFO_PANCAKE_MERCHANT_ID_KEY,
         WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY, WAFFO_PANCAKE_RETURN_URL_KEY,
         WAFFO_PANCAKE_STORE_ID_KEY, WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
-        WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES,
+        WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES, WAFFO_TOPUP_OPTION_KEYS,
+        WAFFO_WEBHOOK_BODY_LIMIT_BYTES,
     };
     use crate::d1_repositories::TopupRow;
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -4762,6 +5901,9 @@ mod tests {
     fn decimal(value: &str) -> Decimal {
         value.parse::<Decimal>().unwrap()
     }
+
+    const WAFFO_TEST_PRIVATE_KEY: &str = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDS7n0aEn+PGo2zP/KygSpm/mp4xWWkDv2Bupypb5gWHSC1a8+zqCG6lnAkE7cqmacUJHTTIbnrntLWuaEWrpI1R3tjArQdBAbgrKk1F9Xl1Q/XcoeAMMvfSfUcF/ivkPDRgiHXsS9pz1txmTDpggOlkZ+7mVedsDlLWwtAj+Z4otvSQt7lW/N2VSxb6J4qA/9a9F7zYy4HHylxQMyHz/Rkpg2/MIH0ongWdvQAPVod4kNX+moSCrr6jQ2Esmap5V0jqiFm5r1d+gkHZadne4N/zrNu4kO5pXAuKYspsQbE8wdbsEKs1JxA5gbY4inK7rgfcZp1xDrcBkLPnATX+MUtAgMBAAECggEABJgarpxxXaPPAHTiW5vKGWOtsdM01JxZ+P8gReV5wHONIJPIT+oCerlSQyA7I1Ok6rX6OxYB4hKma3RawJnNR+6hDptCt9tnA0eSHjyrv+gtLTy1Rv1pF1mERpgeu8OHpzyIcar433sGIMTc0UfaaKWxvwjcOmxElzJUs1OJtMi8f89Rv87QyLgSo0/1M0ki5vnAw+tLysKro/GH+CJWqAF1MHTBNeFrVwFzDTJP525haUWBFhjlYfYNB0X6mN1nl6XnCsalFb5GTpyMy8T7MAKj68J3TJdhhsZfR8yBj1KQM7u+qnGEl3L+e380GyctYG6B5ZAXgq9CZXv9C36viQKBgQDjc9PPqsGG7qbBu91GjlGZ8gyNXa9Hcq64DOGZD22zMrOafah71FSX3wiCB0FFvbgs55aH/y2S9zW46oXkIOH0fp8GWOtxJVx/n6DzJczG1ZFzPNgphOB/n290D5lAcYk/94VIdAo1BX/D1Epkb0NVSwKZp//v7NTKA7B5xetUVQKBgQDtZ9ZOh6KczCgv//3b83Sq8hdvuKJU9N+vOw/Xc5sZiwBUVZzykXo9OGkowjv0BSAtXi/WuhOL2BncoxR8Z90zdZ9cJ5wANsHnpENeP4peF4k7CtP5dyOzzm1wsusJ3XEgqrRu/IroqktEh2++XAWuUIQqruQ/b8Pc081RgPdFeQKBgGUCGx4uBqOVeBixBSNAMJzdERX2dNCV7WFu1wDSCTV7XqdNBnV3ZdnMAks8TZBbIF9QuVjLycFqZ0EnZS5aK/4X/SckdepZXSqQCTnxn27tiRpT+ur1R31loGk6RCSKRxlRIq96WM4TExo0PJU9k/lcxlrWcKJr2lOcL9LkQg3BAoGBAL3AhxxRcPnefCiRdbh+CLwxr+XOL4G0D62hiXHtpwRtg5/kpgODn66bDgJT7VOHXUalx5rbM5BM867UciVVZwogc3VW+2t4WNfrBSWpp9C5Ayi76N22CkVHM1Ymy5Ig+rDfgERNekGpC2wEzJ3cM3Y2SM1M6IaDsIsqhysj54ARAoGBAJmreq1FrUB8w1MupT4Vv8UGTKHL0d8UE+0TLZx7vxlbT1fKAQsyQyyZGHMz/+w1GV+XTRROYfmO6biCKHivySDaEKj0JlBbCSTn6YEfXGQnZoYKllUd07QlnMyAY7Y7sLsrE4cLJsDv2yT8v1M21pa/rNL8wN8u9oPozNB9bna2";
+    const WAFFO_TEST_PUBLIC_CERT: &str = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0u59GhJ/jxqNsz/ysoEqZv5qeMVlpA79gbqcqW+YFh0gtWvPs6ghupZwJBO3KpmnFCR00yG5657S1rmhFq6SNUd7YwK0HQQG4KypNRfV5dUP13KHgDDL30n1HBf4r5Dw0YIh17Evac9bcZkw6YIDpZGfu5lXnbA5S1sLQI/meKLb0kLe5VvzdlUsW+ieKgP/WvRe82MuBx8pcUDMh8/0ZKYNvzCB9KJ4Fnb0AD1aHeJDV/pqEgq6+o0NhLJmqeVdI6ohZua9XfoJB2WnZ3uDf86zbuJDuaVwLimLKbEGxPMHW7BCrNScQOYG2OIpyu64H3GadcQ63AZCz5wE1/jFLQIDAQAB";
 
     #[test]
     fn topup_status_labels_match_go_strings() {
@@ -5160,6 +6302,283 @@ mod tests {
             ..currency_settings
         };
         assert_eq!(epay_credit_quota(500_000, &token_settings), 500_000);
+    }
+
+    #[test]
+    fn waffo_default_methods_and_selection_match_go_contract() {
+        let methods = parse_waffo_pay_methods(None);
+        assert_eq!(methods.len(), 3);
+        assert_eq!(methods[0].name, "Card");
+        assert_eq!(methods[0].pay_method_type, "CREDITCARD,DEBITCARD");
+        assert_eq!(methods[0].pay_method_name, "");
+        assert_eq!(methods[1].name, "Apple Pay");
+        assert_eq!(methods[1].pay_method_type, "APPLEPAY");
+        assert_eq!(methods[1].pay_method_name, "APPLEPAY");
+        assert_eq!(methods[2].name, "Google Pay");
+
+        let selected =
+            resolve_waffo_pay_method(&serde_json::json!({"pay_method_index": "1"}), &methods)
+                .unwrap()
+                .unwrap();
+        assert_eq!(selected.name, "Apple Pay");
+
+        let selected = resolve_waffo_pay_method(
+            &serde_json::json!({
+                "pay_method_type": "GOOGLEPAY",
+                "pay_method_name": "GOOGLEPAY"
+            }),
+            &methods,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.name, "Google Pay");
+
+        let selected = resolve_waffo_pay_method(
+            &serde_json::json!({"pay_method_type": "CREDITCARD,DEBITCARD"}),
+            &methods,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.name, "Card");
+
+        assert!(
+            resolve_waffo_pay_method(&serde_json::json!({"pay_method_index": -1}), &methods)
+                .is_err()
+        );
+        assert!(resolve_waffo_pay_method(
+            &serde_json::json!({"pay_method_type": "UNKNOWN"}),
+            &methods
+        )
+        .is_err());
+        assert!(parse_waffo_pay_methods(Some("[]")).is_empty());
+        assert_eq!(parse_waffo_pay_methods(Some("{")).len(), 3);
+    }
+
+    #[test]
+    fn waffo_config_and_credit_helpers_follow_go_contract() {
+        let mut values: Vec<Option<String>> = vec![None; WAFFO_TOPUP_OPTION_KEYS.len()];
+        assert!(waffo_config_from_values(&values, None, None)
+            .unwrap()
+            .is_none());
+
+        values[2] = Some("true".to_string());
+        values[3] = Some("prod-api-key".to_string());
+        values[4] = Some(WAFFO_TEST_PRIVATE_KEY.to_string());
+        values[5] = Some(WAFFO_TEST_PUBLIC_CERT.to_string());
+        values[6] = Some("sandbox-public-cert".to_string());
+        values[7] = Some("sandbox-api-key".to_string());
+        values[8] = Some("sandbox-private-key".to_string());
+        values[9] = Some("false".to_string());
+        values[10] = Some("merchant_1".to_string());
+        values[11] = Some("https://callback.example/api/waffo/webhook".to_string());
+        values[12] = Some("https://app.example/console/topup?show_history=true".to_string());
+        values[13] = Some("JPY".to_string());
+        values[15] = Some("3".to_string());
+
+        let config = waffo_config_from_values(&values, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.api_key, "prod-api-key");
+        assert_eq!(config.private_key, WAFFO_TEST_PRIVATE_KEY);
+        assert_eq!(config.public_cert, WAFFO_TEST_PUBLIC_CERT);
+        assert!(!config.sandbox);
+        assert_eq!(config.merchant_id, "merchant_1");
+        assert_eq!(config.currency, "JPY");
+        assert_eq!(config.min_topup, 3);
+        assert_eq!(
+            config.notify_url,
+            "https://callback.example/api/waffo/webhook"
+        );
+
+        let overridden = waffo_config_from_values(
+            &values,
+            Some("https://override.example/notify".to_string()),
+            Some("https://override.example/return".to_string()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(overridden.notify_url, "https://override.example/notify");
+        assert_eq!(overridden.return_url, "https://override.example/return");
+
+        values[9] = Some("true".to_string());
+        let sandbox = waffo_config_from_values(&values, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sandbox.api_key, "sandbox-api-key");
+        assert_eq!(sandbox.private_key, "sandbox-private-key");
+        assert_eq!(sandbox.public_cert, "sandbox-public-cert");
+        assert!(sandbox.sandbox);
+
+        let currency_settings = OnlineAmountSettings {
+            min_topup: 1,
+            price: decimal("1"),
+            quota_per_unit: decimal("500000"),
+            topup_group_ratio: Decimal::ONE,
+            quota_display_type: "USD",
+            discount: Decimal::ONE,
+        };
+        assert_eq!(waffo_credit_quota(2, &currency_settings), 1_000_000);
+
+        let token_settings = OnlineAmountSettings {
+            quota_display_type: "TOKENS",
+            ..currency_settings
+        };
+        assert_eq!(waffo_credit_quota(499_999, &token_settings), 500_000);
+        assert_eq!(waffo_credit_quota(1_250_000, &token_settings), 1_000_000);
+    }
+
+    #[test]
+    fn waffo_rsa_sign_verify_matches_sdk_shape() {
+        let payload = br#"{"paymentRequestId":"test-123","amount":"100.00"}"#;
+        let signature = sign_waffo_payload(payload, WAFFO_TEST_PRIVATE_KEY).unwrap();
+
+        assert!(!signature.is_empty());
+        assert!(verify_waffo_signature(
+            payload,
+            &signature,
+            WAFFO_TEST_PUBLIC_CERT
+        ));
+
+        let mut tampered = payload.to_vec();
+        tampered.push(b' ');
+        assert!(!verify_waffo_signature(
+            &tampered,
+            &signature,
+            WAFFO_TEST_PUBLIC_CERT
+        ));
+        assert!(!verify_waffo_signature(payload, &signature, "bad-cert"));
+        assert!(sign_waffo_payload(payload, "bad-private-key").is_err());
+    }
+
+    #[test]
+    fn waffo_amount_and_redirect_helpers_are_stable() {
+        assert!(zero_decimal_waffo_currency("JPY"));
+        assert!(!zero_decimal_waffo_currency("USD"));
+        assert_eq!(format_waffo_amount(decimal("123.45"), "JPY"), "123");
+        assert_eq!(format_waffo_amount(decimal("123.45"), "USD"), "123.45");
+
+        assert_eq!(
+            waffo_order_action_redirect(
+                r#"{"actionType":"DEEPLINK","deeplinkUrl":"app://pay","webUrl":"https://pay.example"}"#
+            ),
+            Some("app://pay".to_string())
+        );
+        assert_eq!(
+            waffo_order_action_redirect(r#"{"actionType":"WEB","webUrl":"https://pay.example"}"#),
+            Some("https://pay.example".to_string())
+        );
+        assert_eq!(waffo_order_action_redirect("{"), None);
+
+        let result = WaffoPaymentNotificationResult {
+            final_deal_amount: "10.00".to_string(),
+            ..Default::default()
+        };
+        assert!(waffo_amount_matches(10.0, &result));
+        assert!(!waffo_amount_matches(9.99, &result));
+        assert!(waffo_amount_matches(
+            10.0,
+            &WaffoPaymentNotificationResult::default()
+        ));
+        assert!(validate_creem_content_length(
+            Some(WAFFO_WEBHOOK_BODY_LIMIT_BYTES.to_string()),
+            WAFFO_WEBHOOK_BODY_LIMIT_BYTES,
+            "Waffo webhook"
+        )
+        .is_ok());
+        assert!(validate_creem_content_length(
+            Some((WAFFO_WEBHOOK_BODY_LIMIT_BYTES + 1).to_string()),
+            WAFFO_WEBHOOK_BODY_LIMIT_BYTES,
+            "Waffo webhook"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn waffo_webhook_event_and_replay_helpers_are_stable() {
+        let payload = r#"{"eventType":"PAYMENT_NOTIFICATION"}"#;
+        let event = WaffoWebhookEvent {
+            event_type: "PAYMENT_NOTIFICATION".to_string(),
+            result: WaffoPaymentNotificationResult {
+                payment_request_id: "REQ_1".to_string(),
+                merchant_order_id: "WAFFO-2-1700000000000-abc123".to_string(),
+                acquiring_order_id: "ACQ_1".to_string(),
+                order_status: "PAY_SUCCESS".to_string(),
+                order_currency: "USD".to_string(),
+                order_amount: "7.30".to_string(),
+                final_deal_amount: "7.30".to_string(),
+            },
+        };
+        assert_eq!(
+            waffo_event_id(&event, payload),
+            "PAYMENT_NOTIFICATION:WAFFO-2-1700000000000-abc123:REQ_1:ACQ_1"
+        );
+
+        let fallback = WaffoWebhookEvent {
+            event_type: String::new(),
+            result: WaffoPaymentNotificationResult::default(),
+        };
+        assert!(waffo_event_id(&fallback, payload).starts_with("payload:"));
+
+        fn topup(provider: &str, method: &str, money: f64, status: i32, credited: i32) -> TopupRow {
+            TopupRow {
+                id: 1,
+                user_id: 2,
+                amount: 500_000,
+                money,
+                trade_no: "WAFFO-2-1700000000000-abc123".to_string(),
+                payment_method: method.to_string(),
+                payment_provider: provider.to_string(),
+                status,
+                create_time: 10,
+                complete_time: 20,
+                credited,
+            }
+        }
+
+        assert!(is_completed_waffo_replay(
+            &topup(
+                PAYMENT_PROVIDER_WAFFO,
+                PAYMENT_PROVIDER_WAFFO,
+                7.30,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            7.30
+        ));
+        assert!(!is_completed_waffo_replay(
+            &topup(
+                PAYMENT_PROVIDER_EPAY,
+                PAYMENT_PROVIDER_WAFFO,
+                7.30,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            7.30
+        ));
+        assert!(!is_completed_waffo_replay(
+            &topup(
+                PAYMENT_PROVIDER_WAFFO,
+                PAYMENT_PROVIDER_EPAY,
+                7.30,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            7.30
+        ));
+        assert!(!is_completed_waffo_replay(
+            &topup(
+                PAYMENT_PROVIDER_WAFFO,
+                PAYMENT_PROVIDER_WAFFO,
+                7.31,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            7.30
+        ));
+        assert!(!is_completed_waffo_replay(
+            &topup(PAYMENT_PROVIDER_WAFFO, PAYMENT_PROVIDER_WAFFO, 7.30, 0, 0),
+            7.30
+        ));
     }
 
     #[test]

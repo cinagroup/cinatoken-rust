@@ -386,6 +386,10 @@ Security cases:
 - Creem wallet smoke covers checkout URL creation, pending topup row, signed
   `checkout.completed` webhook credit, duplicate webhook no-op, amount mismatch
   no-credit, and empty-user-email backfill only after signature verification.
+- Legacy Waffo wallet smoke covers checkout URL creation, pending topup row,
+  raw-body RSA-signed `PAYMENT_NOTIFICATION` webhook credit, signed webhook
+  success/failure ACKs, duplicate webhook no-op, and amount/provider mismatch
+  no-credit cases before paid traffic.
 - Waffo Pancake wallet smoke covers checkout URL creation, pending topup row,
   signed `order.completed` webhook credit, duplicate webhook no-op, and
   env/identity/amount mismatch no-credit cases before paid traffic.

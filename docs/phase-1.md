@@ -312,13 +312,27 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `checkout.completed` + paid + onetime wallet events, checks amount/provider
   replay conditions, credits through the provider-aware D1 credited-anchor
   batch, records `payment_events`, and backfills an empty user email from the
-  verified Creem customer payload. Wallet `topup/info` now exposes Waffo
-  Pancake only when payment compliance and merchant/private/product settings
-  are complete, and exposes Creem products only when compliance, API key,
-  products, and webhook secret are all configured. Subscription Waffo Pancake
-  remains explicitly hidden until its separate subscription order settlement
-  route is migrated. Waffo wallet gateway plus external subscription payment
-  providers remain hidden until their Worker routes are implemented.
+  verified Creem customer payload. Legacy Waffo wallet checkout is implemented
+  at `POST /api/user/waffo/pay`, using the Go-compatible
+  `WAFFO-{user}-{UnixMilli}-{rand6}` order shape, Waffo sandbox/prod
+  credential selection, RSA-SHA256/PKCS#1 v1.5 request signing, bounded
+  outbound order creation, default Card/Apple Pay/Google Pay method parsing,
+  `QuotaPerUnit` token-display normalization, and D1 pending topups before the
+  provider call. `POST /api/waffo/webhook` verifies the raw-body
+  `X-SIGNATURE` with the configured Waffo public cert before any write, credits
+  only `PAYMENT_NOTIFICATION` + `PAY_SUCCESS` wallet events with matching
+  provider and amount, signs the Go-compatible `{"message":"success"}` /
+  `{"message":"failed"}` response body, records `payment_events`, and treats
+  duplicate successful deliveries as replay no-ops only when the local topup is
+  already success+credited with matching provider/method/money. Wallet
+  `topup/info` now exposes Waffo only when payment compliance and active-mode
+  Waffo credentials are complete, exposes Waffo Pancake only when compliance
+  and merchant/private/product settings are complete, and exposes Creem
+  products only when compliance, API key, products, and webhook secret are all
+  configured. Subscription Waffo Pancake remains explicitly hidden until its
+  separate subscription order settlement route is migrated. External
+  subscription payment providers remain hidden until their Worker routes are
+  implemented.
 
 ## Next
 
@@ -361,7 +375,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
-- Complete the remaining topup/subscription payment provider routes (`waffo`
-  wallet checkout/callback helpers and external subscription payment providers,
-  including Waffo Pancake subscription checkout/settlement) before exposing
+- Complete the remaining external subscription payment provider routes
+  (including Waffo Pancake subscription checkout/settlement) before exposing
   those payment methods broadly in production.

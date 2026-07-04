@@ -2596,3 +2596,55 @@ deployment/io.net feature family remain capability-hidden or auth-deferred
 until their provider-specific order model, signature verification,
 amount/product/env checks, replay handling, and staging reconciliation evidence
 are in place.
+
+### 22.24 2026-07-04 Waffo Pancake Subscription Checkout/Webhook Delta
+
+This increment removes the default frontend's last payment-provider route from
+the route-debt set and migrates Waffo Pancake subscription checkout/settlement:
+
+- `POST /api/subscription/waffo-pancake/pay` requires user session auth,
+  payment compliance, configured Waffo Pancake merchant credentials, an enabled
+  plan, `price_amount >= 0.01`, and a valid plan
+  `waffo_pancake_product_id`.
+- The Worker creates a pending `subscription_orders` row before calling Waffo
+  Pancake authenticated checkout. Order IDs keep the Go-visible shape
+  `WAFFO_PANCAKE_SUB-{user_id}-{UnixMilli}-{rand6}` while using the Rust
+  CSPRNG `random_base62` helper for the suffix.
+- Checkout creation reuses the existing Worker-side Pancake action helpers:
+  stable `cinatoken-user-{id}` buyer identity, optional buyer email,
+  two-decimal USD price snapshot, 45-minute expiry, SDK-compatible signed action
+  requests, deterministic idempotency keys, and token-fragment checkout URLs.
+- If external checkout creation fails after the local pending order is created,
+  the Worker CAS-marks the subscription order `failed` for
+  `payment_provider=waffo_pancake`, avoiding indefinitely pending local rows.
+- `POST /api/waffo-pancake/webhook/:env` now dispatches
+  `WAFFO_PANCAKE_SUB-...` trade numbers before wallet topups. It verifies
+  `X-Waffo-Signature`, enforces the test/prod route env, checks local provider,
+  buyer identity, and event amount, then settles through the shared subscription
+  D1 batch.
+- Signature-valid local order, provider, buyer-identity, or amount mismatches
+  are recorded in `payment_events` as subscription rejected/unmatched and ACKed
+  as no-credit permanent mismatches. Successful first-time and duplicate
+  deliveries are recorded as `subscription_paid`.
+- `/api/user/topup/info` now exposes `enable_waffo_pancake_subscription` when
+  payment compliance and Pancake merchant credentials are present; the frontend
+  still requires each selected plan to have its own
+  `waffo_pancake_product_id`.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 254 Worker routes, 31 missing calls;
+- debt categories: 13 auth-deferred, 18 capability-hidden-product,
+  0 payment-deferred;
+- route-set SHA-256:
+  `098ee3dc3d0f38dcd443d31e58306a264c61cb60fe7b2ce983fffe143fb99ebc`;
+- `cargo test -p cinatoken-worker --lib`: 317 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: the default frontend no longer has a payment-provider
+route gap. Remaining production gates are staging browser smoke, provider
+replay/reconciliation evidence, custom OAuth public callbacks, and incomplete
+product families such as deployment/io.net.

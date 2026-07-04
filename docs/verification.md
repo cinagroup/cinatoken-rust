@@ -4,23 +4,22 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 316 passed after adding Epay
-  subscription checkout at `POST /api/subscription/epay/pay`, plus
-  `GET/POST /api/subscription/epay/notify` and
-  `GET/POST /api/subscription/epay/return` settlement through subscription
-  orders.
+- `cargo test -p cinatoken-worker --lib`: 317 passed after adding Waffo
+  Pancake subscription checkout at `POST /api/subscription/waffo-pancake/pay`
+  and shared webhook settlement through `POST
+  /api/waffo-pancake/webhook/:env`.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same Epay subscription slice.
-- `bun run check`: passed after the Epay subscription route-baseline update,
-  covering the frontend build, route-debt baseline, Rust workspace tests
-  excluding the Worker, rustfmt check, and Worker wasm check.
+  the same Waffo Pancake subscription slice.
+- `bun run check`: passed after the Waffo Pancake subscription route-baseline
+  update, covering the frontend build, route-debt baseline, Rust workspace
+  tests excluding the Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 253 Worker routes, 32 missing calls, categories
-  13 auth-deferred / 19 capability-hidden-product, SHA-256
-  `516ec5b5419f85268a569b96893f3b76920dc404ba5edd9982f75bb82c47bd48`.
+  212 frontend calls, 254 Worker routes, 31 missing calls, categories
+  13 auth-deferred / 18 capability-hidden-product, SHA-256
+  `098ee3dc3d0f38dcd443d31e58306a264c61cb60fe7b2ce983fffe143fb99ebc`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 32-call / 0 payment-deferred baseline above.
+superseded by the current 31-call / 0 payment-deferred baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
   checkout and webhook settlement at `POST /api/user/creem/pay` and

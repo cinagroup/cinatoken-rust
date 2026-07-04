@@ -56,14 +56,18 @@ const SUB_STATUS_ACTIVE: &str = "active";
 const ORDER_STATUS_PENDING: &str = "pending";
 const ORDER_STATUS_SUCCESS: &str = "success";
 const ORDER_STATUS_EXPIRED: &str = "expired";
+const ORDER_STATUS_FAILED: &str = "failed";
 const PAYMENT_METHOD_BALANCE: &str = "balance";
 const PAYMENT_PROVIDER_BALANCE: &str = "balance";
 const PAYMENT_PROVIDER_CREEM: &str = "creem";
 const PAYMENT_PROVIDER_EPAY: &str = "epay";
 const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
+const PAYMENT_PROVIDER_WAFFO_PANCAKE: &str = admin_payment::PAYMENT_PROVIDER_WAFFO_PANCAKE;
 const CREEM_API_KEY_KEY: &str = "CreemApiKey";
 const CREEM_TEST_MODE_KEY: &str = "CreemTestMode";
 const CREEM_WEBHOOK_SECRET_KEY: &str = "CreemWebhookSecret";
+const WAFFO_PANCAKE_MERCHANT_ID_KEY: &str = "WaffoPancakeMerchantID";
+const WAFFO_PANCAKE_PRIVATE_KEY_KEY: &str = "WaffoPancakePrivateKey";
 const PAY_ADDRESS_KEY: &str = "PayAddress";
 const EPAY_ID_KEY: &str = "EpayId";
 const EPAY_KEY_KEY: &str = "EpayKey";
@@ -516,6 +520,188 @@ pub async fn creem_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
         checkout_url: checkout.checkout_url,
         order_id: trade_no,
     })?)
+}
+
+pub async fn waffo_pancake_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let payload: PlanIdRequest = match parse_body(&mut req, "subscription waffo pancake pay").await
+    {
+        Ok(payload) => payload,
+        Err(response) => return Ok(response),
+    };
+    let Some(plan_id) = payload.plan_id.filter(|id| *id > 0) else {
+        return admin_payment::waffo_pancake_error_message_response(200, "plan_id is required");
+    };
+
+    let db = env.d1("DB")?;
+    if !payment_compliance_confirmed(&db).await? {
+        return admin_payment::waffo_pancake_error_message_response(
+            200,
+            "payment compliance is required",
+        );
+    }
+    let values = d1_repositories::option_values(
+        &db,
+        &[WAFFO_PANCAKE_MERCHANT_ID_KEY, WAFFO_PANCAKE_PRIVATE_KEY_KEY],
+    )
+    .await?;
+    let creds = match admin_payment::waffo_pancake_creds_from_parts(
+        values[0].as_deref().unwrap_or_default(),
+        values[1].as_deref().unwrap_or_default(),
+    ) {
+        Ok(creds) => creds,
+        Err(message) => return admin_payment::waffo_pancake_error_message_response(200, message),
+    };
+
+    let Some(plan) = d1_repositories::find_subscription_plan_by_id(&db, plan_id).await? else {
+        return admin_payment::waffo_pancake_error_message_response(
+            200,
+            "subscription plan not found",
+        );
+    };
+    if plan.enabled == 0 {
+        return admin_payment::waffo_pancake_error_message_response(
+            200,
+            "subscription plan is disabled",
+        );
+    }
+    if plan.price_amount < 0.01 {
+        return admin_payment::waffo_pancake_error_message_response(
+            200,
+            "subscription price is too small",
+        );
+    }
+    let product_id = plan.waffo_pancake_product_id.trim();
+    if product_id.is_empty() {
+        return admin_payment::waffo_pancake_error_message_response(
+            200,
+            "subscription plan is missing a Waffo Pancake product id",
+        );
+    }
+    if let Err(message) =
+        admin_payment::validate_waffo_pancake_short_id("productId", product_id, "PROD")
+    {
+        return admin_payment::waffo_pancake_error_message_response(200, &message);
+    }
+    if plan.max_purchase_per_user > 0 {
+        let count =
+            d1_repositories::count_user_subscriptions_by_plan(&db, claims.id, plan.id).await?;
+        if count >= plan.max_purchase_per_user {
+            return admin_payment::waffo_pancake_error_message_response(
+                200,
+                "subscription purchase limit reached",
+            );
+        }
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return admin_payment::waffo_pancake_error_message_response(200, "user not found");
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return admin_payment::waffo_pancake_error_message_response(200, "user is disabled");
+    }
+    let trade_no = match waffo_pancake_subscription_trade_no(claims.id) {
+        Some(value) => value,
+        None => {
+            return admin_payment::waffo_pancake_error_message_response(
+                200,
+                "failed to generate subscription order id",
+            )
+        }
+    };
+    let now = unix_timestamp();
+    if let Err(err) = d1_repositories::insert_subscription_order(
+        &db,
+        &SubscriptionOrderWrite {
+            user_id: claims.id,
+            plan_id: plan.id,
+            money: plan.price_amount,
+            trade_no: &trade_no,
+            payment_method: PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            payment_provider: PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            status: ORDER_STATUS_PENDING,
+            create_time: now,
+            complete_time: 0,
+            provider_payload: "",
+        },
+    )
+    .await
+    {
+        worker::console_error!(
+            "failed to record pending Waffo Pancake subscription order {trade_no}: {err}"
+        );
+        return admin_payment::waffo_pancake_error_message_response(
+            200,
+            "failed to record pending subscription order",
+        );
+    }
+
+    let buyer_identity = admin_payment::waffo_pancake_buyer_identity(claims.id);
+    let buyer_email = admin_payment::optional_waffo_pancake_string(&user.email);
+    let money = format!("{:.2}", plan.price_amount);
+    let session = match admin_payment::create_waffo_pancake_checkout_session(
+        &creds,
+        product_id,
+        &buyer_identity,
+        buyer_email.as_deref(),
+        &money,
+        &trade_no,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(message) => {
+            worker::console_error!(
+                "failed to create Waffo Pancake subscription checkout user_id={} trade_no={} product_id={} error={}",
+                claims.id,
+                trade_no,
+                product_id,
+                message
+            );
+            let _ = d1_repositories::mark_subscription_order_status_for_provider(
+                &db,
+                &trade_no,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                ORDER_STATUS_PENDING,
+                ORDER_STATUS_FAILED,
+                now,
+                "",
+                "",
+            )
+            .await;
+            return admin_payment::waffo_pancake_error_message_response(
+                200,
+                "failed to create checkout session",
+            );
+        }
+    };
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        None,
+        "user",
+        "subscription.waffo_pancake.create",
+        &format!(
+            "user {} created Waffo Pancake subscription order {}",
+            claims.username, trade_no
+        ),
+        &serde_json::json!({
+            "trade_no": trade_no,
+            "plan_id": plan.id,
+            "money": money,
+            "product_id": product_id,
+            "session_id": session.session_id,
+        }),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    admin_payment::waffo_pancake_ok_response(&session)
 }
 
 pub async fn epay_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -1933,6 +2119,23 @@ fn epay_subscription_trade_no_from_parts(user_id: i64, now: i64, suffix: &str) -
     format!("SUBUSR{user_id}NO{suffix}{now}")
 }
 
+fn waffo_pancake_subscription_trade_no(user_id: i64) -> Option<String> {
+    let suffix = random_base62(6)?;
+    Some(waffo_pancake_subscription_trade_no_from_parts(
+        user_id,
+        unix_timestamp_millis(),
+        &suffix,
+    ))
+}
+
+fn waffo_pancake_subscription_trade_no_from_parts(
+    user_id: i64,
+    millis: i64,
+    suffix: &str,
+) -> String {
+    format!("WAFFO_PANCAKE_SUB-{user_id}-{millis}-{suffix}")
+}
+
 fn epay_subscription_money_matches(order_money: f64, callback_money: f64) -> bool {
     (order_money - callback_money).abs() < 0.000001
 }
@@ -2442,6 +2645,13 @@ mod tests {
         assert!(epay_subscription_money_matches(12.30, 12.3));
         assert!(epay_subscription_money_matches(12.3000001, 12.3));
         assert!(!epay_subscription_money_matches(12.31, 12.3));
+    }
+
+    #[test]
+    fn waffo_pancake_subscription_trade_no_matches_go_shape() {
+        let trade_no =
+            waffo_pancake_subscription_trade_no_from_parts(42, 1_700_000_000_000, "Ab9zQ1");
+        assert_eq!(trade_no, "WAFFO_PANCAKE_SUB-42-1700000000000-Ab9zQ1");
     }
 
     #[test]

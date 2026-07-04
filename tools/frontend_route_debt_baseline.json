@@ -1,8 +1,8 @@
 {
-  "missing_calls": 32,
-  "missing_sha256": "516ec5b5419f85268a569b96893f3b76920dc404ba5edd9982f75bb82c47bd48",
+  "missing_calls": 31,
+  "missing_sha256": "098ee3dc3d0f38dcd443d31e58306a264c61cb60fe7b2ce983fffe143fb99ebc",
   "categories": {
     "auth-deferred": 13,
-    "capability-hidden-product": 19
+    "capability-hidden-product": 18
   }
 }

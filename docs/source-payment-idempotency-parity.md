@@ -193,10 +193,11 @@ options, and `money_to_quota`. Current parity notes:
 - 2026-07-04 delta: Stripe wallet checkout/webhook, Epay wallet
   checkout/callback, Waffo wallet checkout/webhook, Waffo Pancake wallet
   checkout/webhook, Creem wallet checkout/webhook, Stripe subscription
-  checkout/webhook settlement, and Creem subscription checkout/webhook
-  settlement, and Epay subscription checkout/notify/return settlement now use
-  provider-aware rows and D1 idempotency guards. Waffo Pancake subscription
-  checkout/callback and `ValidateRedirectURL` parity are still pending.
+  checkout/webhook settlement, Creem subscription checkout/webhook settlement,
+  Epay subscription checkout/notify/return settlement, and Waffo Pancake
+  subscription checkout/webhook settlement now use provider-aware rows and D1
+  idempotency guards. `ValidateRedirectURL` parity and staging payment replay
+  evidence are still pending.
 
 Current Stripe subscription details:
 
@@ -298,8 +299,26 @@ Current Waffo Pancake wallet details:
 - First-time credits run through
   `complete_topup_and_credit_for_provider`; duplicate successful deliveries are
   replayed as `200 OK` no-ops only when the row is already success+credited with
-  matching provider/method/money. Waffo Pancake subscription events are recorded
-  as `subscription_deferred` until subscription settlement is migrated.
+  matching provider/method/money.
+
+Current Waffo Pancake subscription details:
+
+- `POST /api/subscription/waffo-pancake/pay` creates the pending
+  `subscription_orders` row before creating the external checkout session. It
+  uses the Go `WAFFO_PANCAKE_SUB-{user}-{UnixMilli}-{rand6}` trade number
+  shape, the plan's `waffo_pancake_product_id`, the stable
+  `cinatoken-user-{id}` buyer identity, and a two-decimal USD price snapshot.
+- The shared `POST /api/waffo-pancake/webhook/:env` path now handles
+  subscription trade numbers before wallet topups. It verifies the RSA
+  signature and route env first, then checks local
+  `payment_provider == "waffo_pancake"`,
+  `merchantProvidedBuyerIdentity == cinatoken-user-{order.user_id}`, and event
+  amount versus the pending subscription order money.
+- Signature-valid local provider, buyer-identity, amount, or order mismatches
+  are recorded as `subscription_rejected` / `subscription_unmatched` and ACKed
+  as no-credit permanent mismatches. Successful and duplicate deliveries settle
+  through the shared subscription D1 batch and are recorded as
+  `subscription_paid`.
 
 Current Creem wallet details:
 
@@ -343,14 +362,14 @@ Checklist:
 
 1. Keep per-provider signature verification before any write. Done for Stripe
    wallet + subscription flows, Epay wallet + subscription flows, Waffo wallet
-   topups, Waffo Pancake wallet topups, and Creem wallet + subscription flows;
-   pending for Waffo Pancake subscription.
+   topups, Waffo Pancake wallet + subscription flows, and Creem wallet +
+   subscription flows.
 2. Keep `payment_events` as non-gating audit/dedup evidence and anchor credit on
    `topups` conditional credited batches. Done for Stripe, Epay wallet topups,
    Waffo wallet topups, Waffo Pancake wallet topups, and Creem wallet topups;
-   Stripe, Creem, and Epay subscription settlement use `subscription_orders`
-   pending/success CAS plus a D1 batch; provider-specific replay fixtures still
-   need staging D1 proof.
+   Stripe, Creem, Epay, and Waffo Pancake subscription settlement use
+   `subscription_orders` pending/success CAS plus a D1 batch; provider-specific
+   replay fixtures still need staging D1 proof.
 3. Implement per-provider quota formulas with truncation. Done for Epay wallet
    order creation and Stripe `money_to_quota`.
 4. Normalize webhook replays to 200 no-op and add replay tests that credit
@@ -360,12 +379,12 @@ Checklist:
    provider and money; Waffo checks provider and amount; Waffo Pancake checks
    provider, buyer identity, amount, and env; Creem subscription checks local
    provider, plan product id, and amount; Epay subscription checks local
-   provider and signed callback amount. Currency/product checks apply to
-   remaining providers where exposed by the webhook payload.
-6. Mirror for `subscription_orders`; Stripe, Creem, and Epay subscription
-   settlement are implemented, while Waffo Pancake subscription settlement
-   remains pending. Keep
-   funding-source evidence in `docs/billing-parity-runbook.md`.
+   provider and signed callback amount; Waffo Pancake subscription checks env,
+   local provider, buyer identity, and amount. Currency/product checks apply to
+   providers where exposed by the webhook payload.
+6. Mirror for `subscription_orders`; Stripe, Creem, Epay, and Waffo Pancake
+   subscription settlement are implemented. Keep funding-source evidence in
+   `docs/billing-parity-runbook.md`.
 7. Admin manual-complete (`ManualCompleteTopUp`) and `AdminCompleteTopUp` route
    parity with audit.
 

@@ -586,6 +586,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/subscription/creem/pay", |req, ctx| async move {
             admin_subscription::creem_pay(req, ctx.env).await
         })
+        .post_async(
+            "/api/subscription/waffo-pancake/pay",
+            |req, ctx| async move { admin_subscription::waffo_pancake_pay(req, ctx.env).await },
+        )
         .post_async("/api/subscription/epay/pay", |req, ctx| async move {
             admin_subscription::epay_pay(req, ctx.env).await
         })

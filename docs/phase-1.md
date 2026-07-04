@@ -275,6 +275,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Go-compatible Epay form and settling `GET/POST
   /api/subscription/epay/notify` plus `GET/POST
   /api/subscription/epay/return` through the shared subscription D1 batch.
+  Waffo Pancake subscription checkout is implemented at
+  `POST /api/subscription/waffo-pancake/pay`, creating the pending
+  subscription order before authenticated Pancake checkout creation and
+  settling signed `order.completed` events through the shared
+  `/api/waffo-pancake/webhook/:env` handler.
 - Wallet/topup compatibility (`crates/worker/src/admin_payment.rs`): Stripe
   amount estimation, frontend-compatible Stripe `pay_link`, wallet
   `topup/info`, self/admin topup history pagination with Go's 30-day self
@@ -346,9 +351,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   configured. Creem subscription checkout is now also exposed when the selected
   plan has a Creem product id and Creem payment settings are complete. Epay
   subscription checkout is now exposed when payment compliance, Epay config,
-  and a configured pay method are present. Remaining external subscription
-  payment provider routes stay hidden until their Worker routes and
-  provider-specific settlement checks are implemented.
+  and a configured pay method are present. Waffo Pancake subscription checkout
+  is now exposed when payment compliance, Pancake merchant credentials, and the
+  selected plan product id are present. Remaining production exposure is gated
+  by provider-specific staging replay and reconciliation evidence.
 
 ## Next
 
@@ -391,5 +397,5 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
-- Complete the remaining Waffo Pancake external subscription payment provider
-  route before exposing that payment method broadly in production.
+- Capture provider-specific staging replay/reconciliation evidence before
+  exposing payment methods broadly in production.

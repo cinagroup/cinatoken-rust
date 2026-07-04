@@ -114,7 +114,7 @@ const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
 const PAYMENT_PROVIDER_EPAY: &str = "epay";
 const PAYMENT_PROVIDER_CREEM: &str = "creem";
 const PAYMENT_PROVIDER_WAFFO: &str = "waffo";
-const PAYMENT_PROVIDER_WAFFO_PANCAKE: &str = "waffo_pancake";
+pub(crate) const PAYMENT_PROVIDER_WAFFO_PANCAKE: &str = "waffo_pancake";
 const TOPUP_STATUS_SUCCESS: i32 = 1;
 const TOPUP_STATUS_FAILED: i32 = 2;
 const TOPUP_STATUS_EXPIRED: i32 = 3;
@@ -2631,18 +2631,16 @@ pub async fn waffo_pancake_webhook(
             PAYMENT_COMPLIANCE_TERMS_KEY,
             WAFFO_PANCAKE_MERCHANT_ID_KEY,
             WAFFO_PANCAKE_PRIVATE_KEY_KEY,
-            WAFFO_PANCAKE_PRODUCT_ID_KEY,
         ],
     )
     .await?;
     let compliance_confirmed = parse_bool(values[0].as_deref(), false)
         && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
-    let gateway_configured = waffo_pancake_topup_configured(
+    let webhook_configured = waffo_pancake_webhook_configured(
         values[2].as_deref().unwrap_or_default(),
         values[3].as_deref().unwrap_or_default(),
-        values[4].as_deref().unwrap_or_default(),
     );
-    if !compliance_confirmed || !gateway_configured {
+    if !compliance_confirmed || !webhook_configured {
         worker::console_warn!("Waffo Pancake webhook rejected: gateway disabled");
         return Ok(Response::error("webhook disabled", 403)?);
     }
@@ -2749,16 +2747,164 @@ pub async fn waffo_pancake_webhook(
         return Response::ok("OK");
     }
     if raw_trade_no.starts_with("WAFFO_PANCAKE_SUB-") {
+        let Some(order) =
+            d1_repositories::find_subscription_order_by_trade_no(&db, &raw_trade_no).await?
+        else {
+            worker::console_error!(
+                "Waffo Pancake webhook subscription order not found event_id={} trade_no={} buyer_identity={}",
+                event_id,
+                raw_trade_no,
+                event
+                    .data
+                    .merchant_provided_buyer_identity
+                    .as_deref()
+                    .unwrap_or_default()
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                &event_id,
+                &raw_trade_no,
+                "subscription_unmatched",
+                &payload,
+                now,
+            )
+            .await;
+            return Response::ok("OK");
+        };
+        if order.payment_provider != PAYMENT_PROVIDER_WAFFO_PANCAKE {
+            worker::console_error!(
+                "Waffo Pancake webhook subscription provider mismatch event_id={} trade_no={} provider={}",
+                event_id,
+                raw_trade_no,
+                order.payment_provider
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                &event_id,
+                &raw_trade_no,
+                "subscription_rejected",
+                &payload,
+                now,
+            )
+            .await;
+            return Response::ok("OK");
+        }
+        let expected_identity = waffo_pancake_buyer_identity(order.user_id);
+        let actual_identity = event
+            .data
+            .merchant_provided_buyer_identity
+            .as_deref()
+            .unwrap_or_default()
+            .trim();
+        if actual_identity != expected_identity {
+            worker::console_error!(
+                "Waffo Pancake webhook subscription buyer identity mismatch event_id={} trade_no={} expected={} actual={}",
+                event_id,
+                raw_trade_no,
+                expected_identity,
+                actual_identity
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                &event_id,
+                &raw_trade_no,
+                "subscription_rejected",
+                &payload,
+                now,
+            )
+            .await;
+            return Response::ok("OK");
+        }
+        let Some(event_money) = parse_waffo_pancake_event_money(&event.data.amount) else {
+            worker::console_error!(
+                "Waffo Pancake webhook subscription missing amount event_id={} trade_no={} raw_amount={}",
+                event_id,
+                raw_trade_no,
+                event.data.amount
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                &event_id,
+                &raw_trade_no,
+                "subscription_rejected",
+                &payload,
+                now,
+            )
+            .await;
+            return Response::ok("OK");
+        };
+        if (order.money - event_money).abs() >= 0.000001 {
+            worker::console_error!(
+                "Waffo Pancake webhook subscription amount mismatch event_id={} trade_no={} order_money={} event_amount={}",
+                event_id,
+                raw_trade_no,
+                order.money,
+                event.data.amount
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                PAYMENT_PROVIDER_WAFFO_PANCAKE,
+                &event_id,
+                &raw_trade_no,
+                "subscription_rejected",
+                &payload,
+                now,
+            )
+            .await;
+            return Response::ok("OK");
+        }
+
+        let outcome = admin_subscription::complete_order_for_provider(
+            &db,
+            &raw_trade_no,
+            &payload,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            PAYMENT_PROVIDER_WAFFO_PANCAKE,
+            now,
+        )
+        .await?;
+        let status = match outcome {
+            admin_subscription::SubscriptionOrderWebhookOutcome::Completed
+            | admin_subscription::SubscriptionOrderWebhookOutcome::AlreadyComplete => {
+                "subscription_paid"
+            }
+            admin_subscription::SubscriptionOrderWebhookOutcome::AlreadyTerminal => {
+                "subscription_ignored"
+            }
+            _ => "subscription_rejected",
+        };
         let _ = d1_repositories::insert_payment_event(
             &db,
             PAYMENT_PROVIDER_WAFFO_PANCAKE,
             &event_id,
             &raw_trade_no,
-            "subscription_deferred",
+            status,
             &payload,
             now,
         )
         .await;
+        if matches!(
+            outcome,
+            admin_subscription::SubscriptionOrderWebhookOutcome::Completed
+                | admin_subscription::SubscriptionOrderWebhookOutcome::AlreadyComplete
+        ) {
+            worker::console_log!(
+                "Waffo Pancake subscription credited trade_no={} event_id={} order_id={}",
+                raw_trade_no,
+                event_id,
+                event.data.order_id
+            );
+        } else {
+            worker::console_warn!(
+                "Waffo Pancake subscription webhook verified but settled as {:?} trade_no={}",
+                outcome,
+                raw_trade_no
+            );
+        }
         return Response::ok("OK");
     }
 
@@ -2976,6 +3122,10 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         values[29].as_deref().unwrap_or_default(),
         values[30].as_deref().unwrap_or_default(),
     );
+    let waffo_pancake_subscription_configured = waffo_pancake_webhook_configured(
+        values[28].as_deref().unwrap_or_default(),
+        values[29].as_deref().unwrap_or_default(),
+    );
 
     // Only expose provider methods that have a Rust Worker implementation and a
     // corresponding settlement path, so the frontend never renders broken
@@ -3038,7 +3188,8 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         enable_creem_topup,
         enable_waffo_topup,
         enable_waffo_pancake_topup,
-        enable_waffo_pancake_subscription: false,
+        enable_waffo_pancake_subscription: compliance_confirmed
+            && waffo_pancake_subscription_configured,
         enable_redemption: compliance_confirmed,
         payment_compliance_confirmed: compliance_confirmed,
         payment_compliance_terms_version: CURRENT_COMPLIANCE_TERMS_VERSION.to_string(),
@@ -3604,9 +3755,9 @@ struct WaffoPancakeCredsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct WaffoPancakeCreds {
-    merchant_id: String,
-    private_key: String,
+pub(crate) struct WaffoPancakeCreds {
+    pub(crate) merchant_id: String,
+    pub(crate) private_key: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -3793,13 +3944,13 @@ struct WaffoPancakeCheckoutSessionData {
 }
 
 #[derive(Debug, Serialize)]
-struct WaffoPancakePayResponse {
-    checkout_url: String,
-    session_id: String,
-    expires_at: String,
-    order_id: String,
-    token: String,
-    token_expires_at: String,
+pub(crate) struct WaffoPancakePayResponse {
+    pub(crate) checkout_url: String,
+    pub(crate) session_id: String,
+    pub(crate) expires_at: String,
+    pub(crate) order_id: String,
+    pub(crate) token: String,
+    pub(crate) token_expires_at: String,
 }
 
 #[allow(dead_code)]
@@ -3957,7 +4108,7 @@ fn validate_waffo_pancake_admin_content_length(raw: Option<&str>) -> Result<(), 
     Ok(())
 }
 
-fn waffo_pancake_ok_response<T: Serialize>(data: &T) -> WorkerResult<Response> {
+pub(crate) fn waffo_pancake_ok_response<T: Serialize>(data: &T) -> WorkerResult<Response> {
     let body = serde_json::json!({
         "message": "success",
         "data": data,
@@ -3967,7 +4118,10 @@ fn waffo_pancake_ok_response<T: Serialize>(data: &T) -> WorkerResult<Response> {
     Ok(response)
 }
 
-fn waffo_pancake_error_message_response(status: u16, message: &str) -> WorkerResult<Response> {
+pub(crate) fn waffo_pancake_error_message_response(
+    status: u16,
+    message: &str,
+) -> WorkerResult<Response> {
     waffo_pancake_error_response(status, &message)
 }
 
@@ -4616,7 +4770,7 @@ async fn resolve_waffo_pancake_admin_creds(
     ))
 }
 
-fn waffo_pancake_creds_from_parts(
+pub(crate) fn waffo_pancake_creds_from_parts(
     merchant_id: &str,
     private_key: &str,
 ) -> Result<WaffoPancakeCreds, &'static str> {
@@ -4767,7 +4921,7 @@ async fn publish_waffo_pancake_onetime_product(
     Ok(data.product)
 }
 
-async fn create_waffo_pancake_checkout_session(
+pub(crate) async fn create_waffo_pancake_checkout_session(
     creds: &WaffoPancakeCreds,
     product_id: &str,
     buyer_identity: &str,
@@ -5286,7 +5440,7 @@ fn filter_active_waffo_pancake_products(catalog: &mut WaffoPancakeCatalog) {
     }
 }
 
-fn optional_waffo_pancake_string(value: &str) -> Option<String> {
+pub(crate) fn optional_waffo_pancake_string(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
         None
@@ -5295,7 +5449,11 @@ fn optional_waffo_pancake_string(value: &str) -> Option<String> {
     }
 }
 
-fn validate_waffo_pancake_short_id(field: &str, value: &str, prefix: &str) -> Result<(), String> {
+pub(crate) fn validate_waffo_pancake_short_id(
+    field: &str,
+    value: &str,
+    prefix: &str,
+) -> Result<(), String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(format!("Missing required field: {field}"));
@@ -5413,6 +5571,10 @@ fn waffo_pancake_topup_configured(merchant_id: &str, private_key: &str, product_
         && validate_waffo_pancake_short_id("productId", product_id.trim(), "PROD").is_ok()
 }
 
+fn waffo_pancake_webhook_configured(merchant_id: &str, private_key: &str) -> bool {
+    waffo_pancake_creds_from_parts(merchant_id, private_key).is_ok()
+}
+
 pub(crate) fn parse_payment_methods(raw: Option<&str>) -> Vec<Value> {
     match raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) {
         Some(Value::Array(items)) => items,
@@ -5475,7 +5637,7 @@ fn waffo_pancake_trade_no(user_id: i64) -> Option<String> {
     ))
 }
 
-fn waffo_pancake_buyer_identity(user_id: i64) -> String {
+pub(crate) fn waffo_pancake_buyer_identity(user_id: i64) -> String {
     format!("cinatoken-user-{user_id}")
 }
 

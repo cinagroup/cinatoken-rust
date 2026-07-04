@@ -83,9 +83,9 @@ Until all API families are migrated, the status response clamps
 advertised:
 
 - playground;
-- remaining wallet/provider variants not yet owned by Rust (Waffo
-  Pancake/Epay subscription providers remain hidden separately from their
-  Worker-owned wallet flows where applicable);
+- remaining wallet/provider variants not yet owned by Rust (the Waffo
+  Pancake subscription provider remains hidden separately from its
+  Worker-owned wallet flow);
 - Midjourney/task logs;
 - subscriptions;
 - io.net model deployments.
@@ -157,15 +157,16 @@ false-positive call:
   logs. Public redemption-code topup, Stripe wallet checkout, Epay wallet
   checkout/callback, legacy Waffo wallet checkout/webhook, Waffo Pancake wallet
   checkout/webhook, Creem wallet checkout/webhook, Stripe subscription
-  checkout/settlement, and Creem subscription checkout/settlement are
-  implemented; Waffo Pancake/Epay subscription providers remain deferred.
+  checkout/settlement, Creem subscription checkout/settlement, and Epay
+  subscription checkout/notify/return settlement are implemented; Waffo
+  Pancake subscription provider remains deferred.
 - Public rankings:
   `GET /api/rankings` now returns the default frontend's live rankings
   snapshot from D1 `logs`, honors `HeaderNavModules.rankings`, and removes
   rankings from the status capability clamp.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-33 missing calls / 0 payment-deferred calls with a stable SHA-256 route-set
+32 missing calls / 0 payment-deferred calls with a stable SHA-256 route-set
 digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families and deferred auth

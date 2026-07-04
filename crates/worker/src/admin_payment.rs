@@ -3238,31 +3238,31 @@ struct StripePayResponse {
 }
 
 #[derive(Debug, Clone)]
-struct EpayConfig {
-    pay_address: String,
-    partner_id: String,
-    key: String,
+pub(crate) struct EpayConfig {
+    pub(crate) pay_address: String,
+    pub(crate) partner_id: String,
+    pub(crate) key: String,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct EpayPurchaseInput<'a> {
-    partner_id: &'a str,
-    key: &'a str,
-    payment_method: &'a str,
-    trade_no: &'a str,
-    name: &'a str,
-    money: &'a str,
-    notify_url: &'a str,
-    return_url: &'a str,
+pub(crate) struct EpayPurchaseInput<'a> {
+    pub(crate) partner_id: &'a str,
+    pub(crate) key: &'a str,
+    pub(crate) payment_method: &'a str,
+    pub(crate) trade_no: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) money: &'a str,
+    pub(crate) notify_url: &'a str,
+    pub(crate) return_url: &'a str,
 }
 
 #[derive(Debug, Clone)]
-struct EpayNotifyInfo {
-    payment_method: String,
-    trade_no: String,
-    out_trade_no: String,
-    money: String,
-    trade_status: String,
+pub(crate) struct EpayNotifyInfo {
+    pub(crate) payment_method: String,
+    pub(crate) trade_no: String,
+    pub(crate) out_trade_no: String,
+    pub(crate) money: String,
+    pub(crate) trade_status: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -5390,7 +5390,7 @@ fn topup_record(row: d1_repositories::TopupRow) -> TopupRecord {
     }
 }
 
-fn epay_config_from_values(
+pub(crate) fn epay_config_from_values(
     pay_address: &Option<String>,
     partner_id: &Option<String>,
     key: &Option<String>,
@@ -5413,14 +5413,14 @@ fn waffo_pancake_topup_configured(merchant_id: &str, private_key: &str, product_
         && validate_waffo_pancake_short_id("productId", product_id.trim(), "PROD").is_ok()
 }
 
-fn parse_payment_methods(raw: Option<&str>) -> Vec<Value> {
+pub(crate) fn parse_payment_methods(raw: Option<&str>) -> Vec<Value> {
     match raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) {
         Some(Value::Array(items)) => items,
         _ => Vec::new(),
     }
 }
 
-fn epay_payment_method_allowed(payment_method: &str, methods: &[Value]) -> bool {
+pub(crate) fn epay_payment_method_allowed(payment_method: &str, methods: &[Value]) -> bool {
     methods
         .iter()
         .any(|method| method.get("type").and_then(Value::as_str) == Some(payment_method))
@@ -5561,7 +5561,7 @@ fn join_url_path(base: &str, path: &str) -> String {
     format!("{}{}", base.trim_end_matches('/'), path)
 }
 
-fn epay_submit_url(pay_address: &str) -> Result<String, String> {
+pub(crate) fn epay_submit_url(pay_address: &str) -> Result<String, String> {
     let mut parsed =
         url::Url::parse(pay_address).map_err(|_| "Epay pay address is invalid".to_string())?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
@@ -5582,7 +5582,7 @@ fn epay_submit_url(pay_address: &str) -> Result<String, String> {
     Ok(parsed.to_string())
 }
 
-fn epay_purchase_params(input: EpayPurchaseInput<'_>) -> BTreeMap<String, String> {
+pub(crate) fn epay_purchase_params(input: EpayPurchaseInput<'_>) -> BTreeMap<String, String> {
     let mut params = BTreeMap::from([
         ("pid".to_string(), input.partner_id.to_string()),
         ("type".to_string(), input.payment_method.to_string()),
@@ -5616,7 +5616,10 @@ fn epay_signing_string(params: &BTreeMap<String, String>) -> String {
         .join("&")
 }
 
-fn epay_success_response(url: &str, params: &BTreeMap<String, String>) -> WorkerResult<Response> {
+pub(crate) fn epay_success_response(
+    url: &str,
+    params: &BTreeMap<String, String>,
+) -> WorkerResult<Response> {
     let mut response = Response::from_json(&serde_json::json!({
         "message": "success",
         "data": params,
@@ -5627,7 +5630,7 @@ fn epay_success_response(url: &str, params: &BTreeMap<String, String>) -> Worker
     Ok(response)
 }
 
-fn epay_error_response(message: &str) -> WorkerResult<Response> {
+pub(crate) fn epay_error_response(message: &str) -> WorkerResult<Response> {
     let mut response = Response::from_json(&serde_json::json!({
         "message": "error",
         "data": message,
@@ -5637,7 +5640,9 @@ fn epay_error_response(message: &str) -> WorkerResult<Response> {
     Ok(response)
 }
 
-async fn epay_notify_params(req: &mut Request) -> Result<BTreeMap<String, String>, String> {
+pub(crate) async fn epay_notify_params(
+    req: &mut Request,
+) -> Result<BTreeMap<String, String>, String> {
     if req.method() == Method::Post {
         validate_epay_notify_content_length(req.headers().get("Content-Length").ok().flatten())?;
         let bytes = req
@@ -5686,7 +5691,10 @@ fn parse_form_params(bytes: &[u8]) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn verify_epay_notify(params: &BTreeMap<String, String>, key: &str) -> Option<EpayNotifyInfo> {
+pub(crate) fn verify_epay_notify(
+    params: &BTreeMap<String, String>,
+    key: &str,
+) -> Option<EpayNotifyInfo> {
     let expected = epay_sign(params, key);
     let provided = params.get("sign")?;
     if !constant_time_str_eq(&expected, provided) {
@@ -5862,7 +5870,7 @@ fn validate_waffo_pancake_webhook_content_length(value: Option<String>) -> Resul
     Ok(())
 }
 
-fn epay_event_id(info: &EpayNotifyInfo) -> String {
+pub(crate) fn epay_event_id(info: &EpayNotifyInfo) -> String {
     let provider_trade = if info.trade_no.is_empty() {
         "unknown"
     } else {

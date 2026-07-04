@@ -270,7 +270,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `POST /api/subscription/creem/pay`, creating the pending subscription order
   before calling Creem Checkout and settling signature-valid
   `checkout.completed` + paid events through the shared subscription D1 batch
-  before falling back to wallet topups.
+  before falling back to wallet topups. Epay subscription checkout is
+  implemented at `POST /api/subscription/epay/pay`, returning the signed
+  Go-compatible Epay form and settling `GET/POST
+  /api/subscription/epay/notify` plus `GET/POST
+  /api/subscription/epay/return` through the shared subscription D1 batch.
 - Wallet/topup compatibility (`crates/worker/src/admin_payment.rs`): Stripe
   amount estimation, frontend-compatible Stripe `pay_link`, wallet
   `topup/info`, self/admin topup history pagination with Go's 30-day self
@@ -340,9 +344,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   and merchant/private/product settings are complete, and exposes Creem
   products only when compliance, API key, products, and webhook secret are all
   configured. Creem subscription checkout is now also exposed when the selected
-  plan has a Creem product id and Creem payment settings are complete.
-  Remaining external subscription payment provider routes stay hidden until
-  their Worker routes and provider-specific settlement checks are implemented.
+  plan has a Creem product id and Creem payment settings are complete. Epay
+  subscription checkout is now exposed when payment compliance, Epay config,
+  and a configured pay method are present. Remaining external subscription
+  payment provider routes stay hidden until their Worker routes and
+  provider-specific settlement checks are implemented.
 
 ## Next
 
@@ -385,6 +391,5 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
-- Complete the remaining external subscription payment provider routes
-  (Waffo Pancake and Epay subscription checkout/callbacks) before exposing
-  those payment methods broadly in production.
+- Complete the remaining Waffo Pancake external subscription payment provider
+  route before exposing that payment method broadly in production.

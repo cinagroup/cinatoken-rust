@@ -59,11 +59,22 @@ const ORDER_STATUS_EXPIRED: &str = "expired";
 const PAYMENT_METHOD_BALANCE: &str = "balance";
 const PAYMENT_PROVIDER_BALANCE: &str = "balance";
 const PAYMENT_PROVIDER_CREEM: &str = "creem";
+const PAYMENT_PROVIDER_EPAY: &str = "epay";
 const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
 const CREEM_API_KEY_KEY: &str = "CreemApiKey";
 const CREEM_TEST_MODE_KEY: &str = "CreemTestMode";
 const CREEM_WEBHOOK_SECRET_KEY: &str = "CreemWebhookSecret";
+const PAY_ADDRESS_KEY: &str = "PayAddress";
+const EPAY_ID_KEY: &str = "EpayId";
+const EPAY_KEY_KEY: &str = "EpayKey";
+const PAY_METHODS_KEY: &str = "PayMethods";
+const CUSTOM_CALLBACK_ADDRESS_KEY: &str = "CustomCallbackAddress";
 const GENERAL_QUOTA_DISPLAY_TYPE_KEY: &str = "general_setting.quota_display_type";
+const EPAY_SUBSCRIPTION_NOTIFY_PATH: &str = "/api/subscription/epay/notify";
+const EPAY_SUBSCRIPTION_RETURN_PATH: &str = "/api/subscription/epay/return";
+const SUBSCRIPTION_RETURN_SUCCESS_PATH: &str = "/console/topup?pay=success";
+const SUBSCRIPTION_RETURN_FAIL_PATH: &str = "/console/topup?pay=fail";
+const SUBSCRIPTION_RETURN_PENDING_PATH: &str = "/console/topup?pay=pending";
 const STRIPE_CHECKOUT_SESSIONS_URL: &str = "https://api.stripe.com/v1/checkout/sessions";
 const STRIPE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const STRIPE_RESPONSE_LIMIT_BYTES: usize = 64 * 1024;
@@ -505,6 +516,254 @@ pub async fn creem_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
         checkout_url: checkout.checkout_url,
         order_id: trade_no,
     })?)
+}
+
+pub async fn epay_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let payload: EpaySubscriptionPayRequest =
+        match parse_body(&mut req, "subscription epay pay").await {
+            Ok(payload) => payload,
+            Err(response) => return Ok(response),
+        };
+    let Some(plan_id) = payload.plan_id.filter(|id| *id > 0) else {
+        return Ok(admin_payment::epay_error_response("plan_id is required")?);
+    };
+    let payment_method = payload.payment_method.unwrap_or_default();
+    let payment_method = payment_method.trim();
+    if payment_method.is_empty() {
+        return Ok(admin_payment::epay_error_response(
+            "payment method is required",
+        )?);
+    }
+
+    let db = env.d1("DB")?;
+    if !payment_compliance_confirmed(&db).await? {
+        return Ok(admin_payment::epay_error_response(
+            "payment compliance is required",
+        )?);
+    }
+    let values = d1_repositories::option_values(
+        &db,
+        &[
+            PAY_ADDRESS_KEY,
+            EPAY_ID_KEY,
+            EPAY_KEY_KEY,
+            PAY_METHODS_KEY,
+            CUSTOM_CALLBACK_ADDRESS_KEY,
+        ],
+    )
+    .await?;
+    let config = match admin_payment::epay_config_from_values(&values[0], &values[1], &values[2]) {
+        Some(config) => config,
+        None => {
+            return Ok(admin_payment::epay_error_response(
+                "Epay payment is not configured",
+            )?)
+        }
+    };
+    let pay_methods = admin_payment::parse_payment_methods(values[3].as_deref());
+    if !admin_payment::epay_payment_method_allowed(payment_method, &pay_methods) {
+        return Ok(admin_payment::epay_error_response(
+            "payment method does not exist",
+        )?);
+    }
+    let submit_url = match admin_payment::epay_submit_url(&config.pay_address) {
+        Ok(url) => url,
+        Err(message) => return Ok(admin_payment::epay_error_response(&message)?),
+    };
+    let callback_base = match resolve_callback_base_url(&env, &req, values[4].as_deref()) {
+        Ok(base) => base,
+        Err(message) => return Ok(admin_payment::epay_error_response(&message)?),
+    };
+    let notify_url = join_url_path(&callback_base, EPAY_SUBSCRIPTION_NOTIFY_PATH);
+    let return_url = join_url_path(&callback_base, EPAY_SUBSCRIPTION_RETURN_PATH);
+
+    let Some(plan) = d1_repositories::find_subscription_plan_by_id(&db, plan_id).await? else {
+        return Ok(admin_payment::epay_error_response(
+            "subscription plan not found",
+        )?);
+    };
+    if plan.enabled == 0 {
+        return Ok(admin_payment::epay_error_response(
+            "subscription plan is disabled",
+        )?);
+    }
+    if plan.price_amount < 0.01 {
+        return Ok(admin_payment::epay_error_response(
+            "subscription price is too small",
+        )?);
+    }
+    if plan.max_purchase_per_user > 0 {
+        let count =
+            d1_repositories::count_user_subscriptions_by_plan(&db, claims.id, plan.id).await?;
+        if count >= plan.max_purchase_per_user {
+            return Ok(admin_payment::epay_error_response(
+                "subscription purchase limit reached",
+            )?);
+        }
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(admin_payment::epay_error_response("user not found")?);
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(admin_payment::epay_error_response("user is disabled")?);
+    }
+
+    let now = unix_timestamp();
+    let trade_no = match epay_subscription_trade_no(claims.id, now) {
+        Some(value) => value,
+        None => {
+            return Ok(admin_payment::epay_error_response(
+                "failed to generate subscription order id",
+            )?)
+        }
+    };
+    let money = format!("{:.2}", plan.price_amount);
+    if let Err(err) = d1_repositories::insert_subscription_order(
+        &db,
+        &SubscriptionOrderWrite {
+            user_id: claims.id,
+            plan_id: plan.id,
+            money: plan.price_amount,
+            trade_no: &trade_no,
+            payment_method,
+            payment_provider: PAYMENT_PROVIDER_EPAY,
+            status: ORDER_STATUS_PENDING,
+            create_time: now,
+            complete_time: 0,
+            provider_payload: "",
+        },
+    )
+    .await
+    {
+        worker::console_error!(
+            "failed to record pending Epay subscription order {trade_no}: {err}"
+        );
+        return Ok(admin_payment::epay_error_response(
+            "failed to record pending subscription order",
+        )?);
+    }
+
+    let params = admin_payment::epay_purchase_params(admin_payment::EpayPurchaseInput {
+        partner_id: &config.partner_id,
+        key: &config.key,
+        payment_method,
+        trade_no: &trade_no,
+        name: &format!("SUB:{}", plan.title),
+        money: &money,
+        notify_url: &notify_url,
+        return_url: &return_url,
+    });
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        None,
+        "user",
+        "subscription.epay.create",
+        &format!(
+            "user {} created Epay subscription order {} via {}",
+            claims.username, trade_no, payment_method
+        ),
+        &serde_json::json!({
+            "trade_no": trade_no,
+            "plan_id": plan.id,
+            "money": money,
+            "payment_method": payment_method,
+        }),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    admin_payment::epay_success_response(&submit_url, &params)
+}
+
+pub async fn epay_notify(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+    let Some(config) = epay_subscription_config(&db).await? else {
+        worker::console_warn!("Epay subscription notify rejected: payment is not configured");
+        return Response::ok("fail");
+    };
+    let params = match admin_payment::epay_notify_params(&mut req).await {
+        Ok(params) => params,
+        Err(message) => {
+            worker::console_warn!("Epay subscription notify rejected: {message}");
+            return Response::ok("fail");
+        }
+    };
+    if params.is_empty() {
+        worker::console_warn!("Epay subscription notify rejected: empty params");
+        return Response::ok("fail");
+    }
+    let Some(info) = admin_payment::verify_epay_notify(&params, &config.key) else {
+        worker::console_warn!("Epay subscription notify signature verification failed");
+        return Response::ok("fail");
+    };
+    if info.trade_status != "TRADE_SUCCESS" {
+        let raw = serde_json::to_string(&params).unwrap_or_default();
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_EPAY,
+            &admin_payment::epay_event_id(&info),
+            &info.out_trade_no,
+            "subscription_ignored",
+            &raw,
+            unix_timestamp(),
+        )
+        .await;
+        return Response::ok("fail");
+    }
+
+    let now = unix_timestamp();
+    let raw = serde_json::to_string(&params).unwrap_or_default();
+    match settle_epay_subscription_order(&db, &info, &raw, now).await? {
+        SubscriptionOrderWebhookOutcome::Completed
+        | SubscriptionOrderWebhookOutcome::AlreadyComplete => Response::ok("success"),
+        other => {
+            worker::console_warn!(
+                "Epay subscription notify verified but order {} settled as {:?}",
+                info.out_trade_no,
+                other
+            );
+            Response::ok("fail")
+        }
+    }
+}
+
+pub async fn epay_return(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+    let Some(config) = epay_subscription_config(&db).await? else {
+        return subscription_payment_redirect(&env, &req, SUBSCRIPTION_RETURN_FAIL_PATH);
+    };
+    let params = match admin_payment::epay_notify_params(&mut req).await {
+        Ok(params) => params,
+        Err(_) => {
+            return subscription_payment_redirect(&env, &req, SUBSCRIPTION_RETURN_FAIL_PATH);
+        }
+    };
+    if params.is_empty() {
+        return subscription_payment_redirect(&env, &req, SUBSCRIPTION_RETURN_FAIL_PATH);
+    }
+    let Some(info) = admin_payment::verify_epay_notify(&params, &config.key) else {
+        return subscription_payment_redirect(&env, &req, SUBSCRIPTION_RETURN_FAIL_PATH);
+    };
+    if info.trade_status == "TRADE_SUCCESS" {
+        let raw = serde_json::to_string(&params).unwrap_or_default();
+        let now = unix_timestamp();
+        return match settle_epay_subscription_order(&db, &info, &raw, now).await? {
+            SubscriptionOrderWebhookOutcome::Completed
+            | SubscriptionOrderWebhookOutcome::AlreadyComplete => {
+                subscription_payment_redirect(&env, &req, SUBSCRIPTION_RETURN_SUCCESS_PATH)
+            }
+            _ => subscription_payment_redirect(&env, &req, SUBSCRIPTION_RETURN_FAIL_PATH),
+        };
+    }
+    subscription_payment_redirect(&env, &req, SUBSCRIPTION_RETURN_PENDING_PATH)
 }
 
 pub async fn admin_list_plans(req: Request, env: Env) -> WorkerResult<Response> {
@@ -958,6 +1217,120 @@ pub(crate) async fn complete_order_for_provider(
     Ok(SubscriptionOrderWebhookOutcome::Completed)
 }
 
+async fn settle_epay_subscription_order(
+    db: &worker::D1Database,
+    info: &admin_payment::EpayNotifyInfo,
+    provider_payload: &str,
+    now: i64,
+) -> WorkerResult<SubscriptionOrderWebhookOutcome> {
+    let event_id = admin_payment::epay_event_id(info);
+    let trade_no = info.out_trade_no.trim();
+    if trade_no.is_empty() {
+        let _ = d1_repositories::insert_payment_event(
+            db,
+            PAYMENT_PROVIDER_EPAY,
+            &event_id,
+            "",
+            "subscription_rejected",
+            provider_payload,
+            now,
+        )
+        .await;
+        return Ok(SubscriptionOrderWebhookOutcome::NotFound);
+    }
+    let expected_money = match info.money.trim().parse::<f64>() {
+        Ok(value) if value >= 0.0 => value,
+        _ => {
+            let _ = d1_repositories::insert_payment_event(
+                db,
+                PAYMENT_PROVIDER_EPAY,
+                &event_id,
+                trade_no,
+                "subscription_rejected",
+                provider_payload,
+                now,
+            )
+            .await;
+            return Ok(SubscriptionOrderWebhookOutcome::InvalidStatus);
+        }
+    };
+    let Some(order) = d1_repositories::find_subscription_order_by_trade_no(db, trade_no).await?
+    else {
+        let _ = d1_repositories::insert_payment_event(
+            db,
+            PAYMENT_PROVIDER_EPAY,
+            &event_id,
+            trade_no,
+            "subscription_unmatched",
+            provider_payload,
+            now,
+        )
+        .await;
+        return Ok(SubscriptionOrderWebhookOutcome::NotFound);
+    };
+    if order.payment_provider != PAYMENT_PROVIDER_EPAY {
+        let _ = d1_repositories::insert_payment_event(
+            db,
+            PAYMENT_PROVIDER_EPAY,
+            &event_id,
+            trade_no,
+            "subscription_rejected",
+            provider_payload,
+            now,
+        )
+        .await;
+        return Ok(SubscriptionOrderWebhookOutcome::ProviderMismatch);
+    }
+    if order.status == ORDER_STATUS_PENDING
+        && !epay_subscription_money_matches(order.money, expected_money)
+    {
+        worker::console_warn!(
+            "Epay subscription amount mismatch trade_no={} order_money={} callback_money={}",
+            trade_no,
+            order.money,
+            expected_money
+        );
+        let _ = d1_repositories::insert_payment_event(
+            db,
+            PAYMENT_PROVIDER_EPAY,
+            &event_id,
+            trade_no,
+            "subscription_rejected",
+            provider_payload,
+            now,
+        )
+        .await;
+        return Ok(SubscriptionOrderWebhookOutcome::InvalidStatus);
+    }
+
+    let outcome = complete_order_for_provider(
+        db,
+        trade_no,
+        provider_payload,
+        PAYMENT_PROVIDER_EPAY,
+        &info.payment_method,
+        now,
+    )
+    .await?;
+    let status = match outcome {
+        SubscriptionOrderWebhookOutcome::Completed
+        | SubscriptionOrderWebhookOutcome::AlreadyComplete => "subscription_paid",
+        SubscriptionOrderWebhookOutcome::AlreadyTerminal => "subscription_ignored",
+        _ => "subscription_rejected",
+    };
+    let _ = d1_repositories::insert_payment_event(
+        db,
+        PAYMENT_PROVIDER_EPAY,
+        &event_id,
+        trade_no,
+        status,
+        provider_payload,
+        now,
+    )
+    .await;
+    Ok(outcome)
+}
+
 pub(crate) async fn expire_order_for_provider(
     db: &worker::D1Database,
     trade_no: &str,
@@ -1118,6 +1491,12 @@ struct PlanStatusRequest {
 #[derive(Debug, Deserialize)]
 struct PlanIdRequest {
     plan_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EpaySubscriptionPayRequest {
+    plan_id: Option<i64>,
+    payment_method: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1545,6 +1924,19 @@ fn creem_subscription_trade_no_from_parts(username: &str, millis: i64, suffix: &
     format!("sub_ref_{}", hex_lower(&hasher.finalize()))
 }
 
+fn epay_subscription_trade_no(user_id: i64, now: i64) -> Option<String> {
+    let suffix = random_base62(6)?;
+    Some(epay_subscription_trade_no_from_parts(user_id, now, &suffix))
+}
+
+fn epay_subscription_trade_no_from_parts(user_id: i64, now: i64, suffix: &str) -> String {
+    format!("SUBUSR{user_id}NO{suffix}{now}")
+}
+
+fn epay_subscription_money_matches(order_money: f64, callback_money: f64) -> bool {
+    (order_money - callback_money).abs() < 0.000001
+}
+
 fn creem_subscription_currency(quota_display_type: Option<&str>) -> &'static str {
     match quota_display_type.map(str::trim) {
         Some("CNY") => "CNY",
@@ -1687,6 +2079,39 @@ async fn read_limited_stripe_response_body(
         })
         .await
         .map_err(|err| err.to_string())
+}
+
+async fn epay_subscription_config(
+    db: &worker::D1Database,
+) -> WorkerResult<Option<admin_payment::EpayConfig>> {
+    let values =
+        d1_repositories::option_values(db, &[PAY_ADDRESS_KEY, EPAY_ID_KEY, EPAY_KEY_KEY]).await?;
+    Ok(admin_payment::epay_config_from_values(
+        &values[0], &values[1], &values[2],
+    ))
+}
+
+fn subscription_payment_redirect(env: &Env, req: &Request, path: &str) -> WorkerResult<Response> {
+    let location = resolve_frontend_base_url(env, req)
+        .map(|base| join_url_path(&base, path))
+        .unwrap_or_else(|_| path.to_string());
+    let mut response = Response::empty()?.with_status(302);
+    response.headers_mut().set("Location", &location)?;
+    Ok(response)
+}
+
+fn resolve_callback_base_url(
+    env: &Env,
+    req: &Request,
+    custom_callback_address: Option<&str>,
+) -> std::result::Result<String, String> {
+    if let Some(value) = custom_callback_address
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return validate_http_base_url(value);
+    }
+    resolve_frontend_base_url(env, req)
 }
 
 fn resolve_frontend_base_url(env: &Env, req: &Request) -> std::result::Result<String, String> {
@@ -2004,6 +2429,19 @@ mod tests {
         assert_eq!(creem_subscription_currency(Some("TOKENS")), "USD");
         assert_eq!(creem_subscription_currency(Some("CUSTOM")), "USD");
         assert_eq!(creem_subscription_currency(None), "USD");
+    }
+
+    #[test]
+    fn epay_subscription_trade_no_matches_go_shape() {
+        let trade_no = epay_subscription_trade_no_from_parts(42, 1_700_000_000, "Ab9zQ1");
+        assert_eq!(trade_no, "SUBUSR42NOAb9zQ11700000000");
+    }
+
+    #[test]
+    fn epay_subscription_money_match_allows_float_storage_noise() {
+        assert!(epay_subscription_money_matches(12.30, 12.3));
+        assert!(epay_subscription_money_matches(12.3000001, 12.3));
+        assert!(!epay_subscription_money_matches(12.31, 12.3));
     }
 
     #[test]

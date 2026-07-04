@@ -194,9 +194,9 @@ options, and `money_to_quota`. Current parity notes:
   checkout/callback, Waffo wallet checkout/webhook, Waffo Pancake wallet
   checkout/webhook, Creem wallet checkout/webhook, Stripe subscription
   checkout/webhook settlement, and Creem subscription checkout/webhook
-  settlement now use provider-aware rows and D1 idempotency guards. Waffo
-  Pancake/Epay subscription checkout/callback providers and
-  `ValidateRedirectURL` parity are still pending.
+  settlement, and Epay subscription checkout/notify/return settlement now use
+  provider-aware rows and D1 idempotency guards. Waffo Pancake subscription
+  checkout/callback and `ValidateRedirectURL` parity are still pending.
 
 Current Stripe subscription details:
 
@@ -224,6 +224,24 @@ Current Epay wallet details:
   replay smoke is still required before paid-traffic cutover. Signature-valid
   mismatches or partial complete/credit/mark batches return `"fail"` instead of
   being ACKed.
+
+Current Epay subscription details:
+
+- `POST /api/subscription/epay/pay` creates the pending
+  `subscription_orders` row before returning the signed Epay form. It uses the
+  Go `SUBUSR{id}NO{rand6}{UnixSeconds}` trade number shape, configured Epay
+  payment-method allowlist, and `SUB:{plan_title}` purchase name.
+- `GET/POST /api/subscription/epay/notify` verifies the MD5 signature before
+  any write, requires `TRADE_SUCCESS`, checks the local
+  `payment_provider == "epay"` and callback money against the pending
+  subscription order, then settles through the shared subscription D1 batch.
+- `GET/POST /api/subscription/epay/return` uses the same verification and
+  settlement path before redirecting the browser to
+  `/console/topup?pay=success`, `?pay=fail`, or `?pay=pending`.
+- Subscription settlement inserts the user subscription, applies any plan group
+  update, records a success topup-history row with `credited=1`, marks the
+  order success, and updates the actual payment method from Epay's signed
+  callback type. Verified duplicate deliveries are no-credit no-ops.
 
 Current Waffo wallet details:
 
@@ -324,13 +342,13 @@ Current Creem subscription details:
 Checklist:
 
 1. Keep per-provider signature verification before any write. Done for Stripe
-   wallet + subscription flows, Epay wallet topups, Waffo wallet topups, Waffo
-   Pancake wallet topups, and Creem wallet + subscription flows; pending for
-   Waffo Pancake/Epay subscription providers.
+   wallet + subscription flows, Epay wallet + subscription flows, Waffo wallet
+   topups, Waffo Pancake wallet topups, and Creem wallet + subscription flows;
+   pending for Waffo Pancake subscription.
 2. Keep `payment_events` as non-gating audit/dedup evidence and anchor credit on
    `topups` conditional credited batches. Done for Stripe, Epay wallet topups,
    Waffo wallet topups, Waffo Pancake wallet topups, and Creem wallet topups;
-   Stripe and Creem subscription settlement use `subscription_orders`
+   Stripe, Creem, and Epay subscription settlement use `subscription_orders`
    pending/success CAS plus a D1 batch; provider-specific replay fixtures still
    need staging D1 proof.
 3. Implement per-provider quota formulas with truncation. Done for Epay wallet
@@ -341,11 +359,12 @@ Checklist:
 5. Add amount/currency/product/env match checks. Epay and Creem wallet checks
    provider and money; Waffo checks provider and amount; Waffo Pancake checks
    provider, buyer identity, amount, and env; Creem subscription checks local
-   provider, plan product id, and amount. Currency/product checks apply to
+   provider, plan product id, and amount; Epay subscription checks local
+   provider and signed callback amount. Currency/product checks apply to
    remaining providers where exposed by the webhook payload.
-6. Mirror for `subscription_orders`; Stripe and Creem subscription settlement
-   are implemented, while Waffo Pancake/Epay subscription settlement remains
-   pending. Keep
+6. Mirror for `subscription_orders`; Stripe, Creem, and Epay subscription
+   settlement are implemented, while Waffo Pancake subscription settlement
+   remains pending. Keep
    funding-source evidence in `docs/billing-parity-runbook.md`.
 7. Admin manual-complete (`ManualCompleteTopUp`) and `AdminCompleteTopUp` route
    parity with audit.

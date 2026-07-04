@@ -4,22 +4,23 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 314 passed after adding Creem
-  subscription checkout at `POST /api/subscription/creem/pay` and wiring
-  Creem `checkout.completed` + paid events through subscription order
-  settlement before wallet-topup fallback.
+- `cargo test -p cinatoken-worker --lib`: 316 passed after adding Epay
+  subscription checkout at `POST /api/subscription/epay/pay`, plus
+  `GET/POST /api/subscription/epay/notify` and
+  `GET/POST /api/subscription/epay/return` settlement through subscription
+  orders.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same Creem subscription slice.
-- `bun run check`: passed after updating the intentional route-debt baseline,
-  covering the frontend TypeScript/build, route-debt baseline, Rust workspace
-  tests excluding the Worker, rustfmt check, and Worker wasm check.
+  the same Epay subscription slice.
+- `bun run check`: passed after the Epay subscription route-baseline update,
+  covering the frontend build, route-debt baseline, Rust workspace tests
+  excluding the Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 248 Worker routes, 33 missing calls, categories
-  13 auth-deferred / 20 capability-hidden-product, SHA-256
-  `cda3a9b64f6b5d611724852f02448df910ae650218273b296d99e564560e19e6`.
+  212 frontend calls, 253 Worker routes, 32 missing calls, categories
+  13 auth-deferred / 19 capability-hidden-product, SHA-256
+  `516ec5b5419f85268a569b96893f3b76920dc404ba5edd9982f75bb82c47bd48`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 33-call / 0 payment-deferred baseline above.
+superseded by the current 32-call / 0 payment-deferred baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
   checkout and webhook settlement at `POST /api/user/creem/pay` and

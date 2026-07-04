@@ -77,9 +77,10 @@ A full diff of every Go-registered route against the Rust worker closed these
   evidence for the full visible workflows, but their core Worker routes are no
   longer entirely absent.
 - Email verification/reset/bind and Passkey.
-- Remaining payment providers: Waffo Pancake and Epay external subscription
-  checkout/callback settlement. Stripe and Creem subscriptions plus Creem,
-  legacy Waffo, and Waffo Pancake wallet checkout/webhooks are Worker-owned.
+- Remaining payment providers: Waffo Pancake external subscription
+  checkout/callback settlement. Stripe, Creem, and Epay subscriptions plus
+  Creem, legacy Waffo, Epay, and Waffo Pancake wallet checkout/webhooks are
+  Worker-owned.
 - Custom OAuth management and several provider-specific OAuth flows.
 - Long-tail provider/channel operations, performance/ratio-sync, io.net
   deployment management.

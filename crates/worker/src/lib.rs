@@ -586,6 +586,21 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/subscription/creem/pay", |req, ctx| async move {
             admin_subscription::creem_pay(req, ctx.env).await
         })
+        .post_async("/api/subscription/epay/pay", |req, ctx| async move {
+            admin_subscription::epay_pay(req, ctx.env).await
+        })
+        .post_async("/api/subscription/epay/notify", |req, ctx| async move {
+            admin_subscription::epay_notify(req, ctx.env).await
+        })
+        .get_async("/api/subscription/epay/notify", |req, ctx| async move {
+            admin_subscription::epay_notify(req, ctx.env).await
+        })
+        .post_async("/api/subscription/epay/return", |req, ctx| async move {
+            admin_subscription::epay_return(req, ctx.env).await
+        })
+        .get_async("/api/subscription/epay/return", |req, ctx| async move {
+            admin_subscription::epay_return(req, ctx.env).await
+        })
         .get_async("/api/subscription/admin/plans", |req, ctx| async move {
             admin_subscription::admin_list_plans(req, ctx.env).await
         })

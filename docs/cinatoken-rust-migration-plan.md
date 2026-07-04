@@ -2546,3 +2546,53 @@ checkout/callback, and the deployment/io.net feature family remain
 capability-hidden or auth-deferred until their provider-specific order model,
 signature verification, amount/product/env checks, replay handling, and staging
 reconciliation evidence are in place.
+
+### 22.23 2026-07-04 Epay Subscription Checkout/Notify/Return Delta
+
+This increment removes the default frontend's Epay subscription checkout route
+from the route-debt set and adds the source Go Epay subscription callback pair:
+
+- `POST /api/subscription/epay/pay` requires user session auth, payment
+  compliance, configured `PayAddress` / `EpayId` / `EpayKey`, a selected
+  configured Epay payment method, an enabled plan, and `price_amount >= 0.01`.
+- The Worker creates a pending `subscription_orders` row before returning the
+  signed Epay form. Order IDs keep the Go-visible shape
+  `SUBUSR{user_id}NO{rand6}{UnixSeconds}` while using the Rust CSPRNG
+  `random_base62` helper for the suffix.
+- The Epay form params reuse the existing Go-compatible Epay SDK translation:
+  `pid`, `type`, `out_trade_no`, `notify_url`, `return_url`, `name=SUB:{plan}`,
+  `money` with two decimals, `device=pc`, `sign_type=MD5`, and
+  `sign=md5(sorted_nonempty_params + EpayKey)`.
+- `GET/POST /api/subscription/epay/notify` parses bounded form/query callbacks,
+  verifies the MD5 signature with constant-time comparison, requires
+  `TRADE_SUCCESS`, checks local provider and pending-order amount, and settles
+  through the shared subscription D1 batch.
+- `GET/POST /api/subscription/epay/return` uses the same verification and
+  settlement path, then redirects the browser to `/console/topup?pay=success`,
+  `?pay=fail`, or `?pay=pending` under `FRONTEND_BASE_URL` or the request
+  origin.
+- Subscription settlement inserts the user subscription, applies any plan group
+  update, records a success topup-history row with `credited=1`, updates the
+  actual payment method from the Epay callback type, and marks the order
+  success. Verified duplicate deliveries are ACKed as idempotent no-ops.
+- Signature-valid local provider, amount, or order mismatches are recorded in
+  `payment_events` as rejected/unmatched without credit.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 253 Worker routes, 32 missing calls;
+- debt categories: 13 auth-deferred, 19 capability-hidden-product,
+  0 payment-deferred;
+- route-set SHA-256:
+  `516ec5b5419f85268a569b96893f3b76920dc404ba5edd9982f75bb82c47bd48`;
+- `cargo test -p cinatoken-worker --lib`: 316 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: `/api/subscription/waffo-pancake/pay` and the
+deployment/io.net feature family remain capability-hidden or auth-deferred
+until their provider-specific order model, signature verification,
+amount/product/env checks, replay handling, and staging reconciliation evidence
+are in place.

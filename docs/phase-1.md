@@ -154,6 +154,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Standalone for now; see `docs/ssrf.md` for the boundary.
 - D1 `migrations/d1/0002_admin_tables.sql` adds the `vendors` and `models`
   admin tables and the `logs` indexes that back admin log/stat queries.
+- Model metadata management now includes default-frontend list/detail
+  enrichment for `bound_channels`, `enable_groups`, `quota_types`,
+  `matched_models`, `matched_count`, endpoint backfill, `vendor_counts`, and
+  server-side `status` / `sync_official` filters. The enrichment reuses the
+  pricing-row context and D1 batch channel lookups instead of per-row queries.
 - `crates/session` implements the stateless HMAC-signed session cookie codec
   (base64url JSON payload + HMAC-SHA256 signature). 10 unit tests cover
   round-trip, tamper/expiry rejection, and secret-length enforcement. Cookie

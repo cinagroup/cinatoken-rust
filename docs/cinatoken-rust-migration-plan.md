@@ -2990,3 +2990,43 @@ Remaining boundary: owner/provider metadata still uses a conservative
 ported for the list endpoint. Production evidence still needs live token smoke
 for unrestricted tokens, limited tokens, auto groups, Anthropic/Gemini shapes,
 missing model errors, disabled/exhausted tokens, and provider owner metadata.
+
+### 22.32 2026-07-04 Model Metadata Frontend Enrichment Delta
+
+This increment tightens the default-frontend `features/models` contract. Route
+debt was already zero, but the Worker model metadata responses were thinner
+than Go `controller/model_meta.go` and did not populate display fields the
+React model table reads.
+
+Implemented in Rust:
+
+- `GET /api/models/` and `GET /api/models/search` now return enriched model
+  rows with `bound_channels`, `enable_groups`, `quota_types`,
+  `matched_models`, `matched_count`, and endpoint backfill.
+- `GET /api/models/:id` now uses the same enrichment path for detail/drawer
+  reads.
+- List responses now include `vendor_counts`, including an `all` count for the
+  default frontend's vendor filter label.
+- The frontend query params `status=enabled|disabled` and
+  `sync_official=yes|no` now become D1 filters instead of being ignored.
+- Enrichment reuses the same pricing-row context as `/api/pricing` and a
+  batched `abilities` + `channels` D1 lookup, matching Go's batch approach and
+  avoiding per-row D1 queries.
+- The readiness matrix now reflects that model/vendor/prefill routes and
+  token/user admin routes are `Partial` rather than stale `Planned` rows.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 294 Worker routes, 0 missing calls;
+- debt categories: none;
+- route-set SHA-256:
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+- `cargo test -p cinatoken-worker --lib`: 344 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `cargo fmt --all --check`: passed.
+
+Remaining boundary: this is still local contract evidence. Production readiness
+needs authenticated browser/operator smoke for model list/search/filter/detail,
+model/vendor/prefill create/update/delete, official metadata preview/sync, and
+proof that model metadata mutations invalidate or refresh the pricing/model
+mapping views used by relay and the frontend.

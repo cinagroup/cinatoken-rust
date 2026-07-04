@@ -4802,13 +4802,30 @@ pub struct ModelMetaFull {
 const MODEL_META_COLUMNS: &str = r#"id, model_name, description, icon, tags, vendor_id,
     endpoints, status, sync_official, name_rule, created_time, updated_time"#;
 
+/// A channel bound to one enabled ability for a model (Go `model.BoundChannel`).
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
+pub struct BoundChannel {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub channel_type: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct BoundChannelByModel {
+    model: String,
+    name: String,
+    channel_type: i32,
+}
+
 /// Page of live model-metadata rows filtered by an optional keyword
-/// (model_name/description/tags LIKE) and an optional vendor id. Returns
-/// `(rows, total)` for the shared filter.
+/// (model_name/description/tags LIKE), optional vendor id, and optional
+/// status/sync flags. Returns `(rows, total)` for the shared filter.
 pub async fn list_models_meta(
     db: &D1Database,
     keyword: Option<&str>,
     vendor_id: Option<i64>,
+    status: Option<i32>,
+    sync_official: Option<i32>,
     offset: u32,
     limit: u32,
 ) -> worker::Result<(Vec<ModelMetaFull>, i64)> {
@@ -4826,6 +4843,22 @@ pub async fn list_models_meta(
     if let Some(vendor_id) = vendor_id {
         args.push(D1Type::Integer(d1_i32(vendor_id)));
         wheres.push(format!("vendor_id = ?{}", args.len()));
+    }
+    if let Some(status) = status {
+        if status == 1 {
+            args.push(D1Type::Integer(1));
+            wheres.push(format!("status = ?{}", args.len()));
+        } else {
+            wheres.push("status != 1".to_string());
+        }
+    }
+    if let Some(sync_official) = sync_official {
+        if sync_official == 1 {
+            args.push(D1Type::Integer(1));
+            wheres.push(format!("sync_official = ?{}", args.len()));
+        } else {
+            wheres.push("sync_official != 1".to_string());
+        }
     }
     let where_sql = wheres.join(" AND ");
 
@@ -4857,6 +4890,84 @@ pub async fn list_models_meta(
         .await?
         .results::<ModelMetaFull>()?;
     Ok((rows, total))
+}
+
+/// Batch-load channels bound to enabled ability rows for the given models.
+/// This mirrors Go `GetBoundChannelsByModelsMap` without per-row lookups.
+pub async fn bound_channels_by_models(
+    db: &D1Database,
+    models: &[String],
+) -> worker::Result<HashMap<String, Vec<BoundChannel>>> {
+    let mut normalized = Vec::<String>::new();
+    for model in models {
+        let model = model.trim();
+        if model.is_empty() || normalized.iter().any(|existing| existing == model) {
+            continue;
+        }
+        normalized.push(model.to_string());
+    }
+    if normalized.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = (1..=normalized.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let args = normalized
+        .iter()
+        .map(|model| D1Type::Text(model))
+        .collect::<Vec<_>>();
+    let rows = db
+        .prepare(&format!(
+            r#"SELECT DISTINCT a.model AS model, c.name AS name,
+                      COALESCE(c.type, 0) AS channel_type
+               FROM abilities a
+               JOIN channels c ON c.id = a.channel_id
+               WHERE a.enabled = 1 AND a.model IN ({placeholders})
+               ORDER BY a.model ASC, c.name ASC, c.type ASC"#
+        ))
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<BoundChannelByModel>()?;
+
+    let mut by_model = HashMap::<String, Vec<BoundChannel>>::new();
+    for row in rows {
+        by_model.entry(row.model).or_default().push(BoundChannel {
+            name: row.name,
+            channel_type: row.channel_type,
+        });
+    }
+    Ok(by_model)
+}
+
+/// Count live metadata rows per vendor for the model-management vendor filter.
+pub async fn vendor_model_counts(db: &D1Database) -> worker::Result<HashMap<String, i64>> {
+    #[derive(Deserialize)]
+    struct VendorModelCount {
+        vendor_id: i64,
+        total: i64,
+    }
+    let rows = db
+        .prepare(
+            r#"SELECT vendor_id AS vendor_id, COUNT(*) AS total
+               FROM models
+               WHERE deleted_at IS NULL
+               GROUP BY vendor_id"#,
+        )
+        .bind_refs(&[] as &[D1Type<'_>])?
+        .all()
+        .await?
+        .results::<VendorModelCount>()?;
+    let mut counts = HashMap::new();
+    let mut all = 0;
+    for row in rows {
+        all += row.total;
+        counts.insert(row.vendor_id.to_string(), row.total);
+    }
+    counts.insert("all".to_string(), all);
+    Ok(counts)
 }
 
 /// One live model-metadata row by id.

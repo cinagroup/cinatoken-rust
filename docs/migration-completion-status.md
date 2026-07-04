@@ -36,7 +36,10 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   KV-backed WebAuthn challenges and finish routes fail closed until verifier
   work lands.
 - Core admin user/token/channel/log/option/model/vendor APIs with audit and cache
-  invalidation.
+  invalidation. Model metadata list/detail responses now include
+  default-frontend enrichment for bound channels, enabled groups, quota types,
+  rule matches, endpoint backfill, vendor counts, and server-side
+  status/sync filters.
 - Task submit/poll/CAS-settlement foundations and scheduled polling.
 - Stripe top-up reference flow plus Epay wallet checkout/callback with D1
   provider-aware credited-anchor settlement.

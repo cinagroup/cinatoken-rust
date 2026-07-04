@@ -2,12 +2,11 @@
 //! `controller/model_meta.go` + `controller/vendor_meta.go`, routes
 //! `/api/models/*` and `/api/vendors/*`, AdminAuth).
 //!
-//! Deferred vs Go (documented): the list responses return the base rows
-//! without the batch display enrichment (`bound_channels` / `enable_groups` /
-//! `quota_types` per row and the vendor model-counts) — display extras the Go
-//! frontend tolerates missing.
+//! Model list/detail responses include the display enrichment the default
+//! frontend reads from Go: bound channels, enabled groups, quota types, rule
+//! match counts, endpoint backfill, and vendor counts.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use futures_util::future::{select, Either};
@@ -24,7 +23,8 @@ use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
     unix_timestamp,
 };
-use crate::d1_repositories::{self, ModelMetaFull, VendorFull};
+use crate::admin_user::merged_ratio_map;
+use crate::d1_repositories::{self, BoundChannel, ModelMetaFull, VendorFull};
 
 // ---------------------------------------------------------------------------
 // Shared helpers (module-local copies of the admin CRUD conventions)
@@ -64,6 +64,51 @@ struct Page<T: Serialize> {
     total: i64,
     page: u32,
     page_size: u32,
+}
+
+#[derive(Serialize)]
+struct ModelsPage {
+    items: Vec<EnrichedModelMeta>,
+    total: i64,
+    page: u32,
+    page_size: u32,
+    vendor_counts: HashMap<String, i64>,
+}
+
+#[derive(Serialize)]
+struct EnrichedModelMeta {
+    #[serde(flatten)]
+    row: ModelMetaFull,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bound_channels: Vec<BoundChannel>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    enable_groups: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    quota_types: Vec<i32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    matched_models: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    matched_count: usize,
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
+fn parse_model_status_filter(value: Option<&str>) -> Option<i32> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "enabled" | "enable" | "1" => Some(1),
+        "disabled" | "disable" | "0" => Some(0),
+        _ => None,
+    }
+}
+
+fn parse_model_sync_filter(value: Option<&str>) -> Option<i32> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "yes" | "official" | "true" | "1" => Some(1),
+        "no" | "false" | "0" => Some(0),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,21 +156,29 @@ pub async fn list_models_meta(req: Request, env: Env) -> WorkerResult<Response> 
     }
     let keyword = parse_query_string(&req, "keyword");
     let vendor_id = parse_query_string(&req, "vendor").and_then(|value| value.parse::<i64>().ok());
+    let status = parse_model_status_filter(parse_query_string(&req, "status").as_deref());
+    let sync_official =
+        parse_model_sync_filter(parse_query_string(&req, "sync_official").as_deref());
     let (page, page_size) = parse_pagination(&req);
     let db = env.d1("DB")?;
     let (items, total) = d1_repositories::list_models_meta(
         &db,
         keyword.as_deref(),
         vendor_id,
+        status,
+        sync_official,
         (page - 1) * page_size,
         page_size,
     )
     .await?;
-    envelope_ok_response(&Page {
+    let items = enrich_model_meta_rows(&db, items).await?;
+    let vendor_counts = d1_repositories::vendor_model_counts(&db).await?;
+    envelope_ok_response(&ModelsPage {
         items,
         total,
         page,
         page_size,
+        vendor_counts,
     })
 }
 
@@ -143,7 +196,13 @@ pub async fn get_model_meta(
     };
     let db = env.d1("DB")?;
     match d1_repositories::get_model_meta(&db, id).await? {
-        Some(row) => envelope_ok_response(&row),
+        Some(row) => {
+            let mut rows = enrich_model_meta_rows(&db, vec![row]).await?;
+            match rows.pop() {
+                Some(row) => envelope_ok_response(&row),
+                None => Ok(envelope_error_response(404, "model not found")),
+            }
+        }
         None => Ok(envelope_error_response(404, "model not found")),
     }
 }
@@ -252,6 +311,180 @@ pub async fn delete_model_meta(
     let db = env.d1("DB")?;
     d1_repositories::soft_delete_model_meta(&db, id, unix_timestamp()).await?;
     envelope_ok_response(&serde_json::Value::Null)
+}
+
+async fn enrich_model_meta_rows(
+    db: &D1Database,
+    rows: Vec<ModelMetaFull>,
+) -> WorkerResult<Vec<EnrichedModelMeta>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pricing_rows = pricing_rows_for_enrichment(db).await?;
+    let bound_model_names = model_names_for_bound_channels(&rows, &pricing_rows);
+    let bound_channels = d1_repositories::bound_channels_by_models(db, &bound_model_names).await?;
+    Ok(enrich_model_meta_rows_with_context(
+        rows,
+        &pricing_rows,
+        &bound_channels,
+    ))
+}
+
+async fn pricing_rows_for_enrichment(
+    db: &D1Database,
+) -> WorkerResult<Vec<crate::pricing_api::PricingRow>> {
+    let opts = d1_repositories::option_values(
+        db,
+        &[
+            "ModelRatio",
+            "CompletionRatio",
+            "ModelPrice",
+            "CacheRatio",
+            "CreateCacheRatio",
+        ],
+    )
+    .await?;
+    use cinatoken_core::default_ratios as dr;
+    let maps = crate::pricing_api::PricingMaps {
+        model_ratios: merged_ratio_map(dr::DEFAULT_MODEL_RATIO, opts[0].as_deref()),
+        completion_ratios: merged_ratio_map(dr::DEFAULT_COMPLETION_RATIO, opts[1].as_deref()),
+        model_prices: merged_ratio_map(dr::DEFAULT_MODEL_PRICE, opts[2].as_deref()),
+        cache_ratios: merged_ratio_map(dr::DEFAULT_CACHE_RATIO, opts[3].as_deref()),
+        create_cache_ratios: merged_ratio_map(dr::DEFAULT_CREATE_CACHE_RATIO, opts[4].as_deref()),
+    };
+    let abilities = d1_repositories::enabled_abilities_with_channel_type(db).await?;
+    let meta_rows = d1_repositories::list_model_meta(db).await?;
+    Ok(crate::pricing_api::build_pricing_rows(
+        &abilities, &meta_rows, &maps,
+    ))
+}
+
+fn model_names_for_bound_channels(
+    rows: &[ModelMetaFull],
+    pricing_rows: &[crate::pricing_api::PricingRow],
+) -> Vec<String> {
+    let mut names = Vec::new();
+    for row in rows {
+        if row.name_rule == 0 {
+            push_unique_string(&mut names, row.model_name.clone());
+            continue;
+        }
+        for pricing in pricing_rows {
+            if model_name_rule_matches(row.name_rule, &row.model_name, &pricing.model_name) {
+                push_unique_string(&mut names, pricing.model_name.clone());
+            }
+        }
+    }
+    names
+}
+
+fn enrich_model_meta_rows_with_context(
+    rows: Vec<ModelMetaFull>,
+    pricing_rows: &[crate::pricing_api::PricingRow],
+    bound_channels: &HashMap<String, Vec<BoundChannel>>,
+) -> Vec<EnrichedModelMeta> {
+    let pricing_by_model = pricing_rows
+        .iter()
+        .map(|row| (row.model_name.as_str(), row))
+        .collect::<HashMap<_, _>>();
+
+    rows.into_iter()
+        .map(|mut row| {
+            if row.name_rule == 0 {
+                let bound_channels = bound_channels
+                    .get(&row.model_name)
+                    .cloned()
+                    .unwrap_or_default();
+                let (enable_groups, quota_types) =
+                    if let Some(pricing) = pricing_by_model.get(row.model_name.as_str()) {
+                        if row.endpoints.trim().is_empty()
+                            && !pricing.supported_endpoint_types.is_empty()
+                        {
+                            row.endpoints = endpoint_array_json(&pricing.supported_endpoint_types);
+                        }
+                        (pricing.enable_groups.clone(), vec![pricing.quota_type])
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
+                return EnrichedModelMeta {
+                    row,
+                    bound_channels,
+                    enable_groups,
+                    quota_types,
+                    matched_models: Vec::new(),
+                    matched_count: 0,
+                };
+            }
+
+            let mut matched_models = Vec::new();
+            let mut endpoint_union = Vec::<&'static str>::new();
+            let mut group_union = BTreeSet::<String>::new();
+            let mut quota_union = BTreeSet::<i32>::new();
+            let mut channel_union = BTreeMap::<(String, i32), BoundChannel>::new();
+
+            for pricing in pricing_rows {
+                if !model_name_rule_matches(row.name_rule, &row.model_name, &pricing.model_name) {
+                    continue;
+                }
+                push_unique_string(&mut matched_models, pricing.model_name.clone());
+                for endpoint in &pricing.supported_endpoint_types {
+                    if !endpoint_union.contains(endpoint) {
+                        endpoint_union.push(*endpoint);
+                    }
+                }
+                for group in &pricing.enable_groups {
+                    group_union.insert(group.clone());
+                }
+                quota_union.insert(pricing.quota_type);
+                if let Some(channels) = bound_channels.get(&pricing.model_name) {
+                    for channel in channels {
+                        channel_union.insert(
+                            (channel.name.clone(), channel.channel_type),
+                            channel.clone(),
+                        );
+                    }
+                }
+            }
+
+            matched_models.sort();
+            if row.endpoints.trim().is_empty() && !endpoint_union.is_empty() {
+                row.endpoints = endpoint_array_json(&endpoint_union);
+            }
+            let matched_count = matched_models.len();
+            EnrichedModelMeta {
+                row,
+                bound_channels: channel_union.into_values().collect(),
+                enable_groups: group_union.into_iter().collect(),
+                quota_types: quota_union.into_iter().collect(),
+                matched_models,
+                matched_count,
+            }
+        })
+        .collect()
+}
+
+fn model_name_rule_matches(rule: i32, pattern: &str, model: &str) -> bool {
+    match rule {
+        0 => model == pattern,
+        1 => model.starts_with(pattern),
+        2 => model.contains(pattern),
+        3 => model.ends_with(pattern),
+        _ => false,
+    }
+}
+
+fn endpoint_array_json(endpoints: &[&'static str]) -> String {
+    serde_json::to_string(endpoints).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
 }
 
 /// `GET /api/models/missing`: enabled ability models with no metadata row
@@ -636,7 +869,8 @@ async fn load_all_models(db: &D1Database) -> WorkerResult<Vec<ModelMetaFull>> {
     loop {
         let offset = u32::try_from(rows.len()).unwrap_or(u32::MAX);
         let (mut page, total) =
-            d1_repositories::list_models_meta(db, None, None, offset, MODEL_PAGE_SIZE).await?;
+            d1_repositories::list_models_meta(db, None, None, None, None, offset, MODEL_PAGE_SIZE)
+                .await?;
         let page_len = page.len();
         rows.append(&mut page);
         if page_len == 0 || i64::try_from(rows.len()).unwrap_or(i64::MAX) >= total {
@@ -1252,6 +1486,21 @@ mod tests {
         }
     }
 
+    fn pricing_row(
+        name: &str,
+        groups: &[&str],
+        quota_type: i32,
+        endpoints: Vec<&'static str>,
+    ) -> crate::pricing_api::PricingRow {
+        crate::pricing_api::PricingRow {
+            model_name: name.to_string(),
+            enable_groups: groups.iter().map(|group| (*group).to_string()).collect(),
+            quota_type,
+            supported_endpoint_types: endpoints,
+            ..Default::default()
+        }
+    }
+
     fn upstream(name: &str) -> UpstreamModel {
         UpstreamModel {
             model_name: name.to_string(),
@@ -1262,6 +1511,90 @@ mod tests {
             status: 1,
             name_rule: 2,
         }
+    }
+
+    #[test]
+    fn model_filter_values_match_frontend_query_values() {
+        assert_eq!(parse_model_status_filter(Some("enabled")), Some(1));
+        assert_eq!(parse_model_status_filter(Some("disabled")), Some(0));
+        assert_eq!(parse_model_status_filter(Some("all")), None);
+        assert_eq!(parse_model_sync_filter(Some("yes")), Some(1));
+        assert_eq!(parse_model_sync_filter(Some("no")), Some(0));
+        assert_eq!(parse_model_sync_filter(Some("all")), None);
+    }
+
+    #[test]
+    fn enrich_exact_model_adds_display_fields() {
+        let mut row = model("gpt-4o");
+        row.endpoints = String::new();
+        let pricing = vec![pricing_row(
+            "gpt-4o",
+            &["vip", "default"],
+            1,
+            vec!["openai", "embeddings"],
+        )];
+        let bound = HashMap::from([(
+            "gpt-4o".to_string(),
+            vec![BoundChannel {
+                name: "primary".to_string(),
+                channel_type: 1,
+            }],
+        )]);
+
+        let enriched = enrich_model_meta_rows_with_context(vec![row], &pricing, &bound);
+        let row = &enriched[0];
+
+        assert_eq!(row.row.endpoints, r#"["openai","embeddings"]"#);
+        assert_eq!(row.enable_groups, vec!["vip", "default"]);
+        assert_eq!(row.quota_types, vec![1]);
+        assert_eq!(row.bound_channels[0].name, "primary");
+        assert_eq!(row.bound_channels[0].channel_type, 1);
+        assert!(row.matched_models.is_empty());
+        assert_eq!(row.matched_count, 0);
+    }
+
+    #[test]
+    fn enrich_rule_model_aggregates_matches() {
+        let mut row = model("gpt-");
+        row.name_rule = 1;
+        row.endpoints = String::new();
+        let pricing = vec![
+            pricing_row("gpt-4o", &["default"], 0, vec!["openai"]),
+            pricing_row("gpt-4o-mini", &["vip"], 1, vec!["openai", "embeddings"]),
+            pricing_row("claude-3", &["default"], 0, vec!["anthropic"]),
+        ];
+        let bound = HashMap::from([
+            (
+                "gpt-4o".to_string(),
+                vec![BoundChannel {
+                    name: "a".to_string(),
+                    channel_type: 1,
+                }],
+            ),
+            (
+                "gpt-4o-mini".to_string(),
+                vec![BoundChannel {
+                    name: "b".to_string(),
+                    channel_type: 24,
+                }],
+            ),
+        ]);
+
+        let enriched = enrich_model_meta_rows_with_context(vec![row], &pricing, &bound);
+        let row = &enriched[0];
+
+        assert_eq!(
+            row.matched_models,
+            vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()]
+        );
+        assert_eq!(row.matched_count, 2);
+        assert_eq!(row.row.endpoints, r#"["openai","embeddings"]"#);
+        assert_eq!(
+            row.enable_groups,
+            vec!["default".to_string(), "vip".to_string()]
+        );
+        assert_eq!(row.quota_types, vec![0, 1]);
+        assert_eq!(row.bound_channels.len(), 2);
     }
 
     #[test]

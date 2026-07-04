@@ -4,16 +4,16 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 341 passed after replacing the
-  placeholder `/v1/models` response with token-authenticated D1-backed model
-  list/retrieve compatibility: OpenAI, Anthropic, and Gemini response shapes,
-  token `model_limits`, effective group/auto-group ability lookup, and
-  model-not-found behavior.
+- `cargo test -p cinatoken-worker --lib`: 344 passed after adding
+  default-frontend model metadata enrichment and filtering: D1-backed
+  `bound_channels`, `enable_groups`, `quota_types`, rule `matched_models` /
+  `matched_count`, endpoint backfill, `vendor_counts`, and server-side
+  `status` / `sync_official` filters.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same model-list compatibility slice.
-- `cargo fmt --all --check`: passed for the same model-list compatibility
+  the same model metadata enrichment slice.
+- `cargo fmt --all --check`: passed for the same model metadata enrichment
   slice.
-- `bun run check`: passed after the model-list compatibility slice, covering the
+- `bun run check`: passed after the model metadata enrichment slice, covering the
   frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:

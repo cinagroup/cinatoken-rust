@@ -105,8 +105,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/status", |req, ctx| async move {
             admin::get_status(req, ctx.env).await
         })
-        .get("/v1/models", |_, _| {
-            json_with_status(&cinatoken_api::models(), 200)
+        .get_async("/v1/models", |req, ctx| async move {
+            relay::list_models(req, ctx.env).await
+        })
+        .get_async("/v1/models/:model", |req, ctx| async move {
+            let model = ctx.param("model").cloned();
+            relay::retrieve_model(req, ctx.env, model.as_deref()).await
+        })
+        .get_async("/v1beta/models", |req, ctx| async move {
+            relay::list_gemini_models(req, ctx.env).await
+        })
+        .get_async("/v1beta/openai/models", |req, ctx| async move {
+            relay::list_gemini_openai_models(req, ctx.env).await
         })
         // Admin / frontend auth surface (G5 foundation).
         .get_async("/api/setup", |req, ctx| async move {

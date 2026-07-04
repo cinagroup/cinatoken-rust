@@ -4,18 +4,20 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 337 passed after adding the
-  Worker-owned Passkey route boundary: status/delete, register/login/verify
-  begin challenge generation, KV-backed challenge state, explicit fail-closed
-  finish handlers, and `passkey_credentials` status projection.
+- `cargo test -p cinatoken-worker --lib`: 341 passed after replacing the
+  placeholder `/v1/models` response with token-authenticated D1-backed model
+  list/retrieve compatibility: OpenAI, Anthropic, and Gemini response shapes,
+  token `model_limits`, effective group/auto-group ability lookup, and
+  model-not-found behavior.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same Passkey boundary slice.
-- `cargo fmt --all --check`: passed for the same Passkey boundary slice.
-- `bun run check`: passed after the Passkey boundary slice, covering the
+  the same model-list compatibility slice.
+- `cargo fmt --all --check`: passed for the same model-list compatibility
+  slice.
+- `bun run check`: passed after the model-list compatibility slice, covering the
   frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
-- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 291 Worker routes, 0 missing calls, categories `{}`,
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:
+  212 frontend calls, 294 Worker routes, 0 missing calls, categories `{}`,
   SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 
 Older entries below are historical evidence; their route-debt counts may be

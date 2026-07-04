@@ -7,7 +7,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Workspace crate layout.
 - Worker route entrypoint.
 - `GET /api/status`.
-- `GET /v1/models`.
+- `GET /v1/models`, `GET /v1/models/:model`, `GET /v1beta/models`, and
+  `GET /v1beta/openai/models` token-authenticated model compatibility
+  endpoints backed by D1 `abilities` and token `model_limits`.
 - `POST /v1/chat/completions` OpenAI-compatible relay MVP, including streaming
   passthrough for `stream: true`.
 - `POST /v1/completions` OpenAI-compatible relay MVP, including streaming

@@ -21,6 +21,9 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 - Rust workspace, Cloudflare Worker entrypoint, D1 repositories and migrations.
 - Major OpenAI-compatible JSON/SSE relay routes, Anthropic Messages, native
   Gemini actions, rerank, image generation, audio speech, Workers AI.
+- Token-authenticated model list/retrieve compatibility for `/v1/models`,
+  `/v1/models/:model`, `/v1beta/models`, and `/v1beta/openai/models`, backed
+  by D1 abilities and token model limits.
 - Token authentication, channel selection/retry, model mapping, cache, rate
   limits, audit logging, reserve/settle/refund and tiered billing expressions.
 - Session-backed playground chat relay at `POST /pg/chat/completions`, using a
@@ -67,7 +70,8 @@ A full diff of every Go-registered route against the Rust worker closed these
 ## In Progress
 
 - Frontend staging deployment and browser/API contract smoke.
-- Model-list/retrieve protocol negotiation.
+- Model-list/retrieve owner metadata, billing-config visibility filtering, and
+  live token smoke.
 - Video content proxy (`GET /v1/videos/:task_id/content`, dual-auth) and the
   OpenAI-video/kling/jimeng native-shape aliases (per-adaptor conversions).
 - Real production Go SQLite -> D1 export/import/reconciliation.

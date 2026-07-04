@@ -75,12 +75,21 @@ const ESTIMATED_IMAGE_INPUT_TOKENS: i64 = 520;
 const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
 const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
 const ESTIMATED_FILE_INPUT_TOKENS: i64 = 4_096;
+const MODEL_OBJECT_CREATED: i64 = 1_626_777_600;
+const MODEL_LIST_CACHE_MODEL_KEY: &str = "__model_list__";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RelayProviderKind {
     OpenAiCompatible,
     AnthropicMessages,
     GeminiNative,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModelListFormat {
+    OpenAi,
+    Anthropic,
+    Gemini,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -204,6 +213,208 @@ impl RelayEndpoint {
             RelayProviderKind::AnthropicMessages => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
         }
     }
+}
+
+pub async fn list_models(req: Request, env: Env) -> worker::Result<Response> {
+    let format = if is_anthropic_model_list_request(&req) {
+        ModelListFormat::Anthropic
+    } else {
+        ModelListFormat::OpenAi
+    };
+    list_models_with_format(req, env, format).await
+}
+
+pub async fn list_gemini_models(req: Request, env: Env) -> worker::Result<Response> {
+    list_models_with_format(req, env, ModelListFormat::Gemini).await
+}
+
+pub async fn list_gemini_openai_models(req: Request, env: Env) -> worker::Result<Response> {
+    list_models_with_format(req, env, ModelListFormat::OpenAi).await
+}
+
+pub async fn retrieve_model(
+    req: Request,
+    env: Env,
+    model: Option<&str>,
+) -> worker::Result<Response> {
+    let model = model.map(str::trim).filter(|model| !model.is_empty());
+    let Some(model) = model else {
+        return model_not_found_response("");
+    };
+    let format = if is_anthropic_model_list_request(&req) {
+        ModelListFormat::Anthropic
+    } else {
+        ModelListFormat::OpenAi
+    };
+    let visible_models = match authenticated_visible_models(&req, &env).await {
+        Ok(models) => models,
+        Err(response) => return response,
+    };
+    if !model_visible(&visible_models, model) {
+        return model_not_found_response(model);
+    }
+    match format {
+        ModelListFormat::OpenAi => json_with_status(&openai_model_object(model), 200),
+        ModelListFormat::Anthropic => json_with_status(&anthropic_model_object(model), 200),
+        ModelListFormat::Gemini => json_with_status(&gemini_model_object(model), 200),
+    }
+}
+
+async fn list_models_with_format(
+    req: Request,
+    env: Env,
+    format: ModelListFormat,
+) -> worker::Result<Response> {
+    let models = match authenticated_visible_models(&req, &env).await {
+        Ok(models) => models,
+        Err(response) => return response,
+    };
+    json_with_status(&model_list_response(format, &models), 200)
+}
+
+async fn authenticated_visible_models(
+    req: &Request,
+    env: &Env,
+) -> Result<Vec<String>, worker::Result<Response>> {
+    let api_key = match extract_api_key(req) {
+        Some(key) => key,
+        None => {
+            return Err(json_with_status(
+                &ErrorBody::bad_request("missing Authorization Bearer token or x-api-key"),
+                401,
+            ));
+        }
+    };
+    let db = env.d1("DB").map_err(|err| worker_error_response(err))?;
+    let client_ip = client_ip(req);
+    let auth = authenticate_for_model_list(&db, env, &api_key, client_ip.as_deref()).await?;
+    model_names_for_authenticated_token(&db, &auth).await
+}
+
+async fn model_names_for_authenticated_token(
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+) -> Result<Vec<String>, worker::Result<Response>> {
+    if auth.model_limits_enabled != 0 {
+        return Ok(csv_model_names(&auth.model_limits));
+    }
+    let group = auth.effective_group();
+    let groups = if group == "auto" {
+        let groups = crate::d1_repositories::resolve_user_auto_groups(db, &auth.user_group)
+            .await
+            .map_err(worker_error_response)?;
+        if groups.is_empty() {
+            return Err(json_with_status(
+                &ErrorBody::bad_request("auto groups is not enabled"),
+                503,
+            ));
+        }
+        groups
+    } else {
+        vec![group.to_string()]
+    };
+    let mut models = Vec::new();
+    for group in groups {
+        for model in crate::d1_repositories::distinct_enabled_models_for_group(db, &group)
+            .await
+            .map_err(worker_error_response)?
+        {
+            push_unique_model(&mut models, model);
+        }
+    }
+    Ok(models)
+}
+
+fn model_list_response(format: ModelListFormat, models: &[String]) -> Value {
+    match format {
+        ModelListFormat::OpenAi => json!({
+            "success": true,
+            "data": models.iter().map(|model| openai_model_object(model)).collect::<Vec<_>>(),
+            "object": "list",
+        }),
+        ModelListFormat::Anthropic => {
+            let data = models
+                .iter()
+                .map(|model| anthropic_model_object(model))
+                .collect::<Vec<_>>();
+            json!({
+                "data": data,
+                "first_id": models.first().cloned().unwrap_or_default(),
+                "has_more": false,
+                "last_id": models.last().cloned().unwrap_or_default(),
+            })
+        }
+        ModelListFormat::Gemini => json!({
+            "models": models.iter().map(|model| gemini_model_object(model)).collect::<Vec<_>>(),
+            "nextPageToken": Value::Null,
+        }),
+    }
+}
+
+fn openai_model_object(model: &str) -> Value {
+    json!({
+        "id": model,
+        "object": "model",
+        "created": MODEL_OBJECT_CREATED,
+        "owned_by": "custom",
+        "supported_endpoint_types": [],
+    })
+}
+
+fn anthropic_model_object(model: &str) -> Value {
+    json!({
+        "id": model,
+        "created_at": "2021-07-20T16:00:00Z",
+        "display_name": model,
+        "type": "model",
+    })
+}
+
+fn gemini_model_object(model: &str) -> Value {
+    json!({
+        "name": model,
+        "displayName": model,
+    })
+}
+
+fn model_not_found_response(model: &str) -> worker::Result<Response> {
+    json_with_status(
+        &json!({
+            "error": {
+                "message": format!("The model '{model}' does not exist"),
+                "type": "invalid_request_error",
+                "param": "model",
+                "code": "model_not_found",
+            }
+        }),
+        200,
+    )
+}
+
+fn is_anthropic_model_list_request(req: &Request) -> bool {
+    request_header(req, "x-api-key").is_some() && request_header(req, "anthropic-version").is_some()
+}
+
+fn csv_model_names(raw: &str) -> Vec<String> {
+    let mut models = Vec::new();
+    for model in raw.split([',', '\n', '\r']) {
+        push_unique_model(&mut models, model.trim().to_string());
+    }
+    models
+}
+
+fn push_unique_model(models: &mut Vec<String>, model: String) {
+    let model = model.trim();
+    if model.is_empty() {
+        return;
+    }
+    if !models.iter().any(|existing| existing == model) {
+        models.push(model.to_string());
+    }
+}
+
+fn model_visible(models: &[String], model: &str) -> bool {
+    models.iter().any(|candidate| candidate == model)
 }
 
 pub async fn chat_completions(
@@ -2495,6 +2706,54 @@ async fn authenticate(
     Ok(row)
 }
 
+async fn authenticate_for_model_list(
+    db: &D1Database,
+    env: &Env,
+    api_key: &str,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let Some((redis, ttl_seconds)) = relay_read_cache(env)? else {
+        return authenticate_model_list_from_d1(db, api_key, client_ip).await;
+    };
+    let cache_key =
+        RelayCacheKeys::default().token_auth(api_key, MODEL_LIST_CACHE_MODEL_KEY, client_ip);
+
+    match read_cached_authenticated_token(&redis, &cache_key).await {
+        Ok(Some(mut row)) => {
+            let still_exists =
+                crate::d1_repositories::refresh_authenticated_token_quota_state(db, &mut row)
+                    .await
+                    .map_err(worker_error_response)?;
+            if !still_exists {
+                return Err(openai_error_response("invalid API key", 401));
+            }
+            return validate_authenticated_token_for_model_list(db, row, client_ip).await;
+        }
+        Ok(None) => {}
+        Err(err) => worker::console_warn!("failed to read relay auth cache: {}", err),
+    }
+
+    let row = authenticate_model_list_from_d1(db, api_key, client_ip).await?;
+    if let Err(err) = write_cached_authenticated_token(&redis, &cache_key, &row, ttl_seconds).await
+    {
+        worker::console_warn!("failed to write relay auth cache: {}", err);
+    }
+    Ok(row)
+}
+
+async fn authenticate_model_list_from_d1(
+    db: &D1Database,
+    api_key: &str,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let row = crate::d1_repositories::authenticate_token(db, api_key)
+        .await
+        .map_err(worker_error_response)?
+        .ok_or_else(|| openai_error_response("invalid API key", 401))?;
+
+    validate_authenticated_token_for_model_list(db, row, client_ip).await
+}
+
 async fn authenticate_from_d1(
     db: &D1Database,
     api_key: &str,
@@ -2533,6 +2792,29 @@ async fn validate_authenticated_token(
     model: &str,
     client_ip: Option<&str>,
 ) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let row = validate_authenticated_token_base(db, row).await?;
+    if !model_allowed_for_token(row.model_limits_enabled, &row.model_limits, model) {
+        return Err(openai_error_response(
+            format!("model {model} is not allowed for this token"),
+            403,
+        ));
+    }
+    validate_authenticated_token_ip(row, client_ip)
+}
+
+async fn validate_authenticated_token_for_model_list(
+    db: &D1Database,
+    row: AuthenticatedToken,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let row = validate_authenticated_token_base(db, row).await?;
+    validate_authenticated_token_ip(row, client_ip)
+}
+
+async fn validate_authenticated_token_base(
+    db: &D1Database,
+    row: AuthenticatedToken,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
     if row.token_status != 1 || row.user_status != 1 {
         return Err(openai_error_response("token or user is disabled", 403));
     }
@@ -2547,12 +2829,13 @@ async fn validate_authenticated_token(
     if row.user_quota <= 0 {
         return Err(openai_error_response("user quota is exhausted", 403));
     }
-    if !model_allowed_for_token(row.model_limits_enabled, &row.model_limits, model) {
-        return Err(openai_error_response(
-            format!("model {model} is not allowed for this token"),
-            403,
-        ));
-    }
+    Ok(row)
+}
+
+fn validate_authenticated_token_ip(
+    row: AuthenticatedToken,
+    client_ip: Option<&str>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
     if !ip_allowlist_matches(&row.allow_ips, client_ip) {
         return Err(openai_error_response(
             "client IP is not allowed for this token",
@@ -5306,6 +5589,53 @@ mod tests {
         // csv_contains is case-insensitive; the limits map / CSV may use either.
         assert!(model_allowed_for_token(1, "GPT-4O", "gpt-4o"));
         assert!(model_allowed_for_token(1, "gpt-4o", "GPT-4O"));
+    }
+
+    #[test]
+    fn csv_model_names_trim_and_deduplicate_token_limits() {
+        assert_eq!(
+            csv_model_names(" gpt-4o,claude-3-opus\ngpt-4o,, "),
+            vec!["gpt-4o", "claude-3-opus"]
+        );
+    }
+
+    #[test]
+    fn openai_model_list_response_matches_go_envelope() {
+        let models = vec!["gpt-4o".to_string(), "custom-model".to_string()];
+        let response = model_list_response(ModelListFormat::OpenAi, &models);
+
+        assert_eq!(response["success"], true);
+        assert_eq!(response["object"], "list");
+        assert_eq!(response["data"][0]["id"], "gpt-4o");
+        assert_eq!(response["data"][0]["object"], "model");
+        assert_eq!(response["data"][0]["created"], MODEL_OBJECT_CREATED);
+        assert_eq!(response["data"][0]["owned_by"], "custom");
+    }
+
+    #[test]
+    fn anthropic_and_gemini_model_lists_use_provider_shapes() {
+        let models = vec![
+            "claude-3-5-sonnet".to_string(),
+            "gemini-2.5-pro".to_string(),
+        ];
+        let anthropic = model_list_response(ModelListFormat::Anthropic, &models);
+        assert_eq!(anthropic["data"][0]["id"], "claude-3-5-sonnet");
+        assert_eq!(anthropic["data"][0]["type"], "model");
+        assert_eq!(anthropic["first_id"], "claude-3-5-sonnet");
+        assert_eq!(anthropic["last_id"], "gemini-2.5-pro");
+        assert_eq!(anthropic["has_more"], false);
+
+        let gemini = model_list_response(ModelListFormat::Gemini, &models);
+        assert_eq!(gemini["models"][0]["name"], "claude-3-5-sonnet");
+        assert_eq!(gemini["models"][0]["displayName"], "claude-3-5-sonnet");
+        assert!(gemini["nextPageToken"].is_null());
+    }
+
+    #[test]
+    fn model_visibility_is_exact() {
+        let models = vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()];
+        assert!(model_visible(&models, "gpt-4o"));
+        assert!(!model_visible(&models, "gpt-4"));
     }
 
     fn test_auth(token_id: i64, user_id: i64) -> AuthenticatedToken {

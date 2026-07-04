@@ -2945,3 +2945,48 @@ verifier, service binding, or Container path is implemented and staged against
 real browsers and authenticators. Production cutover still needs a clear
 forced reset/import policy for existing Passkey credentials if verifier or data
 compatibility cannot be proven.
+
+### 22.31 2026-07-04 Token-Authenticated Model List Compatibility Delta
+
+This increment replaces the Rust placeholder `/v1/models` response with
+Worker-owned model-list compatibility that is materially closer to Go
+`controller.ListModels` / `RetrieveModel`:
+
+- `GET /v1/models` now requires relay token authentication instead of returning
+  an anonymous placeholder list.
+- `GET /v1/models/:model` now returns an OpenAI-compatible model object for
+  models visible to the authenticated token and a Go-shaped
+  `model_not_found` error envelope when the model is not visible.
+- `GET /v1beta/models` returns the Gemini model-list shape
+  `{ models, nextPageToken }` from the same visible model set.
+- `GET /v1beta/openai/models` returns the OpenAI-compatible list for Gemini
+  OpenAI-compatible clients.
+- Visible models are derived from token `model_limits` when enabled; otherwise
+  they come from the token effective group and D1 `abilities`. The `auto`
+  token group expands through the user's configured auto groups.
+- Model-list auth uses the existing relay token read-through cache with a
+  model-list-specific cache key, refreshes token/user quota state from D1 on
+  cache hits, and validates token/user status, expiry, quota, and IP allowlist.
+- Existing relay request authentication keeps its model-specific model-limit
+  gate, so this list path does not weaken request-time enforcement.
+- The local matrix also now reflects already-implemented
+  `/v1/responses/compact` and `/v1/moderations` Worker routes as `Partial`
+  instead of stale `Planned` rows.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 294 Worker routes, 0 missing calls;
+- debt categories: none;
+- route-set SHA-256:
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+- `cargo test -p cinatoken-worker --lib`: 341 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `cargo fmt --all --check`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: owner/provider metadata still uses a conservative
+`owned_by=custom` default for D1-derived models, and the Go
+`AcceptUnsetRatioModel` / billing-config visibility filter is not yet fully
+ported for the list endpoint. Production evidence still needs live token smoke
+for unrestricted tokens, limited tokens, auto groups, Anthropic/Gemini shapes,
+missing model errors, disabled/exhausted tokens, and provider owner metadata.

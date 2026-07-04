@@ -1080,8 +1080,8 @@ async fn relay_endpoint_with_auth(
         retry_config.max_attempts(),
         retry_config.retry_times as i32,
         cross_group_retry,
-        |total| (js_sys::Math::random() * total as f64) as u64,
-    );
+        random_u64_below,
+    )?;
 
     // Channel affinity (sticky routing): when enabled, prefer the user's last
     // successful channel for this (model, group) if it is still a live candidate
@@ -1490,8 +1490,8 @@ fn plan_relay_attempts(
     max_attempts: usize,
     retry_times: i32,
     cross_group_retry: bool,
-    mut rng: impl FnMut(u64) -> u64,
-) -> Vec<RelayAttemptPlan> {
+    mut rng: impl FnMut(u64) -> worker::Result<u64>,
+) -> worker::Result<Vec<RelayAttemptPlan>> {
     let meta_of = |pool: &[RelayChannel]| -> Vec<Candidate> {
         pool.iter()
             .map(|c| Candidate {
@@ -1509,7 +1509,7 @@ fn plan_relay_attempts(
                 break;
             }
             let meta = meta_of(&pool);
-            let Some(pick) = select_weighted(&meta, attempt_index, &mut rng) else {
+            let Some(pick) = select_weighted_checked(&meta, attempt_index, &mut rng)? else {
                 break;
             };
             order.push(RelayAttemptPlan {
@@ -1517,7 +1517,7 @@ fn plan_relay_attempts(
                 channel: pool.remove(pick),
             });
         }
-        return order;
+        return Ok(order);
     }
 
     let groups: Vec<String> = group_pools.iter().map(|(g, _)| g.clone()).collect();
@@ -1531,6 +1531,7 @@ fn plan_relay_attempts(
     // bounds the single-group branch). Termination: each step either increments
     // `retry` toward the bound or advances the group until none remain (`None`).
     while retry <= retry_times {
+        let mut random_error = None;
         let outcome = auto_group_retry_step(
             pools.len(),
             group_index,
@@ -1542,9 +1543,18 @@ fn plan_relay_attempts(
                     return None;
                 }
                 let meta = meta_of(&pools[gi]);
-                select_weighted(&meta, priority_retry.max(0) as usize, &mut rng)
+                match select_weighted_checked(&meta, priority_retry.max(0) as usize, &mut rng) {
+                    Ok(selected) => selected,
+                    Err(err) => {
+                        random_error = Some(err);
+                        None
+                    }
+                }
             },
         );
+        if let Some(err) = random_error {
+            return Err(err);
+        }
         let Some(outcome) = outcome else { break };
         let channel = pools[outcome.group_index].remove(outcome.selected);
         order.push(RelayAttemptPlan {
@@ -1557,7 +1567,43 @@ fn plan_relay_attempts(
             retry += 1;
         }
     }
-    order
+    Ok(order)
+}
+
+fn select_weighted_checked(
+    candidates: &[Candidate],
+    retry: usize,
+    rng: &mut impl FnMut(u64) -> worker::Result<u64>,
+) -> worker::Result<Option<usize>> {
+    let mut random_error = None;
+    let selected = select_weighted(candidates, retry, |total| match rng(total) {
+        Ok(value) => value,
+        Err(err) => {
+            random_error = Some(err);
+            0
+        }
+    });
+    if let Some(err) = random_error {
+        return Err(err);
+    }
+    Ok(selected)
+}
+
+fn random_u64_below(total: u64) -> worker::Result<u64> {
+    if total == 0 {
+        return Ok(0);
+    }
+    let zone = ((u128::from(u64::MAX) + 1) / u128::from(total)) * u128::from(total);
+    let mut bytes = [0u8; 8];
+    loop {
+        getrandom::getrandom(&mut bytes).map_err(|err| {
+            worker::Error::RustError(format!("relay random selection failed: {err}"))
+        })?;
+        let value = u64::from_le_bytes(bytes);
+        if u128::from(value) < zone {
+            return Ok(value % total);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -6832,7 +6878,7 @@ mod tests {
                 test_channel(3, 1, 1),
             ],
         )];
-        let plan = plan_relay_attempts(pools, false, 3, 2, false, |_| 0);
+        let plan = plan_relay_attempts(pools, false, 3, 2, false, |_| Ok(0)).unwrap();
         let ids: Vec<i64> = plan.iter().map(|p| p.channel.id).collect();
         // attempt 0 -> tier 0 = p10 (ch1); after the shrink the remaining
         // distinct priorities are [5,1], so attempt 1 (tier index 1) hits p1
@@ -6849,7 +6895,7 @@ mod tests {
             vec![test_channel(1, 1, 1), test_channel(2, 1, 1)],
         )];
         // max_attempts = 1 -> only one planned attempt despite two channels.
-        let plan = plan_relay_attempts(pools, false, 1, 0, false, |_| 0);
+        let plan = plan_relay_attempts(pools, false, 1, 0, false, |_| Ok(0)).unwrap();
         assert_eq!(plan.len(), 1);
     }
 
@@ -6862,7 +6908,7 @@ mod tests {
         // retry_times = 0 (max_attempts = 1); cross_group_retry advances each
         // attempt. The plan spans BOTH groups despite max_attempts=1 because auto
         // gives each group its own budget (not a global cap).
-        let plan = plan_relay_attempts(pools, true, 1, 0, true, |_| 0);
+        let plan = plan_relay_attempts(pools, true, 1, 0, true, |_| Ok(0)).unwrap();
         let trace: Vec<(&str, i64)> = plan
             .iter()
             .map(|p| (p.group.as_str(), p.channel.id))
@@ -6884,7 +6930,7 @@ mod tests {
         ];
         // max_attempts = retry_times + 1 = 2 (the single-group cap); auto must
         // still reach g1 — a global cap of 2 would have stopped at g0.
-        let plan = plan_relay_attempts(pools, true, 2, 1, true, |_| 0);
+        let plan = plan_relay_attempts(pools, true, 2, 1, true, |_| Ok(0)).unwrap();
         let trace: Vec<(&str, i64)> = plan
             .iter()
             .map(|p| (p.group.as_str(), p.channel.id))
@@ -6898,10 +6944,34 @@ mod tests {
             ("g0".to_string(), vec![]),
             ("g1".to_string(), vec![test_channel(2, 0, 1)]),
         ];
-        let plan = plan_relay_attempts(pools, true, 4, 3, true, |_| 0);
+        let plan = plan_relay_attempts(pools, true, 4, 3, true, |_| Ok(0)).unwrap();
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].group, "g1");
         assert_eq!(plan[0].channel.id, 2);
+    }
+
+    #[test]
+    fn relay_random_below_stays_inside_total() {
+        for total in [1u64, 2, 10, 1_000, u64::from(u32::MAX) + 7] {
+            for _ in 0..16 {
+                let value = random_u64_below(total).unwrap();
+                assert!(value < total, "{value} should be below {total}");
+            }
+        }
+    }
+
+    #[test]
+    fn plan_relay_attempts_propagates_rng_errors() {
+        let pools = vec![(
+            "g".to_string(),
+            vec![test_channel(1, 1, 1), test_channel(2, 1, 1)],
+        )];
+        let result = plan_relay_attempts(pools, false, 1, 0, false, |_| {
+            Err(worker::Error::RustError("rng failed".to_string()))
+        });
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(format!("{err:?}").contains("rng failed"));
     }
 
     fn encode_base64_bytes(bytes: &[u8]) -> String {

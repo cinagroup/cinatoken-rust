@@ -43,6 +43,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `/v1/messages`, and Gemini-only selection for native Gemini generate-content,
   embedding, and token-count endpoints.
 - Ability-first channel selection with channel CSV fallback.
+- Relay weighted channel selection now uses a Worker CSPRNG-backed
+  `random_u64_below()` helper with rejection sampling, preserving the existing
+  Go-compatible priority/weight selector while removing the final direct
+  `Math.random()` Worker runtime dependency.
 - Model mapping before upstream forwarding.
 - Token access update, user request-count update, and zero-quota consume audit logs.
 - Streaming chat completion, completion, response, image generation, and
@@ -409,9 +413,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
-- Audit the remaining non-credential Worker `Math.random()` usage in relay
-  weighted channel selection against Go weighted-random parity and Cloudflare
-  runtime best practices.
+- Capture staging distribution/route evidence for relay weighted channel
+  selection, including retry, auto-group, affinity, and provider-family filters.
 - Capture provider-specific staging replay/reconciliation evidence before
   exposing payment methods broadly in production.
 - Capture io.net deployment staging evidence with real credentials: settings

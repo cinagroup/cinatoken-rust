@@ -4,16 +4,19 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 348 passed after CSPRNG hardening for
-  generated user access tokens, affiliation codes, and subscription balance-pay
-  order suffixes.
+- `cargo test -p cinatoken-worker --lib`: 350 passed after CSPRNG hardening for
+  relay weighted channel selection; generated user access tokens, affiliation
+  codes, and subscription balance-pay order suffixes remain covered.
+- `cargo test -p cinatoken-worker --lib relay::tests::`: 102 passed for the
+  relay planner, bounded random draw, and RNG error-propagation tests.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same CSPRNG hardening slice.
-- `cargo fmt --all --check`: passed for the same CSPRNG hardening slice.
+  the same relay CSPRNG hardening slice.
+- `cargo fmt --all --check`: passed for the same relay CSPRNG hardening slice.
+- `rg -n "Math::random|js_sys::Math" crates/worker/src`: no matches.
 - Fetched the current Cloudflare Worker references and latest
   `@cloudflare/workers-types` with `npm pack`; observed version
   `5.20260704.1`.
-- `bun run check`: passed after the CSPRNG hardening slice, covering the
+- `bun run check`: passed after the relay CSPRNG hardening slice, covering the
   frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:

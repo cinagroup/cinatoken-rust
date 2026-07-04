@@ -3066,11 +3066,49 @@ Updated local evidence:
   212 frontend calls, 294 Worker routes, 0 missing calls, categories `{}`;
 - `bun run check`: passed;
 - `rg` confirms `admin_user.rs` and `admin_subscription.rs` no longer contain
-  `Math.random()` generation; the only remaining direct `Math.random()` hit in
-  the checked files is relay weighted channel selection.
+  `Math.random()` generation. The then-remaining relay weighted selection
+  `Math.random()` hit is closed by 22.34.
 
-Remaining boundary: relay weighted channel selection still uses
-`js_sys::Math::random()` for non-credential traffic distribution. Treat that as
-a separate G3/G6 parity audit, because replacing it may affect Go-compatible
-weighted-random behavior and channel-selection distributions rather than
-credential secrecy.
+Remaining boundary: this slice did not change relay traffic distribution; see
+22.34 for the relay weighted-selection RNG source update. Production still needs
+G3/G6 staging evidence for weighted distribution, retry, affinity, and
+provider-family selection behavior.
+
+### 22.34 2026-07-04 Relay Weighted Selection CSPRNG Delta
+
+This increment closes the remaining direct Worker `Math.random()` usage without
+rewriting the Go-compatible channel-selection algorithm. The pure selector in
+`cinatoken_core::channel_select::select_weighted` remains RNG-injected; the
+Worker now provides a CSPRNG-backed bounded draw instead of
+`js_sys::Math::random()`.
+
+Implemented in Rust:
+
+- `plan_relay_attempts` now accepts a fallible `worker::Result<u64>` RNG and
+  propagates random-source failures instead of silently biasing to a channel.
+- `random_u64_below(total)` uses `getrandom` and u64 rejection sampling to
+  produce unbiased values in `[0,total)`, matching the selector contract.
+- The single-group and auto-group retry planners still use the same
+  priority-tier, smoothing, pool-shrink, and cross-group state-machine behavior.
+- Tests cover bounded random outputs and RNG error propagation, while the
+  existing deterministic plan tests continue to prove retry order and
+  cross-group behavior.
+
+Updated local evidence:
+
+- fetched current Cloudflare Worker references and latest
+  `@cloudflare/workers-types` version `5.20260704.1`;
+- `cargo fmt --all --check`: passed;
+- `cargo test -p cinatoken-worker --lib relay::tests::`: 102 passed;
+- `cargo test -p cinatoken-worker --lib`: 350 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:
+  212 frontend calls, 294 Worker routes, 0 missing calls, categories `{}`;
+- `bun run check`: passed;
+- `rg -n "Math::random|js_sys::Math" crates/worker/src`: no matches.
+
+Remaining boundary: this removes the runtime anti-pattern and preserves local
+selector behavior, but it is not a substitute for staging distribution evidence.
+G3 still needs live or replayed proof for weighted channel spread, auto-group
+retry, affinity preference/recovery, provider-family filters, and retry/auto-ban
+interactions.

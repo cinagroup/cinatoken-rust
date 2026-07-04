@@ -26,6 +26,8 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   by D1 abilities and token model limits.
 - Token authentication, channel selection/retry, model mapping, cache, rate
   limits, audit logging, reserve/settle/refund and tiered billing expressions.
+  Relay weighted channel selection now uses Worker CSPRNG-backed bounded draws
+  while preserving the deterministic Go-compatible selector core.
 - Session-backed playground chat relay at `POST /pg/chat/completions`, using a
   synthetic zero-id token context that preserves user quota, group checks, rate
   limits, streaming, and audit logging without mutating the `tokens` table.
@@ -81,9 +83,8 @@ A full diff of every Go-registered route against the Rust worker closed these
   OpenAI-video/kling/jimeng native-shape aliases (per-adaptor conversions).
 - Real production Go SQLite -> D1 export/import/reconciliation.
 - Billing shadow comparison and exact tokenizer/media parity.
-- Relay weighted channel-selection randomness audit; remaining `Math.random()`
-  usage is non-credential but still needs Go parity and Worker best-practice
-  review.
+- Relay weighted channel-selection staging evidence for distribution, retry,
+  auto-group, affinity, and provider-family filter behavior.
 - Frontend lint cleanup and bundle-size reduction.
 
 ## Incomplete Product Families

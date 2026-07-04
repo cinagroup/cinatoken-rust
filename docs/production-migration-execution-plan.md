@@ -33,7 +33,7 @@ Read this file with:
 - `docs/source-route-inventory.md` for the canonical, source-derived list of
   every Go route with its auth class, handler, and parity findings.
 - `docs/source-d1-schema-parity.md` for P0-table field/index/PK parity against
-  the D1 migration and the proposed corrective migration.
+  the D1 migrations, including corrective `0004_schema_parity.sql`.
 - `docs/source-billing-expr-parity.md` for the source-derived billing-expression
   engine contract and the 56-test golden fixture gap map.
 - `docs/source-token-estimation-parity.md` for the source-derived request-time

@@ -78,6 +78,8 @@ const PUBLIC_STATUS_OPTION_KEYS: &[&str] = &[
     "SidebarModulesAdmin",
     "oidc.authorization_endpoint",
     "model_deployment.ionet.enabled",
+    "WeChatAuthEnabled",
+    "WeChatAccountQRCodeImageURL",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1109,10 +1111,12 @@ fn build_frontend_status(
         .or_else(|| options.get("oidc.authorization_endpoint").cloned())
         .filter(|value| !value.trim().is_empty());
     let oidc_enabled = runtime.oidc_backend_configured && oidc_authorization_endpoint.is_some();
+    let wechat_login = option_bool(options, "WeChatAuthEnabled", false);
     let oauth_register_enabled = register_enabled
         && (runtime.github_oauth
             || runtime.discord_oauth
             || oidc_enabled
+            || wechat_login
             || !custom_oauth_providers.is_empty());
     let docs_link = options
         .get("general_setting.docs_link")
@@ -1158,7 +1162,8 @@ fn build_frontend_status(
         "oidc_authorization_endpoint": oidc_authorization_endpoint,
         "linuxdo_oauth": false,
         "telegram_oauth": false,
-        "wechat_login": false,
+        "wechat_login": wechat_login,
+        "wechat_qrcode": option_string(options, "WeChatAccountQRCodeImageURL", ""),
         "passkey_login": false,
         "oauth_register_enabled": oauth_register_enabled,
         "custom_oauth_providers": custom_oauth_providers,

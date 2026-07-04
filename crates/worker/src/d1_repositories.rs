@@ -1367,6 +1367,115 @@ pub async fn bind_discord_id(
     Ok(())
 }
 
+/// Return whether a WeChat id is present on any user row, including
+/// soft-deleted rows. Mirrors Go `IsWeChatIdAlreadyTaken` (`Unscoped()`).
+pub async fn wechat_id_exists_any_status(db: &D1Database, wechat_id: &str) -> worker::Result<bool> {
+    let wechat_id = wechat_id.trim();
+    if wechat_id.is_empty() {
+        return Ok(false);
+    }
+    #[derive(Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+
+    Ok(db
+        .prepare("SELECT COUNT(*) AS count FROM users WHERE wechat_id = ?1")
+        .bind_refs(&[D1Type::Text(wechat_id)])?
+        .first::<CountRow>(None)
+        .await?
+        .map(|row| row.count > 0)
+        .unwrap_or(false))
+}
+
+/// Find an active user by their linked WeChat id. Empty ids never match.
+pub async fn find_user_by_wechat_id(
+    db: &D1Database,
+    wechat_id: &str,
+) -> worker::Result<Option<AdminUserRow>> {
+    let wechat_id = wechat_id.trim();
+    if wechat_id.is_empty() {
+        return Ok(None);
+    }
+    db.prepare(&format!(
+        r#"
+        SELECT {ADMIN_USER_SELF_COLUMNS}
+        FROM users
+        WHERE wechat_id = ?1 AND deleted_at IS NULL
+        LIMIT 1
+        "#,
+    ))
+    .bind_refs(&[D1Type::Text(wechat_id)])?
+    .first::<AdminUserRow>(None)
+    .await
+}
+
+/// Largest current user id, used to keep Go's `wechat_<max+1>` username shape.
+pub async fn max_user_id(db: &D1Database) -> worker::Result<i64> {
+    #[derive(Deserialize)]
+    struct MaxRow {
+        max_id: Option<i64>,
+    }
+
+    Ok(db
+        .prepare("SELECT MAX(id) AS max_id FROM users")
+        .first::<MaxRow>(None)
+        .await?
+        .and_then(|row| row.max_id)
+        .unwrap_or(0))
+}
+
+/// Create a user from the non-standard WeChat QR/code login flow. Mirrors Go's
+/// `WeChatAuth` register branch: no password, common role, enabled status,
+/// default group, and `WeChat User` display name from the caller.
+pub async fn create_wechat_user(
+    db: &D1Database,
+    username: &str,
+    wechat_id: &str,
+    display_name: &str,
+    aff_code: &str,
+    quota: i64,
+    now: i64,
+) -> worker::Result<i64> {
+    db.prepare(
+        r#"
+        INSERT INTO users (
+          username, password, display_name, wechat_id, role, status,
+          quota, "group", aff_code, created_at, last_login_at
+        )
+        VALUES (?1, '', ?2, ?3, 1, 1, ?4, 'default', ?5, ?6, ?6)
+        "#,
+    )
+    .bind_refs(&[
+        D1Type::Text(username),
+        D1Type::Text(display_name),
+        D1Type::Text(wechat_id),
+        D1Type::Integer(d1_i32(quota)),
+        D1Type::Text(aff_code),
+        D1Type::Integer(d1_i32(now)),
+    ])?
+    .run()
+    .await?;
+    let row = find_user_by_wechat_id(db, wechat_id).await?;
+    row.map(|user| user.id)
+        .ok_or_else(|| worker::Error::RustError("wechat user insert not found after create".into()))
+}
+
+/// Link a WeChat id to an existing active user account. The caller verifies the
+/// id is not already linked elsewhere.
+pub async fn bind_wechat_id(
+    db: &D1Database,
+    user_id: i64,
+    wechat_id: &str,
+) -> worker::Result<bool> {
+    let result = db
+        .prepare("UPDATE users SET wechat_id = ?2 WHERE id = ?1 AND deleted_at IS NULL")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id)), D1Type::Text(wechat_id)])?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
 /// Find a user by primary key (`/api/user/self`, admin user management).
 pub async fn find_user_by_id(db: &D1Database, id: i64) -> worker::Result<Option<AdminUserRow>> {
     let arg = D1Type::Integer(d1_i32(id));

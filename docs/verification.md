@@ -4,20 +4,20 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 324 passed after adding the
-  Worker-owned email verification/bind/password-reset routes.
+- `cargo test -p cinatoken-worker --lib`: 327 passed after adding the
+  Worker-owned WeChat login/bind routes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same email auth slice.
-- `bun run check`: passed after the email auth route-baseline update, covering
+  the same WeChat auth slice.
+- `bun run check`: passed after the WeChat auth route-baseline update, covering
   the frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 279 Worker routes, 8 missing calls, categories
-  8 auth-deferred, SHA-256
-  `65f9ed7547e329d29cd3b7bfb6e9b1cccdf23290c112a87bf2cd5b5db5ca0f99`.
+  212 frontend calls, 282 Worker routes, 6 missing calls, categories
+  6 auth-deferred, SHA-256
+  `8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 8-call / 0 capability-hidden / 0 payment-deferred
+superseded by the current 6-call / 0 capability-hidden / 0 payment-deferred
 baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
@@ -890,6 +890,16 @@ baseline above.
   SMTP sockets. Local route audit reports 212 frontend calls, 279 Worker routes,
   and 8 remaining auth-deferred gaps with SHA-256
   `65f9ed7547e329d29cd3b7bfb6e9b1cccdf23290c112a87bf2cd5b5db5ca0f99`.
+
+- **WeChat login/bind - locally verified route surface (2026-07-04).**
+  `GET /api/oauth/wechat`, `GET /api/oauth/wechat/bind`, and the Go-compatible
+  `POST /api/oauth/wechat/bind` are now Worker-owned. The Worker reads
+  `WeChatAuthEnabled`, `WeChatServerAddress`, `WeChatServerToken`, and
+  `WeChatAccountQRCodeImageURL` from D1 options, verifies codes through an
+  operator-managed public HTTPS WeChat Server, and issues the same session
+  response shape as password/OAuth login. Local route audit reports 212
+  frontend calls, 282 Worker routes, and 6 remaining auth-deferred gaps with
+  SHA-256 `8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457`.
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`

@@ -76,10 +76,11 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Subscription core, redemption, and check-in still need production/staging
   evidence for the full visible workflows, but their core Worker routes are no
   longer entirely absent.
-- WeChat OAuth and the full Passkey register/login/step-up ceremonies. Email
-  verification/reset/bind and admin Passkey reset are Worker-owned; email
-  production readiness still requires real Cloudflare Email Service binding
-  smoke.
+- Full Passkey register/login/step-up ceremonies. WeChat OAuth,
+  email verification/reset/bind, and admin Passkey reset are Worker-owned;
+  WeChat production readiness still requires a real operator WeChat Server
+  over public HTTPS plus QR/code smoke, and email production readiness still
+  requires real Cloudflare Email Service binding smoke.
 - Payment providers: Stripe, Creem, Epay, legacy Waffo, and Waffo Pancake
   wallet/subscription checkout and callback routes used by the default frontend
   are Worker-owned. Remaining payment work is staging replay/reconciliation
@@ -101,7 +102,7 @@ A full diff of every Go-registered route against the Rust worker closed these
    visible workflows.
 4. Billing/payment production shadow and replay thresholds are not signed off.
 5. Capacity, cost, security, SLO, canary and rollback evidence are incomplete.
-6. The remaining 8 auth-deferred routes must be implemented, intentionally
+6. The remaining 6 auth-deferred routes must be implemented, intentionally
    retired with compatible responses, or retained behind a documented fallback.
 
 ## Current Safe Statement

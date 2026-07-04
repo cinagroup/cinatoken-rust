@@ -195,6 +195,12 @@ These must be true for every deployable environment:
 | Containers | Optional | Required before any WASM-incompatible/long-running fallback path | Same | Platform | Container build, Worker->Container smoke |
 | Secrets Store | Optional | Recommended for shared provider/payment secrets | Recommended | Security/Platform | Store binding, rotation audit |
 
+## External Service Checklist
+
+| Service | Stored In | Staging Required | Production Required | Owner | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| WeChat Server | D1 `options`: `WeChatAuthEnabled`, `WeChatServerAddress`, `WeChatServerToken`, `WeChatAccountQRCodeImageURL` | Required before WeChat QR/code smoke | Required before enabling `WeChatAuthEnabled` in production | Auth/Platform | Public HTTPS URL, no query/fragment, token set, QR image visible, code exchange/login/bind smoke, disabled/missing-code/expired-code negative tests |
+
 ## 2026-06-25 Native Primitive And Canary Updates
 
 These supersede earlier Upstash-first / Pages-first / VPS-fallback assumptions.

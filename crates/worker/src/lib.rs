@@ -18,6 +18,7 @@ mod admin_redemption;
 mod admin_subscription;
 mod admin_task_logs;
 mod admin_user;
+mod admin_wechat;
 mod affinity;
 mod cache;
 mod cache_invalidation;
@@ -193,6 +194,15 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .get_async("/api/oauth/discord", |req, ctx| async move {
             admin_oauth::discord_oauth(req, ctx.env).await
+        })
+        .get_async("/api/oauth/wechat", |req, ctx| async move {
+            admin_wechat::wechat_auth(req, ctx.env).await
+        })
+        .get_async("/api/oauth/wechat/bind", |req, ctx| async move {
+            admin_wechat::bind_wechat(req, ctx.env).await
+        })
+        .post_async("/api/oauth/wechat/bind", |req, ctx| async move {
+            admin_wechat::bind_wechat(req, ctx.env).await
         })
         .post_async(
             "/api/custom-oauth-provider/discovery",

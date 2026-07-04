@@ -2784,3 +2784,57 @@ binding/sender, expired token, reused reset token, taken email, domain
 whitelist, and alias restriction. The only default-frontend route debt left is
 WeChat OAuth (2 routes) and full Passkey register/login/step-up ceremonies
 (6 routes).
+
+### 22.28 2026-07-04 WeChat OAuth Compatibility Delta
+
+This increment removes the default frontend's WeChat login and bind route debt
+from the tracked route set:
+
+- Added Worker-owned routes for `GET /api/oauth/wechat`,
+  `GET /api/oauth/wechat/bind`, and the Go-compatible
+  `POST /api/oauth/wechat/bind`.
+- `GET /api/oauth/wechat` reads `code`, verifies it against the operator
+  WeChat Server endpoint `/api/wechat/user?code=...`, finds an active local
+  user by `wechat_id`, or creates `wechat_<max_user_id+1>` with display name
+  `WeChat User`, common role, enabled status, default group, and the configured
+  `QuotaForNewUser` grant.
+- `GET|POST /api/oauth/wechat/bind` requires a Rust session, verifies the code
+  with the same WeChat Server, treats soft-deleted rows as occupying the
+  WeChat id just like Go `IsWeChatIdAlreadyTaken` with `Unscoped()`, and binds
+  the id to the active user.
+- `/api/status` now exposes `wechat_login` from `WeChatAuthEnabled` and
+  `wechat_qrcode` from `WeChatAccountQRCodeImageURL`, so the default React
+  login/register pages can show the existing WeChat QR-code flow.
+- Worker-specific hardening over the Go/VPS path: `WeChatServerAddress` must
+  be a public HTTPS URL without query/fragment, redirects are rejected, and the
+  outbound code-verification fetch uses a 5-second abort timeout. This is safer
+  for Cloudflare egress but requires operators with HTTP/private WeChat Server
+  deployments to move that service behind a public HTTPS endpoint before
+  enabling the feature on Rust.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 282 Worker routes, 6 missing calls;
+- debt categories: 6 auth-deferred;
+- route-set SHA-256:
+  `8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457`;
+- `cargo test -p cinatoken-worker --lib`: 327 passed.
+
+Remaining boundary: WeChat routes are Worker-owned but need deployed smoke
+with a real WeChat Server and QR/code flow: disabled option, missing/invalid
+code, expired code, soft-deleted taken WeChat id, first-time registration with
+`RegisterEnabled=true`, registration blocked with `RegisterEnabled=false`,
+login for an existing enabled user, disabled-user rejection, GET bind for the
+current default frontend, POST bind for Go-compatible clients, and invalid
+HTTP/private/query WeChat Server configuration. The only tracked default
+frontend route debt left is the six full Passkey register/login/step-up
+ceremony routes.
+
+Audit caveat: the current frontend route audit only proves the explicit
+call-expression route set. It does not yet fully cover constant-driven
+endpoints, JSX `href`/`src`, dynamic custom OAuth callbacks, or navigation-only
+targets such as `/pg/chat/completions` and `/v1/videos/:task_id/content`.
+Those remain tracked in the production readiness matrix until the audit script
+is broadened.

@@ -4,24 +4,22 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 331 passed after adding the
-  Worker-owned playground chat relay at `POST /pg/chat/completions`, including
-  session-backed synthetic token context, per-user playground rate-limit key,
-  D1 quota mutations that skip token writes for `token_id <= 0`, group override
-  resolution, and upstream `group` stripping.
+- `cargo test -p cinatoken-worker --lib`: 337 passed after adding the
+  Worker-owned Passkey route boundary: status/delete, register/login/verify
+  begin challenge generation, KV-backed challenge state, explicit fail-closed
+  finish handlers, and `passkey_credentials` status projection.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same playground relay slice.
-- `cargo fmt --all --check`: passed for the same playground relay slice.
-- `bun run check`: passed after the playground relay slice, covering the
+  the same Passkey boundary slice.
+- `cargo fmt --all --check`: passed for the same Passkey boundary slice.
+- `bun run check`: passed after the Passkey boundary slice, covering the
   frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 283 Worker routes, 6 missing calls, categories
-  6 auth-deferred, SHA-256
-  `8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457`.
+  212 frontend calls, 291 Worker routes, 0 missing calls, categories `{}`,
+  SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 6-call / 0 capability-hidden / 0 payment-deferred
+superseded by the current 0-call / 0 capability-hidden / 0 payment-deferred
 baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet

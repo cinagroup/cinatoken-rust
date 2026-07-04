@@ -105,8 +105,9 @@ lock) / `reset_two_fa_attempts` on success, returning `Verified` / `Invalid` /
 `Locked{until}` (callers map Locked -> 429). `POST /api/user/2fa/backup-codes`
 regenerates the code set (secure-verify gated).
 
-**Remaining (follow-ups):** admin 2FA stats/disable; passkey/WebAuthn (needs a
-WASM-compatible WebAuthn lib or a Container).
+**Remaining (follow-ups):** admin 2FA stats/disable; Passkey/WebAuthn finish
+verification (needs a WASM-compatible WebAuthn verifier or a service-binding /
+Container verifier).
 
 ## Passkey / WebAuthn
 
@@ -124,11 +125,14 @@ WASM-compatible WebAuthn lib or a Container).
 - Credentials persist in `passkey_credentials`.
 
 Migration: the **challenge/SessionData -> KV/DO short TTL**, single-use (pop =
-delete-on-read). The Go `go-webauthn` library has no direct WASM equivalent — use
-a WASM-compatible WebAuthn verify (assertion/attestation verification over Web
-Crypto) if one exists, **else run the WebAuthn ceremony in a Cloudflare Container
-(§21.4)** (migration-plan §7.12). RPID/RPOrigins derive from `FRONTEND_BASE_URL`
-+ the deploy domain.
+delete-on-read). Rust now uses `flow_state::PasskeyChallenge` for
+registration/verify and an HttpOnly short-TTL login flow cookie for anonymous
+login begin/finish correlation. The Go `go-webauthn` library has no direct WASM
+equivalent — use a WASM-compatible WebAuthn verify (assertion/attestation
+verification over Web Crypto) if one exists, **else run the WebAuthn ceremony in
+a Cloudflare Container or service binding (§21.4)** (migration-plan §7.12).
+RPID/RPOrigins derive from `passkey.*` options, `ServerAddress`, or the deploy
+origin.
 
 ## The Recurring Finding (consolidated)
 
@@ -152,7 +156,7 @@ not. If forced re-enroll is unacceptable, prove credential-format compatibility
 
 ## Rust Status And Checklist
 
-Per the matrices, OAuth/Passkey/2FA are `Planned`. Checklist:
+Per the matrices, OAuth/Passkey/2FA are `Partial`. Checklist:
 
 1. OAuth: KV/DO single-use state, callback origin validation
    (`TrustedRedirectDomains`), provider secrets from options/Secrets Store,
@@ -167,11 +171,18 @@ Per the matrices, OAuth/Passkey/2FA are `Planned`. Checklist:
    state, secret generation + persistence, single-use backup-code hashing
    (bcrypt via `crate::password`) + the `/user/login/2fa` flow + admin
    stats/disable with audit.
-3. Passkey: KV/DO single-use challenge; choose WASM WebAuthn vs Container;
-   RP config from options; secure-verification gating on register/delete/verify.
+3. Passkey: **route boundary + begin challenge DONE 2026-07-04** — status,
+   delete, register/login/verify begin, and fail-closed finish routes are
+   Worker-owned. Begin routes generate WebAuthn publicKey options, read RP
+   config from `passkey.*`, write short-TTL KV challenge state, and avoid global
+   request state. **Remaining**: choose and implement WASM WebAuthn vs
+   service-binding/Container verifier; finish routes must validate
+   attestation/assertion signatures, challenge, origin/RPID, credential id,
+   user handle, sign count, and credential import/update before any success.
 4. Decide and document forced re-enroll vs credential import per credential type.
 5. Staging smoke: OAuth state replay rejection, 2FA login + backup code,
-   Passkey register/login/verify, and step-up gating.
+   Passkey begin routes, finish fail-closed behavior before verifier, then full
+   Passkey register/login/verify and step-up gating after verifier lands.
 
 ## Wire-In
 

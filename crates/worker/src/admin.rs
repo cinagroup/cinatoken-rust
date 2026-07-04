@@ -80,6 +80,13 @@ const PUBLIC_STATUS_OPTION_KEYS: &[&str] = &[
     "model_deployment.ionet.enabled",
     "WeChatAuthEnabled",
     "WeChatAccountQRCodeImageURL",
+    "passkey.enabled",
+    "passkey.rp_display_name",
+    "passkey.rp_id",
+    "passkey.origins",
+    "passkey.allow_insecure_origin",
+    "passkey.user_verification",
+    "passkey.attachment_preference",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1142,9 +1149,15 @@ fn build_frontend_status(
         "general_setting.custom_currency_exchange_rate",
         1.0,
     );
+    let system_name = option_string(options, "SystemName", "CinaToken");
+    let passkey_configured = option_bool(options, "passkey.enabled", false);
+    // Do not expose the login button until attestation/assertion finish
+    // verification is implemented. Begin routes are Worker-owned, but finish
+    // handlers fail closed by design.
+    let passkey_login = false;
 
     let compatibility = serde_json::json!({
-        "system_name": option_string(options, "SystemName", "CinaToken"),
+        "system_name": system_name.clone(),
         "logo": option_string(options, "Logo", "/logo.png"),
         "footer_html": option_string(options, "Footer", ""),
         "docs_link": docs_link,
@@ -1164,7 +1177,14 @@ fn build_frontend_status(
         "telegram_oauth": false,
         "wechat_login": wechat_login,
         "wechat_qrcode": option_string(options, "WeChatAccountQRCodeImageURL", ""),
-        "passkey_login": false,
+        "passkey_login": passkey_login,
+        "passkey_configured": passkey_configured,
+        "passkey_display_name": option_string(options, "passkey.rp_display_name", &system_name),
+        "passkey_rp_id": option_string(options, "passkey.rp_id", ""),
+        "passkey_origins": option_string(options, "passkey.origins", ""),
+        "passkey_allow_insecure": option_bool(options, "passkey.allow_insecure_origin", false),
+        "passkey_user_verification": option_string(options, "passkey.user_verification", "preferred"),
+        "passkey_attachment": option_string(options, "passkey.attachment_preference", ""),
         "oauth_register_enabled": oauth_register_enabled,
         "custom_oauth_providers": custom_oauth_providers,
         "turnstile_check": runtime.turnstile_check,
@@ -1541,6 +1561,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(disabled["oidc_enabled"], false);
+    }
+
+    #[test]
+    fn passkey_status_keeps_login_gated_until_finish_verifier_exists() {
+        let mut options = HashMap::new();
+        options.insert("SystemName".to_string(), "CinaToken Test".to_string());
+        options.insert("passkey.enabled".to_string(), "true".to_string());
+        options.insert(
+            "passkey.rp_display_name".to_string(),
+            "CinaToken Passkey".to_string(),
+        );
+        options.insert("passkey.rp_id".to_string(), "example.com".to_string());
+
+        let data = build_frontend_status(
+            cinatoken_api::status("test"),
+            &options,
+            true,
+            &PublicRuntimeConfig::default(),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(data["passkey_configured"], true);
+        assert_eq!(data["passkey_display_name"], "CinaToken Passkey");
+        assert_eq!(data["passkey_rp_id"], "example.com");
+        assert_eq!(data["passkey_login"], false);
     }
 
     #[test]

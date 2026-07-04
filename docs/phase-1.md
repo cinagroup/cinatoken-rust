@@ -402,10 +402,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Capture io.net deployment staging evidence with real credentials: settings
   save/connection test, catalog reads, price estimation, list/detail/log smoke,
   one reversible mutation smoke, and rollback notes.
-- Continue the auth-deferred route burn-down. WeChat OAuth, email
-  verification/reset/bind, and admin Passkey reset are now Worker-owned; the
-  remaining default-frontend gaps are full Passkey register/login/step-up
-  ceremonies.
+- Continue Passkey hardening. The default-frontend Passkey route boundary is
+  now Worker-owned and route-debt is zero, but register/login/step-up finish
+  handlers deliberately fail closed until a Worker-safe WebAuthn verifier or
+  service-binding/Container verifier is selected and tested.
 - Capture logged-in playground chat completion staging evidence for
   `POST /pg/chat/completions`: non-stream and stream success, group
   override allow/deny, user quota debit, channel quota/audit rows, token-table

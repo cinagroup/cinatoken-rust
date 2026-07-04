@@ -1,7 +1,5 @@
 {
-  "missing_calls": 6,
-  "missing_sha256": "8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457",
-  "categories": {
-    "auth-deferred": 6
-  }
+  "missing_calls": 0,
+  "missing_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "categories": {}
 }

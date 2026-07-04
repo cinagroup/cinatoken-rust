@@ -2894,3 +2894,54 @@ closed by direct source and matrix evidence rather than by a route-debt SHA
 change. The audit script still needs broader coverage for constant-driven
 endpoints, JSX `href`/`src`, dynamic custom OAuth callbacks, and
 navigation/content targets such as `/v1/videos/:task_id/content`.
+
+### 22.30 2026-07-04 Passkey Route Boundary Compatibility Delta
+
+This increment removes the default frontend's final six tracked Passkey route
+gaps from the explicit route-debt baseline while keeping the cryptographic
+finish ceremony blocked until a production-safe verifier is selected:
+
+- Added Worker-owned routes for `GET /api/user/passkey`,
+  `DELETE /api/user/passkey`, `POST /api/user/passkey/register/begin`,
+  `POST /api/user/passkey/register/finish`,
+  `POST /api/user/passkey/login/begin`,
+  `POST /api/user/passkey/login/finish`,
+  `POST /api/user/passkey/verify/begin`, and
+  `POST /api/user/passkey/verify/finish`.
+- Moved those routes ahead of dynamic `/api/user/:id` admin routes so
+  self-service Passkey calls are matched deterministically.
+- Added D1 projection for active `passkey_credentials` rows so status,
+  delete, register exclusion, and verify allow-credential options can reuse
+  Go-compatible imported credential data.
+- Added register/login/verify begin challenge generation with 32-byte CSPRNG
+  challenges, URL-safe base64 WebAuthn publicKey options, RP settings derived
+  from `passkey.*`, `ServerAddress`, or request origin, and short-TTL
+  `flow_state::PasskeyChallenge` storage.
+- Added an HttpOnly, Secure, SameSite=Strict short-TTL flow cookie for
+  anonymous login begin/finish correlation without process-local state.
+- Kept all finish routes fail-closed with a 501 envelope after single-use
+  challenge consumption. They must not return success until attestation or
+  assertion verification validates signature, challenge, origin/RPID,
+  credential id, user handle, sign count, and credential import/update.
+- `/api/status` now exposes Passkey configuration metadata for the frontend,
+  but intentionally keeps `passkey_login=false` until the finish verifier lands.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated to the
+  empty missing-route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 291 Worker routes, 0 missing calls;
+- debt categories: none;
+- route-set SHA-256:
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+- `cargo test -p cinatoken-worker --lib`: 337 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `cargo fmt --all --check`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: the route audit now reports zero explicit frontend route
+gaps, but Passkey is not production-complete until a Worker-safe WebAuthn
+verifier, service binding, or Container path is implemented and staged against
+real browsers and authenticators. Production cutover still needs a clear
+forced reset/import policy for existing Passkey credentials if verifier or data
+compatibility cannot be proven.

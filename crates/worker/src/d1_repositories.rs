@@ -1826,6 +1826,15 @@ pub async fn mark_backup_code_used(db: &D1Database, id: i64, now: i64) -> worker
 // Passkey credentials — schema in 0016_passkey_credentials.sql.
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct PasskeyCredentialRow {
+    pub credential_id: String,
+    pub transports: String,
+    pub last_used_at: Option<i64>,
+    pub backup_eligible: i32,
+    pub backup_state: i32,
+}
+
 /// Return whether the user has a non-deleted Passkey credential. Go reads via
 /// GORM's default scope, so soft-deleted imported rows are ignored here.
 pub async fn passkey_exists_by_user(db: &D1Database, user_id: i64) -> worker::Result<bool> {
@@ -1844,6 +1853,25 @@ pub async fn passkey_exists_by_user(db: &D1Database, user_id: i64) -> worker::Re
         .await?
         .map(|row| row.count > 0)
         .unwrap_or(false))
+}
+
+/// Return the active Passkey credential needed by status and begin challenge
+/// routes. Binary WebAuthn fields stay base64-encoded as imported from Go.
+pub async fn find_passkey_by_user(
+    db: &D1Database,
+    user_id: i64,
+) -> worker::Result<Option<PasskeyCredentialRow>> {
+    db.prepare(
+        r#"
+        SELECT credential_id, transports, last_used_at, backup_eligible, backup_state
+        FROM passkey_credentials
+        WHERE user_id = ?1 AND deleted_at IS NULL
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+    .first::<PasskeyCredentialRow>(None)
+    .await
 }
 
 /// Hard-delete all Passkey credentials for the user, matching Go

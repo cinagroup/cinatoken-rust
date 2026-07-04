@@ -13,6 +13,7 @@ mod admin_deployments;
 mod admin_email;
 mod admin_oauth;
 mod admin_ollama;
+mod admin_passkey;
 mod admin_payment;
 mod admin_redemption;
 mod admin_subscription;
@@ -318,6 +319,33 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .post_async("/api/user/2fa/backup_codes", |req, ctx| async move {
             admin_2fa::regenerate_backup_codes_with_code(req, ctx.env).await
+        })
+        // Passkey/WebAuthn route boundary. Begin routes create short-lived
+        // challenges; finish routes fail closed until Worker-safe WebAuthn
+        // attestation/assertion verification is wired.
+        .get_async("/api/user/passkey", |req, ctx| async move {
+            admin_passkey::status(req, ctx.env).await
+        })
+        .delete_async("/api/user/passkey", |req, ctx| async move {
+            admin_passkey::delete(req, ctx.env).await
+        })
+        .post_async("/api/user/passkey/register/begin", |req, ctx| async move {
+            admin_passkey::register_begin(req, ctx.env).await
+        })
+        .post_async("/api/user/passkey/register/finish", |req, ctx| async move {
+            admin_passkey::register_finish(req, ctx.env).await
+        })
+        .post_async("/api/user/passkey/login/begin", |req, ctx| async move {
+            admin_passkey::login_begin(req, ctx.env).await
+        })
+        .post_async("/api/user/passkey/login/finish", |req, ctx| async move {
+            admin_passkey::login_finish(req, ctx.env).await
+        })
+        .post_async("/api/user/passkey/verify/begin", |req, ctx| async move {
+            admin_passkey::verify_begin(req, ctx.env).await
+        })
+        .post_async("/api/user/passkey/verify/finish", |req, ctx| async move {
+            admin_passkey::verify_finish(req, ctx.env).await
         })
         // Admin CRUD (G5 P0): logs, options, tokens.
         // Logs.

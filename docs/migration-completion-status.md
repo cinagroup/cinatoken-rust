@@ -28,6 +28,10 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   limits, streaming, and audit logging without mutating the `tokens` table.
 - Session auth, registration, core user self-service, 2FA,
   GitHub/Discord/OIDC, Turnstile, secure verification.
+- Passkey route boundary: default-frontend status/delete and
+  register/login/verify begin/finish paths are Worker-owned; begin routes create
+  KV-backed WebAuthn challenges and finish routes fail closed until verifier
+  work lands.
 - Core admin user/token/channel/log/option/model/vendor APIs with audit and cache
   invalidation.
 - Task submit/poll/CAS-settlement foundations and scheduled polling.
@@ -77,8 +81,9 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Subscription core, redemption, and check-in still need production/staging
   evidence for the full visible workflows, but their core Worker routes are no
   longer entirely absent.
-- Full Passkey register/login/step-up ceremonies. WeChat OAuth,
-  email verification/reset/bind, and admin Passkey reset are Worker-owned;
+- Full Passkey register/login/step-up finish verification. The route boundary,
+  challenge generation, status/delete, email verification/reset/bind, WeChat
+  OAuth, and admin Passkey reset are Worker-owned;
   WeChat production readiness still requires a real operator WeChat Server
   over public HTTPS plus QR/code smoke, and email production readiness still
   requires real Cloudflare Email Service binding smoke.
@@ -103,8 +108,8 @@ A full diff of every Go-registered route against the Rust worker closed these
    visible workflows.
 4. Billing/payment production shadow and replay thresholds are not signed off.
 5. Capacity, cost, security, SLO, canary and rollback evidence are incomplete.
-6. The remaining 6 auth-deferred routes must be implemented, intentionally
-   retired with compatible responses, or retained behind a documented fallback.
+6. Passkey WebAuthn finish verification must be implemented in a Worker-safe
+   verifier or kept disabled with a signed forced-reset/re-enroll policy.
 
 ## Current Safe Statement
 

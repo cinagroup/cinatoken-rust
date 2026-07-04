@@ -82,8 +82,11 @@ A full diff of every Go-registered route against the Rust worker closed these
   are Worker-owned. Remaining payment work is staging replay/reconciliation
   evidence rather than an absent default-frontend provider route.
 - Custom OAuth management and several provider-specific OAuth flows.
-- Long-tail provider/channel operations, performance/ratio-sync, io.net
-  deployment management.
+- Long-tail provider/channel operations and performance/ratio-sync need more
+  staging evidence.
+- io.net deployment management routes used by the default frontend are
+  Worker-owned and option-gated; remaining work is real-credential staging
+  smoke, reversible mutation evidence, and rollback documentation.
 
 ## Production Blockers
 
@@ -95,8 +98,8 @@ A full diff of every Go-registered route against the Rust worker closed these
    visible workflows.
 4. Billing/payment production shadow and replay thresholds are not signed off.
 5. Capacity, cost, security, SLO, canary and rollback evidence are incomplete.
-6. Missing routes must be implemented, intentionally retired with compatible
-   responses, or retained behind a documented fallback.
+6. The remaining 13 auth-deferred routes must be implemented, intentionally
+   retired with compatible responses, or retained behind a documented fallback.
 
 ## Current Safe Statement
 

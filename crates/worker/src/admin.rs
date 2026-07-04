@@ -77,6 +77,7 @@ const PUBLIC_STATUS_OPTION_KEYS: &[&str] = &[
     "HeaderNavModules",
     "SidebarModulesAdmin",
     "oidc.authorization_endpoint",
+    "model_deployment.ionet.enabled",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1178,7 +1179,7 @@ fn build_frontend_status(
         "enable_drawing": false,
         "enable_task": false,
         "enable_data_export": false,
-        "enable_deployments": false,
+        "enable_deployments": option_bool(options, "model_deployment.ionet.enabled", false),
         "HeaderNavModules": header,
         "SidebarModulesAdmin": sidebar
     });

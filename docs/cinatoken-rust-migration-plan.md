@@ -2648,3 +2648,52 @@ Remaining boundary: the default frontend no longer has a payment-provider
 route gap. Remaining production gates are staging browser smoke, provider
 replay/reconciliation evidence, custom OAuth public callbacks, and incomplete
 product families such as deployment/io.net.
+
+### 22.25 2026-07-04 io.net Deployment Admin Compatibility Delta
+
+This increment removes the default frontend's deployment/io.net route family
+from the route-debt set and ports the Go `controller/deployment.go` admin
+surface into the Worker:
+
+- Added Worker-owned AdminAuth routes for deployment settings, connection
+  tests, list/search/detail, containers, raw logs, hardware types, locations,
+  available replicas, price estimation, cluster-name checks, create, update,
+  rename, extend, and delete.
+- The routes preserve the Go option keys
+  `model_deployment.ionet.enabled` and `model_deployment.ionet.api_key`.
+  `/api/status` now exposes only the non-sensitive
+  `enable_deployments` flag from D1 options; the io.net API key remains hidden
+  from public status and option-list responses.
+- External io.net calls are centralized in a Worker-native client using
+  explicit `X-API-KEY`, no forwarded browser auth headers, redirect-error
+  fetches, `DEPLOYMENT_HTTP_TIMEOUT_SECONDS` with a 30 second cap, and a
+  bounded 1 MiB response-body reader.
+- The compatibility layer preserves Go response shapes expected by the React
+  deployment UI: list `items/status_counts`, mapped deployment/container DTOs,
+  raw log string data, hardware/location catalogs, availability, price
+  estimation, and mutation result envelopes.
+- Disabled or unconfigured io.net returns the Go-compatible envelope message
+  `io.net model deployment is not enabled or api key missing` instead of a
+  Worker 500. Connection testing may use an explicit request `api_key` before
+  the setting is saved, matching the Go admin settings flow.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 274 Worker routes, 13 missing calls;
+- debt categories: 13 auth-deferred, 0 capability-hidden-product,
+  0 payment-deferred;
+- route-set SHA-256:
+  `5dc8efd5873d9fd4fbeb7e2f4c8eac2e15b5d872b440894ccf73ba5ebc6654ab`;
+- `cargo test -p cinatoken-worker --lib`: 320 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified`:
+  passed.
+
+Remaining boundary: deployment/io.net is now Worker-owned but still needs
+staging evidence with real io.net credentials: settings save + connection
+test, catalog reads, price estimation, list/detail/log smoke, one reversible
+mutation smoke, and rollback documentation. The only default-frontend route
+debt left is the 13 auth-deferred routes for email verification/reset/bind,
+WeChat OAuth, Passkey, and admin passkey reset.

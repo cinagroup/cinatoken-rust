@@ -9,6 +9,7 @@ mod admin_codex_channel;
 mod admin_crud;
 mod admin_custom_oauth;
 mod admin_data;
+mod admin_deployments;
 mod admin_oauth;
 mod admin_ollama;
 mod admin_payment;
@@ -767,6 +768,83 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .delete_async("/api/vendors/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             model_meta_api::delete_vendor(req, ctx.env, id.as_ref()).await
+        })
+        // Model deployments (Go `/api/deployments*`, AdminAuth). io.net is
+        // option-gated and all external calls use bounded Worker fetches.
+        .get_async("/api/deployments/settings", |req, ctx| async move {
+            admin_deployments::get_settings(req, ctx.env).await
+        })
+        .post_async(
+            "/api/deployments/settings/test-connection",
+            |req, ctx| async move { admin_deployments::test_connection(req, ctx.env).await },
+        )
+        .get_async("/api/deployments/search", |req, ctx| async move {
+            admin_deployments::search(req, ctx.env).await
+        })
+        .get_async("/api/deployments/hardware-types", |req, ctx| async move {
+            admin_deployments::hardware_types(req, ctx.env).await
+        })
+        .get_async("/api/deployments/locations", |req, ctx| async move {
+            admin_deployments::locations(req, ctx.env).await
+        })
+        .get_async(
+            "/api/deployments/available-replicas",
+            |req, ctx| async move { admin_deployments::available_replicas(req, ctx.env).await },
+        )
+        .post_async("/api/deployments/price-estimation", |req, ctx| async move {
+            admin_deployments::price_estimation(req, ctx.env).await
+        })
+        .get_async("/api/deployments/check-name", |req, ctx| async move {
+            admin_deployments::check_name(req, ctx.env).await
+        })
+        .get_async("/api/deployments", |req, ctx| async move {
+            admin_deployments::list(req, ctx.env).await
+        })
+        .get_async("/api/deployments/", |req, ctx| async move {
+            admin_deployments::list(req, ctx.env).await
+        })
+        .post_async("/api/deployments", |req, ctx| async move {
+            admin_deployments::create(req, ctx.env).await
+        })
+        .post_async("/api/deployments/", |req, ctx| async move {
+            admin_deployments::create(req, ctx.env).await
+        })
+        .get_async(
+            "/api/deployments/:id/containers/:container_id",
+            |req, ctx| async move {
+                let id = ctx.param("id").cloned();
+                let container_id = ctx.param("container_id").cloned();
+                admin_deployments::get_container(req, ctx.env, id.as_ref(), container_id.as_ref())
+                    .await
+            },
+        )
+        .get_async("/api/deployments/:id/containers", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_deployments::list_containers(req, ctx.env, id.as_ref()).await
+        })
+        .get_async("/api/deployments/:id/logs", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_deployments::get_logs(req, ctx.env, id.as_ref()).await
+        })
+        .put_async("/api/deployments/:id/name", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_deployments::rename(req, ctx.env, id.as_ref()).await
+        })
+        .post_async("/api/deployments/:id/extend", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_deployments::extend(req, ctx.env, id.as_ref()).await
+        })
+        .get_async("/api/deployments/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_deployments::get(req, ctx.env, id.as_ref()).await
+        })
+        .put_async("/api/deployments/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_deployments::update(req, ctx.env, id.as_ref()).await
+        })
+        .delete_async("/api/deployments/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_deployments::delete(req, ctx.env, id.as_ref()).await
         })
         .get_async("/api/prefill_group", |req, ctx| async move {
             prefill_group_api::get_prefill_groups(req, ctx.env).await

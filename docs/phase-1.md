@@ -399,3 +399,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
 - Capture provider-specific staging replay/reconciliation evidence before
   exposing payment methods broadly in production.
+- Capture io.net deployment staging evidence with real credentials: settings
+  save/connection test, catalog reads, price estimation, list/detail/log smoke,
+  one reversible mutation smoke, and rollback notes.

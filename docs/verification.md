@@ -4,22 +4,21 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 317 passed after adding Waffo
-  Pancake subscription checkout at `POST /api/subscription/waffo-pancake/pay`
-  and shared webhook settlement through `POST
-  /api/waffo-pancake/webhook/:env`.
+- `cargo test -p cinatoken-worker --lib`: 320 passed after adding the
+  Worker-owned io.net deployment admin compatibility surface.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same Waffo Pancake subscription slice.
-- `bun run check`: passed after the Waffo Pancake subscription route-baseline
-  update, covering the frontend build, route-debt baseline, Rust workspace
-  tests excluding the Worker, rustfmt check, and Worker wasm check.
+  the same deployment/io.net slice.
+- `bun run check`: passed after the deployment route-baseline update, covering
+  the frontend build, route-debt baseline, Rust workspace tests excluding the
+  Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 254 Worker routes, 31 missing calls, categories
-  13 auth-deferred / 18 capability-hidden-product, SHA-256
-  `098ee3dc3d0f38dcd443d31e58306a264c61cb60fe7b2ce983fffe143fb99ebc`.
+  212 frontend calls, 274 Worker routes, 13 missing calls, categories
+  13 auth-deferred, SHA-256
+  `5dc8efd5873d9fd4fbeb7e2f4c8eac2e15b5d872b440894ccf73ba5ebc6654ab`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 31-call / 0 payment-deferred baseline above.
+superseded by the current 13-call / 0 capability-hidden / 0 payment-deferred
+baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
   checkout and webhook settlement at `POST /api/user/creem/pay` and

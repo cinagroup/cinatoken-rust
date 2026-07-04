@@ -402,7 +402,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Capture io.net deployment staging evidence with real credentials: settings
   save/connection test, catalog reads, price estimation, list/detail/log smoke,
   one reversible mutation smoke, and rollback notes.
-- Continue the auth-deferred route burn-down. Admin Passkey reset is now
-  Worker-owned; the remaining default-frontend gaps are email
-  verification/reset/bind, password reset confirmation, WeChat OAuth, and full
-  Passkey register/login/step-up ceremonies.
+- Continue the auth-deferred route burn-down. Email verification/reset/bind and
+  admin Passkey reset are now Worker-owned; the remaining default-frontend gaps
+  are WeChat OAuth and full Passkey register/login/step-up ceremonies.

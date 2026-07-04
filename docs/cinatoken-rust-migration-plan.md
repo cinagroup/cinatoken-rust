@@ -2730,3 +2730,57 @@ ceremonies are still deferred; they should reuse the new D1 table plus the
 existing `flow_state` challenge TTL boundary. Email verification/reset/bind,
 WeChat OAuth, and password reset confirmation also remain in the 12
 auth-deferred default-frontend route gaps.
+
+### 22.27 2026-07-04 Email Verification And Password Reset Compatibility Delta
+
+This increment removes the default frontend's email verification, email bind,
+password reset email, and password reset confirmation routes from the
+route-debt set:
+
+- Added Worker-owned routes for `GET /api/verification`,
+  `GET /api/reset_password`, `POST /api/user/reset`, and
+  `POST /api/oauth/email/bind`.
+- Replaced Go's process-local verification map with `flow_state` KV entries:
+  `EmailVerification` and `PasswordReset`, each with a 10-minute TTL matching
+  Go `VerificationValidMinutes`.
+- Verification/reset flow-state ids hash the normalized email before writing
+  KV keys, so emails are not exposed in key names.
+- Email delivery uses Cloudflare's native `send_email` binding named `EMAIL`
+  instead of SMTP sockets, while preserving the existing operator-facing
+  `SMTPFrom`/`SMTPAccount` option fallback as the sender address. Missing
+  `EMAIL` binding or sender config fails verification-email sends and is
+  logged-but-enumeration-safe for password-reset email sends, matching Go's
+  password-reset success envelope.
+- Email verification enforces the Go admin options
+  `EmailDomainRestrictionEnabled`, `EmailDomainWhitelist`, and
+  `EmailAliasRestrictionEnabled`, and treats soft-deleted users as occupying an
+  email address just like Go `IsEmailAlreadyTaken` with `Unscoped()`.
+- Registration now honors `EmailVerificationEnabled`: when enabled, a valid
+  emailed code is required and the verified email is persisted to the new user;
+  when disabled, unverified registration keeps email empty as in Go.
+- Password reset validates the KV token, generates a 12-character CSPRNG hex
+  password, bcrypt-hashes it, updates the active user by email, deletes the
+  reset token, and returns the plaintext generated password in the Go-compatible
+  response `data`.
+- `/api/status` now exposes `email_verification` from the
+  `EmailVerificationEnabled` option instead of hardcoding false.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 279 Worker routes, 8 missing calls;
+- debt categories: 8 auth-deferred;
+- route-set SHA-256:
+  `65f9ed7547e329d29cd3b7bfb6e9b1cccdf23290c112a87bf2cd5b5db5ca0f99`;
+- `cargo test -p cinatoken-worker --lib`: 324 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining boundary: the email routes are Worker-owned but need deployed smoke
+with a real Cloudflare Email Service binding and verified sender address:
+send-code, bind email, registration with `EmailVerificationEnabled=true`,
+password reset email, reset confirmation, and negative tests for missing
+binding/sender, expired token, reused reset token, taken email, domain
+whitelist, and alias restriction. The only default-frontend route debt left is
+WeChat OAuth (2 routes) and full Passkey register/login/step-up ceremonies
+(6 routes).

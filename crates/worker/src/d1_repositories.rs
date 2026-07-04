@@ -1137,6 +1137,27 @@ pub async fn find_user_by_username_or_email(
     .await
 }
 
+/// Return whether an email is already present on any user row, including
+/// soft-deleted accounts. Mirrors Go `IsEmailAlreadyTaken` (`Unscoped()`).
+pub async fn email_exists_any_status(db: &D1Database, email: &str) -> worker::Result<bool> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Ok(false);
+    }
+    #[derive(Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+
+    Ok(db
+        .prepare("SELECT COUNT(*) AS count FROM users WHERE email = ?1")
+        .bind_refs(&[D1Type::Text(email)])?
+        .first::<CountRow>(None)
+        .await?
+        .map(|row| row.count > 0)
+        .unwrap_or(false))
+}
+
 /// Find an enabled user by their linked GitHub id (the GitHub login string).
 /// Mirrors Go `FillUserByGitHubId` — empty ids never match.
 pub async fn find_user_by_github_id(
@@ -4249,6 +4270,7 @@ pub struct CreateUser<'a> {
     pub username: &'a str,
     pub password_hash: &'a str,
     pub display_name: &'a str,
+    pub email: &'a str,
     pub role: i32,
     pub group: &'a str,
     pub aff_code: &'a str,
@@ -4264,6 +4286,7 @@ pub async fn create_user(db: &D1Database, params: CreateUser<'_>) -> worker::Res
         D1Type::Text(params.username),
         D1Type::Text(params.password_hash),
         D1Type::Text(params.display_name),
+        D1Type::Text(params.email),
         D1Type::Integer(params.role),
         D1Type::Integer(d1_i32(params.quota)),
         D1Type::Text(params.group),
@@ -4274,11 +4297,11 @@ pub async fn create_user(db: &D1Database, params: CreateUser<'_>) -> worker::Res
     db.prepare(
         r#"
         INSERT INTO users (
-          username, password, display_name, role, status, quota, used_quota,
+          username, password, display_name, email, role, status, quota, used_quota,
           request_count, "group", aff_code, aff_count, aff_quota,
           aff_history, inviter_id, setting, created_at, last_login_at
         )
-        VALUES (?1, ?2, ?3, ?4, 1, ?5, 0, 0, ?6, ?7, 0, 0, 0, ?9, '{}', ?8, 0)
+        VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, 0, 0, ?7, ?8, 0, 0, 0, ?10, '{}', ?9, 0)
         "#,
     )
     .bind_refs(&args)?
@@ -5111,6 +5134,34 @@ pub async fn update_user_access_token(db: &D1Database, id: i64, token: &str) -> 
         .run()
         .await?;
     Ok(())
+}
+
+/// Bind/replace a user's email after an out-of-band verification code succeeds.
+pub async fn update_user_email(db: &D1Database, id: i64, email: &str) -> worker::Result<bool> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Ok(false);
+    }
+    let result = db
+        .prepare("UPDATE users SET email = ?1 WHERE id = ?2 AND deleted_at IS NULL")
+        .bind_refs(&[D1Type::Text(email), D1Type::Integer(d1_i32(id))])?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+/// Reset a user's password by email. Returns false when no active row matched.
+pub async fn reset_user_password_by_email(
+    db: &D1Database,
+    email: &str,
+    password_hash: &str,
+) -> worker::Result<bool> {
+    let result = db
+        .prepare("UPDATE users SET password = ?1 WHERE email = ?2 AND deleted_at IS NULL")
+        .bind_refs(&[D1Type::Text(password_hash), D1Type::Text(email.trim())])?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
 }
 
 /// Edit a subset of user fields. Mirrors Go `Edit`: only username,

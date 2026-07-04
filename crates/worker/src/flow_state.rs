@@ -34,6 +34,10 @@ pub enum FlowKind {
     PasskeyChallenge,
     /// 2FA pending after password but before the TOTP/backup code is presented.
     TwoFaPending,
+    /// Email verification code pending registration or email binding.
+    EmailVerification,
+    /// Password reset token pending anonymous reset confirmation.
+    PasswordReset,
 }
 
 impl FlowKind {
@@ -45,6 +49,8 @@ impl FlowKind {
             FlowKind::OAuthState => "flow:oauth_state",
             FlowKind::PasskeyChallenge => "flow:passkey_challenge",
             FlowKind::TwoFaPending => "flow:2fa_pending",
+            FlowKind::EmailVerification => "flow:email_verification",
+            FlowKind::PasswordReset => "flow:password_reset",
         }
     }
 
@@ -58,6 +64,8 @@ impl FlowKind {
             FlowKind::OAuthState => 600,
             FlowKind::PasskeyChallenge => 300,
             FlowKind::Turnstile => 1800,
+            FlowKind::EmailVerification => 600,
+            FlowKind::PasswordReset => 600,
         }
     }
 }
@@ -157,6 +165,14 @@ mod tests {
             flow_state_key(FlowKind::TwoFaPending, "7"),
             "flow:2fa_pending:7"
         );
+        assert_eq!(
+            flow_state_key(FlowKind::EmailVerification, "hash"),
+            "flow:email_verification:hash"
+        );
+        assert_eq!(
+            flow_state_key(FlowKind::PasswordReset, "hash"),
+            "flow:password_reset:hash"
+        );
         // Distinct kinds never collide for the same id.
         assert_ne!(
             flow_state_key(FlowKind::SecureVerify, "7"),
@@ -170,6 +186,8 @@ mod tests {
         assert_eq!(FlowKind::TwoFaPending.default_ttl_secs(), 300);
         assert_eq!(FlowKind::PasskeyChallenge.default_ttl_secs(), 300);
         assert_eq!(FlowKind::OAuthState.default_ttl_secs(), 600);
+        assert_eq!(FlowKind::EmailVerification.default_ttl_secs(), 600);
+        assert_eq!(FlowKind::PasswordReset.default_ttl_secs(), 600);
         assert_eq!(FlowKind::Turnstile.default_ttl_secs(), 1800);
     }
 }

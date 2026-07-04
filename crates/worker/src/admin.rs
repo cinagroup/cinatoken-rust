@@ -1148,7 +1148,7 @@ fn build_frontend_status(
         "register_enabled": register_enabled,
         "password_login_enabled": option_bool(options, "PasswordLoginEnabled", true),
         "password_register_enabled": password_register_enabled,
-        "email_verification": false,
+        "email_verification": option_bool(options, "EmailVerificationEnabled", false),
         "github_oauth": runtime.github_oauth,
         "github_client_id": runtime.github_client_id,
         "discord_oauth": runtime.discord_oauth,

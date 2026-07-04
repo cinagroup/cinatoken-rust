@@ -4,20 +4,20 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 320 passed after adding the
-  Worker-owned admin Passkey reset route and D1 credential table.
+- `cargo test -p cinatoken-worker --lib`: 324 passed after adding the
+  Worker-owned email verification/bind/password-reset routes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same admin Passkey reset slice.
-- `bun run check`: passed after the Passkey reset route-baseline update, covering
+  the same email auth slice.
+- `bun run check`: passed after the email auth route-baseline update, covering
   the frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 275 Worker routes, 12 missing calls, categories
-  12 auth-deferred, SHA-256
-  `d51581aed82f7f8a3024885b5fd075834c8dc96b983b74aec6e0144b579905fe`.
+  212 frontend calls, 279 Worker routes, 8 missing calls, categories
+  8 auth-deferred, SHA-256
+  `65f9ed7547e329d29cd3b7bfb6e9b1cccdf23290c112a87bf2cd5b5db5ca0f99`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 12-call / 0 capability-hidden / 0 payment-deferred
+superseded by the current 8-call / 0 capability-hidden / 0 payment-deferred
 baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
@@ -881,6 +881,15 @@ baseline above.
   audit now reports 212 frontend calls, 275 Worker routes, and 12 remaining
   auth-deferred gaps with SHA-256
   `d51581aed82f7f8a3024885b5fd075834c8dc96b983b74aec6e0144b579905fe`.
+
+- **Email verification/reset/bind - locally verified route surface
+  (2026-07-04).** `GET /api/verification`, `GET /api/reset_password`,
+  `POST /api/user/reset`, and `POST /api/oauth/email/bind` are now
+  Worker-owned. The implementation uses `flow_state` KV TTLs instead of Go's
+  process-local map and Cloudflare `send_email` binding `EMAIL` instead of
+  SMTP sockets. Local route audit reports 212 frontend calls, 279 Worker routes,
+  and 8 remaining auth-deferred gaps with SHA-256
+  `65f9ed7547e329d29cd3b7bfb6e9b1cccdf23290c112a87bf2cd5b5db5ca0f99`.
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`

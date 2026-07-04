@@ -10,6 +10,7 @@ mod admin_crud;
 mod admin_custom_oauth;
 mod admin_data;
 mod admin_deployments;
+mod admin_email;
 mod admin_oauth;
 mod admin_ollama;
 mod admin_payment;
@@ -164,6 +165,15 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/user/register", |req, ctx| async move {
             admin_user::register(req, ctx.env).await
         })
+        .get_async("/api/verification", |req, ctx| async move {
+            admin_email::send_email_verification(req, ctx.env).await
+        })
+        .get_async("/api/reset_password", |req, ctx| async move {
+            admin_email::send_password_reset_email(req, ctx.env).await
+        })
+        .post_async("/api/user/reset", |req, ctx| async move {
+            admin_email::reset_password(req, ctx.env).await
+        })
         // Two-step login second factor (item 4.6): complete a 2FA-gated login.
         .post_async("/api/user/login/2fa", |req, ctx| async move {
             admin::login_2fa(req, ctx.env).await
@@ -171,6 +181,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // OAuth login (item 4.6): CSRF state + GitHub callback.
         .get_async("/api/oauth/state", |req, ctx| async move {
             admin_oauth::oauth_state(req, ctx.env).await
+        })
+        .post_async("/api/oauth/email/bind", |req, ctx| async move {
+            admin_email::bind_email(req, ctx.env).await
         })
         .get_async("/api/oauth/github", |req, ctx| async move {
             admin_oauth::github_oauth(req, ctx.env).await

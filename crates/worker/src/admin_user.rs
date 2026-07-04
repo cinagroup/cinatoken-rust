@@ -173,6 +173,7 @@ pub async fn create_user(mut req: Request, env: Env) -> WorkerResult<Response> {
             username,
             password_hash: &password_hash,
             display_name: &display_name,
+            email: "",
             role: new_role,
             group: "default",
             aff_code: &aff_code,
@@ -266,9 +267,7 @@ fn parse_int_option(value: Option<&str>, default: i64) -> i64 {
 /// affiliation tracking. Does NOT auto-login — Go returns `{success:true}` and
 /// the client logs in separately.
 ///
-/// Deferred parity (all off in the default config): Turnstile bot-check;
-/// email-verified registration (`EmailVerificationEnabled` — rejected here since
-/// the email send/verify subsystem is not ported); default-token generation
+/// Deferred parity (all off in the default config): default-token generation
 /// (`GenerateDefaultToken`); the `IsPaymentComplianceConfirmed` sub-gate on the
 /// invitee reward; and the informational new-user/referral system-log entries.
 pub async fn register(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -319,15 +318,6 @@ pub async fn register(mut req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(400, &message));
     }
 
-    if email_verification_enabled {
-        // Go requires a valid emailed code here; refuse rather than silently
-        // skip the check, because the email send/verify subsystem is unported.
-        return Ok(envelope_error_response(
-            400,
-            "email-verified registration is not supported by this deployment",
-        ));
-    }
-
     // Reject an already-taken username or email (Go `CheckUserExistOrDeleted`).
     if d1_repositories::find_user_by_username_or_email(&db, username)
         .await?
@@ -335,12 +325,22 @@ pub async fn register(mut req: Request, env: Env) -> WorkerResult<Response> {
     {
         return Ok(envelope_error_response(409, "user already exists"));
     }
-    if !email.is_empty()
-        && d1_repositories::find_user_by_username_or_email(&db, email)
-            .await?
-            .is_some()
-    {
+    if !email.is_empty() && d1_repositories::email_exists_any_status(&db, email).await? {
         return Ok(envelope_error_response(409, "user already exists"));
+    }
+    if email_verification_enabled {
+        if email.is_empty() || payload.verification_code.trim().is_empty() {
+            return Ok(envelope_error_response(
+                400,
+                "email verification is required",
+            ));
+        }
+        if !crate::admin_email::verify_email_code(&env, email, &payload.verification_code).await? {
+            return Ok(envelope_error_response(
+                400,
+                "verification code is incorrect",
+            ));
+        }
     }
 
     let inviter_id = d1_repositories::find_user_id_by_aff_code(&db, payload.aff_code.trim())
@@ -364,6 +364,11 @@ pub async fn register(mut req: Request, env: Env) -> WorkerResult<Response> {
             username,
             password_hash: &password_hash,
             display_name: username,
+            email: if email_verification_enabled {
+                email
+            } else {
+                ""
+            },
             role: ROLE_COMMON_USER,
             group: "default",
             aff_code: &aff_code,

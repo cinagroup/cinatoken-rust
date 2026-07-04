@@ -69,6 +69,11 @@ Cloudflare references added 2026-06-25 (see migration-plan §21):
   <https://developers.cloudflare.com/workflows/>
 - Secrets Store:
   <https://developers.cloudflare.com/secrets-store/>
+
+Cloudflare references added 2026-07-04:
+
+- Cloudflare Email Service / Workers `send_email` binding:
+  <https://developers.cloudflare.com/email-service/api/send-emails/workers-api/>
 - Smart Placement:
   <https://developers.cloudflare.com/workers/configuration/smart-placement/>
 
@@ -180,6 +185,7 @@ These must be true for every deployable environment:
 | `FILE_BUCKET` R2 | Optional | Real bucket if task/file features enabled | Real bucket before task/file cutover | Platform/Tasks | R2 smoke and retention policy |
 | `LOG_QUEUE` | Optional | Real queue once queue producer is enabled | Real queue plus consumer/DLQ | Platform/SRE | Queue smoke, DLQ alert |
 | `TASK_QUEUE` | Optional | Real queue once async task flow is enabled | Real queue plus consumer/DLQ | Platform/Tasks | Queue smoke, replay test |
+| `EMAIL` send_email | Optional | Required for email verification/reset smoke | Required before enabling `EmailVerificationEnabled` or password reset in production | Platform/Auth | Verified sender, `SMTPFrom`/`SMTPAccount` option, send-code/reset smoke |
 | AI Gateway | Optional | Real ID or direct-provider decision | Real ID or direct-provider decision | Relay | Provider matrix decision |
 | Static assets or Pages | Optional | Required before G5 frontend smoke | Required before Scenario B/C frontend cutover | Frontend/Platform | SPA fallback, API route precedence, bundle redaction smoke |
 | Service bindings | Optional | Use for Worker-to-Worker calls if split | Same | Platform | Binding type and smoke |

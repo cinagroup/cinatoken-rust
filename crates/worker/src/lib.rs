@@ -366,9 +366,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/option/waffo-pancake/catalog", |req, ctx| async move {
             admin_payment::list_waffo_pancake_catalog(req, ctx.env).await
         })
+        .post_async("/api/option/waffo-pancake/pair", |req, ctx| async move {
+            admin_payment::create_waffo_pancake_pair(req, ctx.env).await
+        })
         .post_async("/api/option/waffo-pancake/save", |req, ctx| async move {
             admin_payment::save_waffo_pancake_config(req, ctx.env).await
         })
+        .post_async(
+            "/api/option/waffo-pancake/subscription-product",
+            |req, ctx| async move {
+                admin_payment::create_waffo_pancake_subscription_product(req, ctx.env).await
+            },
+        )
         .post_async(
             "/api/option/waffo-pancake/subscription-product-options",
             |req, ctx| async move {

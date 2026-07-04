@@ -7,7 +7,9 @@
 //! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
 //! - `POST /api/user/waffo-pancake/amount` estimates Waffo Pancake charge amount.
 //! - `POST /api/option/waffo-pancake/catalog` lists Waffo Pancake stores/products.
+//! - `POST /api/option/waffo-pancake/pair` creates a Waffo Pancake store/product pair.
 //! - `POST /api/option/waffo-pancake/save` persists Waffo Pancake admin config.
+//! - `POST /api/option/waffo-pancake/subscription-product` creates a plan product.
 //! - `POST /api/option/waffo-pancake/subscription-product-options` lists saved-store products.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
@@ -16,6 +18,7 @@
 //! - `GET /api/user/topup` lists all topups for admins.
 //! - `POST /api/user/topup/complete` manually completes a pending topup.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -34,7 +37,7 @@ use rsa::signature::{SignatureEncoding, Signer};
 use rsa::RsaPrivateKey;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use worker::{
@@ -47,6 +50,7 @@ use crate::admin::{
     require_admin_auth, require_root_auth, require_user_auth, unix_timestamp,
 };
 use crate::d1_repositories;
+use crate::set_cors_headers;
 
 const CURRENT_COMPLIANCE_TERMS_VERSION: &str = "v1";
 const PAYMENT_COMPLIANCE_CONFIRMED_KEY: &str = "payment_setting.compliance_confirmed";
@@ -68,11 +72,20 @@ const QUOTA_DISPLAY_TYPE_TOKENS: &str = "TOKENS";
 const DEFAULT_PRICE: &str = "7.3";
 const DEFAULT_QUOTA_PER_UNIT: &str = "500000";
 const DEFAULT_WAFFO_PANCAKE_UNIT_PRICE: &str = "1";
+const WAFFO_PANCAKE_API_BASE_URL: &str = "https://api.waffo.ai";
 const WAFFO_PANCAKE_GRAPHQL_URL: &str = "https://api.waffo.ai/v1/graphql";
 const WAFFO_PANCAKE_GRAPHQL_PATH: &str = "/v1/graphql";
+const WAFFO_PANCAKE_CREATE_STORE_PATH: &str = "/v1/actions/store/create-store";
+const WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH: &str =
+    "/v1/actions/onetime-product/create-product";
+const WAFFO_PANCAKE_PUBLISH_ONETIME_PRODUCT_PATH: &str =
+    "/v1/actions/onetime-product/publish-product";
 const WAFFO_PANCAKE_FETCH_TIMEOUT: Duration = Duration::from_secs(12);
 const WAFFO_PANCAKE_GRAPHQL_RESPONSE_LIMIT_BYTES: usize = 512 * 1024;
 const WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES: usize = 64 * 1024;
+const DEFAULT_WAFFO_PANCAKE_STORE_NAME: &str = "cinatoken-store";
+const DEFAULT_WAFFO_PANCAKE_PRODUCT_NAME: &str = "cinatoken-charge-product";
+const WAFFO_PANCAKE_TAX_CATEGORY_SAAS: &str = "saas";
 const WAFFO_PANCAKE_CATALOG_QUERY: &str = r#"query {
     stores(limit: 100) {
         id
@@ -121,6 +134,12 @@ const WAFFO_PANCAKE_SUBSCRIPTION_OPTIONS_KEYS: &[&str] = &[
     WAFFO_PANCAKE_MERCHANT_ID_KEY,
     WAFFO_PANCAKE_PRIVATE_KEY_KEY,
     WAFFO_PANCAKE_STORE_ID_KEY,
+];
+const WAFFO_PANCAKE_SUBSCRIPTION_PRODUCT_KEYS: &[&str] = &[
+    WAFFO_PANCAKE_MERCHANT_ID_KEY,
+    WAFFO_PANCAKE_PRIVATE_KEY_KEY,
+    WAFFO_PANCAKE_STORE_ID_KEY,
+    WAFFO_PANCAKE_RETURN_URL_KEY,
 ];
 
 /// `POST /api/user/stripe/pay`: initiate a Stripe checkout session.
@@ -447,10 +466,10 @@ pub async fn list_waffo_pancake_catalog(mut req: Request, env: Env) -> WorkerRes
     let payload: WaffoPancakeCredsRequest = match serde_json::from_value(body) {
         Ok(payload) => payload,
         Err(err) => {
-            return Ok(envelope_error_response(
-                400,
+            return waffo_pancake_error_message_response(
+                200,
                 &format!("invalid Waffo Pancake catalog request: {err}"),
-            ));
+            );
         }
     };
     let db = env.d1("DB")?;
@@ -459,17 +478,106 @@ pub async fn list_waffo_pancake_catalog(mut req: Request, env: Env) -> WorkerRes
             .await?
         {
             Ok(creds) => creds,
-            Err(message) => return Ok(envelope_error_response(400, message)),
+            Err(message) => return waffo_pancake_error_message_response(200, message),
         };
 
     match fetch_waffo_pancake_catalog(&creds).await {
-        Ok(catalog) => Ok(envelope_ok_response(&catalog)?),
+        Ok(catalog) => waffo_pancake_ok_response(&catalog),
         Err(err) => {
             worker::console_warn!("failed to fetch Waffo Pancake catalog: {err}");
-            Ok(envelope_error_response(
-                502,
-                "failed to fetch Waffo Pancake catalog",
-            ))
+            waffo_pancake_error_message_response(200, "failed to fetch Waffo Pancake catalog")
+        }
+    }
+}
+
+/// `POST /api/option/waffo-pancake/pair`: create Waffo Pancake store/product pair.
+pub async fn create_waffo_pancake_pair(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_root_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_optional_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: CreateWaffoPancakePairRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return waffo_pancake_error_message_response(
+                200,
+                &format!("invalid Waffo Pancake pair request: {err}"),
+            );
+        }
+    };
+    let db = env.d1("DB")?;
+    let creds =
+        match resolve_waffo_pancake_admin_creds(&db, &payload.merchant_id, &payload.private_key)
+            .await?
+        {
+            Ok(creds) => creds,
+            Err(message) => return waffo_pancake_error_message_response(200, message),
+        };
+
+    let result = create_waffo_pancake_primary_pair(&creds, &payload.return_url).await;
+    match result {
+        Ok(pair) => {
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                None,
+                None,
+                &claims.username,
+                "option.waffo_pancake.pair.create",
+                &format!("admin {} created Waffo Pancake pair", claims.username),
+                &serde_json::json!({
+                    "store_id": pair.store_id.as_str(),
+                    "product_id": pair.product_id.as_str(),
+                }),
+                &admin_audit_info(&claims, &req),
+                unix_timestamp(),
+            )
+            .await;
+            waffo_pancake_ok_response(&pair)
+        }
+        Err(WaffoPancakePairError::Store(error)) => {
+            worker::console_warn!("failed to create Waffo Pancake store: {error}");
+            waffo_pancake_error_response(
+                200,
+                &serde_json::json!({
+                    "error": error,
+                }),
+            )
+        }
+        Err(WaffoPancakePairError::OrphanStore { store_id, error }) => {
+            worker::console_warn!(
+                "created Waffo Pancake store but failed to create product: store_id={store_id} error={error}"
+            );
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                None,
+                None,
+                &claims.username,
+                "option.waffo_pancake.pair.orphan_store",
+                &format!(
+                    "admin {} created Waffo Pancake store but product creation failed",
+                    claims.username
+                ),
+                &serde_json::json!({
+                    "store_id": store_id.as_str(),
+                    "orphan_store": true,
+                }),
+                &admin_audit_info(&claims, &req),
+                unix_timestamp(),
+            )
+            .await;
+            waffo_pancake_error_response(
+                200,
+                &serde_json::json!({
+                    "error": error,
+                    "store_id": store_id,
+                    "store_name": DEFAULT_WAFFO_PANCAKE_STORE_NAME,
+                    "orphan_store": true,
+                }),
+            )
         }
     }
 }
@@ -490,15 +598,15 @@ pub async fn save_waffo_pancake_config(mut req: Request, env: Env) -> WorkerResu
     let payload: SaveWaffoPancakeConfigRequest = match serde_json::from_value(body) {
         Ok(payload) => payload,
         Err(err) => {
-            return Ok(envelope_error_response(
-                400,
+            return waffo_pancake_error_message_response(
+                200,
                 &format!("invalid Waffo Pancake config request: {err}"),
-            ));
+            );
         }
     };
     let updates = match waffo_pancake_config_updates(&payload) {
         Ok(updates) => updates,
-        Err(message) => return Ok(envelope_error_response(400, message)),
+        Err(message) => return waffo_pancake_error_message_response(200, message),
     };
     let private_key_updated = !payload.private_key.trim().is_empty();
     let store_id = payload.store_id.trim().to_string();
@@ -525,10 +633,98 @@ pub async fn save_waffo_pancake_config(mut req: Request, env: Env) -> WorkerResu
     )
     .await;
 
-    Ok(envelope_ok_response(&WaffoPancakeConfigSaveResponse {
+    waffo_pancake_ok_response(&WaffoPancakeConfigSaveResponse {
         product_id,
         store_id,
-    })?)
+    })
+}
+
+/// `POST /api/option/waffo-pancake/subscription-product`: create a plan product.
+pub async fn create_waffo_pancake_subscription_product(
+    mut req: Request,
+    env: Env,
+) -> WorkerResult<Response> {
+    let claims = match require_root_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payload: CreateWaffoPancakeSubscriptionProductRequest = match serde_json::from_value(body) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return waffo_pancake_error_message_response(
+                200,
+                &format!("invalid Waffo Pancake subscription product request: {err}"),
+            );
+        }
+    };
+    let name = payload.name.trim();
+    if name.is_empty() {
+        return waffo_pancake_error_message_response(200, "plan name is required");
+    }
+    let amount = payload.amount.trim();
+    if amount.is_empty() {
+        return waffo_pancake_error_message_response(200, "plan price is required");
+    }
+
+    let db = env.d1("DB")?;
+    let values =
+        d1_repositories::option_values(&db, WAFFO_PANCAKE_SUBSCRIPTION_PRODUCT_KEYS).await?;
+    let merchant_id = values[0].clone().unwrap_or_default();
+    let private_key = values[1].clone().unwrap_or_default();
+    let store_id = values[2].clone().unwrap_or_default();
+    let return_url = values[3].clone().unwrap_or_default();
+    let creds = match waffo_pancake_creds_from_parts(&merchant_id, &private_key) {
+        Ok(creds) => creds,
+        Err(_) => {
+            return waffo_pancake_error_message_response(
+                200,
+                "Waffo Pancake is not fully configured",
+            );
+        }
+    };
+    let store_id = store_id.trim();
+    if store_id.is_empty() {
+        return waffo_pancake_error_message_response(200, "Waffo Pancake is not fully configured");
+    }
+
+    match create_waffo_pancake_product_for_plan(&creds, store_id, name, amount, &return_url).await {
+        Ok(product_id) => {
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                None,
+                None,
+                &claims.username,
+                "option.waffo_pancake.subscription_product.create",
+                &format!(
+                    "admin {} created Waffo Pancake subscription product",
+                    claims.username
+                ),
+                &serde_json::json!({
+                    "store_id": store_id,
+                    "product_id": product_id.as_str(),
+                    "product_name": name,
+                }),
+                &admin_audit_info(&claims, &req),
+                unix_timestamp(),
+            )
+            .await;
+            waffo_pancake_ok_response(&WaffoPancakeSubscriptionProductCreateResponse {
+                product_id,
+                product_name: name.to_string(),
+                store_id: store_id.to_string(),
+            })
+        }
+        Err(err) => {
+            worker::console_warn!(
+                "failed to create Waffo Pancake subscription product: store_id={store_id} name={name} error={err}"
+            );
+            waffo_pancake_error_message_response(200, "failed to create Waffo Pancake product")
+        }
+    }
 }
 
 /// `POST /api/option/waffo-pancake/subscription-product-options`: list products in saved store.
@@ -549,30 +745,24 @@ pub async fn list_waffo_pancake_subscription_product_options(
     let creds = match waffo_pancake_creds_from_parts(&merchant_id, &private_key) {
         Ok(creds) => creds,
         Err(_) => {
-            return Ok(envelope_error_response(
-                400,
+            return waffo_pancake_error_message_response(
+                200,
                 "Waffo Pancake is not fully configured",
-            ));
+            );
         }
     };
     let store_id = store_id.trim();
     if store_id.is_empty() {
-        return Ok(envelope_error_response(
-            400,
-            "Waffo Pancake is not fully configured",
-        ));
+        return waffo_pancake_error_message_response(200, "Waffo Pancake is not fully configured");
     }
 
     match fetch_waffo_pancake_catalog(&creds).await {
-        Ok(catalog) => Ok(envelope_ok_response(&waffo_pancake_subscription_options(
-            &catalog, store_id,
-        ))?),
+        Ok(catalog) => {
+            waffo_pancake_ok_response(&waffo_pancake_subscription_options(&catalog, store_id))
+        }
         Err(err) => {
             worker::console_warn!("failed to fetch Waffo Pancake subscription products: {err}");
-            Ok(envelope_error_response(
-                502,
-                "failed to fetch Waffo Pancake products",
-            ))
+            waffo_pancake_error_message_response(200, "failed to fetch Waffo Pancake products")
         }
     }
 }
@@ -1015,6 +1205,16 @@ struct WaffoPancakeCreds {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct CreateWaffoPancakePairRequest {
+    #[serde(default)]
+    merchant_id: String,
+    #[serde(default)]
+    private_key: String,
+    #[serde(default)]
+    return_url: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct SaveWaffoPancakeConfigRequest {
     #[serde(default)]
     merchant_id: String,
@@ -1031,6 +1231,29 @@ struct SaveWaffoPancakeConfigRequest {
 #[derive(Debug, Serialize, PartialEq)]
 struct WaffoPancakeConfigSaveResponse {
     product_id: String,
+    store_id: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CreateWaffoPancakeSubscriptionProductRequest {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    amount: String,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct WaffoPancakePairResponse {
+    store_id: String,
+    store_name: String,
+    product_id: String,
+    product_name: String,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct WaffoPancakeSubscriptionProductCreateResponse {
+    product_id: String,
+    product_name: String,
     store_id: String,
 }
 
@@ -1066,9 +1289,73 @@ struct WaffoPancakeGraphqlEnvelope {
 }
 
 #[derive(Debug, Deserialize)]
+struct WaffoPancakeActionEnvelope<T> {
+    data: Option<T>,
+    #[serde(default)]
+    errors: Vec<WaffoPancakeNotice>,
+}
+
+#[derive(Debug, Deserialize)]
 struct WaffoPancakeNotice {
     #[serde(default)]
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaffoPancakeStoreActionData {
+    store: WaffoPancakeStoreActionStore,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaffoPancakeStoreActionStore {
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaffoPancakeProductActionData {
+    product: WaffoPancakeProductActionProduct,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaffoPancakeProductActionProduct {
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WaffoPancakeCreateStoreBody<'a> {
+    name: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct WaffoPancakeCreateOnetimeProductBody {
+    #[serde(rename = "storeId")]
+    store_id: String,
+    name: String,
+    prices: BTreeMap<String, WaffoPancakePriceInfo>,
+    #[serde(rename = "successUrl", skip_serializing_if = "Option::is_none")]
+    success_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WaffoPancakePriceInfo {
+    amount: String,
+    #[serde(rename = "taxCategory")]
+    tax_category: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct WaffoPancakePublishOnetimeProductBody {
+    id: String,
+}
+
+#[derive(Debug, PartialEq)]
+enum WaffoPancakePairError {
+    Store(String),
+    OrphanStore { store_id: String, error: String },
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -1173,6 +1460,30 @@ fn validate_waffo_pancake_admin_content_length(raw: Option<&str>) -> Result<(), 
     Ok(())
 }
 
+fn waffo_pancake_ok_response<T: Serialize>(data: &T) -> WorkerResult<Response> {
+    let body = serde_json::json!({
+        "message": "success",
+        "data": data,
+    });
+    let mut response = Response::from_json(&body)?.with_status(200);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn waffo_pancake_error_message_response(status: u16, message: &str) -> WorkerResult<Response> {
+    waffo_pancake_error_response(status, &message)
+}
+
+fn waffo_pancake_error_response<T: Serialize>(status: u16, data: &T) -> WorkerResult<Response> {
+    let body = serde_json::json!({
+        "message": "error",
+        "data": data,
+    });
+    let mut response = Response::from_json(&body)?.with_status(status);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
 async fn resolve_waffo_pancake_admin_creds(
     db: &worker::D1Database,
     body_merchant_id: &str,
@@ -1204,6 +1515,215 @@ fn waffo_pancake_creds_from_parts(
         merchant_id: merchant_id.to_string(),
         private_key: private_key.to_string(),
     })
+}
+
+async fn create_waffo_pancake_primary_pair(
+    creds: &WaffoPancakeCreds,
+    return_url: &str,
+) -> Result<WaffoPancakePairResponse, WaffoPancakePairError> {
+    let store = create_waffo_pancake_primary_store(creds)
+        .await
+        .map_err(WaffoPancakePairError::Store)?;
+    match create_waffo_pancake_primary_product(creds, &store.id, return_url).await {
+        Ok(product) => Ok(WaffoPancakePairResponse {
+            store_id: store.id,
+            store_name: non_empty_or(&store.name, DEFAULT_WAFFO_PANCAKE_STORE_NAME),
+            product_id: product.id,
+            product_name: non_empty_or(&product.name, DEFAULT_WAFFO_PANCAKE_PRODUCT_NAME),
+        }),
+        Err(error) => {
+            let store_id = store.id;
+            Err(WaffoPancakePairError::OrphanStore {
+                error: format!("store created at {store_id} but product creation failed: {error}"),
+                store_id,
+            })
+        }
+    }
+}
+
+fn non_empty_or(value: &str, default: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        default.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+async fn create_waffo_pancake_primary_store(
+    creds: &WaffoPancakeCreds,
+) -> Result<WaffoPancakeStoreActionStore, String> {
+    let data: WaffoPancakeStoreActionData = post_waffo_pancake_action(
+        creds,
+        WAFFO_PANCAKE_CREATE_STORE_PATH,
+        &WaffoPancakeCreateStoreBody {
+            name: DEFAULT_WAFFO_PANCAKE_STORE_NAME,
+        },
+    )
+    .await?;
+    if data.store.id.trim().is_empty() {
+        return Err("Waffo Pancake create-store returned no store id".to_string());
+    }
+    Ok(data.store)
+}
+
+async fn create_waffo_pancake_primary_product(
+    creds: &WaffoPancakeCreds,
+    store_id: &str,
+    return_url: &str,
+) -> Result<WaffoPancakeProductActionProduct, String> {
+    create_waffo_pancake_onetime_product(
+        creds,
+        store_id,
+        DEFAULT_WAFFO_PANCAKE_PRODUCT_NAME,
+        "1.00",
+        return_url,
+    )
+    .await
+}
+
+async fn create_waffo_pancake_product_for_plan(
+    creds: &WaffoPancakeCreds,
+    store_id: &str,
+    name: &str,
+    amount: &str,
+    return_url: &str,
+) -> Result<String, String> {
+    let product =
+        create_waffo_pancake_onetime_product(creds, store_id, name, amount, return_url).await?;
+    Ok(product.id)
+}
+
+async fn create_waffo_pancake_onetime_product(
+    creds: &WaffoPancakeCreds,
+    store_id: &str,
+    name: &str,
+    amount: &str,
+    return_url: &str,
+) -> Result<WaffoPancakeProductActionProduct, String> {
+    let store_id = store_id.trim();
+    validate_waffo_pancake_short_id("storeId", store_id, "STO")?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("plan name is required".to_string());
+    }
+    let amount = amount.trim();
+    validate_waffo_pancake_amount("prices.USD.amount", amount)?;
+
+    let mut prices = BTreeMap::new();
+    prices.insert(
+        "USD".to_string(),
+        WaffoPancakePriceInfo {
+            amount: amount.to_string(),
+            tax_category: WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
+        },
+    );
+    let success_url = optional_waffo_pancake_string(return_url);
+    let data: WaffoPancakeProductActionData = post_waffo_pancake_action(
+        creds,
+        WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH,
+        &WaffoPancakeCreateOnetimeProductBody {
+            store_id: store_id.to_string(),
+            name: name.to_string(),
+            prices,
+            success_url,
+        },
+    )
+    .await?;
+    validate_waffo_pancake_short_id("id", &data.product.id, "PROD")?;
+    publish_waffo_pancake_onetime_product(creds, &data.product.id).await
+}
+
+async fn publish_waffo_pancake_onetime_product(
+    creds: &WaffoPancakeCreds,
+    product_id: &str,
+) -> Result<WaffoPancakeProductActionProduct, String> {
+    validate_waffo_pancake_short_id("id", product_id, "PROD")?;
+    let data: WaffoPancakeProductActionData = post_waffo_pancake_action(
+        creds,
+        WAFFO_PANCAKE_PUBLISH_ONETIME_PRODUCT_PATH,
+        &WaffoPancakePublishOnetimeProductBody {
+            id: product_id.to_string(),
+        },
+    )
+    .await?;
+    if data.product.id.trim().is_empty() {
+        return Err("Waffo Pancake publish-product returned no product id".to_string());
+    }
+    Ok(data.product)
+}
+
+async fn post_waffo_pancake_action<T, B>(
+    creds: &WaffoPancakeCreds,
+    path: &str,
+    body: &B,
+) -> Result<T, String>
+where
+    T: DeserializeOwned,
+    B: Serialize,
+{
+    let body = serde_json::to_vec(body)
+        .map_err(|err| format!("failed to encode Waffo Pancake action body: {err}"))?;
+    let timestamp = unix_timestamp().to_string();
+    let signature =
+        sign_waffo_pancake_request("POST", path, &timestamp, &body, &creds.private_key)?;
+    let idempotency_key = waffo_pancake_idempotency_key(&creds.merchant_id, path, &body);
+
+    let mut headers = Headers::new();
+    headers
+        .set("Accept", "application/json")
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-Merchant-Id", &creds.merchant_id)
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-Timestamp", &timestamp)
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-Signature", &signature)
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("X-Idempotency-Key", &idempotency_key)
+        .map_err(|err| err.to_string())?;
+
+    let url = format!("{WAFFO_PANCAKE_API_BASE_URL}{path}");
+    let mut response = fetch_waffo_pancake_json(&url, headers, &body).await?;
+    let bytes = read_limited_waffo_pancake_response_body(&mut response).await?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        if response.status_code() >= 400 {
+            return Err(format!(
+                "Waffo Pancake action HTTP {}",
+                response.status_code()
+            ));
+        }
+        return Err("Waffo Pancake action returned empty response".to_string());
+    }
+
+    let envelope: WaffoPancakeActionEnvelope<T> = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("failed to parse Waffo Pancake action response: {err}"))?;
+    if let Some(first_error) = envelope.errors.first() {
+        let message = first_error.message.trim();
+        return Err(if message.is_empty() {
+            format!(
+                "Waffo Pancake action returned {} API errors",
+                envelope.errors.len()
+            )
+        } else {
+            message.to_string()
+        });
+    }
+    if response.status_code() >= 400 {
+        return Err(format!(
+            "Waffo Pancake action HTTP {}",
+            response.status_code()
+        ));
+    }
+    envelope
+        .data
+        .ok_or_else(|| "Waffo Pancake action returned no data".to_string())
 }
 
 async fn fetch_waffo_pancake_catalog(
@@ -1239,51 +1759,13 @@ async fn fetch_waffo_pancake_catalog(
         .set("X-Signature", &signature)
         .map_err(|err| err.to_string())?;
 
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post)
-        .with_headers(headers)
-        .with_body(Some(wasm_bindgen::JsValue::from(js_sys::Uint8Array::from(
-            body.as_slice(),
-        ))))
-        .with_redirect(RequestRedirect::Error);
-    let request = Request::new_with_init(WAFFO_PANCAKE_GRAPHQL_URL, &init)
-        .map_err(|err| format!("failed to build Waffo Pancake request: {err}"))?;
-    let controller = AbortController::default();
-    let signal = controller.signal();
-    let outbound = Fetch::Request(request);
-    let fetch = outbound.send_with_signal(&signal);
-    let delay = Delay::from(WAFFO_PANCAKE_FETCH_TIMEOUT);
-    futures_util::pin_mut!(fetch);
-    futures_util::pin_mut!(delay);
-    let mut response = match select(fetch, delay).await {
-        Either::Left((result, _)) => {
-            result.map_err(|err| format!("failed to fetch Waffo Pancake catalog: {err}"))?
-        }
-        Either::Right(((), _)) => {
-            controller.abort();
-            return Err("Waffo Pancake catalog request timed out".to_string());
-        }
-    };
-
+    let mut response = fetch_waffo_pancake_json(WAFFO_PANCAKE_GRAPHQL_URL, headers, &body).await?;
     if response.status_code() != 200 {
         return Err(format!(
             "Waffo Pancake catalog HTTP {}",
             response.status_code()
         ));
     }
-    let content_type = response
-        .headers()
-        .get("Content-Type")
-        .map_err(|err| format!("failed to inspect Waffo Pancake headers: {err}"))?
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !content_type.is_empty()
-        && !content_type.contains("application/json")
-        && !content_type.contains("+json")
-    {
-        return Err("Waffo Pancake catalog response is not JSON".to_string());
-    }
-
     let bytes = read_limited_waffo_pancake_response_body(&mut response).await?;
     let envelope: WaffoPancakeGraphqlEnvelope = serde_json::from_slice(&bytes)
         .map_err(|err| format!("failed to parse Waffo Pancake catalog: {err}"))?;
@@ -1301,6 +1783,51 @@ async fn fetch_waffo_pancake_catalog(
     let mut catalog = envelope.data.unwrap_or_default();
     filter_active_waffo_pancake_products(&mut catalog);
     Ok(catalog)
+}
+
+async fn fetch_waffo_pancake_json(
+    url: &str,
+    headers: Headers,
+    body: &[u8],
+) -> Result<Response, String> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(wasm_bindgen::JsValue::from(js_sys::Uint8Array::from(
+            body,
+        ))))
+        .with_redirect(RequestRedirect::Error);
+    let request = Request::new_with_init(url, &init)
+        .map_err(|err| format!("failed to build Waffo Pancake request: {err}"))?;
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let outbound = Fetch::Request(request);
+    let fetch = outbound.send_with_signal(&signal);
+    let delay = Delay::from(WAFFO_PANCAKE_FETCH_TIMEOUT);
+    futures_util::pin_mut!(fetch);
+    futures_util::pin_mut!(delay);
+    let response = match select(fetch, delay).await {
+        Either::Left((result, _)) => {
+            result.map_err(|err| format!("failed to fetch Waffo Pancake request: {err}"))?
+        }
+        Either::Right(((), _)) => {
+            controller.abort();
+            return Err("Waffo Pancake request timed out".to_string());
+        }
+    };
+    let content_type = response
+        .headers()
+        .get("Content-Type")
+        .map_err(|err| format!("failed to inspect Waffo Pancake headers: {err}"))?
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.is_empty()
+        && !content_type.contains("application/json")
+        && !content_type.contains("+json")
+    {
+        return Err("Waffo Pancake response is not JSON".to_string());
+    }
+    Ok(response)
 }
 
 async fn read_limited_waffo_pancake_response_body(
@@ -1352,12 +1879,32 @@ fn sign_waffo_pancake_request(
     Ok(BASE64_STANDARD.encode(signature.to_bytes()))
 }
 
+fn waffo_pancake_idempotency_key(merchant_id: &str, path: &str, body: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(merchant_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(path.as_bytes());
+    hasher.update(b":");
+    hasher.update(body);
+    hex_lower(&hasher.finalize())
+}
+
 fn waffo_pancake_signature_input(method: &str, path: &str, timestamp: &str, body: &[u8]) -> String {
     let body_hash = Sha256::digest(body);
     format!(
         "{method}\n{path}\n{timestamp}\n{}",
         BASE64_STANDARD.encode(body_hash)
     )
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn parse_waffo_pancake_private_key(raw: &str) -> Result<RsaPrivateKey, String> {
@@ -1434,6 +1981,65 @@ fn filter_active_waffo_pancake_products(catalog: &mut WaffoPancakeCatalog) {
             .onetime_products
             .retain(|product| product.status.trim().eq_ignore_ascii_case("active"));
     }
+}
+
+fn optional_waffo_pancake_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn validate_waffo_pancake_short_id(field: &str, value: &str, prefix: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("Missing required field: {field}"));
+    }
+    if !value.starts_with(&format!("{prefix}_")) {
+        return Err(format!(
+            "Invalid {field}: expected {prefix}_ prefix, got {value:?}"
+        ));
+    }
+    let suffix = &value[prefix.len() + 1..];
+    if suffix.len() != 22 || !suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err(format!(
+            "Invalid {field}: expected {prefix} Short ID format ({prefix}_xxx), got {value:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_waffo_pancake_amount(field: &str, value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("Missing required field: {field}"));
+    }
+    if !value.as_bytes()[0].is_ascii_digit() {
+        return Err(format!(
+            "Invalid {field}: expected numeric string in display format, got {value:?}"
+        ));
+    }
+    let mut saw_digit = false;
+    let mut saw_dot = false;
+    for byte in value.bytes() {
+        match byte {
+            b'0'..=b'9' => saw_digit = true,
+            b'.' if !saw_dot => saw_dot = true,
+            _ => {
+                return Err(format!(
+                    "Invalid {field}: expected numeric string in display format, got {value:?}"
+                ));
+            }
+        }
+    }
+    if !saw_digit || value.ends_with('.') {
+        return Err(format!(
+            "Invalid {field}: expected numeric string in display format, got {value:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn waffo_pancake_subscription_options(
@@ -1686,18 +2292,22 @@ fn parse_json_option(value: Option<&str>, default: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
         discount_for_amount, filter_active_waffo_pancake_products, format_pay_money,
         normalize_waffo_pancake_private_key, online_min_topup, online_pay_money,
-        parse_optional_json_bytes, request_amount, sanitize_like_pattern,
-        topup_group_ratio_for_group, topup_status_label,
-        validate_waffo_pancake_admin_content_length, waffo_pancake_config_updates,
-        waffo_pancake_creds_from_parts, waffo_pancake_signature_input,
-        waffo_pancake_subscription_options, OnlineAmountSettings, SaveWaffoPancakeConfigRequest,
-        WaffoPancakeCatalog, WaffoPancakeCatalogProduct, WaffoPancakeCatalogStore,
-        WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES, WAFFO_PANCAKE_MERCHANT_ID_KEY,
-        WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY, WAFFO_PANCAKE_RETURN_URL_KEY,
-        WAFFO_PANCAKE_STORE_ID_KEY,
+        optional_waffo_pancake_string, parse_optional_json_bytes, request_amount,
+        sanitize_like_pattern, topup_group_ratio_for_group, topup_status_label,
+        validate_waffo_pancake_admin_content_length, validate_waffo_pancake_amount,
+        validate_waffo_pancake_short_id, waffo_pancake_config_updates,
+        waffo_pancake_creds_from_parts, waffo_pancake_idempotency_key,
+        waffo_pancake_signature_input, waffo_pancake_subscription_options, OnlineAmountSettings,
+        SaveWaffoPancakeConfigRequest, WaffoPancakeCatalog, WaffoPancakeCatalogProduct,
+        WaffoPancakeCatalogStore, WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo,
+        WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES, WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH,
+        WAFFO_PANCAKE_MERCHANT_ID_KEY, WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY,
+        WAFFO_PANCAKE_RETURN_URL_KEY, WAFFO_PANCAKE_STORE_ID_KEY, WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
     };
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
     use rust_decimal::Decimal;
@@ -1871,6 +2481,74 @@ mod tests {
             waffo_pancake_signature_input("POST", "/v1/graphql", "1700000000", body),
             format!("POST\n/v1/graphql\n1700000000\n{expected_hash}")
         );
+    }
+
+    #[test]
+    fn waffo_pancake_idempotency_key_matches_sdk_shape() {
+        let body = br#"{"name":"cinatoken-store"}"#;
+        let input = [
+            b"merchant".as_slice(),
+            b":",
+            WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH.as_bytes(),
+            b":",
+            body,
+        ]
+        .concat();
+        let expected = format!("{:x}", Sha256::digest(&input));
+        assert_eq!(
+            waffo_pancake_idempotency_key(
+                "merchant",
+                WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH,
+                body
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn waffo_pancake_sdk_validation_helpers_match_source_bounds() {
+        assert!(
+            validate_waffo_pancake_short_id("storeId", "STO_1234567890123456789012", "STO").is_ok()
+        );
+        assert!(
+            validate_waffo_pancake_short_id("storeId", "PROD_1234567890123456789012", "STO")
+                .is_err()
+        );
+        assert!(validate_waffo_pancake_short_id("storeId", "STO_short", "STO").is_err());
+        assert!(validate_waffo_pancake_amount("amount", "1").is_ok());
+        assert!(validate_waffo_pancake_amount("amount", "1.00").is_ok());
+        assert!(validate_waffo_pancake_amount("amount", ".5").is_err());
+        assert!(validate_waffo_pancake_amount("amount", "1.").is_err());
+        assert!(validate_waffo_pancake_amount("amount", "1a").is_err());
+    }
+
+    #[test]
+    fn waffo_pancake_product_body_serializes_success_url_like_sdk() {
+        let mut prices = BTreeMap::new();
+        prices.insert(
+            "USD".to_string(),
+            WaffoPancakePriceInfo {
+                amount: "1.00".to_string(),
+                tax_category: WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
+            },
+        );
+        let body = WaffoPancakeCreateOnetimeProductBody {
+            store_id: "STO_1234567890123456789012".to_string(),
+            name: "plan".to_string(),
+            prices,
+            success_url: optional_waffo_pancake_string("  "),
+        };
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["storeId"], "STO_1234567890123456789012");
+        assert!(value.get("successUrl").is_none());
+
+        let with_url = WaffoPancakeCreateOnetimeProductBody {
+            success_url: optional_waffo_pancake_string(" https://example.com/ok "),
+            ..body
+        };
+        let value = serde_json::to_value(&with_url).unwrap();
+        assert_eq!(value["successUrl"], "https://example.com/ok");
+        assert_eq!(value["prices"]["USD"]["taxCategory"], "saas");
     }
 
     #[test]

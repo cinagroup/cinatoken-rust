@@ -2117,12 +2117,13 @@ Updated local evidence from this config-save batch is superseded by 22.15,
 which adds the adjacent Waffo Pancake catalog read paths and records the current
 route-debt baseline.
 
-Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
+Remaining boundary at this checkpoint: `/api/user/pay`, `/api/user/creem/pay`,
 `/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`, Waffo Pancake admin
 pair/subscription-product creation helper routes, and external subscription
-checkout/callback routes remain payment-deferred and hidden until their
+checkout/callback routes remained payment-deferred. The Waffo Pancake admin
+helper portion is closed by 22.16; checkout/callback settlement remains gated by
 provider-specific order model, signature verification, idempotency, replay, and
-reconciliation evidence is in place.
+reconciliation evidence.
 
 ### 22.15 2026-07-04 Waffo Pancake Catalog Read Delta
 
@@ -2158,9 +2159,60 @@ Updated local evidence:
   `0cbaff3dac0f6260cc4457b913681d43573919205f3a3cb329e8cd34ebddfbd1`;
 - `cargo test -p cinatoken-worker --lib`: 282 passed.
 
-Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
+Remaining boundary at this checkpoint: `/api/user/pay`, `/api/user/creem/pay`,
 `/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`, Waffo Pancake admin
 pair/subscription-product creation helper routes, and external subscription
-checkout/callback routes remain payment-deferred and hidden until their
+checkout/callback routes remained payment-deferred. The Waffo Pancake admin
+helper portion is closed by 22.16; checkout/callback settlement remains gated by
 provider-specific order model, signature verification, idempotency, replay, and
-reconciliation evidence is in place.
+reconciliation evidence.
+
+### 22.16 2026-07-04 Waffo Pancake Action Helper Delta
+
+This increment supersedes the 22.15 route-debt number for the default frontend
+payment-settings and subscription-plan audits. The Rust Worker now implements
+the root-only Waffo Pancake external resource helpers used by the frontend
+before any checkout/callback ownership is exposed:
+
+- `POST /api/option/waffo-pancake/pair` creates the default
+  `cinatoken-store` plus `cinatoken-charge-product` pair using typed body
+  credentials or persisted credential fallback, matching Go
+  `CreateWaffoPancakePair`.
+- `POST /api/option/waffo-pancake/subscription-product` creates and publishes a
+  Waffo Pancake OnetimeProduct for a subscription plan using persisted
+  merchant/private-key/store/return-url options, matching Go's
+  OnetimeProduct-not-SubscriptionProduct rationale.
+- Action calls use the SDK-compatible signed REST endpoints
+  `/v1/actions/store/create-store`,
+  `/v1/actions/onetime-product/create-product`, and
+  `/v1/actions/onetime-product/publish-product`.
+- The Worker sends `X-Idempotency-Key = sha256(merchant:path:body)` for action
+  calls, while catalog GraphQL remains no-idempotency. This preserves the Go SDK
+  retry/dedupe shape for deterministic default names.
+- The external request boundary keeps the 12 second timeout, redirect rejection,
+  JSON response requirement, `Content-Length` check, and 512 KiB streamed
+  response cap added in 22.15.
+- Pair creation preserves Go's orphan-store response shape when store creation
+  succeeds but product creation/publish fails, so the frontend can preselect the
+  new store and retry without losing context.
+- The Waffo admin helper routes now return the Go-compatible
+  `{message:"success"|"error", data}` shape expected by the tracked React
+  frontend. Root-auth failures still use the shared Rust auth envelope/status.
+- This does not enable customer Waffo Pancake checkout, webhook settlement, or
+  subscription external payment callbacks.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 237 Worker routes, 39 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  4 payment-deferred;
+- route-set SHA-256:
+  `a3ffcf011d892afb7b2a2388b3321b66c64456564271cddccb22e29735b4021c`;
+- `cargo test -p cinatoken-worker --lib`: 286 passed.
+
+Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
+`/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`,
+`/api/subscription/creem/pay`, `/api/subscription/waffo-pancake/pay`, and
+external subscription checkout/callback routes remain payment-deferred and
+hidden until their provider-specific order model, signature verification,
+idempotency, replay, and reconciliation evidence is in place.

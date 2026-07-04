@@ -280,8 +280,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   reads are implemented at `POST /api/option/waffo-pancake/catalog` and
   `POST /api/option/waffo-pancake/subscription-product-options` with root-only
   auth, Go-compatible credential fallback, signed GraphQL requests, timeout and
-  response-size limits, and active onetime-product filtering. Non-Stripe
-  checkout, callback, and external resource-creation gateways remain hidden
+  response-size limits, and active onetime-product filtering. Waffo Pancake
+  external resource helpers are implemented at
+  `POST /api/option/waffo-pancake/pair` and
+  `POST /api/option/waffo-pancake/subscription-product` with root-only auth,
+  signed REST actions, deterministic SDK-style idempotency keys,
+  orphan-store surfacing, Go-compatible Waffo admin frontend envelopes, and
+  redacted admin audit. Non-Stripe checkout and callback gateways remain hidden
   until their Worker routes are implemented.
 
 ## Next
@@ -326,6 +331,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
 - Complete the remaining topup/subscription payment provider routes
-  (`epay`/`creem`/`waffo`/`waffo-pancake`, Waffo Pancake pair/subscription
-  product creation, and external subscription checkout/callback helpers) before
-  exposing those payment methods broadly in production.
+  (`epay`/`creem`/`waffo`/`waffo-pancake` checkout/callback helpers and
+  external subscription payment providers) before exposing those payment
+  methods broadly in production.

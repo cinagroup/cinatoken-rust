@@ -583,6 +583,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/subscription/stripe/pay", |req, ctx| async move {
             admin_subscription::stripe_pay(req, ctx.env).await
         })
+        .post_async("/api/subscription/creem/pay", |req, ctx| async move {
+            admin_subscription::creem_pay(req, ctx.env).await
+        })
         .get_async("/api/subscription/admin/plans", |req, ctx| async move {
             admin_subscription::admin_list_plans(req, ctx.env).await
         })

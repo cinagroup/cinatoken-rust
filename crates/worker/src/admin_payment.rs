@@ -1828,17 +1828,144 @@ pub async fn creem_webhook(mut req: Request, env: Env) -> WorkerResult<Response>
         .await;
         return Response::ok("OK");
     }
-    if reference_id.starts_with("sub-creem-ref-") || reference_id.starts_with("SUB") {
-        let _ = d1_repositories::insert_payment_event(
+    if let Some(order) =
+        d1_repositories::find_subscription_order_by_trade_no(&db, &reference_id).await?
+    {
+        if order.payment_provider != PAYMENT_PROVIDER_CREEM {
+            worker::console_error!(
+                "Creem subscription provider mismatch event_id={} trade_no={} provider={}",
+                event_id,
+                reference_id,
+                order.payment_provider
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                PAYMENT_PROVIDER_CREEM,
+                &event_id,
+                &reference_id,
+                "subscription_rejected",
+                &payload,
+                now,
+            )
+            .await;
+            return Response::ok("OK");
+        }
+        if order.status == "pending" {
+            let Some(plan) =
+                d1_repositories::find_subscription_plan_by_id(&db, order.plan_id).await?
+            else {
+                worker::console_error!(
+                    "Creem subscription order references missing plan event_id={} trade_no={} plan_id={}",
+                    event_id,
+                    reference_id,
+                    order.plan_id
+                );
+                return Ok(Response::error("retry", 500)?);
+            };
+            let provider_product_id = creem_subscription_product_id(&event);
+            if !provider_product_id.is_empty() && provider_product_id != plan.creem_product_id {
+                worker::console_error!(
+                    "Creem subscription product mismatch event_id={} trade_no={} expected={} actual={}",
+                    event_id,
+                    reference_id,
+                    plan.creem_product_id,
+                    provider_product_id
+                );
+                let _ = d1_repositories::insert_payment_event(
+                    &db,
+                    PAYMENT_PROVIDER_CREEM,
+                    &event_id,
+                    &reference_id,
+                    "subscription_rejected",
+                    &payload,
+                    now,
+                )
+                .await;
+                return Response::ok("OK");
+            }
+            if !creem_amount_paid_matches(plan.price_amount, event.object.order.amount_paid) {
+                worker::console_error!(
+                    "Creem subscription amount mismatch event_id={} trade_no={} plan_money={} amount_paid_cents={}",
+                    event_id,
+                    reference_id,
+                    plan.price_amount,
+                    event.object.order.amount_paid
+                );
+                let _ = d1_repositories::insert_payment_event(
+                    &db,
+                    PAYMENT_PROVIDER_CREEM,
+                    &event_id,
+                    &reference_id,
+                    "subscription_rejected",
+                    &payload,
+                    now,
+                )
+                .await;
+                return Response::ok("OK");
+            }
+        }
+        let outcome = admin_subscription::complete_order_for_provider(
             &db,
-            PAYMENT_PROVIDER_CREEM,
-            &event_id,
             &reference_id,
-            "subscription_deferred",
             &payload,
+            PAYMENT_PROVIDER_CREEM,
+            PAYMENT_PROVIDER_CREEM,
             now,
         )
-        .await;
+        .await?;
+        match outcome {
+            admin_subscription::SubscriptionOrderWebhookOutcome::Completed
+            | admin_subscription::SubscriptionOrderWebhookOutcome::AlreadyComplete => {
+                let customer_email = event.object.customer.email.trim();
+                if !customer_email.is_empty() {
+                    let _ = d1_repositories::update_user_email_if_empty(
+                        &db,
+                        order.user_id,
+                        customer_email,
+                    )
+                    .await;
+                }
+                let _ = d1_repositories::insert_payment_event(
+                    &db,
+                    PAYMENT_PROVIDER_CREEM,
+                    &event_id,
+                    &reference_id,
+                    "subscription_paid",
+                    &payload,
+                    now,
+                )
+                .await;
+            }
+            admin_subscription::SubscriptionOrderWebhookOutcome::AlreadyTerminal => {
+                let _ = d1_repositories::insert_payment_event(
+                    &db,
+                    PAYMENT_PROVIDER_CREEM,
+                    &event_id,
+                    &reference_id,
+                    "subscription_ignored",
+                    &payload,
+                    now,
+                )
+                .await;
+            }
+            other => {
+                worker::console_warn!(
+                    "Creem subscription order {} ignored with outcome {:?}",
+                    reference_id,
+                    other
+                );
+                let _ = d1_repositories::insert_payment_event(
+                    &db,
+                    PAYMENT_PROVIDER_CREEM,
+                    &event_id,
+                    &reference_id,
+                    "subscription_ignored",
+                    &payload,
+                    now,
+                )
+                .await;
+            }
+        }
         return Response::ok("OK");
     }
     if !event.object.order.r#type.eq_ignore_ascii_case("onetime") {
@@ -3139,17 +3266,17 @@ struct EpayNotifyInfo {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-struct CreemProduct {
+pub(crate) struct CreemProduct {
     #[serde(rename = "productId")]
-    product_id: String,
+    pub(crate) product_id: String,
     #[serde(default)]
-    name: String,
+    pub(crate) name: String,
     #[serde(default)]
-    price: f64,
+    pub(crate) price: f64,
     #[serde(default)]
-    currency: String,
+    pub(crate) currency: String,
     #[serde(default)]
-    quota: i64,
+    pub(crate) quota: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -3172,11 +3299,11 @@ struct CreemCheckoutCustomer {
 }
 
 #[derive(Debug, Deserialize)]
-struct CreemCheckoutResponse {
+pub(crate) struct CreemCheckoutResponse {
     #[serde(default)]
-    checkout_url: String,
+    pub(crate) checkout_url: String,
     #[serde(default)]
-    id: String,
+    pub(crate) id: String,
 }
 
 #[allow(dead_code)]
@@ -4353,7 +4480,7 @@ fn is_completed_waffo_replay(topup: &d1_repositories::TopupRow, expected_money: 
         && (topup.money - expected_money).abs() < 0.000001
 }
 
-async fn create_creem_checkout(
+pub(crate) async fn create_creem_checkout(
     api_key: &str,
     test_mode: bool,
     reference_id: &str,
@@ -5709,6 +5836,15 @@ fn creem_amount_paid_matches(topup_money: f64, amount_paid_cents: i64) -> bool {
     expected_cents == amount_paid_cents
 }
 
+fn creem_subscription_product_id(event: &CreemWebhookEvent) -> &str {
+    let product_id = event.object.product.id.trim();
+    if product_id.is_empty() {
+        event.object.order.product.trim()
+    } else {
+        product_id
+    }
+}
+
 fn validate_waffo_pancake_webhook_content_length(value: Option<String>) -> Result<(), String> {
     let Some(value) = value else {
         return Ok(());
@@ -5967,11 +6103,11 @@ mod tests {
 
     use super::{
         constant_time_str_eq, creem_amount_paid_matches, creem_event_id, creem_products_enabled,
-        creem_trade_no, discount_for_amount, epay_credit_quota, epay_payment_method_allowed,
-        epay_purchase_params, epay_sign, epay_signing_string, epay_submit_url,
-        filter_active_waffo_pancake_products, format_pay_money, format_waffo_amount,
-        generate_creem_signature, is_completed_creem_replay, is_completed_epay_replay,
-        is_completed_waffo_pancake_replay, is_completed_waffo_replay,
+        creem_subscription_product_id, creem_trade_no, discount_for_amount, epay_credit_quota,
+        epay_payment_method_allowed, epay_purchase_params, epay_sign, epay_signing_string,
+        epay_submit_url, filter_active_waffo_pancake_products, format_pay_money,
+        format_waffo_amount, generate_creem_signature, is_completed_creem_replay,
+        is_completed_epay_replay, is_completed_waffo_pancake_replay, is_completed_waffo_replay,
         normalize_waffo_pancake_private_key, normalize_waffo_pancake_public_key, online_min_topup,
         online_pay_money, optional_waffo_pancake_string, parse_creem_products, parse_form_params,
         parse_optional_json_bytes, parse_payment_methods, parse_waffo_pancake_event_money,
@@ -5987,16 +6123,16 @@ mod tests {
         waffo_pancake_event_id, waffo_pancake_idempotency_key, waffo_pancake_signature_input,
         waffo_pancake_subscription_options, waffo_pancake_topup_configured,
         zero_decimal_waffo_currency, CreemProduct, CreemWebhookEvent, CreemWebhookObject,
-        CreemWebhookOrder, EpayNotifyInfo, EpayPurchaseInput, OnlineAmountSettings,
-        SaveWaffoPancakeConfigRequest, WaffoPancakeCatalog, WaffoPancakeCatalogProduct,
-        WaffoPancakeCatalogStore, WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo,
-        WaffoPancakeWebhookData, WaffoPancakeWebhookEvent, WaffoPaymentNotificationResult,
-        WaffoWebhookEvent, CREEM_WEBHOOK_BODY_LIMIT_BYTES, EPAY_NOTIFY_BODY_LIMIT_BYTES,
-        PAYMENT_PROVIDER_CREEM, PAYMENT_PROVIDER_EPAY, PAYMENT_PROVIDER_WAFFO,
-        PAYMENT_PROVIDER_WAFFO_PANCAKE, TOPUP_STATUS_SUCCESS, WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES,
-        WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH, WAFFO_PANCAKE_MERCHANT_ID_KEY,
-        WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY, WAFFO_PANCAKE_RETURN_URL_KEY,
-        WAFFO_PANCAKE_STORE_ID_KEY, WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
+        CreemWebhookOrder, CreemWebhookProduct, EpayNotifyInfo, EpayPurchaseInput,
+        OnlineAmountSettings, SaveWaffoPancakeConfigRequest, WaffoPancakeCatalog,
+        WaffoPancakeCatalogProduct, WaffoPancakeCatalogStore, WaffoPancakeCreateOnetimeProductBody,
+        WaffoPancakePriceInfo, WaffoPancakeWebhookData, WaffoPancakeWebhookEvent,
+        WaffoPaymentNotificationResult, WaffoWebhookEvent, CREEM_WEBHOOK_BODY_LIMIT_BYTES,
+        EPAY_NOTIFY_BODY_LIMIT_BYTES, PAYMENT_PROVIDER_CREEM, PAYMENT_PROVIDER_EPAY,
+        PAYMENT_PROVIDER_WAFFO, PAYMENT_PROVIDER_WAFFO_PANCAKE, TOPUP_STATUS_SUCCESS,
+        WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES, WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH,
+        WAFFO_PANCAKE_MERCHANT_ID_KEY, WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY,
+        WAFFO_PANCAKE_RETURN_URL_KEY, WAFFO_PANCAKE_STORE_ID_KEY, WAFFO_PANCAKE_TAX_CATEGORY_SAAS,
         WAFFO_PANCAKE_WEBHOOK_BODY_LIMIT_BYTES, WAFFO_TOPUP_OPTION_KEYS,
         WAFFO_WEBHOOK_BODY_LIMIT_BYTES,
     };
@@ -6321,6 +6457,30 @@ mod tests {
             "Creem webhook"
         )
         .is_err());
+    }
+
+    #[test]
+    fn creem_subscription_product_id_prefers_product_object_then_order_field() {
+        let mut event = CreemWebhookEvent {
+            id: String::new(),
+            event_type: String::new(),
+            created_at: 0,
+            object: CreemWebhookObject {
+                product: CreemWebhookProduct {
+                    id: "prod_object".to_string(),
+                    ..Default::default()
+                },
+                order: CreemWebhookOrder {
+                    product: "prod_order".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+        assert_eq!(creem_subscription_product_id(&event), "prod_object");
+
+        event.object.product.id.clear();
+        assert_eq!(creem_subscription_product_id(&event), "prod_order");
     }
 
     #[test]

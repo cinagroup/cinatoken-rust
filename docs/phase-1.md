@@ -266,7 +266,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `subscription_orders` row before calling Stripe Checkout, returning the
   frontend `pay_link`, and settling `checkout.session.completed` /
   `checkout.session.expired` through the shared Stripe webhook before falling
-  back to wallet topups.
+  back to wallet topups. Creem subscription checkout is implemented at
+  `POST /api/subscription/creem/pay`, creating the pending subscription order
+  before calling Creem Checkout and settling signature-valid
+  `checkout.completed` + paid events through the shared subscription D1 batch
+  before falling back to wallet topups.
 - Wallet/topup compatibility (`crates/worker/src/admin_payment.rs`): Stripe
   amount estimation, frontend-compatible Stripe `pay_link`, wallet
   `topup/info`, self/admin topup history pagination with Go's 30-day self
@@ -335,9 +339,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Waffo credentials are complete, exposes Waffo Pancake only when compliance
   and merchant/private/product settings are complete, and exposes Creem
   products only when compliance, API key, products, and webhook secret are all
-  configured. External subscription payment providers other than Stripe remain
-  hidden until their Worker routes and provider-specific settlement checks are
-  implemented.
+  configured. Creem subscription checkout is now also exposed when the selected
+  plan has a Creem product id and Creem payment settings are complete.
+  Remaining external subscription payment provider routes stay hidden until
+  their Worker routes and provider-specific settlement checks are implemented.
 
 ## Next
 
@@ -381,5 +386,5 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
 - Complete the remaining external subscription payment provider routes
-  (Creem, Waffo Pancake, Epay subscription checkout/callbacks) before exposing
+  (Waffo Pancake and Epay subscription checkout/callbacks) before exposing
   those payment methods broadly in production.

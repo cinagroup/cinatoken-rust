@@ -4,22 +4,22 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 311 passed after adding Stripe
-  subscription checkout at `POST /api/subscription/stripe/pay` and wiring
-  Stripe `checkout.session.completed` / `checkout.session.expired` events
-  through subscription order settlement before wallet-topup fallback.
+- `cargo test -p cinatoken-worker --lib`: 314 passed after adding Creem
+  subscription checkout at `POST /api/subscription/creem/pay` and wiring
+  Creem `checkout.completed` + paid events through subscription order
+  settlement before wallet-topup fallback.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same Stripe subscription slice.
+  the same Creem subscription slice.
 - `bun run check`: passed after updating the intentional route-debt baseline,
   covering the frontend TypeScript/build, route-debt baseline, Rust workspace
   tests excluding the Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 247 Worker routes, 34 missing calls, categories
-  13 auth-deferred / 21 capability-hidden-product, SHA-256
-  `792603717515eec247bb086b8136b4e37293d673bbe7d808491af1854c8fcde3`.
+  212 frontend calls, 248 Worker routes, 33 missing calls, categories
+  13 auth-deferred / 20 capability-hidden-product, SHA-256
+  `cda3a9b64f6b5d611724852f02448df910ae650218273b296d99e564560e19e6`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 34-call / 0 payment-deferred baseline above.
+superseded by the current 33-call / 0 payment-deferred baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
   checkout and webhook settlement at `POST /api/user/creem/pay` and

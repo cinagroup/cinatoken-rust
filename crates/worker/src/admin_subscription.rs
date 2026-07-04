@@ -20,12 +20,14 @@ use worker::{
     Response, Result as WorkerResult,
 };
 
+use cinatoken_auth::USER_STATUS_DISABLED;
 use cinatoken_session::SessionClaims;
 
 use crate::admin::{
     admin_audit_info, envelope_error_response, envelope_ok_response, read_json_body,
     require_admin_auth, require_user_auth, unix_timestamp,
 };
+use crate::admin_payment;
 use crate::admin_user::parse_group_ratios;
 use crate::d1_repositories::{
     self, SubscriptionOrderSettlementWrite, SubscriptionOrderWrite, SubscriptionPlanRow,
@@ -56,7 +58,12 @@ const ORDER_STATUS_SUCCESS: &str = "success";
 const ORDER_STATUS_EXPIRED: &str = "expired";
 const PAYMENT_METHOD_BALANCE: &str = "balance";
 const PAYMENT_PROVIDER_BALANCE: &str = "balance";
+const PAYMENT_PROVIDER_CREEM: &str = "creem";
 const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
+const CREEM_API_KEY_KEY: &str = "CreemApiKey";
+const CREEM_TEST_MODE_KEY: &str = "CreemTestMode";
+const CREEM_WEBHOOK_SECRET_KEY: &str = "CreemWebhookSecret";
+const GENERAL_QUOTA_DISPLAY_TYPE_KEY: &str = "general_setting.quota_display_type";
 const STRIPE_CHECKOUT_SESSIONS_URL: &str = "https://api.stripe.com/v1/checkout/sessions";
 const STRIPE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const STRIPE_RESPONSE_LIMIT_BYTES: usize = 64 * 1024;
@@ -348,6 +355,155 @@ pub async fn stripe_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
         checkout_url: session.checkout_url,
         session_id: session.session_id,
         trade_no,
+    })?)
+}
+
+pub async fn creem_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let payload: PlanIdRequest = match parse_body(&mut req, "subscription creem pay").await {
+        Ok(payload) => payload,
+        Err(response) => return Ok(response),
+    };
+    let Some(plan_id) = payload.plan_id.filter(|id| *id > 0) else {
+        return Ok(envelope_error_response(400, "plan_id is required"));
+    };
+
+    let db = env.d1("DB")?;
+    if !payment_compliance_confirmed(&db).await? {
+        return Ok(envelope_error_response(
+            400,
+            "payment compliance is required",
+        ));
+    }
+    let values = d1_repositories::option_values(
+        &db,
+        &[
+            CREEM_API_KEY_KEY,
+            CREEM_TEST_MODE_KEY,
+            CREEM_WEBHOOK_SECRET_KEY,
+            GENERAL_QUOTA_DISPLAY_TYPE_KEY,
+        ],
+    )
+    .await?;
+    let api_key = values[0].as_deref().unwrap_or_default().trim();
+    let test_mode = parse_bool(values[1].as_deref(), false);
+    let webhook_secret = values[2].as_deref().unwrap_or_default().trim();
+    let currency = creem_subscription_currency(values[3].as_deref());
+    if api_key.is_empty() || webhook_secret.is_empty() {
+        return Ok(envelope_error_response(
+            503,
+            "Creem subscription payment is not configured",
+        ));
+    }
+    let Some(plan) = d1_repositories::find_subscription_plan_by_id(&db, plan_id).await? else {
+        return Ok(envelope_error_response(404, "subscription plan not found"));
+    };
+    if plan.enabled == 0 {
+        return Ok(envelope_error_response(
+            400,
+            "subscription plan is disabled",
+        ));
+    }
+    if plan.price_amount < 0.0 {
+        return Ok(envelope_error_response(
+            400,
+            "subscription price cannot be negative",
+        ));
+    }
+    let creem_product_id = plan.creem_product_id.trim();
+    if creem_product_id.is_empty() {
+        return Ok(envelope_error_response(
+            400,
+            "subscription plan is missing a Creem product id",
+        ));
+    }
+    if plan.max_purchase_per_user > 0 {
+        let count =
+            d1_repositories::count_user_subscriptions_by_plan(&db, claims.id, plan.id).await?;
+        if count >= plan.max_purchase_per_user {
+            return Ok(envelope_error_response(
+                400,
+                "subscription purchase limit reached",
+            ));
+        }
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(envelope_error_response(404, "user not found"));
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(envelope_error_response(403, "user is disabled"));
+    }
+    let trade_no = match creem_subscription_trade_no(&user.username) {
+        Some(value) => value,
+        None => {
+            return Ok(envelope_error_response(
+                500,
+                "failed to generate subscription order id",
+            ))
+        }
+    };
+    let now = unix_timestamp();
+    if let Err(err) = d1_repositories::insert_subscription_order(
+        &db,
+        &SubscriptionOrderWrite {
+            user_id: claims.id,
+            plan_id: plan.id,
+            money: plan.price_amount,
+            trade_no: &trade_no,
+            payment_method: PAYMENT_PROVIDER_CREEM,
+            payment_provider: PAYMENT_PROVIDER_CREEM,
+            status: ORDER_STATUS_PENDING,
+            create_time: now,
+            complete_time: 0,
+            provider_payload: "",
+        },
+    )
+    .await
+    {
+        worker::console_error!(
+            "failed to record pending Creem subscription order {trade_no}: {err}"
+        );
+        return Ok(envelope_error_response(
+            500,
+            "failed to record pending subscription order",
+        ));
+    }
+
+    let product = admin_payment::CreemProduct {
+        product_id: creem_product_id.to_string(),
+        name: plan.title.clone(),
+        price: plan.price_amount,
+        currency: currency.to_string(),
+        quota: 0,
+    };
+    let checkout = match admin_payment::create_creem_checkout(
+        api_key, test_mode, &trade_no, &product, &user,
+    )
+    .await
+    {
+        Ok(checkout) => checkout,
+        Err(message) => {
+            worker::console_error!(
+                    "failed to create Creem subscription checkout user_id={} trade_no={} product_id={} error={}",
+                    claims.id,
+                    trade_no,
+                    product.product_id,
+                    message
+                );
+            return Ok(envelope_error_response(
+                502,
+                "failed to create Creem checkout session",
+            ));
+        }
+    };
+
+    Ok(envelope_ok_response(&CreemSubscriptionPayResponse {
+        checkout_url: checkout.checkout_url,
+        order_id: trade_no,
     })?)
 }
 
@@ -1019,6 +1175,12 @@ struct StripeSubscriptionPayResponse {
     trade_no: String,
 }
 
+#[derive(Debug, Serialize)]
+struct CreemSubscriptionPayResponse {
+    checkout_url: String,
+    order_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StripeCheckoutSession {
     checkout_url: String,
@@ -1365,6 +1527,29 @@ fn stripe_subscription_trade_no_from_parts(user_id: i64, millis: i64, suffix: &s
     let mut hasher = Sha1::new();
     hasher.update(reference.as_bytes());
     format!("sub_ref_{}", hex_lower(&hasher.finalize()))
+}
+
+fn creem_subscription_trade_no(username: &str) -> Option<String> {
+    let suffix = random_base62(6)?;
+    Some(creem_subscription_trade_no_from_parts(
+        username,
+        unix_timestamp_millis(),
+        &suffix,
+    ))
+}
+
+fn creem_subscription_trade_no_from_parts(username: &str, millis: i64, suffix: &str) -> String {
+    let reference = format!("sub-creem-ref-{suffix}{millis}{username}");
+    let mut hasher = Sha1::new();
+    hasher.update(reference.as_bytes());
+    format!("sub_ref_{}", hex_lower(&hasher.finalize()))
+}
+
+fn creem_subscription_currency(quota_display_type: Option<&str>) -> &'static str {
+    match quota_display_type.map(str::trim) {
+        Some("CNY") => "CNY",
+        _ => "USD",
+    }
 }
 
 fn stripe_subscription_checkout_form(
@@ -1800,6 +1985,25 @@ mod tests {
         assert!(trade_no["sub_ref_".len()..]
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn creem_subscription_trade_no_matches_go_shape() {
+        let trade_no = creem_subscription_trade_no_from_parts("alice", 1_700_000_000_123, "Ab9zQ1");
+        assert!(trade_no.starts_with("sub_ref_"));
+        assert_eq!(trade_no.len(), "sub_ref_".len() + 40);
+        assert!(trade_no["sub_ref_".len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn creem_subscription_currency_matches_go_display_type_mapping() {
+        assert_eq!(creem_subscription_currency(Some("CNY")), "CNY");
+        assert_eq!(creem_subscription_currency(Some("USD")), "USD");
+        assert_eq!(creem_subscription_currency(Some("TOKENS")), "USD");
+        assert_eq!(creem_subscription_currency(Some("CUSTOM")), "USD");
+        assert_eq!(creem_subscription_currency(None), "USD");
     }
 
     #[test]

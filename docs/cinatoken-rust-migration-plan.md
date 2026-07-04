@@ -2497,3 +2497,52 @@ the deployment/io.net feature family remain capability-hidden or auth-deferred
 until their provider-specific order model, signature verification,
 amount/product/env checks, replay handling, and staging reconciliation evidence
 are in place.
+
+### 22.22 2026-07-04 Creem Subscription Checkout/Settlement Delta
+
+This increment removes the default frontend's Creem subscription checkout route
+from the route-debt set and upgrades the existing Creem webhook from
+subscription deferral to subscription-first settlement:
+
+- `POST /api/subscription/creem/pay` requires user session auth, payment
+  compliance, `CreemApiKey`, `CreemWebhookSecret`, an enabled plan, and a
+  non-empty plan `creem_product_id`.
+- The Worker creates a pending `subscription_orders` row before calling Creem
+  Checkout. This keeps the same Rust payment invariant used by wallet topups
+  and Stripe subscriptions: every externally paid checkout must have a local
+  settlement row before the provider is allowed to collect money.
+- Subscription order IDs keep the Go-visible hashed reference shape:
+  `sub_ref_{sha1("sub-creem-ref-{rand6}{UnixMilli}{username}")}`.
+- Creem checkout creation reuses the existing bounded Worker-native Creem
+  client: JSON request body, explicit `x-api-key`, no redirects, 30 second
+  timeout, response content-type checks, and a 64 KiB response cap.
+- `POST /api/creem/webhook` now looks up `subscription_orders` before wallet
+  topups. Signature-valid `checkout.completed` + `paid` events with a matching
+  local `payment_provider=creem`, plan `creem_product_id`, and amount complete
+  the pending order through the shared subscription D1 settlement batch.
+- Subscription settlement inserts the user subscription, applies any plan group
+  update, records a success topup-history row with `credited=1`, and marks the
+  order success. Verified duplicate deliveries are ACKed as idempotent no-ops
+  when the order is already success or otherwise terminal.
+- Signature-valid provider/product/amount mismatches are recorded in
+  `payment_events` as rejected/ignored and ACKed without credit, so permanent
+  mismatches do not create provider retry storms.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 248 Worker routes, 33 missing calls;
+- debt categories: 13 auth-deferred, 20 capability-hidden-product,
+  0 payment-deferred;
+- route-set SHA-256:
+  `cda3a9b64f6b5d611724852f02448df910ae650218273b296d99e564560e19e6`;
+- `cargo test -p cinatoken-worker --lib`: 314 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: `/api/subscription/waffo-pancake/pay`, subscription Epay
+checkout/callback, and the deployment/io.net feature family remain
+capability-hidden or auth-deferred until their provider-specific order model,
+signature verification, amount/product/env checks, replay handling, and staging
+reconciliation evidence are in place.

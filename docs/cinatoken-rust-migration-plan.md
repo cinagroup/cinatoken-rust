@@ -2447,3 +2447,53 @@ other external subscription checkout/callback routes remain capability-hidden
 or auth-deferred until their provider-specific subscription order model,
 signature verification, amount/product/env match checks, idempotency, replay,
 and reconciliation evidence is in place.
+
+### 22.21 2026-07-04 Stripe Subscription Checkout/Settlement Delta
+
+This increment removes the default frontend's Stripe subscription checkout
+route from the route-debt set and gives the existing Stripe webhook a
+subscription-first settlement branch:
+
+- `POST /api/subscription/stripe/pay` requires user session auth, payment
+  compliance, a configured Stripe API secret + webhook secret, an enabled plan,
+  and a non-empty plan `stripe_price_id`.
+- The Worker creates a pending `subscription_orders` row before calling Stripe
+  Checkout. This deliberately follows the safer Rust wallet-payment invariant:
+  a paid external checkout must always have a local settlement record.
+- Subscription order IDs keep the Go-visible hashed reference shape:
+  `sub_ref_{sha1("sub-stripe-ref-{user}-{UnixMilli}-{rand4}")}`.
+- Stripe Checkout uses `mode=subscription`, `client_reference_id`, plan
+  `price`, and either saved `stripe_customer` or `customer_email` +
+  `customer_creation=always`; success/cancel both return to
+  `/console/topup` under `FRONTEND_BASE_URL` or the request origin.
+- Outbound Stripe requests reject redirects, enforce a 30 second timeout,
+  require JSON responses, and bound response reads to 64 KiB.
+- `POST /api/stripe/webhook` now handles subscription orders before wallet
+  topups. `checkout.session.completed` completes the pending subscription
+  order through a D1 batch that inserts the user subscription, updates any
+  upgrade group, records a success topup-history row with `credited=1`, and
+  marks the order success. `checkout.session.expired` marks pending
+  subscription orders expired before falling back to wallet topup expiry.
+- Signature-valid subscription replays are ACKed as idempotent no-ops when the
+  order is already success or expired; only NotFound falls back to wallet
+  topup settlement.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 247 Worker routes, 34 missing calls;
+- debt categories: 13 auth-deferred, 21 capability-hidden-product,
+  0 payment-deferred;
+- route-set SHA-256:
+  `792603717515eec247bb086b8136b4e37293d673bbe7d808491af1854c8fcde3`;
+- `cargo test -p cinatoken-worker --lib`: 311 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: `/api/subscription/creem/pay`,
+`/api/subscription/waffo-pancake/pay`, subscription Epay checkout/callback, and
+the deployment/io.net feature family remain capability-hidden or auth-deferred
+until their provider-specific order model, signature verification,
+amount/product/env checks, replay handling, and staging reconciliation evidence
+are in place.

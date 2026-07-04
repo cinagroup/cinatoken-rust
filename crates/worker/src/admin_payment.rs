@@ -60,8 +60,8 @@ use crate::admin::{
     admin_audit_info, envelope_error_response, envelope_ok_response, read_json_body,
     require_admin_auth, require_root_auth, require_user_auth, unix_timestamp,
 };
-use crate::d1_repositories;
 use crate::set_cors_headers;
+use crate::{admin_subscription, d1_repositories};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -117,6 +117,7 @@ const PAYMENT_PROVIDER_WAFFO: &str = "waffo";
 const PAYMENT_PROVIDER_WAFFO_PANCAKE: &str = "waffo_pancake";
 const TOPUP_STATUS_SUCCESS: i32 = 1;
 const TOPUP_STATUS_FAILED: i32 = 2;
+const TOPUP_STATUS_EXPIRED: i32 = 3;
 const EPAY_SUBMIT_PATH: &str = "/submit.php";
 const EPAY_NOTIFY_BODY_LIMIT_BYTES: usize = 16 * 1024;
 const EPAY_RETURN_PATH: &str = "/usage-logs";
@@ -2294,14 +2295,70 @@ pub async fn stripe_webhook(mut req: Request, env: Env) -> WorkerResult<Response
     let event_id = event.id.clone();
     let now = unix_timestamp();
 
-    // Only `checkout.session.completed` credits a top-up; record other events
-    // for observability and ack so Stripe stops retrying.
+    let trade_no = match &event.data.object.client_reference_id {
+        Some(id) if !id.is_empty() => id.clone(),
+        _ => {
+            worker::console_warn!("Stripe webhook: no client_reference_id in event {event_id}");
+            if event.event_type != "checkout.session.completed"
+                && event.event_type != "checkout.session.expired"
+            {
+                let _ = d1_repositories::insert_payment_event(
+                    &db,
+                    "stripe",
+                    &event_id,
+                    "",
+                    "ignored",
+                    &String::from_utf8_lossy(&payload),
+                    now,
+                )
+                .await;
+            }
+            return Ok(Response::empty()?.with_status(200));
+        }
+    };
+
+    if event.event_type == "checkout.session.expired" {
+        let outcome = admin_subscription::expire_order_for_provider(
+            &db,
+            &trade_no,
+            PAYMENT_PROVIDER_STRIPE,
+            now,
+        )
+        .await?;
+        if matches!(
+            outcome,
+            admin_subscription::SubscriptionOrderWebhookOutcome::NotFound
+        ) {
+            let _ = d1_repositories::update_pending_topup_status_for_provider(
+                &db,
+                &trade_no,
+                PAYMENT_PROVIDER_STRIPE,
+                TOPUP_STATUS_EXPIRED,
+            )
+            .await;
+        }
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            "stripe",
+            &event_id,
+            &trade_no,
+            "expired",
+            &String::from_utf8_lossy(&payload),
+            now,
+        )
+        .await;
+        return Ok(Response::empty()?.with_status(200));
+    }
+
+    // Only `checkout.session.completed` credits a top-up or completes a
+    // subscription; record other events for observability and ack so Stripe
+    // stops retrying.
     if event.event_type != "checkout.session.completed" {
         let _ = d1_repositories::insert_payment_event(
             &db,
             "stripe",
             &event_id,
-            "",
+            &trade_no,
             "ignored",
             &String::from_utf8_lossy(&payload),
             now,
@@ -2310,13 +2367,63 @@ pub async fn stripe_webhook(mut req: Request, env: Env) -> WorkerResult<Response
         return Ok(Response::empty()?.with_status(200));
     }
 
-    let trade_no = match &event.data.object.client_reference_id {
-        Some(id) if !id.is_empty() => id.clone(),
-        _ => {
-            worker::console_warn!("Stripe webhook: no client_reference_id in event {event_id}");
+    let subscription_payload = serde_json::json!({
+        "customer": event.data.object.customer.as_deref().unwrap_or(""),
+        "amount_total": event.data.object.amount_total,
+        "currency": event
+            .data
+            .object
+            .currency
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_uppercase(),
+        "event_type": event.event_type,
+        "payment_status": event.data.object.payment_status.as_deref().unwrap_or(""),
+    })
+    .to_string();
+    let subscription_outcome = admin_subscription::complete_order_for_provider(
+        &db,
+        &trade_no,
+        &subscription_payload,
+        PAYMENT_PROVIDER_STRIPE,
+        PAYMENT_PROVIDER_STRIPE,
+        now,
+    )
+    .await?;
+    match subscription_outcome {
+        admin_subscription::SubscriptionOrderWebhookOutcome::Completed
+        | admin_subscription::SubscriptionOrderWebhookOutcome::AlreadyComplete => {
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                "stripe",
+                &event_id,
+                &trade_no,
+                "subscription_paid",
+                &String::from_utf8_lossy(&payload),
+                now,
+            )
+            .await;
             return Ok(Response::empty()?.with_status(200));
         }
-    };
+        admin_subscription::SubscriptionOrderWebhookOutcome::NotFound => {}
+        other => {
+            worker::console_warn!(
+                "Stripe subscription order {trade_no} ignored with outcome {:?}",
+                other
+            );
+            let _ = d1_repositories::insert_payment_event(
+                &db,
+                "stripe",
+                &event_id,
+                &trade_no,
+                "subscription_ignored",
+                &String::from_utf8_lossy(&payload),
+                now,
+            )
+            .await;
+            return Ok(Response::empty()?.with_status(200));
+        }
+    }
 
     // Idempotency + atomicity: the conditional `WHERE status = 0` CAS inside
     // `complete_topup_and_credit` is the credit-once gate, and it flips the

@@ -261,6 +261,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   list/bind/invalidate/delete; self subscription summary and billing
   preference persistence; balance-pay purchase with quota debit, order record,
   plan duration/reset calculation, and group upgrade/downgrade parity.
+  Stripe subscription checkout is implemented at
+  `POST /api/subscription/stripe/pay`, creating a pending
+  `subscription_orders` row before calling Stripe Checkout, returning the
+  frontend `pay_link`, and settling `checkout.session.completed` /
+  `checkout.session.expired` through the shared Stripe webhook before falling
+  back to wallet topups.
 - Wallet/topup compatibility (`crates/worker/src/admin_payment.rs`): Stripe
   amount estimation, frontend-compatible Stripe `pay_link`, wallet
   `topup/info`, self/admin topup history pagination with Go's 30-day self
@@ -329,9 +335,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Waffo credentials are complete, exposes Waffo Pancake only when compliance
   and merchant/private/product settings are complete, and exposes Creem
   products only when compliance, API key, products, and webhook secret are all
-  configured. Subscription Waffo Pancake remains explicitly hidden until its
-  separate subscription order settlement route is migrated. External
-  subscription payment providers remain hidden until their Worker routes are
+  configured. External subscription payment providers other than Stripe remain
+  hidden until their Worker routes and provider-specific settlement checks are
   implemented.
 
 ## Next
@@ -376,5 +381,5 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
 - Complete the remaining external subscription payment provider routes
-  (including Waffo Pancake subscription checkout/settlement) before exposing
+  (Creem, Waffo Pancake, Epay subscription checkout/callbacks) before exposing
   those payment methods broadly in production.

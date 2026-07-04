@@ -221,6 +221,9 @@ pub struct StripeCheckoutObject {
     /// Matches the `reference_id` we set during checkout creation.
     #[serde(default)]
     pub client_reference_id: Option<String>,
+    /// Stripe customer id attached to the Checkout Session, when present.
+    #[serde(default)]
+    pub customer: Option<String>,
     /// Total paid in cents.
     #[serde(default)]
     pub amount_total: Option<u64>,

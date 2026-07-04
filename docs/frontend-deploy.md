@@ -156,15 +156,16 @@ false-positive call:
   compliance before code creation, soft-delete rows, and write admin audit
   logs. Public redemption-code topup, Stripe wallet checkout, Epay wallet
   checkout/callback, legacy Waffo wallet checkout/webhook, Waffo Pancake wallet
-  checkout/webhook, and Creem wallet checkout/webhook are implemented;
-  external subscription providers remain deferred.
+  checkout/webhook, Creem wallet checkout/webhook, and Stripe subscription
+  checkout/settlement are implemented; non-Stripe external subscription
+  providers remain deferred.
 - Public rankings:
   `GET /api/rankings` now returns the default frontend's live rankings
   snapshot from D1 `logs`, honors `HeaderNavModules.rankings`, and removes
   rankings from the status capability clamp.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-35 missing calls / 0 payment-deferred calls with a stable SHA-256 route-set
+34 missing calls / 0 payment-deferred calls with a stable SHA-256 route-set
 digest and category counts. New
 unclassified calls or an unreviewed route-set change fail the check. The
 remaining calls include capability-hidden product families and deferred auth

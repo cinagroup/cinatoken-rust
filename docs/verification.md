@@ -4,25 +4,22 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 308 passed after adding legacy Waffo
-  wallet checkout and webhook settlement at `POST /api/user/waffo/pay` and
-  `POST /api/waffo/webhook`, including Go SDK-compatible RSA-SHA256
-  request/response signature helpers, default Waffo pay-method parsing,
-  sandbox/prod credential selection, zero-decimal currency formatting,
-  webhook amount checks, provider-aware credited-anchor settlement, and replay
-  no-op checks.
+- `cargo test -p cinatoken-worker --lib`: 311 passed after adding Stripe
+  subscription checkout at `POST /api/subscription/stripe/pay` and wiring
+  Stripe `checkout.session.completed` / `checkout.session.expired` events
+  through subscription order settlement before wallet-topup fallback.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same Waffo wallet/webhook slice.
-- `bun run check`: passed after the Waffo wallet/webhook slice, covering the
-  frontend TypeScript/build, route-debt baseline, Rust workspace tests
-  excluding the Worker, rustfmt check, and Worker wasm check.
+  the same Stripe subscription slice.
+- `bun run check`: passed after updating the intentional route-debt baseline,
+  covering the frontend TypeScript/build, route-debt baseline, Rust workspace
+  tests excluding the Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 246 Worker routes, 35 missing calls, categories
-  13 auth-deferred / 22 capability-hidden-product, SHA-256
-  `47cecc965627ac5c9ee04118b842dad4d1aaa5416e607449998ffa64c45e79d5`.
+  212 frontend calls, 247 Worker routes, 34 missing calls, categories
+  13 auth-deferred / 21 capability-hidden-product, SHA-256
+  `792603717515eec247bb086b8136b4e37293d673bbe7d808491af1854c8fcde3`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 35-call / 0 payment-deferred baseline above.
+superseded by the current 34-call / 0 payment-deferred baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
   checkout and webhook settlement at `POST /api/user/creem/pay` and

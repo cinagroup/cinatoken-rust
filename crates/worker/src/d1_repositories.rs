@@ -5453,6 +5453,50 @@ pub struct SubscriptionOrderWrite<'a> {
     pub provider_payload: &'a str,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SubscriptionOrderRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub plan_id: i64,
+    pub money: f64,
+    pub trade_no: String,
+    pub payment_method: String,
+    pub payment_provider: String,
+    pub status: String,
+    pub create_time: i64,
+    pub complete_time: i64,
+    pub provider_payload: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscriptionOrderSettlementWrite<'a> {
+    pub subscription: UserSubscriptionWrite<'a>,
+    pub trade_no: &'a str,
+    pub expected_provider: &'a str,
+    pub from_status: &'a str,
+    pub to_status: &'a str,
+    pub actual_payment_method: &'a str,
+    pub provider_payload: &'a str,
+    pub money: f64,
+    pub create_time: i64,
+    pub complete_time: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriptionOrderSettlementBatchResult {
+    pub subscription_inserted: bool,
+    pub group_updated: bool,
+    pub topup_inserted: bool,
+    pub topup_updated: bool,
+    pub order_marked: bool,
+}
+
+impl SubscriptionOrderSettlementBatchResult {
+    pub fn topup_recorded(self) -> bool {
+        self.topup_inserted || self.topup_updated
+    }
+}
+
 const SUBSCRIPTION_PLAN_COLUMNS: &str = r#"
   id, title, subtitle, price_amount, currency, duration_unit, duration_value,
   custom_seconds, enabled, sort_order, allow_balance_pay, stripe_price_id,
@@ -5465,6 +5509,11 @@ const USER_SUBSCRIPTION_COLUMNS: &str = r#"
   id, user_id, plan_id, amount_total, amount_used, start_time, end_time,
   status, source, last_reset_time, next_reset_time, upgrade_group,
   prev_user_group, created_at, updated_at
+"#;
+
+const SUBSCRIPTION_ORDER_COLUMNS: &str = r#"
+  id, user_id, plan_id, money, trade_no, payment_method, payment_provider,
+  status, create_time, complete_time, provider_payload
 "#;
 
 pub async fn list_subscription_plans(
@@ -5910,6 +5959,219 @@ pub async fn insert_subscription_order(
                 "D1 insert metadata did not include a subscription order row id".to_string(),
             )
         })
+}
+
+pub async fn find_subscription_order_by_trade_no(
+    db: &D1Database,
+    trade_no: &str,
+) -> worker::Result<Option<SubscriptionOrderRow>> {
+    let arg = D1Type::Text(trade_no);
+    db.prepare(&format!(
+        r#"
+        SELECT {SUBSCRIPTION_ORDER_COLUMNS}
+        FROM subscription_orders
+        WHERE trade_no = ?1
+        LIMIT 1
+        "#
+    ))
+    .bind_refs(&[arg])?
+    .first::<SubscriptionOrderRow>(None)
+    .await
+}
+
+pub async fn mark_subscription_order_status_for_provider(
+    db: &D1Database,
+    trade_no: &str,
+    expected_provider: &str,
+    from_status: &str,
+    to_status: &str,
+    complete_time: i64,
+    provider_payload: &str,
+    actual_payment_method: &str,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(trade_no),
+        D1Type::Text(expected_provider),
+        D1Type::Text(from_status),
+        D1Type::Text(to_status),
+        D1Type::Integer(d1_i32(complete_time)),
+        D1Type::Text(provider_payload),
+        D1Type::Text(actual_payment_method),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE subscription_orders
+               SET status = ?4,
+                   complete_time = ?5,
+                   updated_at = ?5,
+                   provider_payload = CASE WHEN ?6 <> '' THEN ?6 ELSE provider_payload END,
+                   payment_method = CASE WHEN ?7 <> '' THEN ?7 ELSE payment_method END
+             WHERE trade_no = ?1
+               AND payment_provider = ?2
+               AND status = ?3
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+pub async fn complete_subscription_order_batch(
+    db: &D1Database,
+    settlement: &SubscriptionOrderSettlementWrite<'_>,
+) -> worker::Result<SubscriptionOrderSettlementBatchResult> {
+    let sub = &settlement.subscription;
+    let insert_sub_args = [
+        D1Type::Integer(d1_i32(sub.user_id)),
+        D1Type::Integer(d1_i32(sub.plan_id)),
+        D1Type::Integer(d1_i32(sub.amount_total)),
+        D1Type::Integer(d1_i32(sub.amount_used)),
+        D1Type::Integer(d1_i32(sub.start_time)),
+        D1Type::Integer(d1_i32(sub.end_time)),
+        D1Type::Text(sub.status),
+        D1Type::Text(sub.source),
+        D1Type::Integer(d1_i32(sub.last_reset_time)),
+        D1Type::Integer(d1_i32(sub.next_reset_time)),
+        D1Type::Text(sub.upgrade_group),
+        D1Type::Text(sub.prev_user_group),
+        D1Type::Integer(d1_i32(sub.created_at)),
+        D1Type::Integer(d1_i32(sub.updated_at)),
+        D1Type::Text(settlement.trade_no),
+        D1Type::Text(settlement.expected_provider),
+        D1Type::Text(settlement.from_status),
+    ];
+    let insert_sub_stmt = db
+        .prepare(
+            r#"
+            INSERT INTO user_subscriptions (
+              user_id, plan_id, amount_total, amount_used, start_time, end_time,
+              status, source, last_reset_time, next_reset_time, upgrade_group,
+              prev_user_group, created_at, updated_at
+            )
+            SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+            WHERE EXISTS (
+              SELECT 1 FROM subscription_orders
+              WHERE trade_no = ?15 AND payment_provider = ?16 AND status = ?17
+            )
+            "#,
+        )
+        .bind_refs(&insert_sub_args)?;
+
+    let group_args = [
+        D1Type::Text(sub.upgrade_group),
+        D1Type::Integer(d1_i32(sub.user_id)),
+        D1Type::Text(settlement.trade_no),
+        D1Type::Text(settlement.expected_provider),
+        D1Type::Text(settlement.from_status),
+    ];
+    let group_stmt = db
+        .prepare(
+            r#"
+            UPDATE users
+               SET "group" = ?1
+             WHERE id = ?2
+               AND deleted_at IS NULL
+               AND ?1 <> ''
+               AND "group" <> ?1
+               AND EXISTS (
+                 SELECT 1 FROM subscription_orders
+                 WHERE trade_no = ?3 AND payment_provider = ?4 AND status = ?5
+               )
+            "#,
+        )
+        .bind_refs(&group_args)?;
+
+    let topup_args = [
+        D1Type::Integer(d1_i32(sub.user_id)),
+        D1Type::Real(settlement.money),
+        D1Type::Text(settlement.trade_no),
+        D1Type::Text(settlement.actual_payment_method),
+        D1Type::Text(settlement.expected_provider),
+        D1Type::Integer(d1_i32(settlement.create_time)),
+        D1Type::Integer(d1_i32(settlement.complete_time)),
+        D1Type::Text(settlement.from_status),
+    ];
+    let insert_topup_stmt = db
+        .prepare(
+            r#"
+            INSERT OR IGNORE INTO topups (
+              user_id, amount, money, trade_no, payment_method, payment_provider,
+              status, create_time, complete_time, credited
+            )
+            SELECT ?1, 0, ?2, ?3, ?4, ?5, 1, ?6, ?7, 1
+            WHERE EXISTS (
+              SELECT 1 FROM subscription_orders
+              WHERE trade_no = ?3 AND payment_provider = ?5 AND status = ?8
+            )
+            "#,
+        )
+        .bind_refs(&topup_args)?;
+    let update_topup_stmt = db
+        .prepare(
+            r#"
+            UPDATE topups
+               SET amount = 0,
+                   money = ?2,
+                   payment_method = ?4,
+                   payment_provider = ?5,
+                   status = 1,
+                   create_time = ?6,
+                   complete_time = ?7,
+                   credited = 1
+             WHERE trade_no = ?3
+               AND payment_provider = ?5
+               AND EXISTS (
+                 SELECT 1 FROM subscription_orders
+                 WHERE trade_no = ?3 AND payment_provider = ?5 AND status = ?8
+               )
+            "#,
+        )
+        .bind_refs(&topup_args)?;
+
+    let order_args = [
+        D1Type::Text(settlement.trade_no),
+        D1Type::Text(settlement.expected_provider),
+        D1Type::Text(settlement.from_status),
+        D1Type::Text(settlement.to_status),
+        D1Type::Integer(d1_i32(settlement.complete_time)),
+        D1Type::Text(settlement.provider_payload),
+        D1Type::Text(settlement.actual_payment_method),
+    ];
+    let order_stmt = db
+        .prepare(
+            r#"
+            UPDATE subscription_orders
+               SET status = ?4,
+                   complete_time = ?5,
+                   updated_at = ?5,
+                   provider_payload = ?6,
+                   payment_method = CASE WHEN ?7 <> '' THEN ?7 ELSE payment_method END
+             WHERE trade_no = ?1
+               AND payment_provider = ?2
+               AND status = ?3
+            "#,
+        )
+        .bind_refs(&order_args)?;
+
+    let results = db
+        .batch(vec![
+            insert_sub_stmt,
+            group_stmt,
+            insert_topup_stmt,
+            update_topup_stmt,
+            order_stmt,
+        ])
+        .await?;
+    let result = SubscriptionOrderSettlementBatchResult {
+        subscription_inserted: batch_changed(&results, 0)?,
+        group_updated: batch_changed(&results, 1)?,
+        topup_inserted: batch_changed(&results, 2)?,
+        topup_updated: batch_changed(&results, 3)?,
+        order_marked: batch_changed(&results, 4)?,
+    };
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,13 +1,24 @@
 //! Subscription plan and user-subscription routes.
 //!
-//! This is the balance-payable core of Go `controller/subscription.go`.
-//! External payment providers stay on the payment migration track; the D1
-//! schema and shared creation path here are intentionally provider-neutral.
+//! This is the balance-payable and Stripe-checkout core of Go
+//! `controller/subscription.go`. Non-Stripe external payment providers stay on
+//! the payment migration track; the D1 schema and shared creation path here are
+//! intentionally provider-neutral.
 
+use std::time::Duration;
+
+use futures_util::{
+    future::{select, Either},
+    TryStreamExt,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha1::{Digest, Sha1};
 use wasm_bindgen::JsValue;
-use worker::{Env, Request, Response, Result as WorkerResult};
+use worker::{
+    AbortController, Delay, Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect,
+    Response, Result as WorkerResult,
+};
 
 use cinatoken_session::SessionClaims;
 
@@ -17,8 +28,8 @@ use crate::admin::{
 };
 use crate::admin_user::parse_group_ratios;
 use crate::d1_repositories::{
-    self, SubscriptionOrderWrite, SubscriptionPlanRow, SubscriptionPlanWrite,
-    SubscriptionUserState, UserSubscriptionRow, UserSubscriptionWrite,
+    self, SubscriptionOrderSettlementWrite, SubscriptionOrderWrite, SubscriptionPlanRow,
+    SubscriptionPlanWrite, SubscriptionUserState, UserSubscriptionRow, UserSubscriptionWrite,
 };
 
 const CURRENT_COMPLIANCE_TERMS_VERSION: &str = "v1";
@@ -40,9 +51,15 @@ const RESET_MONTHLY: &str = "monthly";
 const RESET_CUSTOM: &str = "custom";
 
 const SUB_STATUS_ACTIVE: &str = "active";
+const ORDER_STATUS_PENDING: &str = "pending";
 const ORDER_STATUS_SUCCESS: &str = "success";
+const ORDER_STATUS_EXPIRED: &str = "expired";
 const PAYMENT_METHOD_BALANCE: &str = "balance";
 const PAYMENT_PROVIDER_BALANCE: &str = "balance";
+const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
+const STRIPE_CHECKOUT_SESSIONS_URL: &str = "https://api.stripe.com/v1/checkout/sessions";
+const STRIPE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const STRIPE_RESPONSE_LIMIT_BYTES: usize = 64 * 1024;
 
 pub async fn public_plans(req: Request, env: Env) -> WorkerResult<Response> {
     let _claims = match require_user_auth(&req, &env).await? {
@@ -197,6 +214,141 @@ pub async fn balance_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
     .await;
 
     Ok(envelope_ok_response(&Value::Null)?)
+}
+
+pub async fn stripe_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let payload: PlanIdRequest = match parse_body(&mut req, "subscription stripe pay").await {
+        Ok(payload) => payload,
+        Err(response) => return Ok(response),
+    };
+    let Some(plan_id) = payload.plan_id.filter(|id| *id > 0) else {
+        return Ok(envelope_error_response(400, "plan_id is required"));
+    };
+
+    let db = env.d1("DB")?;
+    if !payment_compliance_confirmed(&db).await? {
+        return Ok(envelope_error_response(
+            400,
+            "payment compliance is required",
+        ));
+    }
+    let config = d1_repositories::load_stripe_config(&db).await?;
+    if !stripe_configured(&config.api_secret, &config.webhook_secret) {
+        return Ok(envelope_error_response(
+            503,
+            "Stripe subscription payment is not configured",
+        ));
+    }
+    let Some(plan) = d1_repositories::find_subscription_plan_by_id(&db, plan_id).await? else {
+        return Ok(envelope_error_response(404, "subscription plan not found"));
+    };
+    if plan.enabled == 0 {
+        return Ok(envelope_error_response(
+            400,
+            "subscription plan is disabled",
+        ));
+    }
+    if plan.price_amount < 0.0 {
+        return Ok(envelope_error_response(
+            400,
+            "subscription price cannot be negative",
+        ));
+    }
+    let stripe_price_id = plan.stripe_price_id.trim();
+    if stripe_price_id.is_empty() {
+        return Ok(envelope_error_response(
+            400,
+            "subscription plan is missing a Stripe price id",
+        ));
+    }
+    if plan.max_purchase_per_user > 0 {
+        let count =
+            d1_repositories::count_user_subscriptions_by_plan(&db, claims.id, plan.id).await?;
+        if count >= plan.max_purchase_per_user {
+            return Ok(envelope_error_response(
+                400,
+                "subscription purchase limit reached",
+            ));
+        }
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id_full(&db, claims.id).await? else {
+        return Ok(envelope_error_response(404, "user not found"));
+    };
+    if user.deleted_at.is_some() {
+        return Ok(envelope_error_response(404, "user not found"));
+    }
+    let trade_no = match stripe_subscription_trade_no(claims.id) {
+        Some(value) => value,
+        None => {
+            return Ok(envelope_error_response(
+                500,
+                "failed to generate subscription order id",
+            ))
+        }
+    };
+    let now = unix_timestamp();
+    if let Err(err) = d1_repositories::insert_subscription_order(
+        &db,
+        &SubscriptionOrderWrite {
+            user_id: claims.id,
+            plan_id: plan.id,
+            money: plan.price_amount,
+            trade_no: &trade_no,
+            payment_method: PAYMENT_PROVIDER_STRIPE,
+            payment_provider: PAYMENT_PROVIDER_STRIPE,
+            status: ORDER_STATUS_PENDING,
+            create_time: now,
+            complete_time: 0,
+            provider_payload: "",
+        },
+    )
+    .await
+    {
+        worker::console_error!("failed to record pending subscription order {trade_no}: {err}");
+        return Ok(envelope_error_response(
+            500,
+            "failed to record pending subscription order",
+        ));
+    }
+
+    let frontend_base = match resolve_frontend_base_url(&env, &req) {
+        Ok(value) => value,
+        Err(message) => return Ok(envelope_error_response(400, &message)),
+    };
+    let return_url = join_url_path(&frontend_base, "/console/topup");
+    let form_body = stripe_subscription_checkout_form(
+        &trade_no,
+        &return_url,
+        &return_url,
+        stripe_price_id,
+        user.stripe_customer.trim(),
+        user.email.trim(),
+    );
+    let session =
+        match create_stripe_checkout_session(&config.api_secret, form_body.as_bytes()).await {
+            Ok(session) => session,
+            Err(message) => {
+                worker::console_error!(
+                    "failed to create Stripe subscription checkout {trade_no}: {message}"
+                );
+                return Ok(envelope_error_response(
+                    502,
+                    "failed to create Stripe checkout session",
+                ));
+            }
+        };
+
+    Ok(envelope_ok_response(&StripeSubscriptionPayResponse {
+        pay_link: session.checkout_url.clone(),
+        checkout_url: session.checkout_url,
+        session_id: session.session_id,
+        trade_no,
+    })?)
 }
 
 pub async fn admin_list_plans(req: Request, env: Env) -> WorkerResult<Response> {
@@ -498,6 +650,26 @@ async fn create_subscription_from_plan(
     source: &str,
     now: i64,
 ) -> std::result::Result<Option<String>, String> {
+    let prepared = prepare_subscription_from_plan(db, user_id, plan, source, now).await?;
+    let sub = prepared.as_write();
+    d1_repositories::insert_user_subscription(db, &sub)
+        .await
+        .map_err(|err| err.to_string())?;
+    if prepared.upgrade_applies {
+        d1_repositories::update_user_group(db, user_id, &prepared.upgrade_group)
+            .await
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(prepared.upgrade_message())
+}
+
+async fn prepare_subscription_from_plan(
+    db: &worker::D1Database,
+    user_id: i64,
+    plan: &SubscriptionPlanRow,
+    source: &str,
+    now: i64,
+) -> std::result::Result<PreparedSubscription, String> {
     if user_id <= 0 || plan.id <= 0 {
         return Err("invalid user or plan id".to_string());
     }
@@ -517,32 +689,155 @@ async fn create_subscription_from_plan(
     let next_reset_time = calc_next_reset_time(now, plan, end_time);
     let last_reset_time = if next_reset_time > 0 { now } else { 0 };
     let upgrade_group = plan.upgrade_group.trim();
+    let upgrade_applies = !upgrade_group.is_empty() && user.group_name != upgrade_group;
     let prev_user_group = previous_group_for_upgrade(&user, upgrade_group);
-    let sub = UserSubscriptionWrite {
+    Ok(PreparedSubscription {
         user_id,
         plan_id: plan.id,
         amount_total: plan.total_amount,
         amount_used: 0,
         start_time: now,
         end_time,
-        status: SUB_STATUS_ACTIVE,
-        source,
+        status: SUB_STATUS_ACTIVE.to_string(),
+        source: source.to_string(),
         last_reset_time,
         next_reset_time,
-        upgrade_group,
-        prev_user_group: &prev_user_group,
+        upgrade_group: upgrade_group.to_string(),
+        prev_user_group,
+        upgrade_applies,
         created_at: now,
         updated_at: now,
+    })
+}
+
+pub(crate) async fn complete_order_for_provider(
+    db: &worker::D1Database,
+    trade_no: &str,
+    provider_payload: &str,
+    expected_provider: &str,
+    actual_payment_method: &str,
+    now: i64,
+) -> WorkerResult<SubscriptionOrderWebhookOutcome> {
+    let Some(order) = d1_repositories::find_subscription_order_by_trade_no(db, trade_no).await?
+    else {
+        return Ok(SubscriptionOrderWebhookOutcome::NotFound);
     };
-    d1_repositories::insert_user_subscription(db, &sub)
-        .await
-        .map_err(|err| err.to_string())?;
-    if !upgrade_group.is_empty() && user.group_name != upgrade_group {
-        d1_repositories::update_user_group(db, user_id, upgrade_group)
-            .await
-            .map_err(|err| err.to_string())?;
+    if order.payment_provider != expected_provider {
+        return Ok(SubscriptionOrderWebhookOutcome::ProviderMismatch);
     }
-    Ok((!upgrade_group.is_empty()).then(|| format!("user group will upgrade to {upgrade_group}")))
+    match order.status.as_str() {
+        ORDER_STATUS_SUCCESS => return Ok(SubscriptionOrderWebhookOutcome::AlreadyComplete),
+        ORDER_STATUS_PENDING => {}
+        ORDER_STATUS_EXPIRED => return Ok(SubscriptionOrderWebhookOutcome::AlreadyTerminal),
+        _ => return Ok(SubscriptionOrderWebhookOutcome::InvalidStatus),
+    }
+
+    let Some(plan) = d1_repositories::find_subscription_plan_by_id(db, order.plan_id).await? else {
+        return Err(worker::Error::RustError(format!(
+            "subscription order {trade_no} references missing plan {}",
+            order.plan_id
+        )));
+    };
+    let prepared = prepare_subscription_from_plan(db, order.user_id, &plan, "order", now)
+        .await
+        .map_err(worker::Error::RustError)?;
+
+    if let Some(topup) = d1_repositories::find_topup_by_trade_no(db, trade_no).await? {
+        if topup.payment_provider != expected_provider {
+            return Err(worker::Error::RustError(format!(
+                "subscription order {trade_no} collides with topup provider {}",
+                topup.payment_provider
+            )));
+        }
+    }
+
+    let subscription = prepared.as_write();
+    let settlement = SubscriptionOrderSettlementWrite {
+        subscription,
+        trade_no,
+        expected_provider,
+        from_status: ORDER_STATUS_PENDING,
+        to_status: ORDER_STATUS_SUCCESS,
+        actual_payment_method,
+        provider_payload,
+        money: order.money,
+        create_time: order.create_time,
+        complete_time: now,
+    };
+    let result = d1_repositories::complete_subscription_order_batch(db, &settlement).await?;
+    if !result.order_marked {
+        let Some(current) =
+            d1_repositories::find_subscription_order_by_trade_no(db, trade_no).await?
+        else {
+            return Ok(SubscriptionOrderWebhookOutcome::NotFound);
+        };
+        return Ok(match current.status.as_str() {
+            ORDER_STATUS_SUCCESS => SubscriptionOrderWebhookOutcome::AlreadyComplete,
+            ORDER_STATUS_EXPIRED => SubscriptionOrderWebhookOutcome::AlreadyTerminal,
+            ORDER_STATUS_PENDING => SubscriptionOrderWebhookOutcome::InvalidStatus,
+            _ => SubscriptionOrderWebhookOutcome::InvalidStatus,
+        });
+    }
+    if !result.subscription_inserted || !result.topup_recorded() {
+        return Err(worker::Error::RustError(format!(
+            "subscription order {trade_no} marked success without subscription/topup batch changes"
+        )));
+    }
+
+    let username = d1_repositories::find_user_by_id(db, order.user_id)
+        .await?
+        .map(|user| user.username)
+        .unwrap_or_default();
+    let _ = d1_repositories::insert_system_log(
+        db,
+        order.user_id,
+        &username,
+        &format!(
+            "subscription {expected_provider} purchase succeeded, plan: {}",
+            plan.title
+        ),
+        now,
+    )
+    .await;
+    Ok(SubscriptionOrderWebhookOutcome::Completed)
+}
+
+pub(crate) async fn expire_order_for_provider(
+    db: &worker::D1Database,
+    trade_no: &str,
+    expected_provider: &str,
+    now: i64,
+) -> WorkerResult<SubscriptionOrderWebhookOutcome> {
+    let Some(order) = d1_repositories::find_subscription_order_by_trade_no(db, trade_no).await?
+    else {
+        return Ok(SubscriptionOrderWebhookOutcome::NotFound);
+    };
+    if order.payment_provider != expected_provider {
+        return Ok(SubscriptionOrderWebhookOutcome::ProviderMismatch);
+    }
+    match order.status.as_str() {
+        ORDER_STATUS_PENDING => {
+            let marked = d1_repositories::mark_subscription_order_status_for_provider(
+                db,
+                trade_no,
+                expected_provider,
+                ORDER_STATUS_PENDING,
+                ORDER_STATUS_EXPIRED,
+                now,
+                "",
+                "",
+            )
+            .await?;
+            if marked {
+                Ok(SubscriptionOrderWebhookOutcome::Expired)
+            } else {
+                Ok(SubscriptionOrderWebhookOutcome::InvalidStatus)
+            }
+        }
+        ORDER_STATUS_SUCCESS => Ok(SubscriptionOrderWebhookOutcome::AlreadyComplete),
+        ORDER_STATUS_EXPIRED => Ok(SubscriptionOrderWebhookOutcome::AlreadyTerminal),
+        _ => Ok(SubscriptionOrderWebhookOutcome::InvalidStatus),
+    }
 }
 
 fn previous_group_for_upgrade(user: &SubscriptionUserState, upgrade_group: &str) -> String {
@@ -714,6 +1009,76 @@ struct SelfSubscriptionResponse {
     billing_preference: String,
     subscriptions: Vec<UserSubscriptionRecord>,
     all_subscriptions: Vec<UserSubscriptionRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct StripeSubscriptionPayResponse {
+    pay_link: String,
+    checkout_url: String,
+    session_id: String,
+    trade_no: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StripeCheckoutSession {
+    checkout_url: String,
+    session_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedSubscription {
+    user_id: i64,
+    plan_id: i64,
+    amount_total: i64,
+    amount_used: i64,
+    start_time: i64,
+    end_time: i64,
+    status: String,
+    source: String,
+    last_reset_time: i64,
+    next_reset_time: i64,
+    upgrade_group: String,
+    prev_user_group: String,
+    upgrade_applies: bool,
+    created_at: i64,
+    updated_at: i64,
+}
+
+impl PreparedSubscription {
+    fn as_write(&self) -> UserSubscriptionWrite<'_> {
+        UserSubscriptionWrite {
+            user_id: self.user_id,
+            plan_id: self.plan_id,
+            amount_total: self.amount_total,
+            amount_used: self.amount_used,
+            start_time: self.start_time,
+            end_time: self.end_time,
+            status: &self.status,
+            source: &self.source,
+            last_reset_time: self.last_reset_time,
+            next_reset_time: self.next_reset_time,
+            upgrade_group: &self.upgrade_group,
+            prev_user_group: &self.prev_user_group,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+
+    fn upgrade_message(&self) -> Option<String> {
+        self.upgrade_applies
+            .then(|| format!("user group will upgrade to {}", self.upgrade_group))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubscriptionOrderWebhookOutcome {
+    Completed,
+    AlreadyComplete,
+    Expired,
+    AlreadyTerminal,
+    NotFound,
+    ProviderMismatch,
+    InvalidStatus,
 }
 
 fn normalize_plan_input(
@@ -980,6 +1345,243 @@ fn unix_from_date(date: &js_sys::Date) -> i64 {
     (date.get_time() / 1000.0) as i64
 }
 
+fn stripe_configured(api_secret: &str, webhook_secret: &str) -> bool {
+    let api_secret = api_secret.trim();
+    !webhook_secret.trim().is_empty()
+        && (api_secret.starts_with("sk_") || api_secret.starts_with("rk_"))
+}
+
+fn stripe_subscription_trade_no(user_id: i64) -> Option<String> {
+    let suffix = random_base62(4)?;
+    Some(stripe_subscription_trade_no_from_parts(
+        user_id,
+        unix_timestamp_millis(),
+        &suffix,
+    ))
+}
+
+fn stripe_subscription_trade_no_from_parts(user_id: i64, millis: i64, suffix: &str) -> String {
+    let reference = format!("sub-stripe-ref-{user_id}-{millis}-{suffix}");
+    let mut hasher = Sha1::new();
+    hasher.update(reference.as_bytes());
+    format!("sub_ref_{}", hex_lower(&hasher.finalize()))
+}
+
+fn stripe_subscription_checkout_form(
+    reference_id: &str,
+    success_url: &str,
+    cancel_url: &str,
+    stripe_price_id: &str,
+    customer_id: &str,
+    email: &str,
+) -> String {
+    let mut form = url::form_urlencoded::Serializer::new(String::new());
+    form.append_pair("mode", "subscription");
+    form.append_pair("client_reference_id", reference_id);
+    form.append_pair("success_url", success_url);
+    form.append_pair("cancel_url", cancel_url);
+    form.append_pair("line_items[0][price]", stripe_price_id);
+    form.append_pair("line_items[0][quantity]", "1");
+    if !customer_id.trim().is_empty() {
+        form.append_pair("customer", customer_id.trim());
+    } else {
+        if !email.trim().is_empty() {
+            form.append_pair("customer_email", email.trim());
+        }
+        form.append_pair("customer_creation", "always");
+    }
+    form.finish()
+}
+
+async fn create_stripe_checkout_session(
+    api_secret: &str,
+    form_body: &[u8],
+) -> std::result::Result<StripeCheckoutSession, String> {
+    let mut headers = Headers::new();
+    headers
+        .set("Authorization", &format!("Bearer {}", api_secret.trim()))
+        .map_err(|err| format!("failed to set Stripe Authorization header: {err}"))?;
+    headers
+        .set("Content-Type", "application/x-www-form-urlencoded")
+        .map_err(|err| format!("failed to set Stripe Content-Type header: {err}"))?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(wasm_bindgen::JsValue::from(js_sys::Uint8Array::from(
+            form_body,
+        ))))
+        .with_redirect(RequestRedirect::Error);
+    let request = Request::new_with_init(STRIPE_CHECKOUT_SESSIONS_URL, &init)
+        .map_err(|err| format!("failed to build Stripe request: {err}"))?;
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let outbound = Fetch::Request(request);
+    let fetch = outbound.send_with_signal(&signal);
+    let delay = Delay::from(STRIPE_FETCH_TIMEOUT);
+    futures_util::pin_mut!(fetch);
+    futures_util::pin_mut!(delay);
+    let mut response = match select(fetch, delay).await {
+        Either::Left((result, _)) => {
+            result.map_err(|err| format!("failed to fetch Stripe request: {err}"))?
+        }
+        Either::Right(((), _)) => {
+            controller.abort();
+            return Err("Stripe request timed out".to_string());
+        }
+    };
+    let content_type = response
+        .headers()
+        .get("Content-Type")
+        .map_err(|err| format!("failed to inspect Stripe headers: {err}"))?
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.is_empty()
+        && !content_type.contains("application/json")
+        && !content_type.contains("+json")
+    {
+        return Err("Stripe response is not JSON".to_string());
+    }
+    let status = response.status_code();
+    let bytes = read_limited_stripe_response_body(&mut response).await?;
+    if status != 200 {
+        let body = String::from_utf8_lossy(&bytes);
+        return Err(format!("Stripe API error {status}: {body}"));
+    }
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|err| format!("invalid Stripe response: {err}"))?;
+    let checkout_url = value
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let session_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if checkout_url.is_empty() || session_id.is_empty() {
+        return Err("Stripe checkout session response is missing url or id".to_string());
+    }
+    Ok(StripeCheckoutSession {
+        checkout_url,
+        session_id,
+    })
+}
+
+async fn read_limited_stripe_response_body(
+    response: &mut Response,
+) -> std::result::Result<Vec<u8>, String> {
+    if let Some(raw) = response
+        .headers()
+        .get("Content-Length")
+        .map_err(|err| format!("failed to inspect Stripe headers: {err}"))?
+    {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            let length = raw
+                .parse::<usize>()
+                .map_err(|_| "Stripe Content-Length is invalid".to_string())?;
+            if length > STRIPE_RESPONSE_LIMIT_BYTES {
+                return Err("Stripe response body is too large".to_string());
+            }
+        }
+    }
+    response
+        .stream()
+        .map_err(|err| format!("failed to read Stripe response: {err}"))?
+        .try_fold(Vec::new(), |mut bytes, chunk| async move {
+            if bytes.len().saturating_add(chunk.len()) > STRIPE_RESPONSE_LIMIT_BYTES {
+                return Err(worker::Error::RustError(
+                    "Stripe response body is too large".to_string(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+            Ok(bytes)
+        })
+        .await
+        .map_err(|err| err.to_string())
+}
+
+fn resolve_frontend_base_url(env: &Env, req: &Request) -> std::result::Result<String, String> {
+    let configured = env
+        .var("FRONTEND_BASE_URL")
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    if !configured.trim().is_empty() {
+        return validate_http_base_url(configured.trim());
+    }
+    request_origin_base_url(req)
+}
+
+fn request_origin_base_url(req: &Request) -> std::result::Result<String, String> {
+    let url = req
+        .url()
+        .map_err(|err| format!("request URL is invalid: {err}"))?;
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err("request URL must use http or https".to_string());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "request URL is missing host".to_string())?;
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    validate_http_base_url(&format!("{scheme}://{host}{port}"))
+}
+
+fn validate_http_base_url(raw: &str) -> std::result::Result<String, String> {
+    let parsed = url::Url::parse(raw).map_err(|_| "payment base URL is invalid".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("payment base URL must use http or https".to_string());
+    }
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("payment base URL must be an absolute public URL".to_string());
+    }
+    Ok(raw.trim_end_matches('/').to_string())
+}
+
+fn join_url_path(base: &str, path: &str) -> String {
+    format!("{}{}", base.trim_end_matches('/'), path)
+}
+
+fn unix_timestamp_millis() -> i64 {
+    js_sys::Date::now().floor() as i64
+}
+
+fn random_base62(len: usize) -> Option<String> {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut buf = vec![0u8; len.saturating_mul(2).max(16)];
+    getrandom::getrandom(&mut buf).ok()?;
+    let mut out = Vec::with_capacity(len);
+    for &byte in &buf {
+        if out.len() >= len {
+            break;
+        }
+        if byte < 248 {
+            out.push(ALPHABET[(byte % 62) as usize]);
+        }
+    }
+    if out.len() == len {
+        String::from_utf8(out).ok()
+    } else {
+        None
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 async fn quota_per_unit(db: &worker::D1Database) -> WorkerResult<f64> {
     Ok(d1_repositories::get_option(db, QUOTA_PER_UNIT_KEY)
         .await?
@@ -1180,5 +1782,50 @@ mod tests {
         assert_eq!(plan.duration_unit, DURATION_MONTH);
         assert_eq!(plan.duration_value, 1);
         assert!(plan.allow_balance_pay);
+    }
+
+    #[test]
+    fn stripe_config_requires_api_and_webhook_secrets() {
+        assert!(stripe_configured("sk_test_123", "whsec_123"));
+        assert!(stripe_configured("rk_live_123", "whsec_123"));
+        assert!(!stripe_configured("pk_test_123", "whsec_123"));
+        assert!(!stripe_configured("sk_test_123", ""));
+    }
+
+    #[test]
+    fn stripe_subscription_trade_no_matches_go_shape() {
+        let trade_no = stripe_subscription_trade_no_from_parts(42, 1_700_000_000_123, "Ab9z");
+        assert!(trade_no.starts_with("sub_ref_"));
+        assert_eq!(trade_no.len(), "sub_ref_".len() + 40);
+        assert!(trade_no["sub_ref_".len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn stripe_subscription_checkout_form_uses_customer_or_email() {
+        let with_customer = stripe_subscription_checkout_form(
+            "sub_ref_abc",
+            "https://example.com/ok",
+            "https://example.com/cancel",
+            "price_123",
+            "cus_123",
+            "u@example.com",
+        );
+        assert!(with_customer.contains("mode=subscription"));
+        assert!(with_customer.contains("client_reference_id=sub_ref_abc"));
+        assert!(with_customer.contains("customer=cus_123"));
+        assert!(!with_customer.contains("customer_email="));
+
+        let with_email = stripe_subscription_checkout_form(
+            "sub_ref_abc",
+            "https://example.com/ok",
+            "https://example.com/cancel",
+            "price_123",
+            "",
+            "u@example.com",
+        );
+        assert!(with_email.contains("customer_email=u%40example.com"));
+        assert!(with_email.contains("customer_creation=always"));
     }
 }

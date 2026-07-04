@@ -186,15 +186,29 @@ Historical status (verified 2026-06-25): `crates/payments/src/lib.rs` was a
 **Stripe foundation** — `parse_stripe_signature` + HMAC-SHA256 verify, the
 `STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300` window, the `PaymentEvent` +
 `was_processed`/`mark_processed` event-dedup trait, `StripeConfig` loaded from D1
-options, and `money_to_quota`. Two parity notes:
-- **`money_to_quota` uses `.round()`** (`money * unit_price * 500_000` rounded),
-  but Go truncates toward zero (`int(...)` / `decimal.IntPart()`). This is a real
-  divergence — fix to truncate to match Go.
+options, and `money_to_quota`. Current parity notes:
+- `money_to_quota` now truncates toward zero like Go (`int(...)` /
+  `decimal.IntPart()`); unit coverage protects the former round-vs-truncate
+  drift.
 - 2026-07-04 delta: Stripe wallet checkout/webhook, Epay wallet
   checkout/callback, Waffo wallet checkout/webhook, Waffo Pancake wallet
-  checkout/webhook, and Creem wallet checkout/webhook now use provider-aware
-  topup rows and D1 credited-anchor settlement. Subscription checkout/callback
-  providers and `ValidateRedirectURL` parity are still pending.
+  checkout/webhook, Creem wallet checkout/webhook, and Stripe subscription
+  checkout/webhook settlement now use provider-aware rows and D1 idempotency
+  guards. Non-Stripe subscription checkout/callback providers and
+  `ValidateRedirectURL` parity are still pending.
+
+Current Stripe subscription details:
+
+- `POST /api/subscription/stripe/pay` creates the pending
+  `subscription_orders` row before the Stripe Checkout call, using the Go
+  `sub_ref_` SHA1 reference shape and plan `stripe_price_id`.
+- `POST /api/stripe/webhook` handles subscription orders before wallet topups.
+  `checkout.session.completed` settles pending subscription orders through a
+  D1 batch: insert user subscription, update upgrade group when needed, record
+  a success topup-history row with `credited=1`, and mark the order success.
+- `checkout.session.expired` marks pending Stripe subscription orders expired.
+  Replays that find an already-success or already-expired order are ACKed as
+  no-credit no-ops; only `NotFound` falls back to wallet topup settlement.
 
 Current Epay wallet details:
 
@@ -293,15 +307,18 @@ Current Creem wallet details:
 
 Checklist:
 
-1. Keep per-provider signature verification before any write. Done for Stripe,
-   Epay wallet topups, Waffo wallet topups, Waffo Pancake wallet topups, and
-   Creem wallet topups; pending for subscription providers.
+1. Keep per-provider signature verification before any write. Done for Stripe
+   wallet + subscription flows, Epay wallet topups, Waffo wallet topups, Waffo
+   Pancake wallet topups, and Creem wallet topups; pending for non-Stripe
+   subscription providers.
 2. Keep `payment_events` as non-gating audit/dedup evidence and anchor credit on
    `topups` conditional credited batches. Done for Stripe, Epay wallet topups,
    Waffo wallet topups, Waffo Pancake wallet topups, and Creem wallet topups;
-   provider-specific replay fixtures still need staging D1 proof.
+   Stripe subscription settlement uses `subscription_orders` pending/success
+   CAS plus a D1 batch; provider-specific replay fixtures still need staging D1
+   proof.
 3. Implement per-provider quota formulas with truncation. Done for Epay wallet
-   order creation; Stripe `money_to_quota` still needs truncation parity review.
+   order creation and Stripe `money_to_quota`.
 4. Normalize webhook replays to 200 no-op and add replay tests that credit
    exactly once across duplicate deliveries. Unit coverage exists for helper
    parity; staging D1 replay smoke remains required.
@@ -309,8 +326,9 @@ Checklist:
    provider and money; Waffo checks provider and amount; Waffo Pancake checks
    provider, buyer identity, amount, and env. Currency/product checks apply to
    remaining providers where exposed by the webhook payload.
-6. Mirror for `subscription_orders`; keep subscription settlement funding-source
-   correct (`docs/billing-parity-runbook.md`).
+6. Mirror for `subscription_orders`; Stripe subscription is implemented, while
+   Creem/Waffo Pancake/Epay subscription settlement remains pending. Keep
+   funding-source evidence in `docs/billing-parity-runbook.md`.
 7. Admin manual-complete (`ManualCompleteTopUp`) and `AdminCompleteTopUp` route
    parity with audit.
 

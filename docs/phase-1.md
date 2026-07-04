@@ -406,3 +406,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   verification/reset/bind, and admin Passkey reset are now Worker-owned; the
   remaining default-frontend gaps are full Passkey register/login/step-up
   ceremonies.
+- Capture logged-in playground chat completion staging evidence for
+  `POST /pg/chat/completions`: non-stream and stream success, group
+  override allow/deny, user quota debit, channel quota/audit rows, token-table
+  non-mutation for the synthetic playground token, and logout/disabled/quota
+  negative cases.

@@ -4,15 +4,19 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 327 passed after adding the
-  Worker-owned WeChat login/bind routes.
+- `cargo test -p cinatoken-worker --lib`: 331 passed after adding the
+  Worker-owned playground chat relay at `POST /pg/chat/completions`, including
+  session-backed synthetic token context, per-user playground rate-limit key,
+  D1 quota mutations that skip token writes for `token_id <= 0`, group override
+  resolution, and upstream `group` stripping.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same WeChat auth slice.
-- `bun run check`: passed after the WeChat auth route-baseline update, covering
-  the frontend build, route-debt baseline, Rust workspace tests excluding the
+  the same playground relay slice.
+- `cargo fmt --all --check`: passed for the same playground relay slice.
+- `bun run check`: passed after the playground relay slice, covering the
+  frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 282 Worker routes, 6 missing calls, categories
+  212 frontend calls, 283 Worker routes, 6 missing calls, categories
   6 auth-deferred, SHA-256
   `8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457`.
 

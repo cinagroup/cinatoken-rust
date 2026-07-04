@@ -2838,3 +2838,59 @@ endpoints, JSX `href`/`src`, dynamic custom OAuth callbacks, or navigation-only
 targets such as `/pg/chat/completions` and `/v1/videos/:task_id/content`.
 Those remain tracked in the production readiness matrix until the audit script
 is broadened.
+
+### 22.29 2026-07-04 Playground Chat Relay Compatibility Delta
+
+This increment moves the default frontend playground chat path from a
+matrix-only route gap to Worker-owned implementation evidence:
+
+- Added `POST /pg/chat/completions` to the Worker router, sharing the normal
+  OpenAI-compatible chat-completions relay pipeline so JSON/SSE behavior,
+  model mapping, channel selection, read-through cache, rate limits, audit
+  logging, and tiered billing preflight/settlement stay on the same code path
+  as `/v1/chat/completions`.
+- Added a session-backed playground auth mode that mirrors Go
+  `controller.Playground`: it reads the Rust session, loads the active user,
+  enforces enabled/quota checks, resolves optional request `group` overrides,
+  checks the requested group against `UserUsableGroups` plus
+  `group_ratio_setting.group_special_usable_group`, and builds a synthetic
+  token context with `token_id = 0` and `token_name = playground-{group}`.
+- Updated D1 quota mutation helpers so the synthetic playground token debits
+  and settles user quota and channel usage without touching the `tokens` table,
+  matching Go's playground quota behavior while preserving audit/request-count
+  updates.
+- Scoped relay token rate limits for playground traffic by user
+  (`playground-user:{user_id}`) instead of sharing one `token:0` bucket across
+  all logged-in users.
+- Stripped the local-only playground `group` field from the upstream JSON body
+  before forwarding, preserving Go's typed OpenAI request behavior and avoiding
+  unknown-field rejections by strict OpenAI-compatible providers.
+- Reused the same Worker-side bounded JSON request and streaming response
+  practices as the existing relay routes; local implementation was checked
+  against Cloudflare Workers best-practice guidance for request bounds,
+  streaming, environment bindings, and no global mutable request state.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 283 Worker routes, 6 missing calls;
+- debt categories: 6 auth-deferred;
+- route-set SHA-256:
+  `8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457`;
+- `cargo test -p cinatoken-worker --lib`: 331 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `cargo fmt --all --check`: passed;
+- `bun run check`: passed.
+
+Remaining boundary: playground is Worker-owned locally, but production
+readiness still needs logged-in staging smoke for non-stream and stream
+requests, group allow/deny paths, user quota debit, channel quota/audit rows,
+per-user rate-limit scoping, token-table non-mutation for the synthetic token,
+and logout/disabled/quota-exhausted error shapes. The tracked default-frontend
+route debt remains the six full Passkey register/login/step-up ceremony routes.
+
+Audit caveat update: `/pg/chat/completions` was not part of the explicit route
+debt set because it is constant-driven by the playground frontend. It is now
+closed by direct source and matrix evidence rather than by a route-debt SHA
+change. The audit script still needs broader coverage for constant-driven
+endpoints, JSX `href`/`src`, dynamic custom OAuth callbacks, and
+navigation/content targets such as `/v1/videos/:task_id/content`.

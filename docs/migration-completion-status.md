@@ -23,6 +23,9 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   Gemini actions, rerank, image generation, audio speech, Workers AI.
 - Token authentication, channel selection/retry, model mapping, cache, rate
   limits, audit logging, reserve/settle/refund and tiered billing expressions.
+- Session-backed playground chat relay at `POST /pg/chat/completions`, using a
+  synthetic zero-id token context that preserves user quota, group checks, rate
+  limits, streaming, and audit logging without mutating the `tokens` table.
 - Session auth, registration, core user self-service, 2FA,
   GitHub/Discord/OIDC, Turnstile, secure verification.
 - Core admin user/token/channel/log/option/model/vendor APIs with audit and cache
@@ -63,8 +66,6 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Model-list/retrieve protocol negotiation.
 - Video content proxy (`GET /v1/videos/:task_id/content`, dual-auth) and the
   OpenAI-video/kling/jimeng native-shape aliases (per-adaptor conversions).
-- Playground (`POST /pg/chat/completions`) — needs a session→relay auth
-  bridge (synthetic zero-id token) through the billing-critical relay core.
 - Real production Go SQLite -> D1 export/import/reconciliation.
 - Billing shadow comparison and exact tokenizer/media parity.
 - Frontend lint cleanup and bundle-size reduction.

@@ -150,15 +150,16 @@ controlled by `docs/route-provider-parity-runbook.md`.
 Route audit evidence is useful but not exhaustive. As of 2026-07-04 it does
 not fully prove constant-driven endpoints, JSX `href`/`src` links, dynamic
 custom OAuth callbacks, or non-call navigation targets such as
-`/pg/chat/completions` and `/v1/videos/:task_id/content`; those must stay in
-the route/readiness matrices until the audit script is broadened.
+`/v1/videos/:task_id/content`. `POST /pg/chat/completions` is now Worker-owned
+by direct source/matrix evidence, but the audit blind spot still matters for
+future route closures until the script is broadened.
 
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
 | Public status and setup: `/api/status`, `/api/setup`, static content endpoints | `api-router.go`, `web-router.go`, `web/default` | Substantial: Go-compatible status/setup envelopes, public content handlers, and SPA routing implemented; deployed frontend contract smoke pending | JSON/read-only/static assets | G1/G5 | Deploy current frontend/status fixes and capture anonymous/setup/hard-refresh smoke. |
 | Relay model list: `GET /v1/models`, `GET /v1/models/:model` | `relay-router.go` | Partial: `GET /v1/models` exists; model retrieve is not complete | JSON | G3 | Add provider-aware retrieve/list parity and live smoke. |
 | Gemini model list: `GET /v1beta/models`, `/v1beta/openai/models` | `relay-router.go` | Planned | JSON | G3 | Add only if required for first customer canary. |
-| Playground: `POST /pg/chat/completions` | `relay-router.go` | Planned | JSON | G5 | Defer until admin/frontend staging exists. |
+| Playground: `POST /pg/chat/completions` | `relay-router.go`, `controller/playground.go`, `middleware/distributor.go`, `service/quota.go` | Partial: Worker-owned session-backed OpenAI chat relay with group override checks, synthetic zero-id token context, JSON/SSE forwarding, token-table mutation bypass, per-user playground rate-limit key, and local `group` stripping before upstream forwarding | Bounded JSON request, JSON/SSE response | G5/G3/G4 | Logged-in staging playground smoke for non-stream + stream, group allowed/denied, user quota debit, channel quota/audit rows, rate limit scoping, and logout/disabled/quota-exhausted errors. |
 | OpenAI chat/completions: `/v1/chat/completions` | `relay-router.go` | Partial: JSON and SSE implemented | Bounded JSON request, streaming response | G3/G4 | Live upstream smoke with billing shadow report. |
 | OpenAI completions: `/v1/completions` | `relay-router.go` | Partial: JSON and SSE implemented | Bounded JSON request, streaming response | G3/G4 | Live upstream smoke with billing shadow report. |
 | OpenAI responses: `/v1/responses` | `relay-router.go` | Partial: JSON and SSE implemented | Bounded JSON request, streaming response | G3/G4 | Live smoke for response usage and error mapping. |

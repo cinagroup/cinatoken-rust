@@ -136,6 +136,12 @@ struct RelayEndpoint {
     request_validator: Option<fn(&Value) -> Option<&'static str>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelayAuthMode {
+    ApiKey,
+    PlaygroundSession,
+}
+
 impl RelayEndpoint {
     fn expects_json_request_body(&self) -> bool {
         self.request_body_mode == RelayRequestBodyMode::Json
@@ -225,6 +231,39 @@ pub async fn chat_completions(
             request_validator: None,
         },
         None,
+    )
+    .await
+}
+
+/// `POST /pg/chat/completions`: the logged-in dashboard playground uses the
+/// normal OpenAI chat-completions relay with a Go-compatible temporary token
+/// context (`token_id = 0`, `token_name = playground-{group}`).
+pub async fn playground_chat_completions(
+    req: Request,
+    env: Env,
+    context: Context,
+) -> worker::Result<Response> {
+    relay_endpoint_with_auth(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "playground chat completions",
+            cache_family: "openai_compatible",
+            upstream_path: "chat/completions".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: true,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        },
+        None,
+        RelayAuthMode::PlaygroundSession,
     )
     .await
 }
@@ -636,11 +675,30 @@ pub async fn gemini_native(
 }
 
 async fn relay_endpoint(
+    req: Request,
+    env: Env,
+    context: Option<Context>,
+    endpoint: RelayEndpoint,
+    model_override: Option<String>,
+) -> worker::Result<Response> {
+    relay_endpoint_with_auth(
+        req,
+        env,
+        context,
+        endpoint,
+        model_override,
+        RelayAuthMode::ApiKey,
+    )
+    .await
+}
+
+async fn relay_endpoint_with_auth(
     mut req: Request,
     env: Env,
     context: Option<Context>,
     mut endpoint: RelayEndpoint,
     model_override: Option<String>,
+    auth_mode: RelayAuthMode,
 ) -> worker::Result<Response> {
     let started_at = unix_timestamp();
     let client_ip = client_ip(&req);
@@ -714,20 +772,29 @@ async fn relay_endpoint(
         return openai_error_response("streaming relay context is unavailable", 500);
     }
 
-    let api_key = match extract_api_key(&req) {
-        Some(key) => key,
-        None => {
-            return json_with_status(
-                &ErrorBody::bad_request("missing Authorization Bearer token or x-api-key"),
-                401,
-            );
-        }
-    };
-
     let db = env.d1("DB")?;
-    let auth = match authenticate(&db, &env, &api_key, &model, client_ip.as_deref()).await {
-        Ok(auth) => auth,
-        Err(response) => return response,
+    let auth = match auth_mode {
+        RelayAuthMode::ApiKey => {
+            let api_key = match extract_api_key(&req) {
+                Some(key) => key,
+                None => {
+                    return json_with_status(
+                        &ErrorBody::bad_request("missing Authorization Bearer token or x-api-key"),
+                        401,
+                    );
+                }
+            };
+            match authenticate(&db, &env, &api_key, &model, client_ip.as_deref()).await {
+                Ok(auth) => auth,
+                Err(response) => return response,
+            }
+        }
+        RelayAuthMode::PlaygroundSession => {
+            match authenticate_playground_session(&req, &env, &db, json_body.as_ref()).await {
+                Ok(auth) => auth,
+                Err(response) => return response,
+            }
+        }
     };
     let group = auth.effective_group().to_string();
 
@@ -890,6 +957,9 @@ async fn relay_endpoint(
                 let Some(mut upstream_body) = json_body.clone() else {
                     break;
                 };
+                if auth_mode == RelayAuthMode::PlaygroundSession {
+                    strip_playground_request_fields(&mut upstream_body);
+                }
                 apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
                 if endpoint.provider == RelayProviderKind::GeminiNative {
                     if let Some(mapped_model) =
@@ -1651,7 +1721,7 @@ async fn enforce_relay_rate_limits(
 
     let limiter = ExpiringCounterRateLimiter::new(redis, "relay:rate");
     if let Some(limit) = config.token_limit_per_window {
-        let key = format!("token:{}", auth.token_id);
+        let key = relay_token_rate_limit_key(auth);
         let allowed = limiter
             .check(&key, limit, config.window_seconds)
             .await
@@ -1682,6 +1752,14 @@ async fn enforce_relay_rate_limits(
     }
 
     Ok(())
+}
+
+fn relay_token_rate_limit_key(auth: &AuthenticatedToken) -> String {
+    if auth.token_id > 0 {
+        format!("token:{}", auth.token_id)
+    } else {
+        format!("playground-user:{}", auth.user_id)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2310,6 +2388,76 @@ pub(crate) fn extract_api_key(req: &Request) -> Option<String> {
         .filter(|value| !value.is_empty())
         .or_else(|| request_header(req, "x-goog-api-key"))
         .or_else(|| request_query_param(req, "key"))
+}
+
+async fn authenticate_playground_session(
+    req: &Request,
+    env: &Env,
+    db: &D1Database,
+    body: Option<&Value>,
+) -> Result<AuthenticatedToken, worker::Result<Response>> {
+    let claims = match crate::admin::parse_session_claims(req, env).await {
+        Ok(Ok(Some(claims))) => claims,
+        Ok(Ok(None)) => return Err(openai_error_response("not logged in", 401)),
+        Ok(Err(_response)) => {
+            return Err(openai_error_response("failed to parse session", 500));
+        }
+        Err(err) => return Err(worker_error_response(err)),
+    };
+    let Some(user) = crate::d1_repositories::find_user_by_id(db, claims.id)
+        .await
+        .map_err(worker_error_response)?
+    else {
+        return Err(openai_error_response("invalid session user", 401));
+    };
+    if user.status != 1 {
+        return Err(openai_error_response("user is disabled", 403));
+    }
+    if user.quota <= 0 {
+        return Err(openai_error_response("user quota is exhausted", 403));
+    }
+
+    let group = playground_effective_group(body, &user.group);
+    if group != user.group
+        && !crate::d1_repositories::user_can_use_group(db, &user.group, &group)
+            .await
+            .map_err(worker_error_response)?
+    {
+        return Err(openai_error_response("group access denied", 403));
+    }
+
+    Ok(AuthenticatedToken {
+        token_id: 0,
+        user_id: user.id,
+        token_name: format!("playground-{group}"),
+        token_status: 1,
+        expired_time: -1,
+        remain_quota: 0,
+        unlimited_quota: 1,
+        model_limits_enabled: 0,
+        model_limits: String::new(),
+        allow_ips: String::new(),
+        token_group: group,
+        username: user.username,
+        user_status: user.status,
+        user_quota: user.quota,
+        user_group: user.group,
+    })
+}
+
+fn playground_effective_group(body: Option<&Value>, user_group: &str) -> String {
+    body.and_then(|value| value.get("group"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|group| !group.is_empty())
+        .unwrap_or(user_group)
+        .to_string()
+}
+
+fn strip_playground_request_fields(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.remove("group");
+    }
 }
 
 async fn authenticate(
@@ -3674,7 +3822,9 @@ async fn record_relay_audit(
     }
 
     if !billing_applied {
-        crate::d1_repositories::touch_token(db, auth.token_id, now).await?;
+        if auth.token_id > 0 {
+            crate::d1_repositories::touch_token(db, auth.token_id, now).await?;
+        }
         crate::d1_repositories::increment_user_request_count(db, auth.user_id).await?;
     }
     let other_json = other.to_string();
@@ -5158,6 +5308,35 @@ mod tests {
         assert!(model_allowed_for_token(1, "gpt-4o", "GPT-4O"));
     }
 
+    fn test_auth(token_id: i64, user_id: i64) -> AuthenticatedToken {
+        AuthenticatedToken {
+            token_id,
+            user_id,
+            token_name: "test-token".to_string(),
+            token_status: 1,
+            expired_time: -1,
+            remain_quota: 100,
+            unlimited_quota: 0,
+            model_limits_enabled: 0,
+            model_limits: String::new(),
+            allow_ips: String::new(),
+            token_group: "default".to_string(),
+            username: "user".to_string(),
+            user_status: 1,
+            user_quota: 100,
+            user_group: "default".to_string(),
+        }
+    }
+
+    #[test]
+    fn relay_token_rate_limit_key_scopes_playground_by_user() {
+        assert_eq!(relay_token_rate_limit_key(&test_auth(42, 7)), "token:42");
+        assert_eq!(
+            relay_token_rate_limit_key(&test_auth(0, 7)),
+            "playground-user:7"
+        );
+    }
+
     fn endpoint(supports_streaming: bool, feature: Option<&'static str>) -> RelayEndpoint {
         RelayEndpoint {
             display_name: "test",
@@ -5216,6 +5395,32 @@ mod tests {
             endpoint.request_body_mode.pending_feature().as_deref(),
             None
         );
+    }
+
+    #[test]
+    fn playground_effective_group_uses_request_override_when_present() {
+        assert_eq!(
+            playground_effective_group(Some(&json!({"group":" vip "})), "default"),
+            "vip"
+        );
+        assert_eq!(
+            playground_effective_group(Some(&json!({"group":""})), "default"),
+            "default"
+        );
+        assert_eq!(playground_effective_group(None, "default"), "default");
+    }
+
+    #[test]
+    fn strip_playground_request_fields_removes_local_group_only() {
+        let mut body = json!({
+            "model": "gpt-4o-mini",
+            "group": "vip",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        strip_playground_request_fields(&mut body);
+        assert!(body.get("group").is_none());
+        assert_eq!(body["model"], "gpt-4o-mini");
+        assert!(body.get("messages").is_some());
     }
 
     #[test]

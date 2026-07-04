@@ -990,6 +990,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let id = ctx.param("id").cloned();
             admin_user::delete_user(req, ctx.env, id.as_ref()).await
         })
+        .post_async("/pg/chat/completions", |req, ctx| async move {
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::playground_chat_completions(req, env, event_ctx).await
+        })
         .post_async("/v1/chat/completions", |req, ctx| async move {
             let env = ctx.env;
             let event_ctx = ctx.data;

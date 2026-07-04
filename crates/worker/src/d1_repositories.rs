@@ -16,6 +16,7 @@ const AUTO_GROUPS_OPTION_KEY: &str = "AutoGroups";
 const USER_USABLE_GROUPS_OPTION_KEY: &str = "UserUsableGroups";
 const GROUP_SPECIAL_USABLE_GROUP_OPTION_KEY: &str =
     "group_ratio_setting.group_special_usable_group";
+const DEFAULT_USER_USABLE_GROUPS: &[(&str, &str)] = &[("default", "默认分组"), ("vip", "vip分组")];
 
 #[derive(Debug, Deserialize)]
 struct OptionValueRow {
@@ -393,25 +394,29 @@ pub async fn apply_relay_quota_usage(
 ) -> worker::Result<()> {
     let quota = quota_i32(quota)?;
     debit_user_quota_usage_and_request_count(db, user_id, quota).await?;
-    if let Err(err) = debit_token_quota_usage(db, token_id, quota, accessed_time).await {
-        if let Err(compensate_err) =
-            credit_user_quota_usage_and_request_count(db, user_id, quota).await
-        {
-            worker::console_error!(
-                "failed to compensate user quota after token quota debit failure: {}",
-                compensate_err
-            );
+    if token_id > 0 {
+        if let Err(err) = debit_token_quota_usage(db, token_id, quota, accessed_time).await {
+            if let Err(compensate_err) =
+                credit_user_quota_usage_and_request_count(db, user_id, quota).await
+            {
+                worker::console_error!(
+                    "failed to compensate user quota after token quota debit failure: {}",
+                    compensate_err
+                );
+            }
+            return Err(err);
         }
-        return Err(err);
     }
     if let Err(err) = increment_channel_used_quota(db, channel_id, quota).await {
-        if let Err(compensate_err) =
-            credit_token_quota_usage(db, token_id, quota, accessed_time).await
-        {
-            worker::console_error!(
-                "failed to compensate token quota after channel quota update failure: {}",
-                compensate_err
-            );
+        if token_id > 0 {
+            if let Err(compensate_err) =
+                credit_token_quota_usage(db, token_id, quota, accessed_time).await
+            {
+                worker::console_error!(
+                    "failed to compensate token quota after channel quota update failure: {}",
+                    compensate_err
+                );
+            }
         }
         if let Err(compensate_err) =
             credit_user_quota_usage_and_request_count(db, user_id, quota).await
@@ -435,8 +440,17 @@ pub async fn reserve_relay_quota(
 ) -> worker::Result<()> {
     let quota = quota_i32(quota)?;
     if quota == 0 {
-        touch_token(db, token_id, accessed_time).await?;
+        if token_id > 0 {
+            touch_token(db, token_id, accessed_time).await?;
+        }
         return Ok(());
+    }
+
+    if token_id <= 0 {
+        let result = reserve_user_quota_statement(db, user_id, quota)?
+            .run()
+            .await?;
+        return require_one_change(result, "user quota is not enough");
     }
 
     let results = db
@@ -489,8 +503,17 @@ pub async fn refund_reserved_relay_quota(
 ) -> worker::Result<()> {
     let quota = quota_i32(quota)?;
     if quota == 0 {
-        touch_token(db, token_id, accessed_time).await?;
+        if token_id > 0 {
+            touch_token(db, token_id, accessed_time).await?;
+        }
         return Ok(());
+    }
+
+    if token_id <= 0 {
+        let result = credit_user_quota_statement(db, user_id, quota)?
+            .run()
+            .await?;
+        return require_one_change(result, "user no longer exists");
     }
 
     let results = db
@@ -515,6 +538,36 @@ pub async fn settle_reserved_relay_quota_usage(
     let pre_consumed_quota = quota_i32(pre_consumed_quota)?;
     let final_quota = quota_i32(final_quota)?;
     let delta = final_quota.saturating_sub(pre_consumed_quota);
+
+    if token_id <= 0 {
+        let mut statements = Vec::new();
+        if delta > 0 {
+            statements.push(reserve_user_quota_statement(db, user_id, delta)?);
+        } else if delta < 0 {
+            statements.push(credit_user_quota_statement(
+                db,
+                user_id,
+                delta.saturating_abs(),
+            )?);
+        }
+        statements.push(increment_user_used_quota_and_request_count_statement(
+            db,
+            user_id,
+            final_quota,
+        )?);
+        statements.push(increment_channel_used_quota_statement(
+            db,
+            channel_id,
+            final_quota,
+        )?);
+        let results = db.batch(statements).await?;
+        let offset = usize::from(delta != 0);
+        if delta != 0 {
+            require_batch_change(&results, 0, "user quota settlement failed")?;
+        }
+        require_batch_change(&results, offset, "user no longer exists")?;
+        return require_batch_change(&results, offset + 1, "relay channel no longer exists");
+    }
 
     let mut statements = Vec::new();
     if delta > 0 {
@@ -921,6 +974,57 @@ fn parse_special_usable_groups_option(
 /// `service.GetUserAutoGroup` glue. Returns the ordered auto-group list (empty
 /// when auto groups are not configured). Exposed (via the async wrapper) for the
 /// relay loop's cross-group retry.
+fn parse_user_usable_groups_option(raw: Option<&str>) -> HashMap<String, String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str::<HashMap<String, String>>(value).ok())
+        .unwrap_or_else(|| {
+            DEFAULT_USER_USABLE_GROUPS
+                .iter()
+                .map(|(group, desc)| (group.to_string(), desc.to_string()))
+                .collect()
+        })
+}
+
+fn resolve_user_usable_groups_from_options(
+    user_group: &str,
+    user_usable_groups_raw: Option<&str>,
+    special_usable_groups_raw: Option<&str>,
+) -> HashMap<String, String> {
+    let base = parse_user_usable_groups_option(user_usable_groups_raw);
+    let special = parse_special_usable_groups_option(special_usable_groups_raw)
+        .remove(user_group)
+        .unwrap_or_default();
+    cinatoken_core::groups::user_usable_groups(user_group, &base, &special)
+}
+
+/// Return whether `target_group` is usable for a user in `user_group`, mirroring
+/// Go `service.GroupInUserUsableGroups` over D1-backed options.
+pub async fn user_can_use_group(
+    db: &D1Database,
+    user_group: &str,
+    target_group: &str,
+) -> worker::Result<bool> {
+    let target_group = target_group.trim();
+    if target_group.is_empty() {
+        return Ok(false);
+    }
+    let values = option_values(
+        db,
+        &[
+            USER_USABLE_GROUPS_OPTION_KEY,
+            GROUP_SPECIAL_USABLE_GROUP_OPTION_KEY,
+        ],
+    )
+    .await?;
+    let usable = resolve_user_usable_groups_from_options(
+        user_group,
+        values[0].as_deref(),
+        values[1].as_deref(),
+    );
+    Ok(usable.contains_key(target_group))
+}
+
 fn resolve_user_auto_groups_from_options(
     user_group: &str,
     auto_groups_raw: Option<&str>,
@@ -931,8 +1035,7 @@ fn resolve_user_auto_groups_from_options(
     if auto_groups.is_empty() {
         return Vec::new();
     }
-    let base = parse_string_map_option(USER_USABLE_GROUPS_OPTION_KEY, user_usable_groups_raw)
-        .unwrap_or_default();
+    let base = parse_user_usable_groups_option(user_usable_groups_raw);
     let special = parse_special_usable_groups_option(special_usable_groups_raw)
         .remove(user_group)
         .unwrap_or_default();
@@ -7700,6 +7803,22 @@ mod tests {
             resolve_user_auto_groups_from_options("other", auto, usable, special),
             vec!["default".to_string(), "vip".to_string()]
         );
+    }
+
+    #[test]
+    fn resolve_user_usable_groups_adds_own_group_and_specials() {
+        let usable = Some(r#"{"default":"default group","vip":"vip group"}"#);
+        let special = Some(r#"{"u":{"+:svip":"super vip","-:vip":""}}"#);
+        let groups = resolve_user_usable_groups_from_options("u", usable, special);
+        assert!(groups.contains_key("default"));
+        assert!(groups.contains_key("svip"));
+        assert!(groups.contains_key("u"));
+        assert!(!groups.contains_key("vip"));
+
+        let fallback = resolve_user_usable_groups_from_options("other", None, None);
+        assert!(fallback.contains_key("default"));
+        assert!(fallback.contains_key("vip"));
+        assert!(fallback.contains_key("other"));
     }
 
     #[test]

@@ -5,19 +5,19 @@ Last checked: 2026-07-04
 ## Passed
 
 - `cargo test -p cinatoken-worker --lib`: 320 passed after adding the
-  Worker-owned io.net deployment admin compatibility surface.
+  Worker-owned admin Passkey reset route and D1 credential table.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same deployment/io.net slice.
-- `bun run check`: passed after the deployment route-baseline update, covering
+  the same admin Passkey reset slice.
+- `bun run check`: passed after the Passkey reset route-baseline update, covering
   the frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 274 Worker routes, 13 missing calls, categories
-  13 auth-deferred, SHA-256
-  `5dc8efd5873d9fd4fbeb7e2f4c8eac2e15b5d872b440894ccf73ba5ebc6654ab`.
+  212 frontend calls, 275 Worker routes, 12 missing calls, categories
+  12 auth-deferred, SHA-256
+  `d51581aed82f7f8a3024885b5fd075834c8dc96b983b74aec6e0144b579905fe`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 13-call / 0 capability-hidden / 0 payment-deferred
+superseded by the current 12-call / 0 capability-hidden / 0 payment-deferred
 baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
@@ -873,6 +873,14 @@ baseline above.
   2026-07-03 backend compatibility routes still require redeployment.
 
 ## Local Notes
+
+- **Admin Passkey reset - locally verified route surface (2026-07-04).**
+  `DELETE /api/user/:id/reset_passkey` is now Worker-owned with AdminAuth,
+  manage-target role checks, `user.reset_passkey` admin audit, and a D1
+  `passkey_credentials` table for Go-compatible credential storage. The route
+  audit now reports 212 frontend calls, 275 Worker routes, and 12 remaining
+  auth-deferred gaps with SHA-256
+  `d51581aed82f7f8a3024885b5fd075834c8dc96b983b74aec6e0144b579905fe`.
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`

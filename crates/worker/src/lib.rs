@@ -959,6 +959,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let id = ctx.param("id").cloned();
             admin_user::admin_disable_2fa(req, ctx.env, id.as_ref()).await
         })
+        .delete_async("/api/user/:id/reset_passkey", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_user::reset_user_passkey(req, ctx.env, id.as_ref()).await
+        })
         .delete_async("/api/user/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_user::delete_user(req, ctx.env, id.as_ref()).await

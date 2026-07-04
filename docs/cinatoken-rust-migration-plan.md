@@ -2691,9 +2691,42 @@ Updated local evidence:
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified`:
   passed.
 
-Remaining boundary: deployment/io.net is now Worker-owned but still needs
-staging evidence with real io.net credentials: settings save + connection
-test, catalog reads, price estimation, list/detail/log smoke, one reversible
-mutation smoke, and rollback documentation. The only default-frontend route
-debt left is the 13 auth-deferred routes for email verification/reset/bind,
-WeChat OAuth, Passkey, and admin passkey reset.
+Remaining boundary at this checkpoint: deployment/io.net is now Worker-owned
+but still needs staging evidence with real io.net credentials: settings save +
+connection test, catalog reads, price estimation, list/detail/log smoke, one
+reversible mutation smoke, and rollback documentation. At this point the only
+default-frontend route debt left was the 13 auth-deferred routes for email
+verification/reset/bind, WeChat OAuth, Passkey, and admin passkey reset.
+
+### 22.26 2026-07-04 Admin Passkey Reset Compatibility Delta
+
+This increment removes the default frontend's admin Passkey reset route from
+the route-debt set and lays the D1 foundation for the remaining full Passkey
+ceremonies:
+
+- Added `migrations/d1/0016_passkey_credentials.sql`, mirroring Go
+  `model/passkey.go` with base64 WebAuthn credential fields, one active
+  credential per user, 0/1 boolean columns, unix-second timestamps, and a
+  `deleted_at` import-compatibility column.
+- Added Worker D1 repository helpers to check a user's active Passkey
+  credential with `deleted_at IS NULL` and hard-delete all credentials for a
+  user, matching Go's `DeletePasskeyByUserID` `Unscoped()` behavior.
+- Added AdminAuth route `DELETE /api/user/:id/reset_passkey` with the same
+  manage-target role boundary used by the other user recovery routes. It
+  returns a 200 `success:false` envelope when the target has no Passkey,
+  hard-deletes on success, and records a `user.reset_passkey` admin audit row.
+- `tools/frontend_route_debt_baseline.json` is intentionally updated for the
+  new route set.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 275 Worker routes, 12 missing calls;
+- debt categories: 12 auth-deferred;
+- route-set SHA-256:
+  `d51581aed82f7f8a3024885b5fd075834c8dc96b983b74aec6e0144b579905fe`.
+
+Remaining boundary: full WebAuthn/Passkey register, login, and step-up
+ceremonies are still deferred; they should reuse the new D1 table plus the
+existing `flow_state` challenge TTL boundary. Email verification/reset/bind,
+WeChat OAuth, and password reset confirmation also remain in the 12
+auth-deferred default-frontend route gaps.

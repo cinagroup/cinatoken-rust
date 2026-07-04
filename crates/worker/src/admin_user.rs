@@ -1449,6 +1449,56 @@ pub async fn admin_disable_2fa(
     envelope_ok_response(&serde_json::json!({ "disabled": true }))
 }
 
+/// `DELETE /api/user/:id/reset_passkey`: admin account recovery for a user who
+/// lost their Passkey. Mirrors Go `AdminResetPasskey`: manage-target privilege,
+/// report "not bound" as a 200 envelope error, hard-delete credentials, audit.
+pub async fn reset_user_passkey(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let target = match require_manage_target_user(&db, &claims, id_param).await {
+        Ok(target) => target,
+        Err(response) => return Ok(response),
+    };
+    if !d1_repositories::passkey_exists_by_user(&db, target.id).await? {
+        return Ok(envelope_error_response(
+            200,
+            "this user has not bound Passkey",
+        ));
+    }
+    if !d1_repositories::delete_passkey_by_user(&db, target.id).await? {
+        return Ok(envelope_error_response(
+            200,
+            "this user has not bound Passkey",
+        ));
+    }
+    let _ = crate::d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(target.id),
+        Some(&target.username),
+        &claims.username,
+        "user.reset_passkey",
+        &format!(
+            "admin {} reset Passkey for user {}",
+            claims.username, target.id
+        ),
+        &serde_json::json!({
+            "id": target.id,
+            "username": &target.username
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        unix_timestamp(),
+    )
+    .await;
+    envelope_ok_response(&serde_json::json!({ "reset": true }))
+}
+
 // ---------------------------------------------------------------------------
 // ManageUser (the action switch)
 // ---------------------------------------------------------------------------

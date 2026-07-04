@@ -1589,6 +1589,41 @@ pub async fn mark_backup_code_used(db: &D1Database, id: i64, now: i64) -> worker
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Passkey credentials — schema in 0016_passkey_credentials.sql.
+// ---------------------------------------------------------------------------
+
+/// Return whether the user has a non-deleted Passkey credential. Go reads via
+/// GORM's default scope, so soft-deleted imported rows are ignored here.
+pub async fn passkey_exists_by_user(db: &D1Database, user_id: i64) -> worker::Result<bool> {
+    #[derive(Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+
+    Ok(db
+        .prepare(
+            "SELECT COUNT(*) AS count FROM passkey_credentials \
+             WHERE user_id = ?1 AND deleted_at IS NULL",
+        )
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .first::<CountRow>(None)
+        .await?
+        .map(|row| row.count > 0)
+        .unwrap_or(false))
+}
+
+/// Hard-delete all Passkey credentials for the user, matching Go
+/// `DeletePasskeyByUserID`'s `Unscoped()` delete.
+pub async fn delete_passkey_by_user(db: &D1Database, user_id: i64) -> worker::Result<bool> {
+    let result = db
+        .prepare("DELETE FROM passkey_credentials WHERE user_id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
 /// Return `true` if a root user (`role = 100`) exists. Used by `/api/setup`
 /// to decide whether initial bootstrap is still allowed.
 pub async fn root_user_exists(db: &D1Database) -> worker::Result<bool> {

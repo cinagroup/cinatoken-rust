@@ -2113,18 +2113,54 @@ Pancake merchant/store/product settings:
 - This does not enable Waffo Pancake checkout or webhook settlement; wallet
   `topup/info` still keeps `enable_waffo_pancake_topup = false`.
 
-Updated local evidence:
-
-- route audit: 212 frontend calls, 233 Worker routes, 43 missing calls;
-- debt categories: 13 auth-deferred, 22 capability-hidden-product,
-  8 payment-deferred;
-- route-set SHA-256:
-  `b47be2c9dd3177daa5792806208451ad73653c2e2c8218bb5cea2f28c2213272`;
-- `cargo test -p cinatoken-worker --lib`: 276 passed.
+Updated local evidence from this config-save batch is superseded by 22.15,
+which adds the adjacent Waffo Pancake catalog read paths and records the current
+route-debt baseline.
 
 Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
 `/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`, Waffo Pancake admin
-catalog/pair/product helper routes, and external subscription checkout/callback
-routes remain payment-deferred and hidden until their provider-specific order
-model, signature verification, idempotency, replay, and reconciliation evidence
-is in place.
+pair/subscription-product creation helper routes, and external subscription
+checkout/callback routes remain payment-deferred and hidden until their
+provider-specific order model, signature verification, idempotency, replay, and
+reconciliation evidence is in place.
+
+### 22.15 2026-07-04 Waffo Pancake Catalog Read Delta
+
+This increment supersedes the 22.14 route-debt number for the default frontend
+payment-settings audit. The Rust Worker now implements the root-only Waffo
+Pancake read helpers used before saving payment settings:
+
+- `POST /api/option/waffo-pancake/catalog` requires root session auth and
+  accepts optional `merchant_id` / `private_key` request credentials. When both
+  body fields are blank it falls back to persisted `WaffoPancakeMerchantID` and
+  `WaffoPancakePrivateKey`, matching Go `ListWaffoPancakeCatalog`.
+- `POST /api/option/waffo-pancake/subscription-product-options` requires root
+  session auth and uses persisted merchant/private-key/store settings to return
+  the active onetime products for the saved store.
+- The Worker signs Waffo Pancake GraphQL requests with the Go-compatible
+  canonical string `METHOD\nPATH\nTIMESTAMP\nbase64(sha256(body))`, RSA-SHA256
+  PKCS#1 v1.5 signatures, `X-Merchant-Id`, `X-Timestamp`, and `X-Signature`.
+- The external request boundary uses a 12 second timeout, rejects redirects,
+  requires a JSON response, checks `Content-Length`, and caps streamed response
+  bodies at 512 KiB. Optional admin request bodies are capped before whitespace
+  normalization.
+- Catalog products are filtered to active onetime products before returning to
+  the frontend, preserving Go's operator-visible product list behavior.
+- This is still read-only provider integration. It does not create Waffo
+  Pancake pairs/products, open checkout, or settle webhooks.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 235 Worker routes, 41 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  6 payment-deferred;
+- route-set SHA-256:
+  `0cbaff3dac0f6260cc4457b913681d43573919205f3a3cb329e8cd34ebddfbd1`;
+- `cargo test -p cinatoken-worker --lib`: 282 passed.
+
+Remaining boundary: `/api/user/pay`, `/api/user/creem/pay`,
+`/api/user/waffo/pay`, `/api/user/waffo-pancake/pay`, Waffo Pancake admin
+pair/subscription-product creation helper routes, and external subscription
+checkout/callback routes remain payment-deferred and hidden until their
+provider-specific order model, signature verification, idempotency, replay, and
+reconciliation evidence is in place.

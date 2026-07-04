@@ -276,9 +276,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Go direct-minimum and token-display/unit-price formula. Waffo Pancake admin
   config save is implemented at `POST /api/option/waffo-pancake/save` with
   root-only auth, option-cache invalidation, redacted audit details, and the Go
-  "blank private key keeps current key" behavior. Non-Stripe checkout,
-  callback, and order-creation gateways remain hidden until their Worker
-  routes are implemented.
+  "blank private key keeps current key" behavior. Waffo Pancake admin catalog
+  reads are implemented at `POST /api/option/waffo-pancake/catalog` and
+  `POST /api/option/waffo-pancake/subscription-product-options` with root-only
+  auth, Go-compatible credential fallback, signed GraphQL requests, timeout and
+  response-size limits, and active onetime-product filtering. Non-Stripe
+  checkout, callback, and external resource-creation gateways remain hidden
+  until their Worker routes are implemented.
 
 ## Next
 
@@ -322,6 +326,6 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
 - Complete the remaining topup/subscription payment provider routes
-  (`epay`/`creem`/`waffo`/`waffo-pancake`, and external subscription
-  checkout/callback helpers) before exposing those payment methods broadly in
-  production.
+  (`epay`/`creem`/`waffo`/`waffo-pancake`, Waffo Pancake pair/subscription
+  product creation, and external subscription checkout/callback helpers) before
+  exposing those payment methods broadly in production.

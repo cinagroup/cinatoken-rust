@@ -4,6 +4,18 @@ Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 283 passed after adding root-only
+  Waffo Pancake catalog reads at `POST /api/option/waffo-pancake/catalog` and
+  `POST /api/option/waffo-pancake/subscription-product-options`, including
+  signed GraphQL request helpers, timeout/response-size guards, active-product
+  filtering, optional-body/content-length parsing, and private-key
+  normalization coverage.
+- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
+  212 frontend calls, 235 Worker routes, 41 missing calls, categories
+  13 auth-deferred / 22 capability-hidden-product / 6 payment-deferred,
+  SHA-256 `0cbaff3dac0f6260cc4457b913681d43573919205f3a3cb329e8cd34ebddfbd1`.
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
+  passes with the reviewed 41-call route-debt baseline.
 - `cargo test -p cinatoken-worker --lib`: 276 passed after adding root-only
   Waffo Pancake config save at `POST /api/option/waffo-pancake/save`, including
   tests for required merchant/store/product fields and the Go-compatible
@@ -19,14 +31,8 @@ Last checked: 2026-07-04
 - `cargo test -p cinatoken-migration`: 23 passed after adding the
   `redemptions.credited` import/default boundary, including automatic
   `status=used -> credited=1` mapping for imported Go redemption rows.
-- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
-  212 frontend calls, 233 Worker routes, 43 missing calls, categories
-  13 auth-deferred / 22 capability-hidden-product / 8 payment-deferred,
-  SHA-256 `b47be2c9dd3177daa5792806208451ad73653c2e2c8218bb5cea2f28c2213272`.
-- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`
-  passes with the reviewed 43-call route-debt baseline.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes
-  after the Waffo Pancake config-save batch.
+  after the Waffo Pancake catalog-read batch.
 - In-memory SQLite replay of `migrations/d1/0001_core.sql` plus
   `migrations/d1/0013_subscriptions.sql`, confirming
   `subscription_plans`, upgraded `subscription_orders`,
@@ -35,7 +41,7 @@ Last checked: 2026-07-04
   `credited` anchor and marks already-used imported Go rows as credited.
 - `bun run check`: frontend TypeScript/Rsbuild build, route baseline check,
   `cargo fmt --all --check`, workspace tests excluding `cinatoken-worker`, and
-  worker wasm check all passed after the Waffo Pancake config-save batch.
+  worker wasm check all passed after the Waffo Pancake catalog-read batch.
 - `cargo test -p cinatoken-worker --lib`: 262 passed after adding public
   rankings, `HeaderNavModules.rankings` access enforcement, live `logs`
   aggregation, status capability exposure, and rankings unit coverage.

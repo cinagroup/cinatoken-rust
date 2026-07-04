@@ -363,9 +363,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/option/payment_compliance", |req, ctx| async move {
             admin_crud::confirm_payment_compliance(req, ctx.env).await
         })
+        .post_async("/api/option/waffo-pancake/catalog", |req, ctx| async move {
+            admin_payment::list_waffo_pancake_catalog(req, ctx.env).await
+        })
         .post_async("/api/option/waffo-pancake/save", |req, ctx| async move {
             admin_payment::save_waffo_pancake_config(req, ctx.env).await
         })
+        .post_async(
+            "/api/option/waffo-pancake/subscription-product-options",
+            |req, ctx| async move {
+                admin_payment::list_waffo_pancake_subscription_product_options(req, ctx.env).await
+            },
+        )
         // Worker-native operational compatibility. Local disk/GC actions are
         // explicit no-ops; Uptime and perf metrics above are real read paths.
         .get_async("/api/performance/stats", |req, ctx| async move {

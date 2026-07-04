@@ -4,16 +4,16 @@ Last checked: 2026-07-04
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: 344 passed after adding
-  default-frontend model metadata enrichment and filtering: D1-backed
-  `bound_channels`, `enable_groups`, `quota_types`, rule `matched_models` /
-  `matched_count`, endpoint backfill, `vendor_counts`, and server-side
-  `status` / `sync_official` filters.
+- `cargo test -p cinatoken-worker --lib`: 348 passed after CSPRNG hardening for
+  generated user access tokens, affiliation codes, and subscription balance-pay
+  order suffixes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
-  the same model metadata enrichment slice.
-- `cargo fmt --all --check`: passed for the same model metadata enrichment
-  slice.
-- `bun run check`: passed after the model metadata enrichment slice, covering the
+  the same CSPRNG hardening slice.
+- `cargo fmt --all --check`: passed for the same CSPRNG hardening slice.
+- Fetched the current Cloudflare Worker references and latest
+  `@cloudflare/workers-types` with `npm pack`; observed version
+  `5.20260704.1`.
+- `bun run check`: passed after the CSPRNG hardening slice, covering the
   frontend build, route-debt baseline, Rust workspace tests excluding the
   Worker, rustfmt check, and Worker wasm check.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:

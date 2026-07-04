@@ -150,7 +150,7 @@ selected cutover scenario, while keeping deferred rows explicit.
 | Register/password/OAuth start | `/api/user/register`, `/api/reset_password`, `/api/oauth/*` | P1/P2 | Defer unless public auth moves in Scenario B |
 | Passkey/2FA self-service | `/api/user/passkey/*`, `/api/user/2fa/*` | P1/P2 | 2FA setup/enable/status/disable/backup-code frontend contract implemented and unit-verified; Passkey status/delete and register/login/verify begin routes are Worker-owned with short-TTL challenge state; Passkey finish routes intentionally fail closed until a WebAuthn verifier or reset/import policy is production-approved |
 | Profile check-in | `/api/user/checkin` | P1 | Implemented: status and submit routes use D1 `checkins`, Go-compatible envelopes, option-backed enable/min/max settings, Turnstile on submit when configured, a unique per-user UTC day guard, quota increment rollback on failure, and best-effort system logs; authenticated staging duplicate-submit smoke still required |
-| User admin | `/api/user`, `/api/user/search`, `/api/user/manage`, binding reset routes | P0 | Partial: list/search/get/create/edit/delete + `POST /api/user/manage` 8-action switch (disable/enable/delete/promote/demote/quota add/subtract/override) implemented in `admin_user.rs`; permission tiers match Go, quota mutations atomic, DELETE soft-deletes with token cache invalidation; binding reset routes deferred (OAuth batch) |
+| User admin | `/api/user`, `/api/user/search`, `/api/user/manage`, binding reset routes | P0 | Partial: list/search/get/create/edit/delete + `POST /api/user/manage` 8-action switch (disable/enable/delete/promote/demote/quota add/subtract/override) implemented in `admin_user.rs`; permission tiers match Go, quota mutations atomic, generated access tokens and affiliation codes are Worker CSPRNG-backed, DELETE soft-deletes with token cache invalidation; binding reset routes deferred (OAuth batch) |
 | Token/key admin | `/api/token`, `/api/token/search`, key reveal, batch delete | P0 | Implemented: list/search/get/create/update/delete/batch/reveal plus secure user-scoped batch-key reveal (100-id limit), ownership checks, masking, audit, and cache invalidation |
 | Channel admin | `/api/channel`, test, key reveal, tags, balance, model fetch | P0 | Partial: CRUD, key reveal, test/fetch-models including Ollama `/api/tags`, tag enable/disable/edit, batch-tag, tag-model lookup, provider balance refresh, multi-key management, single-channel and bounded-batch upstream-update detect/apply, Codex usage/credential refresh, Ollama version/delete/pull-stream management, abilities sync and cache invalidation implemented |
 | Logs and usage | `/api/log`, `/api/log/search`, `/api/log/self`, `/api/usage/*`, `/api/mj`, `/api/task` | P0/P1 | Logs: list/stat/delete (admin + self) implemented in `crates/worker/src/admin_crud.rs`; Midjourney/task read-only usage-log lists implemented in `crates/worker/src/admin_task_logs.rs`; `/api/usage/*` still Planned |
@@ -356,6 +356,9 @@ G5 must pass these before Scenario B:
   credentials.
 - Frontend bundle scan shows no secret values.
 - Admin reveal routes have elevated auth and critical rate limits.
+- Generated bearer credentials, affiliation codes, and payment/order suffixes
+  use Worker CSPRNG sources; `Math.random()` is not acceptable for security
+  tokens or externally visible order identifiers.
 - All admin mutations write audit metadata with actor, action, target, and
   request ID.
 - CORS only allows approved origins and credentials policy matches cookie

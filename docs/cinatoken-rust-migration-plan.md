@@ -3030,3 +3030,47 @@ needs authenticated browser/operator smoke for model list/search/filter/detail,
 model/vendor/prefill create/update/delete, official metadata preview/sync, and
 proof that model metadata mutations invalidate or refresh the pricing/model
 mapping views used by relay and the frontend.
+
+### 22.33 2026-07-04 CSPRNG Hardening Delta
+
+This increment does not add routes; it closes a production security gap found
+during the Go-to-Cloudflare Worker migration audit. Cloudflare Workers best
+practice treats `Math.random()` as unsuitable for security-sensitive tokens and
+IDs, so the Worker now avoids it for the user/admin credentials and subscription
+balance order suffixes that are generated on the Rust side.
+
+Implemented in Rust:
+
+- `GET /api/user/token` now generates its 32-character user access token through
+  `getrandom` with base62 rejection sampling instead of `js_sys::Math::random`.
+- Admin user creation, public registration, and lazy affiliation-code creation
+  now use the same Worker CSPRNG-backed base62 helper for 4-character
+  `aff_code` values.
+- Subscription balance-pay order numbers keep the Go-visible
+  `SUBBALUSR{user_id}NO{six_digits}{millis}` shape, but the six-digit suffix is
+  now produced from CSPRNG bytes with digit rejection sampling.
+- Balance-pay order-id generation happens before quota debit or subscription
+  creation, so a random-source failure fails closed before state mutation.
+- Tests cover generated access-token length/alphabet/distinctness, affiliation
+  code length/alphabet, zero-length base62 handling, and balance-pay digit
+  suffix formatting.
+
+Updated local evidence:
+
+- fetched current Cloudflare Worker references and latest
+  `@cloudflare/workers-types` version `5.20260704.1`;
+- `cargo fmt --all --check`: passed;
+- `cargo test -p cinatoken-worker --lib`: 348 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:
+  212 frontend calls, 294 Worker routes, 0 missing calls, categories `{}`;
+- `bun run check`: passed;
+- `rg` confirms `admin_user.rs` and `admin_subscription.rs` no longer contain
+  `Math.random()` generation; the only remaining direct `Math.random()` hit in
+  the checked files is relay weighted channel selection.
+
+Remaining boundary: relay weighted channel selection still uses
+`js_sys::Math::random()` for non-credential traffic distribution. Treat that as
+a separate G3/G6 parity audit, because replacing it may affect Go-compatible
+weighted-random behavior and channel-selection distributions rather than
+credential secrecy.

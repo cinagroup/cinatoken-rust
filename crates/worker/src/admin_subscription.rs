@@ -178,6 +178,12 @@ pub async fn balance_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
 
     let quota_per_unit = quota_per_unit(&db).await?;
     let required_quota = calc_balance_quota(plan.price_amount, quota_per_unit)?;
+    let Some(trade_no) = balance_trade_no(claims.id) else {
+        return Ok(envelope_error_response(
+            500,
+            "failed to generate subscription balance order id",
+        ));
+    };
     if required_quota > 0 {
         let Some(user) = d1_repositories::find_subscription_user_state(&db, claims.id).await?
         else {
@@ -201,7 +207,6 @@ pub async fn balance_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(400, &message));
     }
 
-    let trade_no = balance_trade_no(claims.id);
     let payload_text = format!("charged_quota={required_quota}");
     if let Err(err) = d1_repositories::insert_subscription_order(
         &db,
@@ -2549,10 +2554,38 @@ async fn audit_subscription_admin(
     .await;
 }
 
-fn balance_trade_no(user_id: i64) -> String {
-    let random = (js_sys::Math::random() * 1_000_000.0).floor() as i64;
-    let millis = js_sys::Date::now() as i64;
-    format!("SUBBALUSR{user_id}NO{random:06}{millis}")
+fn balance_trade_no(user_id: i64) -> Option<String> {
+    let suffix = random_digits(6)?;
+    Some(balance_trade_no_from_parts(
+        user_id,
+        &suffix,
+        unix_timestamp_millis(),
+    ))
+}
+
+fn balance_trade_no_from_parts(user_id: i64, suffix: &str, millis: i64) -> String {
+    format!("SUBBALUSR{user_id}NO{suffix}{millis}")
+}
+
+fn random_digits(len: usize) -> Option<String> {
+    const DIGITS: &[u8] = b"0123456789";
+    let zone = ((usize::from(u8::MAX) + 1) / DIGITS.len()) * DIGITS.len();
+    let mut out = Vec::with_capacity(len);
+    let mut buf = [0u8; 32];
+    while out.len() < len {
+        getrandom::getrandom(&mut buf).ok()?;
+        for &byte in &buf {
+            let byte = usize::from(byte);
+            if byte >= zone {
+                continue;
+            }
+            out.push(DIGITS[byte % DIGITS.len()]);
+            if out.len() == len {
+                break;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -2613,6 +2646,17 @@ mod tests {
         assert!(trade_no["sub_ref_".len()..]
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn balance_trade_no_uses_csprng_digit_suffix() {
+        let suffix = random_digits(6).unwrap();
+        assert_eq!(suffix.len(), 6);
+        assert!(suffix.bytes().all(|byte| byte.is_ascii_digit()));
+        assert_eq!(
+            balance_trade_no_from_parts(42, &suffix, 1_700_000_000_123),
+            format!("SUBBALUSR42NO{suffix}1700000000123")
+        );
     }
 
     #[test]

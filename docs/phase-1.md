@@ -252,7 +252,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   create/edit/delete + `POST /api/user/manage` 8-action switch
   (disable/enable/delete/promote/demote/quota add/subtract/override).
   Permission tiers match Go; quota mutations are atomic SQL; DELETE is soft
-  delete with token cache invalidation.
+  delete with token cache invalidation. Generated user access tokens and
+  affiliation codes now use the Worker CSPRNG through `getrandom` with
+  base62 rejection sampling instead of `Math.random()`.
 - Non-tiered billing (`crates/billing/src/flat.rs` + `pricing.rs`): models
   without a `tiered_expr` but with a `ModelRatio`/`ModelPrice` option now
   charge quota via the per-token or fixed-price formula, wired into
@@ -361,7 +363,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   and a configured pay method are present. Waffo Pancake subscription checkout
   is now exposed when payment compliance, Pancake merchant credentials, and the
   selected plan product id are present. Remaining production exposure is gated
-  by provider-specific staging replay and reconciliation evidence.
+  by provider-specific staging replay and reconciliation evidence. Subscription
+  balance-pay order IDs now preserve the Go-visible
+  `SUBBALUSR{id}NO{digits}{millis}` shape while using Worker CSPRNG digits
+  instead of `Math.random()`.
 
 ## Next
 
@@ -404,6 +409,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
+- Audit the remaining non-credential Worker `Math.random()` usage in relay
+  weighted channel selection against Go weighted-random parity and Cloudflare
+  runtime best practices.
 - Capture provider-specific staging replay/reconciliation evidence before
   exposing payment methods broadly in production.
 - Capture io.net deployment staging evidence with real credentials: settings

@@ -165,7 +165,7 @@ pub async fn create_user(mut req: Request, env: Env) -> WorkerResult<Response> {
         }
     };
     let now = unix_timestamp();
-    let aff_code = random_aff_code();
+    let aff_code = random_aff_code()?;
     let db = env.d1("DB")?;
     let user_id = d1_repositories::create_user(
         &db,
@@ -357,7 +357,7 @@ pub async fn register(mut req: Request, env: Env) -> WorkerResult<Response> {
         }
     };
     let now = unix_timestamp();
-    let aff_code = random_aff_code();
+    let aff_code = random_aff_code()?;
     let user_id = d1_repositories::create_user(
         &db,
         d1_repositories::CreateUser {
@@ -413,7 +413,7 @@ pub async fn get_aff_code(req: Request, env: Env) -> WorkerResult<Response> {
         ));
     };
     if aff_code.is_empty() {
-        aff_code = random_aff_code();
+        aff_code = random_aff_code()?;
         d1_repositories::update_user_aff_code(&db, claims.id, &aff_code).await?;
     }
     Ok(envelope_ok_response(&aff_code)?)
@@ -443,7 +443,7 @@ pub async fn generate_access_token(req: Request, env: Env) -> WorkerResult<Respo
         Err(response) => return Ok(response),
     };
     let db = env.d1("DB")?;
-    let token = random_access_token();
+    let token = random_access_token()?;
     d1_repositories::update_user_access_token(&db, claims.id, &token).await?;
     Ok(envelope_ok_response(&token)?)
 }
@@ -668,14 +668,34 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
 
 /// A 32-char random access token from the same alphabet as [`random_aff_code`]
 /// (Go `GenerateRandomKey`, length 29-32; we fix 32).
-fn random_access_token() -> String {
-    let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut out = String::with_capacity(32);
-    for _ in 0..32 {
-        let r = js_sys::Math::random() * (alphabet.len() as f64);
-        out.push(alphabet[r as usize] as char);
+fn random_access_token() -> WorkerResult<String> {
+    random_base62(32)
+}
+
+const RANDOM_BASE62_ALPHABET: &[u8] =
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+fn random_base62(len: usize) -> WorkerResult<String> {
+    let zone =
+        ((usize::from(u8::MAX) + 1) / RANDOM_BASE62_ALPHABET.len()) * RANDOM_BASE62_ALPHABET.len();
+    let mut out = String::with_capacity(len);
+    let mut bytes = [0u8; 32];
+    while out.len() < len {
+        getrandom::getrandom(&mut bytes).map_err(|err| {
+            worker::Error::RustError(format!("admin user random generation failed: {err}"))
+        })?;
+        for &byte in &bytes {
+            let byte = usize::from(byte);
+            if byte >= zone {
+                continue;
+            }
+            out.push(RANDOM_BASE62_ALPHABET[byte % RANDOM_BASE62_ALPHABET.len()] as char);
+            if out.len() == len {
+                break;
+            }
+        }
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1749,14 +1769,8 @@ fn parse_id_param(id_param: Option<&String>) -> Option<i64> {
 
 /// Generate a 4-character alphanumeric affiliation code, matching the Go
 /// `common.GetRandomString(4)` behavior.
-fn random_aff_code() -> String {
-    let alphabet: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut out = String::with_capacity(4);
-    for _ in 0..4 {
-        let r = js_sys::Math::random() * (alphabet.len() as f64);
-        out.push(alphabet[r as usize] as char);
-    }
-    out
+fn random_aff_code() -> WorkerResult<String> {
+    random_base62(4)
 }
 
 /// Admin-facing user response. `access_token` is intentionally absent (never
@@ -1963,6 +1977,35 @@ mod tests {
         assert_eq!(parse_id_param(Some(&"  7 ".to_string())), Some(7));
         assert_eq!(parse_id_param(Some(&"abc".to_string())), None);
         assert_eq!(parse_id_param(None), None);
+    }
+
+    #[test]
+    fn random_access_token_is_csprng_base62() {
+        let first = random_access_token().unwrap();
+        let second = random_access_token().unwrap();
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert_ne!(first, second);
+        assert!(first
+            .bytes()
+            .all(|byte| RANDOM_BASE62_ALPHABET.contains(&byte)));
+        assert!(second
+            .bytes()
+            .all(|byte| RANDOM_BASE62_ALPHABET.contains(&byte)));
+    }
+
+    #[test]
+    fn random_aff_code_is_csprng_base62() {
+        let code = random_aff_code().unwrap();
+        assert_eq!(code.len(), 4);
+        assert!(code
+            .bytes()
+            .all(|byte| RANDOM_BASE62_ALPHABET.contains(&byte)));
+    }
+
+    #[test]
+    fn random_base62_accepts_zero_length() {
+        assert_eq!(random_base62(0).unwrap(), "");
     }
 
     #[test]

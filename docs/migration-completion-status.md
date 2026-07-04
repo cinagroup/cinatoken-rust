@@ -36,13 +36,15 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   KV-backed WebAuthn challenges and finish routes fail closed until verifier
   work lands.
 - Core admin user/token/channel/log/option/model/vendor APIs with audit and cache
-  invalidation. Model metadata list/detail responses now include
-  default-frontend enrichment for bound channels, enabled groups, quota types,
-  rule matches, endpoint backfill, vendor counts, and server-side
+  invalidation. Generated user access tokens and affiliation codes now use
+  Worker CSPRNG-backed base62 strings, and model metadata list/detail responses
+  include default-frontend enrichment for bound channels, enabled groups, quota
+  types, rule matches, endpoint backfill, vendor counts, and server-side
   status/sync filters.
 - Task submit/poll/CAS-settlement foundations and scheduled polling.
 - Stripe top-up reference flow plus Epay wallet checkout/callback with D1
-  provider-aware credited-anchor settlement.
+  provider-aware credited-anchor settlement. Subscription balance-pay order
+  suffixes now preserve the Go-visible shape while using CSPRNG digits.
 - Public redemption-code topup and daily check-in core routes.
 - Tracked React/Bun source plus a successful production typecheck/build.
 
@@ -79,6 +81,9 @@ A full diff of every Go-registered route against the Rust worker closed these
   OpenAI-video/kling/jimeng native-shape aliases (per-adaptor conversions).
 - Real production Go SQLite -> D1 export/import/reconciliation.
 - Billing shadow comparison and exact tokenizer/media parity.
+- Relay weighted channel-selection randomness audit; remaining `Math.random()`
+  usage is non-credential but still needs Go parity and Worker best-practice
+  review.
 - Frontend lint cleanup and bundle-size reduction.
 
 ## Incomplete Product Families

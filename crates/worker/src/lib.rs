@@ -517,6 +517,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/user/pay", |req, ctx| async move {
             admin_payment::epay_pay(req, ctx.env).await
         })
+        .post_async("/api/user/creem/pay", |req, ctx| async move {
+            admin_payment::creem_pay(req, ctx.env).await
+        })
         .post_async("/api/user/amount", |req, ctx| async move {
             admin_payment::online_amount(req, ctx.env).await
         })
@@ -528,6 +531,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         })
         .post_async("/api/stripe/webhook", |req, ctx| async move {
             admin_payment::stripe_webhook(req, ctx.env).await
+        })
+        .post_async("/api/creem/webhook", |req, ctx| async move {
+            admin_payment::creem_webhook(req, ctx.env).await
         })
         .post_async("/api/waffo-pancake/webhook/:env", |req, ctx| async move {
             let env_name = ctx.param("env").cloned();

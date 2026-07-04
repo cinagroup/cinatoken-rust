@@ -2330,3 +2330,58 @@ subscription Epay checkout/callback, and other external subscription
 checkout/callback routes remain payment-deferred or capability-hidden until
 their provider-specific order model, signature verification, amount/product/env
 match checks, idempotency, replay, and reconciliation evidence is in place.
+
+### 22.19 2026-07-04 Creem Wallet Topup/Webhook Delta
+
+This increment supersedes the 22.18 route-debt number for the default frontend
+wallet audit. The Rust Worker now owns Creem wallet checkout and webhook
+settlement while still keeping Creem subscription checkout hidden until the
+subscription order settlement path is migrated:
+
+- `POST /api/user/creem/pay` requires user session auth, payment compliance,
+  configured `CreemApiKey`, non-empty valid `CreemProducts`, and
+  `CreemWebhookSecret`. Requiring the webhook secret before exposing checkout
+  avoids a paid-but-unsettleable production state.
+- The Worker selects the configured product by frontend `product_id`, stores a
+  D1 pending topup before calling Creem, and uses the product `quota` as the
+  final Rust D1 quota-to-credit, matching Go `RechargeCreem`.
+- Order IDs keep the Go-visible `ref_` + SHA1 shape over
+  `creem-api-ref-{user}-{UnixMilli}-{rand4}`. Checkout requests call
+  `https://api.creem.io/v1/checkouts` or the test endpoint, prefill the user's
+  email, and include username/reference/product/quota metadata.
+- Creem outbound checkout creation uses explicit JSON headers, redirect
+  rejection, a 30 second timeout, JSON content-type validation, `Content-Length`
+  precheck, and streamed response-size guarding.
+- `POST /api/creem/webhook` verifies the `creem-signature` header as
+  `hex(hmac_sha256(raw_payload, CreemWebhookSecret))` before parsing JSON.
+- Only `checkout.completed` + `order.status == paid` + `order.type == onetime`
+  wallet events credit. The handler rejects provider mismatches and
+  `amount_paid`/stored-money mismatches before calling the provider-aware D1
+  credited-anchor batch.
+- Signature-valid permanent mismatches are recorded in `payment_events` and
+  ACKed with `OK`; partial complete/credit/mark failures return `retry`.
+  Duplicate paid deliveries are `OK` no-ops only when the stored row is already
+  success+credited with matching provider/method/money.
+- When a verified Creem customer email is present, the Worker backfills
+  `users.email` only if it is currently empty, preserving Go's convenience
+  behavior without overwriting user-managed email.
+- `GET /api/user/topup/info` now exposes `enable_creem_topup` and
+  `creem_products` only when compliance, API key, products, and webhook secret
+  are all configured.
+
+Updated local evidence:
+
+- route audit: 212 frontend calls, 244 Worker routes, 36 missing calls;
+- debt categories: 13 auth-deferred, 22 capability-hidden-product,
+  1 payment-deferred;
+- route-set SHA-256:
+  `5cdffd5d02a44c03b55467410820893a988a9303d18be2cb1f03b55acb1409fd`;
+- `cargo test -p cinatoken-worker --lib`: 303 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining boundary: `/api/user/waffo/pay`,
+`/api/subscription/creem/pay`, `/api/subscription/waffo-pancake/pay`,
+subscription Epay checkout/callback, and other external subscription
+checkout/callback routes remain payment-deferred or capability-hidden until
+their provider-specific order model, signature verification, amount/product/env
+match checks, idempotency, replay, and reconciliation evidence is in place.

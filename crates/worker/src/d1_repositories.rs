@@ -6574,6 +6574,32 @@ pub async fn update_pending_topup_status_for_provider(
     Ok(changes > 0)
 }
 
+pub async fn update_user_email_if_empty(
+    db: &D1Database,
+    user_id: i64,
+    email: &str,
+) -> worker::Result<bool> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Ok(false);
+    }
+    let args = [D1Type::Text(email), D1Type::Integer(d1_i32(user_id))];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE users
+            SET email = ?1
+            WHERE id = ?2
+              AND email = ''
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|m| m.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
 pub async fn complete_topup(db: &D1Database, trade_no: &str, now: i64) -> worker::Result<bool> {
     let args = [D1Type::Integer(d1_i32(now)), D1Type::Text(trade_no)];
     let result = db

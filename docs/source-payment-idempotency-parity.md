@@ -191,10 +191,10 @@ options, and `money_to_quota`. Two parity notes:
   but Go truncates toward zero (`int(...)` / `decimal.IntPart()`). This is a real
   divergence — fix to truncate to match Go.
 - 2026-07-04 delta: Stripe wallet checkout/webhook, Epay wallet
-  checkout/callback, and Waffo Pancake wallet checkout/webhook now use
-  provider-aware topup rows and D1 credited-anchor settlement. Creem/Waffo
-  wallet providers, subscription checkout/callback providers, and
-  `ValidateRedirectURL` parity are still pending.
+  checkout/callback, Waffo Pancake wallet checkout/webhook, and Creem wallet
+  checkout/webhook now use provider-aware topup rows and D1 credited-anchor
+  settlement. Waffo wallet provider, subscription checkout/callback providers,
+  and `ValidateRedirectURL` parity are still pending.
 
 Current Epay wallet details:
 
@@ -239,22 +239,47 @@ Current Waffo Pancake wallet details:
   matching provider/method/money. Waffo Pancake subscription events are recorded
   as `subscription_deferred` until subscription settlement is migrated.
 
+Current Creem wallet details:
+
+- `POST /api/user/creem/pay` accepts the frontend's `product_id` +
+  `payment_method=creem`, requires payment compliance, `CreemApiKey`, non-empty
+  valid `CreemProducts`, and `CreemWebhookSecret`, then creates a D1 pending
+  topup before calling Creem `/v1/checkouts`. The Worker uses the Go-visible
+  `ref_ + sha1("creem-api-ref-{user}-{UnixMilli}-{rand4}")` order shape.
+- `topups.amount` stores the configured product quota directly, matching Go
+  `RechargeCreem` where Creem product `Quota` is the credited amount. Checkout
+  metadata includes username, reference id, product name, and quota; customer
+  email is prefilled from the D1 user row.
+- `POST /api/creem/webhook` verifies `creem-signature` as
+  `hex(hmac_sha256(raw_payload, CreemWebhookSecret))` before parsing JSON. The
+  Worker requires `checkout.completed`, order status `paid`, and order type
+  `onetime` for wallet credit; subscription references are recorded as
+  `subscription_deferred` until subscription settlement is migrated.
+- First-time Creem credits verify local `payment_provider == "creem"` and
+  compare Creem `amount_paid` cents with stored topup money before calling
+  `complete_topup_and_credit_for_provider`. Duplicate successful deliveries are
+  `200 OK` no-ops only when the row is already success+credited with matching
+  provider/method/money. When the verified Creem customer email is present, the
+  Worker backfills `users.email` only if it is currently empty.
+
 Checklist:
 
 1. Keep per-provider signature verification before any write. Done for Stripe,
-   Epay wallet topups, and Waffo Pancake wallet topups; pending for
-   Creem/Waffo and subscription providers.
+   Epay wallet topups, Waffo Pancake wallet topups, and Creem wallet topups;
+   pending for Waffo and subscription providers.
 2. Keep `payment_events` as non-gating audit/dedup evidence and anchor credit on
    `topups` conditional credited batches. Done for Stripe, Epay wallet topups,
-   and Waffo Pancake wallet topups; provider-specific replay fixtures still
-   need staging D1 proof.
+   Waffo Pancake wallet topups, and Creem wallet topups; provider-specific
+   replay fixtures still need staging D1 proof.
 3. Implement per-provider quota formulas with truncation. Done for Epay wallet
    order creation; Stripe `money_to_quota` still needs truncation parity review.
 4. Normalize webhook replays to 200 no-op and add replay tests that credit
    exactly once across duplicate deliveries. Unit coverage exists for helper
    parity; staging D1 replay smoke remains required.
-5. Add amount/currency/product/env match checks. Epay wallet checks provider and
-   money; currency/product/env checks apply to remaining providers.
+5. Add amount/currency/product/env match checks. Epay and Creem wallet checks
+   provider and money; Waffo Pancake checks provider, buyer identity, amount,
+   and env. Currency/product checks apply to remaining providers where exposed
+   by the webhook payload.
 6. Mirror for `subscription_orders`; keep subscription settlement funding-source
    correct (`docs/billing-parity-runbook.md`).
 7. Admin manual-complete (`ManualCompleteTopUp`) and `AdminCompleteTopUp` route

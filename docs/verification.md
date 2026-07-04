@@ -4,6 +4,25 @@ Last checked: 2026-07-04
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet
+  checkout and webhook settlement at `POST /api/user/creem/pay` and
+  `POST /api/creem/webhook`, including Go-compatible `ref_` SHA1 order IDs,
+  HMAC-SHA256 raw-body webhook signature checks, product-list parsing, amount
+  replay checks, provider-aware credited-anchor settlement, and optional
+  empty-email backfill from the verified Creem customer payload.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed for
+  the same Creem wallet/webhook slice.
+- `bun run check`: passed after the Creem wallet/webhook slice, covering the
+  frontend build, route-debt baseline, Rust workspace tests excluding the Worker,
+  rustfmt check, and Worker wasm check.
+- `bun tools/audit_frontend_routes.mjs --summary --details --fail-on-unclassified`:
+  212 frontend calls, 244 Worker routes, 36 missing calls, categories
+  13 auth-deferred / 22 capability-hidden-product / 1 payment-deferred,
+  SHA-256 `5cdffd5d02a44c03b55467410820893a988a9303d18be2cb1f03b55acb1409fd`.
+
+Older entries below are historical evidence; their route-debt counts may be
+superseded by the current 36-call / 1 payment-deferred baseline above.
+
 - `cargo test -p cinatoken-worker --lib`: 298 passed after adding Waffo
   Pancake wallet checkout and webhook settlement at
   `POST /api/user/waffo-pancake/pay` and
@@ -19,9 +38,6 @@ Last checked: 2026-07-04
   212 frontend calls, 242 Worker routes, 37 missing calls, categories
   13 auth-deferred / 22 capability-hidden-product / 2 payment-deferred,
   SHA-256 `15339560f12bfb286e08b72afe867ce802b72f7bd3fcd0d21ae741c089ba0af7`.
-
-Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 37-call / 2 payment-deferred baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 292 passed after adding the
   Epay-compatible wallet topup path at `POST /api/user/pay` plus

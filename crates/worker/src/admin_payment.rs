@@ -6,6 +6,7 @@
 //! - `POST /api/user/stripe/amount` estimates the Stripe charge amount.
 //! - `POST /api/user/pay` creates an Epay-compatible pending topup order and
 //!   returns the signed form action/params. UserAuth.
+//! - `POST /api/user/creem/pay` creates a Creem checkout session. UserAuth.
 //! - `POST /api/user/amount` estimates legacy online/Epay-style charge amount.
 //! - `POST /api/user/waffo-pancake/amount` estimates Waffo Pancake charge amount.
 //! - `POST /api/user/waffo-pancake/pay` creates a Waffo Pancake checkout session.
@@ -15,6 +16,7 @@
 //! - `POST /api/option/waffo-pancake/subscription-product` creates a plan product.
 //! - `POST /api/option/waffo-pancake/subscription-product-options` lists saved-store products.
 //! - `POST /api/stripe/webhook` verifies Stripe events and credits quota.
+//! - `POST /api/creem/webhook` verifies Creem events and credits quota.
 //! - `POST /api/waffo-pancake/webhook/:env` verifies Waffo Pancake events and credits quota.
 //! - `GET/POST /api/user/epay/notify` verifies Epay callbacks and credits quota.
 //! - `GET /api/user/topup/info` exposes implemented payment capabilities.
@@ -35,6 +37,7 @@ use futures_util::{
     future::{select, Either},
     TryStreamExt,
 };
+use hmac::{Hmac, Mac};
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
 use rsa::pkcs1v15::{Signature as RsaSignature, SigningKey, VerifyingKey};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
@@ -44,6 +47,7 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use worker::{
     AbortController, Delay, Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect,
@@ -56,6 +60,8 @@ use crate::admin::{
 };
 use crate::d1_repositories;
 use crate::set_cors_headers;
+
+type HmacSha256 = Hmac<Sha256>;
 
 const CURRENT_COMPLIANCE_TERMS_VERSION: &str = "v1";
 const PAYMENT_COMPLIANCE_CONFIRMED_KEY: &str = "payment_setting.compliance_confirmed";
@@ -71,6 +77,10 @@ const EPAY_ID_KEY: &str = "EpayId";
 const EPAY_KEY_KEY: &str = "EpayKey";
 const PAY_METHODS_KEY: &str = "PayMethods";
 const CUSTOM_CALLBACK_ADDRESS_KEY: &str = "CustomCallbackAddress";
+const CREEM_API_KEY_KEY: &str = "CreemApiKey";
+const CREEM_PRODUCTS_KEY: &str = "CreemProducts";
+const CREEM_TEST_MODE_KEY: &str = "CreemTestMode";
+const CREEM_WEBHOOK_SECRET_KEY: &str = "CreemWebhookSecret";
 const WAFFO_PANCAKE_MERCHANT_ID_KEY: &str = "WaffoPancakeMerchantID";
 const WAFFO_PANCAKE_PRIVATE_KEY_KEY: &str = "WaffoPancakePrivateKey";
 const WAFFO_PANCAKE_RETURN_URL_KEY: &str = "WaffoPancakeReturnURL";
@@ -84,12 +94,18 @@ const DEFAULT_QUOTA_PER_UNIT: &str = "500000";
 const DEFAULT_WAFFO_PANCAKE_UNIT_PRICE: &str = "1";
 const PAYMENT_PROVIDER_STRIPE: &str = "stripe";
 const PAYMENT_PROVIDER_EPAY: &str = "epay";
+const PAYMENT_PROVIDER_CREEM: &str = "creem";
 const PAYMENT_PROVIDER_WAFFO_PANCAKE: &str = "waffo_pancake";
 const TOPUP_STATUS_SUCCESS: i32 = 1;
 const TOPUP_STATUS_FAILED: i32 = 2;
 const EPAY_SUBMIT_PATH: &str = "/submit.php";
 const EPAY_NOTIFY_BODY_LIMIT_BYTES: usize = 16 * 1024;
 const EPAY_RETURN_PATH: &str = "/usage-logs";
+const CREEM_PROD_CHECKOUT_URL: &str = "https://api.creem.io/v1/checkouts";
+const CREEM_TEST_CHECKOUT_URL: &str = "https://test-api.creem.io/v1/checkouts";
+const CREEM_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const CREEM_RESPONSE_LIMIT_BYTES: usize = 64 * 1024;
+const CREEM_WEBHOOK_BODY_LIMIT_BYTES: usize = 64 * 1024;
 const WAFFO_PANCAKE_API_BASE_URL: &str = "https://api.waffo.ai";
 const WAFFO_PANCAKE_GRAPHQL_URL: &str = "https://api.waffo.ai/v1/graphql";
 const WAFFO_PANCAKE_GRAPHQL_PATH: &str = "/v1/graphql";
@@ -148,6 +164,10 @@ const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     PAYMENT_AMOUNT_OPTIONS_KEY,
     PAYMENT_AMOUNT_DISCOUNT_KEY,
     "TopUpLink",
+    CREEM_API_KEY_KEY,
+    CREEM_PRODUCTS_KEY,
+    CREEM_TEST_MODE_KEY,
+    CREEM_WEBHOOK_SECRET_KEY,
     PAY_ADDRESS_KEY,
     EPAY_ID_KEY,
     EPAY_KEY_KEY,
@@ -156,6 +176,22 @@ const TOPUP_INFO_OPTION_KEYS: &[&str] = &[
     WAFFO_PANCAKE_PRIVATE_KEY_KEY,
     WAFFO_PANCAKE_PRODUCT_ID_KEY,
     WAFFO_PANCAKE_MIN_TOPUP_KEY,
+];
+const CREEM_TOPUP_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    CREEM_API_KEY_KEY,
+    CREEM_PRODUCTS_KEY,
+    CREEM_TEST_MODE_KEY,
+    CREEM_WEBHOOK_SECRET_KEY,
+];
+const CREEM_WEBHOOK_OPTION_KEYS: &[&str] = &[
+    PAYMENT_COMPLIANCE_CONFIRMED_KEY,
+    PAYMENT_COMPLIANCE_TERMS_KEY,
+    CREEM_API_KEY_KEY,
+    CREEM_PRODUCTS_KEY,
+    CREEM_TEST_MODE_KEY,
+    CREEM_WEBHOOK_SECRET_KEY,
 ];
 const ONLINE_AMOUNT_OPTION_KEYS: &[&str] = &[
     PAYMENT_COMPLIANCE_CONFIRMED_KEY,
@@ -621,6 +657,142 @@ pub async fn epay_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
     .await;
 
     epay_success_response(&submit_url, &params)
+}
+
+/// `POST /api/user/creem/pay`: create a Creem checkout session.
+pub async fn creem_pay(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let payment_method = body
+        .get("payment_method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if payment_method != PAYMENT_PROVIDER_CREEM {
+        return Ok(creem_error_response("unsupported payment method")?);
+    }
+    let product_id = body
+        .get("product_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if product_id.is_empty() {
+        return Ok(creem_error_response("product is required")?);
+    }
+
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, CREEM_TOPUP_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    if !compliance_confirmed {
+        return Ok(creem_error_response("payment compliance is not confirmed")?);
+    }
+    let api_key = values[2].as_deref().unwrap_or_default().trim();
+    if api_key.is_empty() {
+        return Ok(creem_error_response("Creem payment is not configured")?);
+    }
+    let products = match parse_creem_products(values[3].as_deref()) {
+        Ok(products) => products,
+        Err(message) => return Ok(creem_error_response(&message)?),
+    };
+    if !creem_products_enabled(&products) {
+        return Ok(creem_error_response("Creem products are not configured")?);
+    }
+    let test_mode = parse_bool(values[4].as_deref(), false);
+    if values[5].as_deref().unwrap_or_default().trim().is_empty() {
+        return Ok(creem_error_response("Creem webhook is not configured")?);
+    }
+    let Some(product) = products
+        .iter()
+        .find(|product| product.product_id == product_id)
+        .cloned()
+    else {
+        return Ok(creem_error_response("product does not exist")?);
+    };
+    if product.price <= 0.0 || product.quota <= 0 {
+        return Ok(creem_error_response("product configuration is invalid")?);
+    }
+
+    let Some(user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+        return Ok(creem_error_response("user not found")?);
+    };
+    if user.status == USER_STATUS_DISABLED {
+        return Ok(creem_error_response("user is disabled")?);
+    }
+
+    let now = unix_timestamp();
+    let trade_no = match creem_trade_no(claims.id, unix_timestamp_millis()) {
+        Some(value) => value,
+        None => return Ok(creem_error_response("failed to generate order id")?),
+    };
+    if let Err(err) = d1_repositories::create_topup(
+        &db,
+        claims.id,
+        product.quota,
+        product.price,
+        &trade_no,
+        PAYMENT_PROVIDER_CREEM,
+        PAYMENT_PROVIDER_CREEM,
+        now,
+    )
+    .await
+    {
+        worker::console_error!("failed to record Creem pending topup {trade_no}: {err}");
+        return Ok(creem_error_response("failed to create topup order")?);
+    }
+
+    let checkout = match create_creem_checkout(api_key, test_mode, &trade_no, &product, &user).await
+    {
+        Ok(checkout) => checkout,
+        Err(err) => {
+            worker::console_error!(
+                "failed to create Creem checkout user_id={} trade_no={} product_id={} error={}",
+                claims.id,
+                trade_no,
+                product.product_id,
+                err
+            );
+            let _ = d1_repositories::update_pending_topup_status_for_provider(
+                &db,
+                &trade_no,
+                PAYMENT_PROVIDER_CREEM,
+                TOPUP_STATUS_FAILED,
+            )
+            .await;
+            return Ok(creem_error_response("failed to create checkout session")?);
+        }
+    };
+
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        None,
+        "user",
+        "topup.creem.create",
+        &format!("user {} created Creem topup {}", claims.username, trade_no),
+        &serde_json::json!({
+            "trade_no": trade_no,
+            "product_id": product.product_id,
+            "product_name": product.name,
+            "credit_quota": product.quota,
+            "money": product.price,
+            "checkout_id": checkout.id,
+        }),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+
+    creem_ok_response(&CreemPayResponse {
+        checkout_url: checkout.checkout_url,
+        order_id: trade_no,
+    })
 }
 
 /// `GET/POST /api/user/epay/notify`: verify Epay callback and credit topup.
@@ -1292,6 +1464,294 @@ pub async fn list_waffo_pancake_subscription_product_options(
     }
 }
 
+/// `POST /api/creem/webhook`: verify Creem and credit wallet quota.
+pub async fn creem_webhook(mut req: Request, env: Env) -> WorkerResult<Response> {
+    let db = env.d1("DB")?;
+    let values = d1_repositories::option_values(&db, CREEM_WEBHOOK_OPTION_KEYS).await?;
+    let compliance_confirmed = parse_bool(values[0].as_deref(), false)
+        && values[1].as_deref().unwrap_or("") == CURRENT_COMPLIANCE_TERMS_VERSION;
+    let api_key = values[2].as_deref().unwrap_or_default().trim();
+    let products = match parse_creem_products(values[3].as_deref()) {
+        Ok(products) => products,
+        Err(message) => {
+            worker::console_warn!("Creem webhook rejected: {message}");
+            return Ok(Response::error("webhook disabled", 403)?);
+        }
+    };
+    let webhook_secret = values[5].as_deref().unwrap_or_default().trim();
+    if !compliance_confirmed
+        || api_key.is_empty()
+        || !creem_products_enabled(&products)
+        || webhook_secret.is_empty()
+    {
+        worker::console_warn!("Creem webhook rejected: gateway disabled");
+        return Ok(Response::error("webhook disabled", 403)?);
+    }
+
+    if let Err(message) = validate_creem_content_length(
+        req.headers().get("Content-Length").ok().flatten(),
+        CREEM_WEBHOOK_BODY_LIMIT_BYTES,
+        "Creem webhook",
+    ) {
+        let status = if message.contains("too large") {
+            413
+        } else {
+            400
+        };
+        worker::console_warn!("Creem webhook rejected: {message}");
+        return Ok(Response::error(&message, status)?);
+    }
+    let signature = req
+        .headers()
+        .get("creem-signature")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if signature.trim().is_empty() {
+        worker::console_warn!("Creem webhook rejected: missing signature");
+        return Ok(Response::error("missing signature", 401)?);
+    }
+    let payload_bytes = req.bytes().await?;
+    if payload_bytes.len() > CREEM_WEBHOOK_BODY_LIMIT_BYTES {
+        return Ok(Response::error("Creem webhook body too large", 413)?);
+    }
+    if !verify_creem_signature(&payload_bytes, &signature, webhook_secret) {
+        worker::console_warn!("Creem webhook signature invalid");
+        return Ok(Response::error("invalid signature", 401)?);
+    }
+    let payload = match String::from_utf8(payload_bytes) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(Response::error("invalid payload encoding", 400)?),
+    };
+    let event: CreemWebhookEvent = match serde_json::from_str(&payload) {
+        Ok(event) => event,
+        Err(err) => {
+            worker::console_warn!("Creem webhook payload invalid: {err}");
+            return Ok(Response::error("invalid payload", 400)?);
+        }
+    };
+
+    let now = unix_timestamp();
+    let event_id = creem_event_id(&event, &payload);
+    let reference_id = event.object.request_id.trim().to_string();
+    let provider_order_id = event.object.order.id.trim();
+    let order_id = if reference_id.is_empty() {
+        provider_order_id
+    } else {
+        reference_id.as_str()
+    };
+
+    if event.event_type != "checkout.completed" {
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            order_id,
+            "ignored",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    if !event.object.order.status.eq_ignore_ascii_case("paid") {
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            order_id,
+            "ignored",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    if reference_id.is_empty() {
+        worker::console_error!(
+            "Creem webhook missing request_id event_id={} order_id={}",
+            event_id,
+            provider_order_id
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            order_id,
+            "unmatched",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    if reference_id.starts_with("sub-creem-ref-") || reference_id.starts_with("SUB") {
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            &reference_id,
+            "subscription_deferred",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    if !event.object.order.r#type.eq_ignore_ascii_case("onetime") {
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            &reference_id,
+            "ignored",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+
+    let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &reference_id).await? else {
+        worker::console_error!(
+            "Creem webhook topup not found event_id={} trade_no={} order_id={}",
+            event_id,
+            reference_id,
+            provider_order_id
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            &reference_id,
+            "unmatched",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    };
+    if topup.payment_provider != PAYMENT_PROVIDER_CREEM {
+        worker::console_error!(
+            "Creem webhook provider mismatch event_id={} trade_no={} provider={}",
+            event_id,
+            reference_id,
+            topup.payment_provider
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            &reference_id,
+            "rejected",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    if !creem_amount_paid_matches(topup.money, event.object.order.amount_paid) {
+        worker::console_error!(
+            "Creem webhook amount mismatch event_id={} trade_no={} topup_money={} amount_paid_cents={}",
+            event_id,
+            reference_id,
+            topup.money,
+            event.object.order.amount_paid
+        );
+        let _ = d1_repositories::insert_payment_event(
+            &db,
+            PAYMENT_PROVIDER_CREEM,
+            &event_id,
+            &reference_id,
+            "rejected",
+            &payload,
+            now,
+        )
+        .await;
+        return Response::ok("OK");
+    }
+    let expected_money = topup.money;
+
+    let credit_result = d1_repositories::complete_topup_and_credit_for_provider(
+        &db,
+        &reference_id,
+        PAYMENT_PROVIDER_CREEM,
+        PAYMENT_PROVIDER_CREEM,
+        expected_money,
+        now,
+    )
+    .await?;
+    let _ = d1_repositories::insert_payment_event(
+        &db,
+        PAYMENT_PROVIDER_CREEM,
+        &event_id,
+        &reference_id,
+        "paid",
+        &payload,
+        now,
+    )
+    .await;
+
+    if credit_result.credited_now() {
+        let customer_email = event.object.customer.email.trim();
+        if !customer_email.is_empty() {
+            let _ = d1_repositories::update_user_email_if_empty(&db, topup.user_id, customer_email)
+                .await;
+        }
+        if let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &reference_id).await? {
+            let _ = d1_repositories::insert_admin_audit_log(
+                &db,
+                Some(topup.user_id),
+                None,
+                "system",
+                "topup.credit",
+                &format!(
+                    "Creem topup {} credited {} quota ({} paid)",
+                    topup.trade_no, topup.amount, topup.money
+                ),
+                &serde_json::json!({
+                    "trade_no": topup.trade_no,
+                    "amount": topup.amount,
+                    "money": topup.money,
+                    "payment_method": topup.payment_method,
+                    "payment_provider": PAYMENT_PROVIDER_CREEM,
+                    "event_id": event_id,
+                    "order_id": provider_order_id,
+                    "customer_email_present": !customer_email.is_empty(),
+                }),
+                &d1_repositories::AdminAuditInfo {
+                    admin_id: 0,
+                    admin_username: "creem-webhook".to_string(),
+                    admin_role: 0,
+                    auth_method: "webhook".to_string(),
+                    ip: String::new(),
+                },
+                now,
+            )
+            .await;
+        }
+    } else if let Some(topup) = d1_repositories::find_topup_by_trade_no(&db, &reference_id).await? {
+        if !is_completed_creem_replay(&topup, expected_money) {
+            worker::console_error!(
+                "Creem webhook verified but did not credit trade_no={} status={} credited={} provider={}",
+                reference_id,
+                topup.status,
+                topup.credited,
+                topup.payment_provider
+            );
+            return Ok(Response::error("retry", 500)?);
+        }
+    } else {
+        worker::console_error!(
+            "Creem webhook verified but topup disappeared trade_no={}",
+            reference_id
+        );
+        return Ok(Response::error("retry", 500)?);
+    }
+
+    Response::ok("OK")
+}
+
 /// `POST /api/stripe/webhook`: receive and process a Stripe webhook.
 /// Public route - security relies on HMAC-SHA256 signature verification.
 pub async fn stripe_webhook(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -1758,19 +2218,24 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
     );
     let discount = parse_json_option(values[5].as_deref(), serde_json::json!({}));
     let topup_link = values[6].clone().unwrap_or_default();
-    let epay_configured = epay_config_from_values(&values[7], &values[8], &values[9]).is_some();
-    let epay_pay_methods = parse_payment_methods(values[10].as_deref());
-    let waffo_pancake_min_topup = parse_positive_f64(values[14].as_deref(), 1.0);
+    let creem_products = parse_creem_products(values[8].as_deref()).unwrap_or_default();
+    let creem_configured = !values[7].as_deref().unwrap_or_default().trim().is_empty()
+        && creem_products_enabled(&creem_products)
+        && !values[10].as_deref().unwrap_or_default().trim().is_empty();
+    let epay_configured = epay_config_from_values(&values[11], &values[12], &values[13]).is_some();
+    let epay_pay_methods = parse_payment_methods(values[14].as_deref());
+    let waffo_pancake_min_topup = parse_positive_f64(values[18].as_deref(), 1.0);
     let waffo_pancake_configured = waffo_pancake_topup_configured(
-        values[11].as_deref().unwrap_or_default(),
-        values[12].as_deref().unwrap_or_default(),
-        values[13].as_deref().unwrap_or_default(),
+        values[15].as_deref().unwrap_or_default(),
+        values[16].as_deref().unwrap_or_default(),
+        values[17].as_deref().unwrap_or_default(),
     );
 
-    // Only expose provider methods that have a Rust Worker implementation.
-    // Creem/Waffo remain payment-deferred and stay hidden even if legacy option
-    // keys are present, so the frontend never renders broken buttons.
+    // Only expose provider methods that have a Rust Worker implementation and a
+    // corresponding settlement path, so the frontend never renders broken
+    // buttons.
     let enable_stripe_topup = compliance_confirmed && config.is_enabled();
+    let enable_creem_topup = compliance_confirmed && creem_configured;
     let enable_online_topup =
         compliance_confirmed && epay_configured && !epay_pay_methods.is_empty();
     let enable_waffo_pancake_topup = compliance_confirmed && waffo_pancake_configured;
@@ -1809,7 +2274,7 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
     Ok(envelope_ok_response(&TopupInfoResponse {
         enable_online_topup,
         enable_stripe_topup,
-        enable_creem_topup: false,
+        enable_creem_topup,
         enable_waffo_topup: false,
         enable_waffo_pancake_topup,
         enable_waffo_pancake_subscription: false,
@@ -1817,7 +2282,7 @@ pub async fn topup_info(req: Request, env: Env) -> WorkerResult<Response> {
         payment_compliance_confirmed: compliance_confirmed,
         payment_compliance_terms_version: CURRENT_COMPLIANCE_TERMS_VERSION.to_string(),
         waffo_pay_methods: Value::Null,
-        creem_products: Value::Array(Vec::new()),
+        creem_products: creem_products_value(&creem_products, enable_creem_topup),
         pay_methods,
         min_topup,
         stripe_min_topup,
@@ -2033,6 +2498,148 @@ struct EpayNotifyInfo {
     out_trade_no: String,
     money: String,
     trade_status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+struct CreemProduct {
+    #[serde(rename = "productId")]
+    product_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    price: f64,
+    #[serde(default)]
+    currency: String,
+    #[serde(default)]
+    quota: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CreemPayResponse {
+    checkout_url: String,
+    order_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreemCheckoutRequest {
+    product_id: String,
+    request_id: String,
+    customer: CreemCheckoutCustomer,
+    metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreemCheckoutCustomer {
+    email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreemCheckoutResponse {
+    #[serde(default)]
+    checkout_url: String,
+    #[serde(default)]
+    id: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct CreemWebhookEvent {
+    #[serde(default)]
+    id: String,
+    #[serde(rename = "eventType", default)]
+    event_type: String,
+    #[serde(default)]
+    created_at: i64,
+    #[serde(default)]
+    object: CreemWebhookObject,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize)]
+struct CreemWebhookObject {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    object: String,
+    #[serde(default)]
+    request_id: String,
+    #[serde(default)]
+    order: CreemWebhookOrder,
+    #[serde(default)]
+    product: CreemWebhookProduct,
+    #[serde(default)]
+    units: i64,
+    #[serde(default)]
+    customer: CreemWebhookCustomer,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    mode: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize)]
+struct CreemWebhookOrder {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    customer: String,
+    #[serde(default)]
+    product: String,
+    #[serde(default)]
+    amount: i64,
+    #[serde(default)]
+    currency: String,
+    #[serde(default)]
+    sub_total: i64,
+    #[serde(default)]
+    tax_amount: i64,
+    #[serde(default)]
+    amount_due: i64,
+    #[serde(default)]
+    amount_paid: i64,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    transaction: String,
+    #[serde(default)]
+    mode: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize)]
+struct CreemWebhookProduct {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    price: i64,
+    #[serde(default)]
+    currency: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    mode: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize)]
+struct CreemWebhookCustomer {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    country: String,
+    #[serde(default)]
+    mode: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2484,6 +3091,144 @@ fn waffo_pancake_error_response<T: Serialize>(status: u16, data: &T) -> WorkerRe
     let mut response = Response::from_json(&body)?.with_status(status);
     set_cors_headers(&mut response)?;
     Ok(response)
+}
+
+fn creem_ok_response<T: Serialize>(data: &T) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&serde_json::json!({
+        "message": "success",
+        "data": data,
+    }))?
+    .with_status(200);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn creem_error_response(message: &str) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&serde_json::json!({
+        "message": "error",
+        "data": message,
+    }))?
+    .with_status(200);
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+async fn create_creem_checkout(
+    api_key: &str,
+    test_mode: bool,
+    reference_id: &str,
+    product: &CreemProduct,
+    user: &d1_repositories::AdminUserRow,
+) -> Result<CreemCheckoutResponse, String> {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("username".to_string(), user.username.clone());
+    metadata.insert("reference_id".to_string(), reference_id.to_string());
+    metadata.insert("product_name".to_string(), product.name.clone());
+    metadata.insert("quota".to_string(), product.quota.to_string());
+    let body = serde_json::to_vec(&CreemCheckoutRequest {
+        product_id: product.product_id.clone(),
+        request_id: reference_id.to_string(),
+        customer: CreemCheckoutCustomer {
+            email: user.email.clone(),
+        },
+        metadata,
+    })
+    .map_err(|err| format!("failed to encode Creem checkout request: {err}"))?;
+
+    let mut headers = Headers::new();
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("Accept", "application/json")
+        .map_err(|err| err.to_string())?;
+    headers
+        .set("x-api-key", api_key)
+        .map_err(|err| err.to_string())?;
+
+    let url = if test_mode {
+        CREEM_TEST_CHECKOUT_URL
+    } else {
+        CREEM_PROD_CHECKOUT_URL
+    };
+    let mut response = fetch_creem_json(url, headers, &body).await?;
+    let status = response.status_code();
+    let bytes = read_limited_creem_response_body(&mut response).await?;
+    if status / 100 != 2 {
+        return Err(format!("Creem checkout HTTP {status}"));
+    }
+    let checkout: CreemCheckoutResponse = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("failed to parse Creem checkout response: {err}"))?;
+    if checkout.checkout_url.trim().is_empty() {
+        return Err("Creem checkout response did not include checkout_url".to_string());
+    }
+    Ok(checkout)
+}
+
+async fn fetch_creem_json(url: &str, headers: Headers, body: &[u8]) -> Result<Response, String> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(wasm_bindgen::JsValue::from(js_sys::Uint8Array::from(
+            body,
+        ))))
+        .with_redirect(RequestRedirect::Error);
+    let request = Request::new_with_init(url, &init)
+        .map_err(|err| format!("failed to build Creem request: {err}"))?;
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let outbound = Fetch::Request(request);
+    let fetch = outbound.send_with_signal(&signal);
+    let delay = Delay::from(CREEM_FETCH_TIMEOUT);
+    futures_util::pin_mut!(fetch);
+    futures_util::pin_mut!(delay);
+    let response = match select(fetch, delay).await {
+        Either::Left((result, _)) => {
+            result.map_err(|err| format!("failed to fetch Creem request: {err}"))?
+        }
+        Either::Right(((), _)) => {
+            controller.abort();
+            return Err("Creem request timed out".to_string());
+        }
+    };
+    let content_type = response
+        .headers()
+        .get("Content-Type")
+        .map_err(|err| format!("failed to inspect Creem headers: {err}"))?
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.is_empty()
+        && !content_type.contains("application/json")
+        && !content_type.contains("+json")
+    {
+        return Err("Creem response is not JSON".to_string());
+    }
+    Ok(response)
+}
+
+async fn read_limited_creem_response_body(response: &mut Response) -> Result<Vec<u8>, String> {
+    validate_creem_content_length(
+        response
+            .headers()
+            .get("Content-Length")
+            .map_err(|err| format!("failed to inspect Creem headers: {err}"))?,
+        CREEM_RESPONSE_LIMIT_BYTES,
+        "Creem response",
+    )?;
+    response
+        .stream()
+        .map_err(|err| format!("failed to read Creem response: {err}"))?
+        .try_fold(Vec::new(), |mut bytes, chunk| async move {
+            if bytes.len().saturating_add(chunk.len()) > CREEM_RESPONSE_LIMIT_BYTES {
+                return Err(worker::Error::RustError(
+                    "Creem response body too large".to_string(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+            Ok(bytes)
+        })
+        .await
+        .map_err(|err| err.to_string())
 }
 
 async fn resolve_waffo_pancake_admin_creds(
@@ -3612,6 +4357,14 @@ fn is_completed_waffo_pancake_replay(
         && (topup.money - expected_money).abs() < 0.000001
 }
 
+fn is_completed_creem_replay(topup: &d1_repositories::TopupRow, expected_money: f64) -> bool {
+    topup.status == TOPUP_STATUS_SUCCESS
+        && topup.credited == 1
+        && topup.payment_provider == PAYMENT_PROVIDER_CREEM
+        && topup.payment_method == PAYMENT_PROVIDER_CREEM
+        && (topup.money - expected_money).abs() < 0.000001
+}
+
 fn constant_time_str_eq(left: &str, right: &str) -> bool {
     let left = left.as_bytes();
     let right = right.as_bytes();
@@ -3623,6 +4376,97 @@ fn constant_time_str_eq(left: &str, right: &str) -> bool {
         diff |= usize::from(a ^ b);
     }
     diff == 0
+}
+
+fn parse_creem_products(raw: Option<&str>) -> Result<Vec<CreemProduct>, String> {
+    let raw = raw.unwrap_or_default().trim();
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str::<Vec<CreemProduct>>(raw)
+        .map_err(|err| format!("Creem products configuration is invalid: {err}"))
+}
+
+fn creem_products_enabled(products: &[CreemProduct]) -> bool {
+    products.iter().any(|product| {
+        !product.product_id.trim().is_empty()
+            && !product.name.trim().is_empty()
+            && product.price > 0.0
+            && product.quota > 0
+    })
+}
+
+fn creem_products_value(products: &[CreemProduct], enabled: bool) -> Value {
+    if enabled {
+        serde_json::to_value(products).unwrap_or_else(|_| Value::Array(Vec::new()))
+    } else {
+        Value::Array(Vec::new())
+    }
+}
+
+fn creem_trade_no(user_id: i64, now_millis: i64) -> Option<String> {
+    let suffix = random_base62(4)?;
+    let reference = format!("creem-api-ref-{user_id}-{now_millis}-{suffix}");
+    Some(format!(
+        "ref_{}",
+        hex_lower(&Sha1::digest(reference.as_bytes()))
+    ))
+}
+
+fn generate_creem_signature(payload: &[u8], secret: &str) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac accepts any key");
+    mac.update(payload);
+    hex_lower(&mac.finalize().into_bytes())
+}
+
+fn verify_creem_signature(payload: &[u8], signature: &str, secret: &str) -> bool {
+    if secret.trim().is_empty() || signature.trim().is_empty() {
+        return false;
+    }
+    let expected = generate_creem_signature(payload, secret.trim());
+    constant_time_str_eq(&expected, signature.trim())
+}
+
+fn validate_creem_content_length(
+    value: Option<String>,
+    limit: usize,
+    label: &str,
+) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let len = trimmed
+        .parse::<usize>()
+        .map_err(|_| format!("{label} Content-Length is invalid"))?;
+    if len > limit {
+        return Err(format!("{label} body too large"));
+    }
+    Ok(())
+}
+
+fn creem_event_id(event: &CreemWebhookEvent, payload: &str) -> String {
+    let id = event.id.trim();
+    if !id.is_empty() {
+        return id.to_string();
+    }
+    let request_id = event.object.request_id.trim();
+    let order_id = event.object.order.id.trim();
+    if !request_id.is_empty() || !order_id.is_empty() {
+        return format!("{}:{}:{}", event.event_type.trim(), request_id, order_id);
+    }
+    format!("payload:{}", hex_lower(&Sha256::digest(payload.as_bytes())))
+}
+
+fn creem_amount_paid_matches(topup_money: f64, amount_paid_cents: i64) -> bool {
+    if amount_paid_cents <= 0 {
+        return true;
+    }
+    let expected_cents = (topup_money * 100.0).round() as i64;
+    expected_cents == amount_paid_cents
 }
 
 fn validate_waffo_pancake_webhook_content_length(value: Option<String>) -> Result<(), String> {
@@ -3882,25 +4726,28 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        constant_time_str_eq, discount_for_amount, epay_credit_quota, epay_payment_method_allowed,
+        constant_time_str_eq, creem_amount_paid_matches, creem_event_id, creem_products_enabled,
+        creem_trade_no, discount_for_amount, epay_credit_quota, epay_payment_method_allowed,
         epay_purchase_params, epay_sign, epay_signing_string, epay_submit_url,
-        filter_active_waffo_pancake_products, format_pay_money, is_completed_epay_replay,
-        is_completed_waffo_pancake_replay, normalize_waffo_pancake_private_key,
-        normalize_waffo_pancake_public_key, online_min_topup, online_pay_money,
-        optional_waffo_pancake_string, parse_form_params, parse_optional_json_bytes,
-        parse_payment_methods, parse_waffo_pancake_event_money,
+        filter_active_waffo_pancake_products, format_pay_money, generate_creem_signature,
+        is_completed_creem_replay, is_completed_epay_replay, is_completed_waffo_pancake_replay,
+        normalize_waffo_pancake_private_key, normalize_waffo_pancake_public_key, online_min_topup,
+        online_pay_money, optional_waffo_pancake_string, parse_creem_products, parse_form_params,
+        parse_optional_json_bytes, parse_payment_methods, parse_waffo_pancake_event_money,
         parse_waffo_pancake_signature_header, request_amount, sanitize_like_pattern,
-        topup_group_ratio_for_group, topup_status_label, validate_epay_notify_content_length,
-        validate_waffo_pancake_admin_content_length, validate_waffo_pancake_amount,
-        validate_waffo_pancake_short_id, validate_waffo_pancake_webhook_content_length,
-        verify_epay_notify, waffo_pancake_buyer_identity, waffo_pancake_config_updates,
-        waffo_pancake_credit_quota, waffo_pancake_creds_from_parts, waffo_pancake_event_id,
-        waffo_pancake_idempotency_key, waffo_pancake_signature_input,
-        waffo_pancake_subscription_options, waffo_pancake_topup_configured, EpayNotifyInfo,
-        EpayPurchaseInput, OnlineAmountSettings, SaveWaffoPancakeConfigRequest,
-        WaffoPancakeCatalog, WaffoPancakeCatalogProduct, WaffoPancakeCatalogStore,
-        WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo, WaffoPancakeWebhookData,
-        WaffoPancakeWebhookEvent, EPAY_NOTIFY_BODY_LIMIT_BYTES, PAYMENT_PROVIDER_EPAY,
+        topup_group_ratio_for_group, topup_status_label, validate_creem_content_length,
+        validate_epay_notify_content_length, validate_waffo_pancake_admin_content_length,
+        validate_waffo_pancake_amount, validate_waffo_pancake_short_id,
+        validate_waffo_pancake_webhook_content_length, verify_creem_signature, verify_epay_notify,
+        waffo_pancake_buyer_identity, waffo_pancake_config_updates, waffo_pancake_credit_quota,
+        waffo_pancake_creds_from_parts, waffo_pancake_event_id, waffo_pancake_idempotency_key,
+        waffo_pancake_signature_input, waffo_pancake_subscription_options,
+        waffo_pancake_topup_configured, CreemProduct, CreemWebhookEvent, CreemWebhookObject,
+        CreemWebhookOrder, EpayNotifyInfo, EpayPurchaseInput, OnlineAmountSettings,
+        SaveWaffoPancakeConfigRequest, WaffoPancakeCatalog, WaffoPancakeCatalogProduct,
+        WaffoPancakeCatalogStore, WaffoPancakeCreateOnetimeProductBody, WaffoPancakePriceInfo,
+        WaffoPancakeWebhookData, WaffoPancakeWebhookEvent, CREEM_WEBHOOK_BODY_LIMIT_BYTES,
+        EPAY_NOTIFY_BODY_LIMIT_BYTES, PAYMENT_PROVIDER_CREEM, PAYMENT_PROVIDER_EPAY,
         PAYMENT_PROVIDER_WAFFO_PANCAKE, TOPUP_STATUS_SUCCESS, WAFFO_PANCAKE_ADMIN_BODY_LIMIT_BYTES,
         WAFFO_PANCAKE_CREATE_ONETIME_PRODUCT_PATH, WAFFO_PANCAKE_MERCHANT_ID_KEY,
         WAFFO_PANCAKE_PRIVATE_KEY_KEY, WAFFO_PANCAKE_PRODUCT_ID_KEY, WAFFO_PANCAKE_RETURN_URL_KEY,
@@ -4148,6 +4995,146 @@ mod tests {
             &info,
             7.30
         ));
+    }
+
+    #[test]
+    fn creem_products_parse_and_enable_only_valid_products() {
+        let products = parse_creem_products(Some(
+            r#"[
+                {"productId":"prod_1","name":"Starter","price":9.99,"currency":"USD","quota":1000},
+                {"productId":"","name":"Broken","price":0,"currency":"USD","quota":0}
+            ]"#,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            products[0],
+            CreemProduct {
+                product_id: "prod_1".to_string(),
+                name: "Starter".to_string(),
+                price: 9.99,
+                currency: "USD".to_string(),
+                quota: 1000,
+            }
+        );
+        assert!(creem_products_enabled(&products));
+        assert!(!creem_products_enabled(&[]));
+        assert!(parse_creem_products(Some("{")).is_err());
+    }
+
+    #[test]
+    fn creem_signature_matches_go_hmac_shape() {
+        let payload = br#"{"id":"evt_1","eventType":"checkout.completed"}"#;
+        let signature = generate_creem_signature(payload, "secret");
+
+        assert_eq!(
+            signature,
+            "2448cad88cb7a924dead86489385c9a9433202f3cd5280bb61c6eacd6878c1a5"
+        );
+        assert!(verify_creem_signature(payload, &signature, "secret"));
+        assert!(!verify_creem_signature(payload, "bad", "secret"));
+        assert!(!verify_creem_signature(payload, &signature, ""));
+    }
+
+    #[test]
+    fn creem_webhook_helpers_are_stable() {
+        let payload = r#"{"eventType":"checkout.completed"}"#;
+        let event = CreemWebhookEvent {
+            id: "evt_1".to_string(),
+            event_type: "checkout.completed".to_string(),
+            created_at: 1,
+            object: CreemWebhookObject {
+                request_id: "ref_abc".to_string(),
+                order: CreemWebhookOrder {
+                    id: "ord_1".to_string(),
+                    status: "paid".to_string(),
+                    amount_paid: 999,
+                    r#type: "onetime".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(creem_event_id(&event, payload), "evt_1");
+        assert!(creem_amount_paid_matches(9.99, 999));
+        assert!(!creem_amount_paid_matches(9.98, 999));
+        assert!(creem_amount_paid_matches(9.99, 0));
+        assert!(validate_creem_content_length(
+            Some(CREEM_WEBHOOK_BODY_LIMIT_BYTES.to_string()),
+            CREEM_WEBHOOK_BODY_LIMIT_BYTES,
+            "Creem webhook"
+        )
+        .is_ok());
+        assert!(validate_creem_content_length(
+            Some((CREEM_WEBHOOK_BODY_LIMIT_BYTES + 1).to_string()),
+            CREEM_WEBHOOK_BODY_LIMIT_BYTES,
+            "Creem webhook"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn creem_replay_requires_completed_provider_method_and_money() {
+        fn topup(provider: &str, method: &str, money: f64, status: i32, credited: i32) -> TopupRow {
+            TopupRow {
+                id: 1,
+                user_id: 2,
+                amount: 1000,
+                money,
+                trade_no: "ref_abc123".to_string(),
+                payment_method: method.to_string(),
+                payment_provider: provider.to_string(),
+                status,
+                create_time: 10,
+                complete_time: 20,
+                credited,
+            }
+        }
+
+        assert!(is_completed_creem_replay(
+            &topup(
+                PAYMENT_PROVIDER_CREEM,
+                PAYMENT_PROVIDER_CREEM,
+                9.99,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            9.99
+        ));
+        assert!(!is_completed_creem_replay(
+            &topup(
+                PAYMENT_PROVIDER_EPAY,
+                PAYMENT_PROVIDER_CREEM,
+                9.99,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            9.99
+        ));
+        assert!(!is_completed_creem_replay(
+            &topup(
+                PAYMENT_PROVIDER_CREEM,
+                PAYMENT_PROVIDER_CREEM,
+                9.98,
+                TOPUP_STATUS_SUCCESS,
+                1
+            ),
+            9.99
+        ));
+        assert!(!is_completed_creem_replay(
+            &topup(PAYMENT_PROVIDER_CREEM, PAYMENT_PROVIDER_CREEM, 9.99, 0, 0),
+            9.99
+        ));
+    }
+
+    #[test]
+    fn creem_trade_no_uses_go_visible_reference_hash_shape() {
+        let trade_no = creem_trade_no(7, 1_700_000_000_123).unwrap();
+
+        assert!(trade_no.starts_with("ref_"));
+        assert_eq!(trade_no.len(), 44);
+        assert!(trade_no[4..].chars().all(|ch| ch.is_ascii_hexdigit()));
     }
 
     #[test]

@@ -288,6 +288,7 @@ dependencies = [
  "console_error_panic_hook",
  "futures-util",
  "getrandom",
+ "hmac",
  "js-sys",
  "md5",
  "regex",

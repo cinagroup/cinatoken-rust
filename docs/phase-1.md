@@ -304,12 +304,21 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   verifies `X-Waffo-Signature` with RSA-SHA256/PKCS#1 v1.5 over
   `timestamp.payload`, enforces the test/prod route env, checks local order
   provider, buyer identity, and amount before crediting through the
-  provider-aware D1 credited-anchor batch. Wallet `topup/info` now exposes
-  Waffo Pancake only when payment compliance and merchant/private/product
-  settings are complete; subscription Waffo Pancake remains explicitly hidden
-  until its separate subscription order settlement route is migrated. Creem and
-  Waffo wallet gateways plus external subscription payment providers remain
-  hidden until their Worker routes are implemented.
+  provider-aware D1 credited-anchor batch. Creem wallet checkout is implemented
+  at `POST /api/user/creem/pay`, using configured `CreemProducts`, D1 pending
+  topups, Go-compatible `ref_` SHA1 order IDs, and bounded outbound checkout
+  creation against the production/test Creem API. `POST /api/creem/webhook`
+  verifies the `creem-signature` HMAC-SHA256 raw-body signature, accepts only
+  `checkout.completed` + paid + onetime wallet events, checks amount/provider
+  replay conditions, credits through the provider-aware D1 credited-anchor
+  batch, records `payment_events`, and backfills an empty user email from the
+  verified Creem customer payload. Wallet `topup/info` now exposes Waffo
+  Pancake only when payment compliance and merchant/private/product settings
+  are complete, and exposes Creem products only when compliance, API key,
+  products, and webhook secret are all configured. Subscription Waffo Pancake
+  remains explicitly hidden until its separate subscription order settlement
+  route is migrated. Waffo wallet gateway plus external subscription payment
+  providers remain hidden until their Worker routes are implemented.
 
 ## Next
 
@@ -352,7 +361,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.
-- Complete the remaining topup/subscription payment provider routes
-  (`creem`/`waffo` wallet checkout/callback helpers and external subscription
-  payment providers, including Waffo Pancake subscription checkout/settlement)
-  before exposing those payment methods broadly in production.
+- Complete the remaining topup/subscription payment provider routes (`waffo`
+  wallet checkout/callback helpers and external subscription payment providers,
+  including Waffo Pancake subscription checkout/settlement) before exposing
+  those payment methods broadly in production.

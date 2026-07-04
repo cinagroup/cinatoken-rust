@@ -26,6 +26,7 @@ cinatoken-tasks = { path = "../tasks" }
 cinatoken-tokenizer = { path = "../tokenizer" }
 console_error_panic_hook = "0.1"
 futures-util = { version = "0.3", default-features = false }
+hmac.workspace = true
 js-sys = "0.3"
 regex.workspace = true
 rsa = { version = "0.9", features = ["pem", "sha2"] }

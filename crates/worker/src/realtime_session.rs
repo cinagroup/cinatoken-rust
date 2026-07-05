@@ -70,6 +70,12 @@ struct RealtimeApiKey {
     source: &'static str,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RealtimeTextControlSummary {
+    text_chars: usize,
+    text_bytes: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct RealtimeSessionMetrics {
     session: String,
@@ -176,11 +182,13 @@ impl DurableObject for RealtimeSession {
                 }))?;
             }
             WebSocketIncomingMessage::String(message) => {
+                let summary = realtime_text_control_summary(&message);
                 ws.send(&json!({
                     "type": "realtime_session_control",
                     "status": "upstream_bridge_not_wired",
                     "context": context,
-                    "received": message
+                    "text_chars": summary.text_chars,
+                    "text_bytes": summary.text_bytes
                 }))?;
             }
             WebSocketIncomingMessage::Binary(bytes) => {
@@ -539,6 +547,13 @@ fn attachment_context_json(attachment: Option<&SocketAttachment>) -> Value {
     }
 }
 
+fn realtime_text_control_summary(message: &str) -> RealtimeTextControlSummary {
+    RealtimeTextControlSummary {
+        text_chars: message.chars().count(),
+        text_bytes: message.as_bytes().len(),
+    }
+}
+
 fn realtime_error_response(
     code: &str,
     message: &str,
@@ -854,6 +869,19 @@ mod tests {
         let raw = serde_json::to_string(&metrics).unwrap();
         assert!(!raw.contains("secret client payload"));
         assert!(!raw.contains("openai-insecure-api-key.sk"));
+    }
+
+    #[test]
+    fn realtime_text_control_summary_does_not_include_payload() {
+        let payload = "secret client payload 云";
+        let summary = realtime_text_control_summary(payload);
+
+        assert_eq!(summary.text_chars, payload.chars().count());
+        assert_eq!(summary.text_bytes, payload.as_bytes().len());
+
+        let raw = serde_json::to_string(&summary).unwrap();
+        assert!(!raw.contains("secret client payload"));
+        assert!(!raw.contains("云"));
     }
 
     #[test]

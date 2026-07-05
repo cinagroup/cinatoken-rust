@@ -1391,6 +1391,21 @@ baseline above.
   output). Live staging still needs the same tool run against a real
   `REALTIME_SESSIONS` binding.
 
+- **RealtimeSession control payload hygiene - locally verified
+  (2026-07-05).** Unsupported text control messages now return only bounded
+  metadata (`text_chars` and `text_bytes`) instead of echoing client message
+  bodies. The Realtime smoke harness sends a probe after `ping` and `status`,
+  fails if the response contains a legacy `received` field, and fails if the
+  probe text appears anywhere in the control response. Local evidence:
+  `cargo test -p cinatoken-worker --lib realtime_session` (passed; 10 tests,
+  including a Unicode/secret summary test), `bun
+  tools/smoke_realtime_session.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --session session-smoke --probe secret-do-not-echo`
+  (passed without printing the probe text), and `bun run check` (passed;
+  frontend gates, WFP plans, Realtime smoke plan, workspace tests, and Worker
+  / WFP wasm32 checks). Live staging still needs the same no-echo proof against
+  a real `REALTIME_SESSIONS` binding.
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

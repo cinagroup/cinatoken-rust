@@ -3,6 +3,7 @@
 const defaultSession = "session-smoke";
 const defaultModel = "gpt-4o-realtime-preview";
 const defaultTimeoutMs = 10_000;
+const defaultProbe = "cinatoken realtime smoke probe";
 
 const args = parseArgs(process.argv.slice(2));
 const options = normalizeOptions(args);
@@ -36,6 +37,15 @@ async function smoke(options) {
     );
     validateMetrics(statusFrame.metrics, "websocket status metrics");
 
+    ws.send(options.probe);
+    const controlFrame = await waitForJsonMessage(
+      ws,
+      (message) => message.type === "realtime_session_control",
+      options.timeoutMs,
+      "realtime_session_control",
+    );
+    validateControlFrame(controlFrame, options.probe);
+
     let httpStatus = null;
     if (plan.statusUrl) {
       const response = await fetch(plan.statusUrl, { redirect: "error" });
@@ -43,7 +53,7 @@ async function smoke(options) {
         throw new Error(`HTTP status smoke failed: ${response.status} ${response.statusText}`);
       }
       httpStatus = await response.json();
-      validateMetrics(httpStatus.metrics, "HTTP status metrics");
+      validateMetrics(httpStatus.metrics, "HTTP status metrics", { minTextMessageCount: 3 });
     }
 
     return {
@@ -55,6 +65,7 @@ async function smoke(options) {
       pongContext: pong.context ?? null,
       websocketMetrics: summarizeMetrics(statusFrame.metrics),
       httpMetrics: httpStatus?.metrics ? summarizeMetrics(httpStatus.metrics) : null,
+      controlFrame: summarizeControlFrame(controlFrame),
     };
   } finally {
     ws.close(1000, "cinatoken realtime smoke complete");
@@ -82,13 +93,15 @@ function buildPlan(options) {
     statusUrl,
     protocols,
     timeoutMs: options.timeoutMs,
+    probeConfigured: Boolean(options.probe),
+    probeBytes: byteLength(options.probe),
     notes:
       mode === "v1"
         ? [
-            "v1 mode validates the WebSocket control status frame only; the DO session name is derived from gateway auth context.",
+            "v1 mode validates WebSocket status and metadata-only unsupported-control frames; the DO session name is derived from gateway auth context.",
           ]
         : [
-            "platform mode validates both WebSocket control status and HTTP status for the named DO session.",
+            "platform mode validates WebSocket status, metadata-only unsupported-control frames, and HTTP status for the named DO session.",
           ],
   };
 }
@@ -140,6 +153,7 @@ function normalizeOptions(args) {
     session: validateSessionName(value("session", "REALTIME_SMOKE_SESSION") || defaultSession),
     model: validatePlainValue(value("model", "REALTIME_SMOKE_MODEL") || defaultModel, "model"),
     apiKey: value("api-key", "REALTIME_SMOKE_API_KEY") || "",
+    probe: validatePlainValue(value("probe", "REALTIME_SMOKE_PROBE") || defaultProbe, "probe"),
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaultTimeoutMs,
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
@@ -160,6 +174,7 @@ function usage(exitCode, error) {
       "  --session <name>      or REALTIME_SMOKE_SESSION (platform mode)",
       "  --model <model>       or REALTIME_SMOKE_MODEL (v1 mode)",
       "  --api-key <token>     or REALTIME_SMOKE_API_KEY (v1 mode)",
+      "  --probe <text>        or REALTIME_SMOKE_PROBE, default is a safe fixed probe",
       "  --timeout-ms <ms>     or REALTIME_SMOKE_TIMEOUT_MS, default 10000",
       "  --dry-run             resolve URLs/protocols without network",
       "  --json",
@@ -290,7 +305,8 @@ async function messageText(data) {
   return String(data);
 }
 
-function validateMetrics(metrics, label) {
+function validateMetrics(metrics, label, options = {}) {
+  const minTextMessageCount = options.minTextMessageCount ?? 2;
   if (!metrics || typeof metrics !== "object") {
     throw new Error(`${label} missing metrics object`);
   }
@@ -302,8 +318,31 @@ function validateMetrics(metrics, label) {
   if (metrics.connected_count < 1) {
     throw new Error(`${label} did not record a WebSocket connect`);
   }
-  if (metrics.text_message_count < 2) {
-    throw new Error(`${label} did not record ping and status messages`);
+  if (metrics.text_message_count < minTextMessageCount) {
+    throw new Error(`${label} did not record the expected control messages`);
+  }
+}
+
+function validateControlFrame(frame, probe) {
+  if (!frame || typeof frame !== "object") {
+    throw new Error("unsupported-control response missing JSON object");
+  }
+  if (frame.status !== "upstream_bridge_not_wired") {
+    throw new Error(`unsupported-control response has unexpected status: ${frame.status}`);
+  }
+  if (Object.hasOwn(frame, "received")) {
+    throw new Error("unsupported-control response echoed a received payload field");
+  }
+  const expectedTextBytes = byteLength(probe);
+  const expectedTextChars = Array.from(probe).length;
+  if (frame.text_bytes !== expectedTextBytes) {
+    throw new Error(`unsupported-control response text_bytes=${frame.text_bytes}, expected ${expectedTextBytes}`);
+  }
+  if (frame.text_chars !== expectedTextChars) {
+    throw new Error(`unsupported-control response text_chars=${frame.text_chars}, expected ${expectedTextChars}`);
+  }
+  if (JSON.stringify(frame).includes(probe)) {
+    throw new Error("unsupported-control response echoed the probe text");
   }
 }
 
@@ -320,6 +359,19 @@ function summarizeMetrics(metrics) {
     lastTokenSource: metrics.last_token_source,
     lastAuthState: metrics.last_auth_state,
   };
+}
+
+function summarizeControlFrame(frame) {
+  return {
+    status: frame.status,
+    textBytes: frame.text_bytes,
+    textChars: frame.text_chars,
+    rawProbeEchoed: false,
+  };
+}
+
+function byteLength(value) {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function validateSessionName(value) {
@@ -375,6 +427,11 @@ function printResult(result, options) {
         ? [`websocket_metrics: ${JSON.stringify(result.websocketMetrics)}`]
         : []),
       ...(result.httpMetrics ? [`http_metrics: ${JSON.stringify(result.httpMetrics)}`] : []),
+      ...(result.controlFrame ? [`control_frame: ${JSON.stringify(result.controlFrame)}`] : []),
+      ...(typeof result.probeConfigured === "boolean"
+        ? [`probe_configured: ${result.probeConfigured}`]
+        : []),
+      ...(typeof result.probeBytes === "number" ? [`probe_bytes: ${result.probeBytes}`] : []),
       ...(result.notes?.length ? ["notes:", ...result.notes.map((note) => `  - ${note}`)] : []),
     ].join("\n"),
   );

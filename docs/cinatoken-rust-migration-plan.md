@@ -5064,3 +5064,52 @@ Remaining migration gaps:
 - Capture at least one live POST route smoke after route-specific AI Gateway IDs
   are configured, then verify AI Gateway logs contain tenant metadata without
   exposing platform credentials to tenant clients.
+
+### 22.77 2026-07-05 RealtimeSession Control Payload Hygiene
+
+This increment hardens the Realtime Durable Object smoke/control surface before
+the upstream OpenAI Realtime bridge is wired. The DO already avoided persisting
+client message payloads in lifecycle metrics; this closes the adjacent response
+surface so unsupported control messages cannot echo arbitrary client text back
+into staging smoke output, browser consoles, or logs copied from those outputs.
+
+Implemented:
+
+- Replaced the unsupported text control response's legacy `received` payload
+  echo with metadata-only `text_chars` and `text_bytes`.
+- Kept binary unsupported-control responses metadata-only through
+  `binary_bytes`.
+- Added a Rust unit test proving the text summary handles multi-byte content
+  while serialized output does not contain the original secret/probe payload.
+- Extended `tools/smoke_realtime_session.mjs` to send a probe after `ping` and
+  `status`, wait for `realtime_session_control`, and fail if:
+  - the response contains a legacy `received` field;
+  - `text_chars` or `text_bytes` do not match the probe;
+  - the response JSON contains the raw probe text.
+- Kept dry-run output redacted: it reports only `probeConfigured` and
+  `probeBytes`, never the probe text.
+- Updated staging smoke, production-readiness, verification, and Cloudflare
+  configuration docs so unsupported-control no-echo proof is a required
+  `REALTIME_SESSIONS` evidence item.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session` passed (10 tests;
+  391 filtered).
+- `bun tools/smoke_realtime_session.mjs --help` passed and documents
+  `--probe`.
+- `bun tools/smoke_realtime_session.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --session session-smoke --probe secret-do-not-echo`
+  passed without printing the probe text.
+- `bun run check` passed, including frontend build/redaction/budget/route
+  gates, WFP deploy-plan/dispatch smoke plans, Realtime smoke plan, workspace
+  tests, and Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run live staging Realtime smoke against a real `REALTIME_SESSIONS` binding
+  and archive the no-echo control frame together with persisted metrics and
+  restored attachments.
+- Keep `/v1/realtime` production-disabled until upstream bridge,
+  backpressure/error mapping, preconsume/final settlement, audit logging, and
+  live protocol replay are complete.

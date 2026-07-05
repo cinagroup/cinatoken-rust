@@ -297,6 +297,8 @@ Record:
 - Command output with URLs and protocols redacted.
 - WebSocket `pong` response.
 - WebSocket `realtime_session_status` frame.
+- WebSocket `realtime_session_control` probe response, including
+  `text_bytes`, `text_chars`, `rawProbeEchoed=false`, and no `received` field.
 - HTTP status response for the platform session path.
 - Worker log/trace link for the WebSocket accept and status request.
 
@@ -306,9 +308,11 @@ Pass criteria:
   only in staging.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
   lifecycle metrics.
-- Metrics show at least one connect and at least two text messages without
-  storing raw message payloads, raw bearer tokens, or raw Realtime protocol
-  API keys.
+- Metrics show at least one connect and at least two text messages from the
+  WebSocket status frame; platform HTTP status shows at least three text
+  messages after `ping`, `status`, and the unsupported-control probe.
+- Neither persisted metrics nor unsupported-control responses store or echo raw
+  message payloads, raw bearer tokens, or raw Realtime protocol API keys.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `/v1/realtime` remains off in production until upstream bridge,

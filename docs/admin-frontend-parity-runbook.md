@@ -184,17 +184,31 @@ bun run typecheck
 bun run build
 ```
 
-2. Decide whether the built assets are copied into the Rust repository,
+2. Confirm frontend formatting and lint-debt regression gates:
+
+```powershell
+cd C:\cinagroup\cinatoken-rust
+cd apps\web\source\default
+bun run format:check
+cd ..\..\..\..
+bun run check:web:lint-debt
+```
+
+Strict lint debt must trend downward over time. A non-zero lint baseline may be
+accepted only while `bun run check:web:lint-debt` shows no regression and the
+G5 report records the remaining rule families.
+
+3. Decide whether the built assets are copied into the Rust repository,
    produced by a CI artifact, or deployed from the source frontend repository.
    Record the artifact path and commit SHA.
-3. Configure staging so `/api/*`, `/v1/*`, and provider relay routes go to the
+4. Configure staging so `/api/*`, `/v1/*`, and provider relay routes go to the
    Worker API, while SPA routes fall back to `index.html`.
-4. Keep `VITE_REACT_APP_SERVER_URL` empty for same-origin staging unless a
+5. Keep `VITE_REACT_APP_SERVER_URL` empty for same-origin staging unless a
    separate Pages/API domain is deliberately selected.
-5. Run route smoke for hard refreshes on `/dashboard`, `/channels`, `/keys`,
+6. Run route smoke for hard refreshes on `/dashboard`, `/channels`, `/keys`,
    `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`,
    and `/profile`.
-6. Confirm no secret value appears in the static bundle and the bundle stays
+7. Confirm no secret value appears in the static bundle and the bundle stays
    inside the reviewed ratchet budget:
 
 ```powershell

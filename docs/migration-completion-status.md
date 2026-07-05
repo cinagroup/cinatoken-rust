@@ -94,8 +94,9 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Billing shadow comparison and exact tokenizer/media parity.
 - Relay weighted channel-selection staging evidence for distribution, retry,
   auto-group, affinity, and provider-family filter behavior.
-- Frontend strict lint cleanup, bundle-size reduction, and budget ratchet
-  tightening after heavy route-specific chunks are split.
+- Frontend strict lint zero-debt cleanup, bundle-size reduction, and budget
+  ratchet tightening after heavy route-specific chunks are split. Current lint
+  debt is no-regression gated, but `check:web:quality` is not green yet.
 
 ## Incomplete Product Families
 

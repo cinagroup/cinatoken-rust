@@ -47,7 +47,6 @@ export function useDebouncedColumnFilter({
   React.useEffect(() => {
     // Keep the input aligned when URL state changes outside the local field.
     if (!isComposingRef.current) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setInputValue(value)
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect

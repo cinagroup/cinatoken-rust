@@ -3765,3 +3765,42 @@ the broader frontend performance gate. Strict lint cleanup, heavy
 route-specific chunk splitting, deployed desktop/mobile browser smoke, staging
 artifact/hash evidence, and performance/capacity report evidence remain
 required before production frontend cutover.
+
+### 22.50 2026-07-05 Frontend Lint Debt No-Regression Gate
+
+This increment turns the imported frontend strict-lint debt into an executable
+no-regression gate. The React source still needs real cleanup before G5 can pass
+with zero lint debt, but the migration now prevents new ESLint debt while the
+larger React Hooks/React Compiler fixes are paid down in safer batches.
+
+Implemented in the Rust migration repository:
+
+- Removed one stale `react-hooks/set-state-in-effect` disable comment from
+  `use-debounced-column-filter.ts`; the warning was no longer suppressing an
+  active diagnostic.
+- Added `tools/frontend_lint_debt_baseline.json`, capturing the current
+  imported frontend ESLint baseline: 101 errors, 3 warnings, 69 files with
+  findings, and per-rule counts.
+- Added `tools/audit_frontend_lint_debt.mjs`, which runs the default frontend
+  ESLint config through JSON output and fails only when total counts, affected
+  file count, or any rule-family count exceeds the baseline.
+- Root package scripts now expose `bun run audit:web:lint-debt` for manual
+  inspection and `bun run check:web:lint-debt` for fail-on-regression mode.
+- The main `bun run check` chain now runs the lint-debt gate after frontend
+  type/build, bundle redaction, and bundle budget checks.
+
+Updated local evidence:
+
+- `bun run check:web:lint-debt`: passed with 101 errors, 3 warnings, 69 files
+  with findings, and 0 regressions against
+  `tools/frontend_lint_debt_baseline.json`.
+- `bun run format:check` in `apps/web/source/default`: passed.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit, bundle budget audit, lint-debt baseline, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check.
+
+Remaining boundary: this does not make `bun run check:web:quality` green. The
+largest remaining rule family is `react-hooks/set-state-in-effect`; strict
+lint cleanup must continue by fixing React state/effect patterns and lowering
+the baseline after each verified batch.

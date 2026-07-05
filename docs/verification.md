@@ -4,6 +4,21 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `bun run check:web:lint-debt`: passed after adding the executable frontend
+  lint-debt no-regression baseline. It reports 101 ESLint errors, 3 warnings,
+  69 files with findings, and 0 regressions against
+  `tools/frontend_lint_debt_baseline.json`.
+- `bun run format:check` in `apps/web/source/default`: passed after removing
+  one stale `react-hooks/set-state-in-effect` disable comment from the imported
+  frontend source.
+- `bun run check`: passed after wiring frontend lint-debt regression checking
+  into the main verification chain, covering frontend type/build, bundle
+  redaction audit, bundle budget audit, lint-debt baseline, route-debt
+  baseline, `cargo fmt --all --check`, Rust workspace tests excluding the
+  Worker, and Worker wasm check. The route audit reported 214 frontend
+  Worker-facing routes, 304 Worker routes, 0 missing calls, categories `{}`,
+  and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:bundle-budget`: passed after adding the executable
   frontend bundle-size budget. It scanned 245 built assets in
   `apps/web/source/default/dist`: 18.94 MB raw / 4.49 MB gzip total,
@@ -1155,15 +1170,18 @@ bun run check
 
 ## Still Pending
 
-- `bun run check:web:quality` remains red: strict ESLint reports 101 errors and
-  4 warnings in the imported frontend source. The rules have not been weakened.
+- `bun run check:web:quality` remains red because strict ESLint still reports
+  101 errors and 3 warnings in the imported frontend source. The rules have not
+  been weakened; `bun run check:web:lint-debt` now enforces a no-regression
+  baseline while the debt is paid down in batches. `bun run format:check`
+  passes.
 - The frontend artifact and public HTTP contract are deployed and verified.
   Rendered browser smoke, authenticated session/role/CRUD/2FA flows, console
   inspection, and the 2026-07-03 backend route batch deployment remain
   pending.
-- The production bundle is about 18.9 MB uncompressed / 4.4 MB gzip; the
-  largest chunks are about 5.3 MB, 2.7 MB and 1.9 MB. Define and enforce a
-  bundle budget before G5 production approval.
+- The production bundle-size budget is now enforced locally, but the bundle
+  still needs heavy route-specific chunk splitting and deployed browser
+  performance evidence before G5 production approval.
 
 - `worker-build` installation previously exceeded the local command timeout.
   Install it with `bun run install:worker-build`, then run `bun run dev` and

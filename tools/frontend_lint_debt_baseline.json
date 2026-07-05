@@ -1,0 +1,56 @@
+{
+  "frontend_dir": "apps/web/source/default",
+  "totals": {
+    "errors": 101,
+    "warnings": 3,
+    "fixable_errors": 0,
+    "fixable_warnings": 0,
+    "files_with_findings": 69
+  },
+  "by_rule": {
+    "@tanstack/query/exhaustive-deps": {
+      "errors": 3,
+      "warnings": 0
+    },
+    "react-hooks/exhaustive-deps": {
+      "errors": 0,
+      "warnings": 2
+    },
+    "react-hooks/immutability": {
+      "errors": 6,
+      "warnings": 0
+    },
+    "react-hooks/preserve-manual-memoization": {
+      "errors": 2,
+      "warnings": 0
+    },
+    "react-hooks/purity": {
+      "errors": 2,
+      "warnings": 0
+    },
+    "react-hooks/refs": {
+      "errors": 13,
+      "warnings": 0
+    },
+    "react-hooks/set-state-in-effect": {
+      "errors": 64,
+      "warnings": 0
+    },
+    "react-hooks/static-components": {
+      "errors": 9,
+      "warnings": 0
+    },
+    "react-hooks/use-memo": {
+      "errors": 2,
+      "warnings": 0
+    },
+    "react-refresh/only-export-components": {
+      "errors": 0,
+      "warnings": 1
+    }
+  },
+  "notes": [
+    "Baseline captured after removing one stale eslint-disable warning on 2026-07-05.",
+    "This is a no-regression gate for imported frontend lint debt; reduce the numbers as rule families are fixed."
+  ]
+}

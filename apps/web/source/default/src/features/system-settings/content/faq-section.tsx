@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import * as z from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -79,9 +79,34 @@ type FAQFormValues = z.infer<typeof faqSchema>
 const FAQ_FORM_ID = 'faq-form'
 
 export function FAQSection({ enabled, data }: FAQSectionProps) {
+  return (
+    <FAQSectionContent
+      key={`${enabled}:${data}`}
+      enabled={enabled}
+      data={data}
+    />
+  )
+}
+
+function parseFaqList(data: string): FAQ[] {
+  try {
+    const parsed = JSON.parse(data || '[]')
+    if (Array.isArray(parsed)) {
+      return parsed.map((item, idx) => ({
+        ...item,
+        id: item.id || idx + 1,
+      }))
+    }
+  } catch {
+    // Fall through to the empty list for malformed imported settings.
+  }
+  return []
+}
+
+function FAQSectionContent({ enabled, data }: FAQSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
-  const [faqList, setFaqList] = useState<FAQ[]>([])
+  const [faqList, setFaqList] = useState<FAQ[]>(() => parseFaqList(data))
   const [isEnabled, setIsEnabled] = useState(enabled)
   const [hasChanges, setHasChanges] = useState(false)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
@@ -97,26 +122,6 @@ export function FAQSection({ enabled, data }: FAQSectionProps) {
       answer: '',
     },
   })
-
-  useEffect(() => {
-    try {
-      const parsed = JSON.parse(data || '[]')
-      if (Array.isArray(parsed)) {
-        setFaqList(
-          parsed.map((item, idx) => ({
-            ...item,
-            id: item.id || idx + 1,
-          }))
-        )
-      }
-    } catch {
-      setFaqList([])
-    }
-  }, [data])
-
-  useEffect(() => {
-    setIsEnabled(enabled)
-  }, [enabled])
 
   const handleToggleEnabled = async (checked: boolean) => {
     try {

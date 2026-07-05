@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import * as z from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -86,10 +86,37 @@ type UptimeKumaFormValues = z.infer<ReturnType<typeof createUptimeKumaSchema>>
 const UPTIME_KUMA_FORM_ID = 'uptime-kuma-form'
 
 export function UptimeKumaSection({ enabled, data }: UptimeKumaSectionProps) {
+  return (
+    <UptimeKumaSectionContent
+      key={`${enabled}:${data}`}
+      enabled={enabled}
+      data={data}
+    />
+  )
+}
+
+function parseUptimeKumaGroups(data: string): UptimeKumaGroup[] {
+  try {
+    const parsed = JSON.parse(data || '[]')
+    if (Array.isArray(parsed)) {
+      return parsed.map((item, idx) => ({
+        ...item,
+        id: item.id || idx + 1,
+      }))
+    }
+  } catch {
+    // Fall through to the empty list for malformed imported settings.
+  }
+  return []
+}
+
+function UptimeKumaSectionContent({ enabled, data }: UptimeKumaSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const uptimeKumaSchema = createUptimeKumaSchema(t)
-  const [groups, setGroups] = useState<UptimeKumaGroup[]>([])
+  const [groups, setGroups] = useState<UptimeKumaGroup[]>(() =>
+    parseUptimeKumaGroups(data)
+  )
   const [isEnabled, setIsEnabled] = useState(enabled)
   const [hasChanges, setHasChanges] = useState(false)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
@@ -106,26 +133,6 @@ export function UptimeKumaSection({ enabled, data }: UptimeKumaSectionProps) {
       slug: '',
     },
   })
-
-  useEffect(() => {
-    try {
-      const parsed = JSON.parse(data || '[]')
-      if (Array.isArray(parsed)) {
-        setGroups(
-          parsed.map((item, idx) => ({
-            ...item,
-            id: item.id || idx + 1,
-          }))
-        )
-      }
-    } catch {
-      setGroups([])
-    }
-  }, [data])
-
-  useEffect(() => {
-    setIsEnabled(enabled)
-  }, [enabled])
 
   const handleToggleEnabled = async (checked: boolean) => {
     try {

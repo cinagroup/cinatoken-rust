@@ -5,8 +5,8 @@ Last checked: 2026-07-05
 ## Passed
 
 - `bun run check:web:lint-debt`: passed after adding the executable frontend
-  lint-debt no-regression baseline. It reports 83 ESLint errors, 2 warnings,
-  66 files with findings, and 0 regressions against
+  lint-debt no-regression baseline. It reports 77 ESLint errors, 2 warnings,
+  63 files with findings, and 0 regressions against
   `tools/frontend_lint_debt_baseline.json`; the paydown batches hoisted the
   usage-log user-info `InfoItem` component, reduced
   `react-hooks/static-components` from 9 errors to 0, and refactored the
@@ -16,6 +16,9 @@ Last checked: 2026-07-05
   settings page context actions now use destructured props and a split
   non-component hook/context module, reducing `react-hooks/refs` from 13 to 9
   errors and `react-refresh/only-export-components` from 1 warning to 0.
+  Content settings for announcements, FAQ, and Uptime Kuma now initialize
+  parsed JSON state lazily behind keyed inner components, reducing
+  `react-hooks/set-state-in-effect` from 63 to 57 errors.
 - `bun run format:check` in `apps/web/source/default`: passed after removing
   one stale `react-hooks/set-state-in-effect` disable comment from the imported
   frontend source.
@@ -42,7 +45,7 @@ Last checked: 2026-07-05
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:bundle`: passed after adding the frontend bundle
   redaction audit. It scanned 460 built frontend text assets
-  (37,280,138 bytes) across `apps/web/source/default/dist` and
+  (37,280,303 bytes) across `apps/web/source/default/dist` and
   `apps/web/dist`, with 0 findings.
 - `bun run check`: passed after wiring the frontend bundle redaction audit
   into the main verification chain, covering frontend type/build, bundle
@@ -1179,7 +1182,7 @@ bun run check
 ## Still Pending
 
 - `bun run check:web:quality` remains red because strict ESLint still reports
-  83 errors and 2 warnings in the imported frontend source. The rules have not
+  77 errors and 2 warnings in the imported frontend source. The rules have not
   been weakened; `bun run check:web:lint-debt` now enforces a no-regression
   baseline while the debt is paid down in batches. `bun run format:check`
   passes.

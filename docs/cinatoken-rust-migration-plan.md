@@ -3953,3 +3953,43 @@ Updated local evidence:
 Remaining boundary: strict lint is still not green. The largest remaining
 family is `react-hooks/set-state-in-effect`; `react-hooks/refs` is smaller but
 still present in several settings/auth components.
+
+### 22.55 2026-07-05 Frontend Content Settings Lint Paydown
+
+This increment continues the G5 frontend strict-lint cleanup in three
+content-settings pages that share the same imported React state pattern:
+announcements, FAQ, and Uptime Kuma.
+
+Implemented in the imported React frontend:
+
+- Converted `AnnouncementsSection`, `FAQSection`, and `UptimeKumaSection` into
+  keyed wrapper components with inner stateful content components. External
+  `enabled`/`data` prop changes now reset the inner state through React's key
+  mechanism instead of render-following sync effects.
+- Moved JSON option parsing into module-level parse helpers and lazy
+  `useState` initializers, preserving malformed-data fallback behavior while
+  avoiding repeated parse work during ordinary re-renders.
+- Kept local edit flows, save buttons, delete selection state, and setting
+  toggles unchanged for operators; only the prop-to-state initialization path
+  moved out of `useEffect`.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 83 errors / 2 warnings
+  / 66 files to 77 errors / 2 warnings / 63 files. The rule-family delta is
+  `react-hooks/set-state-in-effect` 63 -> 57.
+
+Updated local evidence:
+
+- File-scoped ESLint for `announcements-section.tsx`, `faq-section.tsx`, and
+  `uptime-kuma-section.tsx`: passed with no findings.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 77 errors, 2 warnings, 63 files
+  with findings, and 0 regressions.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,280,303 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green. The largest remaining
+family is still `react-hooks/set-state-in-effect`; continue paying it down in
+small operator-owned UI batches and lower the baseline only after each
+verified batch.

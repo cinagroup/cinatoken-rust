@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -57,11 +57,15 @@ export function SyncWizardDialog({
   const [isSyncing, setIsSyncing] = useState(false)
 
   // Get translated options
-  const SYNC_SOURCE_OPTIONS = getSyncSourceOptions(t)
-  const SYNC_LOCALE_OPTIONS = getSyncLocaleOptions(t)
+  const SYNC_SOURCE_OPTIONS = useMemo(() => getSyncSourceOptions(t), [t])
+  const SYNC_LOCALE_OPTIONS = useMemo(() => getSyncLocaleOptions(t), [t])
 
   useEffect(() => {
-    if (open) {
+    if (!open) return
+
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
       setLocale(syncWizardOptions.locale || 'zh')
       const preferredSource = SYNC_SOURCE_OPTIONS.find(
         (option) => option.value === syncWizardOptions.source
@@ -71,6 +75,10 @@ export function SyncWizardDialog({
           ? (preferredSource.value as SyncSource)
           : 'official'
       )
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [open, syncWizardOptions, SYNC_SOURCE_OPTIONS])
 

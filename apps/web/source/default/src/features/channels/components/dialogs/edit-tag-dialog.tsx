@@ -93,7 +93,11 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
 
   // Initialize form when tag changes
   useEffect(() => {
-    if (open && currentTag) {
+    if (!open || !currentTag) return
+
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
       setNewTag(currentTag)
       setModelMapping('')
       setSelectedGroups([])
@@ -106,6 +110,10 @@ export function EditTagDialog({ open, onOpenChange }: EditTagDialogProps) {
       } else {
         setSelectedModels([])
       }
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [open, currentTag, tagModelsData])
 

@@ -1,11 +1,11 @@
 {
   "frontend_dir": "apps/web/source/default",
   "totals": {
-    "errors": 50,
+    "errors": 34,
     "warnings": 2,
     "fixable_errors": 0,
     "fixable_warnings": 0,
-    "files_with_findings": 51
+    "files_with_findings": 35
   },
   "by_rule": {
     "@tanstack/query/exhaustive-deps": {
@@ -16,21 +16,17 @@
       "errors": 0,
       "warnings": 2
     },
-    "react-hooks/immutability": {
-      "errors": 2,
-      "warnings": 0
-    },
     "react-hooks/refs": {
-      "errors": 5,
+      "errors": 4,
       "warnings": 0
     },
     "react-hooks/set-state-in-effect": {
-      "errors": 42,
+      "errors": 29,
       "warnings": 0
     }
   },
   "notes": [
-    "Baseline lowered after hoisting the user-info dialog InfoItem component, refactoring the Ollama models dialog fetch/close effects, deriving mobile table cell metadata without useMemo, splitting the settings page context hook, converting content settings JSON props to keyed lazy state initializers, deferring wallet/system-settings form initialization out of synchronous effects, converting param-override/upstream-conflict dialogs to keyed or derived local state, and paying down risk acknowledgement, multi-key management, account binding, playground query, OAuth/passkey settings, user subscription, subscription plan, and channel affinity React lint findings on 2026-07-05.",
+    "Baseline lowered after hoisting the user-info dialog InfoItem component, refactoring the Ollama models dialog fetch/close effects, deriving mobile table cell metadata without useMemo, splitting the settings page context hook, converting content settings JSON props to keyed lazy state initializers, deferring wallet/system-settings form initialization out of synchronous effects, converting param-override/upstream-conflict dialogs to keyed or derived local state, paying down risk acknowledgement, multi-key management, account binding, playground query, OAuth/passkey settings, user subscription, subscription plan, and channel affinity React lint findings, then moving auth/profile/channel/model dialog initialization and data-table callback refs out of render-following synchronous paths on 2026-07-05.",
     "This is a no-regression gate for imported frontend lint debt; reduce the numbers as rule families are fixed."
   ]
 }

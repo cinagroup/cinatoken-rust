@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useState, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, AlertCircle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -77,14 +77,7 @@ export function TagBatchEditDialog({
     }))
   }, [groupsData, groups])
 
-  useEffect(() => {
-    if (open && currentTag) {
-      loadTagData()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, currentTag])
-
-  const loadTagData = async () => {
+  const loadTagData = useCallback(async () => {
     if (!currentTag) return
 
     setIsLoading(true)
@@ -110,7 +103,22 @@ export function TagBatchEditDialog({
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [currentTag, t])
+
+  useEffect(() => {
+    if (!open || !currentTag) return
+
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void loadTagData()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, currentTag, loadTagData])
 
   const handleSave = async () => {
     if (!currentTag) return

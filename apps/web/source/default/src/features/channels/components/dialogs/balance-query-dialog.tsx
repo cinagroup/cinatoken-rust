@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw, DollarSign } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -55,7 +55,7 @@ export function BalanceQueryDialog({
 
   const isCodex = currentRow?.type === 57
 
-  const handleQueryCodexUsage = async () => {
+  const handleQueryCodexUsage = useCallback(async () => {
     const row = currentRow
     if (!row) return
     setIsQuerying(true)
@@ -72,14 +72,22 @@ export function BalanceQueryDialog({
     } finally {
       setIsQuerying(false)
     }
-  }
+  }, [currentRow, t])
 
   useEffect(() => {
     if (!isCodex) return
     if (!open) return
-    handleQueryCodexUsage()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, isCodex])
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void handleQueryCodexUsage()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [handleQueryCodexUsage, open, isCodex])
 
   if (!currentRow) return null
 

@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useState, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, Search, Info, ChevronDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -76,6 +76,7 @@ export function FetchModelsDialog({
   const { t } = useTranslation()
   const { currentRow } = useChannels()
   const activeChannel = customFetcher ? null : currentRow
+  const activeChannelId = activeChannel?.id
   const queryClient = useQueryClient()
   const [isFetching, setIsFetching] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -121,14 +122,7 @@ export function FetchModelsDialog({
     })
   }, [fetchedModelSet, redirectSourceKeysSet, searchKeyword, selectedModels])
 
-  useEffect(() => {
-    if (open && (activeChannel || customFetcher)) {
-      handleFetchModels()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeChannel?.id, customFetcher])
-
-  const handleFetchModels = async () => {
+  const handleFetchModels = useCallback(async () => {
     if (!activeChannel && !customFetcher) return
 
     setIsFetching(true)
@@ -158,7 +152,22 @@ export function FetchModelsDialog({
     } finally {
       setIsFetching(false)
     }
-  }
+  }, [activeChannel, customFetcher, existingModels, t])
+
+  useEffect(() => {
+    if (!open || (!activeChannelId && !customFetcher)) return
+
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void handleFetchModels()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, activeChannelId, customFetcher, handleFetchModels])
 
   const handleSave = async () => {
     // If onModelsSelected callback is provided, use it (form filling mode)

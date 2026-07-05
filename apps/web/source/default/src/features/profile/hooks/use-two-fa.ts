@@ -52,7 +52,16 @@ export function useTwoFA(enabled = true) {
   }, [enabled])
 
   useEffect(() => {
-    fetchStatus()
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void fetchStatus()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [fetchStatus])
 
   return {

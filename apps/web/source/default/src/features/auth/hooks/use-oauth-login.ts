@@ -41,20 +41,27 @@ type LogoutRequestConfig = AxiosRequestConfig & {
 export function useOAuthLogin(status: SystemStatus | null) {
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(false)
-  const [githubButtonText, setGithubButtonText] = useState('')
+  const [githubButtonStatus, setGithubButtonStatus] = useState<
+    'idle' | 'redirecting' | 'timeout'
+  >('idle')
   const [githubButtonDisabled, setGithubButtonDisabled] = useState(false)
   const githubTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const { auth } = useAuthStore()
 
   useEffect(() => {
-    setGithubButtonText(t('Continue with GitHub'))
-
     return () => {
       if (githubTimeoutRef.current) {
         clearTimeout(githubTimeoutRef.current)
       }
     }
-  }, [t])
+  }, [])
+
+  const githubButtonText =
+    githubButtonStatus === 'redirecting'
+      ? t('Redirecting to GitHub...')
+      : githubButtonStatus === 'timeout'
+        ? t('Request timed out, please refresh and restart GitHub login')
+        : t('Continue with GitHub')
 
   const resetSession = async () => {
     try {
@@ -77,7 +84,7 @@ export function useOAuthLogin(status: SystemStatus | null) {
 
     setIsLoading(true)
     setGithubButtonDisabled(true)
-    setGithubButtonText(t('Redirecting to GitHub...'))
+    setGithubButtonStatus('redirecting')
 
     if (githubTimeoutRef.current) {
       clearTimeout(githubTimeoutRef.current)
@@ -85,9 +92,7 @@ export function useOAuthLogin(status: SystemStatus | null) {
 
     githubTimeoutRef.current = setTimeout(() => {
       setIsLoading(false)
-      setGithubButtonText(
-        t('Request timed out, please refresh and restart GitHub login')
-      )
+      setGithubButtonStatus('timeout')
       setGithubButtonDisabled(true)
     }, 20000)
 
@@ -100,7 +105,7 @@ export function useOAuthLogin(status: SystemStatus | null) {
           clearTimeout(githubTimeoutRef.current)
         }
         setIsLoading(false)
-        setGithubButtonText(t('Continue with GitHub'))
+        setGithubButtonStatus('idle')
         setGithubButtonDisabled(false)
         return
       }
@@ -113,7 +118,7 @@ export function useOAuthLogin(status: SystemStatus | null) {
         clearTimeout(githubTimeoutRef.current)
       }
       setIsLoading(false)
-      setGithubButtonText(t('Continue with GitHub'))
+      setGithubButtonStatus('idle')
       setGithubButtonDisabled(false)
     }
   }

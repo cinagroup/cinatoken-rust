@@ -4141,3 +4141,52 @@ baseline is 50 ESLint errors / 2 warnings, dominated by
 `react-hooks/set-state-in-effect` (42 errors), with smaller refs,
 immutability, TanStack Query, and hook dependency families still pending before
 G5 production sign-off.
+
+### 22.59 2026-07-05 Frontend Auth/Profile Dialog Lint Paydown
+
+This increment continues the G5 strict-lint paydown across auth/profile hooks
+and operator channel/model dialogs. It avoids the tiered-pricing/billing
+expression editor in this batch and does not change billing expression
+semantics.
+
+Implemented in the imported React frontend:
+
+- Replaced GitHub OAuth button text state with a small status enum and derived
+  translated labels during render. The timeout cleanup effect now only clears
+  the timer.
+- Deferred Passkey management, secure verification method discovery, Codex
+  balance usage refresh, fetch-models loading, tag-batch loading, edit-tag form
+  reset, login legal-consent reset, deployment extend/rename/sync wizard
+  initialization, profile loading, 2FA status/setup loading, and sidebar module
+  loading out of synchronous effect bodies using cleanup-guarded microtasks.
+- Promoted fetch-models and tag-batch loaders to stable callbacks before their
+  opening effects, removing the remaining imported `react-hooks/immutability`
+  findings for declaration-before-use access.
+- Moved the debounced data-table column-filter callback ref update out of
+  render and into an effect, lowering the current `react-hooks/refs` baseline.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 50 errors / 2 warnings
+  / 51 files to 34 errors / 2 warnings / 35 files. The rule-family deltas are:
+  `react-hooks/set-state-in-effect` 42 -> 29, `react-hooks/refs` 5 -> 4,
+  `react-hooks/immutability` 2 -> 0, while
+  `@tanstack/query/exhaustive-deps` remains at 1 error and
+  `react-hooks/exhaustive-deps` remains at 2 warnings.
+
+Updated local evidence:
+
+- File-scoped ESLint for the touched frontend files: passed with no findings.
+- Full frontend ESLint aggregation: 34 errors, 2 warnings, 35 files with
+  findings.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 34 errors, 2 warnings, 35 files
+  with findings, and 0 regressions.
+- `bun run format:check` in `apps/web/source/default`: passed.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,282,869 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green. The remaining current
+baseline is 34 ESLint errors / 2 warnings, dominated by
+`react-hooks/set-state-in-effect` (29 errors), with smaller refs, TanStack
+Query, and hook dependency families still pending before G5 production sign-off.

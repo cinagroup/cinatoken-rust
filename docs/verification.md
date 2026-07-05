@@ -5,9 +5,11 @@ Last checked: 2026-07-05
 ## Passed
 
 - `bun run check:web:lint-debt`: passed after adding the executable frontend
-  lint-debt no-regression baseline. It reports 101 ESLint errors, 3 warnings,
+  lint-debt no-regression baseline. It reports 92 ESLint errors, 3 warnings,
   69 files with findings, and 0 regressions against
-  `tools/frontend_lint_debt_baseline.json`.
+  `tools/frontend_lint_debt_baseline.json`; the first paydown batch hoisted
+  the usage-log user-info `InfoItem` component and reduced
+  `react-hooks/static-components` from 9 errors to 0.
 - `bun run format:check` in `apps/web/source/default`: passed after removing
   one stale `react-hooks/set-state-in-effect` disable comment from the imported
   frontend source.
@@ -1171,7 +1173,7 @@ bun run check
 ## Still Pending
 
 - `bun run check:web:quality` remains red because strict ESLint still reports
-  101 errors and 3 warnings in the imported frontend source. The rules have not
+  92 errors and 3 warnings in the imported frontend source. The rules have not
   been weakened; `bun run check:web:lint-debt` now enforces a no-regression
   baseline while the debt is paid down in batches. `bun run format:check`
   passes.

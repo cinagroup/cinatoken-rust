@@ -1,7 +1,7 @@
 {
   "frontend_dir": "apps/web/source/default",
   "totals": {
-    "errors": 101,
+    "errors": 92,
     "warnings": 3,
     "fixable_errors": 0,
     "fixable_warnings": 0,
@@ -36,10 +36,6 @@
       "errors": 64,
       "warnings": 0
     },
-    "react-hooks/static-components": {
-      "errors": 9,
-      "warnings": 0
-    },
     "react-hooks/use-memo": {
       "errors": 2,
       "warnings": 0
@@ -50,7 +46,7 @@
     }
   },
   "notes": [
-    "Baseline captured after removing one stale eslint-disable warning on 2026-07-05.",
+    "Baseline lowered after hoisting the user-info dialog InfoItem component on 2026-07-05.",
     "This is a no-regression gate for imported frontend lint debt; reduce the numbers as rule families are fixed."
   ]
 }

@@ -3778,7 +3778,7 @@ Implemented in the Rust migration repository:
 - Removed one stale `react-hooks/set-state-in-effect` disable comment from
   `use-debounced-column-filter.ts`; the warning was no longer suppressing an
   active diagnostic.
-- Added `tools/frontend_lint_debt_baseline.json`, capturing the current
+- Added `tools/frontend_lint_debt_baseline.json`, capturing the initial
   imported frontend ESLint baseline: 101 errors, 3 warnings, 69 files with
   findings, and per-rule counts.
 - Added `tools/audit_frontend_lint_debt.mjs`, which runs the default frontend
@@ -3804,3 +3804,31 @@ Remaining boundary: this does not make `bun run check:web:quality` green. The
 largest remaining rule family is `react-hooks/set-state-in-effect`; strict
 lint cleanup must continue by fixing React state/effect patterns and lowering
 the baseline after each verified batch.
+
+### 22.51 2026-07-05 Frontend Static Component Lint Paydown
+
+This increment starts paying down the strict lint baseline rather than only
+tracking it. The first target was the highest single-file frontend lint hotspot,
+`apps/web/source/default/src/features/usage-logs/components/dialogs/user-info-dialog.tsx`.
+
+Implemented in the imported React frontend:
+
+- Hoisted the render-local `InfoItem` component to module scope, following the
+  React performance rule that components should not be created during render.
+- Preserved the existing user-info dialog markup and translated labels; callers
+  now pass the same `label` and `value` props to a stable component type.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 101 errors / 3 warnings
+  to 92 errors / 3 warnings, and removed the `react-hooks/static-components`
+  allowance because that rule family is now at zero.
+
+Updated local evidence:
+
+- File-scoped ESLint for `user-info-dialog.tsx`: reduced from 10 errors to 1
+  remaining `react-hooks/set-state-in-effect` error.
+- `bun run check:web:lint-debt`: passed with 92 errors, 3 warnings, 69 files
+  with findings, and 0 regressions.
+
+Remaining boundary: strict lint is still not green. The next high-value
+paydown batches should target `react-hooks/set-state-in-effect` and
+`react-hooks/refs` in small UI-owned slices, lowering the baseline after each
+verified batch.

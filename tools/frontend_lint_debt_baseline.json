@@ -1,11 +1,11 @@
 {
   "frontend_dir": "apps/web/source/default",
   "totals": {
-    "errors": 87,
-    "warnings": 3,
+    "errors": 83,
+    "warnings": 2,
     "fixable_errors": 0,
     "fixable_warnings": 0,
-    "files_with_findings": 67
+    "files_with_findings": 66
   },
   "by_rule": {
     "@tanstack/query/exhaustive-deps": {
@@ -29,20 +29,16 @@
       "warnings": 0
     },
     "react-hooks/refs": {
-      "errors": 13,
+      "errors": 9,
       "warnings": 0
     },
     "react-hooks/set-state-in-effect": {
       "errors": 63,
       "warnings": 0
-    },
-    "react-refresh/only-export-components": {
-      "errors": 0,
-      "warnings": 1
     }
   },
   "notes": [
-    "Baseline lowered after hoisting the user-info dialog InfoItem component, refactoring the Ollama models dialog fetch/close effects, and deriving mobile table cell metadata without useMemo on 2026-07-05.",
+    "Baseline lowered after hoisting the user-info dialog InfoItem component, refactoring the Ollama models dialog fetch/close effects, deriving mobile table cell metadata without useMemo, and splitting the settings page context hook on 2026-07-05.",
     "This is a no-regression gate for imported frontend lint debt; reduce the numbers as rule families are fixed."
   ]
 }

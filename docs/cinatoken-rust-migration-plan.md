@@ -3910,3 +3910,46 @@ Updated local evidence:
 Remaining boundary: strict lint is still not green. The largest remaining
 family is still `react-hooks/set-state-in-effect`, followed by `react-hooks/refs`.
 Continue reducing these in small UI-owned batches before G5 production cutover.
+
+### 22.54 2026-07-05 Frontend Settings Context Lint Paydown
+
+This increment continues the G5 frontend strict-lint cleanup in the shared
+system-settings page action/context helpers. The target was the largest
+remaining single-file lint cluster after the mobile table cleanup.
+
+Implemented in the imported React frontend:
+
+- Destructured `SettingsPageFormActions` props at the function boundary so the
+  action buttons receive stable local variables instead of repeated
+  `props.*` member reads in JSX. This preserves all existing save/reset labels,
+  disabled states, variants, callbacks, and `saveButtonRef` behavior while
+  removing the React Compiler `react-hooks/refs` diagnostics.
+- Split `SettingsPageContext` into
+  `settings-page-context-value.ts` and moved
+  `useSuppressSettingsSectionHeader` into
+  `use-suppress-settings-section-header.ts`, leaving
+  `settings-page-context.tsx` with component exports only. This removes the
+  Fast Refresh mixed-export warning without weakening the lint rules.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 87 errors / 3 warnings
+  / 67 files to 83 errors / 2 warnings / 66 files. The rule-family deltas are:
+  `react-hooks/refs` 13 -> 9 and
+  `react-refresh/only-export-components` 1 warning -> 0.
+
+Updated local evidence:
+
+- File-scoped ESLint for
+  `settings-page-context.tsx`, `settings-page-context-value.ts`,
+  `use-suppress-settings-section-header.ts`, and `settings-section.tsx`:
+  passed with no findings.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 83 errors, 2 warnings, 66 files
+  with findings, and 0 regressions.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,280,138 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green. The largest remaining
+family is `react-hooks/set-state-in-effect`; `react-hooks/refs` is smaller but
+still present in several settings/auth components.

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@cinagroup.com
 */
 import { cn } from '@/lib/utils'
-import { useSuppressSettingsSectionHeader } from './settings-page-context'
+import { useSuppressSettingsSectionHeader } from './use-suppress-settings-section-header'
 
 type SettingsSectionProps = {
   title: string

@@ -1325,6 +1325,30 @@ baseline above.
   same smoke against a real `DISPATCHER` binding to verify the tenant status
   reports an empty `inbound_sensitive_headers` array.
 
+- **WFP internal forwarding marker gate - locally verified (2026-07-05).**
+  The main dispatch Worker now strips caller-supplied `x-cinatoken-*` request
+  markers, then injects controlled `x-cinatoken-wfp-route` and
+  `x-cinatoken-wfp-worker` headers when invoking `DISPATCHER`. The Rust/Wasm
+  tenant runtime and generated JS fallback expose those as
+  `inbound_dispatch_route` and `inbound_dispatch_worker` on the tenant status
+  route, while tenant AI routes reject non-`internal-path` dispatch with
+  `403 tenant_internal_dispatch_required`. `tools/smoke_wfp_dispatch.mjs`
+  now requires the status body to prove `inbound_dispatch_route=internal-path`
+  and a matching worker marker in addition to the existing response-header and
+  sensitive-header checks. Local evidence: `cargo test -p cinatoken-worker
+  --lib platform_gateway` (passed; 7 platform-gateway tests), `cargo test -p
+  cinatoken-wfp-tenant` (passed; 9 tenant-runtime tests), `cargo test -p
+  cinatoken-worker --lib wfp_tenant` (passed; 7 generated
+  fallback/control-plane tests), `bun tools/smoke_wfp_dispatch.mjs --help`
+  (passed), `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --worker tenant-smoke` (passed),
+  `bun run check:wfp-dispatch:smoke-plan` (passed), `cargo fmt --all --check`
+  (passed), `git diff --check` (passed), and `bun run check` (passed;
+  frontend gates, WFP deploy-plan/dispatch/realtime smoke plans, workspace
+  tests, and Worker/WFP wasm32 checks). Live staging still needs the same
+  authenticated status/route smoke against a real `DISPATCHER` binding, plus
+  preview-host/public AI 403 or disabled evidence.
+
 - **WFP Rust/Wasm artifact deploy uploader - locally verified (2026-07-05).**
   Added `tools/deploy_wfp_tenant_artifact.mjs` and `bun run deploy:wfp-tenant`
   for local upload of `crates/wfp-tenant/build/worker` to the Cloudflare WFP

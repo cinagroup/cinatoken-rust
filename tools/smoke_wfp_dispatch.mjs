@@ -40,7 +40,7 @@ async function smoke(options) {
     );
   }
   const statusBody = await readJsonResponse(statusResponse, "WFP dispatch status");
-  validateStatusBody(statusBody, options.expectRuntime);
+  validateStatusBody(statusBody, options.expectRuntime, options.worker);
   validateDispatchHeaders(statusResponse.headers, options.worker, options.expectRuntime);
 
   let routeResult = null;
@@ -107,7 +107,7 @@ function buildPlan(options) {
       "worker is the public tenant name in /api/platform/dispatch/:worker; WFP_DISPATCH_WORKER_PREFIX is applied by the main Worker.",
       "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
       "the dispatch Worker strips platform/admin credentials before invoking the tenant Worker; live status smoke fails if tenant status reports sensitive inbound headers.",
-      "status smoke validates the dispatch binding, internal path rewrite, expected tenant runtime, tenant status contract, and x-cinatoken WFP headers.",
+      "status smoke validates the dispatch binding, internal path rewrite, controlled internal dispatch markers, expected tenant runtime, tenant status contract, and x-cinatoken WFP headers.",
       "route smoke is opt-in and may call the tenant AI Gateway route; use staging credentials and a low-risk payload.",
     ],
   };
@@ -265,7 +265,7 @@ async function boundedText(response, maxBytes) {
   return `${text.slice(0, maxBytes)}...<truncated>`;
 }
 
-function validateStatusBody(body, expectRuntime) {
+function validateStatusBody(body, expectRuntime, worker) {
   if (!body || typeof body !== "object") {
     throw new Error("tenant status response must be a JSON object");
   }
@@ -293,6 +293,12 @@ function validateStatusBody(body, expectRuntime) {
   }
   if (!Array.isArray(body.inbound_sensitive_headers) || body.inbound_sensitive_headers.length !== 0) {
     throw new Error("tenant status must expose an empty inbound_sensitive_headers array");
+  }
+  if (body.inbound_dispatch_route !== "internal-path") {
+    throw new Error(`tenant status did not prove internal WFP dispatch: ${body.inbound_dispatch_route}`);
+  }
+  if (body.inbound_dispatch_worker !== worker) {
+    throw new Error(`tenant status worker marker ${body.inbound_dispatch_worker} did not match ${worker}`);
   }
 }
 
@@ -330,6 +336,8 @@ function summarizeTenantStatus(body) {
     routeGateways: body.route_gateways,
     inboundSensitiveHeadersPresent: body.inbound_sensitive_headers_present,
     inboundSensitiveHeaders: body.inbound_sensitive_headers,
+    inboundDispatchRoute: body.inbound_dispatch_route,
+    inboundDispatchWorker: body.inbound_dispatch_worker,
     routes: body.routes,
   };
 }

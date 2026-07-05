@@ -322,9 +322,9 @@ captured.
 
 | Flag | Effect when on | Required binding/evidence |
 | --- | --- | --- |
-| `WFP_DISPATCH_ENABLED` | Enables the Rust dispatch Worker pre-router for tenant/preview traffic | `DISPATCHER` dispatch namespace, admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` route smoke for internal paths |
+| `WFP_DISPATCH_ENABLED` | Enables the Rust dispatch Worker pre-router for tenant/preview traffic | `DISPATCHER` dispatch namespace, admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` route smoke for internal paths proving controlled `inbound_dispatch_route=internal-path` |
 | `WFP_PREVIEW_HOST_SUFFIX` | Maps `{tenant}.{suffix}` hostnames to dispatch namespace worker names | DNS/route review, tenant-name validation |
-| `WFP_INTERNAL_DISPATCH_ENABLED` | Enables `/api/platform/dispatch/:worker/...` as an admin-only internal dispatch test path | Admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` status smoke with empty `inbound_sensitive_headers`, matching `x-cinatoken-wfp-runtime`, plus unauthenticated 401/403 check; keep off in production unless explicitly needed |
+| `WFP_INTERNAL_DISPATCH_ENABLED` | Enables `/api/platform/dispatch/:worker/...` as an admin-only internal dispatch test path | Admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` status smoke with empty `inbound_sensitive_headers`, `inbound_dispatch_route=internal-path`, matching `inbound_dispatch_worker` and `x-cinatoken-wfp-runtime`, plus unauthenticated 401/403 check; keep off in production unless explicitly needed |
 | `WFP_DISPATCH_WORKER_PREFIX` | Prefixes sanitized tenant names before `DISPATCHER.get()` | Naming convention and collision review |
 | `REALTIME_SESSION_GATEWAY_ENABLED` | Enables `/api/platform/realtime/:session...` -> `REALTIME_SESSIONS` DO forwarding | `REALTIME_SESSIONS` binding plus `bun run smoke:realtime-session` status/control smoke proving restored attachments, persisted lifecycle metrics, and unsupported-control no-echo behavior; not a `/v1/realtime` cutover by itself |
 | `REALTIME_SESSION_V1_ENABLED` | Enables the OpenAI-compatible `/v1/realtime` WebSocket entry after relay-token auth/model/rate-limit checks | Upstream Realtime bridge, billing/audit settlement, hibernation/resume smoke, persisted metrics smoke, unsupported-control no-echo smoke, and live protocol replay with `bun run smoke:realtime-session -- --mode v1`; keep off until G7 approval |
@@ -386,12 +386,15 @@ Smoke order:
    `WFP_DISPATCH_ENABLED=true` in staging using
    `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm`. Confirm the same
    URL fails 401/403 without an admin session and that tenant status reports
-   `inbound_sensitive_headers_present=false`. The main Worker rewrites the
-   internal prefix away before invoking the dispatch namespace, so the tenant
-   Worker should receive `/__cinatoken/tenant/status`, not the
+   `inbound_sensitive_headers_present=false`,
+   `inbound_dispatch_route=internal-path`, and
+   `inbound_dispatch_worker=<worker>`. The main Worker rewrites the internal
+   prefix away before invoking the dispatch namespace, so the tenant Worker
+   should receive `/__cinatoken/tenant/status`, not the
    `/api/platform/dispatch/...` control-plane path. The tenant Worker should
    not receive the admin cookie, relay/API-key headers, Cloudflare Access
-   client credentials, or caller-supplied `x-cinatoken-*` markers.
+   client credentials, or caller-supplied `x-cinatoken-*` markers; only the
+   controlled WFP route/worker request markers are allowed through.
 6. Run route-set parity smoke through the generated fallback and preferred
    Rust/Wasm artifact for `/v1/chat/completions`, `/v1/responses`,
    `/v1/messages`, `/v1/embeddings`, and `/ai/run`. Confirm the fallback status
@@ -401,8 +404,11 @@ Smoke order:
    expected runtime, `route_gateways` reports the expected route-specific env
    names, client `Authorization` is not forwarded, and AI Gateway logs include
    flat tenant metadata for each route family. If route-specific gateway IDs are
-   set, confirm each route lands in the intended Gateway before
-   comparing provider output. Capture redacted response headers and verify
+   set, confirm each route lands in the intended Gateway before comparing
+   provider output. Public preview-host AI route attempts must remain disabled
+   or return `403 tenant_internal_dispatch_required`; only the
+   admin-authenticated internal dispatch path is allowed to reach tenant AI
+   forwarding. Capture redacted response headers and verify
    tenant/runtime marker headers are present while `cf-aig-*`, `authorization`,
    `set-cookie`, `content-length`, transfer/platform headers, and upstream
    `x-cinatoken-*` headers are absent.

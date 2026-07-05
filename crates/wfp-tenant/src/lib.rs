@@ -23,6 +23,9 @@ const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES
 const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
 const AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV: &str = "AI_GATEWAY_ID_OPENAI_EMBEDDINGS";
 const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
+const WFP_ROUTE_HEADER: &str = "x-cinatoken-wfp-route";
+const WFP_WORKER_HEADER: &str = "x-cinatoken-wfp-worker";
+const WFP_INTERNAL_ROUTE: &str = "internal-path";
 const UNKNOWN_TENANT: &str = "unknown";
 const SAFE_RESPONSE_HEADERS: &[&str] = &[
     "content-type",
@@ -48,6 +51,7 @@ const SENSITIVE_INBOUND_HEADERS: &[&str] = &[
     "cf-access-client-id",
     "cf-access-client-secret",
 ];
+const CONTROLLED_INBOUND_HEADERS: &[&str] = &[WFP_ROUTE_HEADER, WFP_WORKER_HEADER];
 const SUPPORTED_ROUTES: &[TenantRoute] = &[
     TenantRoute {
         public_path: "/v1/chat/completions",
@@ -101,6 +105,8 @@ struct TenantStatus {
     route_gateways: Vec<RouteGatewayStatus>,
     inbound_sensitive_headers_present: bool,
     inbound_sensitive_headers: Vec<String>,
+    inbound_dispatch_route: Option<String>,
+    inbound_dispatch_worker: Option<String>,
     forwarding: &'static str,
     body_mode: &'static str,
     routes: &'static [&'static str],
@@ -162,6 +168,8 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
         route_gateways,
         inbound_sensitive_headers_present: !inbound_sensitive_headers.is_empty(),
         inbound_sensitive_headers,
+        inbound_dispatch_route: request_header(req, WFP_ROUTE_HEADER),
+        inbound_dispatch_worker: request_header(req, WFP_WORKER_HEADER),
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTE_PATHS,
@@ -177,6 +185,14 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
 }
 
 async fn forward_ai_gateway(req: Request, env: Env, route: TenantRoute) -> WorkerResult<Response> {
+    if !request_is_internal_dispatch(&req) {
+        return tenant_error(
+            403,
+            "tenant_internal_dispatch_required",
+            "tenant AI Gateway routes require internal WFP dispatch",
+        );
+    }
+
     let Some(account_id) = runtime_value(&env, "CF_ACCOUNT_ID") else {
         return tenant_error(
             500,
@@ -344,6 +360,23 @@ fn copy_header(req: &Request, output: &mut Headers, name: &str) -> WorkerResult<
     Ok(())
 }
 
+fn request_header(req: &Request, name: &str) -> Option<String> {
+    req.headers()
+        .get(name)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn request_is_internal_dispatch(req: &Request) -> bool {
+    is_internal_dispatch_route(request_header(req, WFP_ROUTE_HEADER).as_deref())
+}
+
+fn is_internal_dispatch_route(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some(value) if value.eq_ignore_ascii_case(WFP_INTERNAL_ROUTE))
+}
+
 fn inbound_sensitive_header_names(headers: &Headers) -> Vec<String> {
     let mut names = Vec::new();
     for (name, _) in headers {
@@ -358,7 +391,9 @@ fn inbound_sensitive_header_names(headers: &Headers) -> Vec<String> {
 
 fn is_sensitive_inbound_header(name: &str) -> bool {
     let name = name.trim().to_ascii_lowercase();
-    SENSITIVE_INBOUND_HEADERS.contains(&name.as_str()) || name.starts_with("x-cinatoken-")
+    SENSITIVE_INBOUND_HEADERS.contains(&name.as_str())
+        || (name.starts_with("x-cinatoken-")
+            && !CONTROLLED_INBOUND_HEADERS.contains(&name.as_str()))
 }
 
 fn tenant_id(env: &Env) -> String {
@@ -568,11 +603,27 @@ mod tests {
             );
         }
 
-        for header in ["Content-Type", "Accept", "User-Agent", "Traceparent"] {
+        for header in [
+            "Content-Type",
+            "Accept",
+            "User-Agent",
+            "Traceparent",
+            "X-Cinatoken-WFP-Route",
+            "x-cinatoken-wfp-worker",
+        ] {
             assert!(
                 !is_sensitive_inbound_header(header),
                 "expected {header} to remain a normal forwarded header"
             );
         }
+    }
+
+    #[test]
+    fn internal_dispatch_route_header_is_required_for_ai_forwarding() {
+        assert!(is_internal_dispatch_route(Some("internal-path")));
+        assert!(is_internal_dispatch_route(Some(" INTERNAL-PATH ")));
+        assert!(!is_internal_dispatch_route(Some("preview-host")));
+        assert!(!is_internal_dispatch_route(Some("")));
+        assert!(!is_internal_dispatch_route(None));
     }
 }

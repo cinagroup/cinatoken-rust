@@ -5164,3 +5164,69 @@ Remaining migration gaps:
   being tested.
 - Capture at least one route POST smoke with real route-specific AI Gateway IDs
   and confirm tenant metadata lands in the intended Gateway.
+
+### 22.79 2026-07-05 WFP Internal Forwarding Marker Gate
+
+This increment closes the remaining ambiguity between "traffic reached a WFP
+tenant Worker" and "traffic reached the tenant Worker through the intended
+internal dispatch path." The cinaVibeSDK-style production target is a Rust
+dispatch gateway using Workers for Platforms internal forwarding for tenant AI
+traffic. Preview-host/status diagnostics can still exist, but tenant AI
+forwarding must not silently run through a public preview-host path with tenant
+runtime Cloudflare credentials.
+
+Implemented:
+
+- The Rust dispatch gateway now rebuilds tenant requests by first stripping
+  caller-supplied credentials and `x-cinatoken-*` platform markers, then
+  injecting controlled request markers:
+  - `x-cinatoken-wfp-route: internal-path|preview-host`;
+  - `x-cinatoken-wfp-worker: <public tenant worker>`.
+- The tenant-visible status contract now includes
+  `inbound_dispatch_route` and `inbound_dispatch_worker` in both the preferred
+  Rust/Wasm tenant runtime and the generated JS fallback.
+- Tenant AI Gateway routes in both runtimes now require
+  `x-cinatoken-wfp-route: internal-path`; missing or preview-host markers
+  return `403 tenant_internal_dispatch_required` before any tenant Cloudflare
+  API token or AI Gateway forwarding is used.
+- The tenant sensitive-header detector still reports caller/platform
+  credentials and untrusted `x-cinatoken-*` markers, but allows the two
+  dispatch-controlled WFP request markers so status smoke can prove the
+  expected internal path without false positives.
+- `tools/smoke_wfp_dispatch.mjs` now validates that tenant status reports
+  `inbound_dispatch_route: "internal-path"` and
+  `inbound_dispatch_worker: "<worker>"`, in addition to the existing empty
+  sensitive-header array, runtime, route manifest, and response-header checks.
+- Staging smoke, Cloudflare production config, production-readiness, and
+  verification docs now require this marker proof and call out
+  preview-host/public AI 403-or-disabled evidence before WFP cutover.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed (7 tests).
+- `cargo test -p cinatoken-wfp-tenant` passed (9 tests).
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed (7 tests; 395
+  filtered in the focused run).
+- `bun tools/smoke_wfp_dispatch.mjs --help` passed.
+- `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --worker tenant-smoke` passed and reports the
+  controlled internal marker smoke plan.
+- `bun run check:wfp-dispatch:smoke-plan` passed.
+- `cargo fmt --all --check` passed.
+- `git diff --check` passed.
+- `bun run check` passed, including frontend build/redaction/budget/route
+  gates, WFP deploy-plan/dispatch/realtime smoke plans, workspace tests, and
+  Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run live staging WFP status smoke against a real `DISPATCHER` binding and
+  uploaded Rust/Wasm tenant artifact; archive a redacted status body proving
+  `runtime: "rust-wasm"`, `inbound_sensitive_headers: []`,
+  `inbound_dispatch_route: "internal-path"`, and a matching
+  `inbound_dispatch_worker`.
+- Run at least one live internal-path tenant AI route smoke with route-specific
+  AI Gateway IDs and confirm tenant metadata lands in the intended Gateway.
+- Capture the negative preview-host/public AI result:
+  `403 tenant_internal_dispatch_required`, or document that preview-host AI
+  routing remains disabled for the cutover window.

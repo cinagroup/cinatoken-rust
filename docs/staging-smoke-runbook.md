@@ -184,7 +184,8 @@ Record:
 - Admin-authenticated smoke evidence only; do not paste the raw
   `WFP_SMOKE_COOKIE` value into the report.
 - Tenant status body, including `runtime`, `forwarding`, `body_mode`, routes,
-  per-route gateway configuration, and `inbound_sensitive_headers_present`.
+  per-route gateway configuration, `inbound_sensitive_headers_present`,
+  `inbound_dispatch_route`, and `inbound_dispatch_worker`.
 - `x-cinatoken-wfp-route`, `x-cinatoken-wfp-worker`,
   `x-cinatoken-wfp-tenant`, and `x-cinatoken-wfp-runtime` headers.
 - AI Gateway log entry for any opt-in POST route smoke.
@@ -208,10 +209,18 @@ Pass criteria:
   stripped the admin cookie, relay/API-key headers, Cloudflare Access client
   headers, and `x-cinatoken-*` platform markers before invoking the tenant
   Worker.
+- Tenant status reports `inbound_dispatch_route: "internal-path"` and
+  `inbound_dispatch_worker: "<worker>"`, proving the main Worker injected the
+  controlled internal-dispatch markers after stripping caller-supplied platform
+  markers.
 - Dispatch headers identify `internal-path` and the public tenant worker name.
 - Optional AI route smoke returns the expected staging status and safe
   response headers only; raw authorization, `cf-aig-*`, and upstream
   `x-cinatoken-*` headers are not exposed to the caller.
+- Tenant AI route smoke only passes through the admin-authenticated internal
+  dispatch path. Preview-host/public AI attempts must either remain disabled or
+  return `403 tenant_internal_dispatch_required`; the tenant status route may
+  still be used for non-AI preview diagnostics.
 
 ## Phase 2: Auth And Rejection Smoke
 

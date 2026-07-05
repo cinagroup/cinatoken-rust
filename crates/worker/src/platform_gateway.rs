@@ -18,6 +18,8 @@ pub const WFP_INTERNAL_DISPATCH_ENABLED_ENV: &str = "WFP_INTERNAL_DISPATCH_ENABL
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
+const WFP_ROUTE_REQUEST_HEADER: &str = "x-cinatoken-wfp-route";
+const WFP_WORKER_REQUEST_HEADER: &str = "x-cinatoken-wfp-worker";
 const BLOCKED_DISPATCH_REQUEST_HEADERS: &[&str] = &[
     "authorization",
     "cookie",
@@ -172,8 +174,8 @@ pub async fn dispatch_request(
     let outbound = request_for_dispatch_target(req, &target)?;
     let mut response = fetcher.fetch_request(outbound).await?;
     let headers = response.headers_mut();
-    let _ = headers.set("X-Cinatoken-WFP-Route", target.route_kind.header_value());
-    let _ = headers.set("X-Cinatoken-WFP-Worker", &target.public_name);
+    let _ = headers.set(WFP_ROUTE_REQUEST_HEADER, target.route_kind.header_value());
+    let _ = headers.set(WFP_WORKER_REQUEST_HEADER, &target.public_name);
     Ok(response)
 }
 
@@ -263,7 +265,7 @@ fn request_for_dispatch_target(req: Request, target: &DispatchTarget) -> WorkerR
         url.set_path(tenant_path);
     }
 
-    let headers = dispatch_forward_headers(req.headers())?;
+    let headers = dispatch_forward_headers_for_target(req.headers(), target)?;
     let body = req.inner().body().map(JsValue::from);
     let mut init = RequestInit::new();
     init.with_method(req.method()).with_headers(headers);
@@ -285,6 +287,37 @@ fn dispatch_forward_headers(input: &Headers) -> WorkerResult<Headers> {
         }
     }
     Ok(headers)
+}
+
+fn dispatch_forward_headers_for_target(
+    input: &Headers,
+    target: &DispatchTarget,
+) -> WorkerResult<Headers> {
+    let mut headers = dispatch_forward_headers(input)?;
+    append_dispatch_platform_headers(&mut headers, target)?;
+    Ok(headers)
+}
+
+fn append_dispatch_platform_headers(
+    headers: &mut Headers,
+    target: &DispatchTarget,
+) -> WorkerResult<()> {
+    let values = dispatch_platform_header_values(target);
+    headers.set(WFP_ROUTE_REQUEST_HEADER, values.route)?;
+    headers.set(WFP_WORKER_REQUEST_HEADER, values.worker)?;
+    Ok(())
+}
+
+struct DispatchPlatformHeaderValues<'a> {
+    route: &'static str,
+    worker: &'a str,
+}
+
+fn dispatch_platform_header_values(target: &DispatchTarget) -> DispatchPlatformHeaderValues<'_> {
+    DispatchPlatformHeaderValues {
+        route: target.route_kind.header_value(),
+        worker: &target.public_name,
+    }
 }
 
 fn should_forward_dispatch_request_header(name: &str) -> bool {
@@ -436,6 +469,27 @@ mod tests {
                 "expected {header} to be forwarded to WFP dispatch"
             );
         }
+    }
+
+    #[test]
+    fn dispatch_request_header_forwarding_adds_controlled_platform_markers() {
+        let target = DispatchTarget {
+            route_kind: DispatchRouteKind::InternalPath,
+            public_name: "tenant-a".to_string(),
+            worker_name: "tenant-a".to_string(),
+            tenant_path: Some("/v1/responses".to_string()),
+        };
+
+        let values = dispatch_platform_header_values(&target);
+
+        assert_eq!(values.route, "internal-path");
+        assert_eq!(values.worker, "tenant-a");
+        assert!(!should_forward_dispatch_request_header(
+            WFP_ROUTE_REQUEST_HEADER
+        ));
+        assert!(!should_forward_dispatch_request_header(
+            WFP_WORKER_REQUEST_HEADER
+        ));
     }
 
     #[test]

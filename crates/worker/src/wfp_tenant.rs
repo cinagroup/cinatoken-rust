@@ -578,6 +578,10 @@ const SENSITIVE_INBOUND_HEADERS = [
   "cf-access-client-id",
   "cf-access-client-secret"
 ];
+const WFP_ROUTE_HEADER = "x-cinatoken-wfp-route";
+const WFP_WORKER_HEADER = "x-cinatoken-wfp-worker";
+const WFP_INTERNAL_ROUTE = "internal-path";
+const CONTROLLED_INBOUND_HEADERS = new Set([WFP_ROUTE_HEADER, WFP_WORKER_HEADER]);
 const ROUTE_GATEWAY_ENVS = {
   "/v1/chat/completions": "AI_GATEWAY_ID_OPENAI_CHAT",
   "/v1/responses": "AI_GATEWAY_ID_OPENAI_RESPONSES",
@@ -604,6 +608,8 @@ export default {
         route_gateways: routeGatewayStatus(env),
         inbound_sensitive_headers_present: inboundSensitiveHeaders.length > 0,
         inbound_sensitive_headers: inboundSensitiveHeaders,
+        inbound_dispatch_route: headerValue(request.headers, WFP_ROUTE_HEADER),
+        inbound_dispatch_worker: headerValue(request.headers, WFP_WORKER_HEADER),
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTES
@@ -621,6 +627,9 @@ export default {
     }
     if (request.method !== "POST") {
       return jsonError(405, "method_not_allowed", "tenant AI Gateway routes require POST");
+    }
+    if (!isInternalDispatch(request.headers)) {
+      return jsonError(403, "tenant_internal_dispatch_required", "tenant AI Gateway routes require internal WFP dispatch");
     }
     if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
       return jsonError(500, "tenant_gateway_not_configured", "CF_ACCOUNT_ID and CF_API_TOKEN must be bound");
@@ -700,7 +709,17 @@ function inboundSensitiveHeaderNames(input) {
 
 function isSensitiveInboundHeader(name) {
   const normalized = name.trim().toLowerCase();
-  return SENSITIVE_INBOUND_HEADERS.includes(normalized) || normalized.startsWith("x-cinatoken-");
+  return SENSITIVE_INBOUND_HEADERS.includes(normalized) ||
+    (normalized.startsWith("x-cinatoken-") && !CONTROLLED_INBOUND_HEADERS.has(normalized));
+}
+
+function isInternalDispatch(input) {
+  return (input.get(WFP_ROUTE_HEADER) || "").trim().toLowerCase() === WFP_INTERNAL_ROUTE;
+}
+
+function headerValue(input, name) {
+  const value = input.get(name);
+  return value && value.trim() ? value.trim() : null;
 }
 
 function safeResponseHeaders(input) {
@@ -948,6 +967,11 @@ mod tests {
         assert!(script.contains("inbound_sensitive_headers_present"));
         assert!(script.contains("inboundSensitiveHeaderNames(request.headers)"));
         assert!(script.contains("SENSITIVE_INBOUND_HEADERS"));
+        assert!(script.contains("CONTROLLED_INBOUND_HEADERS"));
+        assert!(script.contains("WFP_ROUTE_HEADER"));
+        assert!(script.contains("inbound_dispatch_route"));
+        assert!(script.contains("isInternalDispatch(request.headers)"));
+        assert!(script.contains("tenant_internal_dispatch_required"));
         assert!(script.contains("x-cinatoken-wfp-runtime"));
         assert!(script.contains("\"x-cinatoken-wfp-runtime\": \"js-fallback\""));
         assert!(script.contains("safeResponseHeaders(upstream.headers)"));

@@ -1066,6 +1066,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let now = (worker::Date::now().as_millis() / 1000) as i64;
             task_orchestration::handle_kling_video_submit(req, env, "generate", now).await
         })
+        .post_async("/jimeng/", |req, ctx| async move {
+            let env = ctx.env;
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_jimeng_official(req, env, now).await
+        })
+        .post_async("/jimeng", |req, ctx| async move {
+            let env = ctx.env;
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_jimeng_official(req, env, now).await
+        })
         // Suno task submit (platform "suno"): POST /suno/submit/:action.
         // Client-facing async-task fetch (Go RelayTaskFetch): the owner's
         // stored TaskDto, kept current by the poller cron.
@@ -1466,6 +1476,7 @@ fn is_static_asset_path(path: &str) -> bool {
         "/v1/",
         "/v1beta/",
         "/mj/",
+        "/jimeng/",
         "/suno/",
         "/pg/",
         // OpenAI-compatible billing views (Go dashboard.go) — API, not the SPA
@@ -1494,6 +1505,7 @@ fn is_static_asset_path(path: &str) -> bool {
             | "/v1/audio/transcriptions"
             | "/v1/audio/translations"
             | "/v1/images/edits"
+            | "/jimeng"
     )
 }
 
@@ -1595,6 +1607,8 @@ mod tests {
             "/v1/audio/transcriptions",
             "/v1beta/models/gemini-2.0-flash:generateContent",
             "/mj/submit/imagine",
+            "/jimeng/?Action=CVSync2AsyncSubmitTask&Version=2022-08-31",
+            "/jimeng?Action=CVSync2AsyncGetResult&Version=2022-08-31",
             "/suno/submit/music",
             "/pg/chat/completions",
         ] {

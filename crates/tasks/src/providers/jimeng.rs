@@ -30,6 +30,35 @@ struct DataField {
     video_url: String,
 }
 
+#[derive(Deserialize, Default)]
+struct SubmitResponse {
+    #[serde(default)]
+    code: i64,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    data: SubmitData,
+}
+
+#[derive(Deserialize, Default)]
+struct SubmitData {
+    #[serde(default)]
+    task_id: String,
+}
+
+/// Extract the upstream task id from a Jimeng submit response (Go `DoResponse`):
+/// success is the sentinel code `10000`, otherwise the upstream `message` is
+/// returned as the error. Go does not reject an empty `data.task_id`, so this
+/// port returns it verbatim.
+pub fn parse_submit_response(resp_body: &[u8]) -> Result<String, String> {
+    let resp: SubmitResponse = serde_json::from_slice(resp_body)
+        .map_err(|err| format!("unmarshal_response_body_failed: {err}"))?;
+    if resp.code != 10000 {
+        return Err(resp.message);
+    }
+    Ok(resp.data.task_id)
+}
+
 /// Map a Jimeng poll response onto a [`TaskInfo`]. A `code` other than the
 /// success sentinel `10000` carries the error code and message as a failure.
 /// Then the inner `data.status` switch recognizes only `in_queue` (queued, 10%)
@@ -463,6 +492,18 @@ mod tests {
         assert_eq!(info.status, TaskStatus::Success);
         assert_eq!(info.progress, "100%");
         assert_eq!(info.url, "https://cdn/v.mp4");
+    }
+
+    #[test]
+    fn submit_returns_task_id_or_message_on_error() {
+        assert_eq!(
+            parse_submit_response(br#"{"code":10000,"data":{"task_id":"jm_77"}}"#).unwrap(),
+            "jm_77"
+        );
+        assert_eq!(
+            parse_submit_response(br#"{"code":50500,"message":"quota exhausted"}"#).unwrap_err(),
+            "quota exhausted"
+        );
     }
 
     #[test]

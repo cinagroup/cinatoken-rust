@@ -563,6 +563,13 @@ fn string_value(value: Option<&serde_json::Value>) -> &str {
         .unwrap_or("")
 }
 
+fn query_string_value(req: &Request, key: &str) -> Option<String> {
+    let url = req.url().ok()?;
+    url.query_pairs()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.trim().to_string())
+}
+
 fn metadata_field_is_present(metadata: Option<&serde_json::Value>, field: &str) -> bool {
     let Some(value) = metadata.and_then(|value| value.get(field)) else {
         return false;
@@ -572,6 +579,31 @@ fn metadata_field_is_present(metadata: Option<&serde_json::Value>, field: &str) 
         serde_json::Value::String(value) => !value.trim().is_empty(),
         _ => true,
     }
+}
+
+fn official_task_submit_body_from_model_field(
+    body_bytes: &[u8],
+    model_field: &str,
+    fallback_model_field: Option<&str>,
+) -> Result<(TaskSubmitReq, Vec<u8>), String> {
+    let original: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(body_bytes).map_err(|err| format!("invalid request: {err}"))?;
+    let original_value = serde_json::Value::Object(original.clone());
+    let model = string_value(
+        original
+            .get(model_field)
+            .or_else(|| fallback_model_field.and_then(|field| original.get(field))),
+    );
+    let prompt = string_value(original.get("prompt"));
+    let unified = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "metadata": original_value,
+    });
+    let unified_body = serde_json::to_vec(&unified).map_err(|err| err.to_string())?;
+    let task_req: TaskSubmitReq =
+        serde_json::from_value(unified).map_err(|err| format!("invalid request: {err}"))?;
+    Ok((task_req, unified_body))
 }
 
 fn kling_submit_action(task_req: &TaskSubmitReq) -> &'static str {
@@ -585,28 +617,40 @@ fn kling_submit_action(task_req: &TaskSubmitReq) -> &'static str {
     }
 }
 
+fn jimeng_submit_action(task_req: &TaskSubmitReq) -> &'static str {
+    if metadata_field_is_present(task_req.metadata.as_ref(), "image") {
+        TASK_ACTION_GENERATE
+    } else {
+        TASK_ACTION_TEXT_GENERATE
+    }
+}
+
 fn default_task_submit_action(provider: VideoProvider, task_req: &TaskSubmitReq) -> &'static str {
     match provider {
         VideoProvider::Kling => kling_submit_action(task_req),
+        VideoProvider::Jimeng => jimeng_submit_action(task_req),
         _ => TASK_ACTION_GENERATE,
     }
 }
 
 fn kling_official_task_submit_body(body_bytes: &[u8]) -> Result<(TaskSubmitReq, Vec<u8>), String> {
-    let original: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_slice(body_bytes).map_err(|err| format!("invalid request: {err}"))?;
-    let original_value = serde_json::Value::Object(original.clone());
-    let model = string_value(original.get("model_name").or_else(|| original.get("model")));
-    let prompt = string_value(original.get("prompt"));
-    let unified = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "metadata": original_value,
-    });
-    let unified_body = serde_json::to_vec(&unified).map_err(|err| err.to_string())?;
-    let task_req: TaskSubmitReq =
-        serde_json::from_value(unified).map_err(|err| format!("invalid request: {err}"))?;
-    Ok((task_req, unified_body))
+    official_task_submit_body_from_model_field(body_bytes, "model_name", Some("model"))
+}
+
+fn jimeng_official_task_submit_body(body_bytes: &[u8]) -> Result<(TaskSubmitReq, Vec<u8>), String> {
+    official_task_submit_body_from_model_field(body_bytes, "req_key", None)
+        .map_err(|_| "Invalid request body".to_string())
+}
+
+fn jimeng_official_fetch_task_id(body_bytes: &[u8]) -> Result<String, String> {
+    let body: serde_json::Value =
+        serde_json::from_slice(body_bytes).map_err(|_| "Invalid request body".to_string())?;
+    let task_id = string_value(body.get("task_id")).to_string();
+    if task_id.is_empty() {
+        Err("task_id is required for CVSync2AsyncGetResult".to_string())
+    } else {
+        Ok(task_id)
+    }
 }
 
 /// HTTP entry for a video task submit — the route handler that produces the
@@ -759,6 +803,48 @@ pub async fn handle_kling_video_submit(
         Ok(converted) => converted,
         Err(err) => return crate::json_with_status(&serde_json::json!({"error": err}), 400),
     };
+    handle_parsed_task_submit_with_response(
+        &req,
+        env,
+        now,
+        VideoSubmitResponse::OpenAiVideo,
+        task_req,
+        unified_body,
+        Some(action),
+    )
+    .await
+}
+
+/// `POST /jimeng/?Action=CVSync2Async*`: Jimeng official API route. Source Go
+/// rewrites submit requests into the unified task shape and rewrites
+/// `CVSync2AsyncGetResult` into a by-id task fetch.
+pub async fn handle_jimeng_official(
+    mut req: Request,
+    env: Env,
+    now: i64,
+) -> worker::Result<Response> {
+    let action = query_string_value(&req, "Action").unwrap_or_default();
+    if action.is_empty() {
+        return crate::json_with_status(
+            &serde_json::json!({"error": "Action query parameter is required"}),
+            400,
+        );
+    }
+
+    let body_bytes = req.bytes().await?;
+    if action == "CVSync2AsyncGetResult" {
+        let task_id = match jimeng_official_fetch_task_id(&body_bytes) {
+            Ok(task_id) => task_id,
+            Err(err) => return crate::json_with_status(&serde_json::json!({"error": err}), 400),
+        };
+        return handle_task_fetch_by_id(req, env, Some(&task_id)).await;
+    }
+
+    let (task_req, unified_body) = match jimeng_official_task_submit_body(&body_bytes) {
+        Ok(converted) => converted,
+        Err(err) => return crate::json_with_status(&serde_json::json!({"error": err}), 400),
+    };
+    let action = jimeng_submit_action(&task_req);
     handle_parsed_task_submit_with_response(
         &req,
         env,
@@ -2628,6 +2714,75 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(kling_submit_action(&image_tail_req), TASK_ACTION_GENERATE);
+    }
+
+    #[test]
+    fn jimeng_official_body_wraps_req_key_prompt_and_metadata() {
+        let (task_req, unified_body) = jimeng_official_task_submit_body(
+            br#"{
+                "req_key": "jimeng_vgfm_t2v_l20",
+                "prompt": "a city timelapse",
+                "binary_data_base64": ["QUJD"],
+                "duration": 10
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(task_req.model, "jimeng_vgfm_t2v_l20");
+        assert_eq!(task_req.prompt, "a city timelapse");
+        let metadata = task_req.metadata.as_ref().unwrap();
+        assert_eq!(metadata["binary_data_base64"], serde_json::json!(["QUJD"]));
+        assert_eq!(metadata["duration"], 10);
+
+        let unified: serde_json::Value = serde_json::from_slice(&unified_body).unwrap();
+        assert_eq!(unified["model"], "jimeng_vgfm_t2v_l20");
+        assert_eq!(unified["prompt"], "a city timelapse");
+        assert_eq!(unified["metadata"]["req_key"], "jimeng_vgfm_t2v_l20");
+
+        assert_eq!(
+            jimeng_official_task_submit_body(b"not json").unwrap_err(),
+            "Invalid request body"
+        );
+    }
+
+    #[test]
+    fn jimeng_official_fetch_task_id_requires_task_id() {
+        assert_eq!(
+            jimeng_official_fetch_task_id(br#"{"task_id":"task_abc"}"#).unwrap(),
+            "task_abc"
+        );
+        assert_eq!(
+            jimeng_official_fetch_task_id(br#"{"task_id":" "}"#).unwrap_err(),
+            "task_id is required for CVSync2AsyncGetResult"
+        );
+        assert_eq!(
+            jimeng_official_fetch_task_id(b"not json").unwrap_err(),
+            "Invalid request body"
+        );
+    }
+
+    #[test]
+    fn jimeng_submit_action_matches_go_image_field_rule() {
+        let text_req = TaskSubmitReq {
+            metadata: Some(serde_json::json!({"prompt": "text only"})),
+            ..Default::default()
+        };
+        assert_eq!(jimeng_submit_action(&text_req), TASK_ACTION_TEXT_GENERATE);
+
+        let image_req = TaskSubmitReq {
+            metadata: Some(serde_json::json!({"image": "https://img.example/seed.png"})),
+            ..Default::default()
+        };
+        assert_eq!(jimeng_submit_action(&image_req), TASK_ACTION_GENERATE);
+
+        let empty_image_req = TaskSubmitReq {
+            metadata: Some(serde_json::json!({"image": ""})),
+            ..Default::default()
+        };
+        assert_eq!(
+            jimeng_submit_action(&empty_image_req),
+            TASK_ACTION_TEXT_GENERATE
+        );
     }
 
     #[test]

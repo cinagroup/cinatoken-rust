@@ -3578,3 +3578,57 @@ Remaining boundary: this is official-route ownership, not full provider replay
 or artifact ownership. Live Kling text/image submit replay, stored task status
 conversion replay, async settlement evidence, Jimeng official route ownership,
 and Queue/R2 artifact retention remain G7 gates.
+
+### 22.46 2026-07-05 Jimeng Official Video Route Aliases
+
+This increment ports the Go `router/video-router.go` Jimeng official route
+surface into the Worker task orchestration path. Source Go mounts `/jimeng`
+with `middleware.JimengRequestConvert()`, token auth, channel distribution, and
+the shared task relay. The converter requires a non-empty `Action` query
+parameter, wraps official submit bodies into the unified video-generation
+shape, and maps `CVSync2AsyncGetResult` bodies containing `task_id` to the
+task fetch path.
+
+Implemented in Rust:
+
+- Added Worker-owned `POST /jimeng/` and `POST /jimeng` route aliases.
+- Added Go-compatible `Action` handling: missing/empty `Action` returns a
+  client error, `CVSync2AsyncGetResult` reads body `task_id` and reuses the
+  existing owner-scoped TaskDto fetch path, while other non-empty actions use
+  the submit path.
+- Added a Jimeng official-body converter that maps `req_key` and `prompt` into
+  the unified task request while preserving the original official body under
+  `metadata`.
+- Matched the Go image rule for submit action selection: a missing or empty
+  `image` field uses `textGenerate`; a non-empty `image` field uses
+  `generate`.
+- Ported the Jimeng submit-response parser so provider `code == 10000` returns
+  `data.task_id`, while non-success responses surface the upstream message
+  instead of falling through to the unported-provider path.
+- Marked `/jimeng` and `/jimeng/` as Worker router paths in the static-asset
+  split so official Jimeng aliases are never served by the frontend fallback.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-tasks jimeng --lib`: 9 passed, covering Jimeng
+  request signing, status parsing, and the newly ported submit parser;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::jimeng_`:
+  3 passed, covering official body conversion, fetch body validation, and
+  Go-compatible image/action selection;
+- `cargo test -p cinatoken-worker --lib tests::static_asset_path_routes_api_paths_to_router`:
+  passed, covering `/jimeng` and `/jimeng/` router ownership;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 24
+  passed;
+- `cargo test -p cinatoken-worker --lib`: 377 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit reported 214 frontend Worker-facing
+  routes, 304 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Remaining boundary: this is official-route ownership, not full provider replay
+or artifact ownership. Live Jimeng text/image submit/fetch replay, stored task
+status conversion replay, async settlement evidence, and Queue/R2 artifact
+retention remain G7 gates.

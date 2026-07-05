@@ -83,10 +83,8 @@ impl VideoProvider {
             VideoProvider::Doubao => doubao::parse_submit_response(body),
             VideoProvider::Kling => kling::parse_submit_response(body),
             VideoProvider::Ali => ali::parse_submit_response(body),
-            VideoProvider::Jimeng
-            | VideoProvider::Vertex
-            | VideoProvider::Gemini
-            | VideoProvider::Hailuo => {
+            VideoProvider::Jimeng => jimeng::parse_submit_response(body),
+            VideoProvider::Vertex | VideoProvider::Gemini | VideoProvider::Hailuo => {
                 Err("submit response parser not yet ported for this provider".to_string())
             }
         }
@@ -156,8 +154,15 @@ mod tests {
                 .unwrap(),
             "ali-1"
         );
+        // Jimeng extracts `data.task_id` from the 10000 success envelope.
+        assert_eq!(
+            VideoProvider::Jimeng
+                .parse_submit_response(br#"{"code":10000,"data":{"task_id":"jm-1"}}"#)
+                .unwrap(),
+            "jm-1"
+        );
         // Unported providers error.
-        assert!(VideoProvider::Jimeng
+        assert!(VideoProvider::Vertex
             .parse_submit_response(br#"{}"#)
             .is_err());
     }

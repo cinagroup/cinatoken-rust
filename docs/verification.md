@@ -4,6 +4,28 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `cargo fmt --all`: passed after adding the Jimeng official video route
+  aliases.
+- `cargo test -p cinatoken-tasks jimeng --lib`: 9 passed after porting the
+  Jimeng submit-response parser.
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::jimeng_`:
+  3 passed after adding official Jimeng body conversion, fetch-body
+  validation, and image/action-selection coverage.
+- `cargo test -p cinatoken-worker --lib tests::static_asset_path_routes_api_paths_to_router`:
+  passed after routing `/jimeng` and `/jimeng/` to the Worker router.
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 24
+  passed after adding the Jimeng official video route aliases.
+- `cargo test -p cinatoken-worker --lib`: 377 passed after adding the Jimeng
+  official video route aliases.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the Jimeng aliases; the only warnings were the pre-existing
+  `dead_code` warnings in `d1_repositories.rs`.
+- `bun run check`: passed after adding the Jimeng aliases, covering frontend
+  type/build, route-debt baseline, `cargo fmt --all --check`, Rust workspace
+  tests excluding the Worker, and Worker wasm check. The route audit reported
+  214 frontend Worker-facing routes, 304 Worker routes, 0 missing calls,
+  categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `cargo fmt --all`: passed after adding the Kling official video route
   aliases.
 - `cargo test -p cinatoken-worker --lib task_orchestration::tests::kling_`: 2

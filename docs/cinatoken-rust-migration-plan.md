@@ -3677,3 +3677,47 @@ Remaining boundary: this is route compatibility and bounded relay ownership,
 not live embeddings upstream proof. Live legacy-engine embeddings smoke,
 provider-specific embeddings adapters, batch-size checks, and billing shadow
 evidence remain G3/G4 gates.
+
+### 22.48 2026-07-05 Frontend Bundle Redaction Audit
+
+This increment closes the first local frontend bundle-redaction evidence gap in
+the production readiness matrix. The original Go/VPS deployment serves the
+compiled React frontend from the VPS process; the Rust/Cloudflare migration
+serves static assets through Worker Static Assets, so the production gate needs
+an executable check that the shipped bundle contains only public configuration.
+
+Implemented in Rust migration tooling:
+
+- Added `tools/audit_frontend_bundle_redaction.mjs`, a Bun/Node script that
+  scans built frontend text assets in `apps/web/source/default/dist` and
+  `apps/web/dist`.
+- The scanner covers high-confidence leakage classes: PEM private keys,
+  OpenAI/Anthropic/xAI-style secret keys, Stripe secret or webhook keys,
+  GitHub/GitLab/Hugging Face/Google API tokens, literal bearer tokens, and
+  credential-bearing URLs.
+- Findings are reported with file, line, column, pattern id, and a redacted
+  match/snippet so verification logs do not echo the full candidate secret.
+- Optional absent dist roots are ignored, but at least one frontend dist root
+  must exist; this keeps the check compatible with local builds while still
+  failing if no bundle was produced.
+- Root package scripts now expose `bun run audit:web:bundle` for manual
+  inspection and `bun run check:web:bundle` for failure-on-findings mode.
+- The main `bun run check` chain now runs the bundle redaction audit after
+  frontend type/build and before the frontend route audit.
+
+Updated local evidence:
+
+- `bun run check:web:bundle`: passed, scanning 460 files / 37,280,170 bytes in
+  `apps/web/source/default/dist` and `apps/web/dist`, with 0 findings.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit, route-debt audit, `cargo fmt --all --check`, Rust workspace tests
+  excluding the Worker, and Worker wasm check. The route audit reported 214
+  frontend Worker-facing routes, 304 Worker routes, 0 missing calls,
+  categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Remaining boundary: this is local built-bundle redaction evidence, not full G5
+sign-off. CI retention, explicit allowlist documentation if benign findings are
+ever introduced, staging artifact/hash evidence, lint debt closure,
+bundle-size budget enforcement, and deployed browser smoke remain required
+before production frontend cutover.

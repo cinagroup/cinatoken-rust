@@ -4,6 +4,17 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `bun run check:web:bundle`: passed after adding the frontend bundle
+  redaction audit. It scanned 460 built frontend text assets
+  (37,280,170 bytes) across `apps/web/source/default/dist` and
+  `apps/web/dist`, with 0 findings.
+- `bun run check`: passed after wiring the frontend bundle redaction audit
+  into the main verification chain, covering frontend type/build, bundle
+  redaction audit, route-debt baseline, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The route audit
+  reported 214 frontend Worker-facing routes, 304 Worker routes, 0 missing
+  calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `cargo fmt --all`: passed after adding the legacy engines embeddings alias.
 - `cargo test -p cinatoken-worker --lib json_model_fallback`: passed after
   adding the `/v1/engines/:model/embeddings` path-model fallback.

@@ -365,8 +365,8 @@ Route readiness:
 | `POST /v1/rerank` | Jina/Cohere JSON implemented | Additional providers, live Jina/Cohere smoke | G3/G4 |
 | `POST /v1/images/generations` | JSON + SSE implemented | Provider smoke, large response policy | G3/G4 |
 | `POST /v1/audio/speech` | JSON passthrough implemented | Binary/audio live smoke, response audit policy | G3 |
-| `POST /v1/audio/transcriptions` | Blocked | Multipart body mode and upstream forwarding | G3 |
-| `POST /v1/audio/translations` | Blocked | Multipart body mode and upstream forwarding | G3 |
+| `POST /v1/audio/transcriptions` | Partial: multipart forwarding implemented | Live upstream smoke, WAV/non-WAV duration parity, billing shadow evidence | G3/G4 |
+| `POST /v1/audio/translations` | Partial: multipart forwarding implemented | Live upstream smoke, WAV/non-WAV duration parity, billing shadow evidence | G3/G4 |
 | `POST /v1/messages` | Anthropic JSON + SSE implemented | Live Anthropic smoke, billing shadow | G3/G4 |
 | Gemini generate/stream/embed/count | Implemented | Live Gemini smoke, model/path parity | G3/G4 |
 | Admin APIs | Planned | Route matrix, auth, audit, frontend smoke | G5 |

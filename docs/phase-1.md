@@ -404,12 +404,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`
   parity, especially exact tokenizer counts plus image dimension and audio
   duration media counts.
-- Extend the explicit request-body mode foundation with multipart/raw/stream
-  modes before adding `/v1/audio/transcriptions` and
-  `/v1/audio/translations`; the current JSON relay path must not buffer
-  unbounded file uploads. Mode metadata, shared content-type policy, and
-  bounded byte reading are in place; the next step is raw/multipart extraction
-  and upstream forwarding.
+- Continue hardening explicit request-body modes after the first multipart
+  upload routes. `/v1/audio/transcriptions`, `/v1/audio/translations`, and
+  `/v1/images/edits` now forward bounded multipart bodies; the next steps are
+  non-WAV audio duration parity (or Container offload), raw/pass-through stream
+  extraction where needed, live upstream smoke, and billing shadow evidence.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

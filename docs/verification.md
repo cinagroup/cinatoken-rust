@@ -908,6 +908,18 @@ baseline above.
   frontend calls, 282 Worker routes, and 6 remaining auth-deferred gaps with
   SHA-256 `8bcefa9b62aaa9473541032cc28e21d6e31e9711db66b6f5706b3976c736b457`.
 
+- **Multipart upload binary parser and WAV estimate - locally verified
+  (2026-07-05).** `cinatoken_relay::multipart` now scans bodies as bytes rather
+  than requiring the entire upload to be valid UTF-8, so binary audio/image
+  parts do not prevent `model` extraction. Worker multipart audio preflight
+  derives Go-compatible prompt-token estimates from WAV duration for
+  `/v1/audio/transcriptions` and `/v1/audio/translations`, while preserving
+  byte-for-byte upstream multipart forwarding for audio uploads and
+  `/v1/images/edits`. Local evidence so far:
+  `cargo test -p cinatoken-relay multipart` (12 passed) and
+  `cargo test -p cinatoken-worker --lib multipart_audio_wav_duration_feeds_prompt_estimate`
+  (passed).
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

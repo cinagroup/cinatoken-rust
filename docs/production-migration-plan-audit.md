@@ -113,10 +113,11 @@ Known incomplete areas:
   staging/prod sampling policy still needs to be set deliberately.
 - The `LOG_QUEUE`, `TASK_QUEUE`, `FILE_BUCKET`, `CACHE_KV`, and `CONFIG_KV`
   bindings are declared but currently unused by Worker code.
-- Worker relay now marks current relay endpoints as explicit JSON-only body
-  mode. The JSON body is read through a size-limited stream reader, but
-  multipart/raw-body endpoints remain blocked until dedicated body modes are
-  implemented.
+- Worker relay now has explicit body modes. JSON bodies are size-limited, and
+  the first multipart upload routes (`/v1/audio/transcriptions`,
+  `/v1/audio/translations`, `/v1/images/edits`) are Worker-owned with bounded
+  reads and byte-safe field extraction. Raw/pass-through upload modes,
+  non-WAV audio duration parity, and live billing evidence remain incomplete.
 - No live provider smoke, no live SSE verification, and no production D1 or
   Wrangler dev end-to-end result is recorded.
 - Source database row counts/hashes for a real deployment have not been

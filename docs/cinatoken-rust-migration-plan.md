@@ -3112,3 +3112,40 @@ selector behavior, but it is not a substitute for staging distribution evidence.
 G3 still needs live or replayed proof for weighted channel spread, auto-group
 retry, affinity preference/recovery, provider-family filters, and retry/auto-ban
 interactions.
+
+### 22.35 2026-07-05 Multipart Upload Binary Parser And WAV Estimate Delta
+
+This increment tightens the multipart upload relay paths that replace Go's
+Gin multipart parsing for OpenAI-compatible uploads. The previous Rust parser
+could only extract text fields when the entire multipart body was valid UTF-8,
+which is not true for real audio/image binaries. A binary `file` part could
+therefore hide the `model` field from the relay and fail routing/auth/billing
+before the upstream request.
+
+Implemented in Rust:
+
+- `cinatoken_relay::multipart` now scans multipart bodies at the byte level and
+  parses only each part's ASCII headers, so binary file bytes no longer block
+  extraction of text fields such as `model`.
+- Added `extract_multipart_file`/`MultipartFile` for first-file extraction
+  without decoding or copying the uploaded bytes.
+- Multipart `Content-Type` validation now uses the shared exact media-type
+  policy instead of a substring check.
+- Worker audio transcription/translation preflight now derives extra
+  Go-compatible prompt-token estimates from PCM WAV duration:
+  `round(ceil(duration_seconds) / 60 * 1000)`.
+- `/v1/audio/transcriptions`, `/v1/audio/translations`, and `/v1/images/edits`
+  remain byte-for-byte upstream multipart forwards; the Worker does not rewrite
+  the upload body.
+
+Updated local evidence:
+
+- `cargo test -p cinatoken-relay multipart`: 12 passed;
+- `cargo test -p cinatoken-worker --lib multipart_audio_wav_duration_feeds_prompt_estimate`:
+  passed.
+
+Remaining boundary: this is not full STT production billing parity. MP3, FLAC,
+M4A/MP4, OGG/Opus, AIFF, WebM, and AAC duration parsing still need a
+header-parser, size-estimate, or Container offload decision; live upstream
+smoke and billing shadow/reconciliation evidence are still required before
+audio upload routes own production paid traffic.

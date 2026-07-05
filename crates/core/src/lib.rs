@@ -36,7 +36,7 @@ pub use relay_policy::{
     error_body_triggers_auto_disable, should_disable_channel, should_retry,
     AUTOMATIC_DISABLE_KEYWORDS,
 };
-pub use request_tokens::openai_chat_format_overhead;
+pub use request_tokens::{audio_transcription_tokens, openai_chat_format_overhead};
 pub use response::ApiEnvelope;
 pub use status::{RuntimeFeature, StatusResponse};
 pub use tiktoken::{

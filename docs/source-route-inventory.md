@@ -65,10 +65,10 @@ Global middleware on this surface: `CORS`, `DecompressRequestMiddleware`,
 | POST | `/v1/responses/compact` | Token | `Relay(OpenAIResponsesCompaction)` | |
 | POST | `/v1/edits` | Token | `Relay(OpenAIImage)` | Legacy edits -> image format. |
 | POST | `/v1/images/generations` | Token | `Relay(OpenAIImage)` | |
-| POST | `/v1/images/edits` | Token | `Relay(OpenAIImage)` | **Multipart**; blocked until multipart mode. |
+| POST | `/v1/images/edits` | Token | `Relay(OpenAIImage)` | **Multipart** implemented; live upstream/billing evidence pending. |
 | POST | `/v1/embeddings` | Token | `Relay(Embedding)` | |
-| POST | `/v1/audio/transcriptions` | Token | `Relay(OpenAIAudio)` | **Multipart**; blocked. |
-| POST | `/v1/audio/translations` | Token | `Relay(OpenAIAudio)` | **Multipart**; blocked. |
+| POST | `/v1/audio/transcriptions` | Token | `Relay(OpenAIAudio)` | **Multipart** implemented; byte-safe model extraction and WAV duration preflight estimate; live upstream/billing evidence pending. |
+| POST | `/v1/audio/translations` | Token | `Relay(OpenAIAudio)` | **Multipart** implemented; byte-safe model extraction and WAV duration preflight estimate; live upstream/billing evidence pending. |
 | POST | `/v1/audio/speech` | Token | `Relay(OpenAIAudio)` | Binary response. |
 | POST | `/v1/rerank` | Token | `Relay(Rerank)` | Jina/Cohere. |
 | POST | `/v1/engines/:model/embeddings` | Token | `Relay(Gemini)` | Legacy engines alias -> Gemini format. |

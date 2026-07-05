@@ -7,9 +7,10 @@ use cinatoken_billing::{
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{
-    auto_group_retry_step, format_matching_model_name, image_dimensions, image_tokens,
-    image_tokens_needs_dimensions, is_openai_text_model, openai_chat_format_overhead,
-    select_weighted, ApiError, ApiResult, Candidate, ErrorBody, MediaTokenFlags,
+    audio_transcription_tokens, auto_group_retry_step, format_matching_model_name,
+    image_dimensions, image_tokens, image_tokens_needs_dimensions, is_openai_text_model,
+    openai_chat_format_overhead, select_weighted, wav_duration_seconds, ApiError, ApiResult,
+    Candidate, ErrorBody, MediaTokenFlags,
 };
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
@@ -123,7 +124,7 @@ impl RelayRequestBodyMode {
 
     fn pending_feature(self) -> Option<String> {
         match self {
-            Self::Json => None,
+            Self::Json | Self::MultipartForm => None,
             _ => Some(format!("{} relay request body mode", self.body_kind())),
         }
     }
@@ -941,6 +942,7 @@ async fn relay_endpoint_with_auth(
         };
     let request_body = prepared_request.body;
     let billing_request_input = prepared_request.billing_request_input;
+    let extra_prompt_tokens = prepared_request.extra_prompt_tokens;
 
     // Multipart/raw bodies do not support streaming or model-mapping rewrites;
     // they are forwarded verbatim. JSON bodies go through the full pipeline.
@@ -1112,6 +1114,7 @@ async fn relay_endpoint_with_auth(
         json_body.as_ref().unwrap_or(&Value::Null),
         &billing_request_input,
         endpoint.uses_openai_chat_format(),
+        extra_prompt_tokens,
     )
     .await
     {
@@ -1395,6 +1398,7 @@ async fn relay_endpoint_with_auth(
                     )
                 })
                 .unwrap_or(0)
+                .saturating_add(extra_prompt_tokens)
         });
     let audit = RelayAuditContext {
         started_at,
@@ -1804,6 +1808,7 @@ impl RelayRequestBody {
 struct PreparedRelayRequest {
     body: RelayRequestBody,
     billing_request_input: RequestInput,
+    extra_prompt_tokens: i64,
 }
 
 async fn prepare_relay_request(
@@ -1863,6 +1868,7 @@ async fn prepare_json_relay_request(
     Ok(Ok(PreparedRelayRequest {
         billing_request_input: billing_request_input(req, &request_body),
         body: RelayRequestBody::Json(request_body),
+        extra_prompt_tokens: 0,
     }))
 }
 
@@ -1874,25 +1880,41 @@ async fn prepare_multipart_relay_request(
     req: &mut Request,
     endpoint: &RelayEndpoint,
 ) -> worker::Result<Result<PreparedRelayRequest, Response>> {
-    let content_type = req
-        .headers()
-        .get("content-type")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if !content_type
-        .to_ascii_lowercase()
-        .contains("multipart/form-data")
+    if let Err(err) =
+        validate_request_content_type(req, endpoint.request_body_mode.content_type_policy())
     {
         let response = json_with_status(
-            &ErrorBody::bad_request(format!(
-                "{} expects multipart/form-data",
-                endpoint.display_name
+            &ErrorBody::bad_request(err.message(
+                endpoint.display_name,
+                endpoint.request_body_mode.body_kind(),
             )),
-            415,
+            err.status_code(),
         )?;
         return Ok(Err(response));
     }
+    let content_type = match request_content_type(req) {
+        Ok(Some(content_type)) => content_type,
+        Ok(None) => {
+            let response = json_with_status(
+                &ErrorBody::bad_request(format!(
+                    "{} expects multipart/form-data",
+                    endpoint.display_name
+                )),
+                415,
+            )?;
+            return Ok(Err(response));
+        }
+        Err(err) => {
+            let response = json_with_status(
+                &ErrorBody::bad_request(err.message(
+                    endpoint.display_name,
+                    endpoint.request_body_mode.body_kind(),
+                )),
+                err.status_code(),
+            )?;
+            return Ok(Err(response));
+        }
+    };
 
     let bytes = match read_bounded_relay_request_bytes(req, MULTIPART_BODY_LIMIT_BYTES).await {
         Ok(bytes) => bytes,
@@ -1917,6 +1939,7 @@ async fn prepare_multipart_relay_request(
         Some(model) => json!({ "model": model }),
         None => Value::Object(serde_json::Map::new()),
     };
+    let extra_prompt_tokens = multipart_extra_prompt_tokens(endpoint, &bytes, &content_type);
 
     Ok(Ok(PreparedRelayRequest {
         billing_request_input: billing_request_input(req, &synthetic_body),
@@ -1924,11 +1947,30 @@ async fn prepare_multipart_relay_request(
             bytes,
             content_type,
         },
+        extra_prompt_tokens,
     }))
 }
 
 fn endpoint_multipart_model(bytes: &[u8], content_type: &str) -> Option<String> {
     cinatoken_relay::extract_multipart_field(bytes, content_type, "model")
+}
+
+fn multipart_extra_prompt_tokens(
+    endpoint: &RelayEndpoint,
+    bytes: &[u8],
+    content_type: &str,
+) -> i64 {
+    if !matches!(
+        endpoint.upstream_path.as_str(),
+        "audio/transcriptions" | "audio/translations"
+    ) {
+        return 0;
+    }
+
+    cinatoken_relay::extract_multipart_file(bytes, content_type, "file")
+        .and_then(|file| wav_duration_seconds(file.bytes))
+        .map(audio_transcription_tokens)
+        .unwrap_or_default()
 }
 
 pub(crate) fn relay_rate_limit_configured(env: &Env) -> bool {
@@ -4226,6 +4268,7 @@ async fn prepare_tiered_billing_preflight(
     request_body: &Value,
     request: &RequestInput,
     is_openai_chat: bool,
+    extra_prompt_tokens: i64,
 ) -> worker::Result<Option<TieredBillingPreflight>> {
     let Some(expr) = crate::d1_repositories::tiered_billing_expr_for_model(db, model).await? else {
         return Ok(None);
@@ -4238,6 +4281,7 @@ async fn prepare_tiered_billing_preflight(
         request_body,
         request.clone(),
         is_openai_chat,
+        extra_prompt_tokens,
     )
     .map(Some)
     .map_err(worker::Error::RustError)
@@ -4250,9 +4294,16 @@ fn tiered_billing_preflight_snapshot(
     request_body: &Value,
     request: RequestInput,
     is_openai_chat: bool,
+    extra_prompt_tokens: i64,
 ) -> Result<TieredBillingPreflight, String> {
     let used_vars = detect_billing_expr_variables(expr);
-    let params = token_params_from_request(model, request_body, used_vars, is_openai_chat);
+    let params = token_params_from_request(
+        model,
+        request_body,
+        used_vars,
+        is_openai_chat,
+        extra_prompt_tokens,
+    );
     let snapshot =
         estimate_tiered_billing_snapshot_with_request(model, expr, params, group_ratio, request)
             .map_err(|err| format!("failed to estimate tiered billing: {err}"))?;
@@ -4668,8 +4719,12 @@ fn token_params_from_request(
     body: &Value,
     used_vars: BillingExprVariables,
     is_openai_chat: bool,
+    extra_prompt_tokens: i64,
 ) -> TokenParams {
-    let estimate = request_token_estimate_from_body_for_model(model, body, is_openai_chat);
+    let mut estimate = request_token_estimate_from_body_for_model(model, body, is_openai_chat);
+    estimate.text_prompt_tokens = estimate
+        .text_prompt_tokens
+        .saturating_add(extra_prompt_tokens.max(0));
     build_tiered_token_params(
         TieredTokenUsage {
             prompt_tokens: estimate.prompt_tokens(),
@@ -5731,6 +5786,43 @@ mod tests {
         }
     }
 
+    fn wav_header(channels: u16, sample_rate: u32, bits: u16, data_size: u32) -> Vec<u8> {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&[0, 0, 0, 0]);
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        let byte_rate = sample_rate * channels as u32 * (bits as u32 / 8);
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        let block_align = channels * (bits / 8);
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&bits.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        wav
+    }
+
+    fn multipart_audio_body(boundary: &str, model: &str, file_bytes: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"model\"\r\n\r\n");
+        body.extend_from_slice(model.as_bytes());
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: audio/wav\r\n\r\n");
+        body.extend_from_slice(file_bytes);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        body
+    }
+
     #[test]
     fn streaming_supported_endpoint_relays_requested_stream() {
         let endpoint = endpoint(true, None);
@@ -5816,12 +5908,12 @@ mod tests {
     }
 
     #[test]
-    fn inactive_request_body_modes_are_marked_pending() {
+    fn unsupported_request_body_modes_are_marked_pending() {
         assert_eq!(
             RelayRequestBodyMode::MultipartForm
                 .pending_feature()
                 .as_deref(),
-            Some("multipart relay request body mode")
+            None
         );
         assert_eq!(
             RelayRequestBodyMode::RawBytes.pending_feature().as_deref(),
@@ -5833,6 +5925,38 @@ mod tests {
                 .as_deref(),
             Some("pass-through stream relay request body mode")
         );
+    }
+
+    #[test]
+    fn multipart_audio_wav_duration_feeds_prompt_estimate() {
+        let mut endpoint = endpoint(false, None);
+        endpoint.upstream_path = "audio/transcriptions".to_string();
+        endpoint.request_body_mode = RelayRequestBodyMode::MultipartForm;
+        let boundary = "audio-boundary";
+        // 30 seconds, mono 16 kHz 16-bit: 16000 * 2 * 30 bytes.
+        let wav = wav_header(1, 16_000, 16, 960_000);
+        let body = multipart_audio_body(boundary, "whisper-1", &wav);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        assert_eq!(
+            endpoint_multipart_model(&body, &content_type),
+            Some("whisper-1".to_string())
+        );
+        assert_eq!(
+            multipart_extra_prompt_tokens(&endpoint, &body, &content_type),
+            500
+        );
+
+        let params = token_params_from_request(
+            "whisper-1",
+            &json!({"model": "whisper-1"}),
+            BillingExprVariables::default(),
+            false,
+            500,
+        );
+        assert_eq!(params.p, 500.0);
+        assert_eq!(params.len, 500.0);
+        assert_eq!(params.ai, 0.0);
     }
 
     #[test]
@@ -6654,6 +6778,7 @@ mod tests {
             &json!({}),
             RequestInput::default(),
             true,
+            0,
         )
         .unwrap()
         .snapshot;
@@ -6825,7 +6950,7 @@ mod tests {
         );
 
         let params =
-            token_params_from_request("gpt-4o", &body, BillingExprVariables::default(), true);
+            token_params_from_request("gpt-4o", &body, BillingExprVariables::default(), true, 0);
         assert_eq!(params.p, estimate.prompt_tokens() as f64);
         assert_eq!(params.len, estimate.prompt_tokens() as f64);
         assert_eq!(params.img, non_stream_image as f64);
@@ -6840,6 +6965,7 @@ mod tests {
                 ..BillingExprVariables::default()
             },
             true,
+            0,
         );
         assert_eq!(
             detail_params.p,
@@ -7207,6 +7333,7 @@ mod tests {
             &request_body,
             request.clone(),
             true,
+            0,
         )
         .unwrap();
         let usage = UsageSummary {
@@ -7255,6 +7382,7 @@ mod tests {
             &request_body,
             request,
             true,
+            0,
         )
         .unwrap();
 
@@ -7290,6 +7418,7 @@ mod tests {
                 ..BillingExprVariables::default()
             },
             true,
+            0,
         );
         assert_eq!(params.p, estimated_text_prompt);
         assert_eq!(params.len, estimated_prompt);
@@ -7316,6 +7445,7 @@ mod tests {
             &request_body,
             request.clone(),
             true,
+            0,
         )
         .unwrap();
         let outcome = tiered_billing_settlement(
@@ -7381,6 +7511,7 @@ mod tests {
             &request_body,
             request.clone(),
             true,
+            0,
         )
         .unwrap();
         let outcome = tiered_billing_settlement(
@@ -7428,6 +7559,7 @@ mod tests {
             &request_body,
             RequestInput::from_json_body(request_body.clone()),
             true,
+            0,
         )
         .unwrap();
 

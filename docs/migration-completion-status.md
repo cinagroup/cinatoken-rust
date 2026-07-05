@@ -28,6 +28,10 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   limits, audit logging, reserve/settle/refund and tiered billing expressions.
   Relay weighted channel selection now uses Worker CSPRNG-backed bounded draws
   while preserving the deterministic Go-compatible selector core.
+- Multipart upload relay is now Worker-owned for `/v1/audio/transcriptions`,
+  `/v1/audio/translations`, and `/v1/images/edits`, with byte-safe model-field
+  extraction from binary bodies and WAV duration-derived preflight estimates
+  for audio transcription/translation.
 - Session-backed playground chat relay at `POST /pg/chat/completions`, using a
   synthetic zero-id token context that preserves user quota, group checks, rate
   limits, streaming, and audit logging without mutating the `tokens` table.
@@ -89,7 +93,9 @@ A full diff of every Go-registered route against the Rust worker closed these
 
 ## Incomplete Product Families
 
-- Multipart image/audio relay.
+- Multipart image/audio relay is no longer entirely absent, but production
+  parity still needs non-WAV audio duration strategy, live upstream smoke,
+  image-edit fixture coverage, and billing shadow/reconciliation evidence.
 - OpenAI Realtime WebSocket.
 - Subscription core, redemption, and check-in still need production/staging
   evidence for the full visible workflows, but their core Worker routes are no

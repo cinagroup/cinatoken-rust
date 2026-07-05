@@ -5,11 +5,13 @@ Last checked: 2026-07-05
 ## Passed
 
 - `bun run check:web:lint-debt`: passed after adding the executable frontend
-  lint-debt no-regression baseline. It reports 92 ESLint errors, 3 warnings,
-  69 files with findings, and 0 regressions against
-  `tools/frontend_lint_debt_baseline.json`; the first paydown batch hoisted
-  the usage-log user-info `InfoItem` component and reduced
-  `react-hooks/static-components` from 9 errors to 0.
+  lint-debt no-regression baseline. It reports 89 ESLint errors, 3 warnings,
+  68 files with findings, and 0 regressions against
+  `tools/frontend_lint_debt_baseline.json`; the paydown batches hoisted the
+  usage-log user-info `InfoItem` component, reduced
+  `react-hooks/static-components` from 9 errors to 0, and refactored the
+  Ollama models dialog fetch/close effects to remove 3 more React Hooks /
+  React Compiler errors.
 - `bun run format:check` in `apps/web/source/default`: passed after removing
   one stale `react-hooks/set-state-in-effect` disable comment from the imported
   frontend source.
@@ -36,7 +38,7 @@ Last checked: 2026-07-05
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:bundle`: passed after adding the frontend bundle
   redaction audit. It scanned 460 built frontend text assets
-  (37,280,170 bytes) across `apps/web/source/default/dist` and
+  (37,280,201 bytes) across `apps/web/source/default/dist` and
   `apps/web/dist`, with 0 findings.
 - `bun run check`: passed after wiring the frontend bundle redaction audit
   into the main verification chain, covering frontend type/build, bundle
@@ -1173,7 +1175,7 @@ bun run check
 ## Still Pending
 
 - `bun run check:web:quality` remains red because strict ESLint still reports
-  92 errors and 3 warnings in the imported frontend source. The rules have not
+  89 errors and 3 warnings in the imported frontend source. The rules have not
   been weakened; `bun run check:web:lint-debt` now enforces a no-regression
   baseline while the debt is paid down in batches. `bun run format:check`
   passes.

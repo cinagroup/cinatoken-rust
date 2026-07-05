@@ -3832,3 +3832,44 @@ Remaining boundary: strict lint is still not green. The next high-value
 paydown batches should target `react-hooks/set-state-in-effect` and
 `react-hooks/refs` in small UI-owned slices, lowering the baseline after each
 verified batch.
+
+### 22.52 2026-07-05 Frontend Ollama Dialog Lint Paydown
+
+This increment continues turning G5 frontend lint cleanup into verified,
+incremental migration progress. The target was the default frontend Ollama
+models management dialog because it had a compact cluster of React Hooks /
+React Compiler diagnostics in one operator-owned surface.
+
+Implemented in the imported React frontend:
+
+- Moved the `fetchOllamaModels` callback before the effect that schedules it,
+  removing the stale "accessed before declared" diagnostic without weakening
+  lint rules.
+- Replaced the open-triggered synchronous effect call with a microtask
+  scheduled fetch guarded by effect cleanup, so the dialog still fetches models
+  when opened but avoids a synchronous state update cascade from the effect
+  body.
+- Centralized close cleanup for local model list, selection, search, pull name,
+  pull progress, and abort controller state in the dialog close path.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 92 errors / 3 warnings
+  / 69 files to 89 errors / 3 warnings / 68 files. The rule-family deltas are:
+  `react-hooks/set-state-in-effect` 64 -> 63,
+  `react-hooks/immutability` 6 -> 5, and
+  `react-hooks/preserve-manual-memoization` 2 -> 1.
+
+Updated local evidence:
+
+- File-scoped ESLint for
+  `apps/web/source/default/src/features/channels/components/dialogs/ollama-models-dialog.tsx`:
+  passed with no findings.
+- `bun run audit:web:lint-debt`: passed with 89 errors, 3 warnings, 68 files
+  with findings, and 0 regressions.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,280,201 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green, and this does not replace
+deployed browser smoke for the Ollama admin flow. Continue with small
+React-owned batches and lower the baseline only after each batch is verified.

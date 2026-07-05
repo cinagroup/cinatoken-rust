@@ -1,11 +1,11 @@
 {
   "frontend_dir": "apps/web/source/default",
   "totals": {
-    "errors": 92,
+    "errors": 89,
     "warnings": 3,
     "fixable_errors": 0,
     "fixable_warnings": 0,
-    "files_with_findings": 69
+    "files_with_findings": 68
   },
   "by_rule": {
     "@tanstack/query/exhaustive-deps": {
@@ -17,11 +17,11 @@
       "warnings": 2
     },
     "react-hooks/immutability": {
-      "errors": 6,
+      "errors": 5,
       "warnings": 0
     },
     "react-hooks/preserve-manual-memoization": {
-      "errors": 2,
+      "errors": 1,
       "warnings": 0
     },
     "react-hooks/purity": {
@@ -33,7 +33,7 @@
       "warnings": 0
     },
     "react-hooks/set-state-in-effect": {
-      "errors": 64,
+      "errors": 63,
       "warnings": 0
     },
     "react-hooks/use-memo": {
@@ -46,7 +46,7 @@
     }
   },
   "notes": [
-    "Baseline lowered after hoisting the user-info dialog InfoItem component on 2026-07-05.",
+    "Baseline lowered after hoisting the user-info dialog InfoItem component and refactoring the Ollama models dialog fetch/close effects on 2026-07-05.",
     "This is a no-regression gate for imported frontend lint debt; reduce the numbers as rule families are fixed."
   ]
 }

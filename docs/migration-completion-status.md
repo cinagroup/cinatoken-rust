@@ -78,6 +78,11 @@ A full diff of every Go-registered route against the Rust worker closed these
   aliases (`/v1/engines/:model/embeddings`, which Go relays in Gemini format —
   a wrong-format OpenAI relay would be worse than an honest 501).
 
+- Superseding update: `/v1/engines/:model/embeddings` is now Worker-owned
+  through the bounded embeddings relay with Go-compatible path-model fallback
+  when body `model` is missing or blank. Files / fine-tunes / image-variations /
+  model-delete remain structured 501 compatibility surfaces.
+
 ## In Progress
 
 - Frontend staging deployment and browser/API contract smoke.

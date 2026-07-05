@@ -4,6 +4,23 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `cargo fmt --all`: passed after adding the legacy engines embeddings alias.
+- `cargo test -p cinatoken-worker --lib json_model_fallback`: passed after
+  adding the `/v1/engines/:model/embeddings` path-model fallback.
+- `cargo test -p cinatoken-worker --lib static_asset_path_routes_api_paths_to_router`:
+  passed after routing `/v1/engines/text-embedding-3-small/embeddings` to the
+  Worker router.
+- `cargo test -p cinatoken-worker --lib`: 378 passed after adding the legacy
+  engines embeddings alias.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the legacy engines embeddings alias; the only warnings were the
+  pre-existing `dead_code` warnings in `d1_repositories.rs`.
+- `bun run check`: passed after adding the legacy engines embeddings alias,
+  covering frontend type/build, route-debt baseline, `cargo fmt --all --check`,
+  Rust workspace tests excluding the Worker, and Worker wasm check. The route
+  audit reported 214 frontend Worker-facing routes, 304 Worker routes, 0
+  missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `cargo fmt --all`: passed after adding the Jimeng official video route
   aliases.
 - `cargo test -p cinatoken-tasks jimeng --lib`: 9 passed after porting the

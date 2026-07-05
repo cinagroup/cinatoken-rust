@@ -475,6 +475,7 @@ pub async fn playground_chat_completions(
             request_validator: None,
         },
         None,
+        None,
         RelayAuthMode::PlaygroundSession,
     )
     .await
@@ -501,6 +502,46 @@ pub async fn embeddings(req: Request, env: Env, context: Context) -> worker::Res
             request_validator: None,
         },
         None,
+    )
+    .await
+}
+
+pub async fn engine_embeddings(
+    req: Request,
+    env: Env,
+    context: Context,
+    model: Option<String>,
+) -> worker::Result<Response> {
+    let Some(model) = model
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+    else {
+        return json_with_status(
+            &ErrorBody::bad_request("engine embeddings path must include a non-empty model"),
+            400,
+        );
+    };
+    relay_endpoint_with_json_model_fallback(
+        req,
+        env,
+        Some(context),
+        RelayEndpoint {
+            display_name: "engine embeddings",
+            cache_family: "openai_compatible",
+            upstream_path: "embeddings".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        },
+        Some(model.clone()),
+        Some(model),
     )
     .await
 }
@@ -893,12 +934,24 @@ async fn relay_endpoint(
     endpoint: RelayEndpoint,
     model_override: Option<String>,
 ) -> worker::Result<Response> {
+    relay_endpoint_with_json_model_fallback(req, env, context, endpoint, model_override, None).await
+}
+
+async fn relay_endpoint_with_json_model_fallback(
+    req: Request,
+    env: Env,
+    context: Option<Context>,
+    endpoint: RelayEndpoint,
+    model_override: Option<String>,
+    json_model_fallback: Option<String>,
+) -> worker::Result<Response> {
     relay_endpoint_with_auth(
         req,
         env,
         context,
         endpoint,
         model_override,
+        json_model_fallback,
         RelayAuthMode::ApiKey,
     )
     .await
@@ -910,6 +963,7 @@ async fn relay_endpoint_with_auth(
     context: Option<Context>,
     mut endpoint: RelayEndpoint,
     model_override: Option<String>,
+    json_model_fallback: Option<String>,
     auth_mode: RelayAuthMode,
 ) -> worker::Result<Response> {
     let started_at = unix_timestamp();
@@ -935,11 +989,17 @@ async fn relay_endpoint_with_auth(
             );
         }
     };
-    let prepared_request =
-        match prepare_relay_request(&mut req, &endpoint, json_body_config).await? {
-            Ok(prepared_request) => prepared_request,
-            Err(response) => return Ok(response),
-        };
+    let prepared_request = match prepare_relay_request(
+        &mut req,
+        &endpoint,
+        json_body_config,
+        json_model_fallback.as_deref(),
+    )
+    .await?
+    {
+        Ok(prepared_request) => prepared_request,
+        Err(response) => return Ok(response),
+    };
     let request_body = prepared_request.body;
     let billing_request_input = prepared_request.billing_request_input;
     let extra_prompt_tokens = prepared_request.extra_prompt_tokens;
@@ -1815,10 +1875,17 @@ async fn prepare_relay_request(
     req: &mut Request,
     endpoint: &RelayEndpoint,
     json_body_config: RelayJsonBodyConfig,
+    json_model_fallback: Option<&str>,
 ) -> worker::Result<Result<PreparedRelayRequest, Response>> {
     match endpoint.request_body_mode {
         RelayRequestBodyMode::Json => {
-            prepare_json_relay_request(req, endpoint, json_body_config.max_bytes).await
+            prepare_json_relay_request(
+                req,
+                endpoint,
+                json_body_config.max_bytes,
+                json_model_fallback,
+            )
+            .await
         }
         RelayRequestBodyMode::MultipartForm => prepare_multipart_relay_request(req, endpoint).await,
         mode => {
@@ -1838,6 +1905,7 @@ async fn prepare_json_relay_request(
     req: &mut Request,
     endpoint: &RelayEndpoint,
     max_bytes: usize,
+    json_model_fallback: Option<&str>,
 ) -> worker::Result<Result<PreparedRelayRequest, Response>> {
     debug_assert!(endpoint.expects_json_request_body());
 
@@ -1858,6 +1926,10 @@ async fn prepare_json_relay_request(
             return Ok(Err(response));
         }
     };
+    let mut request_body = request_body;
+    if let Some(model) = json_model_fallback {
+        apply_json_model_fallback(&mut request_body, model);
+    }
     if let Some(validate) = endpoint.request_validator {
         if let Some(message) = validate(&request_body) {
             let response = json_with_status(&ErrorBody::bad_request(message), 400)?;
@@ -1870,6 +1942,25 @@ async fn prepare_json_relay_request(
         body: RelayRequestBody::Json(request_body),
         extra_prompt_tokens: 0,
     }))
+}
+
+fn apply_json_model_fallback(body: &mut Value, model: &str) {
+    let model = model.trim();
+    if model.is_empty() {
+        return;
+    }
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let needs_fallback = object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty();
+    if needs_fallback {
+        object.insert("model".to_string(), Value::String(model.to_string()));
+    }
 }
 
 /// Multipart body size limit. Audio files (mp3/wav) and images can be
@@ -6709,6 +6800,25 @@ mod tests {
             config.max_bytes_for(&endpoint),
             GEMINI_JSON_RESPONSE_LIMIT_BYTES
         );
+    }
+
+    #[test]
+    fn json_model_fallback_only_fills_missing_legacy_engine_model() {
+        let mut missing = json!({"input": "hello"});
+        apply_json_model_fallback(&mut missing, " text-embedding-3-small ");
+        assert_eq!(missing["model"], "text-embedding-3-small");
+
+        let mut empty = json!({"model": " ", "input": "hello"});
+        apply_json_model_fallback(&mut empty, "text-embedding-3-small");
+        assert_eq!(empty["model"], "text-embedding-3-small");
+
+        let mut explicit = json!({"model": "body-model", "input": "hello"});
+        apply_json_model_fallback(&mut explicit, "path-model");
+        assert_eq!(explicit["model"], "body-model");
+
+        let mut non_object = json!(["not", "an", "object"]);
+        apply_json_model_fallback(&mut non_object, "path-model");
+        assert_eq!(non_object, json!(["not", "an", "object"]));
     }
 
     #[test]

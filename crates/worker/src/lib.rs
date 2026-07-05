@@ -1162,12 +1162,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let event_ctx = ctx.data;
             relay::edits(req, env, event_ctx).await
         })
-        // Go relays these two in GEMINI format (PaLM-era legacy aliases on
-        // /v1). The Rust Gemini-native relay covers the canonical /v1beta
-        // surface; the legacy aliases answer a structured 501 rather than a
-        // wrong-format relay.
-        .post("/v1/engines/:model/embeddings", |_, _| {
-            relay::relay_not_implemented()
+        // Go's PaLM-era legacy engines alias falls back to the `:model` path
+        // param when the JSON body omits `model`, then uses embeddings relay
+        // mode. Keep it on the same bounded JSON relay as `/v1/embeddings`.
+        .post_async("/v1/engines/:model/embeddings", |req, ctx| async move {
+            let model = ctx.param("model").cloned();
+            let env = ctx.env;
+            let event_ctx = ctx.data;
+            relay::engine_embeddings(req, env, event_ctx, model).await
         })
         // Go RelayNotImplemented surface: structured 501s instead of 404s.
         .post("/v1/images/variations", |_, _| {
@@ -1601,6 +1603,7 @@ mod tests {
             "/v1/responses",
             "/v1/messages",
             "/v1/embeddings",
+            "/v1/engines/text-embedding-3-small/embeddings",
             "/v1/rerank",
             "/v1/images/generations",
             "/v1/audio/speech",

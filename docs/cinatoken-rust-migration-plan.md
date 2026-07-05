@@ -3632,3 +3632,48 @@ Remaining boundary: this is official-route ownership, not full provider replay
 or artifact ownership. Live Jimeng text/image submit/fetch replay, stored task
 status conversion replay, async settlement evidence, and Queue/R2 artifact
 retention remain G7 gates.
+
+### 22.47 2026-07-05 Legacy Engines Embeddings Alias
+
+This increment closes the Go route parity gap for
+`POST /v1/engines/:model/embeddings`. Source Go registers the route in
+`router/relay-router.go`; even though the route is mounted with the legacy
+Gemini relay format, `Path2RelayMode` and distributor model extraction both
+treat paths ending in `embeddings` as embeddings mode and fall back to
+`c.Param("model")` when the JSON body omits `model`.
+
+Implemented in Rust:
+
+- Replaced the previous structured 501 placeholder for
+  `/v1/engines/:model/embeddings` with a Worker-owned bounded JSON relay path.
+- Reused the existing `/v1/embeddings` OpenAI-compatible relay core, response
+  limits, auth, channel selection, model mapping, usage parsing, audit logging,
+  and billing flow instead of adding a second embeddings pipeline.
+- Added a narrow JSON body fallback that injects the path `:model` only when
+  the request body has a missing or blank `model`, preserving explicit body
+  models.
+- Kept the alias on `upstream_path = "embeddings"` so upstream URL generation,
+  embeddings response limits, and request transforms stay identical to
+  `/v1/embeddings`.
+- Added static-asset routing coverage for
+  `/v1/engines/text-embedding-3-small/embeddings`.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib json_model_fallback`: passed,
+  covering path-model fallback insertion and non-overwrite behavior;
+- `cargo test -p cinatoken-worker --lib static_asset_path_routes_api_paths_to_router`:
+  passed, covering the legacy engines alias router ownership.
+- `cargo test -p cinatoken-worker --lib`: 378 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit reported 214 frontend Worker-facing
+  routes, 304 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Remaining boundary: this is route compatibility and bounded relay ownership,
+not live embeddings upstream proof. Live legacy-engine embeddings smoke,
+provider-specific embeddings adapters, batch-size checks, and billing shadow
+evidence remain G3/G4 gates.

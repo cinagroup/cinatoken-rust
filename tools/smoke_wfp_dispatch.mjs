@@ -4,7 +4,10 @@ import { readFile } from "node:fs/promises";
 
 const defaultWorker = "tenant-smoke";
 const defaultTimeoutMs = 10_000;
+const defaultExpectedRuntime = "rust-wasm";
 const statusTenantPath = "/__cinatoken/tenant/status";
+const supportedRuntimes = new Set(["rust-wasm", "js-fallback"]);
+const runtimeExpectations = new Set(["rust-wasm", "js-fallback", "any"]);
 const supportedRoutes = new Set([
   "/v1/chat/completions",
   "/v1/responses",
@@ -37,8 +40,8 @@ async function smoke(options) {
     );
   }
   const statusBody = await readJsonResponse(statusResponse, "WFP dispatch status");
-  validateStatusBody(statusBody);
-  validateDispatchHeaders(statusResponse.headers, options.worker);
+  validateStatusBody(statusBody, options.expectRuntime);
+  validateDispatchHeaders(statusResponse.headers, options.worker, options.expectRuntime);
 
   let routeResult = null;
   if (plan.routeUrl) {
@@ -58,7 +61,7 @@ async function smoke(options) {
         `WFP dispatch route smoke failed: ${routeResponse.status} ${routeResponse.statusText}: ${preview}`,
       );
     }
-    validateDispatchHeaders(routeResponse.headers, options.worker);
+    validateDispatchHeaders(routeResponse.headers, options.worker, options.expectRuntime);
     routeResult = {
       route: options.route,
       url: redactUrl(plan.routeUrl),
@@ -76,6 +79,7 @@ async function smoke(options) {
     worker: options.worker,
     statusUrl: redactUrl(plan.statusUrl),
     adminCookieConfigured: Boolean(options.adminCookie),
+    expectRuntime: options.expectRuntime,
     status: summarizeTenantStatus(statusBody),
     dispatchHeaders: dispatchHeaders(statusResponse.headers),
     route: routeResult,
@@ -96,13 +100,14 @@ function buildPlan(options) {
     method: options.route ? "GET status, then POST route" : "GET status only",
     bodyBytes: options.route ? new TextEncoder().encode(options.bodyText).byteLength : 0,
     adminCookieConfigured: Boolean(options.adminCookie),
+    expectRuntime: options.expectRuntime,
     allowNon2xx: options.allowNon2xx,
     timeoutMs: options.timeoutMs,
     notes: [
       "worker is the public tenant name in /api/platform/dispatch/:worker; WFP_DISPATCH_WORKER_PREFIX is applied by the main Worker.",
       "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
       "the dispatch Worker strips platform/admin credentials before invoking the tenant Worker; live status smoke fails if tenant status reports sensitive inbound headers.",
-      "status smoke validates the dispatch binding, internal path rewrite, tenant status contract, and x-cinatoken WFP headers.",
+      "status smoke validates the dispatch binding, internal path rewrite, expected tenant runtime, tenant status contract, and x-cinatoken WFP headers.",
       "route smoke is opt-in and may call the tenant AI Gateway route; use staging credentials and a low-risk payload.",
     ],
   };
@@ -145,6 +150,9 @@ async function normalizeOptions(args) {
     route: normalizedRoute,
     bodyText,
     adminCookie: optionalHeaderValue(value("cookie", "WFP_SMOKE_COOKIE"), "cookie"),
+    expectRuntime: validateRuntimeExpectation(
+      value("expect-runtime", "WFP_SMOKE_EXPECT_RUNTIME") || defaultExpectedRuntime,
+    ),
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaultTimeoutMs,
     allowNon2xx: args.flags.has("allow-non-2xx"),
     dryRun: args.flags.has("dry-run"),
@@ -182,6 +190,7 @@ function usage(exitCode, error) {
       "  --body <json>         Optional JSON body for --route; otherwise a low-token default body is used",
       "  --body-file <path>    Optional JSON body file for --route",
       "  --cookie <header>     or WFP_SMOKE_COOKIE, admin session Cookie header required for live internal dispatch smoke",
+      "  --expect-runtime <runtime>  rust-wasm, js-fallback, or any; default rust-wasm",
       "  --timeout-ms <ms>     or WFP_SMOKE_TIMEOUT_MS, default 10000",
       "  --allow-non-2xx       Record POST route responses even if the AI Gateway/provider rejects the payload",
       "  --dry-run             Resolve URLs without network",
@@ -256,15 +265,18 @@ async function boundedText(response, maxBytes) {
   return `${text.slice(0, maxBytes)}...<truncated>`;
 }
 
-function validateStatusBody(body) {
+function validateStatusBody(body, expectRuntime) {
   if (!body || typeof body !== "object") {
     throw new Error("tenant status response must be a JSON object");
   }
   if (body.forwarding !== "cloudflare-ai-gateway-rest") {
     throw new Error("tenant status did not report Cloudflare AI Gateway forwarding");
   }
-  if (!["rust-wasm", "js-fallback"].includes(body.runtime)) {
+  if (!supportedRuntimes.has(body.runtime)) {
     throw new Error(`tenant status reported unexpected runtime: ${body.runtime}`);
+  }
+  if (expectRuntime !== "any" && body.runtime !== expectRuntime) {
+    throw new Error(`tenant status runtime ${body.runtime} did not match expected ${expectRuntime}`);
   }
   if (!Array.isArray(body.routes) || !body.routes.includes(statusTenantPath)) {
     throw new Error("tenant status route manifest is missing the status path");
@@ -284,14 +296,25 @@ function validateStatusBody(body) {
   }
 }
 
-function validateDispatchHeaders(headers, worker) {
+function validateDispatchHeaders(headers, worker, expectRuntime) {
   const route = headers.get("x-cinatoken-wfp-route");
   const headerWorker = headers.get("x-cinatoken-wfp-worker");
+  const runtime = headers.get("x-cinatoken-wfp-runtime");
+  const tenant = headers.get("x-cinatoken-wfp-tenant");
   if (route !== "internal-path") {
     throw new Error(`unexpected x-cinatoken-wfp-route: ${route}`);
   }
   if (headerWorker !== worker) {
     throw new Error(`unexpected x-cinatoken-wfp-worker: ${headerWorker}`);
+  }
+  if (!tenant) {
+    throw new Error("missing x-cinatoken-wfp-tenant response header");
+  }
+  if (!supportedRuntimes.has(runtime)) {
+    throw new Error(`unexpected x-cinatoken-wfp-runtime: ${runtime}`);
+  }
+  if (expectRuntime !== "any" && runtime !== expectRuntime) {
+    throw new Error(`x-cinatoken-wfp-runtime ${runtime} did not match expected ${expectRuntime}`);
   }
 }
 
@@ -377,6 +400,14 @@ function validateRoute(value) {
   return normalized;
 }
 
+function validateRuntimeExpectation(value) {
+  const runtime = validatePlainValue(value, "expect-runtime").toLowerCase();
+  if (!runtimeExpectations.has(runtime)) {
+    throw new Error("expect-runtime must be rust-wasm, js-fallback, or any");
+  }
+  return runtime;
+}
+
 function validatePlainValue(value, name) {
   const trimmed = required(value, name);
   if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
@@ -425,6 +456,7 @@ function printResult(result, options) {
       ...(result.route ? [`route: ${typeof result.route === "string" ? result.route : result.route.route}`] : []),
       ...(result.bodyBytes ? [`body_bytes: ${result.bodyBytes}`] : []),
       ...(Object.hasOwn(result, "adminCookieConfigured") ? [`admin_cookie_configured: ${result.adminCookieConfigured}`] : []),
+      ...(result.expectRuntime ? [`expect_runtime: ${result.expectRuntime}`] : []),
       ...(result.status ? [`tenant_status: ${JSON.stringify(result.status)}`] : []),
       ...(result.dispatchHeaders ? [`dispatch_headers: ${JSON.stringify(result.dispatchHeaders)}`] : []),
       ...(result.route && typeof result.route === "object"

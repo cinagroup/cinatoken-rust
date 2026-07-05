@@ -5113,3 +5113,54 @@ Remaining migration gaps:
 - Keep `/v1/realtime` production-disabled until upstream bridge,
   backpressure/error mapping, preconsume/final settlement, audit logging, and
   live protocol replay are complete.
+
+### 22.78 2026-07-05 WFP Rust Runtime Smoke Gate
+
+This increment tightens the cinaVibeSDK-style dispatch Worker -> WFP tenant
+Worker evidence path around the preferred Rust/Wasm tenant runtime. The prior
+smoke accepted either the generated JS fallback or the Rust artifact, which was
+useful during bring-up but too weak for the migration target: production WFP
+traffic should prove that `crates/wfp-tenant` is the tenant script under test,
+while JS fallback evidence remains a separately named recovery path.
+
+Implemented:
+
+- Added `x-cinatoken-wfp-tenant` and `x-cinatoken-wfp-runtime: rust-wasm` to
+  the Rust/Wasm tenant status response.
+- Added the same tenant/runtime status headers to the generated JS fallback,
+  with `x-cinatoken-wfp-runtime: js-fallback`.
+- Upgraded `tools/smoke_wfp_dispatch.mjs` with
+  `--expect-runtime rust-wasm|js-fallback|any`; the default is now
+  `rust-wasm`.
+- Live WFP dispatch smoke now validates both:
+  - tenant status body `runtime`;
+  - response header `x-cinatoken-wfp-runtime`.
+- Kept fallback validation available, but it must be explicit with
+  `--expect-runtime js-fallback` or `--expect-runtime any`.
+- Updated staging smoke, Cloudflare config, production readiness, and
+  verification docs so Rust/Wasm runtime evidence is the default WFP gate.
+
+Validation:
+
+- `bun tools/smoke_wfp_dispatch.mjs --help` passed and documents
+  `--expect-runtime`.
+- `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --worker tenant-smoke` passed and reports
+  `expectRuntime: "rust-wasm"`.
+- `cargo test -p cinatoken-wfp-tenant` passed (8 tests).
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed (7 tests; 394
+  filtered), including generated fallback status/header coverage.
+- `bun run check` passed, including frontend build/redaction/budget/route
+  gates, WFP deploy-plan/dispatch/realtime smoke plans, workspace tests, and
+  Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run live staging WFP dispatch smoke after a real Rust/Wasm artifact is
+  uploaded to the dispatch namespace and verify both body/runtime headers show
+  `rust-wasm`.
+- Run the generated JS fallback smoke separately with
+  `--expect-runtime js-fallback` only when fallback behavior is intentionally
+  being tested.
+- Capture at least one route POST smoke with real route-specific AI Gateway IDs
+  and confirm tenant metadata lands in the intended Gateway.

@@ -145,6 +145,7 @@ async fn route(req: Request, env: Env) -> WorkerResult<Response> {
 }
 
 fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
+    let tenant_id = tenant_id(env);
     let default_ai_gateway_id_configured = runtime_value(env, AI_GATEWAY_ID_ENV).is_some();
     let route_gateways = route_gateway_statuses(env);
     let ai_gateway_id_configured = default_ai_gateway_id_configured
@@ -155,8 +156,7 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
     let status = TenantStatus {
         service: SERVICE_NAME,
         runtime: "rust-wasm",
-        tenant_id: runtime_value(env, "CINATOKEN_TENANT_ID")
-            .unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
+        tenant_id,
         ai_gateway_id_configured,
         default_ai_gateway_id_configured,
         route_gateways,
@@ -166,7 +166,14 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTE_PATHS,
     };
-    json_response(&status, 200)
+    let mut response = json_response(&status, 200)?;
+    response
+        .headers_mut()
+        .set("x-cinatoken-wfp-tenant", &status.tenant_id)?;
+    response
+        .headers_mut()
+        .set("x-cinatoken-wfp-runtime", "rust-wasm")?;
+    Ok(response)
 }
 
 async fn forward_ai_gateway(req: Request, env: Env, route: TenantRoute) -> WorkerResult<Response> {

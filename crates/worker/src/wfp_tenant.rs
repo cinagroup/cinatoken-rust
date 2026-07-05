@@ -607,6 +607,11 @@ export default {
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTES
+      }, {
+        headers: {
+          "x-cinatoken-wfp-tenant": env.CINATOKEN_TENANT_ID || "unknown",
+          "x-cinatoken-wfp-runtime": "js-fallback"
+        }
       });
     }
 
@@ -944,6 +949,7 @@ mod tests {
         assert!(script.contains("inboundSensitiveHeaderNames(request.headers)"));
         assert!(script.contains("SENSITIVE_INBOUND_HEADERS"));
         assert!(script.contains("x-cinatoken-wfp-runtime"));
+        assert!(script.contains("\"x-cinatoken-wfp-runtime\": \"js-fallback\""));
         assert!(script.contains("safeResponseHeaders(upstream.headers)"));
         assert!(script.contains("SAFE_RESPONSE_HEADERS"));
         assert!(!script.contains("new Headers(upstream.headers)"));

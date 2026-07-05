@@ -164,15 +164,19 @@ without sending an AI request:
 ```powershell
 $env:WFP_SMOKE_URL = $env:STAGING_BASE_URL
 $env:WFP_SMOKE_COOKIE = "session=<redacted admin session cookie>"
-bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --cookie $env:WFP_SMOKE_COOKIE --json
+bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --cookie $env:WFP_SMOKE_COOKIE --expect-runtime rust-wasm --json
 ```
 
 If the tenant has staging `CF_ACCOUNT_ID`, `CF_API_TOKEN`, and AI Gateway ID
 bindings, run one explicit AI route smoke with a low-risk payload:
 
 ```powershell
-bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --route /v1/responses --body '{"model":"gpt-4o-mini","input":"wfp dispatch smoke","max_output_tokens":1}' --cookie $env:WFP_SMOKE_COOKIE --json
+bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --route /v1/responses --body '{"model":"gpt-4o-mini","input":"wfp dispatch smoke","max_output_tokens":1}' --cookie $env:WFP_SMOKE_COOKIE --expect-runtime rust-wasm --json
 ```
+
+If the generated JS fallback is being tested deliberately, rerun the same smoke
+with `--expect-runtime js-fallback` and record it separately from the
+Rust/Wasm artifact evidence.
 
 Record:
 
@@ -192,8 +196,11 @@ Pass criteria:
 - The same internal dispatch URL without an admin session fails with 401/403,
   while authenticated admin smoke reaches the tenant status route through
   `/api/platform/dispatch/:worker/...`.
-- `runtime` is `rust-wasm` for the Rust/Wasm artifact path or
-  `js-fallback` for the generated fallback path under test.
+- Default WFP dispatch smoke proves the uploaded Rust/Wasm artifact by
+  requiring `runtime: "rust-wasm"` in the tenant status body and
+  `x-cinatoken-wfp-runtime: rust-wasm` in response headers. Generated fallback
+  evidence is accepted only when the command explicitly uses
+  `--expect-runtime js-fallback`.
 - `forwarding` is `cloudflare-ai-gateway-rest`, `body_mode` is streamed, and
   every supported tenant AI route appears in the route manifest.
 - `inbound_sensitive_headers_present` is `false` and

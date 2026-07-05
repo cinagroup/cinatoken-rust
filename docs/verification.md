@@ -1267,6 +1267,25 @@ baseline above.
   byte count). Live staging still needs the same tool run against a real
   `DISPATCHER` binding and uploaded tenant script.
 
+- **WFP Rust/Wasm runtime smoke expectation - locally verified
+  (2026-07-05).** WFP dispatch smoke now defaults to
+  `--expect-runtime rust-wasm` and validates both the tenant status body and
+  `x-cinatoken-wfp-runtime` response header. The Rust/Wasm tenant status route
+  and generated JS fallback status route both emit `x-cinatoken-wfp-tenant` and
+  `x-cinatoken-wfp-runtime`, so live staging evidence can distinguish the
+  preferred Rust artifact from the generated fallback. Fallback validation must
+  now be explicit with `--expect-runtime js-fallback` or `any`. Local evidence:
+  `bun tools/smoke_wfp_dispatch.mjs --help` (passed),
+  `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --worker tenant-smoke` (passed with
+  `expectRuntime: "rust-wasm"`), `cargo test -p cinatoken-wfp-tenant` (passed;
+  8 tenant-runtime tests), and `cargo test -p cinatoken-worker --lib
+  wfp_tenant` (passed; 7 generated fallback/control-plane tests). `bun run
+  check` also passed, including frontend gates, WFP deploy-plan, WFP dispatch
+  and Realtime smoke plans, workspace tests, and Worker/WFP wasm32 checks. Live
+  staging still needs this smoke against a real Rust/Wasm artifact uploaded to
+  the dispatch namespace.
+
 - **WFP internal dispatch admin boundary - locally verified (2026-07-05).**
   The Rust dispatch Worker now requires existing admin session auth before
   forwarding `/api/platform/dispatch/:worker/...` internal-path traffic to the

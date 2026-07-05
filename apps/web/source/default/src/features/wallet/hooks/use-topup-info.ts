@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { getTopupInfo } from '../api'
 import {
   generatePresetAmounts,
@@ -166,7 +166,7 @@ export function useTopupInfo() {
   const [presetAmounts, setPresetAmounts] = useState<PresetAmount[]>([])
   const [loading, setLoading] = useState(true)
 
-  const fetchTopupInfo = async () => {
+  const fetchTopupInfo = useCallback(async () => {
     try {
       setLoading(true)
 
@@ -211,11 +211,20 @@ export function useTopupInfo() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    fetchTopupInfo()
-  }, [])
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void fetchTopupInfo()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [fetchTopupInfo])
 
   return {
     topupInfo,

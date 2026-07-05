@@ -77,6 +77,7 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
   })
 
   useEffect(() => {
+    let cancelled = false
     const { start, end } = getDefaultTimeRange()
     const baseFilters = {
       startTime: searchParams.startTime
@@ -98,7 +99,15 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
             ...(searchParams.filter ? { taskId: searchParams.filter } : {}),
           }
 
-    setFilters(next)
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setFilters(next)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [
     props.logCategory,
     searchParams.startTime,

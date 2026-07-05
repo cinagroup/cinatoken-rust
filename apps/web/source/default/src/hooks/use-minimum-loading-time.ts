@@ -31,19 +31,40 @@ export function useMinimumLoadingTime(
   const loadingStartRef = useRef(Date.now())
 
   useEffect(() => {
+    let cancelled = false
+
     if (loading) {
       loadingStartRef.current = Date.now()
-      setShowSkeleton(true)
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setShowSkeleton(true)
+        }
+      })
     } else {
       const elapsed = Date.now() - loadingStartRef.current
       const remaining = Math.max(0, minimumTime - elapsed)
 
       if (remaining === 0) {
-        setShowSkeleton(false)
+        queueMicrotask(() => {
+          if (!cancelled) {
+            setShowSkeleton(false)
+          }
+        })
       } else {
-        const timer = setTimeout(() => setShowSkeleton(false), remaining)
-        return () => clearTimeout(timer)
+        const timer = setTimeout(() => {
+          if (!cancelled) {
+            setShowSkeleton(false)
+          }
+        }, remaining)
+        return () => {
+          cancelled = true
+          clearTimeout(timer)
+        }
       }
+    }
+
+    return () => {
+      cancelled = true
     }
   }, [loading, minimumTime])
 

@@ -43,10 +43,12 @@ mod task_orchestration;
 mod mj_repository;
 mod model_meta_api;
 mod operations;
+mod platform_gateway;
 mod prefill_group_api;
 mod pricing_api;
 mod rankings_api;
 mod ratio_sync;
+mod realtime_session;
 mod turnstile;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
@@ -84,6 +86,20 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         }
     }
 
+    if let Some(target) = platform_gateway::dispatch_target_for_request(&req, &env)? {
+        let mut response = platform_gateway::dispatch_request(req, env.clone(), target).await?;
+        upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+        return Ok(response);
+    }
+
+    if realtime_session::realtime_gateway_candidate(&req.path())
+        && realtime_session::realtime_gateway_enabled(&env)
+    {
+        let mut response = realtime_session::handle_gateway(req, env.clone()).await?;
+        upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+        return Ok(response);
+    }
+
     // Admin/frontend static assets: when the ASSETS binding is configured
     // (see wrangler.toml `[assets]`), non-API paths fall through to it so the
     // React SPA's client-side routes (`/dashboard`, `/channels`, `/keys`,
@@ -104,6 +120,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let response = Router::with_data(ctx)
         .get_async("/api/status", |req, ctx| async move {
             admin::get_status(req, ctx.env).await
+        })
+        .get_async("/api/platform/capabilities", |req, ctx| async move {
+            platform_gateway::capabilities(req, ctx.env).await
         })
         .get_async("/v1/models", |req, ctx| async move {
             relay::list_models(req, ctx.env).await
@@ -1591,6 +1610,9 @@ mod tests {
         for path in [
             "/api/status",
             "/api/setup",
+            "/api/platform/capabilities",
+            "/api/platform/dispatch/tenant-a",
+            "/api/platform/realtime/session-a",
             "/api/user/login",
             "/api/user/self",
             "/api/user/checkin",

@@ -4339,3 +4339,72 @@ Remaining boundary: frontend source quality is now locally green, but G5 still
 needs deployed browser smoke, authenticated session/role/CRUD/2FA flow
 evidence, bundle performance evidence, and production/staging callback smoke
 before production sign-off.
+
+### 22.63 2026-07-05 cinaVibeSDK Cloudflare Layer Foundation
+
+This increment pivots from frontend cleanup back to the target Cloudflare
+platform shape requested for the Go/VPS -> Rust/Cloudflare migration. It uses
+`C:\cinagroup\cinavibesdk` as the architecture reference, specifically its
+Hono dispatch Worker, `DISPATCHER` Workers for Platforms binding, AI Gateway
+proxy, and Durable Object agent/session layering.
+
+Architecture findings applied here:
+
+- cinaVibeSDK routes preview/tenant traffic by domain, then calls
+  `env.DISPATCHER.get(workerName).fetch(request)` so the dispatch Worker keeps
+  the original request stream intact.
+- cinaVibeSDK keeps long-lived agent/session state in Durable Objects and uses
+  WebSocket fan-out for streaming development sessions.
+- Cloudflare's current Durable Object WebSocket guidance requires
+  `state.acceptWebSocket`/hibernation and socket attachments, because in-memory
+  object state is not preserved across idle eviction.
+- Cloudflare Workers best practices favor bindings/service bindings over REST
+  calls from the hot path, streaming request/response bodies, and explicit
+  `waitUntil` for background work.
+
+Implemented in `cinatoken-rust`:
+
+- Added `crates/worker/src/platform_gateway.rs`.
+  - `GET /api/platform/capabilities` is AdminAuth-protected and reports the
+    presence of `AI`, `AI_GATEWAY_ID`, `CHANNEL_AFFINITY`, `REALTIME_SESSIONS`,
+    `DISPATCHER`, WFP flags, and compiled DO WebSocket hibernation support.
+  - A default-off WFP dispatch path now runs before static assets. When
+    `WFP_DISPATCH_ENABLED=true`, requests can be resolved from either a preview
+    host suffix (`WFP_PREVIEW_HOST_SUFFIX`) or an explicitly enabled internal
+    path (`WFP_INTERNAL_DISPATCH_ENABLED=true`,
+    `/api/platform/dispatch/:worker/...`).
+  - The dispatch gateway forwards the original `Request` via
+    `DynamicDispatcher.fetch_request`, preserving request streaming and avoiding
+    body pre-reading. The tenant worker name is sanitized and can be prefixed
+    with `WFP_DISPATCH_WORKER_PREFIX`.
+- Added `crates/worker/src/realtime_session.rs`.
+  - `RealtimeSession` is a Durable Object class using
+    `State::accept_websocket_with_tags` and `WebSocket::serialize_attachment`
+    so idle WebSocket hibernation can restore connection metadata.
+  - The DO exposes a small status/control surface for smoke tests (`ping` ->
+    `pong`, other messages return a `bridge_not_wired` control response). It
+    deliberately does not claim `/v1/realtime` protocol parity yet.
+  - A default-off platform gateway hook can forward
+    `/api/platform/realtime/:session...` to the DO only when
+    `REALTIME_SESSION_GATEWAY_ENABLED=true`.
+- Updated `wrangler.toml`.
+  - Added default-off WFP and realtime flags.
+  - Added commented `DISPATCHER` dispatch namespace blocks so operators can
+    enable WFP only after the namespace exists.
+  - Added `REALTIME_SESSIONS` Durable Object bindings and the
+    `v2-realtime-session` SQLite migration for local, staging, and production
+    shapes.
+
+Remaining migration gaps:
+
+- WFP tenant script packaging/deployment is not yet ported. The next step is a
+  Rust-side deployment service that uploads tenant Workers into the dispatch
+  namespace through Cloudflare's dispatch namespace API, analogous to
+  cinaVibeSDK's deployer.
+- `/v1/realtime` is still not OpenAI Realtime-compatible. The next protocol
+  step is token/session authentication, upstream WebSocket connection handling,
+  backpressure/error mapping, and billing/audit accounting through
+  `RealtimeSession`.
+- AI Gateway is present for Workers AI binding calls via `AI_GATEWAY_ID`, but a
+  complete multi-provider AI Gateway policy still needs route-level controls,
+  fallback rules, and provider-specific smoke evidence.

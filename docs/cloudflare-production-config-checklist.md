@@ -77,6 +77,15 @@ Cloudflare references added 2026-07-04:
 - Smart Placement:
   <https://developers.cloudflare.com/workers/configuration/smart-placement/>
 
+Cloudflare references added 2026-07-05:
+
+- Workers for Platforms dispatch namespaces:
+  <https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/get-started/>
+- Durable Object WebSocket Hibernation:
+  <https://developers.cloudflare.com/durable-objects/best-practices/websockets/>
+- AI Gateway:
+  <https://developers.cloudflare.com/ai-gateway/>
+
 ## Current Config Snapshot
 
 Current `wrangler.toml` is development-shaped:
@@ -90,8 +99,15 @@ Current `wrangler.toml` is development-shaped:
 - `ENVIRONMENT = "development"`
 - `FRONTEND_BASE_URL = "http://localhost:3000"`
 - `AI_GATEWAY_ID = ""`
+- WFP/realtime flags default off or empty: `WFP_DISPATCH_ENABLED`,
+  `WFP_INTERNAL_DISPATCH_ENABLED`, `WFP_PREVIEW_HOST_SUFFIX`,
+  `WFP_DISPATCH_WORKER_PREFIX`, `REALTIME_SESSION_GATEWAY_ENABLED`
 - D1/KV IDs are placeholders
-- R2/Queue names are declared but Worker code does not yet use them
+- R2/Queue names are declared; relay audit logging and async task polling use
+  Queue bindings when configured
+- `CHANNEL_AFFINITY` and `REALTIME_SESSIONS` Durable Objects are declared; WFP
+  `DISPATCHER` dispatch namespace blocks remain commented until the namespace
+  exists
 
 Production decision:
 
@@ -189,7 +205,9 @@ These must be true for every deployable environment:
 | AI Gateway | Optional | Real ID or direct-provider decision | Real ID or direct-provider decision | Relay | Provider matrix decision |
 | Static assets or Pages | Optional | Required before G5 frontend smoke | Required before Scenario B/C frontend cutover | Frontend/Platform | SPA fallback, API route precedence, bundle redaction smoke |
 | Service bindings | Optional | Use for Worker-to-Worker calls if split | Same | Platform | Binding type and smoke |
-| Durable Objects | Optional | Required for hot atomic state + before realtime/session cutover | Same | Platform | Migration entry, contention smoke, WebSocket smoke |
+| `CHANNEL_AFFINITY` Durable Object | Optional | Required before channel-affinity canary | Same | Relay/Platform | Migration entry, affinity smoke, fail-open smoke |
+| `REALTIME_SESSIONS` Durable Object | Optional | Required before realtime/session cutover | Same | Platform/Relay | Migration entry, hibernation WebSocket smoke, protocol bridge smoke |
+| `DISPATCHER` WFP dispatch namespace | Optional | Required before tenant/preview WFP traffic | Required before WFP cutover | Platform | Namespace created, binding uncommented, tenant script smoke |
 | Rate Limiting binding | Optional | Required once relay rate limits move off Upstash | Required before relay canary | Platform/Security | 429 telemetry via Analytics Engine, limit smoke |
 | Workflows | Optional | Required before multi-step async cutover | Required before multi-step async cutover | Platform/Tasks | Workflow smoke and retry test |
 | Containers | Optional | Required before any WASM-incompatible/long-running fallback path | Same | Platform | Container build, Worker->Container smoke |
@@ -258,6 +276,9 @@ secret halves with `wrangler secret put --env <env> NAME`; the public halves
 is **inert** (the endpoint returns "not configured"), so partial enablement is
 safe.
 
+Platform/WFP and relay feature flags are the exception: they are plain vars,
+not secret-first settings.
+
 | Var | Kind | Feature | Notes |
 | --- | --- | --- | --- |
 | `SESSION_SECRET` | secret | Session cookie HMAC | Required for any login; rotating it forces re-auth |
@@ -283,6 +304,20 @@ billing, so it is a staging-gated cutover, not a deploy-time default.
 Enable order (per flag): deploy with it **off** → smoke the off path → flip it on
 in **staging** only → re-smoke (verify billing/usage and audit `usage_source`) →
 then arm it in production. Never flip a charge-affecting flag straight to prod.
+
+### Platform feature flags (default OFF)
+
+These flags expose platform-level traffic routing and stateful WebSocket
+surfaces. Keep them off until the matching binding exists and staging smoke is
+captured.
+
+| Flag | Effect when on | Required binding/evidence |
+| --- | --- | --- |
+| `WFP_DISPATCH_ENABLED` | Enables the Rust dispatch Worker pre-router for tenant/preview traffic | `DISPATCHER` dispatch namespace, route smoke |
+| `WFP_PREVIEW_HOST_SUFFIX` | Maps `{tenant}.{suffix}` hostnames to dispatch namespace worker names | DNS/route review, tenant-name validation |
+| `WFP_INTERNAL_DISPATCH_ENABLED` | Enables `/api/platform/dispatch/:worker/...` as an internal dispatch test path | Operator smoke plan; keep off in production unless explicitly needed |
+| `WFP_DISPATCH_WORKER_PREFIX` | Prefixes sanitized tenant names before `DISPATCHER.get()` | Naming convention and collision review |
+| `REALTIME_SESSION_GATEWAY_ENABLED` | Enables `/api/platform/realtime/:session...` -> `REALTIME_SESSIONS` DO forwarding | `REALTIME_SESSIONS` binding and WebSocket hibernation smoke; not a `/v1/realtime` cutover by itself |
 
 ### Migration prerequisite
 

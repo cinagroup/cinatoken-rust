@@ -4,6 +4,15 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `bun run check`: passed after adding the cinaVibeSDK-inspired Cloudflare
+  platform foundation (default-off WFP dispatch gateway, AdminAuth platform
+  capabilities endpoint, and `RealtimeSession` Durable Object hibernation
+  skeleton). The run covered frontend type/build, bundle redaction audit,
+  bundle budget audit, zero-debt lint baseline, route-debt baseline,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit reported 214 frontend Worker-facing
+  routes, 305 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:quality`: passed after closing the imported React strict
   lint debt to zero without weakening the lint rules. The final cleanup moved
   model mutation drawer initialization out of synchronous effect state writes,
@@ -1157,6 +1166,21 @@ baseline above.
   ported. Local evidence: `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib` (356 passed), and
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` (passed).
+
+- **Cloudflare WFP dispatch and RealtimeSession DO foundation - locally
+  verified (2026-07-05).** The Worker now has an AdminAuth
+  `/api/platform/capabilities` probe, a default-off WFP dispatch pre-router
+  using the `DISPATCHER` dynamic dispatcher binding, default-off preview-host
+  and internal dispatch selectors, a `REALTIME_SESSIONS` Durable Object binding
+  and migration, and a `RealtimeSession` DO that accepts hibernatable
+  WebSockets with serialized socket attachments. `/v1/realtime` remains
+  protocol-unwired and G7-gated. Local evidence:
+  `cargo test -p cinatoken-worker --lib platform_gateway` (3 passed),
+  `cargo test -p cinatoken-worker --lib realtime_session` (2 passed),
+  `cargo test -p cinatoken-worker --lib` (383 passed),
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` (passed),
+  `git diff --check` (passed), and `bun run check` (passed; route audit
+  214 frontend calls / 305 Worker routes / 0 missing calls).
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`

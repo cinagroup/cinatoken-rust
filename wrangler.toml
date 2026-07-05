@@ -50,6 +50,18 @@ binding = "AI"
 ENVIRONMENT = "development"
 FRONTEND_BASE_URL = "http://localhost:3000"
 AI_GATEWAY_ID = ""
+WFP_DISPATCH_ENABLED = "false"
+WFP_INTERNAL_DISPATCH_ENABLED = "false"
+WFP_PREVIEW_HOST_SUFFIX = ""
+WFP_DISPATCH_WORKER_PREFIX = ""
+REALTIME_SESSION_GATEWAY_ENABLED = "false"
+
+# Workers for Platforms dispatch namespace. Create the namespace first, then
+# uncomment in the environment that should accept tenant/preview traffic:
+#   wrangler dispatch-namespace create cinatoken-rust-tenants
+# [[dispatch_namespaces]]
+# binding = "DISPATCHER"
+# namespace = "cinatoken-rust-tenants"
 
 [[d1_databases]]
 binding = "DB"
@@ -96,9 +108,17 @@ dead_letter_queue = "cinatoken-rust-log-events-dlq"
 name = "CHANNEL_AFFINITY"
 class_name = "ChannelAffinity"
 
+[[durable_objects.bindings]]
+name = "REALTIME_SESSIONS"
+class_name = "RealtimeSession"
+
 [[migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
+
+[[migrations]]
+tag = "v2-realtime-session"
+new_sqlite_classes = ["RealtimeSession"]
 
 # ---------------------------------------------------------------------------
 # Staging environment.
@@ -123,6 +143,15 @@ binding = "AI"
 ENVIRONMENT = "staging"
 FRONTEND_BASE_URL = ""
 AI_GATEWAY_ID = ""
+WFP_DISPATCH_ENABLED = "false"
+WFP_INTERNAL_DISPATCH_ENABLED = "false"
+WFP_PREVIEW_HOST_SUFFIX = ""
+WFP_DISPATCH_WORKER_PREFIX = ""
+REALTIME_SESSION_GATEWAY_ENABLED = "false"
+
+# [[env.staging.dispatch_namespaces]]
+# binding = "DISPATCHER"
+# namespace = "cinatoken-rust-tenants-staging"
 
 [env.staging.observability]
 enabled = true
@@ -173,9 +202,17 @@ dead_letter_queue = "cinatoken-rust-log-events-dlq-staging"
 name = "CHANNEL_AFFINITY"
 class_name = "ChannelAffinity"
 
+[[env.staging.durable_objects.bindings]]
+name = "REALTIME_SESSIONS"
+class_name = "RealtimeSession"
+
 [[env.staging.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
+
+[[env.staging.migrations]]
+tag = "v2-realtime-session"
+new_sqlite_classes = ["RealtimeSession"]
 
 # ---------------------------------------------------------------------------
 # Production environment.
@@ -201,6 +238,15 @@ binding = "AI"
 ENVIRONMENT = "production"
 FRONTEND_BASE_URL = ""
 AI_GATEWAY_ID = ""
+WFP_DISPATCH_ENABLED = "false"
+WFP_INTERNAL_DISPATCH_ENABLED = "false"
+WFP_PREVIEW_HOST_SUFFIX = ""
+WFP_DISPATCH_WORKER_PREFIX = ""
+REALTIME_SESSION_GATEWAY_ENABLED = "false"
+
+# [[env.production.dispatch_namespaces]]
+# binding = "DISPATCHER"
+# namespace = "cinatoken-rust-tenants"
 
 [env.production.observability]
 enabled = true
@@ -252,6 +298,14 @@ dead_letter_queue = "cinatoken-rust-log-events-dlq"
 name = "CHANNEL_AFFINITY"
 class_name = "ChannelAffinity"
 
+[[env.production.durable_objects.bindings]]
+name = "REALTIME_SESSIONS"
+class_name = "RealtimeSession"
+
 [[env.production.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
+
+[[env.production.migrations]]
+tag = "v2-realtime-session"
+new_sqlite_classes = ["RealtimeSession"]

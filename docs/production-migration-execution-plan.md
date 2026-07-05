@@ -571,9 +571,12 @@ Required tasks:
    Workflows for durable, idempotent, replayable steps; keep Queues for
    high-volume log fan-in and Cron only for scheduled cleanup/reconciliation
    triggers.
-7. Decide whether realtime/session-heavy flows use Durable Objects (with the
-   WebSocket Hibernation API for idle connections), a Cloudflare Container
-   running the native Rust bridge, or stay on Go until later.
+7. Use Durable Objects as the first realtime/session-heavy foundation: the
+   Rust Worker now has a default-off `RealtimeSession` DO with WebSocket
+   Hibernation accepts and socket attachments. The remaining decision is the
+   `/v1/realtime` protocol bridge boundary: pure DO bridge first, or a
+   Cloudflare Container fallback for provider-specific native WebSocket edge
+   cases.
 
 Exit evidence:
 

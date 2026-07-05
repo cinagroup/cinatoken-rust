@@ -1324,6 +1324,19 @@ baseline above.
   0 missing calls). Live staging still needs hibernation/resume smoke plus the
   upstream Realtime bridge, billing settlement, and audit trail.
 
+- **RealtimeSession smoke harness - locally verified (2026-07-05).** Added
+  `tools/smoke_realtime_session.mjs` and `bun run smoke:realtime-session` to
+  make the Durable Object long-session path executable in staging. Platform
+  mode connects `/api/platform/realtime/:session`, sends `ping` and `status`,
+  validates the `realtime_session_status` metrics frame, then fetches the HTTP
+  status path and validates persisted metrics. `/v1/realtime` mode resolves the
+  OpenAI-compatible path and redacts the Realtime subprotocol API key in output.
+  Local evidence: `bun tools/smoke_realtime_session.mjs --help` (passed),
+  `bun run check:realtime-session:smoke-plan` (passed), and a v1 dry-run with
+  a synthetic API key (passed with `openai-insecure-api-key.<redacted>` in
+  output). Live staging still needs the same tool run against a real
+  `REALTIME_SESSIONS` binding.
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

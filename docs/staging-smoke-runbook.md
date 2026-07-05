@@ -219,6 +219,49 @@ Pass criteria:
 - Missing final usage causes the documented refund/fallback behavior.
 - Client disconnect handling does not double-charge.
 
+## Phase 4b: Realtime Durable Object Smoke
+
+Realtime remains G7-gated until the upstream OpenAI Realtime bridge and billing
+settlement are wired, but the Cloudflare long-session substrate must be proven
+before that bridge is enabled. Use the platform smoke path first because it
+does not require a live relay token or upstream provider credentials:
+
+```powershell
+$env:REALTIME_SMOKE_URL = $env:STAGING_BASE_URL
+bun run smoke:realtime-session -- --url $env:REALTIME_SMOKE_URL --session session-smoke --json
+```
+
+If `/v1/realtime` is explicitly enabled in staging and a low-risk relay token is
+available, also run the OpenAI-compatible entry smoke:
+
+```powershell
+$env:REALTIME_SMOKE_API_KEY = "<redacted staging token>"
+bun run smoke:realtime-session -- --mode v1 --url $env:STAGING_BASE_URL --model gpt-4o-realtime-preview --api-key $env:REALTIME_SMOKE_API_KEY --json
+```
+
+Record:
+
+- Command output with URLs and protocols redacted.
+- WebSocket `pong` response.
+- WebSocket `realtime_session_status` frame.
+- HTTP status response for the platform session path.
+- Worker log/trace link for the WebSocket accept and status request.
+
+Pass criteria:
+
+- `REALTIME_SESSIONS` binding is present and the gateway flag under test is on
+  only in staging.
+- The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
+  lifecycle metrics.
+- Metrics show at least one connect and at least two text messages without
+  storing raw message payloads, raw bearer tokens, or raw Realtime protocol
+  API keys.
+- The platform HTTP status path shows restored socket attachments and the same
+  persisted metrics surface.
+- `/v1/realtime` remains off in production until upstream bridge,
+  backpressure/error mapping, billing settlement, audit logging, and live
+  protocol replay evidence are complete.
+
 ## Phase 5: Billing Shadow Smoke
 
 Run each successful relay smoke in shadow mode when available. Use

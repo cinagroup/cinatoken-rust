@@ -4873,3 +4873,44 @@ Remaining migration gaps:
 - Wire the upstream OpenAI Realtime WebSocket bridge, backpressure/error
   mapping, preconsume/final settlement, audit log, and live protocol replay
   before enabling `/v1/realtime` for production traffic.
+
+### 22.73 2026-07-05 RealtimeSession Smoke Harness
+
+This increment turns the Realtime Durable Object lifecycle metrics from a code
+surface into an executable staging evidence path. It follows the migration
+principle that Cloudflare-only capabilities need repeatable smoke commands,
+not only unit tests, before they become canary gates.
+
+Implemented:
+
+- Added `tools/smoke_realtime_session.mjs`, a Bun-based WebSocket smoke tool.
+- The tool supports the platform DO path
+  `/api/platform/realtime/:session...` and the OpenAI-compatible
+  `/v1/realtime?model=...` entry.
+- Platform mode opens a WebSocket, sends `ping`, sends `status`, validates the
+  `realtime_session_status` metrics frame, then fetches the HTTP status path
+  and validates the same persisted metrics surface.
+- `/v1/realtime` mode uses Go/OpenAI-compatible Realtime subprotocol token
+  shape (`openai-insecure-api-key.<token>`) and redacts it in all dry-run and
+  result output.
+- Added `bun run smoke:realtime-session` for live use and
+  `bun run check:realtime-session:smoke-plan` for local dry-run validation.
+  The dry-run gate is now included in `bun run check`.
+- Updated `docs/staging-smoke-runbook.md` with a dedicated Realtime DO smoke
+  phase and pass criteria.
+
+Validation:
+
+- `bun tools/smoke_realtime_session.mjs --help` passed.
+- `bun run check:realtime-session:smoke-plan` passed and resolved the platform
+  WebSocket + HTTP status URLs without network access.
+- A v1 dry-run with a synthetic API key passed and redacted the Realtime
+  protocol token.
+
+Remaining migration gaps:
+
+- Run the smoke harness against a real staging Worker with
+  `REALTIME_SESSION_GATEWAY_ENABLED=true` and archive the WebSocket/status
+  output, logs, and traces.
+- Run `/v1/realtime` smoke only after staging has a low-risk relay token and
+  the upstream bridge/billing/audit path is ready for controlled replay.

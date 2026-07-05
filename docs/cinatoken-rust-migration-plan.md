@@ -3390,3 +3390,50 @@ video production ownership. Hailuo's authenticated file retrieval, Vertex/Gemini
 artifact delivery, `/v1/videos/:task_id/content`, Sora remix origin-task
 resolution, provider replay fixtures, and async task billing settlement evidence
 remain required before G7 video cutover.
+
+### 22.42 2026-07-05 OpenAI Video Content Proxy First Slice
+
+This increment starts closing the Go `VideoProxy` parity gap for
+`GET /v1/videos/:task_id/content` without pretending that full artifact
+ownership is complete. The Worker now owns the safe subset that can be served
+from already persisted task state.
+
+Implemented in Rust:
+
+- `/v1/videos/:task_id/content` is now an async Worker route instead of a
+  structured 501 boundary.
+- The route reuses the task-fetch token authentication and owner scoping:
+  clients can only fetch completed tasks belonging to the authenticated token's
+  user.
+- Content source resolution follows Go `Task.GetResultURL` compatibility where
+  possible: prefer `private_data.result_url`, fall back to legacy
+  `fail_reason`, then stored provider URLs in `tasks.data`.
+- Self-referential `/v1/videos/:task_id/content` URLs are skipped so the Worker
+  does not recursively proxy itself.
+- Vertex stored responses can produce a Go-compatible `data:<mime>;base64,...`
+  URL from `response.videos[0].bytesBase64Encoded`,
+  `response.bytesBase64Encoded`, or raw `response.video` payloads.
+- `data:` URLs are decoded only when they are base64 and under the Worker
+  inline-content cap. HTTP(S) URLs are checked by the existing strict SSRF
+  policy before the upstream response body is streamed through a fresh mutable
+  Worker response with `Cache-Control: public, max-age=86400`.
+- The video proxy keeps Go's OpenAI-style error envelope for this route:
+  `{"error":{"message":...,"type":...}}`.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 16
+  passed, including content-source fallback, self-proxy skip, Vertex data URL
+  extraction, and bounded data URL decode tests;
+- `cargo test -p cinatoken-worker --lib`: 369 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check.
+
+Remaining boundary: this is not the final Queue/R2 artifact system. Session
+auth parity for dashboard media elements, provider credential refetch
+(`Gemini`, `Vertex`, `OpenAI`/`Sora` content endpoints), R2 retention policy,
+provider replay fixtures, Sora remix origin-task/channel-lock resolution, and
+async task billing settlement evidence remain required before G7 video cutover.

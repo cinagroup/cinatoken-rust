@@ -4,6 +4,22 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `cargo fmt --all`: passed after adding the first OpenAI video content proxy
+  slice.
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 16
+  passed after adding content-source fallback, self-proxy skip, Vertex data URL
+  extraction, and bounded data URL decode coverage.
+- `cargo test -p cinatoken-worker --lib`: 369 passed after adding the first
+  OpenAI video content proxy slice.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the content proxy slice; the only warnings were the pre-existing
+  `dead_code` warnings in `d1_repositories.rs`.
+- `bun run check`: passed after adding the content proxy slice, covering
+  frontend type/build, route-debt baseline, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The route audit
+  remained 214 frontend Worker-facing routes, 298 Worker routes, 0 missing
+  calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `cargo fmt --all`: passed after adding provider-specific OpenAI video
   serializer overlays.
 - `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 10

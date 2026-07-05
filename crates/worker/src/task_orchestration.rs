@@ -12,6 +12,13 @@ use crate::d1_repositories::{refund_reserved_relay_quota, reserve_relay_quota};
 use crate::task_repository::{
     apply_poll_result, find_unfinished_tasks, generate_task_id, insert_task, NewTask, TaskRow,
 };
+use base64::{
+    engine::general_purpose::{
+        STANDARD as BASE64_STANDARD, STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD,
+    },
+    Engine as _,
+};
+use cinatoken_ssrf::SsrfPolicy;
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
     ali, doubao, gemini, hailuo, jimeng, kling, midjourney, sora, submit_request, suno, vertex,
@@ -24,6 +31,8 @@ use cinatoken_tasks::{
 use std::collections::HashMap;
 use wasm_bindgen::JsValue;
 use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
+
+const VIDEO_CONTENT_DATA_URL_MAX_BYTES: usize = 25 * 1024 * 1024;
 
 /// Build the submit request body for a provider by dispatching to its ported
 /// body transform (the submit half of Go `BuildRequestBody`). The JSON-payload
@@ -1303,6 +1312,124 @@ fn provider_data_url(data: Option<&serde_json::Value>) -> Option<String> {
         .or_else(|| json_first_array_string(data, &["creations"], "url"))
 }
 
+fn build_video_data_url(
+    mime_type: Option<&str>,
+    encoding: Option<&str>,
+    base64_data: &str,
+) -> String {
+    let mime = mime_type
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            let encoding = encoding
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .unwrap_or("mp4");
+            if encoding.contains('/') {
+                encoding.to_string()
+            } else {
+                format!("video/{encoding}")
+            }
+        });
+    format!("data:{mime};base64,{base64_data}")
+}
+
+fn vertex_video_url_from_data(data: Option<&serde_json::Value>) -> Option<String> {
+    let response = data?.get("response")?;
+    if let Some(video) = response
+        .get("videos")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|videos| videos.first())
+    {
+        if let Some(b64) = json_path_string(video, &["bytesBase64Encoded"])
+            .filter(|value| !value.trim().is_empty())
+        {
+            let mime = json_path_string(video, &["mimeType"]);
+            let encoding = json_path_string(video, &["encoding"]);
+            return Some(build_video_data_url(
+                mime.as_deref(),
+                encoding.as_deref(),
+                &b64,
+            ));
+        }
+    }
+    if let Some(b64) =
+        json_path_string(response, &["bytesBase64Encoded"]).filter(|value| !value.trim().is_empty())
+    {
+        let encoding = json_path_string(response, &["encoding"]);
+        return Some(build_video_data_url(None, encoding.as_deref(), &b64));
+    }
+    if let Some(video) =
+        json_path_string(response, &["video"]).filter(|value| !value.trim().is_empty())
+    {
+        if video.starts_with("data:")
+            || video.starts_with("http://")
+            || video.starts_with("https://")
+        {
+            return Some(video);
+        }
+        let encoding = json_path_string(response, &["encoding"]);
+        return Some(build_video_data_url(None, encoding.as_deref(), &video));
+    }
+    None
+}
+
+fn is_self_video_content_url(url: &str, task_id: &str) -> bool {
+    let task_id = task_id.trim();
+    !task_id.is_empty() && url.contains(&format!("/v1/videos/{task_id}/content"))
+}
+
+fn non_self_video_content_url(url: String, task_id: &str) -> Option<String> {
+    if is_self_video_content_url(&url, task_id) {
+        None
+    } else {
+        Some(url)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum VideoContentSourceError {
+    NotCompleted(String),
+    MissingUrl,
+}
+
+fn video_content_source_url(
+    row: &crate::task_repository::TaskDtoRow,
+) -> Result<String, VideoContentSourceError> {
+    let status = TaskStatus::from_status_str(&row.status);
+    if status != TaskStatus::Success {
+        return Err(VideoContentSourceError::NotCompleted(row.status.clone()));
+    }
+
+    let data = task_data_json(row);
+    let provider = openai_video_provider(row);
+    let url = result_url_option_from_private_data(&row.private_data)
+        .and_then(|url| non_self_video_content_url(url, &row.task_id))
+        .or_else(|| {
+            let fail_reason = row.fail_reason.trim();
+            if fail_reason.is_empty() || is_self_video_content_url(fail_reason, &row.task_id) {
+                None
+            } else {
+                Some(fail_reason.to_string())
+            }
+        })
+        .or_else(|| {
+            if provider == Some(OpenAiVideoProvider::Vertex) {
+                vertex_video_url_from_data(data.as_ref())
+                    .and_then(|url| non_self_video_content_url(url, &row.task_id))
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            provider_data_url(data.as_ref())
+                .and_then(|url| non_self_video_content_url(url, &row.task_id))
+        });
+
+    url.ok_or(VideoContentSourceError::MissingUrl)
+}
+
 fn is_openai_video_passthrough(
     row: &crate::task_repository::TaskDtoRow,
     data: Option<&serde_json::Value>,
@@ -1655,6 +1782,126 @@ fn task_error_response(code: &str, message: &str, status: u16) -> worker::Result
     )
 }
 
+fn video_proxy_error(
+    status: u16,
+    err_type: &str,
+    message: impl Into<String>,
+) -> worker::Result<Response> {
+    crate::json_with_status(
+        &serde_json::json!({
+            "error": {
+                "message": message.into(),
+                "type": err_type,
+            }
+        }),
+        status,
+    )
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum VideoDataUrlError {
+    Invalid,
+    Unsupported,
+    TooLarge,
+    DecodeFailed,
+}
+
+fn decode_video_data_url(
+    data_url: &str,
+    max_bytes: usize,
+) -> Result<(String, Vec<u8>), VideoDataUrlError> {
+    let (header, payload) = data_url.split_once(',').ok_or(VideoDataUrlError::Invalid)?;
+    let metadata = header
+        .strip_prefix("data:")
+        .ok_or(VideoDataUrlError::Invalid)?;
+    let mut metadata_parts = metadata.split(';');
+    let mime_type = metadata_parts
+        .next()
+        .filter(|item| !item.trim().is_empty())
+        .unwrap_or("video/mp4")
+        .trim()
+        .to_string();
+    if !metadata_parts.any(|part| part.eq_ignore_ascii_case("base64")) {
+        return Err(VideoDataUrlError::Unsupported);
+    }
+
+    let encoded = payload.trim();
+    if encoded.len().saturating_mul(3) / 4 > max_bytes.saturating_add(2) {
+        return Err(VideoDataUrlError::TooLarge);
+    }
+    let bytes = BASE64_STANDARD
+        .decode(encoded)
+        .or_else(|_| BASE64_STANDARD_NO_PAD.decode(encoded))
+        .map_err(|_| VideoDataUrlError::DecodeFailed)?;
+    if bytes.len() > max_bytes {
+        return Err(VideoDataUrlError::TooLarge);
+    }
+    Ok((mime_type, bytes))
+}
+
+fn video_bytes_response(mime_type: &str, bytes: Vec<u8>) -> worker::Result<Response> {
+    let mut headers = Headers::new();
+    headers.set("content-type", mime_type)?;
+    headers.set("cache-control", "public, max-age=86400")?;
+    let mut response = Response::from_bytes(bytes)?
+        .with_status(200)
+        .with_headers(headers);
+    crate::set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn finalize_video_proxy_response(upstream: Response) -> worker::Result<Response> {
+    let status = upstream.status_code();
+    let mut headers = Headers::new();
+    for (name, value) in upstream.headers().entries() {
+        let _ = headers.set(&name, &value);
+    }
+    headers.set("cache-control", "public, max-age=86400")?;
+    let (_, body) = upstream.into_parts();
+    let mut response = Response::from_body(body)?
+        .with_status(status)
+        .with_headers(headers);
+    crate::set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+async fn proxy_video_content_url(url: &str) -> worker::Result<Response> {
+    let url = url.trim();
+    if url.starts_with("data:") {
+        return match decode_video_data_url(url, VIDEO_CONTENT_DATA_URL_MAX_BYTES) {
+            Ok((mime_type, bytes)) => video_bytes_response(&mime_type, bytes),
+            Err(VideoDataUrlError::TooLarge) => video_proxy_error(
+                413,
+                "invalid_request_error",
+                "Video data URL exceeds Worker inline content limit",
+            ),
+            Err(_) => video_proxy_error(502, "server_error", "Failed to fetch video content"),
+        };
+    }
+
+    let parsed = match SsrfPolicy::strict_default().validate_url(url) {
+        Ok(url) => url,
+        Err(err) => {
+            return video_proxy_error(403, "server_error", format!("request blocked: {err}"))
+        }
+    };
+    let mut init = RequestInit::new();
+    init.with_method(Method::Get);
+    let outbound = Request::new_with_init(parsed.as_str(), &init)?;
+    let upstream = Fetch::Request(outbound).send().await?;
+    if upstream.status_code() != 200 {
+        return video_proxy_error(
+            502,
+            "server_error",
+            format!(
+                "Upstream service returned status {}",
+                upstream.status_code()
+            ),
+        );
+    }
+    finalize_video_proxy_response(upstream)
+}
+
 /// Shared auth for the fetch endpoints (same token auth as task submit).
 async fn authenticate_fetch(
     req: &Request,
@@ -1708,10 +1955,10 @@ pub async fn handle_task_fetch_by_id(
     )
 }
 
-/// `GET /v1/videos/:task_id`: OpenAI-compatible video status response. Bounded
-/// vs Go: provider-specific `ConvertToOpenAIVideo` enrichments from stored
-/// upstream data are still pending; this DB-backed shell preserves the public
-/// OpenAI video shape and owner scoping while the poller remains authoritative.
+/// `GET /v1/videos/:task_id`: OpenAI-compatible video status response. The
+/// DB-backed serializer ports provider-specific fields that can be derived from
+/// stored task JSON; credentialed artifact refetch remains a content-proxy/R2
+/// follow-up.
 pub async fn handle_openai_video_fetch_by_id(
     req: Request,
     env: Env,
@@ -1732,6 +1979,46 @@ pub async fn handle_openai_video_fetch_by_id(
         return task_error_response("task_not_exist", "task_not_exist", 400);
     };
     crate::json_with_status(&openai_video_json(&row), 200)
+}
+
+/// `GET /v1/videos/:task_id/content`: owner-scoped OpenAI-compatible video
+/// content proxy. This first production slice serves stored provider URLs and
+/// bounded `data:` URLs only. Provider refetches that require stored upstream
+/// credentials (Gemini/Vertex/Sora/OpenAI) remain out of this request path until
+/// the Queue/R2 artifact pipeline owns retrieval and retention.
+pub async fn handle_openai_video_content_by_id(
+    req: Request,
+    env: Env,
+    task_id: Option<&String>,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+    let auth = match authenticate_fetch(&req, &db).await? {
+        Ok(auth) => auth,
+        Err(response) => return Ok(response),
+    };
+    let Some(task_id) = task_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return video_proxy_error(400, "invalid_request_error", "task_id is required");
+    };
+    let Some(row) = crate::task_repository::find_task_dto(&db, auth.user_id, task_id).await? else {
+        return video_proxy_error(404, "invalid_request_error", "Task not found");
+    };
+    let url = match video_content_source_url(&row) {
+        Ok(url) => url,
+        Err(VideoContentSourceError::NotCompleted(status)) => {
+            return video_proxy_error(
+                400,
+                "invalid_request_error",
+                format!("Task is not completed yet, current status: {status}"),
+            )
+        }
+        Err(VideoContentSourceError::MissingUrl) => {
+            return video_proxy_error(502, "server_error", "Failed to fetch video content")
+        }
+    };
+    proxy_video_content_url(&url).await
 }
 
 /// `POST /suno/fetch` (Go `sunoFetchRespBodyBuilder`): batch fetch by public
@@ -2027,6 +2314,99 @@ mod tests {
         assert_eq!(
             video["metadata"]["url"],
             "https://provider.example/kling-first.mp4"
+        );
+    }
+
+    #[test]
+    fn video_content_source_requires_completed_task() {
+        let mut row = task_row();
+        row.status = "IN_PROGRESS".to_string();
+
+        assert_eq!(
+            video_content_source_url(&row),
+            Err(VideoContentSourceError::NotCompleted(
+                "IN_PROGRESS".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn video_content_source_uses_private_result_url_and_legacy_fail_reason() {
+        let mut row = task_row();
+        assert_eq!(
+            video_content_source_url(&row).unwrap(),
+            "https://cdn.example/video.mp4"
+        );
+
+        row.private_data = "{}".to_string();
+        row.fail_reason = "https://legacy.example/video.mp4".to_string();
+        assert_eq!(
+            video_content_source_url(&row).unwrap(),
+            "https://legacy.example/video.mp4"
+        );
+    }
+
+    #[test]
+    fn video_content_source_skips_self_proxy_and_uses_provider_data_url() {
+        let mut row = task_row();
+        row.private_data =
+            r#"{"result_url":"https://api.example/v1/videos/task_video/content"}"#.to_string();
+        row.data = serde_json::json!({
+            "content": {
+                "video_url": "https://provider.example/video.mp4"
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            video_content_source_url(&row).unwrap(),
+            "https://provider.example/video.mp4"
+        );
+    }
+
+    #[test]
+    fn vertex_video_content_source_builds_data_url_from_stored_response() {
+        let mut row = task_row();
+        row.platform = "41".to_string();
+        row.private_data = "{}".to_string();
+        row.data = serde_json::json!({
+            "response": {
+                "videos": [
+                    {
+                        "bytesBase64Encoded": "aGVsbG8=",
+                        "mimeType": "video/webm"
+                    }
+                ]
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            video_content_source_url(&row).unwrap(),
+            "data:video/webm;base64,aGVsbG8="
+        );
+    }
+
+    #[test]
+    fn decode_video_data_url_accepts_standard_and_no_pad_base64() {
+        let (mime, bytes) = decode_video_data_url("data:video/mp4;base64,aGk=", 16).unwrap();
+        assert_eq!(mime, "video/mp4");
+        assert_eq!(bytes, b"hi");
+
+        let (mime, bytes) = decode_video_data_url("data:;base64,aGk", 16).unwrap();
+        assert_eq!(mime, "video/mp4");
+        assert_eq!(bytes, b"hi");
+    }
+
+    #[test]
+    fn decode_video_data_url_rejects_non_base64_and_oversize_payloads() {
+        assert_eq!(
+            decode_video_data_url("data:video/mp4,hello", 16),
+            Err(VideoDataUrlError::Unsupported)
+        );
+        assert_eq!(
+            decode_video_data_url("data:video/mp4;base64,aGVsbG8=", 2),
+            Err(VideoDataUrlError::TooLarge)
         );
     }
 

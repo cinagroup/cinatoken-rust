@@ -116,8 +116,10 @@ Known incomplete areas:
 - Worker relay now has explicit body modes. JSON bodies are size-limited, and
   the first multipart upload routes (`/v1/audio/transcriptions`,
   `/v1/audio/translations`, `/v1/images/edits`) are Worker-owned with bounded
-  reads and byte-safe field extraction. Raw/pass-through upload modes,
-  non-WAV audio duration parity, and live billing evidence remain incomplete.
+  reads and byte-safe field extraction. Audio upload preflight now parses common
+  non-WAV duration metadata in Worker, but raw/pass-through upload modes, WebM
+  duration strategy, real-file replay, and live billing evidence remain
+  incomplete.
 - No live provider smoke, no live SSE verification, and no production D1 or
   Wrangler dev end-to-end result is recorded.
 - Source database row counts/hashes for a real deployment have not been

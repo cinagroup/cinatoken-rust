@@ -7,9 +7,9 @@ use cinatoken_billing::{
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{
-    audio_transcription_tokens, auto_group_retry_step, format_matching_model_name,
-    image_dimensions, image_tokens, image_tokens_needs_dimensions, is_openai_text_model,
-    openai_chat_format_overhead, select_weighted, wav_duration_seconds, ApiError, ApiResult,
+    audio_duration_seconds, audio_transcription_tokens, auto_group_retry_step,
+    format_matching_model_name, image_dimensions, image_tokens, image_tokens_needs_dimensions,
+    is_openai_text_model, openai_chat_format_overhead, select_weighted, ApiError, ApiResult,
     Candidate, ErrorBody, MediaTokenFlags,
 };
 use cinatoken_relay::{
@@ -1968,7 +1968,13 @@ fn multipart_extra_prompt_tokens(
     }
 
     cinatoken_relay::extract_multipart_file(bytes, content_type, "file")
-        .and_then(|file| wav_duration_seconds(file.bytes))
+        .and_then(|file| {
+            audio_duration_seconds(
+                file.bytes,
+                Some(file.filename.as_str()),
+                file.content_type.as_deref(),
+            )
+        })
         .map(audio_transcription_tokens)
         .unwrap_or_default()
 }
@@ -5806,7 +5812,27 @@ mod tests {
         wav
     }
 
-    fn multipart_audio_body(boundary: &str, model: &str, file_bytes: &[u8]) -> Vec<u8> {
+    fn flac_streaminfo(sample_rate: u32, total_samples: u64) -> Vec<u8> {
+        let mut flac = Vec::new();
+        flac.extend_from_slice(b"fLaC");
+        flac.extend_from_slice(&[0x80, 0, 0, 34]);
+        let mut streaminfo = [0u8; 34];
+        let packed = ((sample_rate as u64) << 44)
+            | (1u64 << 41)
+            | (15u64 << 36)
+            | (total_samples & 0x0000_000f_ffff_ffff);
+        streaminfo[10..18].copy_from_slice(&packed.to_be_bytes());
+        flac.extend_from_slice(&streaminfo);
+        flac
+    }
+
+    fn multipart_audio_body(
+        boundary: &str,
+        model: &str,
+        file_name: &str,
+        file_content_type: &str,
+        file_bytes: &[u8],
+    ) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         body.extend_from_slice(b"Content-Disposition: form-data; name=\"model\"\r\n\r\n");
@@ -5814,9 +5840,10 @@ mod tests {
         body.extend_from_slice(b"\r\n");
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         body.extend_from_slice(
-            b"Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n",
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+                .as_bytes(),
         );
-        body.extend_from_slice(b"Content-Type: audio/wav\r\n\r\n");
+        body.extend_from_slice(format!("Content-Type: {file_content_type}\r\n\r\n").as_bytes());
         body.extend_from_slice(file_bytes);
         body.extend_from_slice(b"\r\n");
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
@@ -5935,7 +5962,7 @@ mod tests {
         let boundary = "audio-boundary";
         // 30 seconds, mono 16 kHz 16-bit: 16000 * 2 * 30 bytes.
         let wav = wav_header(1, 16_000, 16, 960_000);
-        let body = multipart_audio_body(boundary, "whisper-1", &wav);
+        let body = multipart_audio_body(boundary, "whisper-1", "audio.wav", "audio/wav", &wav);
         let content_type = format!("multipart/form-data; boundary={boundary}");
 
         assert_eq!(
@@ -5957,6 +5984,26 @@ mod tests {
         assert_eq!(params.p, 500.0);
         assert_eq!(params.len, 500.0);
         assert_eq!(params.ai, 0.0);
+    }
+
+    #[test]
+    fn multipart_audio_flac_duration_feeds_prompt_estimate() {
+        let mut endpoint = endpoint(false, None);
+        endpoint.upstream_path = "audio/translations".to_string();
+        endpoint.request_body_mode = RelayRequestBodyMode::MultipartForm;
+        let boundary = "audio-boundary";
+        let flac = flac_streaminfo(48_000, 144_000); // 3 seconds.
+        let body = multipart_audio_body(boundary, "whisper-1", "audio.flac", "audio/flac", &flac);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        assert_eq!(
+            endpoint_multipart_model(&body, &content_type),
+            Some("whisper-1".to_string())
+        );
+        assert_eq!(
+            multipart_extra_prompt_tokens(&endpoint, &body, &content_type),
+            50
+        );
     }
 
     #[test]

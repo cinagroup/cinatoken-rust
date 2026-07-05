@@ -3149,3 +3149,37 @@ M4A/MP4, OGG/Opus, AIFF, WebM, and AAC duration parsing still need a
 header-parser, size-estimate, or Container offload decision; live upstream
 smoke and billing shadow/reconciliation evidence are still required before
 audio upload routes own production paid traffic.
+
+### 22.36 2026-07-05 Common Audio Duration Parser Delta
+
+This increment supersedes the non-WAV parser gap left in 22.35 for request-time
+STT preflight estimates. It keeps the Cloudflare Worker upload path bounded and
+WASM-local: no ffmpeg/ffprobe, no external process, and no heavyweight decoder
+dependency.
+
+Implemented in Rust:
+
+- `cinatoken_core::audio_duration::audio_duration_seconds` dispatches by upload
+  filename, part `Content-Type`, and magic bytes.
+- Header/frame-level parsers now cover WAV, MP3, FLAC STREAMINFO, M4A/MP4
+  `mvhd`, OGG/Vorbis granule position, OGG/Opus granule position, AIFF/AIFC
+  `COMM`, and AAC ADTS frames.
+- Worker multipart audio preflight now passes the uploaded file name and part
+  `Content-Type` into the common duration parser before applying the
+  Go-compatible `round(ceil(duration_seconds) / 60 * 1000)` token formula.
+- WebM remains unsupported in Worker until a real EBML parser or Container
+  offload path is selected. This matches the conservative production posture:
+  failed duration parse yields no extra preflight tokens rather than blocking
+  byte-for-byte upstream forwarding.
+
+Updated local evidence:
+
+- `cargo test -p cinatoken-core audio_duration`: 12 passed;
+- `cargo test -p cinatoken-worker --lib multipart_audio_flac_duration_feeds_prompt_estimate`:
+  passed.
+
+Remaining boundary: this is still preflight-estimate parity, not production
+billing proof. The next audio slice should replay real MP3/FLAC/M4A/OGG/Opus/
+AIFF/AAC fixtures from source-compatible samples, decide WebM EBML versus
+Container offload, run live transcription/translation smoke, and capture billing
+shadow/reconciliation evidence.

@@ -920,6 +920,16 @@ baseline above.
   `cargo test -p cinatoken-worker --lib multipart_audio_wav_duration_feeds_prompt_estimate`
   (passed).
 
+- **Common audio duration preflight parsers - locally verified (2026-07-05).**
+  `cinatoken_core::audio_duration::audio_duration_seconds` now parses WAV, MP3,
+  FLAC, M4A/MP4, OGG/Vorbis, Opus, AIFF/AIFC, and AAC ADTS duration metadata
+  without external tools, and Worker multipart audio preflight uses the uploaded
+  file name plus part `Content-Type` to feed STT prompt-token estimates. WebM
+  remains intentionally unsupported pending an EBML parser or Container offload.
+  Local evidence: `cargo test -p cinatoken-core audio_duration` (12 passed) and
+  `cargo test -p cinatoken-worker --lib multipart_audio_flac_duration_feeds_prompt_estimate`
+  (passed).
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

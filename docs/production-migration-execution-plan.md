@@ -365,8 +365,8 @@ Route readiness:
 | `POST /v1/rerank` | Jina/Cohere JSON implemented | Additional providers, live Jina/Cohere smoke | G3/G4 |
 | `POST /v1/images/generations` | JSON + SSE implemented | Provider smoke, large response policy | G3/G4 |
 | `POST /v1/audio/speech` | JSON passthrough implemented | Binary/audio live smoke, response audit policy | G3 |
-| `POST /v1/audio/transcriptions` | Partial: multipart forwarding implemented | Live upstream smoke, WAV/non-WAV duration parity, billing shadow evidence | G3/G4 |
-| `POST /v1/audio/translations` | Partial: multipart forwarding implemented | Live upstream smoke, WAV/non-WAV duration parity, billing shadow evidence | G3/G4 |
+| `POST /v1/audio/transcriptions` | Partial: multipart forwarding and common audio duration preflight implemented | Live upstream smoke, real-file non-WAV replay, WebM decision, billing shadow evidence | G3/G4 |
+| `POST /v1/audio/translations` | Partial: multipart forwarding and common audio duration preflight implemented | Live upstream smoke, real-file non-WAV replay, WebM decision, billing shadow evidence | G3/G4 |
 | `POST /v1/messages` | Anthropic JSON + SSE implemented | Live Anthropic smoke, billing shadow | G3/G4 |
 | Gemini generate/stream/embed/count | Implemented | Live Gemini smoke, model/path parity | G3/G4 |
 | Admin APIs | Planned | Route matrix, auth, audit, frontend smoke | G5 |
@@ -380,8 +380,10 @@ Required tasks:
    request-body type, response type, streaming behavior, provider family, and
    production priority.
 2. Keep JSON endpoints on the bounded JSON body path.
-3. Implement multipart/raw/pass-through stream modes before file upload or
-   binary body routes.
+3. Continue multipart/raw/pass-through stream modes before broader file upload
+   or binary body routes. The first multipart audio/image routes and common
+   audio duration preflight are in place; raw/pass-through and WebM duration
+   strategy remain open.
 4. For every provider adapter, add golden request/response fixtures, URL
    mapping tests, error mapping tests, and usage parser tests.
 5. Run live smoke tests per route family in staging.

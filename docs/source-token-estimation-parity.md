@@ -224,6 +224,12 @@ from Go (which uses real BPE for GPT/o-series). Gaps to close for G4:
    containers Go decodes (MP3/FLAC/M4A/OGG/Opus — header parse / size estimate /
    Container, §21.4) and wiring it into the transcription/translation endpoint
    (multipart parse, charge-affecting, staging-gated).
+   **2026-07-05 update:** this WAV-only note is superseded for Worker
+   preflight. `core::audio_duration::audio_duration_seconds` now dispatches by
+   filename/content-type/magic bytes and parses WAV, MP3, FLAC, M4A/MP4,
+   OGG/Vorbis, Opus, AIFF/AIFC, and AAC ADTS without external tools; WebM still
+   needs a full EBML parser or Container offload. Remaining evidence is real-file
+   fixture replay plus billing shadow/reconciliation for non-WAV uploads.
 6. Media fallback constants — **done** (`core::request_tokens` consts:
    `NON_OPENAI_IMAGE_TOKENS`/`AUDIO_FILE_TOKENS`/`VIDEO_FILE_TOKENS`/`FILE_TOKENS`);
    wire the per-file-type selection + feature-flag gating.

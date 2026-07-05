@@ -58,6 +58,7 @@ WFP_DISPATCH_WORKER_PREFIX = ""
 WFP_DISPATCH_NAMESPACE = ""
 WFP_TENANT_COMPATIBILITY_DATE = "2026-06-17"
 REALTIME_SESSION_GATEWAY_ENABLED = "false"
+REALTIME_SESSION_V1_ENABLED = "false"
 
 # Workers for Platforms dispatch namespace. Create the namespace first, then
 # uncomment in the environment that should accept tenant/preview traffic:
@@ -154,6 +155,7 @@ WFP_DISPATCH_WORKER_PREFIX = ""
 WFP_DISPATCH_NAMESPACE = ""
 WFP_TENANT_COMPATIBILITY_DATE = "2026-06-17"
 REALTIME_SESSION_GATEWAY_ENABLED = "false"
+REALTIME_SESSION_V1_ENABLED = "false"
 
 # [[env.staging.dispatch_namespaces]]
 # binding = "DISPATCHER"
@@ -252,6 +254,7 @@ WFP_DISPATCH_WORKER_PREFIX = ""
 WFP_DISPATCH_NAMESPACE = ""
 WFP_TENANT_COMPATIBILITY_DATE = "2026-06-17"
 REALTIME_SESSION_GATEWAY_ENABLED = "false"
+REALTIME_SESSION_V1_ENABLED = "false"
 
 # [[env.production.dispatch_namespaces]]
 # binding = "DISPATCHER"

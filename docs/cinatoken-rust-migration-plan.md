@@ -4382,11 +4382,16 @@ Implemented in `cinatoken-rust`:
     `State::accept_websocket_with_tags` and `WebSocket::serialize_attachment`
     so idle WebSocket hibernation can restore connection metadata.
   - The DO exposes a small status/control surface for smoke tests (`ping` ->
-    `pong`, other messages return a `bridge_not_wired` control response). It
-    deliberately does not claim `/v1/realtime` protocol parity yet.
+    `pong`, other messages return an `upstream_bridge_not_wired` control
+    response). It deliberately does not claim full `/v1/realtime` protocol
+    parity yet.
   - A default-off platform gateway hook can forward
     `/api/platform/realtime/:session...` to the DO only when
     `REALTIME_SESSION_GATEWAY_ENABLED=true`.
+  - A separate default-off `/v1/realtime` gateway can require GET WebSocket
+    upgrades, `model`, relay token auth, token/IP rate limit, model limits, and
+    Go-compatible Realtime subprotocol token extraction before selecting a
+    hibernatable DO session.
 - Updated `wrangler.toml`.
   - Added default-off WFP and realtime flags.
   - Added commented `DISPATCHER` dispatch namespace blocks so operators can
@@ -4401,10 +4406,10 @@ Remaining migration gaps:
   foundation (see 22.64), but staging Cloudflare API credentials, namespace
   creation, live deploy smoke, and dispatch smoke are still required before
   tenant traffic moves to this path.
-- `/v1/realtime` is still not OpenAI Realtime-compatible. The next protocol
-  step is token/session authentication, upstream WebSocket connection handling,
-  backpressure/error mapping, and billing/audit accounting through
-  `RealtimeSession`.
+- `/v1/realtime` is still not OpenAI Realtime-compatible. Token/session auth
+  now reaches the DO boundary, but the next protocol step is upstream
+  WebSocket connection handling, backpressure/error mapping, and billing/audit
+  accounting through `RealtimeSession`.
 - AI Gateway is present for Workers AI binding calls via `AI_GATEWAY_ID`, but a
   complete multi-provider AI Gateway policy still needs route-level controls,
   fallback rules, and provider-specific smoke evidence.
@@ -4560,3 +4565,58 @@ Remaining migration gaps:
 - Confirm `/api/platform/dispatch/:worker/__cinatoken/tenant/status` returns
   `runtime: "rust-wasm"` through the `DISPATCHER` binding before routing tenant
   traffic.
+
+### 22.67 2026-07-05 OpenAI Realtime DO Auth Boundary
+
+This increment moves Realtime from a platform-only hibernation smoke toward the
+real Go `/v1/realtime` route shape while keeping the production cutover flag
+off. It does not yet bridge to an upstream Realtime provider; it establishes the
+Worker-owned entry, auth, and session metadata boundary that the bridge can
+build on.
+
+Implemented:
+
+- `GET /v1/realtime` is now an early-dispatch realtime candidate, separate from
+  normal HTTP relay routes and static assets.
+- Added `REALTIME_SESSION_V1_ENABLED`, default `false` in development,
+  staging, and production. This is intentionally separate from
+  `REALTIME_SESSION_GATEWAY_ENABLED`, which remains only the platform smoke
+  path for `/api/platform/realtime/:session...`.
+- When `REALTIME_SESSION_V1_ENABLED=true`, the gateway now requires:
+  - GET method;
+  - `Upgrade: websocket`;
+  - non-empty `model` query parameter;
+  - `Sec-WebSocket-Key`;
+  - a relay API key from Go-compatible Realtime subprotocol
+    `openai-insecure-api-key.<token>`, `Authorization: Bearer`, `x-api-key`,
+    `x-goog-api-key`, or query `key`.
+- The gateway reuses the existing relay D1 auth path, including token/user
+  status, expiry/quota, model limits, IP allowlist, read-through auth cache,
+  and token/IP rate limits before forwarding the original WebSocket `Request`
+  to `REALTIME_SESSIONS`.
+- The DO attachment now stores sanitized session metadata: entrypoint, model,
+  token source, non-plaintext token fingerprint, auth state, connected time,
+  and a redacted protocol summary. The raw `Sec-WebSocket-Protocol` token is
+  not serialized into the attachment.
+- The DO control response now returns a `context` object instead of only a
+  session string, preserving enough metadata for hibernation smoke and future
+  upstream bridge diagnostics.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session` passed (6 tests).
+- `cargo test -p cinatoken-worker --lib` passed (392 tests).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check` passed, including frontend gates, route audit
+  (214 frontend calls / 307 Worker routes / 0 missing calls), workspace tests,
+  Worker wasm32 check, and WFP tenant wasm32 check.
+
+Remaining migration gaps:
+
+- Implement the upstream Realtime WebSocket bridge, including upstream
+  subprotocol/header construction, bidirectional forwarding, backpressure and
+  close/error mapping.
+- Port Go realtime usage accounting: pre-consume, `session.update` tool/input
+  tracking, `response.done` usage handling, settlement/refund, and audit logs.
+- Run a staging hibernation WebSocket smoke, then a live protocol replay, before
+  enabling `REALTIME_SESSION_V1_ENABLED` outside a controlled canary.

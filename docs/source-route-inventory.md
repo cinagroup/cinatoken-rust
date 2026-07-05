@@ -57,7 +57,7 @@ Global middleware on this surface: `CORS`, `DecompressRequestMiddleware`,
 | GET | `/v1beta/models` | Token | `ListModels(Gemini)` | Gemini model list. |
 | GET | `/v1beta/openai/models` | Token | `ListModels(OpenAI)` | Gemini-OpenAI-compat model list. |
 | POST | `/pg/chat/completions` | User session | `Playground` | `UserAuth`+`Distribute`; admin playground, not token. |
-| GET | `/v1/realtime` | Token | `Relay(OpenAIRealtime)` | **WebSocket**; `Distribute`. Needs DO/Container (§21.4). |
+| GET | `/v1/realtime` | Token | `Relay(OpenAIRealtime)` | **WebSocket**; `Distribute`. Rust now has a default-off DO auth/session boundary; upstream bridge, billing settlement, and live replay remain G7. |
 | POST | `/v1/messages` | Token | `Relay(Claude)` | Anthropic Messages. |
 | POST | `/v1/completions` | Token | `Relay(OpenAI)` | |
 | POST | `/v1/chat/completions` | Token | `Relay(OpenAI)` | |

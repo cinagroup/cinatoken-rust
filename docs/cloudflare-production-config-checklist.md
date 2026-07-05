@@ -103,7 +103,8 @@ Current `wrangler.toml` is development-shaped:
 - WFP/realtime flags default off or empty: `WFP_DISPATCH_ENABLED`,
   `WFP_INTERNAL_DISPATCH_ENABLED`, `WFP_PREVIEW_HOST_SUFFIX`,
   `WFP_DISPATCH_WORKER_PREFIX`, `WFP_DISPATCH_NAMESPACE`,
-  `WFP_TENANT_COMPATIBILITY_DATE`, `REALTIME_SESSION_GATEWAY_ENABLED`
+  `WFP_TENANT_COMPATIBILITY_DATE`, `REALTIME_SESSION_GATEWAY_ENABLED`,
+  `REALTIME_SESSION_V1_ENABLED`
 - D1/KV IDs are placeholders
 - R2/Queue names are declared; relay audit logging and async task polling use
   Queue bindings when configured
@@ -322,6 +323,7 @@ captured.
 | `WFP_INTERNAL_DISPATCH_ENABLED` | Enables `/api/platform/dispatch/:worker/...` as an internal dispatch test path | Operator smoke plan; keep off in production unless explicitly needed |
 | `WFP_DISPATCH_WORKER_PREFIX` | Prefixes sanitized tenant names before `DISPATCHER.get()` | Naming convention and collision review |
 | `REALTIME_SESSION_GATEWAY_ENABLED` | Enables `/api/platform/realtime/:session...` -> `REALTIME_SESSIONS` DO forwarding | `REALTIME_SESSIONS` binding and WebSocket hibernation smoke; not a `/v1/realtime` cutover by itself |
+| `REALTIME_SESSION_V1_ENABLED` | Enables the OpenAI-compatible `/v1/realtime` WebSocket entry after relay-token auth/model/rate-limit checks | Upstream Realtime bridge, billing/audit settlement, hibernation smoke, and live protocol replay; keep off until G7 approval |
 
 ### WFP tenant script deploy control plane
 

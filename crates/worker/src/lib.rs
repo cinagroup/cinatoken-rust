@@ -93,9 +93,7 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         return Ok(response);
     }
 
-    if realtime_session::realtime_gateway_candidate(&req.path())
-        && realtime_session::realtime_gateway_enabled(&env)
-    {
+    if realtime_session::realtime_gateway_candidate(&req.path()) {
         let mut response = realtime_session::handle_gateway(req, env.clone()).await?;
         upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
         return Ok(response);
@@ -1632,6 +1630,7 @@ mod tests {
             "/v1/chat/completions",
             "/v1/completions",
             "/v1/responses",
+            "/v1/realtime",
             "/v1/messages",
             "/v1/embeddings",
             "/v1/engines/text-embedding-3-small/embeddings",

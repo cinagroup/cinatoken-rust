@@ -2084,7 +2084,7 @@ pub(crate) fn relay_read_cache_configured(env: &Env) -> bool {
     config.enabled() && crate::cache::upstash_redis_configured(env)
 }
 
-async fn enforce_relay_rate_limits(
+pub(crate) async fn enforce_relay_rate_limits(
     env: &Env,
     auth: &AuthenticatedToken,
     client_ip: Option<&str>,
@@ -2856,7 +2856,7 @@ fn strip_playground_request_fields(body: &mut Value) {
     }
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     db: &D1Database,
     env: &Env,
     api_key: &str,

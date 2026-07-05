@@ -1229,6 +1229,26 @@ baseline above.
   Tools. Live dispatch upload still requires a working `worker-build`
   environment plus staging Cloudflare credentials and namespace.
 
+- **OpenAI Realtime DO auth boundary - locally verified (2026-07-05).**
+  `/v1/realtime` is now an early-dispatch, default-off WebSocket route gated
+  by `REALTIME_SESSION_V1_ENABLED`. When enabled, it requires GET,
+  `Upgrade: websocket`, `Sec-WebSocket-Key`, a non-empty `model` query
+  parameter, and a relay API key from the Go-compatible Realtime subprotocol
+  (`openai-insecure-api-key.<token>`), `Authorization: Bearer`, `x-api-key`,
+  `x-goog-api-key`, or query `key`. The entry reuses D1 relay-token auth,
+  model/IP/quota checks, auth cache, and token/IP rate limits before forwarding
+  the original WebSocket request to the hibernatable `RealtimeSession` Durable
+  Object. Socket attachments now store sanitized context, including token
+  source, non-plaintext token fingerprint, auth state, model, and redacted
+  protocol summary; raw protocol tokens are not serialized. Local evidence:
+  `cargo test -p cinatoken-worker --lib realtime_session` (6 passed),
+  `cargo test -p cinatoken-worker --lib` (392 passed),
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` (passed),
+  and `bun run check` (passed; route audit 214 frontend calls / 307 Worker
+  routes / 0 missing calls; existing worker dead-code warnings only). Upstream
+  Realtime bridge, preconsume/settlement/audit, and live hibernation/protocol
+  replay remain G7-gated.
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

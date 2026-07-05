@@ -34,6 +34,8 @@ use wasm_bindgen::JsValue;
 use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
 const VIDEO_CONTENT_DATA_URL_MAX_BYTES: usize = 25 * 1024 * 1024;
+const TASK_ACTION_GENERATE: &str = "generate";
+const TASK_ACTION_TEXT_GENERATE: &str = "textGenerate";
 const TASK_ACTION_REMIX: &str = "remixGenerate";
 
 /// Build the submit request body for a provider by dispatching to its ported
@@ -544,9 +546,67 @@ pub async fn relay_task_submit(
 /// scope channel selection to task-capable channels.
 const VIDEO_CHANNEL_TYPES: &[i32] = &[1, 17, 24, 35, 41, 45, 50, 51, 52, 54, 55];
 
+#[derive(Clone, Copy)]
 enum VideoSubmitResponse {
     LegacyTaskId,
     OpenAiVideo,
+}
+
+fn task_submit_request_from_body(body_bytes: &[u8]) -> Result<TaskSubmitReq, String> {
+    serde_json::from_slice(body_bytes).map_err(|err| format!("invalid request: {err}"))
+}
+
+fn string_value(value: Option<&serde_json::Value>) -> &str {
+    value
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+}
+
+fn metadata_field_is_present(metadata: Option<&serde_json::Value>, field: &str) -> bool {
+    let Some(value) = metadata.and_then(|value| value.get(field)) else {
+        return false;
+    };
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        _ => true,
+    }
+}
+
+fn kling_submit_action(task_req: &TaskSubmitReq) -> &'static str {
+    if !task_req.image.trim().is_empty()
+        || metadata_field_is_present(task_req.metadata.as_ref(), "image")
+        || metadata_field_is_present(task_req.metadata.as_ref(), "image_tail")
+    {
+        TASK_ACTION_GENERATE
+    } else {
+        TASK_ACTION_TEXT_GENERATE
+    }
+}
+
+fn default_task_submit_action(provider: VideoProvider, task_req: &TaskSubmitReq) -> &'static str {
+    match provider {
+        VideoProvider::Kling => kling_submit_action(task_req),
+        _ => TASK_ACTION_GENERATE,
+    }
+}
+
+fn kling_official_task_submit_body(body_bytes: &[u8]) -> Result<(TaskSubmitReq, Vec<u8>), String> {
+    let original: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(body_bytes).map_err(|err| format!("invalid request: {err}"))?;
+    let original_value = serde_json::Value::Object(original.clone());
+    let model = string_value(original.get("model_name").or_else(|| original.get("model")));
+    let prompt = string_value(original.get("prompt"));
+    let unified = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "metadata": original_value,
+    });
+    let unified_body = serde_json::to_vec(&unified).map_err(|err| err.to_string())?;
+    let task_req: TaskSubmitReq =
+        serde_json::from_value(unified).map_err(|err| format!("invalid request: {err}"))?;
+    Ok((task_req, unified_body))
 }
 
 /// HTTP entry for a video task submit — the route handler that produces the
@@ -554,35 +614,27 @@ enum VideoSubmitResponse {
 /// parse the request, select a task channel for the model, price the base model
 /// ([`compute_task_base_quota`]), and submit. Returns `{"task_id": "task_..."}`.
 ///
-/// Simplifications pending runtime tuning against Go: the action defaults to
-/// `generate` (Go derives it per-provider in `ValidateRequestAndSetAction`) and
-/// channel model-mapping isn't applied — these affect provider routing/billing
-/// detail and are validated by a staging submit.
-async fn handle_task_submit_with_response(
-    mut req: Request,
+/// Simplifications pending runtime tuning against Go: channel model-mapping and
+/// several non-Kling provider action special cases are still future slices, and
+/// are validated by staging submits before production ownership.
+async fn handle_parsed_task_submit_with_response(
+    req: &Request,
     env: Env,
     now: i64,
     response_kind: VideoSubmitResponse,
+    task_req: TaskSubmitReq,
+    body_bytes: Vec<u8>,
+    action_override: Option<&str>,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
 
-    let Some(api_key) = crate::relay::extract_api_key(&req) else {
+    let Some(api_key) = crate::relay::extract_api_key(req) else {
         return crate::json_with_status(&serde_json::json!({"error": "missing api key"}), 401);
     };
     let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
         return crate::json_with_status(&serde_json::json!({"error": "invalid api key"}), 401);
     };
 
-    let body_bytes = req.bytes().await?;
-    let task_req: TaskSubmitReq = match serde_json::from_slice(&body_bytes) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            return crate::json_with_status(
-                &serde_json::json!({"error": format!("invalid request: {err}")}),
-                400,
-            )
-        }
-    };
     let model = task_req.model.clone();
 
     let channels = crate::d1_repositories::select_relay_channels(
@@ -619,6 +671,7 @@ async fn handle_task_submit_with_response(
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "us-central1".to_string());
     let platform = channel.channel_type.to_string();
+    let action = action_override.unwrap_or_else(|| default_task_submit_action(provider, &task_req));
     let ctx = TaskSubmitContext {
         provider,
         channel_id: channel.id,
@@ -631,7 +684,7 @@ async fn handle_task_submit_with_response(
         platform: &platform,
         upstream_model: &model,
         origin_model: &model,
-        action: "generate",
+        action,
         origin_task_id: "",
         base_quota,
         now,
@@ -653,9 +706,33 @@ async fn handle_task_submit_with_response(
     }
 }
 
+async fn handle_task_submit_with_response(
+    mut req: Request,
+    env: Env,
+    now: i64,
+    response_kind: VideoSubmitResponse,
+    action_override: Option<&str>,
+) -> worker::Result<Response> {
+    let body_bytes = req.bytes().await?;
+    let task_req = match task_submit_request_from_body(&body_bytes) {
+        Ok(parsed) => parsed,
+        Err(err) => return crate::json_with_status(&serde_json::json!({"error": err}), 400),
+    };
+    handle_parsed_task_submit_with_response(
+        &req,
+        env,
+        now,
+        response_kind,
+        task_req,
+        body_bytes,
+        action_override,
+    )
+    .await
+}
+
 /// `POST /v1/video/generations`: legacy New API task response shape.
 pub async fn handle_task_submit(req: Request, env: Env, now: i64) -> worker::Result<Response> {
-    handle_task_submit_with_response(req, env, now, VideoSubmitResponse::LegacyTaskId).await
+    handle_task_submit_with_response(req, env, now, VideoSubmitResponse::LegacyTaskId, None).await
 }
 
 /// `POST /v1/videos`: OpenAI-compatible video create response shell.
@@ -664,7 +741,34 @@ pub async fn handle_openai_video_submit(
     env: Env,
     now: i64,
 ) -> worker::Result<Response> {
-    handle_task_submit_with_response(req, env, now, VideoSubmitResponse::OpenAiVideo).await
+    handle_task_submit_with_response(req, env, now, VideoSubmitResponse::OpenAiVideo, None).await
+}
+
+/// `POST /kling/v1/videos/{text2video|image2video}`: official Kling-compatible
+/// route. Go wraps the official request in the unified task shape
+/// (`model`, `prompt`, `metadata`) before normal token auth, distribution,
+/// submit, and task persistence.
+pub async fn handle_kling_video_submit(
+    mut req: Request,
+    env: Env,
+    action: &str,
+    now: i64,
+) -> worker::Result<Response> {
+    let body_bytes = req.bytes().await?;
+    let (task_req, unified_body) = match kling_official_task_submit_body(&body_bytes) {
+        Ok(converted) => converted,
+        Err(err) => return crate::json_with_status(&serde_json::json!({"error": err}), 400),
+    };
+    handle_parsed_task_submit_with_response(
+        &req,
+        env,
+        now,
+        VideoSubmitResponse::OpenAiVideo,
+        task_req,
+        unified_body,
+        Some(action),
+    )
+    .await
 }
 
 /// `POST /v1/videos/:video_id/remix`: OpenAI-compatible Sora remix. Go resolves
@@ -2471,6 +2575,59 @@ mod tests {
             created_at: 100,
             last_login_at: 100,
         }
+    }
+
+    #[test]
+    fn kling_official_body_wraps_model_prompt_and_metadata() {
+        let (task_req, unified_body) = kling_official_task_submit_body(
+            br#"{
+                "model_name": "kling-v2-master",
+                "model": "ignored-model",
+                "prompt": "a cat playing piano",
+                "image": "https://img.example/cat.png",
+                "duration": "5",
+                "negative_prompt": "blurry"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(task_req.model, "kling-v2-master");
+        assert_eq!(task_req.prompt, "a cat playing piano");
+        let metadata = task_req.metadata.as_ref().unwrap();
+        assert_eq!(metadata["image"], "https://img.example/cat.png");
+        assert_eq!(metadata["negative_prompt"], "blurry");
+
+        let unified: serde_json::Value = serde_json::from_slice(&unified_body).unwrap();
+        assert_eq!(unified["model"], "kling-v2-master");
+        assert_eq!(unified["prompt"], "a cat playing piano");
+        assert_eq!(unified["metadata"]["model_name"], "kling-v2-master");
+        assert_eq!(unified["metadata"]["model"], "ignored-model");
+    }
+
+    #[test]
+    fn kling_submit_action_follows_official_text_and_image_modes() {
+        let text_req = TaskSubmitReq {
+            prompt: "text only".to_string(),
+            model: "kling-v1".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(kling_submit_action(&text_req), TASK_ACTION_TEXT_GENERATE);
+
+        let image_req = TaskSubmitReq {
+            prompt: "image".to_string(),
+            model: "kling-v1".to_string(),
+            image: "https://img.example/seed.png".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(kling_submit_action(&image_req), TASK_ACTION_GENERATE);
+
+        let image_tail_req = TaskSubmitReq {
+            prompt: "tail".to_string(),
+            model: "kling-v1".to_string(),
+            metadata: Some(serde_json::json!({"image_tail": "https://img.example/tail.png"})),
+            ..Default::default()
+        };
+        assert_eq!(kling_submit_action(&image_tail_req), TASK_ACTION_GENERATE);
     }
 
     #[test]

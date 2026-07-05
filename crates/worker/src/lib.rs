@@ -1056,6 +1056,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let now = (worker::Date::now().as_millis() / 1000) as i64;
             task_orchestration::handle_openai_video_submit(req, env, now).await
         })
+        .post_async("/kling/v1/videos/text2video", |req, ctx| async move {
+            let env = ctx.env;
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_kling_video_submit(req, env, "textGenerate", now).await
+        })
+        .post_async("/kling/v1/videos/image2video", |req, ctx| async move {
+            let env = ctx.env;
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_kling_video_submit(req, env, "generate", now).await
+        })
         // Suno task submit (platform "suno"): POST /suno/submit/:action.
         // Client-facing async-task fetch (Go RelayTaskFetch): the owner's
         // stored TaskDto, kept current by the poller cron.
@@ -1063,6 +1073,20 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let task_id = ctx.param("task_id").cloned();
             task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await
         })
+        .get_async(
+            "/kling/v1/videos/text2video/:task_id",
+            |req, ctx| async move {
+                let task_id = ctx.param("task_id").cloned();
+                task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await
+            },
+        )
+        .get_async(
+            "/kling/v1/videos/image2video/:task_id",
+            |req, ctx| async move {
+                let task_id = ctx.param("task_id").cloned();
+                task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await
+            },
+        )
         // Source Go exposes this as a TokenOrUserAuth video proxy. Rust now
         // owns the token-or-session-authenticated stored-URL/data-URL proxy
         // slice; provider credential refetch remains an explicit G7 follow-up.

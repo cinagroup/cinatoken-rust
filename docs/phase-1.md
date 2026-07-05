@@ -437,10 +437,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   raw/pass-through stream extraction where needed, live upstream smoke, and
   billing shadow evidence.
 - Continue the async-video G7 path by adding provider replay fixtures for the
-  newly ported OpenAI video serializers/content proxy, completing artifact
-  retrieval gaps that require provider credentials, hardening Sora remix with
-  provider replay/billing-settlement evidence, and moving video artifact
-  retrieval/retention into Queue/R2 before full production ownership.
+  newly ported OpenAI video serializers/content proxy, Kling official
+  text/image submit aliases, and Sora remix; complete artifact retrieval gaps
+  that require provider credentials, port Jimeng official routes, harden
+  billing-settlement evidence, and move video artifact retrieval/retention into
+  Queue/R2 before full production ownership.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

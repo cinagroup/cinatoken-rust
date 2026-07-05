@@ -3524,3 +3524,57 @@ Remaining boundary: this is submit-path ownership, not provider replay proof or
 full artifact ownership. Live/provider replay, final async-task settlement
 shadow evidence, credentialed artifact refetch, and Queue/R2 retention still
 gate G7 cutover.
+
+### 22.45 2026-07-05 Kling Official Video Route Aliases
+
+This increment ports the Go `router/video-router.go` Kling official route
+surface into the Worker task orchestration path without adding a second task
+pipeline. Source Go uses `middleware.KlingRequestConvert()` to wrap the
+official Kling request body into the unified task submit shape before token
+auth, channel distribution, provider submit, and task persistence.
+
+Implemented in Rust:
+
+- Added Worker-owned `POST /kling/v1/videos/text2video` and
+  `POST /kling/v1/videos/image2video` submit routes.
+- Added owner-scoped fetch aliases for
+  `GET /kling/v1/videos/text2video/:task_id` and
+  `GET /kling/v1/videos/image2video/:task_id`, reusing the existing TaskDto
+  fetch path.
+- Added a Kling official-body converter that maps `model_name` (falling back
+  to `model`) and `prompt` into the unified task request while preserving the
+  original official body under `metadata` for provider-specific fields such as
+  `image`, `negative_prompt`, `camera_control`, and `image_tail`.
+- The official submit routes force Go-compatible action selection:
+  `textGenerate` for text2video and `generate` for image2video. Generic Kling
+  task submits now also derive `textGenerate` when no top-level/metadata image
+  or `image_tail` is present, so submit and poll URLs stay aligned with the
+  Kling provider URL builder.
+- The Kling official submit response uses the existing OpenAI video `queued`
+  shell, matching the Go Kling adaptor's client-facing submit behavior while
+  keeping the inserted task in the unified D1 `tasks` table.
+- The shared video submit core was refactored so legacy
+  `/v1/video/generations`, OpenAI `/v1/videos`, and Kling official aliases all
+  reuse the same token auth, channel selection, quota reservation, upstream
+  submit, and D1 insert flow.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::kling_`: 2
+  passed, covering official body conversion and Kling text/image action
+  selection;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 21
+  passed;
+- `cargo test -p cinatoken-worker --lib`: 374 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit reported 214 frontend Worker-facing
+  routes, 302 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Remaining boundary: this is official-route ownership, not full provider replay
+or artifact ownership. Live Kling text/image submit replay, stored task status
+conversion replay, async settlement evidence, Jimeng official route ownership,
+and Queue/R2 artifact retention remain G7 gates.

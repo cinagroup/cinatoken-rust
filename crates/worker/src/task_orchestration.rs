@@ -1257,6 +1257,34 @@ fn json_first_array_string(
         .map(ToString::to_string)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenAiVideoProvider {
+    Ali,
+    Doubao,
+    Kling,
+    Vidu,
+    Jimeng,
+    Gemini,
+    Vertex,
+    Hailuo,
+    Sora,
+}
+
+fn openai_video_provider(row: &crate::task_repository::TaskDtoRow) -> Option<OpenAiVideoProvider> {
+    match row.platform.as_str() {
+        "17" => Some(OpenAiVideoProvider::Ali),
+        "45" | "54" => Some(OpenAiVideoProvider::Doubao),
+        "50" => Some(OpenAiVideoProvider::Kling),
+        "52" => Some(OpenAiVideoProvider::Vidu),
+        "51" => Some(OpenAiVideoProvider::Jimeng),
+        "24" => Some(OpenAiVideoProvider::Gemini),
+        "41" => Some(OpenAiVideoProvider::Vertex),
+        "35" => Some(OpenAiVideoProvider::Hailuo),
+        "1" | "55" | "sora" => Some(OpenAiVideoProvider::Sora),
+        _ => None,
+    }
+}
+
 fn provider_data_url(data: Option<&serde_json::Value>) -> Option<String> {
     let data = data?;
     for path in [
@@ -1279,11 +1307,36 @@ fn is_openai_video_passthrough(
     row: &crate::task_repository::TaskDtoRow,
     data: Option<&serde_json::Value>,
 ) -> bool {
-    matches!(row.platform.as_str(), "1" | "55" | "sora")
+    openai_video_provider(row) == Some(OpenAiVideoProvider::Sora)
         || data
             .and_then(|value| json_path_string(value, &["object"]))
             .as_deref()
             == Some("video")
+}
+
+fn convert_ali_video_status(status: &str) -> &'static str {
+    match status {
+        "PENDING" => "queued",
+        "RUNNING" => "in_progress",
+        "SUCCEEDED" => "completed",
+        "FAILED" | "CANCELED" | "UNKNOWN" => "failed",
+        _ => "unknown",
+    }
+}
+
+fn provider_video_status(
+    provider: Option<OpenAiVideoProvider>,
+    status: TaskStatus,
+    data: Option<&serde_json::Value>,
+) -> String {
+    if provider == Some(OpenAiVideoProvider::Ali) {
+        if let Some(ali_status) =
+            data.and_then(|item| json_path_string(item, &["output", "task_status"]))
+        {
+            return convert_ali_video_status(&ali_status).to_string();
+        }
+    }
+    status.to_video_status().to_string()
 }
 
 fn provider_data_error_message(data: Option<&serde_json::Value>) -> Option<String> {
@@ -1291,6 +1344,110 @@ fn provider_data_error_message(data: Option<&serde_json::Value>) -> Option<Strin
     json_path_string(data, &["error", "message"])
         .or_else(|| json_path_string(data, &["output", "message"]))
         .or_else(|| json_path_string(data, &["message"]))
+}
+
+fn provider_video_error(
+    provider: Option<OpenAiVideoProvider>,
+    data: Option<&serde_json::Value>,
+) -> Option<(String, String)> {
+    let data = data?;
+    match provider? {
+        OpenAiVideoProvider::Ali => {
+            if let Some(code) = json_path_string(data, &["code"]).filter(|code| !code.is_empty()) {
+                let message = json_path_string(data, &["message"]).unwrap_or_default();
+                return Some((message, code));
+            }
+            if let Some(code) =
+                json_path_string(data, &["output", "code"]).filter(|code| !code.is_empty())
+            {
+                let message = json_path_string(data, &["output", "message"]).unwrap_or_default();
+                return Some((message, code));
+            }
+            None
+        }
+        OpenAiVideoProvider::Doubao => {
+            if json_path_string(data, &["status"]).as_deref() == Some("failed") {
+                let message = json_path_string(data, &["error", "message"]).unwrap_or_default();
+                let code = json_path_string(data, &["error", "code"]).unwrap_or_default();
+                return Some((message, code));
+            }
+            None
+        }
+        OpenAiVideoProvider::Kling => {
+            let mut error = None;
+            if let (Some(code), Some(message)) = (
+                json_path_i64(data, &["code"]).filter(|code| *code != 0),
+                json_path_string(data, &["message"]),
+            ) {
+                error = Some((message, code.to_string()));
+            }
+            if json_path_string(data, &["data", "task_status"]).as_deref() == Some("failed") {
+                let message =
+                    json_path_string(data, &["data", "task_status_msg"]).unwrap_or_default();
+                error = Some((message, String::new()));
+            }
+            error
+        }
+        OpenAiVideoProvider::Vidu => {
+            if json_path_string(data, &["state"]).as_deref() == Some("failed") {
+                if let Some(code) = json_path_string(data, &["err_code"]) {
+                    return Some((code.clone(), code));
+                }
+            }
+            None
+        }
+        OpenAiVideoProvider::Jimeng => {
+            if let Some(code) = json_path_i64(data, &["code"]).filter(|code| *code != 10000) {
+                let message = json_path_string(data, &["message"]).unwrap_or_default();
+                return Some((message, code.to_string()));
+            }
+            None
+        }
+        OpenAiVideoProvider::Hailuo => {
+            if let Some(code) =
+                json_path_i64(data, &["base_resp", "status_code"]).filter(|code| *code != 0)
+            {
+                let message =
+                    json_path_string(data, &["base_resp", "status_msg"]).unwrap_or_default();
+                return Some((message, code.to_string()));
+            }
+            None
+        }
+        OpenAiVideoProvider::Gemini | OpenAiVideoProvider::Vertex | OpenAiVideoProvider::Sora => {
+            None
+        }
+    }
+}
+
+fn upstream_task_id_from_private_data(row: &crate::task_repository::TaskDtoRow) -> String {
+    let private: serde_json::Value =
+        serde_json::from_str(&row.private_data).unwrap_or(serde_json::Value::Null);
+    private
+        .get("upstream_task_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or(&row.task_id)
+        .to_string()
+}
+
+fn extract_operation_model(name: &str) -> Option<String> {
+    let start = name.find("models/")? + "models/".len();
+    let rest = &name[start..];
+    let end = rest.find("/operations/")?;
+    let model = &rest[..end];
+    if model.trim().is_empty() {
+        None
+    } else {
+        Some(model.to_string())
+    }
+}
+
+fn veo_model_from_upstream_task(row: &crate::task_repository::TaskDtoRow) -> String {
+    let upstream_task_id = upstream_task_id_from_private_data(row);
+    decode_local_task_id(&upstream_task_id)
+        .ok()
+        .and_then(|name| extract_operation_model(&name))
+        .unwrap_or_else(|| "veo-3.0-generate-001".to_string())
 }
 
 fn task_origin_model(
@@ -1326,6 +1483,7 @@ fn openai_video_submit_json(task_id: &str, model: &str, created_at: i64) -> serd
 fn openai_video_json(row: &crate::task_repository::TaskDtoRow) -> serde_json::Value {
     let status = TaskStatus::from_status_str(&row.status);
     let data = task_data_json(row);
+    let provider = openai_video_provider(row);
     let result_url = result_url_option_from_private_data(&row.private_data)
         .or_else(|| provider_data_url(data.as_ref()))
         .unwrap_or_else(|| row.fail_reason.clone());
@@ -1340,7 +1498,7 @@ fn openai_video_json(row: &crate::task_repository::TaskDtoRow) -> serde_json::Va
         "id": row.task_id,
         "object": "video",
         "model": task_origin_model(row, data.as_ref()),
-        "status": status.to_video_status(),
+        "status": provider_video_status(provider, status, data.as_ref()),
         "progress": progress,
         "created_at": row.created_at,
         "metadata": {
@@ -1380,16 +1538,70 @@ fn openai_video_json(row: &crate::task_repository::TaskDtoRow) -> serde_json::Va
             }
         }
     }
-    let error_message = if row.fail_reason.trim().is_empty() {
-        provider_data_error_message(data.as_ref())
-    } else {
-        Some(row.fail_reason.clone())
-    };
-    if status == TaskStatus::Failure && error_message.is_some() {
-        let error_message = error_message.unwrap_or_default();
+
+    match provider {
+        Some(OpenAiVideoProvider::Ali)
+        | Some(OpenAiVideoProvider::Doubao)
+        | Some(OpenAiVideoProvider::Vidu)
+        | Some(OpenAiVideoProvider::Jimeng)
+        | Some(OpenAiVideoProvider::Hailuo)
+        | Some(OpenAiVideoProvider::Vertex) => {
+            if row.updated_at > 0 {
+                video["completed_at"] = serde_json::json!(row.updated_at);
+            }
+        }
+        Some(OpenAiVideoProvider::Gemini) => {
+            if row.finish_time > 0 {
+                video["completed_at"] = serde_json::json!(row.finish_time);
+            } else if row.updated_at > 0 {
+                video["completed_at"] = serde_json::json!(row.updated_at);
+            }
+            video["model"] = serde_json::json!(veo_model_from_upstream_task(row));
+        }
+        Some(OpenAiVideoProvider::Kling) => {
+            if let Some(value) = data
+                .as_ref()
+                .and_then(|item| json_path_i64(item, &["data", "created_at"]))
+            {
+                video["created_at"] = serde_json::json!(value);
+            }
+            if let Some(value) = data
+                .as_ref()
+                .and_then(|item| json_path_i64(item, &["data", "updated_at"]))
+            {
+                video["completed_at"] = serde_json::json!(value);
+            }
+            if let Some(value) = data.as_ref().and_then(|item| {
+                json_first_array_string(item, &["data", "task_result", "videos"], "duration")
+            }) {
+                video["seconds"] = serde_json::json!(value);
+            }
+        }
+        Some(OpenAiVideoProvider::Sora) | None => {}
+    }
+    if provider == Some(OpenAiVideoProvider::Doubao) {
+        video["task_id"] = serde_json::json!(row.task_id);
+    }
+    if provider == Some(OpenAiVideoProvider::Vertex) {
+        video["model"] = serde_json::json!(veo_model_from_upstream_task(row));
+    }
+
+    let error = provider_video_error(provider, data.as_ref()).or_else(|| {
+        if status == TaskStatus::Failure {
+            if row.fail_reason.trim().is_empty() {
+                provider_data_error_message(data.as_ref())
+                    .map(|message| (message, "task_failed".to_string()))
+            } else {
+                Some((row.fail_reason.clone(), "task_failed".to_string()))
+            }
+        } else {
+            None
+        }
+    });
+    if let Some((message, code)) = error {
         video["error"] = serde_json::json!({
-            "message": error_message,
-            "code": "task_failed",
+            "message": message,
+            "code": code,
         });
     }
     video
@@ -1835,5 +2047,85 @@ mod tests {
         let video = openai_video_json(&row);
         assert_eq!(video["created_at"], 100);
         assert_eq!(video["metadata"]["url"], "https://provider.example/ali.mp4");
+    }
+
+    #[test]
+    fn openai_video_json_applies_ali_status_and_error_mapping() {
+        let mut row = task_row();
+        row.platform = "17".to_string();
+        row.status = "SUCCESS".to_string();
+        row.private_data = "{}".to_string();
+        row.data = serde_json::json!({
+            "output": {
+                "task_status": "FAILED",
+                "video_url": "https://provider.example/ali.mp4",
+                "code": "ALI_FAILED",
+                "message": "ali rejected"
+            }
+        })
+        .to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(video["status"], "failed");
+        assert_eq!(video["completed_at"], 110);
+        assert_eq!(video["metadata"]["url"], "https://provider.example/ali.mp4");
+        assert_eq!(video["error"]["message"], "ali rejected");
+        assert_eq!(video["error"]["code"], "ALI_FAILED");
+    }
+
+    #[test]
+    fn openai_video_json_applies_kling_provider_times_seconds_and_error() {
+        let mut row = task_row();
+        row.platform = "50".to_string();
+        row.status = "FAILURE".to_string();
+        row.private_data = "{}".to_string();
+        row.data = serde_json::json!({
+            "data": {
+                "created_at": 1000,
+                "updated_at": 1100,
+                "task_status": "failed",
+                "task_status_msg": "kling failed",
+                "task_result": {
+                    "videos": [
+                        {
+                            "url": "https://provider.example/kling.mp4",
+                            "duration": "8"
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(video["created_at"], 1000);
+        assert_eq!(video["completed_at"], 1100);
+        assert_eq!(video["seconds"], "8");
+        assert_eq!(
+            video["metadata"]["url"],
+            "https://provider.example/kling.mp4"
+        );
+        assert_eq!(video["error"]["message"], "kling failed");
+        assert_eq!(video["error"]["code"], "");
+    }
+
+    #[test]
+    fn openai_video_json_extracts_veo_model_from_encoded_operation_name() {
+        let mut row = task_row();
+        row.platform = "24".to_string();
+        row.status = "IN_PROGRESS".to_string();
+        row.finish_time = 0;
+        let upstream_task_id = cinatoken_tasks::taskcommon::encode_local_task_id(
+            "projects/proj/locations/us-central1/publishers/google/models/veo-3.1-generate-preview/operations/op123",
+        );
+        row.private_data = serde_json::json!({
+            "upstream_task_id": upstream_task_id
+        })
+        .to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(video["model"], "veo-3.1-generate-preview");
+        assert_eq!(video["status"], "in_progress");
+        assert_eq!(video["completed_at"], 110);
     }
 }

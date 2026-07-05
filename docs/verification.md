@@ -4,6 +4,22 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `cargo fmt --all`: passed after adding provider-specific OpenAI video
+  serializer overlays.
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 10
+  passed after adding Ali status/error mapping, Kling provider time/seconds/error
+  mapping, and Gemini/Vertex Veo operation-name model extraction.
+- `cargo test -p cinatoken-worker --lib`: 363 passed after adding
+  provider-specific OpenAI video serializer overlays.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding provider-specific OpenAI video serializer overlays; the only
+  warnings were the pre-existing `dead_code` warnings in `d1_repositories.rs`.
+- `bun run check`: passed after adding provider-specific OpenAI video
+  serializer overlays, covering frontend type/build, route-debt baseline,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit remained 214 frontend Worker-facing
+  routes, 298 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check`: passed after task-data persistence and OpenAI video
   enrichment, covering frontend type/build, route-debt baseline,
   `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and

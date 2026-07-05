@@ -254,6 +254,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   video fetch enriches from that stored data for Sora/OpenAI passthrough fields,
   common provider video URL shapes, nested first-video arrays, and provider
   error messages while preserving local task `created_at` for non-Sora data.
+  The no-extra-I/O portions of provider-specific `ConvertToOpenAIVideo` are now
+  ported for Ali status/error mapping, Doubao/Kling/Vidu/Jimeng/Hailuo error
+  shapes, Kling provider time/seconds fields, Doubao legacy `task_id`, and
+  Gemini/Vertex Veo model extraction from encoded upstream operation names.
   `/v1/videos/:video_id/remix` and `/v1/videos/:task_id/content` remain
   explicit 501 boundaries until remix origin-task resolution and the Queue/R2
   content proxy are ported.
@@ -428,11 +432,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   real-file replay for the non-WAV/WebM audio duration parsers,
   raw/pass-through stream extraction where needed, live upstream smoke, and
   billing shadow evidence.
-- Continue the async-video G7 path by completing exact provider-specific
-  `ConvertToOpenAIVideo` serializers on top of the persisted task data
-  substrate, porting Sora remix origin-task/channel-lock resolution, and adding
-  the `/v1/videos/:task_id/content` Queue/R2 proxy before production ownership
-  of video artifacts.
+- Continue the async-video G7 path by adding provider replay fixtures for the
+  newly ported OpenAI video serializers, completing any remaining exact
+  provider-specific conversion gaps that require artifact retrieval, porting
+  Sora remix origin-task/channel-lock resolution, and adding the
+  `/v1/videos/:task_id/content` Queue/R2 proxy before production ownership of
+  video artifacts.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

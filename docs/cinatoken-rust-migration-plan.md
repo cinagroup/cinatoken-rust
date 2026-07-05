@@ -3346,3 +3346,47 @@ Ali, Doubao, Kling, Jimeng, Vidu, Gemini, Vertex, and Hailuo, and Sora remix
 still needs `ResolveOriginTask` parity. The `/v1/videos/:task_id/content`
 artifact path remains fail-closed until the Queue/R2 proxy, retention policy,
 provider replay, and task billing settlement evidence exist.
+
+### 22.41 2026-07-05 Provider-Specific OpenAI Video Serializer Delta
+
+This increment builds on the persisted `tasks.data` substrate from 22.40 and
+ports the no-extra-I/O portions of Go `ConvertToOpenAIVideo` into the Worker
+status serializer. It keeps artifact retrieval out of `GET /v1/videos/:task_id`
+until the Queue/R2 content proxy exists.
+
+Implemented in Rust:
+
+- `GET /v1/videos/:task_id` now detects task provider identity from the stored
+  channel-type `platform`, including Ali, Doubao, Kling, Vidu, Jimeng, Gemini,
+  Vertex, Hailuo, and Sora/OpenAI.
+- Ali video status now follows Go `convertAliStatus` from
+  `data.output.task_status`, including `PENDING`, `RUNNING`, `SUCCEEDED`,
+  `FAILED`, `CANCELED`, `UNKNOWN`, and unknown-status fallback.
+- Provider-specific OpenAI video errors now prefer each provider's task data
+  shape: Ali top-level/output codes, Doubao `error`, Kling top-level or
+  `data.task_status_msg`, Vidu `err_code`, Jimeng numeric `code`, and Hailuo
+  `base_resp`.
+- Provider-specific time and metadata overlays now match source behavior where
+  no extra fetch is required: Ali/Doubao/Vidu/Jimeng/Hailuo/Vertex use local
+  `updated_at` for `completed_at`; Kling uses provider `created_at` /
+  `updated_at` and first-video `duration` as `seconds`; Doubao emits the
+  legacy-compatible `task_id`; Gemini/Vertex extract the Veo model from the
+  encoded upstream operation name with the Go fallback model.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 10
+  passed, including Ali status/error mapping, Kling provider time/seconds/error
+  mapping, and Veo operation-name model extraction;
+- `cargo test -p cinatoken-worker --lib`: 363 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check.
+
+Remaining boundary: this is serializer parity for stored task JSON, not full
+video production ownership. Hailuo's authenticated file retrieval, Vertex/Gemini
+artifact delivery, `/v1/videos/:task_id/content`, Sora remix origin-task
+resolution, provider replay fixtures, and async task billing settlement evidence
+remain required before G7 video cutover.

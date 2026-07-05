@@ -4457,3 +4457,51 @@ Remaining migration gaps:
   option after the WFP deploy path is proven.
 - `/v1/realtime` protocol parity and cross-provider AI Gateway fallback policy
   remain separate migration tracks.
+
+### 22.65 2026-07-05 WFP Rust/Wasm Tenant Runtime Foundation
+
+This increment closes the biggest naming/architecture mismatch left by 22.64:
+the deploy control plane was written in Rust, but the generated tenant runtime
+was still an ES module string. The migration goal explicitly calls for a WFP
+Rust tenant script, so the repository now contains a separate Rust/Wasm tenant
+Worker crate.
+
+Implemented:
+
+- Added `crates/wfp-tenant`.
+  - `cinatoken-wfp-tenant` is a standalone `worker-rs` Worker crate with its
+    own `wrangler.toml`.
+  - `GET /__cinatoken/tenant/status` returns a runtime status payload with
+    `runtime: "rust-wasm"` for WFP dispatch smoke.
+  - `POST /v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and
+    `/ai/run` forward to Cloudflare AI Gateway REST.
+  - The Rust runtime uses `CF_ACCOUNT_ID`, `CF_API_TOKEN`, optional
+    `AI_GATEWAY_ID`, and `CINATOKEN_TENANT_ID` bindings. It sets the upstream
+    bearer token itself and does not forward the client's `Authorization`
+    header.
+  - The forwarding path passes the inbound `ReadableStream` body through
+    `RequestInit` instead of calling `bytes()`/`json()`; route policy and
+    response headers are handled in Rust.
+- Added `bun run build:wfp-tenant` and `bun run check:wfp-tenant`.
+- The root-only tenant-script plan response now advertises the Rust/Wasm
+  runtime crate path, build command, and shim artifact path so the next
+  control-plane increment can upload worker-build artifacts.
+
+Validation:
+
+- `cargo test -p cinatoken-wfp-tenant` passed.
+- `cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown` passed.
+- `bun run check:wfp-tenant` passed.
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed.
+- `bun run check` passed, including frontend type/build, bundle redaction,
+  bundle budget, lint debt, route audit, workspace tests, and Worker/WFP
+  wasm32 checks.
+
+Remaining migration gaps:
+
+- The `deploy` route still uploads the generated ES module fallback. The next
+  WFP step is artifact-aware deployment: upload `crates/wfp-tenant/build/worker`
+  output (`shim.mjs` plus generated Wasm/glue modules) through the dispatch
+  namespace multipart API.
+- Live dispatch namespace deploy/smoke still needs Cloudflare account ID,
+  namespace, and scoped API token in staging.

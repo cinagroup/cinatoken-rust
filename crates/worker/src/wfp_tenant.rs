@@ -33,6 +33,9 @@ const DEFAULT_COMPATIBILITY_DATE: &str = "2026-06-17";
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const CF_API_RESPONSE_LIMIT_BYTES: usize = 32 * 1024;
 const CF_API_TIMEOUT: Duration = Duration::from_secs(20);
+const RUST_TENANT_CRATE: &str = "crates/wfp-tenant";
+const RUST_TENANT_BUILD_COMMAND: &str = "bun run build:wfp-tenant";
+const RUST_TENANT_SHIM_PATH: &str = "crates/wfp-tenant/build/worker/shim.mjs";
 
 #[derive(Debug, Deserialize)]
 struct TenantScriptRequest {
@@ -84,6 +87,16 @@ struct TenantScriptPlanResponse {
     warnings: Vec<String>,
     metadata: Value,
     script: String,
+    rust_wasm_runtime: RustWasmRuntimePlan,
+}
+
+#[derive(Debug, Serialize)]
+struct RustWasmRuntimePlan {
+    available: bool,
+    crate_path: &'static str,
+    build_command: &'static str,
+    shim_path: &'static str,
+    deployment_status: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -342,6 +355,13 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
         warnings: plan.warnings.clone(),
         metadata: plan.redacted_metadata.clone(),
         script: plan.script.clone(),
+        rust_wasm_runtime: RustWasmRuntimePlan {
+            available: true,
+            crate_path: RUST_TENANT_CRATE,
+            build_command: RUST_TENANT_BUILD_COMMAND,
+            shim_path: RUST_TENANT_SHIM_PATH,
+            deployment_status: "compile_ready_artifact_upload_not_wired",
+        },
     }
 }
 

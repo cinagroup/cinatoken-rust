@@ -1198,6 +1198,21 @@ baseline above.
   `git diff --check` (passed), and `bun run check` (passed; route audit
   214 frontend calls / 307 Worker routes / 0 missing calls).
 
+- **WFP Rust/Wasm tenant runtime - locally verified (2026-07-05).** Added the
+  standalone `cinatoken-wfp-tenant` Worker crate under `crates/wfp-tenant`.
+  It exposes `GET /__cinatoken/tenant/status` with `runtime: "rust-wasm"` and
+  forwards `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and
+  `/ai/run` to Cloudflare AI Gateway REST using tenant-owned
+  `CF_ACCOUNT_ID`/`CF_API_TOKEN`/`AI_GATEWAY_ID` bindings. The inbound request
+  body is passed through as a `ReadableStream` via `RequestInit`; the Rust
+  runtime does not call `bytes()` or `json()` on the AI request body. Local
+  evidence: `bun run check:wfp-tenant` (passed; 2 tenant tests and wasm32
+  check), `cargo test -p cinatoken-wfp-tenant` (2 passed),
+  `cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown`
+  (passed), `cargo test -p cinatoken-worker --lib wfp_tenant` (5 passed),
+  and `bun run check` (passed; frontend route audit 214 calls / 307 Worker
+  routes / 0 missing calls; existing worker dead-code warnings only).
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

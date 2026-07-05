@@ -333,6 +333,10 @@ The root-only control-plane routes:
 generate a small tenant Worker module and, for `deploy`, upload it to the
 Cloudflare Workers for Platforms dispatch namespace API. This REST call is
 control-plane only; hot tenant traffic still uses the `DISPATCHER` binding.
+The repository also includes a standalone Rust/Wasm tenant Worker at
+`crates/wfp-tenant`; until artifact-aware deployment is wired, the control-plane
+deploy route still uploads the ES module fallback while the plan response
+advertises the Rust crate path and build artifact.
 
 | Var/secret | Kind | Required for | Notes |
 | --- | --- | --- | --- |
@@ -348,9 +352,12 @@ Smoke order:
    `CLOUDFLARE_API_TOKEN` in staging.
 2. Call `/api/platform/wfp/tenant-script/plan` as a root admin and archive the
    redacted metadata plus generated script.
-3. Call `/api/platform/wfp/tenant-script/deploy` and confirm a 2xx Cloudflare
+3. Run `bun run check:wfp-tenant` and, when `worker-build` is installed,
+   `bun run build:wfp-tenant`; archive the `crates/wfp-tenant/build/worker`
+   artifact manifest.
+4. Call `/api/platform/wfp/tenant-script/deploy` and confirm a 2xx Cloudflare
    API response.
-4. Enable the commented `DISPATCHER` binding and, only then, run an internal
+5. Enable the commented `DISPATCHER` binding and, only then, run an internal
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke with
    `WFP_DISPATCH_ENABLED=true` in staging.
 

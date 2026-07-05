@@ -580,7 +580,8 @@ Required tasks:
 8. Use the root-only WFP tenant script control plane to generate and deploy
    staging tenant Workers before enabling dispatch traffic:
    `/api/platform/wfp/tenant-script/plan` must produce redacted metadata and a
-   reviewed script, `/api/platform/wfp/tenant-script/deploy` must return a 2xx
+   reviewed script, `bun run check:wfp-tenant` must prove the Rust/Wasm tenant
+   runtime, `/api/platform/wfp/tenant-script/deploy` must return a 2xx
    Cloudflare dispatch namespace API response, and only then may
    `WFP_DISPATCH_ENABLED` be armed for dispatch smoke.
 
@@ -595,8 +596,8 @@ Exit evidence:
 - Task retry cannot double-charge or lose artifacts.
 - Frontend build and route checks pass under Bun.
 - WFP tenant script deploy smoke proves the Cloudflare dispatch namespace API,
-  `DISPATCHER` binding, and AI Gateway runtime bindings before tenant traffic
-  is routed through the new path.
+  `DISPATCHER` binding, Rust/Wasm tenant runtime, and AI Gateway runtime
+  bindings before tenant traffic is routed through the new path.
 
 ## Performance And Cost Plan
 

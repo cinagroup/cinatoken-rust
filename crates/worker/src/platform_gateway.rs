@@ -18,6 +18,16 @@ pub const WFP_INTERNAL_DISPATCH_ENABLED_ENV: &str = "WFP_INTERNAL_DISPATCH_ENABL
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
+const BLOCKED_DISPATCH_REQUEST_HEADERS: &[&str] = &[
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "x-goog-api-key",
+    "api-key",
+    "cf-access-client-id",
+    "cf-access-client-secret",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchTarget {
@@ -248,20 +258,12 @@ fn prefixed_worker_name(public_name: &str, prefix: Option<&str>) -> Option<Strin
 }
 
 fn request_for_dispatch_target(req: Request, target: &DispatchTarget) -> WorkerResult<Request> {
-    match target.tenant_path.as_deref() {
-        Some(tenant_path) => rewrite_request_path(req, tenant_path),
-        None => Ok(req),
-    }
-}
-
-fn internal_dispatch_requires_admin_auth(target: &DispatchTarget) -> bool {
-    target.route_kind == DispatchRouteKind::InternalPath
-}
-
-fn rewrite_request_path(req: Request, tenant_path: &str) -> WorkerResult<Request> {
     let mut url = req.url()?;
-    url.set_path(tenant_path);
-    let headers = clone_headers(req.headers())?;
+    if let Some(tenant_path) = target.tenant_path.as_deref() {
+        url.set_path(tenant_path);
+    }
+
+    let headers = dispatch_forward_headers(req.headers())?;
     let body = req.inner().body().map(JsValue::from);
     let mut init = RequestInit::new();
     init.with_method(req.method()).with_headers(headers);
@@ -271,12 +273,27 @@ fn rewrite_request_path(req: Request, tenant_path: &str) -> WorkerResult<Request
     Request::new_with_init(url.as_str(), &init)
 }
 
-fn clone_headers(input: &Headers) -> WorkerResult<Headers> {
+fn internal_dispatch_requires_admin_auth(target: &DispatchTarget) -> bool {
+    target.route_kind == DispatchRouteKind::InternalPath
+}
+
+fn dispatch_forward_headers(input: &Headers) -> WorkerResult<Headers> {
     let mut headers = Headers::new();
     for (name, value) in input {
-        headers.append(&name, &value)?;
+        if should_forward_dispatch_request_header(&name) {
+            headers.append(&name, &value)?;
+        }
     }
     Ok(headers)
+}
+
+fn should_forward_dispatch_request_header(name: &str) -> bool {
+    !is_blocked_dispatch_request_header(name)
+}
+
+fn is_blocked_dispatch_request_header(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    BLOCKED_DISPATCH_REQUEST_HEADERS.contains(&name.as_str()) || name.starts_with("x-cinatoken-")
 }
 
 fn normalize_host(host: &str) -> Option<String> {
@@ -391,6 +408,34 @@ mod tests {
             tenant_path: None,
         };
         assert!(!internal_dispatch_requires_admin_auth(&preview));
+    }
+
+    #[test]
+    fn dispatch_request_header_forwarding_strips_credentials_and_platform_markers() {
+        for header in [
+            "Authorization",
+            "Cookie",
+            "Proxy-Authorization",
+            "X-Api-Key",
+            "X-Goog-Api-Key",
+            "Api-Key",
+            "CF-Access-Client-Id",
+            "CF-Access-Client-Secret",
+            "X-Cinatoken-Smoke",
+            "x-cinatoken-tenant",
+        ] {
+            assert!(
+                !should_forward_dispatch_request_header(header),
+                "expected {header} to be stripped before WFP dispatch"
+            );
+        }
+
+        for header in ["Content-Type", "Accept", "User-Agent", "Traceparent"] {
+            assert!(
+                should_forward_dispatch_request_header(header),
+                "expected {header} to be forwarded to WFP dispatch"
+            );
+        }
     }
 
     #[test]

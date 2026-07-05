@@ -1285,6 +1285,27 @@ baseline above.
   unauthenticated 401/403 negative check before `WFP_INTERNAL_DISPATCH_ENABLED`
   is considered production-ready.
 
+- **WFP dispatch inbound header hygiene - locally verified (2026-07-05).**
+  The main dispatch Worker now rebuilds the request before invoking
+  `DISPATCHER`, preserving safe forwarded headers and the streamed body while
+  stripping `Authorization`, `Cookie`, `Proxy-Authorization`, API-key headers,
+  Cloudflare Access client credentials, and caller-provided `x-cinatoken-*`
+  markers. The Rust/Wasm tenant runtime and generated JS fallback tenant script
+  now expose `inbound_sensitive_headers_present` and
+  `inbound_sensitive_headers` in tenant status responses, allowing staging
+  smoke to prove that admin cookies and relay credentials did not reach the
+  tenant Worker. Local evidence: `cargo test -p cinatoken-worker --lib
+  platform_gateway` (passed; 6 platform-gateway tests), `cargo test -p
+  cinatoken-wfp-tenant` (passed; 8 tenant-runtime tests), `cargo test -p
+  cinatoken-worker --lib wfp_tenant` (passed; 7 generated fallback/control-plane
+  tests), `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  https://staging.example.test --worker tenant-smoke --route /v1/responses
+  --cookie session=redacted` (passed; no cookie value printed), and `bun run
+  check` (passed; frontend gates, WFP deploy-plan/dispatch/realtime smoke plans,
+  workspace tests, and Worker/WFP wasm32 checks). Live staging still needs the
+  same smoke against a real `DISPATCHER` binding to verify the tenant status
+  reports an empty `inbound_sensitive_headers` array.
+
 - **WFP Rust/Wasm artifact deploy uploader - locally verified (2026-07-05).**
   Added `tools/deploy_wfp_tenant_artifact.mjs` and `bun run deploy:wfp-tenant`
   for local upload of `crates/wfp-tenant/build/worker` to the Cloudflare WFP

@@ -101,6 +101,7 @@ function buildPlan(options) {
     notes: [
       "worker is the public tenant name in /api/platform/dispatch/:worker; WFP_DISPATCH_WORKER_PREFIX is applied by the main Worker.",
       "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
+      "the dispatch Worker strips platform/admin credentials before invoking the tenant Worker; live status smoke fails if tenant status reports sensitive inbound headers.",
       "status smoke validates the dispatch binding, internal path rewrite, tenant status contract, and x-cinatoken WFP headers.",
       "route smoke is opt-in and may call the tenant AI Gateway route; use staging credentials and a low-risk payload.",
     ],
@@ -273,6 +274,14 @@ function validateStatusBody(body) {
       throw new Error(`tenant status route manifest is missing ${route}`);
     }
   }
+  if (body.inbound_sensitive_headers_present !== false) {
+    throw new Error(
+      `tenant status reported sensitive inbound headers: ${JSON.stringify(body.inbound_sensitive_headers)}`,
+    );
+  }
+  if (!Array.isArray(body.inbound_sensitive_headers) || body.inbound_sensitive_headers.length !== 0) {
+    throw new Error("tenant status must expose an empty inbound_sensitive_headers array");
+  }
 }
 
 function validateDispatchHeaders(headers, worker) {
@@ -296,6 +305,8 @@ function summarizeTenantStatus(body) {
     aiGatewayIdConfigured: body.ai_gateway_id_configured,
     defaultAiGatewayIdConfigured: body.default_ai_gateway_id_configured,
     routeGateways: body.route_gateways,
+    inboundSensitiveHeadersPresent: body.inbound_sensitive_headers_present,
+    inboundSensitiveHeaders: body.inbound_sensitive_headers,
     routes: body.routes,
   };
 }

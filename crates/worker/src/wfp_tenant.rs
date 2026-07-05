@@ -568,6 +568,16 @@ const SAFE_RESPONSE_HEADERS = [
   "openai-request-id",
   "anthropic-request-id"
 ];
+const SENSITIVE_INBOUND_HEADERS = [
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "x-api-key",
+  "x-goog-api-key",
+  "api-key",
+  "cf-access-client-id",
+  "cf-access-client-secret"
+];
 const ROUTE_GATEWAY_ENVS = {
   "/v1/chat/completions": "AI_GATEWAY_ID_OPENAI_CHAT",
   "/v1/responses": "AI_GATEWAY_ID_OPENAI_RESPONSES",
@@ -584,6 +594,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === STATUS_PATH) {
+      const inboundSensitiveHeaders = inboundSensitiveHeaderNames(request.headers);
       return jsonResponse({
         service: "cinatoken-wfp-tenant",
         runtime: "js-fallback",
@@ -591,6 +602,8 @@ export default {
         ai_gateway_id_configured: gatewayIdConfigured(env),
         default_ai_gateway_id_configured: Boolean(env.AI_GATEWAY_ID),
         route_gateways: routeGatewayStatus(env),
+        inbound_sensitive_headers_present: inboundSensitiveHeaders.length > 0,
+        inbound_sensitive_headers: inboundSensitiveHeaders,
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTES
@@ -670,6 +683,19 @@ function routeGatewayStatus(env) {
     gateway_env: gatewayEnv,
     gateway_id_configured: Boolean(env[gatewayEnv])
   }));
+}
+
+function inboundSensitiveHeaderNames(input) {
+  const names = new Set();
+  for (const [name] of input) {
+    if (isSensitiveInboundHeader(name)) names.add(name.toLowerCase());
+  }
+  return Array.from(names).sort();
+}
+
+function isSensitiveInboundHeader(name) {
+  const normalized = name.trim().toLowerCase();
+  return SENSITIVE_INBOUND_HEADERS.includes(normalized) || normalized.startsWith("x-cinatoken-");
 }
 
 function safeResponseHeaders(input) {
@@ -914,11 +940,15 @@ mod tests {
         assert!(script.contains("cf-aig-metadata"));
         assert!(script.contains("runtime: \"js-fallback\""));
         assert!(script.contains("body_mode: \"streamed_request_body\""));
+        assert!(script.contains("inbound_sensitive_headers_present"));
+        assert!(script.contains("inboundSensitiveHeaderNames(request.headers)"));
+        assert!(script.contains("SENSITIVE_INBOUND_HEADERS"));
         assert!(script.contains("x-cinatoken-wfp-runtime"));
         assert!(script.contains("safeResponseHeaders(upstream.headers)"));
         assert!(script.contains("SAFE_RESPONSE_HEADERS"));
         assert!(!script.contains("new Headers(upstream.headers)"));
         assert!(!script.contains("input.get(\"authorization\")"));
+        assert!(!script.contains("input.get(\"cookie\")"));
         assert!(!script.contains("if (env.AI_GATEWAY_ID) headers.set"));
         assert!(!script.contains("await request.json()"));
     }

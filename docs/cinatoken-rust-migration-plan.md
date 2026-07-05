@@ -4745,8 +4745,10 @@ Implemented:
   `:worker` segment.
 - `dispatch_request` rewrites only internal-dispatch requests before invoking
   the `DISPATCHER` binding. Preview-host dispatch keeps the original path.
-- The rewrite preserves method, query string, headers, and the original
-  `ReadableStream` request body. It does not read AI request bodies into memory.
+- The rewrite preserves method, query string, safe forwarded headers, and the
+  original `ReadableStream` request body. It does not read AI request bodies
+  into memory. Later hardening strips platform/admin credential headers before
+  the `DISPATCHER` binding sees the request.
 - The documented smoke
   `/api/platform/dispatch/:worker/__cinatoken/tenant/status` now reaches the
   tenant as `/__cinatoken/tenant/status`, matching the Rust/Wasm and generated
@@ -4766,8 +4768,8 @@ Remaining migration gaps:
 - Run the internal dispatch status smoke against a real staging
   `DISPATCHER` binding and uploaded fallback/Rust tenant scripts.
 - Capture an internal dispatch POST smoke for at least one tenant AI route to
-  prove the rewritten path, query string, headers, and streamed body reach the
-  tenant Worker unchanged.
+  prove the rewritten path, query string, safe forwarded headers, and streamed
+  body reach the tenant Worker while platform/admin credentials stay stripped.
 
 ### 22.71 2026-07-05 WFP Tenant Route-Level AI Gateway Selection
 
@@ -5006,3 +5008,59 @@ Remaining migration gaps:
   dispatch URL before any production WFP routing decision.
 - Decide whether production ever needs `WFP_INTERNAL_DISPATCH_ENABLED`; the
   safer default remains off outside staging smoke windows.
+
+### 22.76 2026-07-05 WFP Dispatch Inbound Header Hygiene
+
+This increment tightens the boundary between the main dispatch Worker and WFP
+tenant scripts. The previous admin-auth gate protected the internal dispatch
+entrypoint, but the authenticated request still carried the admin `Cookie`
+header into the tenant Worker. Since WFP tenant scripts may be generated,
+uploaded, or inspected independently, the dispatch Worker must not expose
+platform credentials to that layer.
+
+Implemented:
+
+- Rebuilt the WFP dispatch request before invoking `DISPATCHER` for both
+  internal-path and preview-host routes, preserving method, query string, body
+  stream, and safe request headers.
+- Stripped credential/control-plane request headers before tenant dispatch:
+  `Authorization`, `Cookie`, `Proxy-Authorization`, `x-api-key`,
+  `x-goog-api-key`, `api-key`, Cloudflare Access client credentials, and all
+  caller-provided `x-cinatoken-*` markers.
+- Extended the Rust/Wasm tenant status contract with
+  `inbound_sensitive_headers_present` and `inbound_sensitive_headers`, exposing
+  only sensitive header names and never values.
+- Updated the generated JS fallback tenant script with the same inbound-header
+  status contract.
+- Upgraded `tools/smoke_wfp_dispatch.mjs` so live WFP status smoke fails unless
+  tenant status reports `inbound_sensitive_headers_present=false` and an empty
+  `inbound_sensitive_headers` array.
+- Updated staging and production readiness docs so WFP dispatch evidence now
+  proves both admin-only access and credential stripping at the tenant boundary.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed, including
+  header-forwarding coverage that strips credentials and `x-cinatoken-*`
+  platform markers before WFP dispatch.
+- `cargo test -p cinatoken-wfp-tenant` passed, including inbound sensitive
+  header detection coverage for the Rust/Wasm tenant status contract.
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed, proving the
+  generated JS fallback includes the same inbound-header status contract and
+  still avoids client auth/header forwarding to AI Gateway.
+- `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  https://staging.example.test --worker tenant-smoke --route /v1/responses
+  --cookie session=redacted` passed and documented the new credential-stripping
+  live-smoke gate without printing the cookie value.
+- `bun run check` passed, including frontend build/redaction/budget/route
+  gates, WFP deploy-plan/dispatch/realtime smoke plans, workspace tests, and
+  Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run live staging WFP dispatch smoke with a real admin session cookie and
+  confirm the tenant status response still reports no sensitive inbound
+  headers.
+- Capture at least one live POST route smoke after route-specific AI Gateway IDs
+  are configured, then verify AI Gateway logs contain tenant metadata without
+  exposing platform credentials to tenant clients.

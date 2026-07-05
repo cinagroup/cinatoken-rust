@@ -38,6 +38,16 @@ const SAFE_RESPONSE_HEADERS: &[&str] = &[
     "openai-request-id",
     "anthropic-request-id",
 ];
+const SENSITIVE_INBOUND_HEADERS: &[&str] = &[
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "x-goog-api-key",
+    "api-key",
+    "cf-access-client-id",
+    "cf-access-client-secret",
+];
 const SUPPORTED_ROUTES: &[TenantRoute] = &[
     TenantRoute {
         public_path: "/v1/chat/completions",
@@ -89,6 +99,8 @@ struct TenantStatus {
     ai_gateway_id_configured: bool,
     default_ai_gateway_id_configured: bool,
     route_gateways: Vec<RouteGatewayStatus>,
+    inbound_sensitive_headers_present: bool,
+    inbound_sensitive_headers: Vec<String>,
     forwarding: &'static str,
     body_mode: &'static str,
     routes: &'static [&'static str],
@@ -111,7 +123,7 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> WorkerResult<Respon
 async fn route(req: Request, env: Env) -> WorkerResult<Response> {
     let path = req.path();
     if req.method() == Method::Get && path == STATUS_PATH {
-        return tenant_status(&env);
+        return tenant_status(&req, &env);
     }
 
     let Some(route) = target_route(&path) else {
@@ -132,13 +144,14 @@ async fn route(req: Request, env: Env) -> WorkerResult<Response> {
     forward_ai_gateway(req, env, route).await
 }
 
-fn tenant_status(env: &Env) -> WorkerResult<Response> {
+fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
     let default_ai_gateway_id_configured = runtime_value(env, AI_GATEWAY_ID_ENV).is_some();
     let route_gateways = route_gateway_statuses(env);
     let ai_gateway_id_configured = default_ai_gateway_id_configured
         || route_gateways
             .iter()
             .any(|route| route.gateway_id_configured);
+    let inbound_sensitive_headers = inbound_sensitive_header_names(req.headers());
     let status = TenantStatus {
         service: SERVICE_NAME,
         runtime: "rust-wasm",
@@ -147,6 +160,8 @@ fn tenant_status(env: &Env) -> WorkerResult<Response> {
         ai_gateway_id_configured,
         default_ai_gateway_id_configured,
         route_gateways,
+        inbound_sensitive_headers_present: !inbound_sensitive_headers.is_empty(),
+        inbound_sensitive_headers,
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTE_PATHS,
@@ -320,6 +335,23 @@ fn copy_header(req: &Request, output: &mut Headers, name: &str) -> WorkerResult<
         output.set(name, &value)?;
     }
     Ok(())
+}
+
+fn inbound_sensitive_header_names(headers: &Headers) -> Vec<String> {
+    let mut names = Vec::new();
+    for (name, _) in headers {
+        if is_sensitive_inbound_header(&name) {
+            names.push(name.to_ascii_lowercase());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn is_sensitive_inbound_header(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    SENSITIVE_INBOUND_HEADERS.contains(&name.as_str()) || name.starts_with("x-cinatoken-")
 }
 
 fn tenant_id(env: &Env) -> String {
@@ -505,6 +537,34 @@ mod tests {
             assert!(
                 !is_safe_response_header(header),
                 "expected {header} to be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_sensitive_header_detection_matches_dispatch_scrubbing_contract() {
+        for header in [
+            "Authorization",
+            "Cookie",
+            "Proxy-Authorization",
+            "X-Api-Key",
+            "X-Goog-Api-Key",
+            "Api-Key",
+            "CF-Access-Client-Id",
+            "CF-Access-Client-Secret",
+            "X-Cinatoken-Smoke",
+            "x-cinatoken-tenant",
+        ] {
+            assert!(
+                is_sensitive_inbound_header(header),
+                "expected {header} to be reported by tenant status"
+            );
+        }
+
+        for header in ["Content-Type", "Accept", "User-Agent", "Traceparent"] {
+            assert!(
+                !is_sensitive_inbound_header(header),
+                "expected {header} to remain a normal forwarded header"
             );
         }
     }

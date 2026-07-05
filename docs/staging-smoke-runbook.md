@@ -180,7 +180,7 @@ Record:
 - Admin-authenticated smoke evidence only; do not paste the raw
   `WFP_SMOKE_COOKIE` value into the report.
 - Tenant status body, including `runtime`, `forwarding`, `body_mode`, routes,
-  and per-route gateway configuration.
+  per-route gateway configuration, and `inbound_sensitive_headers_present`.
 - `x-cinatoken-wfp-route`, `x-cinatoken-wfp-worker`,
   `x-cinatoken-wfp-tenant`, and `x-cinatoken-wfp-runtime` headers.
 - AI Gateway log entry for any opt-in POST route smoke.
@@ -196,6 +196,11 @@ Pass criteria:
   `js-fallback` for the generated fallback path under test.
 - `forwarding` is `cloudflare-ai-gateway-rest`, `body_mode` is streamed, and
   every supported tenant AI route appears in the route manifest.
+- `inbound_sensitive_headers_present` is `false` and
+  `inbound_sensitive_headers` is an empty array, proving the dispatch Worker
+  stripped the admin cookie, relay/API-key headers, Cloudflare Access client
+  headers, and `x-cinatoken-*` platform markers before invoking the tenant
+  Worker.
 - Dispatch headers identify `internal-path` and the public tenant worker name.
 - Optional AI route smoke returns the expected staging status and safe
   response headers only; raw authorization, `cf-aig-*`, and upstream

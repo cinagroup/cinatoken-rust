@@ -153,6 +153,50 @@ Pass criteria:
 - Environment is staging, not development.
 - Logs/traces show the request.
 
+## Phase 1b: WFP Dispatch Smoke
+
+Run this only after the staging dispatch namespace exists, the tenant Worker is
+uploaded, and `WFP_DISPATCH_ENABLED=true` plus
+`WFP_INTERNAL_DISPATCH_ENABLED=true` are enabled in staging. The default smoke
+checks the internal dispatch path and tenant status route without sending an AI
+request:
+
+```powershell
+$env:WFP_SMOKE_URL = $env:STAGING_BASE_URL
+bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --json
+```
+
+If the tenant has staging `CF_ACCOUNT_ID`, `CF_API_TOKEN`, and AI Gateway ID
+bindings, run one explicit AI route smoke with a low-risk payload:
+
+```powershell
+bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --route /v1/responses --body '{"model":"gpt-4o-mini","input":"wfp dispatch smoke","max_output_tokens":1}' --json
+```
+
+Record:
+
+- Command output.
+- Tenant status body, including `runtime`, `forwarding`, `body_mode`, routes,
+  and per-route gateway configuration.
+- `x-cinatoken-wfp-route`, `x-cinatoken-wfp-worker`,
+  `x-cinatoken-wfp-tenant`, and `x-cinatoken-wfp-runtime` headers.
+- AI Gateway log entry for any opt-in POST route smoke.
+- Worker log/trace link for both the main dispatch Worker and the tenant
+  Worker.
+
+Pass criteria:
+
+- Status smoke reaches the tenant status route through
+  `/api/platform/dispatch/:worker/...`.
+- `runtime` is `rust-wasm` for the Rust/Wasm artifact path or
+  `js-fallback` for the generated fallback path under test.
+- `forwarding` is `cloudflare-ai-gateway-rest`, `body_mode` is streamed, and
+  every supported tenant AI route appears in the route manifest.
+- Dispatch headers identify `internal-path` and the public tenant worker name.
+- Optional AI route smoke returns the expected staging status and safe
+  response headers only; raw authorization, `cf-aig-*`, and upstream
+  `x-cinatoken-*` headers are not exposed to the caller.
+
 ## Phase 2: Auth And Rejection Smoke
 
 Cases:

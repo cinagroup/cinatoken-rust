@@ -4914,3 +4914,49 @@ Remaining migration gaps:
   output, logs, and traces.
 - Run `/v1/realtime` smoke only after staging has a low-risk relay token and
   the upstream bridge/billing/audit path is ready for controlled replay.
+
+### 22.74 2026-07-05 WFP Dispatch Smoke Harness
+
+This increment turns the Rust dispatch gateway -> WFP tenant Worker path into a
+repeatable staging smoke gate. It follows the cinaVibeSDK pattern of keeping
+the platform dispatch layer thin while making tenant-runtime behavior visible
+through explicit status routes and Cloudflare logs.
+
+Implemented:
+
+- Added `tools/smoke_wfp_dispatch.mjs`, a Bun-based smoke tool for
+  `/api/platform/dispatch/:worker/...`.
+- Default mode runs the internal dispatch status path
+  `/api/platform/dispatch/:worker/__cinatoken/tenant/status`, validating the
+  tenant status contract, route manifest, forwarding mode, and WFP response
+  headers without sending an AI request.
+- Optional `--route` mode posts a JSON body to a supported tenant AI route
+  (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/embeddings`,
+  or `/ai/run`) so staging can capture real AI Gateway route evidence after
+  tenant bindings are configured.
+- The tool validates public tenant worker names, supported route paths, JSON
+  route bodies, URL construction, timeout behavior, and query redaction.
+- Added `bun run smoke:wfp-dispatch` for live use and
+  `bun run check:wfp-dispatch:smoke-plan` for local dry-run validation. The
+  dry-run gate is now included in `bun run check`.
+- Updated the staging smoke runbook and production Cloudflare config checklist
+  so WFP dispatch status/route smoke becomes explicit evidence for enabling
+  `DISPATCHER`, `WFP_DISPATCH_ENABLED`, and
+  `WFP_INTERNAL_DISPATCH_ENABLED`.
+
+Validation:
+
+- `bun tools/smoke_wfp_dispatch.mjs --help` passed.
+- `bun run check:wfp-dispatch:smoke-plan` passed and resolved the internal
+  dispatch status URL without network access.
+- A `/v1/responses` dry-run route smoke passed and reported the expected
+  internal dispatch route URL plus JSON body byte count.
+
+Remaining migration gaps:
+
+- Run the WFP dispatch smoke harness against a real staging Worker with a real
+  `DISPATCHER` binding, uploaded tenant script, and staging-only internal
+  dispatch flag.
+- Capture optional POST route smoke for the default and route-specific AI
+  Gateway IDs, then compare the Worker traces and AI Gateway logs before any
+  production WFP cutover.

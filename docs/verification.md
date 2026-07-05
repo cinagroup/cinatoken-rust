@@ -1252,6 +1252,21 @@ baseline above.
   and Worker/WFP wasm32 checks). Live staging still needs the real `DISPATCHER`
   binding plus uploaded tenant scripts.
 
+- **WFP dispatch smoke harness - locally verified (2026-07-05).** Added
+  `tools/smoke_wfp_dispatch.mjs` and `bun run smoke:wfp-dispatch` to make the
+  cinaVibeSDK-style dispatch Worker -> WFP tenant Worker path executable in
+  staging. Default status mode resolves
+  `/api/platform/dispatch/:worker/__cinatoken/tenant/status` and validates the
+  tenant status contract (`runtime`, `forwarding`, `body_mode`, route manifest,
+  and route-gateway configuration) plus `x-cinatoken-wfp-*` dispatch headers.
+  Optional `--route` mode posts a low-risk JSON payload to a supported tenant
+  AI route and records the safe response-header surface. Local evidence:
+  `bun tools/smoke_wfp_dispatch.mjs --help` (passed),
+  `bun run check:wfp-dispatch:smoke-plan` (passed), and a dry-run route smoke
+  for `/v1/responses` (passed with the expected internal dispatch URL and body
+  byte count). Live staging still needs the same tool run against a real
+  `DISPATCHER` binding and uploaded tenant script.
+
 - **WFP Rust/Wasm artifact deploy uploader - locally verified (2026-07-05).**
   Added `tools/deploy_wfp_tenant_artifact.mjs` and `bun run deploy:wfp-tenant`
   for local upload of `crates/wfp-tenant/build/worker` to the Cloudflare WFP

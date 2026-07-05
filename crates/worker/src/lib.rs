@@ -1051,6 +1051,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let now = (worker::Date::now().as_millis() / 1000) as i64;
             task_orchestration::handle_task_submit(req, env, now).await
         })
+        .post_async("/v1/videos", |req, ctx| async move {
+            let env = ctx.env;
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_openai_video_submit(req, env, now).await
+        })
         // Suno task submit (platform "suno"): POST /suno/submit/:action.
         // Client-facing async-task fetch (Go RelayTaskFetch): the owner's
         // stored TaskDto, kept current by the poller cron.
@@ -1062,6 +1067,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // the frontend content link Worker-owned but fail-closed until the
         // G7 Queue/R2/video-proxy path has provider-specific replay evidence.
         .get("/v1/videos/:task_id/content", |_, _| {
+            relay::relay_not_implemented()
+        })
+        .get_async("/v1/videos/:task_id", |req, ctx| async move {
+            let task_id = ctx.param("task_id").cloned();
+            task_orchestration::handle_openai_video_fetch_by_id(req, ctx.env, task_id.as_ref())
+                .await
+        })
+        .post("/v1/videos/:video_id/remix", |_, _| {
             relay::relay_not_implemented()
         })
         .get_async("/suno/fetch/:id", |req, ctx| async move {

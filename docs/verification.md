@@ -4,6 +4,22 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `bun run check`: passed after the OpenAI-compatible video create/fetch shell,
+  covering frontend type/build, route-debt baseline, rustfmt check, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The route audit
+  reported 214 frontend Worker-facing routes, 298 Worker routes, 0 missing
+  calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- `cargo fmt --all`: passed after adding the OpenAI-compatible video
+  create/fetch shell.
+- `cargo test -p cinatoken-worker --lib`: 356 passed after adding
+  `POST /v1/videos`, `GET /v1/videos/:task_id`, and explicit
+  `/v1/videos/:video_id/remix` 501 ownership. The new tests cover the OpenAI
+  video submit shell, status/progress/model/result URL mapping, and failure
+  error shape.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the OpenAI-compatible video create/fetch shell; the only
+  warnings were the pre-existing `dead_code` warnings in `d1_repositories.rs`.
 - `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:
   214 frontend Worker-facing routes, detection kinds
   `call=243` / `jsx-attribute=1` / `navigation=1` / `stream=1`,
@@ -947,6 +963,17 @@ baseline above.
   (passed), plus
   `cargo test -p cinatoken-worker --lib multipart_audio_webm_duration_feeds_prompt_estimate`
   (passed).
+
+- **OpenAI video create/fetch shell - locally verified (2026-07-05).**
+  `POST /v1/videos` now returns an OpenAI video `queued` shell after the
+  existing Worker task submit path succeeds, and `GET /v1/videos/:task_id`
+  returns an owner-scoped DB-backed OpenAI video status object. Remix
+  (`POST /v1/videos/:video_id/remix`) and content streaming
+  (`GET /v1/videos/:task_id/content`) remain structured 501 boundaries until
+  origin-task/channel-lock resolution and Queue/R2 artifact proxying are
+  ported. Local evidence: `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib` (356 passed), and
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` (passed).
 
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`

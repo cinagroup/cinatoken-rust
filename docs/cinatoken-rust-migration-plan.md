@@ -3253,3 +3253,44 @@ visible with production data still require deployed browser smoke. The
 `/v1/videos/:task_id/content` route is deliberately fail-closed until the G7
 Queue/R2/video proxy design, provider-specific replay, and task billing
 settlement evidence exist.
+
+### 22.39 2026-07-05 OpenAI Video Create/Fetch Shell Delta
+
+This increment narrows the `router/video-router.go` gap without claiming full
+video artifact ownership.
+
+Implemented in Rust:
+
+- `POST /v1/videos` now uses the existing Worker task-submit orchestration
+  (token auth, video channel selection, base quota reserve, upstream submit,
+  task insert) and returns an OpenAI-compatible video shell:
+  `id`, `object: "video"`, `model`, `status: "queued"`, `progress: 0`, and
+  `created_at`.
+- `GET /v1/videos/:task_id` now uses the same owner-scoped token auth as
+  `/v1/video/generations/:task_id`, but serializes the stored D1 task as an
+  OpenAI video status object instead of the internal TaskDto envelope. The
+  response maps Go task statuses to OpenAI video statuses, parses `"45%"`
+  progress strings, uses `properties.origin_model_name` when present with a
+  `platform` fallback, emits `metadata.url` from `private_data.result_url`
+  (falling back to `fail_reason` for legacy rows), and includes a basic
+  `error` object for failed tasks with a fail reason.
+- `POST /v1/videos/:video_id/remix` is now Worker-owned as a structured 501
+  boundary, rather than a 404 or accidental generic submit alias.
+- `GET /v1/videos/:task_id/content` remains the structured 501 boundary from
+  22.38.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib`: 356 passed, including OpenAI video
+  submit/fetch JSON-shape tests;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit
+  (214 frontend routes, 298 Worker routes, 0 missing calls), Rust workspace
+  tests excluding the Worker, and Worker wasm check.
+
+Remaining boundary: Go provider adaptors still carry richer
+`ConvertToOpenAIVideo` behavior from stored upstream `task.Data`, and Sora remix
+still requires `ResolveOriginTask` parity (origin task lookup, ratio inheritance,
+and channel lock). Real artifact delivery still requires the G7 Queue/R2 video
+content proxy plus provider replay and task billing settlement evidence.

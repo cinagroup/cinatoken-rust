@@ -497,6 +497,11 @@ pub async fn relay_task_submit(
 /// scope channel selection to task-capable channels.
 const VIDEO_CHANNEL_TYPES: &[i32] = &[1, 17, 24, 35, 41, 45, 50, 51, 52, 54, 55];
 
+enum VideoSubmitResponse {
+    LegacyTaskId,
+    OpenAiVideo,
+}
+
 /// HTTP entry for a video task submit — the route handler that produces the
 /// [`TaskSubmitContext`] and drives [`relay_task_submit`]: authenticate the key,
 /// parse the request, select a task channel for the model, price the base model
@@ -506,7 +511,12 @@ const VIDEO_CHANNEL_TYPES: &[i32] = &[1, 17, 24, 35, 41, 45, 50, 51, 52, 54, 55]
 /// `generate` (Go derives it per-provider in `ValidateRequestAndSetAction`), the
 /// platform tag uses the model, and channel model-mapping isn't applied — these
 /// affect provider routing/billing detail and are validated by a staging submit.
-pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker::Result<Response> {
+async fn handle_task_submit_with_response(
+    mut req: Request,
+    env: Env,
+    now: i64,
+    response_kind: VideoSubmitResponse,
+) -> worker::Result<Response> {
     let db = env.d1("DB")?;
 
     let Some(api_key) = crate::relay::extract_api_key(&req) else {
@@ -581,11 +591,31 @@ pub async fn handle_task_submit(mut req: Request, env: Env, now: i64) -> worker:
     };
 
     match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
-        Ok(public_task_id) => {
-            crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
-        }
+        Ok(public_task_id) => match response_kind {
+            VideoSubmitResponse::LegacyTaskId => {
+                crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
+            }
+            VideoSubmitResponse::OpenAiVideo => crate::json_with_status(
+                &openai_video_submit_json(&public_task_id, &model, now),
+                200,
+            ),
+        },
         Err(err) => crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500),
     }
+}
+
+/// `POST /v1/video/generations`: legacy New API task response shape.
+pub async fn handle_task_submit(req: Request, env: Env, now: i64) -> worker::Result<Response> {
+    handle_task_submit_with_response(req, env, now, VideoSubmitResponse::LegacyTaskId).await
+}
+
+/// `POST /v1/videos`: OpenAI-compatible video create response shell.
+pub async fn handle_openai_video_submit(
+    req: Request,
+    env: Env,
+    now: i64,
+) -> worker::Result<Response> {
+    handle_task_submit_with_response(req, env, now, VideoSubmitResponse::OpenAiVideo).await
 }
 
 /// HTTP entry for a Suno task submit (`POST /suno/submit/:action`). Suno is a
@@ -1100,19 +1130,79 @@ pub async fn poll_unfinished_midjourney_tasks(
 // Client-facing task fetch (Go RelayTaskFetch)
 // ---------------------------------------------------------------------------
 
+fn result_url_from_private_data(private_data: &str, fail_reason: &str) -> String {
+    let private: serde_json::Value =
+        serde_json::from_str(private_data).unwrap_or(serde_json::Value::Null);
+    private
+        .get("result_url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|url| !url.is_empty())
+        .unwrap_or(fail_reason)
+        .to_string()
+}
+
+fn progress_percent(progress: &str) -> i64 {
+    progress
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<i64>()
+        .unwrap_or(0)
+}
+
+fn task_origin_model(row: &crate::task_repository::TaskDtoRow) -> String {
+    let properties: serde_json::Value =
+        serde_json::from_str(&row.properties).unwrap_or(serde_json::Value::Null);
+    properties
+        .get("origin_model_name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(&row.platform)
+        .to_string()
+}
+
+fn openai_video_submit_json(task_id: &str, model: &str, created_at: i64) -> serde_json::Value {
+    serde_json::json!({
+        "id": task_id,
+        "object": "video",
+        "model": model,
+        "status": TaskStatus::Submitted.to_video_status(),
+        "progress": 0,
+        "created_at": created_at,
+    })
+}
+
+fn openai_video_json(row: &crate::task_repository::TaskDtoRow) -> serde_json::Value {
+    let status = TaskStatus::from_status_str(&row.status);
+    let mut video = serde_json::json!({
+        "id": row.task_id,
+        "object": "video",
+        "model": task_origin_model(row),
+        "status": status.to_video_status(),
+        "progress": progress_percent(&row.progress),
+        "created_at": row.created_at,
+        "metadata": {
+            "url": result_url_from_private_data(&row.private_data, &row.fail_reason),
+        },
+    });
+    if row.finish_time > 0 {
+        video["completed_at"] = serde_json::json!(row.finish_time);
+    }
+    if status == TaskStatus::Failure && !row.fail_reason.trim().is_empty() {
+        video["error"] = serde_json::json!({
+            "message": row.fail_reason,
+            "code": "task_failed",
+        });
+    }
+    video
+}
+
 /// Serialize a stored task as Go `dto.TaskDto` (JSON field names preserved).
 /// `result_url` follows Go `Task.GetResultURL`: `private_data.result_url`,
 /// falling back to `fail_reason`. `properties`/`data` are re-emitted as raw
 /// JSON values (Go stores them as JSON blobs).
 fn task_dto_json(row: &crate::task_repository::TaskDtoRow) -> serde_json::Value {
-    let private: serde_json::Value =
-        serde_json::from_str(&row.private_data).unwrap_or(serde_json::Value::Null);
-    let result_url = private
-        .get("result_url")
-        .and_then(serde_json::Value::as_str)
-        .filter(|url| !url.is_empty())
-        .unwrap_or(&row.fail_reason)
-        .to_string();
+    let result_url = result_url_from_private_data(&row.private_data, &row.fail_reason);
     let properties: serde_json::Value =
         serde_json::from_str(&row.properties).unwrap_or(serde_json::Value::Null);
     let data: serde_json::Value =
@@ -1206,6 +1296,32 @@ pub async fn handle_task_fetch_by_id(
         &serde_json::json!({"code": "success", "data": task_dto_json(&row)}),
         200,
     )
+}
+
+/// `GET /v1/videos/:task_id`: OpenAI-compatible video status response. Bounded
+/// vs Go: provider-specific `ConvertToOpenAIVideo` enrichments from stored
+/// upstream data are still pending; this DB-backed shell preserves the public
+/// OpenAI video shape and owner scoping while the poller remains authoritative.
+pub async fn handle_openai_video_fetch_by_id(
+    req: Request,
+    env: Env,
+    task_id: Option<&String>,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+    let auth = match authenticate_fetch(&req, &db).await? {
+        Ok(auth) => auth,
+        Err(response) => return Ok(response),
+    };
+    let Some(task_id) = task_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return task_error_response("invalid_request", "missing task id", 400);
+    };
+    let Some(row) = crate::task_repository::find_task_dto(&db, auth.user_id, task_id).await? else {
+        return task_error_response("task_not_exist", "task_not_exist", 400);
+    };
+    crate::json_with_status(&openai_video_json(&row), 200)
 }
 
 /// `POST /suno/fetch` (Go `sunoFetchRespBodyBuilder`): batch fetch by public
@@ -1351,4 +1467,79 @@ pub async fn handle_mj_task_list_by_condition(
             .collect()
     };
     crate::json_with_status(&tasks, 200)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task_row() -> crate::task_repository::TaskDtoRow {
+        crate::task_repository::TaskDtoRow {
+            id: 1,
+            created_at: 100,
+            updated_at: 110,
+            task_id: "task_video".to_string(),
+            platform: "sora".to_string(),
+            user_id: 7,
+            group: "default".to_string(),
+            channel_id: 9,
+            quota: 1000,
+            action: "generate".to_string(),
+            status: "SUCCESS".to_string(),
+            fail_reason: String::new(),
+            submit_time: 100,
+            start_time: 0,
+            finish_time: 150,
+            progress: "45%".to_string(),
+            properties: r#"{"origin_model_name":"sora-2"}"#.to_string(),
+            username: "alice".to_string(),
+            data: "{}".to_string(),
+            private_data: r#"{"result_url":"https://cdn.example/video.mp4"}"#.to_string(),
+        }
+    }
+
+    #[test]
+    fn openai_video_submit_json_is_queued_shell() {
+        let video = openai_video_submit_json("task_1", "sora-2", 123);
+        assert_eq!(video["id"], "task_1");
+        assert_eq!(video["object"], "video");
+        assert_eq!(video["model"], "sora-2");
+        assert_eq!(video["status"], "queued");
+        assert_eq!(video["progress"], 0);
+        assert_eq!(video["created_at"], 123);
+        assert!(video.get("completed_at").is_none());
+    }
+
+    #[test]
+    fn openai_video_json_maps_task_row_to_video_shape() {
+        let video = openai_video_json(&task_row());
+        assert_eq!(video["id"], "task_video");
+        assert_eq!(video["object"], "video");
+        assert_eq!(video["model"], "sora-2");
+        assert_eq!(video["status"], "completed");
+        assert_eq!(video["progress"], 45);
+        assert_eq!(video["created_at"], 100);
+        assert_eq!(video["completed_at"], 150);
+        assert_eq!(video["metadata"]["url"], "https://cdn.example/video.mp4");
+    }
+
+    #[test]
+    fn openai_video_json_falls_back_to_platform_and_error() {
+        let mut row = task_row();
+        row.status = "FAILURE".to_string();
+        row.fail_reason = "upstream rejected request".to_string();
+        row.finish_time = 0;
+        row.progress = "not-a-percent".to_string();
+        row.properties = "{}".to_string();
+        row.private_data = "{}".to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(video["model"], "sora");
+        assert_eq!(video["status"], "failed");
+        assert_eq!(video["progress"], 0);
+        assert!(video.get("completed_at").is_none());
+        assert_eq!(video["metadata"]["url"], "upstream rejected request");
+        assert_eq!(video["error"]["message"], "upstream rejected request");
+        assert_eq!(video["error"]["code"], "task_failed");
+    }
 }

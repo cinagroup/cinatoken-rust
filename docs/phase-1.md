@@ -245,6 +245,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   reviewed baseline covers 214 Worker-facing frontend routes with 0 missing
   calls, and the frontend task-log video content link is Worker-owned through a
   structured fail-closed `/v1/videos/:task_id/content` route boundary.
+- OpenAI-compatible video create/fetch shell: `POST /v1/videos` now reuses the
+  Worker task submit orchestration but returns an OpenAI video `queued` object,
+  while `GET /v1/videos/:task_id` returns a token-owner-scoped DB-backed video
+  status object with Go-compatible status/progress mapping, origin-model
+  fallback, `metadata.url`, and failure error details. `/v1/videos/:video_id/remix`
+  and `/v1/videos/:task_id/content` remain explicit 501 boundaries until remix
+  origin-task resolution and the Queue/R2 content proxy are ported.
 - Admin CRUD P0 surface (`crates/worker/src/admin_crud.rs`): admin + self log
   list/stat/delete, root-only option list/update with sensitive-key
   filtering, and user-scoped token CRUD with key masking, ownership
@@ -416,6 +423,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   real-file replay for the non-WAV/WebM audio duration parsers,
   raw/pass-through stream extraction where needed, live upstream smoke, and
   billing shadow evidence.
+- Continue the async-video G7 path by porting provider-specific
+  `ConvertToOpenAIVideo` data enrichments, Sora remix origin-task/channel-lock
+  resolution, and the `/v1/videos/:task_id/content` Queue/R2 proxy before
+  production ownership of video artifacts.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

@@ -304,7 +304,21 @@ async fn poll_vertex_task(
     let response = execute_poll_request(&request).await?;
     let info = vertex::parse_task_result(&response).map_err(worker::Error::RustError)?;
     let finish_time = if info.status.is_terminal() { now } else { 0 };
-    apply_poll_result(db, task, &info, finish_time, now).await
+    let result_data = String::from_utf8_lossy(&response);
+    apply_poll_result(
+        db,
+        task,
+        &info,
+        Some(result_data.as_ref()),
+        finish_time,
+        now,
+    )
+    .await
+}
+
+pub struct SubmitTaskOutcome {
+    pub upstream_task_id: String,
+    pub task_data: Vec<u8>,
 }
 
 pub async fn submit_task(
@@ -319,11 +333,16 @@ pub async fn submit_task(
     vertex_region: &str,
     raw_client_body: &[u8],
     now: i64,
-) -> worker::Result<String> {
+) -> worker::Result<SubmitTaskOutcome> {
     // Vertex needs an async GCP token exchange before building the request, so it
     // bypasses the sync build_submit_* path.
     if provider == VideoProvider::Vertex {
-        return submit_vertex_task(base_url, key, vertex_region, req, upstream_model, now).await;
+        let upstream_task_id =
+            submit_vertex_task(base_url, key, vertex_region, req, upstream_model, now).await?;
+        return Ok(SubmitTaskOutcome {
+            upstream_task_id,
+            task_data: Vec::new(),
+        });
     }
     let body = build_submit_body(provider, req, upstream_model, raw_client_body)
         .map_err(worker::Error::RustError)?;
@@ -340,9 +359,13 @@ pub async fn submit_task(
     )
     .map_err(worker::Error::RustError)?;
     let response = execute_poll_request(&request).await?;
-    provider
+    let upstream_task_id = provider
         .parse_submit_response(&response)
-        .map_err(|message| worker::Error::RustError(format!("parse submit response: {message}")))
+        .map_err(|message| worker::Error::RustError(format!("parse submit response: {message}")))?;
+    Ok(SubmitTaskOutcome {
+        upstream_task_id,
+        task_data: response,
+    })
 }
 
 /// Compute the base per-call quota for a task model — a port of Go
@@ -404,6 +427,7 @@ pub struct TaskSubmitContext<'a> {
     pub group: &'a str,
     pub platform: &'a str,
     pub upstream_model: &'a str,
+    pub origin_model: &'a str,
     pub action: &'a str,
     pub origin_task_id: &'a str,
     pub base_quota: i64,
@@ -447,7 +471,7 @@ pub async fn relay_task_submit(
 
     reserve_relay_quota(db, ctx.user_id, ctx.token_id, quota, ctx.now).await?;
 
-    let upstream_task_id = match submit_task(
+    let submit_outcome = match submit_task(
         ctx.provider,
         ctx.channel_base_url,
         ctx.channel_key,
@@ -462,7 +486,7 @@ pub async fn relay_task_submit(
     )
     .await
     {
-        Ok(id) => id,
+        Ok(outcome) => outcome,
         Err(err) => {
             // Best-effort refund of the reserve before surfacing the failure.
             let _ =
@@ -472,9 +496,19 @@ pub async fn relay_task_submit(
     };
 
     let public_task_id = generate_task_id();
+    let task_data = if submit_outcome.task_data.is_empty() {
+        "{}".to_string()
+    } else {
+        String::from_utf8(submit_outcome.task_data).unwrap_or_else(|_| "{}".to_string())
+    };
+    let task_properties = serde_json::json!({
+        "upstream_model_name": ctx.upstream_model,
+        "origin_model_name": ctx.origin_model,
+    })
+    .to_string();
     let new_task = NewTask {
         task_id: &public_task_id,
-        upstream_task_id: &upstream_task_id,
+        upstream_task_id: &submit_outcome.upstream_task_id,
         platform: ctx.platform,
         user_id: ctx.user_id,
         username: ctx.username,
@@ -487,6 +521,8 @@ pub async fn relay_task_submit(
         submit_time: ctx.now,
         created_at: ctx.now,
         updated_at: ctx.now,
+        properties: &task_properties,
+        data: &task_data,
     };
     insert_task(db, &new_task).await?;
 
@@ -508,9 +544,9 @@ enum VideoSubmitResponse {
 /// ([`compute_task_base_quota`]), and submit. Returns `{"task_id": "task_..."}`.
 ///
 /// Simplifications pending runtime tuning against Go: the action defaults to
-/// `generate` (Go derives it per-provider in `ValidateRequestAndSetAction`), the
-/// platform tag uses the model, and channel model-mapping isn't applied — these
-/// affect provider routing/billing detail and are validated by a staging submit.
+/// `generate` (Go derives it per-provider in `ValidateRequestAndSetAction`) and
+/// channel model-mapping isn't applied — these affect provider routing/billing
+/// detail and are validated by a staging submit.
 async fn handle_task_submit_with_response(
     mut req: Request,
     env: Env,
@@ -571,6 +607,7 @@ async fn handle_task_submit_with_response(
         .var("VERTEX_REGION")
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "us-central1".to_string());
+    let platform = channel.channel_type.to_string();
     let ctx = TaskSubmitContext {
         provider,
         channel_id: channel.id,
@@ -580,8 +617,9 @@ async fn handle_task_submit_with_response(
         token_id: auth.token_id,
         username: &auth.username,
         group: &auth.token_group,
-        platform: &model,
+        platform: &platform,
         upstream_model: &model,
+        origin_model: &model,
         action: "generate",
         origin_task_id: "",
         base_quota,
@@ -698,6 +736,11 @@ pub async fn handle_suno_submit(
     };
 
     let public_task_id = generate_task_id();
+    let task_properties = serde_json::json!({
+        "upstream_model_name": model,
+        "origin_model_name": model,
+    })
+    .to_string();
     let new_task = NewTask {
         task_id: &public_task_id,
         upstream_task_id: &upstream_task_id,
@@ -713,6 +756,8 @@ pub async fn handle_suno_submit(
         submit_time: now,
         created_at: now,
         updated_at: now,
+        properties: &task_properties,
+        data: "{}",
     };
     insert_task(&db, &new_task).await?;
 
@@ -851,11 +896,15 @@ pub async fn execute_poll_request(request: &PollRequest) -> worker::Result<Vec<u
 /// fetch-then-parse half of one poll cycle. The settle-apply half is
 /// [`crate::task_repository::apply_poll_result`], which the caller invokes with
 /// the returned [`TaskInfo`].
-pub async fn poll_task(provider: VideoProvider, request: &PollRequest) -> worker::Result<TaskInfo> {
+pub async fn poll_task(
+    provider: VideoProvider,
+    request: &PollRequest,
+) -> worker::Result<(TaskInfo, Vec<u8>)> {
     let body = execute_poll_request(request).await?;
-    provider
+    let info = provider
         .parse_task_result(&body)
-        .map_err(|message| worker::Error::RustError(format!("parse task result: {message}")))
+        .map_err(|message| worker::Error::RustError(format!("parse task result: {message}")))?;
+    Ok((info, body))
 }
 
 /// Run one full poll cycle for a task against its channel: resolve the provider
@@ -926,9 +975,18 @@ pub async fn poll_one_task(
         }
     };
 
-    let info = poll_task(provider, &request).await?;
+    let (info, body) = poll_task(provider, &request).await?;
     let finish_time = if info.status.is_terminal() { now } else { 0 };
-    let won = apply_poll_result(db, task, &info, finish_time, now).await?;
+    let result_data = String::from_utf8_lossy(&body);
+    let won = apply_poll_result(
+        db,
+        task,
+        &info,
+        Some(result_data.as_ref()),
+        finish_time,
+        now,
+    )
+    .await?;
     Ok(Some(won))
 }
 
@@ -1131,14 +1189,17 @@ pub async fn poll_unfinished_midjourney_tasks(
 // ---------------------------------------------------------------------------
 
 fn result_url_from_private_data(private_data: &str, fail_reason: &str) -> String {
+    result_url_option_from_private_data(private_data).unwrap_or_else(|| fail_reason.to_string())
+}
+
+fn result_url_option_from_private_data(private_data: &str) -> Option<String> {
     let private: serde_json::Value =
         serde_json::from_str(private_data).unwrap_or(serde_json::Value::Null);
     private
         .get("result_url")
         .and_then(serde_json::Value::as_str)
         .filter(|url| !url.is_empty())
-        .unwrap_or(fail_reason)
-        .to_string()
+        .map(ToString::to_string)
 }
 
 fn progress_percent(progress: &str) -> i64 {
@@ -1150,13 +1211,103 @@ fn progress_percent(progress: &str) -> i64 {
         .unwrap_or(0)
 }
 
-fn task_origin_model(row: &crate::task_repository::TaskDtoRow) -> String {
+fn task_data_json(row: &crate::task_repository::TaskDtoRow) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(&row.data).ok()?;
+    match &value {
+        serde_json::Value::Object(map) if map.is_empty() => None,
+        serde_json::Value::Null => None,
+        _ => Some(value),
+    }
+}
+
+fn json_path_string(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    current
+        .as_str()
+        .filter(|item| !item.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn json_path_i64(value: &serde_json::Value, path: &[&str]) -> Option<i64> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    current.as_i64()
+}
+
+fn json_first_array_string(
+    value: &serde_json::Value,
+    array_path: &[&str],
+    item_field: &str,
+) -> Option<String> {
+    let mut current = value;
+    for segment in array_path {
+        current = current.get(*segment)?;
+    }
+    current
+        .as_array()?
+        .first()?
+        .get(item_field)?
+        .as_str()
+        .filter(|item| !item.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn provider_data_url(data: Option<&serde_json::Value>) -> Option<String> {
+    let data = data?;
+    for path in [
+        &["content", "video_url"][..],
+        &["output", "video_url"][..],
+        &["data", "video_url"][..],
+        &["video_url"][..],
+        &["url"][..],
+    ] {
+        if let Some(url) = json_path_string(data, path) {
+            return Some(url);
+        }
+    }
+    json_first_array_string(data, &["data", "task_result", "videos"], "url")
+        .or_else(|| json_first_array_string(data, &["task_result", "videos"], "url"))
+        .or_else(|| json_first_array_string(data, &["creations"], "url"))
+}
+
+fn is_openai_video_passthrough(
+    row: &crate::task_repository::TaskDtoRow,
+    data: Option<&serde_json::Value>,
+) -> bool {
+    matches!(row.platform.as_str(), "1" | "55" | "sora")
+        || data
+            .and_then(|value| json_path_string(value, &["object"]))
+            .as_deref()
+            == Some("video")
+}
+
+fn provider_data_error_message(data: Option<&serde_json::Value>) -> Option<String> {
+    let data = data?;
+    json_path_string(data, &["error", "message"])
+        .or_else(|| json_path_string(data, &["output", "message"]))
+        .or_else(|| json_path_string(data, &["message"]))
+}
+
+fn task_origin_model(
+    row: &crate::task_repository::TaskDtoRow,
+    data: Option<&serde_json::Value>,
+) -> String {
     let properties: serde_json::Value =
         serde_json::from_str(&row.properties).unwrap_or(serde_json::Value::Null);
     properties
         .get("origin_model_name")
         .and_then(serde_json::Value::as_str)
         .filter(|model| !model.trim().is_empty())
+        .or_else(|| {
+            data.and_then(|value| value.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|model| !model.trim().is_empty())
+        })
         .unwrap_or(&row.platform)
         .to_string()
 }
@@ -1174,23 +1325,70 @@ fn openai_video_submit_json(task_id: &str, model: &str, created_at: i64) -> serd
 
 fn openai_video_json(row: &crate::task_repository::TaskDtoRow) -> serde_json::Value {
     let status = TaskStatus::from_status_str(&row.status);
+    let data = task_data_json(row);
+    let result_url = result_url_option_from_private_data(&row.private_data)
+        .or_else(|| provider_data_url(data.as_ref()))
+        .unwrap_or_else(|| row.fail_reason.clone());
+    let progress = if row.progress.trim().is_empty() {
+        data.as_ref()
+            .and_then(|value| json_path_i64(value, &["progress"]))
+            .unwrap_or(0)
+    } else {
+        progress_percent(&row.progress)
+    };
     let mut video = serde_json::json!({
         "id": row.task_id,
         "object": "video",
-        "model": task_origin_model(row),
+        "model": task_origin_model(row, data.as_ref()),
         "status": status.to_video_status(),
-        "progress": progress_percent(&row.progress),
+        "progress": progress,
         "created_at": row.created_at,
         "metadata": {
-            "url": result_url_from_private_data(&row.private_data, &row.fail_reason),
+            "url": result_url,
         },
     });
     if row.finish_time > 0 {
         video["completed_at"] = serde_json::json!(row.finish_time);
     }
-    if status == TaskStatus::Failure && !row.fail_reason.trim().is_empty() {
+    for field in ["seconds", "size", "remixed_from_video_id"] {
+        if let Some(value) = data
+            .as_ref()
+            .and_then(|item| json_path_string(item, &[field]))
+        {
+            video[field] = serde_json::json!(value);
+        }
+    }
+    if let Some(value) = data
+        .as_ref()
+        .and_then(|item| json_path_i64(item, &["expires_at"]))
+    {
+        video["expires_at"] = serde_json::json!(value);
+    }
+    if is_openai_video_passthrough(row, data.as_ref()) {
+        if let Some(value) = data
+            .as_ref()
+            .and_then(|item| json_path_i64(item, &["created_at"]))
+        {
+            video["created_at"] = serde_json::json!(value);
+        }
+        if row.finish_time == 0 {
+            if let Some(value) = data
+                .as_ref()
+                .and_then(|item| json_path_i64(item, &["completed_at"]))
+            {
+                video["completed_at"] = serde_json::json!(value);
+            }
+        }
+    }
+    let error_message = if row.fail_reason.trim().is_empty() {
+        provider_data_error_message(data.as_ref())
+    } else {
+        Some(row.fail_reason.clone())
+    };
+    if status == TaskStatus::Failure && error_message.is_some() {
+        let error_message = error_message.unwrap_or_default();
         video["error"] = serde_json::json!({
-            "message": row.fail_reason,
+            "message": error_message,
             "code": "task_failed",
         });
     }
@@ -1541,5 +1739,101 @@ mod tests {
         assert_eq!(video["metadata"]["url"], "upstream rejected request");
         assert_eq!(video["error"]["message"], "upstream rejected request");
         assert_eq!(video["error"]["code"], "task_failed");
+    }
+
+    #[test]
+    fn openai_video_json_enriches_from_sora_data() {
+        let mut row = task_row();
+        row.status = "SUBMITTED".to_string();
+        row.progress = String::new();
+        row.finish_time = 0;
+        row.properties = "{}".to_string();
+        row.private_data = "{}".to_string();
+        row.data = serde_json::json!({
+            "id": "upstream_vid",
+            "object": "video",
+            "model": "sora-2",
+            "status": "queued",
+            "progress": 37,
+            "created_at": 101,
+            "expires_at": 999,
+            "seconds": "4",
+            "size": "720x1280",
+            "remixed_from_video_id": "task_origin"
+        })
+        .to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(video["id"], "task_video");
+        assert_eq!(video["model"], "sora-2");
+        assert_eq!(video["status"], "queued");
+        assert_eq!(video["progress"], 37);
+        assert_eq!(video["created_at"], 101);
+        assert_eq!(video["expires_at"], 999);
+        assert_eq!(video["seconds"], "4");
+        assert_eq!(video["size"], "720x1280");
+        assert_eq!(video["remixed_from_video_id"], "task_origin");
+    }
+
+    #[test]
+    fn openai_video_json_uses_provider_data_url_when_private_url_absent() {
+        let mut row = task_row();
+        row.private_data = "{}".to_string();
+        row.fail_reason = String::new();
+        row.data = serde_json::json!({
+            "content": {
+                "video_url": "https://provider.example/doubao.mp4"
+            }
+        })
+        .to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(
+            video["metadata"]["url"],
+            "https://provider.example/doubao.mp4"
+        );
+    }
+
+    #[test]
+    fn openai_video_json_extracts_first_nested_provider_video_url() {
+        let mut row = task_row();
+        row.private_data = "{}".to_string();
+        row.fail_reason = String::new();
+        row.data = serde_json::json!({
+            "data": {
+                "task_result": {
+                    "videos": [
+                        {"url": "https://provider.example/kling-first.mp4"},
+                        {"url": "https://provider.example/kling-second.mp4"}
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(
+            video["metadata"]["url"],
+            "https://provider.example/kling-first.mp4"
+        );
+    }
+
+    #[test]
+    fn openai_video_json_keeps_local_created_at_for_provider_data() {
+        let mut row = task_row();
+        row.platform = "17".to_string();
+        row.properties = "{}".to_string();
+        row.private_data = "{}".to_string();
+        row.data = serde_json::json!({
+            "created_at": 999,
+            "output": {
+                "video_url": "https://provider.example/ali.mp4"
+            }
+        })
+        .to_string();
+
+        let video = openai_video_json(&row);
+        assert_eq!(video["created_at"], 100);
+        assert_eq!(video["metadata"]["url"], "https://provider.example/ali.mp4");
     }
 }

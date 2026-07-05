@@ -3294,3 +3294,55 @@ Remaining boundary: Go provider adaptors still carry richer
 still requires `ResolveOriginTask` parity (origin task lookup, ratio inheritance,
 and channel lock). Real artifact delivery still requires the G7 Queue/R2 video
 content proxy plus provider replay and task billing settlement evidence.
+
+### 22.40 2026-07-05 Task Data Persistence And OpenAI Video Enrichment Delta
+
+This increment narrows the provider-conversion gap left in 22.39 by preserving
+the same task data substrate that Go's task adaptors use for later
+`ConvertToOpenAIVideo` conversion. It still does not claim full artifact
+delivery or exact provider-by-provider serializer parity.
+
+Implemented in Rust:
+
+- Task submit now stores both the upstream task id and the raw upstream submit
+  response body in D1. `submit_task` returns a `SubmitTaskOutcome` containing
+  the parsed upstream id plus raw `task_data`, and `insert_task` writes it to
+  `tasks.data`.
+- Task polling now passes the raw provider poll response into the CAS status
+  update path, so successful or failed poll rows retain the latest provider
+  JSON in `tasks.data` for DTOs and OpenAI video conversion.
+- New task inserts now persist Go-compatible model properties:
+  `upstream_model_name` and `origin_model_name`. Video task `platform` now uses
+  the selected channel type string, matching Go `GetTaskPlatform`, instead of
+  overloading the platform field with the requested model name.
+- `private_data` now also stores `upstream_task_id` alongside the reserving
+  `token_id`, while the dedicated `upstream_task_id` column remains the Rust
+  fast path.
+- `GET /v1/videos/:task_id` now enriches the OpenAI video object from stored
+  provider data: progress fallback from raw data, Sora/OpenAI passthrough fields
+  such as `seconds`, `size`, `remixed_from_video_id`, `expires_at`,
+  `created_at`, and `completed_at`, provider URL fallback from common
+  `content.video_url` / `output.video_url` / `data.video_url` / `video_url` /
+  `url` shapes, first-video URL extraction for Kling/Vidu-style arrays, and
+  provider error-message fallback.
+- Non-Sora provider data no longer overwrites the local task `created_at`, so
+  provider-specific JSON can improve metadata without corrupting the task
+  timeline.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib`: 360 passed, including task/video
+  data-enrichment tests for Sora passthrough, provider URL fallback, nested
+  first-video URL extraction, and non-Sora `created_at` protection;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, covering frontend type/build, route-debt baseline,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit reported 214 frontend Worker-facing
+  routes, 298 Worker routes, 0 missing calls, categories `{}`.
+
+Remaining boundary: exact Go adaptor serializers are still not complete for
+Ali, Doubao, Kling, Jimeng, Vidu, Gemini, Vertex, and Hailuo, and Sora remix
+still needs `ResolveOriginTask` parity. The `/v1/videos/:task_id/content`
+artifact path remains fail-closed until the Queue/R2 proxy, retention policy,
+provider replay, and task billing settlement evidence exist.

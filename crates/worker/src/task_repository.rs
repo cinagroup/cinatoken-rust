@@ -45,7 +45,7 @@ pub fn generate_task_id() -> String {
 }
 
 /// The fields needed to create a task row. Columns not listed take their
-/// `0001_core.sql` defaults (`properties`/`private_data`/`data` = `{}`, etc.).
+/// `0001_core.sql` defaults.
 pub struct NewTask<'a> {
     pub task_id: &'a str,
     pub upstream_task_id: &'a str,
@@ -64,6 +64,13 @@ pub struct NewTask<'a> {
     pub submit_time: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Go `Task.Properties`: model metadata carried to DTO conversion and
+    /// OpenAI-compatible video responses.
+    pub properties: &'a str,
+    /// Raw provider response data persisted as Go `Task.Data`. Upstream task
+    /// providers return JSON today; callers pass `{}` for flows that do not
+    /// have provider data yet.
+    pub data: &'a str,
 }
 
 /// A task row as read back from D1. `status` is parsed via
@@ -99,8 +106,14 @@ impl TaskRow {
 /// given public task is created once.
 pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<()> {
     // Persist the reserving token id in private_data (Go `TaskPrivateData`), so
-    // the poller can refund the token on failure.
-    let private_data = format!(r#"{{"token_id":{}}}"#, task.token_id);
+    // the poller can refund the token on failure. Keep the upstream id there as
+    // well for source DTO compatibility; the dedicated column remains the Rust
+    // fast path.
+    let private_data = serde_json::json!({
+        "token_id": task.token_id,
+        "upstream_task_id": task.upstream_task_id,
+    })
+    .to_string();
     let args = [
         D1Type::Text(task.task_id),
         D1Type::Text(task.upstream_task_id),
@@ -115,15 +128,17 @@ pub async fn insert_task(db: &D1Database, task: &NewTask<'_>) -> worker::Result<
         D1Type::Integer(d1_i32(task.submit_time)),
         D1Type::Integer(d1_i32(task.created_at)),
         D1Type::Integer(d1_i32(task.updated_at)),
+        D1Type::Text(task.properties),
         D1Type::Text(&private_data),
+        D1Type::Text(task.data),
     ];
     db.prepare(
         r#"
         INSERT INTO tasks
           (task_id, upstream_task_id, platform, user_id, username, "group",
            channel_id, quota, action, status, submit_time, created_at, updated_at,
-           private_data)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+           properties, private_data, data)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         "#,
     )
     .bind_refs(&args)?
@@ -192,14 +207,19 @@ pub async fn update_task_status_cas(
     fail_reason: &str,
     progress: &str,
     result_url: &str,
+    result_data: Option<&str>,
     finish_time: i64,
     updated_at: i64,
 ) -> worker::Result<bool> {
+    let should_update_data = if result_data.is_some() { 1 } else { 0 };
+    let result_data = result_data.unwrap_or("");
     let args = [
         D1Type::Text(to.as_str()),
         D1Type::Text(fail_reason),
         D1Type::Text(progress),
         D1Type::Text(result_url),
+        D1Type::Text(result_data),
+        D1Type::Integer(should_update_data),
         D1Type::Integer(d1_i32(finish_time)),
         D1Type::Integer(d1_i32(updated_at)),
         D1Type::Integer(d1_i32(id)),
@@ -215,8 +235,9 @@ pub async fn update_task_status_cas(
             UPDATE tasks
             SET status = ?1, fail_reason = ?2, progress = ?3,
                 private_data = json_set(private_data, '$.result_url', ?4),
-                finish_time = ?5, updated_at = ?6
-            WHERE id = ?7 AND status = ?8
+                data = CASE WHEN ?6 = 1 THEN ?5 ELSE data END,
+                finish_time = ?7, updated_at = ?8
+            WHERE id = ?9 AND status = ?10
             "#,
         )
         .bind_refs(&args)?
@@ -419,6 +440,7 @@ pub async fn apply_poll_result(
     db: &D1Database,
     task: &TaskRow,
     info: &TaskInfo,
+    result_data: Option<&str>,
     finish_time: i64,
     now: i64,
 ) -> worker::Result<bool> {
@@ -431,6 +453,7 @@ pub async fn apply_poll_result(
         &info.reason,
         &info.progress,
         &info.url,
+        result_data,
         finish_time,
         now,
     )
@@ -487,6 +510,7 @@ pub async fn apply_suno_poll_result(
         item_fail_reason,
         progress,
         "",
+        None,
         finish_time,
         now,
     )

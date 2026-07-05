@@ -4,6 +4,22 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `bun run check`: passed after task-data persistence and OpenAI video
+  enrichment, covering frontend type/build, route-debt baseline,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit reported 214 frontend Worker-facing
+  routes, 298 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- `cargo fmt --all`: passed after task-data persistence and OpenAI video
+  enrichment.
+- `cargo test -p cinatoken-worker --lib`: 360 passed after persisting raw
+  provider task data through submit/poll and enriching OpenAI video fetch from
+  stored task data. New/updated tests cover Sora/OpenAI passthrough metadata,
+  provider URL fallback, nested first-video URL extraction, and non-Sora
+  `created_at` protection.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after task-data persistence and OpenAI video enrichment; the only warnings
+  were the pre-existing `dead_code` warnings in `d1_repositories.rs`.
 - `bun run check`: passed after the OpenAI-compatible video create/fetch shell,
   covering frontend type/build, route-debt baseline, rustfmt check, Rust
   workspace tests excluding the Worker, and Worker wasm check. The route audit

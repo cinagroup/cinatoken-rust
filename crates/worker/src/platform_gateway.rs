@@ -7,7 +7,8 @@
 
 use serde::Serialize;
 use serde_json::json;
-use worker::{Env, Request, Response, Result as WorkerResult};
+use wasm_bindgen::JsValue;
+use worker::{Env, Headers, Request, RequestInit, Response, Result as WorkerResult};
 
 use crate::admin::{envelope_ok_response, require_admin_auth};
 
@@ -23,6 +24,7 @@ pub struct DispatchTarget {
     pub route_kind: DispatchRouteKind,
     pub public_name: String,
     pub worker_name: String,
+    pub tenant_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -90,11 +92,12 @@ pub fn dispatch_target_for_request(
 
     let prefix = runtime_value(env, WFP_DISPATCH_WORKER_PREFIX_ENV);
     if env_flag(env, WFP_INTERNAL_DISPATCH_ENABLED_ENV) {
-        if let Some(public_name) = internal_dispatch_script_name(&req.path()) {
+        if let Some(route) = internal_dispatch_route(&req.path()) {
             return Ok(Some(dispatch_target(
                 DispatchRouteKind::InternalPath,
-                &public_name,
+                &route.public_name,
                 prefix.as_deref(),
+                Some(route.tenant_path),
             )?));
         }
     }
@@ -114,6 +117,7 @@ pub fn dispatch_target_for_request(
         DispatchRouteKind::PreviewHost,
         &public_name,
         prefix.as_deref(),
+        None,
     )?))
 }
 
@@ -149,7 +153,8 @@ pub async fn dispatch_request(
         }
     };
 
-    let mut response = fetcher.fetch_request(req).await?;
+    let outbound = request_for_dispatch_target(req, &target)?;
+    let mut response = fetcher.fetch_request(outbound).await?;
     let headers = response.headers_mut();
     let _ = headers.set("X-Cinatoken-WFP-Route", target.route_kind.header_value());
     let _ = headers.set("X-Cinatoken-WFP-Worker", &target.public_name);
@@ -160,6 +165,7 @@ fn dispatch_target(
     route_kind: DispatchRouteKind,
     public_name: &str,
     prefix: Option<&str>,
+    tenant_path: Option<String>,
 ) -> WorkerResult<DispatchTarget> {
     let public_name = normalize_worker_name(public_name)
         .ok_or_else(|| worker::Error::RustError("invalid WFP worker name".to_string()))?;
@@ -169,6 +175,7 @@ fn dispatch_target(
         route_kind,
         public_name,
         worker_name,
+        tenant_path,
     })
 }
 
@@ -180,10 +187,32 @@ fn host_header(req: &Request) -> WorkerResult<Option<String>> {
     }))
 }
 
-fn internal_dispatch_script_name(path: &str) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InternalDispatchRoute {
+    public_name: String,
+    tenant_path: String,
+}
+
+fn internal_dispatch_route(path: &str) -> Option<InternalDispatchRoute> {
     let rest = path.strip_prefix(INTERNAL_DISPATCH_PREFIX)?;
-    let script = rest.split('/').next().unwrap_or_default();
-    normalize_worker_name(script)
+    let (script, tenant_path) = rest.split_once('/').unwrap_or((rest, ""));
+    Some(InternalDispatchRoute {
+        public_name: normalize_worker_name(script)?,
+        tenant_path: normalize_tenant_dispatch_path(tenant_path),
+    })
+}
+
+#[cfg(test)]
+fn internal_dispatch_script_name(path: &str) -> Option<String> {
+    internal_dispatch_route(path).map(|route| route.public_name)
+}
+
+fn normalize_tenant_dispatch_path(value: &str) -> String {
+    if value.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{value}")
+    }
 }
 
 fn preview_script_name_from_host(host: &str, suffix: &str) -> Option<String> {
@@ -210,6 +239,34 @@ fn prefixed_worker_name(public_name: &str, prefix: Option<&str>) -> Option<Strin
     }
     let worker_name = format!("{prefix}{public_name}");
     normalize_worker_name(&worker_name)
+}
+
+fn request_for_dispatch_target(req: Request, target: &DispatchTarget) -> WorkerResult<Request> {
+    match target.tenant_path.as_deref() {
+        Some(tenant_path) => rewrite_request_path(req, tenant_path),
+        None => Ok(req),
+    }
+}
+
+fn rewrite_request_path(req: Request, tenant_path: &str) -> WorkerResult<Request> {
+    let mut url = req.url()?;
+    url.set_path(tenant_path);
+    let headers = clone_headers(req.headers())?;
+    let body = req.inner().body().map(JsValue::from);
+    let mut init = RequestInit::new();
+    init.with_method(req.method()).with_headers(headers);
+    if let Some(body) = body {
+        init.with_body(Some(body));
+    }
+    Request::new_with_init(url.as_str(), &init)
+}
+
+fn clone_headers(input: &Headers) -> WorkerResult<Headers> {
+    let mut headers = Headers::new();
+    for (name, value) in input {
+        headers.append(&name, &value)?;
+    }
+    Ok(headers)
 }
 
 fn normalize_host(host: &str) -> Option<String> {
@@ -289,6 +346,22 @@ mod tests {
         );
         assert!(internal_dispatch_script_name("/api/platform/dispatch/../x").is_none());
         assert!(internal_dispatch_script_name("/api/platform/dispatch/-bad").is_none());
+    }
+
+    #[test]
+    fn internal_dispatch_rewrites_to_tenant_visible_path() {
+        let route =
+            internal_dispatch_route("/api/platform/dispatch/tenant-a/__cinatoken/tenant/status")
+                .unwrap();
+        assert_eq!(route.public_name, "tenant-a");
+        assert_eq!(route.tenant_path, "/__cinatoken/tenant/status");
+
+        let route =
+            internal_dispatch_route("/api/platform/dispatch/tenant-a/v1/responses").unwrap();
+        assert_eq!(route.tenant_path, "/v1/responses");
+
+        let route = internal_dispatch_route("/api/platform/dispatch/tenant-a").unwrap();
+        assert_eq!(route.tenant_path, "/");
     }
 
     #[test]

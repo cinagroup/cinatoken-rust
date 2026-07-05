@@ -1236,6 +1236,22 @@ baseline above.
   needs redacted response-header evidence for both the generated fallback and
   the Rust/Wasm artifact.
 
+- **WFP internal dispatch path rewrite - locally verified (2026-07-05).** The
+  main Worker now rewrites internal dispatch URLs before calling the
+  `DISPATCHER` binding: `/api/platform/dispatch/:worker/<tenant-path>` is
+  forwarded to the tenant Worker as `/<tenant-path>` while preserving method,
+  query string, headers, and the original request body stream. Preview-host
+  dispatch still forwards the original path. This makes the documented
+  `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke actually
+  reach the tenant status route. Local evidence:
+  `cargo test -p cinatoken-worker --lib platform_gateway` (4 passed),
+  `cargo test -p cinatoken-worker --lib` (394 passed),
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` (passed;
+  existing worker dead-code warnings only), and `bun run check` (passed;
+  frontend gates, WFP deploy-plan/generated fallback gates, workspace tests,
+  and Worker/WFP wasm32 checks). Live staging still needs the real `DISPATCHER`
+  binding plus uploaded tenant scripts.
+
 - **WFP Rust/Wasm artifact deploy uploader - locally verified (2026-07-05).**
   Added `tools/deploy_wfp_tenant_artifact.mjs` and `bun run deploy:wfp-tenant`
   for local upload of `crates/wfp-tenant/build/worker` to the Cloudflare WFP

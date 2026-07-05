@@ -4729,3 +4729,42 @@ Remaining migration gaps:
 - Decide whether any AI Gateway correlation ID should be exposed through a
   separate operator-only diagnostic response or log lookup path instead of the
   public tenant relay response.
+
+### 22.70 2026-07-05 WFP Internal Dispatch Path Rewrite
+
+This increment fixes the main Worker's internal WFP dispatch smoke path so it
+actually exercises the tenant Worker contract. The previous dispatch layer
+resolved `/api/platform/dispatch/:worker/...` to a dispatch namespace Worker,
+but forwarded the original URL path unchanged. A tenant script therefore saw
+`/api/platform/dispatch/...` instead of its own route such as
+`/__cinatoken/tenant/status`.
+
+Implemented:
+
+- Internal dispatch targets now carry the tenant-visible path that follows the
+  `:worker` segment.
+- `dispatch_request` rewrites only internal-dispatch requests before invoking
+  the `DISPATCHER` binding. Preview-host dispatch keeps the original path.
+- The rewrite preserves method, query string, headers, and the original
+  `ReadableStream` request body. It does not read AI request bodies into memory.
+- The documented smoke
+  `/api/platform/dispatch/:worker/__cinatoken/tenant/status` now reaches the
+  tenant as `/__cinatoken/tenant/status`, matching the Rust/Wasm and generated
+  fallback tenant status route.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed (4 tests).
+- `cargo test -p cinatoken-worker --lib` passed (394 tests).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with only the existing worker dead-code warnings.
+- `bun run check` passed, including frontend gates, WFP deploy-plan/generated
+  fallback gates, workspace tests, and Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run the internal dispatch status smoke against a real staging
+  `DISPATCHER` binding and uploaded fallback/Rust tenant scripts.
+- Capture an internal dispatch POST smoke for at least one tenant AI route to
+  prove the rewritten path, query string, headers, and streamed body reach the
+  tenant Worker unchanged.

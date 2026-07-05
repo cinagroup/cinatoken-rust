@@ -368,7 +368,10 @@ Smoke order:
    upload the generated ES module.
 5. Enable the commented `DISPATCHER` binding and, only then, run an internal
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke with
-   `WFP_DISPATCH_ENABLED=true` in staging.
+   `WFP_DISPATCH_ENABLED=true` in staging. The main Worker rewrites the
+   internal prefix away before invoking the dispatch namespace, so the tenant
+   Worker should receive `/__cinatoken/tenant/status`, not the
+   `/api/platform/dispatch/...` control-plane path.
 6. Run route-set parity smoke through the generated fallback and preferred
    Rust/Wasm artifact for `/v1/chat/completions`, `/v1/responses`,
    `/v1/messages`, `/v1/embeddings`, and `/ai/run`. Confirm the fallback status

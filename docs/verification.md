@@ -1308,6 +1308,22 @@ baseline above.
   Live staging evidence still needs route-by-route AI Gateway log capture for
   the configured default and override IDs.
 
+- **RealtimeSession DO lifecycle observability - locally verified
+  (2026-07-05).** The hibernatable `RealtimeSession` Durable Object now writes
+  a bounded, non-secret lifecycle metrics record to Durable Object storage on
+  WebSocket accept, text/binary message, close, and error events. The HTTP
+  status response includes `observability: "durable_object_storage"` and the
+  persisted metrics alongside restored socket attachments, while the WebSocket
+  control message `status` returns the same metrics snapshot for smoke tests.
+  The metrics deliberately store counts, timestamps, last auth/model context,
+  token fingerprints, and truncated close/error text only; request payloads,
+  raw protocol API keys, and raw bearer tokens are not serialized. Local
+  evidence: `cargo test -p cinatoken-worker --lib realtime_session` (9 passed;
+  389 filtered), `cargo test -p cinatoken-worker --lib` (398 passed), and
+  `bun run check` (passed; frontend route audit 214 calls / 307 Worker routes /
+  0 missing calls). Live staging still needs hibernation/resume smoke plus the
+  upstream Realtime bridge, billing settlement, and audit trail.
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

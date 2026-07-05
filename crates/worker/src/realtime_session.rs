@@ -24,6 +24,9 @@ pub const REALTIME_OPENAI_PATH: &str = "/v1/realtime";
 
 const SESSION_TAG_PREFIX: &str = "session:";
 const OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX: &str = "openai-insecure-api-key.";
+const SESSION_METRICS_KEY: &str = "session_metrics_v1";
+const MAX_STORED_TEXT_CHARS: usize = 160;
+const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
 const SESSION_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const SESSION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -45,6 +48,8 @@ struct RealtimeSessionStatus {
     active_websockets: usize,
     restored_attachments: usize,
     hibernation: bool,
+    observability: &'static str,
+    metrics: RealtimeSessionMetrics,
     attachments: Vec<RealtimeSocketSummary>,
 }
 
@@ -65,6 +70,30 @@ struct RealtimeApiKey {
     source: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct RealtimeSessionMetrics {
+    session: String,
+    created_at_ms: f64,
+    updated_at_ms: f64,
+    connected_count: u32,
+    text_message_count: u32,
+    binary_message_count: u32,
+    closed_count: u32,
+    error_count: u32,
+    last_connected_at_ms: Option<f64>,
+    last_message_at_ms: Option<f64>,
+    last_closed_at_ms: Option<f64>,
+    last_error_at_ms: Option<f64>,
+    last_entrypoint: Option<String>,
+    last_model: Option<String>,
+    last_token_source: Option<String>,
+    last_token_fingerprint: Option<String>,
+    last_auth_state: Option<String>,
+    last_close_code: Option<usize>,
+    last_close_reason: Option<String>,
+    last_error: Option<String>,
+}
+
 #[durable_object]
 pub struct RealtimeSession {
     state: State,
@@ -79,7 +108,7 @@ impl DurableObject for RealtimeSession {
     async fn fetch(&mut self, req: Request) -> WorkerResult<Response> {
         let session = session_from_request(&req).unwrap_or_else(|| self.state.id().to_string());
         if wants_websocket(&req) {
-            return self.accept_websocket(req, session);
+            return self.accept_websocket(req, session).await;
         }
 
         let sockets = self.state.get_websockets();
@@ -101,11 +130,14 @@ impl DurableObject for RealtimeSession {
             })
             .collect::<Vec<_>>();
         let restored_attachments = attachments.len();
+        let metrics = self.load_metrics(&session, js_sys::Date::now()).await?;
         Response::from_json(&RealtimeSessionStatus {
             session,
             active_websockets: sockets.len(),
             restored_attachments,
             hibernation: true,
+            observability: "durable_object_storage",
+            metrics,
             attachments,
         })
     }
@@ -119,6 +151,14 @@ impl DurableObject for RealtimeSession {
             .deserialize_attachment::<SocketAttachment>()
             .ok()
             .flatten();
+        let now_ms = js_sys::Date::now();
+        let session = attachment
+            .as_ref()
+            .map(|attachment| attachment.session.clone())
+            .unwrap_or_else(|| self.state.id().to_string());
+        let mut metrics = self.load_metrics(&session, now_ms).await?;
+        metrics.record_message(attachment.as_ref(), now_ms, &message);
+        self.store_metrics(&metrics).await?;
         let context = attachment_context_json(attachment.as_ref());
         match message {
             WebSocketIncomingMessage::String(message) if message.trim() == "ping" => {
@@ -126,6 +166,13 @@ impl DurableObject for RealtimeSession {
                     "type": "pong",
                     "context": context,
                     "time_ms": js_sys::Date::now()
+                }))?;
+            }
+            WebSocketIncomingMessage::String(message) if message.trim() == "status" => {
+                ws.send(&json!({
+                    "type": "realtime_session_status",
+                    "context": context,
+                    "metrics": metrics
                 }))?;
             }
             WebSocketIncomingMessage::String(message) => {
@@ -150,30 +197,169 @@ impl DurableObject for RealtimeSession {
 
     async fn websocket_close(
         &mut self,
-        _ws: WebSocket,
-        _code: usize,
-        _reason: String,
+        ws: WebSocket,
+        code: usize,
+        reason: String,
         _was_clean: bool,
     ) -> WorkerResult<()> {
+        let attachment = ws
+            .deserialize_attachment::<SocketAttachment>()
+            .ok()
+            .flatten();
+        let now_ms = js_sys::Date::now();
+        let session = attachment
+            .as_ref()
+            .map(|attachment| attachment.session.clone())
+            .unwrap_or_else(|| self.state.id().to_string());
+        let mut metrics = self.load_metrics(&session, now_ms).await?;
+        metrics.record_close(attachment.as_ref(), now_ms, code, &reason);
+        self.store_metrics(&metrics).await?;
         Ok(())
     }
 
-    async fn websocket_error(&mut self, _ws: WebSocket, error: worker::Error) -> WorkerResult<()> {
+    async fn websocket_error(&mut self, ws: WebSocket, error: worker::Error) -> WorkerResult<()> {
         worker::console_warn!("RealtimeSession websocket error: {}", error);
+        let attachment = ws
+            .deserialize_attachment::<SocketAttachment>()
+            .ok()
+            .flatten();
+        let now_ms = js_sys::Date::now();
+        let session = attachment
+            .as_ref()
+            .map(|attachment| attachment.session.clone())
+            .unwrap_or_else(|| self.state.id().to_string());
+        let mut metrics = self.load_metrics(&session, now_ms).await?;
+        metrics.record_error(attachment.as_ref(), now_ms, &error.to_string());
+        self.store_metrics(&metrics).await?;
         Ok(())
     }
 }
 
 impl RealtimeSession {
-    fn accept_websocket(&mut self, req: Request, session: String) -> WorkerResult<Response> {
+    async fn accept_websocket(&mut self, req: Request, session: String) -> WorkerResult<Response> {
         let pair = WebSocketPair::new()?;
         let client = pair.client;
         let server = pair.server;
-        server.serialize_attachment(socket_attachment_from_request(&req, session.clone()))?;
+        let attachment = socket_attachment_from_request(&req, session.clone());
+        server.serialize_attachment(attachment.clone())?;
         let tag = format!("{SESSION_TAG_PREFIX}{session}");
         self.state
             .accept_websocket_with_tags(&server, &[tag.as_str()]);
+        let now_ms = js_sys::Date::now();
+        let mut metrics = self.load_metrics(&attachment.session, now_ms).await?;
+        metrics.record_connect(&attachment, now_ms);
+        self.store_metrics(&metrics).await?;
         Response::from_websocket(client)
+    }
+
+    async fn load_metrics(
+        &self,
+        session: &str,
+        now_ms: f64,
+    ) -> WorkerResult<RealtimeSessionMetrics> {
+        match self
+            .state
+            .storage()
+            .get::<RealtimeSessionMetrics>(SESSION_METRICS_KEY)
+            .await
+        {
+            Ok(mut metrics) => {
+                if metrics.session != session {
+                    metrics.session = session.to_string();
+                }
+                Ok(metrics)
+            }
+            Err(_) => Ok(RealtimeSessionMetrics::new(session, now_ms)),
+        }
+    }
+
+    async fn store_metrics(&self, metrics: &RealtimeSessionMetrics) -> WorkerResult<()> {
+        let mut storage = self.state.storage();
+        storage.put(SESSION_METRICS_KEY, metrics).await
+    }
+}
+
+impl RealtimeSessionMetrics {
+    fn new(session: &str, now_ms: f64) -> Self {
+        Self {
+            session: session.to_string(),
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            connected_count: 0,
+            text_message_count: 0,
+            binary_message_count: 0,
+            closed_count: 0,
+            error_count: 0,
+            last_connected_at_ms: None,
+            last_message_at_ms: None,
+            last_closed_at_ms: None,
+            last_error_at_ms: None,
+            last_entrypoint: None,
+            last_model: None,
+            last_token_source: None,
+            last_token_fingerprint: None,
+            last_auth_state: None,
+            last_close_code: None,
+            last_close_reason: None,
+            last_error: None,
+        }
+    }
+
+    fn record_connect(&mut self, attachment: &SocketAttachment, now_ms: f64) {
+        self.connected_count = self.connected_count.saturating_add(1);
+        self.last_connected_at_ms = Some(now_ms);
+        self.record_context(Some(attachment), now_ms);
+    }
+
+    fn record_message(
+        &mut self,
+        attachment: Option<&SocketAttachment>,
+        now_ms: f64,
+        message: &WebSocketIncomingMessage,
+    ) {
+        match message {
+            WebSocketIncomingMessage::String(_) => {
+                self.text_message_count = self.text_message_count.saturating_add(1);
+            }
+            WebSocketIncomingMessage::Binary(_) => {
+                self.binary_message_count = self.binary_message_count.saturating_add(1);
+            }
+        }
+        self.last_message_at_ms = Some(now_ms);
+        self.record_context(attachment, now_ms);
+    }
+
+    fn record_close(
+        &mut self,
+        attachment: Option<&SocketAttachment>,
+        now_ms: f64,
+        code: usize,
+        reason: &str,
+    ) {
+        self.closed_count = self.closed_count.saturating_add(1);
+        self.last_closed_at_ms = Some(now_ms);
+        self.last_close_code = Some(code);
+        self.last_close_reason = truncate_stored_text(reason);
+        self.record_context(attachment, now_ms);
+    }
+
+    fn record_error(&mut self, attachment: Option<&SocketAttachment>, now_ms: f64, error: &str) {
+        self.error_count = self.error_count.saturating_add(1);
+        self.last_error_at_ms = Some(now_ms);
+        self.last_error = truncate_stored_text(error);
+        self.record_context(attachment, now_ms);
+    }
+
+    fn record_context(&mut self, attachment: Option<&SocketAttachment>, now_ms: f64) {
+        self.updated_at_ms = now_ms;
+        if let Some(attachment) = attachment {
+            self.session = attachment.session.clone();
+            self.last_entrypoint = Some(attachment.entrypoint.clone());
+            self.last_model = attachment.model.clone();
+            self.last_token_source = attachment.token_source.clone();
+            self.last_token_fingerprint = attachment.token_fingerprint.clone();
+            self.last_auth_state = Some(attachment.auth_state.clone());
+        }
     }
 }
 
@@ -514,11 +700,25 @@ fn redacted_realtime_protocols(value: &str) -> Option<String> {
 }
 
 fn truncate_protocol_token(value: &str) -> String {
-    const MAX_PROTOCOL_TOKEN_LEN: usize = 96;
-    if value.len() <= MAX_PROTOCOL_TOKEN_LEN {
-        return value.to_string();
+    truncate_text(value, MAX_PROTOCOL_TOKEN_CHARS).unwrap_or_default()
+}
+
+fn truncate_stored_text(value: &str) -> Option<String> {
+    truncate_text(value.trim(), MAX_STORED_TEXT_CHARS)
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
     }
-    format!("{}...", &value[..MAX_PROTOCOL_TOKEN_LEN])
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        Some(format!("{truncated}..."))
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn bearer_token(value: &str) -> Option<String> {
@@ -611,5 +811,80 @@ mod tests {
         assert_ne!(first, other);
         assert!(first.starts_with("rt-"));
         assert!(normalize_session_name(&first).is_some());
+    }
+
+    #[test]
+    fn realtime_metrics_record_lifecycle_without_payload_or_token() {
+        let attachment = SocketAttachment {
+            session: "rt-session".to_string(),
+            connected_at_ms: 10.0,
+            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            entrypoint: "openai_realtime_v1".to_string(),
+            model: Some("gpt-4o-realtime-preview".to_string()),
+            token_source: Some("authorization".to_string()),
+            token_fingerprint: Some("fp-token".to_string()),
+            auth_state: "gateway_checked".to_string(),
+        };
+        let mut metrics = RealtimeSessionMetrics::new("rt-session", 1.0);
+        metrics.record_connect(&attachment, 2.0);
+        metrics.record_message(
+            Some(&attachment),
+            3.0,
+            &WebSocketIncomingMessage::String("secret client payload".to_string()),
+        );
+        metrics.record_message(
+            Some(&attachment),
+            4.0,
+            &WebSocketIncomingMessage::Binary(vec![1]),
+        );
+        metrics.record_close(Some(&attachment), 5.0, 1000, "normal close");
+
+        assert_eq!(metrics.connected_count, 1);
+        assert_eq!(metrics.text_message_count, 1);
+        assert_eq!(metrics.binary_message_count, 1);
+        assert_eq!(metrics.closed_count, 1);
+        assert_eq!(
+            metrics.last_model.as_deref(),
+            Some("gpt-4o-realtime-preview")
+        );
+        assert_eq!(metrics.last_token_source.as_deref(), Some("authorization"));
+        assert_eq!(metrics.last_token_fingerprint.as_deref(), Some("fp-token"));
+        assert_eq!(metrics.last_close_code, Some(1000));
+        assert_eq!(metrics.last_close_reason.as_deref(), Some("normal close"));
+        let raw = serde_json::to_string(&metrics).unwrap();
+        assert!(!raw.contains("secret client payload"));
+        assert!(!raw.contains("openai-insecure-api-key.sk"));
+    }
+
+    #[test]
+    fn realtime_metrics_truncate_close_and_error_text_safely() {
+        let mut metrics = RealtimeSessionMetrics::new("rt-session", 1.0);
+        let long_unicode = "云".repeat(MAX_STORED_TEXT_CHARS + 8);
+        metrics.record_close(None, 2.0, 1006, &long_unicode);
+        metrics.record_error(None, 3.0, &long_unicode);
+
+        let close = metrics.last_close_reason.unwrap();
+        let error = metrics.last_error.unwrap();
+        assert!(close.ends_with("..."));
+        assert!(error.ends_with("..."));
+        assert_eq!(
+            close.trim_end_matches("...").chars().count(),
+            MAX_STORED_TEXT_CHARS
+        );
+        assert_eq!(
+            error.trim_end_matches("...").chars().count(),
+            MAX_STORED_TEXT_CHARS
+        );
+    }
+
+    #[test]
+    fn protocol_truncation_is_unicode_safe() {
+        let long_protocol = "协议".repeat(MAX_PROTOCOL_TOKEN_CHARS);
+        let truncated = truncate_protocol_token(&long_protocol);
+        assert!(truncated.ends_with("..."));
+        assert_eq!(
+            truncated.trim_end_matches("...").chars().count(),
+            MAX_PROTOCOL_TOKEN_CHARS
+        );
     }
 }

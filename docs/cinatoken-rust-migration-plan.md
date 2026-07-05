@@ -4826,3 +4826,50 @@ Remaining migration gaps:
   Gateway per tenant tier, or a default Gateway plus only selected route
   overrides; record the chosen policy in the provider/channel matrix before
   canary.
+
+### 22.72 2026-07-05 RealtimeSession DO Lifecycle Observability
+
+This increment continues the cinaVibeSDK-style Durable Object long-session
+layer without claiming full OpenAI Realtime protocol parity. The previous
+Realtime DO could accept hibernatable sockets and restore sanitized socket
+attachments, but its status surface could not prove lifecycle continuity after
+messages, close events, errors, or hibernation resume. The DO now persists a
+bounded metrics record in Durable Object storage so staging smoke can inspect
+state that is not dependent on in-memory object lifetime.
+
+Implemented:
+
+- `RealtimeSession` now writes `session_metrics_v1` to Durable Object storage
+  on WebSocket accept, text/binary message, close, and error events.
+- The persisted metrics record includes only non-secret lifecycle data:
+  counters, timestamps, last entrypoint/model/auth state, token source,
+  token fingerprint, close code, and truncated close/error text.
+- The metrics record deliberately does not store client message payloads, raw
+  bearer tokens, raw Realtime protocol API keys, provider keys, or upstream
+  frames.
+- HTTP status responses now include
+  `observability: "durable_object_storage"` and the persisted metrics together
+  with restored hibernatable socket attachments.
+- A WebSocket control message of `status` returns a
+  `realtime_session_status` frame with the same metrics snapshot, giving live
+  smoke tests a single-socket control path in addition to the HTTP status path.
+- Protocol-token and close/error truncation is Unicode-safe, so smoke or error
+  text cannot panic on multi-byte content.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session` passed (9 tests; 389
+  filtered), including lifecycle metrics, non-persistence of message payloads
+  and raw keys, and Unicode-safe truncation tests.
+- `cargo test -p cinatoken-worker --lib` passed (398 tests).
+- `bun run check` passed, including frontend gates, WFP deploy-plan/generated
+  fallback gates, workspace tests, and Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run staging hibernation/resume smoke against a real `REALTIME_SESSIONS`
+  binding: connect, send `ping`, send `status`, force/observe idle resume,
+  fetch HTTP status, and archive restored attachments plus persisted metrics.
+- Wire the upstream OpenAI Realtime WebSocket bridge, backpressure/error
+  mapping, preconsume/final settlement, audit log, and live protocol replay
+  before enabling `/v1/realtime` for production traffic.

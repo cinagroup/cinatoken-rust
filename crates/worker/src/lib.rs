@@ -1076,8 +1076,11 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             task_orchestration::handle_openai_video_fetch_by_id(req, ctx.env, task_id.as_ref())
                 .await
         })
-        .post("/v1/videos/:video_id/remix", |_, _| {
-            relay::relay_not_implemented()
+        .post_async("/v1/videos/:video_id/remix", |req, ctx| async move {
+            let video_id = ctx.param("video_id").cloned();
+            let now = (worker::Date::now().as_millis() / 1000) as i64;
+            task_orchestration::handle_openai_video_remix(req, ctx.env, video_id.as_ref(), now)
+                .await
         })
         .get_async("/suno/fetch/:id", |req, ctx| async move {
             let task_id = ctx.param("id").cloned();

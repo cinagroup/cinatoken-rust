@@ -34,6 +34,7 @@ use wasm_bindgen::JsValue;
 use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
 
 const VIDEO_CONTENT_DATA_URL_MAX_BYTES: usize = 25 * 1024 * 1024;
+const TASK_ACTION_REMIX: &str = "remixGenerate";
 
 /// Build the submit request body for a provider by dispatching to its ported
 /// body transform (the submit half of Go `BuildRequestBody`). The JSON-payload
@@ -664,6 +665,128 @@ pub async fn handle_openai_video_submit(
     now: i64,
 ) -> worker::Result<Response> {
     handle_task_submit_with_response(req, env, now, VideoSubmitResponse::OpenAiVideo).await
+}
+
+/// `POST /v1/videos/:video_id/remix`: OpenAI-compatible Sora remix. Go resolves
+/// the public origin task, locks the submit to that task's channel, and uses
+/// the origin's stored upstream task id for the provider URL.
+pub async fn handle_openai_video_remix(
+    mut req: Request,
+    env: Env,
+    video_id: Option<&String>,
+    now: i64,
+) -> worker::Result<Response> {
+    let db = env.d1("DB")?;
+
+    let Some(api_key) = crate::relay::extract_api_key(&req) else {
+        return task_error_response("unauthorized", "missing api key", 401);
+    };
+    let Some(auth) = crate::d1_repositories::authenticate_token(&db, &api_key).await? else {
+        return task_error_response("unauthorized", "invalid api key", 401);
+    };
+    let Some(video_id) = video_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return task_error_response("invalid_request", "video_id is required", 400);
+    };
+
+    let Some(origin) = crate::task_repository::find_task_dto(&db, auth.user_id, video_id).await?
+    else {
+        return task_error_response("task_not_exist", "task_origin_not_exist", 400);
+    };
+    let origin_upstream_task_id = upstream_task_id_from_private_data(&origin)
+        .trim()
+        .to_string();
+    if origin_upstream_task_id.is_empty() {
+        return task_error_response(
+            "invalid_request",
+            "origin task missing upstream task id",
+            400,
+        );
+    }
+
+    let body_bytes = req.bytes().await?;
+    let task_req: TaskSubmitReq = match serde_json::from_slice(&body_bytes) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return task_error_response("invalid_request", &format!("invalid request: {err}"), 400)
+        }
+    };
+    if task_req.prompt.trim().is_empty() {
+        return task_error_response("invalid_request", "field prompt is required", 400);
+    }
+
+    let model = remix_origin_model(&origin, &task_req.model);
+    if model.trim().is_empty() {
+        return task_error_response("invalid_request", "origin task model is missing", 400);
+    }
+
+    let Some(channel) =
+        crate::d1_repositories::find_enabled_relay_channel_by_id(&db, origin.channel_id).await?
+    else {
+        return task_error_response(
+            "task_channel_disable",
+            "the channel of the origin task is disabled",
+            400,
+        );
+    };
+    let Some(provider) = VideoProvider::from_channel_type(channel.channel_type as i64) else {
+        return task_error_response(
+            "invalid_api_platform",
+            "channel is not a task provider",
+            400,
+        );
+    };
+    if provider != VideoProvider::Sora {
+        return task_error_response(
+            "invalid_api_platform",
+            "origin task channel does not support OpenAI video remix",
+            400,
+        );
+    }
+
+    let base_quota = compute_task_base_quota(&db, &model, &auth.user_group)
+        .await?
+        .unwrap_or(0);
+    let remix_quota = apply_other_ratios(base_quota, &remix_billing_ratios_from_origin(&origin));
+
+    let channel_base_url = channel.base_url.as_deref().unwrap_or_default();
+    let gemini_version = env
+        .var("GEMINI_VERSION")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "v1beta".to_string());
+    let vertex_region = env
+        .var("VERTEX_REGION")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "us-central1".to_string());
+    let platform = channel.channel_type.to_string();
+    let ctx = TaskSubmitContext {
+        provider,
+        channel_id: channel.id,
+        channel_base_url,
+        channel_key: &channel.key,
+        user_id: auth.user_id,
+        token_id: auth.token_id,
+        username: &auth.username,
+        group: &auth.token_group,
+        platform: &platform,
+        upstream_model: &model,
+        origin_model: &model,
+        action: TASK_ACTION_REMIX,
+        origin_task_id: &origin_upstream_task_id,
+        base_quota: remix_quota,
+        now,
+        gemini_version: &gemini_version,
+        vertex_region: &vertex_region,
+    };
+
+    match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
+        Ok(public_task_id) => {
+            crate::json_with_status(&openai_video_submit_json(&public_task_id, &model, now), 200)
+        }
+        Err(err) => task_error_response("submit_task_failed", &err.to_string(), 500),
+    }
 }
 
 /// HTTP entry for a Suno task submit (`POST /suno/submit/:action`). Suno is a
@@ -1597,6 +1720,63 @@ fn task_origin_model(
         .to_string()
 }
 
+fn string_or_number_i64(value: Option<&serde_json::Value>) -> Option<i64> {
+    match value {
+        Some(serde_json::Value::Number(number)) => number.as_i64(),
+        Some(serde_json::Value::String(value)) => value.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn remix_billing_ratios_from_origin(row: &crate::task_repository::TaskDtoRow) -> Vec<f64> {
+    let data = task_data_json(row);
+    let seconds = data
+        .as_ref()
+        .and_then(|value| string_or_number_i64(value.get("seconds")))
+        .filter(|value| *value > 0)
+        .unwrap_or(4);
+    let size = data
+        .as_ref()
+        .and_then(|value| value.get("size"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    let size_ratio = if size == "1792x1024" || size == "1024x1792" {
+        1.666667
+    } else {
+        1.0
+    };
+    vec![seconds as f64, size_ratio]
+}
+
+fn remix_origin_model(row: &crate::task_repository::TaskDtoRow, fallback_model: &str) -> String {
+    let data = task_data_json(row);
+    let properties: serde_json::Value =
+        serde_json::from_str(&row.properties).unwrap_or(serde_json::Value::Null);
+    let model = properties
+        .get("origin_model_name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| {
+            properties
+                .get("upstream_model_name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|model| !model.trim().is_empty())
+        })
+        .or_else(|| {
+            data.as_ref()
+                .and_then(|value| value.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|model| !model.trim().is_empty())
+        })
+        .unwrap_or("");
+    if model.trim().is_empty() {
+        fallback_model.trim().to_string()
+    } else {
+        model.to_string()
+    }
+}
+
 fn openai_video_submit_json(task_id: &str, model: &str, created_at: i64) -> serde_json::Value {
     serde_json::json!({
         "id": task_id,
@@ -2307,6 +2487,45 @@ mod tests {
             active_session_video_user_id(Some(&disabled)),
             Err(VideoContentSessionAuthError::DisabledUser)
         );
+    }
+
+    #[test]
+    fn remix_origin_model_prefers_origin_then_upstream_then_data_then_request() {
+        let row = task_row();
+        assert_eq!(remix_origin_model(&row, "request-model"), "sora-2");
+
+        let mut row = task_row();
+        row.properties = r#"{"upstream_model_name":"sora-upstream"}"#.to_string();
+        assert_eq!(remix_origin_model(&row, "request-model"), "sora-upstream");
+
+        row.properties = "{}".to_string();
+        row.data = serde_json::json!({"model": "sora-data"}).to_string();
+        assert_eq!(remix_origin_model(&row, "request-model"), "sora-data");
+
+        row.data = "{}".to_string();
+        assert_eq!(remix_origin_model(&row, "request-model"), "request-model");
+    }
+
+    #[test]
+    fn remix_billing_ratios_follow_origin_task_data() {
+        let mut row = task_row();
+        row.data = serde_json::json!({
+            "seconds": "8",
+            "size": "1792x1024"
+        })
+        .to_string();
+        assert_eq!(remix_billing_ratios_from_origin(&row), vec![8.0, 1.666667]);
+        assert_eq!(
+            apply_other_ratios(100, &remix_billing_ratios_from_origin(&row)),
+            1333
+        );
+
+        row.data = serde_json::json!({
+            "seconds": 0,
+            "size": "720x1280"
+        })
+        .to_string();
+        assert_eq!(remix_billing_ratios_from_origin(&row), vec![4.0, 1.0]);
     }
 
     #[test]

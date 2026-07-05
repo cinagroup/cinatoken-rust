@@ -176,6 +176,39 @@ pub async fn select_relay_channels(
         .collect())
 }
 
+/// Return one enabled relay channel by id for origin-task-locked task submits
+/// (for example OpenAI video remix). The shape matches [`RelayChannel`] so the
+/// submit path can reuse the same provider dispatch as regular selection.
+pub async fn find_enabled_relay_channel_by_id(
+    db: &D1Database,
+    channel_id: i64,
+) -> worker::Result<Option<RelayChannel>> {
+    let arg = D1Type::Integer(d1_i32(channel_id));
+    db.prepare(
+        r#"
+        SELECT
+          id,
+          type AS channel_type,
+          "key",
+          name,
+          base_url,
+          models,
+          "group" AS channel_group,
+          model_mapping,
+          openai_organization,
+          COALESCE(priority, 0) AS priority,
+          COALESCE(weight, 0) AS weight
+        FROM channels
+        WHERE id = ?1
+          AND status = 1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&[arg])?
+    .first::<RelayChannel>(None)
+    .await
+}
+
 /// The normalized model name to retry when an exact ability match misses, or
 /// `None` when normalization would not change the name (so there is nothing to
 /// retry). Mirrors Go's `normalizedModel := FormatMatchingModelName(model)`

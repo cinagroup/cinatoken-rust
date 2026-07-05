@@ -261,9 +261,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `GET /v1/videos/:task_id/content` now serves completed,
   token-or-session-owner-scoped tasks from stored result/provider URLs or
   bounded `data:` URLs with SSRF validation and streaming upstream response
-  passthrough. `/v1/videos/:video_id/remix`
-  remains a structured 501 boundary until remix origin-task resolution is
-  ported.
+  passthrough. `POST /v1/videos/:video_id/remix` now resolves the owner's
+  origin task, locks the submit to the origin channel, forwards to the stored
+  upstream Sora/OpenAI video id, and derives remix billing ratios from origin
+  task data.
 - Admin CRUD P0 surface (`crates/worker/src/admin_crud.rs`): admin + self log
   list/stat/delete, root-only option list/update with sensitive-key
   filtering, and user-scoped token CRUD with key masking, ownership
@@ -437,8 +438,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   billing shadow evidence.
 - Continue the async-video G7 path by adding provider replay fixtures for the
   newly ported OpenAI video serializers/content proxy, completing artifact
-  retrieval gaps that require provider credentials, porting Sora remix
-  origin-task/channel-lock resolution, and moving video artifact
+  retrieval gaps that require provider credentials, hardening Sora remix with
+  provider replay/billing-settlement evidence, and moving video artifact
   retrieval/retention into Queue/R2 before full production ownership.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.

@@ -3474,6 +3474,53 @@ Updated local evidence:
 
 Remaining boundary: this completes the session-auth slice for dashboard video
 media links, not full video artifact ownership. Credentialed provider refetch,
-R2 retention policy, provider replay fixtures, Sora remix origin-task/channel
-lock resolution, and async task billing settlement evidence remain required
-before G7 video cutover.
+R2 retention policy, provider replay fixtures, Sora remix provider/billing
+replay, and async task billing settlement evidence remain required before G7
+video cutover.
+
+### 22.44 2026-07-05 OpenAI Video Sora Remix Submit Slice
+
+This increment replaces the explicit `POST /v1/videos/:video_id/remix` 501
+boundary with the first Worker-owned Sora/OpenAI remix submit path. Source Go
+uses `ResolveOriginTask` before task submit: it owner-scopes the public origin
+task id, locks the request to the origin task's channel, and submits remix
+through the Sora adaptor.
+
+Implemented in Rust:
+
+- `/v1/videos/:video_id/remix` is now an async Worker route with the same token
+  authentication class as the Go video submit group.
+- The route loads the origin task by authenticated user id and public task id,
+  rejects missing origin tasks, and reads the stored upstream task id from
+  `private_data.upstream_task_id`.
+- The route locks channel selection to the origin task's enabled channel via a
+  new D1 repository helper returning the existing relay-channel shape.
+- Only Sora/OpenAI channel types are accepted for this OpenAI-compatible remix
+  slice; other provider remix semantics remain explicit future work.
+- The submit context uses action `remixGenerate`, so the existing Sora submit
+  URL builder posts to `{base}/v1/videos/{upstream_origin_id}/remix`.
+- Remix billing precharge derives Go-compatible old-style ratios from origin
+  task data: `seconds` defaults to 4 and large `size` values
+  `1792x1024`/`1024x1792` apply the `1.666667` multiplier.
+- The success response returns the same Rust OpenAI video queued shell as
+  `POST /v1/videos`, while the inserted task keeps `action=remixGenerate` for
+  downstream polling/status.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::remix_`: 2
+  passed, covering origin-model precedence and origin-data remix billing
+  ratios.
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 19
+  passed;
+- `cargo test -p cinatoken-worker --lib`: 372 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check.
+
+Remaining boundary: this is submit-path ownership, not provider replay proof or
+full artifact ownership. Live/provider replay, final async-task settlement
+shadow evidence, credentialed artifact refetch, and Queue/R2 retention still
+gate G7 cutover.

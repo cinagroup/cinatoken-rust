@@ -122,8 +122,18 @@ export function CheckinCalendarCard({
     if (initialLoaded) return
     if (isLoading) return
     if (!checkinData) return
-    setCollapsed(checkedToday)
-    setInitialLoaded(true)
+
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setCollapsed(checkedToday)
+        setInitialLoaded(true)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [checkinData, checkedToday, initialLoaded, isLoading])
 
   const shouldTriggerTurnstile = useCallback(

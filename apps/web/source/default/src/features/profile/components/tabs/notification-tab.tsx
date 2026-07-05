@@ -90,7 +90,10 @@ export function NotificationTab({ profile, onUpdate }: NotificationTabProps) {
   )
 
   useEffect(() => {
-    if (profile?.setting) {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled || !profile?.setting) return
+
       const parsed = parseUserSettings(profile.setting)
       setSettings({
         notify_type: normalizeNotifyType(parsed.notify_type),
@@ -109,6 +112,10 @@ export function NotificationTab({ profile, onUpdate }: NotificationTabProps) {
         upstream_model_update_notify_enabled:
           parsed.upstream_model_update_notify_enabled || false,
       })
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [profile])
 

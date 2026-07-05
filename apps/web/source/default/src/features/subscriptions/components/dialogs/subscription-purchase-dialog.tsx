@@ -71,14 +71,24 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const { currency } = useSystemConfig()
   const [paying, setPaying] = useState(false)
   const [selectedEpayMethod, setSelectedEpayMethod] = useState('')
+  const firstEpayMethodType = props.epayMethods?.[0]?.type ?? ''
 
   useEffect(() => {
-    if (props.open && props.epayMethods && props.epayMethods.length > 0) {
-      setSelectedEpayMethod(props.epayMethods[0].type)
-    } else if (!props.open) {
-      setSelectedEpayMethod('')
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+
+      if (props.open && firstEpayMethodType) {
+        setSelectedEpayMethod(firstEpayMethodType)
+      } else if (!props.open) {
+        setSelectedEpayMethod('')
+      }
+    })
+
+    return () => {
+      cancelled = true
     }
-  }, [props.open, props.epayMethods])
+  }, [props.open, firstEpayMethodType])
 
   const plan = props.plan?.plan
   if (!plan) return null

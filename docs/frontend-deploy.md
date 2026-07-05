@@ -47,7 +47,7 @@ bun run check:web:quality
 ```
 
 As of 2026-07-05, build/typecheck and Prettier pass. Strict lint still reports
-22 errors and 2 warnings; this is tracked debt and the lint rules must not be
+5 errors and 0 warnings; this is tracked debt and the lint rules must not be
 weakened to hide it. The migration check chain now enforces a no-regression
 baseline while the imported React debt is paid down:
 

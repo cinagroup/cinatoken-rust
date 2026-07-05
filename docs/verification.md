@@ -5,8 +5,8 @@ Last checked: 2026-07-05
 ## Passed
 
 - `bun run check:web:lint-debt`: passed after adding the executable frontend
-  lint-debt no-regression baseline. It reports 22 ESLint errors, 2 warnings,
-  23 files with findings, and 0 regressions against
+  lint-debt no-regression baseline. It reports 5 ESLint errors, 0 warnings,
+  4 files with findings, and 0 regressions against
   `tools/frontend_lint_debt_baseline.json`; the paydown batches hoisted the
   usage-log user-info `InfoItem` component, reduced
   `react-hooks/static-components` from 9 errors to 0, and refactored the
@@ -59,6 +59,15 @@ Last checked: 2026-07-05
   files to 22 errors / 2 warnings / 23 files, with
   `react-hooks/set-state-in-effect` down to 18 errors and the
   `@tanstack/query/exhaustive-deps` family cleared from the current baseline.
+  The latest shared editor/chart/profile/subscription/settings cleanup defers
+  remaining low-risk prop/URL/default synchronization work out of synchronous
+  effect bodies, fixes React Hook Form save callbacks by resolving
+  `handleSubmit` at event time, stabilizes model-mapping JSON parsing, and
+  removes the final hook dependency warnings. This reduces strict lint from
+  22 errors / 2 warnings / 23 files to 5 errors / 0 warnings / 4 files, with
+  `react-hooks/set-state-in-effect` down to 4 errors,
+  `react-hooks/refs` down to 1 error, and `react-hooks/exhaustive-deps`
+  cleared from the current baseline.
 - `bun run format:check` in `apps/web/source/default`: passed after removing
   one stale `react-hooks/set-state-in-effect` disable comment from the imported
   frontend source.
@@ -85,7 +94,7 @@ Last checked: 2026-07-05
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:bundle`: passed after adding the frontend bundle
   redaction audit. It scanned 460 built frontend text assets
-  (37,283,587 bytes) across `apps/web/source/default/dist` and
+  (37,284,372 bytes) across `apps/web/source/default/dist` and
   `apps/web/dist`, with 0 findings.
 - `bun run check`: passed after wiring the frontend bundle redaction audit
   into the main verification chain, covering frontend type/build, bundle
@@ -1222,7 +1231,7 @@ bun run check
 ## Still Pending
 
 - `bun run check:web:quality` remains red because strict ESLint still reports
-  22 errors and 2 warnings in the imported frontend source. The rules have not
+  5 errors and 0 warnings in the imported frontend source. The rules have not
   been weakened; `bun run check:web:lint-debt` now enforces a no-regression
   baseline while the debt is paid down in batches. `bun run format:check`
   passes.

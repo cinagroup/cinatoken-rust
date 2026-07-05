@@ -81,21 +81,30 @@ export function ChannelSelectorDialog({
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
 
   useEffect(() => {
-    if (!selectedChannelIds.length) {
-      setRowSelection({})
-      return
-    }
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
 
-    const availableChannelIds = new Set(channels.map((channel) => channel.id))
-    const newSelection: RowSelectionState = {}
-
-    selectedChannelIds.forEach((id) => {
-      if (availableChannelIds.has(id)) {
-        newSelection[id.toString()] = true
+      if (!selectedChannelIds.length) {
+        setRowSelection({})
+        return
       }
+
+      const availableChannelIds = new Set(channels.map((channel) => channel.id))
+      const newSelection: RowSelectionState = {}
+
+      selectedChannelIds.forEach((id) => {
+        if (availableChannelIds.has(id)) {
+          newSelection[id.toString()] = true
+        }
+      })
+
+      setRowSelection(newSelection)
     })
 
-    setRowSelection(newSelection)
+    return () => {
+      cancelled = true
+    }
   }, [selectedChannelIds, channels])
 
   const updateEndpoint = useCallback(

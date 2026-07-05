@@ -757,16 +757,25 @@ function GroupPricingTable({
   )
 
   useEffect(() => {
+    let cancelled = false
     const incomingSignature = sourceGroupPricingSignature(
       groupRatio,
       userUsableGroups
     )
-    setRows((currentRows) => {
-      if (groupPricingSignature(currentRows) === incomingSignature) {
-        return currentRows
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setRows((currentRows) => {
+          if (groupPricingSignature(currentRows) === incomingSignature) {
+            return currentRows
+          }
+          return buildGroupPricingRows(groupRatio, userUsableGroups)
+        })
       }
-      return buildGroupPricingRows(groupRatio, userUsableGroups)
     })
+
+    return () => {
+      cancelled = true
+    }
   }, [groupRatio, userUsableGroups])
 
   const emitRows = useCallback(

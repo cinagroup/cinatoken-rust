@@ -4242,3 +4242,55 @@ Remaining boundary: strict lint is still not green. The remaining current
 baseline is 22 ESLint errors / 2 warnings, dominated by
 `react-hooks/set-state-in-effect` (18 errors), with smaller refs and hook
 dependency families still pending before G5 production sign-off.
+
+### 22.61 2026-07-05 Frontend Shared Form/Editor Lint Paydown
+
+This increment takes the imported React strict-lint cleanup close to zero by
+targeting shared editors, chart defaults, profile/subscription forms, and
+settings form actions. It intentionally leaves the tiered-pricing/billing
+expression editor and upstream billing-expression sync surfaces for a dedicated
+batch that first reviews the Go billing-expression notes.
+
+Implemented in the imported React frontend:
+
+- Deferred remaining low-risk prop/context synchronization in web preview URL
+  input, datetime picker, JSON editor, dashboard chart defaults, prefill-group
+  management, profile check-in/language/notification forms, subscription
+  purchase Epay method selection, usage-log user info loading, and wallet
+  recharge amount mirroring out of synchronous effect bodies.
+- Stabilized the model-mapping editor's JSON parser with `useCallback` and
+  moved external-value synchronization behind a cleanup-guarded microtask,
+  clearing the final imported `react-hooks/exhaustive-deps` warnings.
+- Changed chat, JSON-toggle, and Claude settings page action callbacks so
+  React Hook Form `handleSubmit` is resolved at save-event time instead of
+  being passed through render, lowering the `react-hooks/refs` baseline.
+- Deferred channel-selector row-selection sync and group-ratio visual table
+  source synchronization out of synchronous effect bodies.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 22 errors / 2 warnings
+  / 23 files to 5 errors / 0 warnings / 4 files. The rule-family deltas are:
+  `react-hooks/set-state-in-effect` 18 -> 4,
+  `react-hooks/refs` 4 -> 1, and `react-hooks/exhaustive-deps` 2 warnings ->
+  0.
+
+Updated local evidence:
+
+- File-scoped ESLint for the touched frontend files: passed with no findings.
+- Full frontend ESLint aggregation: 5 errors, 0 warnings, 4 files with
+  findings.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 5 errors, 0 warnings, 4 files
+  with findings, and 0 regressions.
+- `bun run format:check` in `apps/web/source/default`: passed.
+- `git diff --check`: passed.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,284,372 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is nearly green but not zero. The remaining
+current baseline is 5 ESLint errors / 0 warnings across
+`model-mutate-drawer.tsx`, `ratio-settings-card.tsx`,
+`tiered-pricing-editor.tsx`, and `upstream-ratio-sync.tsx`. The last three
+touch billing ratio or billing-expression surfaces and should be handled after
+reading the Go billing-expression notes.

@@ -166,7 +166,16 @@ export const WebPreviewUrl = ({
 
   // Sync input value with context URL when it changes externally
   useEffect(() => {
-    setInputValue(url)
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setInputValue(url)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [url])
 
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {

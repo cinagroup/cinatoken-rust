@@ -72,8 +72,15 @@ export function UserInfoDialog({
   )
 
   useEffect(() => {
-    if (open && userId) {
-      fetchUserInfo(userId)
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled && open && userId) {
+        void fetchUserInfo(userId)
+      }
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [open, userId, fetchUserInfo])
 

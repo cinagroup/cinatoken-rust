@@ -334,14 +334,16 @@ generate a small tenant Worker module and, for `deploy`, upload it to the
 Cloudflare Workers for Platforms dispatch namespace API. This REST call is
 control-plane only; hot tenant traffic still uses the `DISPATCHER` binding.
 The repository also includes a standalone Rust/Wasm tenant Worker at
-`crates/wfp-tenant`; until artifact-aware deployment is wired, the control-plane
-deploy route still uploads the ES module fallback while the plan response
-advertises the Rust crate path and build artifact.
+`crates/wfp-tenant`. The Worker-side deploy route still uploads the ES module
+fallback, but the preferred Rust/Wasm path is the local artifact uploader:
+build with `bun run build:wfp-tenant`, then upload the generated
+`crates/wfp-tenant/build/worker` directory with `bun run deploy:wfp-tenant`.
 
 | Var/secret | Kind | Required for | Notes |
 | --- | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | var | Tenant script plan/deploy URL and runtime AI Gateway calls | Plain account identifier; may be left empty until WFP staging |
 | `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace script upload and tenant runtime AI Gateway calls | Never commit; scope to Worker dispatch namespace script edit plus AI Gateway/Workers AI calls needed by the tenant script |
+| `WFP_TENANT_CF_API_TOKEN` or `CLOUDFLARE_AI_GATEWAY_TOKEN` | local secret/env for artifact uploader | Optional tenant runtime `CF_API_TOKEN` binding | Prefer this over reusing the dispatch deploy token for staging/prod tenant runtime calls |
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
@@ -352,11 +354,16 @@ Smoke order:
    `CLOUDFLARE_API_TOKEN` in staging.
 2. Call `/api/platform/wfp/tenant-script/plan` as a root admin and archive the
    redacted metadata plus generated script.
-3. Run `bun run check:wfp-tenant` and, when `worker-build` is installed,
-   `bun run build:wfp-tenant`; archive the `crates/wfp-tenant/build/worker`
-   artifact manifest.
-4. Call `/api/platform/wfp/tenant-script/deploy` and confirm a 2xx Cloudflare
-   API response.
+3. Run `bun run check:wfp-tenant`, `bun run check:wfp-tenant:deploy-plan`, and,
+   when `worker-build` is installed, `bun run build:wfp-tenant`; archive the
+   `crates/wfp-tenant/build/worker` artifact manifest. On Windows, ensure
+   either GNU binutils provides `dlltool.exe` or Visual Studio Build Tools'
+   `link.exe` wins over Git/Hermes in PATH before installing `worker-build`.
+4. Preferred Rust/Wasm path: run `bun run deploy:wfp-tenant -- --script-name
+   <tenant> --tenant-id <tenant> --namespace <dispatch-namespace>` first with
+   `--dry-run`, then without `--dry-run`, and confirm a 2xx Cloudflare API
+   response. Fallback path: call `/api/platform/wfp/tenant-script/deploy` to
+   upload the generated ES module.
 5. Enable the commented `DISPATCHER` binding and, only then, run an internal
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke with
    `WFP_DISPATCH_ENABLED=true` in staging.

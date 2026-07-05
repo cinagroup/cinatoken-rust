@@ -1213,6 +1213,22 @@ baseline above.
   and `bun run check` (passed; frontend route audit 214 calls / 307 Worker
   routes / 0 missing calls; existing worker dead-code warnings only).
 
+- **WFP Rust/Wasm artifact deploy uploader - locally verified (2026-07-05).**
+  Added `tools/deploy_wfp_tenant_artifact.mjs` and `bun run deploy:wfp-tenant`
+  for local upload of `crates/wfp-tenant/build/worker` to the Cloudflare WFP
+  dispatch namespace multipart API. Local evidence:
+  `bun tools/deploy_wfp_tenant_artifact.mjs --help` (passed),
+  `bun run check:wfp-tenant:deploy-plan` (passed), and a dry-run against an
+  ignored synthetic artifact directory with `shim.mjs` plus `index_bg.wasm`
+  (2 modules discovered; JavaScript module and Wasm content types assigned;
+  `CF_API_TOKEN` redacted). `bun run check` also passed with the new
+  deploy-plan gate included. Attempted `worker-build` installation on the
+  current Windows workstation is blocked by local native toolchain setup:
+  GNU lacks `dlltool.exe`, while MSVC resolves `link.exe` to
+  `C:\Users\cina\.hermes\git\usr\bin\link.exe` instead of Visual Studio Build
+  Tools. Live dispatch upload still requires a working `worker-build`
+  environment plus staging Cloudflare credentials and namespace.
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

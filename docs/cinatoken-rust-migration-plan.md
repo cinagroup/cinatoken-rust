@@ -4499,9 +4499,64 @@ Validation:
 
 Remaining migration gaps:
 
-- The `deploy` route still uploads the generated ES module fallback. The next
-  WFP step is artifact-aware deployment: upload `crates/wfp-tenant/build/worker`
-  output (`shim.mjs` plus generated Wasm/glue modules) through the dispatch
-  namespace multipart API.
+- The Worker-side `deploy` route still uploads the generated ES module
+  fallback. Rust/Wasm artifact deployment is handled by the local uploader in
+  22.66, because the main Worker cannot read local `worker-build` output at
+  runtime.
 - Live dispatch namespace deploy/smoke still needs Cloudflare account ID,
   namespace, and scoped API token in staging.
+
+### 22.66 2026-07-05 WFP Rust/Wasm Artifact Deploy Uploader
+
+This increment wires the missing packaging/deployment leg for the WFP Rust
+tenant runtime without putting build artifacts or secrets into the main Worker.
+It follows the same separation used by cinaVibeSDK: runtime dispatch stays in
+Worker bindings, while deployment tooling packages artifacts locally and calls
+Cloudflare's dispatch namespace upload API.
+
+Implemented:
+
+- Added `tools/deploy_wfp_tenant_artifact.mjs`.
+  - Reads `worker-build` output from `crates/wfp-tenant/build/worker` by
+    default and uploads every artifact module in the directory.
+  - Uses `shim.mjs` as the default multipart `main_module` and marks `.mjs` /
+    `.js` files as `application/javascript+module`, `.wasm` as
+    `application/wasm`, and JSON/text files with explicit content types.
+  - Builds the multipart body explicitly so the `metadata` part has
+    `Content-Type: application/json` and each module part is named exactly as
+    the generated artifact import expects.
+  - Emits redacted dry-run output; `secret_text` bindings never print the real
+    token.
+  - Supports CLI/env configuration for script name, tenant id, dispatch
+    namespace, worker prefix, Cloudflare account/token, optional tenant runtime
+    token (`WFP_TENANT_CF_API_TOKEN` or `CLOUDFLARE_AI_GATEWAY_TOKEN`), optional
+    `AI_GATEWAY_ID`, compatibility date, artifact directory, and main module.
+- Added `bun run deploy:wfp-tenant`.
+- Added `bun run check:wfp-tenant:deploy-plan` and included it in
+  `bun run check`. The check validates the redacted manifest-only upload plan
+  without requiring real Cloudflare credentials or `worker-build` output.
+
+Validation:
+
+- `bun tools/deploy_wfp_tenant_artifact.mjs --help` passed.
+- `bun run check:wfp-tenant:deploy-plan` passed.
+- A dry-run against a synthetic ignored artifact directory under
+  `target/wfp-artifact-smoke` found `shim.mjs` and `index_bg.wasm`, produced
+  the expected dispatch namespace upload URL, assigned
+  `application/javascript+module` and `application/wasm`, and redacted
+  `CF_API_TOKEN`.
+- `bun run check` passed, including the new WFP tenant artifact deploy-plan
+  gate, frontend gates, workspace tests, and wasm32 checks.
+
+Remaining migration gaps:
+
+- Install `worker-build` in the deployment environment, run
+  `bun run build:wfp-tenant`, then use `bun run deploy:wfp-tenant -- ...` with
+  staging credentials to upload the real Rust/Wasm artifact. On the current
+  Windows workstation, `cargo install worker-build --locked` failed under the
+  GNU toolchain because `dlltool.exe` is missing, and the MSVC toolchain failed
+  because PATH resolves `link.exe` to Git/Hermes instead of Visual Studio Build
+  Tools.
+- Confirm `/api/platform/dispatch/:worker/__cinatoken/tenant/status` returns
+  `runtime: "rust-wasm"` through the `DISPATCHER` binding before routing tenant
+  traffic.

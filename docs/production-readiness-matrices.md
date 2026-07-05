@@ -346,7 +346,7 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | Payment/OAuth/Turnstile/JWT/session secrets | Go/VPS-owned today | Cloudflare secrets or forced re-auth/defer plan | Secret inventory without values. |
 | AI Gateway ID | Empty var | Real ID or direct-provider policy | Provider matrix records chosen path. |
 | `DISPATCHER` WFP namespace | Commented binding; tenant script control-plane routes implemented | Real dispatch namespace, binding enabled after live deploy smoke | Root-only plan/deploy route evidence plus internal dispatch status smoke. |
-| `cinatoken-wfp-tenant` Rust/Wasm runtime | Compile-ready crate under `crates/wfp-tenant`; artifact upload not wired | worker-build artifact uploaded to dispatch namespace | `bun run check:wfp-tenant`, artifact manifest, tenant status smoke shows `runtime: "rust-wasm"`. |
+| `cinatoken-wfp-tenant` Rust/Wasm runtime | Compile-ready crate under `crates/wfp-tenant`; local artifact uploader wired; live upload not proven | worker-build artifact uploaded to dispatch namespace | `bun run check:wfp-tenant`, `bun run check:wfp-tenant:deploy-plan`, artifact manifest, tenant status smoke shows `runtime: "rust-wasm"`. |
 | `CLOUDFLARE_ACCOUNT_ID`, `WFP_DISPATCH_NAMESPACE`, `WFP_TENANT_COMPATIBILITY_DATE` | Empty/default vars | Real account/namespace/date in staging/prod | Redacted plan response shows deployable metadata. |
 | `CLOUDFLARE_API_TOKEN` | Secret-only; not in config | Scoped secret for dispatch script deploy and tenant AI Gateway runtime | Secret inventory, deploy 2xx, rotation owner. |
 

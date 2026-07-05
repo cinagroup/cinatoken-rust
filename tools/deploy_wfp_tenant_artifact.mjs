@@ -1,0 +1,474 @@
+#!/usr/bin/env bun
+
+import { randomUUID } from "node:crypto";
+import { readdir, readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const defaultArtifactDir = path.join(
+  repoRoot,
+  "crates",
+  "wfp-tenant",
+  "build",
+  "worker",
+);
+const defaultMainModule = "shim.mjs";
+const defaultCompatibilityDate = "2026-06-17";
+const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
+
+const args = parseArgs(process.argv.slice(2));
+const options = normalizeOptions(args);
+
+try {
+  const result = await main(options);
+  printResult(result, options);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+async function main(options) {
+  const publicScriptName = normalizeWorkerName(required(options.scriptName, "script-name"));
+  if (!publicScriptName) {
+    throw new Error("script-name must be a valid WFP worker name");
+  }
+  const scriptName = prefixedWorkerName(publicScriptName, options.workerPrefix);
+  if (!scriptName) {
+    throw new Error("worker prefix must contain only WFP worker-name characters");
+  }
+  const tenantId = validatePlainValue(options.tenantId || publicScriptName, "tenant-id");
+  const namespace = normalizeDispatchNamespace(required(options.namespace, "namespace"));
+  if (!namespace) {
+    throw new Error("namespace must be a valid dispatch namespace");
+  }
+  const accountId = validateAccountId(required(options.accountId, "account-id"));
+  const compatibilityDate = validateCompatibilityDate(
+    options.compatibilityDate || defaultCompatibilityDate,
+  );
+  const aiGatewayId = options.aiGatewayId
+    ? validatePlainValue(options.aiGatewayId, "ai-gateway-id")
+    : null;
+  const apiToken = required(options.apiToken, "api-token");
+  const tenantApiToken =
+    options.attachGatewayToken && options.tenantApiToken
+      ? validatePlainValue(options.tenantApiToken, "tenant-api-token")
+      : options.attachGatewayToken
+        ? validatePlainValue(apiToken, "api-token")
+        : null;
+
+  const metadata = uploadMetadata({
+    mainModule: options.mainModule,
+    compatibilityDate,
+    tenantId,
+    accountId,
+    aiGatewayId,
+    tenantApiToken,
+  });
+  const uploadUrl = dispatchUploadUrl(accountId, namespace, scriptName);
+  const modules = options.manifestOnly
+    ? []
+    : await collectArtifactModules(options.artifactDir, options.mainModule);
+
+  if (options.dryRun || options.manifestOnly) {
+    return {
+      dryRun: true,
+      publicScriptName,
+      scriptName,
+      tenantId,
+      namespace,
+      uploadUrl,
+      artifactDir: relativePath(options.artifactDir),
+      mainModule: options.mainModule,
+      moduleCount: modules.length,
+      modules: modules.map((module) => ({
+        name: module.name,
+        bytes: module.bytes.length,
+        contentType: module.contentType,
+      })),
+      metadata: redactMetadata(metadata),
+      warnings: artifactWarnings(options, modules, apiToken, tenantApiToken),
+    };
+  }
+
+  const boundary = `cinatoken_wfp_tenant_${randomUUID().replaceAll("-", "")}`;
+  const body = buildMultipartBody(boundary, metadata, modules);
+
+  const response = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+    },
+    body,
+    redirect: "error",
+  });
+  const preview = await response.text();
+  let parsed = null;
+  try {
+    parsed = preview ? JSON.parse(preview) : null;
+  } catch {
+    // Keep the bounded preview for diagnostics when Cloudflare returns text.
+  }
+
+  return {
+    dryRun: false,
+    publicScriptName,
+    scriptName,
+    tenantId,
+    namespace,
+    uploadUrl,
+    artifactDir: relativePath(options.artifactDir),
+    mainModule: options.mainModule,
+    moduleCount: modules.length,
+    modules: modules.map((module) => ({
+      name: module.name,
+      bytes: module.bytes.length,
+      contentType: module.contentType,
+    })),
+    metadata: redactMetadata(metadata),
+    status: response.status,
+    ok: response.ok,
+    cloudflareResponsePreview: preview.slice(0, 32768),
+    cloudflareResponseJson: parsed,
+    warnings: artifactWarnings(options, modules, apiToken, tenantApiToken),
+  };
+}
+
+function parseArgs(argv) {
+  const values = new Map();
+  const flags = new Set();
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") {
+      usage(0);
+    }
+    if (arg === "--dry-run" || arg === "--json" || arg === "--manifest-only") {
+      flags.add(arg.slice(2));
+      continue;
+    }
+    if (arg === "--no-attach-gateway-token") {
+      flags.add("no-attach-gateway-token");
+      continue;
+    }
+    if (!arg.startsWith("--")) {
+      usage(2, `Unexpected argument: ${arg}`);
+    }
+    const key = arg.slice(2);
+    const value = argv[++i];
+    if (!value || value.startsWith("--")) {
+      usage(2, `${arg} requires a value`);
+    }
+    values.set(key, value);
+  }
+  return { values, flags };
+}
+
+function normalizeOptions(args) {
+  const value = (name, envName) => args.values.get(name) || process.env[envName];
+  const artifactDir = args.values.get("artifact-dir")
+    ? path.resolve(repoRoot, args.values.get("artifact-dir"))
+    : defaultArtifactDir;
+  return {
+    scriptName: value("script-name", "WFP_TENANT_SCRIPT_NAME"),
+    tenantId: value("tenant-id", "WFP_TENANT_ID"),
+    namespace: value("namespace", "WFP_DISPATCH_NAMESPACE"),
+    accountId: value("account-id", "CLOUDFLARE_ACCOUNT_ID"),
+    apiToken: value("api-token", "CLOUDFLARE_API_TOKEN"),
+    tenantApiToken:
+      value("tenant-api-token", "WFP_TENANT_CF_API_TOKEN") ||
+      value("tenant-api-token", "CLOUDFLARE_AI_GATEWAY_TOKEN"),
+    aiGatewayId: value("ai-gateway-id", "AI_GATEWAY_ID"),
+    compatibilityDate:
+      value("compatibility-date", "WFP_TENANT_COMPATIBILITY_DATE") ||
+      defaultCompatibilityDate,
+    workerPrefix: value("worker-prefix", "WFP_DISPATCH_WORKER_PREFIX") || "",
+    artifactDir,
+    mainModule: args.values.get("main-module") || defaultMainModule,
+    attachGatewayToken: !args.flags.has("no-attach-gateway-token"),
+    dryRun: args.flags.has("dry-run"),
+    json: args.flags.has("json"),
+    manifestOnly: args.flags.has("manifest-only"),
+  };
+}
+
+function usage(exitCode, error) {
+  if (error) console.error(error);
+  console.error(
+    [
+      "Usage: bun tools/deploy_wfp_tenant_artifact.mjs --script-name <name> --namespace <dispatch-namespace> [options]",
+      "",
+      "Build first with: bun run build:wfp-tenant",
+      "",
+      "Required for deploy:",
+      "  --account-id <id>      or CLOUDFLARE_ACCOUNT_ID",
+      "  --api-token <token>    or CLOUDFLARE_API_TOKEN",
+      "",
+      "Options:",
+      "  --tenant-id <id>",
+      "  --tenant-api-token <token>  or WFP_TENANT_CF_API_TOKEN / CLOUDFLARE_AI_GATEWAY_TOKEN",
+      "  --ai-gateway-id <id>        or AI_GATEWAY_ID",
+      "  --worker-prefix <prefix>    or WFP_DISPATCH_WORKER_PREFIX",
+      "  --compatibility-date <YYYY-MM-DD>",
+      "  --artifact-dir <path>       default crates/wfp-tenant/build/worker",
+      "  --main-module <path>        default shim.mjs",
+      "  --dry-run                   print redacted upload plan without PUT",
+      "  --manifest-only             skip artifact directory scan; dry-run style only",
+      "  --json",
+      "  --no-attach-gateway-token   omit CF_API_TOKEN binding from tenant metadata",
+    ].join("\n"),
+  );
+  process.exit(exitCode);
+}
+
+async function collectArtifactModules(artifactDir, mainModule) {
+  const info = await stat(artifactDir).catch(() => null);
+  if (!info?.isDirectory()) {
+    throw new Error(
+      `WFP tenant artifact directory not found: ${relativePath(artifactDir)}. Run bun run build:wfp-tenant first.`,
+    );
+  }
+  const files = await listFiles(artifactDir);
+  if (files.length === 0) {
+    throw new Error(`WFP tenant artifact directory is empty: ${relativePath(artifactDir)}`);
+  }
+  const modules = await Promise.all(
+    files.map(async (file) => {
+      const rel = path.relative(artifactDir, file).replaceAll(path.sep, "/");
+      return {
+        name: rel,
+        bytes: await readFile(file),
+        contentType: contentTypeFor(file),
+      };
+    }),
+  );
+  modules.sort((left, right) => left.name.localeCompare(right.name));
+  if (!modules.some((module) => module.name === mainModule)) {
+    throw new Error(
+      `main module ${mainModule} was not found in ${relativePath(artifactDir)}`,
+    );
+  }
+  return modules;
+}
+
+async function listFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) return listFiles(fullPath);
+      return entry.isFile() ? [fullPath] : [];
+    }),
+  );
+  return nested.flat();
+}
+
+function uploadMetadata({
+  mainModule,
+  compatibilityDate,
+  tenantId,
+  accountId,
+  aiGatewayId,
+  tenantApiToken,
+}) {
+  const bindings = [
+    {
+      name: "CINATOKEN_TENANT_ID",
+      type: "plain_text",
+      text: tenantId,
+    },
+    {
+      name: "CF_ACCOUNT_ID",
+      type: "plain_text",
+      text: accountId,
+    },
+  ];
+  if (aiGatewayId) {
+    bindings.push({
+      name: "AI_GATEWAY_ID",
+      type: "plain_text",
+      text: aiGatewayId,
+    });
+  }
+  if (tenantApiToken) {
+    bindings.push({
+      name: "CF_API_TOKEN",
+      type: "secret_text",
+      text: tenantApiToken,
+    });
+  }
+  return {
+    main_module: mainModule,
+    compatibility_date: compatibilityDate,
+    compatibility_flags: ["nodejs_compat"],
+    bindings,
+  };
+}
+
+function redactMetadata(metadata) {
+  return {
+    ...metadata,
+    bindings: metadata.bindings.map((binding) =>
+      binding.type === "secret_text" ? { ...binding, text: "<redacted>" } : binding,
+    ),
+  };
+}
+
+function artifactWarnings(options, modules, apiToken, tenantApiToken) {
+  const warnings = [];
+  if (options.manifestOnly) {
+    warnings.push("manifest-only mode skipped artifact directory scanning");
+  }
+  if (options.attachGatewayToken && !options.tenantApiToken) {
+    warnings.push(
+      "tenant CF_API_TOKEN binding uses the deployment token; prefer WFP_TENANT_CF_API_TOKEN or CLOUDFLARE_AI_GATEWAY_TOKEN for staging/prod",
+    );
+  }
+  if (!options.attachGatewayToken) {
+    warnings.push("tenant CF_API_TOKEN binding omitted; runtime will fail closed until attached");
+  }
+  if (!options.manifestOnly && modules.length === 0) {
+    warnings.push("no artifact modules were attached");
+  }
+  if (options.tenantApiToken && tenantApiToken && apiToken === tenantApiToken) {
+    warnings.push("deployment token and tenant runtime token are the same value");
+  }
+  return warnings;
+}
+
+function contentTypeFor(file) {
+  switch (path.extname(file).toLowerCase()) {
+    case ".mjs":
+    case ".js":
+      return "application/javascript+module";
+    case ".wasm":
+      return "application/wasm";
+    case ".json":
+      return "application/json";
+    case ".txt":
+      return "text/plain; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function buildMultipartBody(boundary, metadata, modules) {
+  const chunks = [];
+  const encode = (value) => new TextEncoder().encode(value);
+  chunks.push(
+    encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(
+        metadata,
+      )}\r\n`,
+    ),
+  );
+  for (const module of modules) {
+    const safeName = safeDispositionValue(module.name);
+    chunks.push(
+      encode(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${safeName}"; filename="${safeName}"\r\nContent-Type: ${module.contentType}\r\n\r\n`,
+      ),
+    );
+    chunks.push(module.bytes);
+    chunks.push(encode("\r\n"));
+  }
+  chunks.push(encode(`--${boundary}--\r\n`));
+  return new Blob(chunks);
+}
+
+function safeDispositionValue(value) {
+  if (/["\r\n]/.test(value)) {
+    throw new Error(`artifact module name is not safe for multipart upload: ${value}`);
+  }
+  return value;
+}
+
+function required(value, name) {
+  if (!value?.trim()) {
+    throw new Error(`${name} is required`);
+  }
+  return value.trim();
+}
+
+function validatePlainValue(value, name) {
+  const trimmed = required(value, name);
+  if (trimmed.length > 128 || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new Error(`${name} must be non-empty and header-safe`);
+  }
+  return trimmed;
+}
+
+function validateAccountId(value) {
+  const trimmed = required(value, "account-id");
+  if (trimmed.length > 128 || /[\u0000-\u001f\u007f/?#]/.test(trimmed)) {
+    throw new Error("account-id is not valid");
+  }
+  return trimmed;
+}
+
+function validateCompatibilityDate(value) {
+  const trimmed = required(value, "compatibility-date");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    throw new Error("compatibility-date must use YYYY-MM-DD");
+  }
+  return trimmed;
+}
+
+function normalizeWorkerName(value) {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed || trimmed.length > 63) return null;
+  if (/^[-_]|[-_]$/.test(trimmed)) return null;
+  return /^[a-z0-9_-]+$/.test(trimmed) ? trimmed : null;
+}
+
+function prefixedWorkerName(publicName, prefix) {
+  const cleanPrefix = prefix?.trim() || "";
+  if (!cleanPrefix) return publicName;
+  if (!/^[a-zA-Z0-9_-]+$/.test(cleanPrefix)) return null;
+  return normalizeWorkerName(`${cleanPrefix}${publicName}`);
+}
+
+function normalizeDispatchNamespace(value) {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed || trimmed.length > 64) return null;
+  return /^[a-z0-9_-]+$/.test(trimmed) ? trimmed : null;
+}
+
+function dispatchUploadUrl(accountId, namespace, scriptName) {
+  return `${cloudflareApiBase}/accounts/${encodeURIComponent(
+    accountId,
+  )}/workers/dispatch/namespaces/${encodeURIComponent(
+    namespace,
+  )}/scripts/${encodeURIComponent(scriptName)}`;
+}
+
+function relativePath(file) {
+  return path.relative(repoRoot, file).replaceAll(path.sep, "/") || ".";
+}
+
+function printResult(result, options) {
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    [
+      result.dryRun ? "WFP tenant artifact deploy plan (dry-run)" : "WFP tenant artifact deploy result",
+      `script: ${result.scriptName}`,
+      `namespace: ${result.namespace}`,
+      `upload_url: ${result.uploadUrl}`,
+      `artifact_dir: ${result.artifactDir}`,
+      `main_module: ${result.mainModule}`,
+      `modules: ${result.moduleCount}`,
+      ...(result.status ? [`status: ${result.status}`, `ok: ${result.ok}`] : []),
+      ...(result.warnings.length
+        ? ["warnings:", ...result.warnings.map((warning) => `  - ${warning}`)]
+        : []),
+    ].join("\n"),
+  );
+  if (result.cloudflareResponsePreview) {
+    console.log("cloudflare_response_preview:");
+    console.log(result.cloudflareResponsePreview);
+  }
+}

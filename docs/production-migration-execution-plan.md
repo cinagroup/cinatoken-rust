@@ -581,8 +581,11 @@ Required tasks:
    staging tenant Workers before enabling dispatch traffic:
    `/api/platform/wfp/tenant-script/plan` must produce redacted metadata and a
    reviewed script, `bun run check:wfp-tenant` must prove the Rust/Wasm tenant
-   runtime, `/api/platform/wfp/tenant-script/deploy` must return a 2xx
-   Cloudflare dispatch namespace API response, and only then may
+   runtime, `bun run check:wfp-tenant:deploy-plan` must prove the redacted
+   artifact upload manifest, the preferred `bun run deploy:wfp-tenant -- ...`
+   path must upload the `worker-build` Rust/Wasm artifact, the fallback
+   `/api/platform/wfp/tenant-script/deploy` route may upload the ES module
+   script, and only then may
    `WFP_DISPATCH_ENABLED` be armed for dispatch smoke.
 
 Exit evidence:
@@ -596,8 +599,9 @@ Exit evidence:
 - Task retry cannot double-charge or lose artifacts.
 - Frontend build and route checks pass under Bun.
 - WFP tenant script deploy smoke proves the Cloudflare dispatch namespace API,
-  `DISPATCHER` binding, Rust/Wasm tenant runtime, and AI Gateway runtime
-  bindings before tenant traffic is routed through the new path.
+  local Rust/Wasm artifact uploader, `DISPATCHER` binding, Rust/Wasm tenant
+  runtime, and AI Gateway runtime bindings before tenant traffic is routed
+  through the new path.
 
 ## Performance And Cost Plan
 

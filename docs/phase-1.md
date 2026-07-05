@@ -407,9 +407,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue hardening explicit request-body modes after the first multipart
   upload routes. `/v1/audio/transcriptions`, `/v1/audio/translations`, and
   `/v1/images/edits` now forward bounded multipart bodies; the next steps are
-  real-file replay for the non-WAV audio duration parsers, a WebM parser versus
-  Container offload decision, raw/pass-through stream extraction where needed,
-  live upstream smoke, and billing shadow evidence.
+  real-file replay for the non-WAV/WebM audio duration parsers,
+  raw/pass-through stream extraction where needed, live upstream smoke, and
+  billing shadow evidence.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

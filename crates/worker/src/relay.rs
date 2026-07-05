@@ -5826,6 +5826,29 @@ mod tests {
         flac
     }
 
+    fn ebml_element(id: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut element = Vec::new();
+        element.extend_from_slice(id);
+        element.extend_from_slice(&ebml_size(payload.len()));
+        element.extend_from_slice(payload);
+        element
+    }
+
+    fn ebml_size(size: usize) -> Vec<u8> {
+        if size < 0x7f {
+            return vec![0x80 | size as u8];
+        }
+        vec![0x40 | ((size >> 8) as u8), size as u8]
+    }
+
+    fn webm_duration_metadata(duration_ticks: f64) -> Vec<u8> {
+        let duration = ebml_element(&[0x44, 0x89], &duration_ticks.to_bits().to_be_bytes());
+        let info = ebml_element(&[0x15, 0x49, 0xa9, 0x66], &duration);
+        let mut body = ebml_element(&[0x1a, 0x45, 0xdf, 0xa3], &[]);
+        body.extend_from_slice(&ebml_element(&[0x18, 0x53, 0x80, 0x67], &info));
+        body
+    }
+
     fn multipart_audio_body(
         boundary: &str,
         model: &str,
@@ -6003,6 +6026,26 @@ mod tests {
         assert_eq!(
             multipart_extra_prompt_tokens(&endpoint, &body, &content_type),
             50
+        );
+    }
+
+    #[test]
+    fn multipart_audio_webm_duration_feeds_prompt_estimate() {
+        let mut endpoint = endpoint(false, None);
+        endpoint.upstream_path = "audio/transcriptions".to_string();
+        endpoint.request_body_mode = RelayRequestBodyMode::MultipartForm;
+        let boundary = "audio-boundary";
+        let webm = webm_duration_metadata(42_000.0); // default scale: milliseconds.
+        let body = multipart_audio_body(boundary, "whisper-1", "audio.webm", "audio/webm", &webm);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        assert_eq!(
+            endpoint_multipart_model(&body, &content_type),
+            Some("whisper-1".to_string())
+        );
+        assert_eq!(
+            multipart_extra_prompt_tokens(&endpoint, &body, &content_type),
+            700
         );
     }
 

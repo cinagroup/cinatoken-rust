@@ -3167,10 +3167,8 @@ Implemented in Rust:
 - Worker multipart audio preflight now passes the uploaded file name and part
   `Content-Type` into the common duration parser before applying the
   Go-compatible `round(ceil(duration_seconds) / 60 * 1000)` token formula.
-- WebM remains unsupported in Worker until a real EBML parser or Container
-  offload path is selected. This matches the conservative production posture:
-  failed duration parse yields no extra preflight tokens rather than blocking
-  byte-for-byte upstream forwarding.
+- WebM was left for a follow-up EBML parser or Container offload decision in
+  this increment. That follow-up landed in 22.37.
 
 Updated local evidence:
 
@@ -3180,6 +3178,39 @@ Updated local evidence:
 
 Remaining boundary: this is still preflight-estimate parity, not production
 billing proof. The next audio slice should replay real MP3/FLAC/M4A/OGG/Opus/
-AIFF/AAC fixtures from source-compatible samples, decide WebM EBML versus
-Container offload, run live transcription/translation smoke, and capture billing
-shadow/reconciliation evidence.
+AIFF/AAC fixtures from source-compatible samples, run live
+transcription/translation smoke, and capture billing shadow/reconciliation
+evidence.
+
+### 22.37 2026-07-05 WebM EBML Duration Parser Delta
+
+This increment closes the WebM duration-strategy decision left by 22.36 without
+introducing a Container or heavyweight decoder. WebM is a Matroska subset; the
+Matroska spec defines `TimestampScale` with a default of `1000000` nanoseconds
+and `Duration` as Segment ticks based on that scale. The Worker only needs that
+metadata for pre-consume estimates, so full media decode is unnecessary.
+
+Implemented in Rust:
+
+- `cinatoken_core::audio_duration` now parses EBML variable-length element IDs
+  and sizes, including unknown-size `Segment` elements commonly seen in
+  Matroska/WebM streams.
+- `audio_duration_seconds` now handles `audio/webm` / `video/webm` uploads when
+  the `Segment.Info.Duration` element is present, using explicit
+  `TimestampScale` or the Matroska default.
+- Worker multipart audio preflight automatically benefits through the existing
+  common duration parser; no relay body rewriting or upstream forwarding change
+  was required.
+
+Updated local evidence:
+
+- `cargo test -p cinatoken-core audio_duration`: 14 passed;
+- `cargo test -p cinatoken-worker --lib multipart_audio_webm_duration_feeds_prompt_estimate`:
+  passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining boundary: WebM files that omit the optional `Duration` metadata still
+cannot be estimated locally; they continue to forward upstream and simply do not
+add extra preflight tokens. Production ownership still requires real-file
+fixture replay across the supported upload formats, live transcription/
+translation smoke, and billing shadow/reconciliation evidence.

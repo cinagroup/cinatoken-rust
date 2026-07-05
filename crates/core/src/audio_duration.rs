@@ -2,8 +2,6 @@
 //! by request-token estimation. Go reads duration via `common.GetAudioDuration`
 //! with container-specific libraries. In the Worker we avoid full decode and
 //! external tools, so this module parses common upload headers/frames directly.
-//! WebM stays unsupported for now because the Go code also requires a full EBML
-//! parser there.
 //!
 //! Parity target: `docs/source-token-estimation-parity.md`.
 
@@ -135,7 +133,7 @@ fn duration_for_format(data: &[u8], format: AudioFormat) -> Option<f64> {
         AudioFormat::Ogg => ogg_duration_seconds(data, false),
         AudioFormat::Opus => ogg_duration_seconds(data, true),
         AudioFormat::Aiff => aiff_duration_seconds(data),
-        AudioFormat::Webm => None,
+        AudioFormat::Webm => webm_duration_seconds(data),
         AudioFormat::Aac => aac_adts_duration_seconds(data),
     }
 }
@@ -149,6 +147,9 @@ fn duration_from_magic(data: &[u8]) -> Option<f64> {
     }
     if data.starts_with(b"OggS") {
         return ogg_duration_seconds(data, false);
+    }
+    if looks_like_ebml(data) {
+        return webm_duration_seconds(data);
     }
     if looks_like_mp4(data) {
         return mp4_duration_seconds(data);
@@ -193,6 +194,139 @@ fn flac_duration_seconds(data: &[u8]) -> Option<f64> {
         offset = body + len;
     }
     None
+}
+
+fn webm_duration_seconds(data: &[u8]) -> Option<f64> {
+    if !looks_like_ebml(data) {
+        return None;
+    }
+    let mut offset = 0;
+    while let Some(element) = read_ebml_element(data, offset, false) {
+        if element.id == 0x1853_8067 {
+            return find_webm_info_duration(data, element.data_start, element.data_end);
+        }
+        offset = element.next;
+    }
+    None
+}
+
+fn looks_like_ebml(data: &[u8]) -> bool {
+    data.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+}
+
+fn find_webm_info_duration(data: &[u8], start: usize, end: usize) -> Option<f64> {
+    let mut offset = start;
+    while offset < end {
+        let Some(element) = read_ebml_element(data, offset, false) else {
+            break;
+        };
+        if element.id == 0x1549_a966 {
+            return parse_webm_info_duration(data, element.data_start, element.data_end);
+        }
+        offset = element.next;
+    }
+    None
+}
+
+fn parse_webm_info_duration(data: &[u8], start: usize, end: usize) -> Option<f64> {
+    let mut offset = start;
+    let mut timestamp_scale = 1_000_000u64;
+    let mut duration_ticks: Option<f64> = None;
+
+    while offset < end {
+        let Some(element) = read_ebml_element(data, offset, false) else {
+            break;
+        };
+        match element.id {
+            0x2a_d7_b1 => {
+                timestamp_scale = parse_ebml_uint(&data[element.data_start..element.data_end])?;
+                if timestamp_scale == 0 {
+                    return None;
+                }
+            }
+            0x4489 => {
+                duration_ticks = parse_ebml_float(&data[element.data_start..element.data_end])
+                    .filter(|v| *v > 0.0);
+            }
+            _ => {}
+        }
+        offset = element.next;
+    }
+
+    duration_ticks.map(|ticks| ticks * timestamp_scale as f64 / 1_000_000_000.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EbmlElement {
+    id: u64,
+    data_start: usize,
+    data_end: usize,
+    next: usize,
+}
+
+fn read_ebml_element(data: &[u8], offset: usize, strip_id_marker: bool) -> Option<EbmlElement> {
+    let (id, id_len) = read_ebml_vint(data, offset, strip_id_marker)?;
+    let size_offset = offset.checked_add(id_len)?;
+    let (size, size_len) = read_ebml_vint(data, size_offset, true)?;
+    let data_start = size_offset.checked_add(size_len)?;
+    let data_end = if is_unknown_ebml_size(size, size_len) {
+        data.len()
+    } else {
+        let size = usize::try_from(size).ok()?;
+        data_start.checked_add(size)?
+    };
+    if data_end > data.len() {
+        return None;
+    }
+    Some(EbmlElement {
+        id,
+        data_start,
+        data_end,
+        next: data_end,
+    })
+}
+
+fn read_ebml_vint(data: &[u8], offset: usize, strip_marker: bool) -> Option<(u64, usize)> {
+    let first = *data.get(offset)?;
+    if first == 0 {
+        return None;
+    }
+    let len = (first.leading_zeros() as usize) + 1;
+    if len > 8 || offset + len > data.len() {
+        return None;
+    }
+    let mut value = if strip_marker {
+        (first & (0xff >> len)) as u64
+    } else {
+        first as u64
+    };
+    for byte in &data[offset + 1..offset + len] {
+        value = (value << 8) | *byte as u64;
+    }
+    Some((value, len))
+}
+
+fn is_unknown_ebml_size(value: u64, len: usize) -> bool {
+    len > 0 && len <= 8 && value == ((1u64 << (7 * len)) - 1)
+}
+
+fn parse_ebml_uint(bytes: &[u8]) -> Option<u64> {
+    if bytes.is_empty() || bytes.len() > 8 {
+        return None;
+    }
+    Some(
+        bytes
+            .iter()
+            .fold(0u64, |value, byte| (value << 8) | *byte as u64),
+    )
+}
+
+fn parse_ebml_float(bytes: &[u8]) -> Option<f64> {
+    match bytes.len() {
+        4 => Some(f32::from_bits(u32_be(bytes)) as f64),
+        8 => Some(f64::from_bits(u64_be(bytes))),
+        _ => None,
+    }
 }
 
 fn mp4_duration_seconds(data: &[u8]) -> Option<f64> {
@@ -736,6 +870,60 @@ mod tests {
         v
     }
 
+    fn ebml_element(id: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(id);
+        v.extend_from_slice(&ebml_size(payload.len()));
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn ebml_size(size: usize) -> Vec<u8> {
+        if size < 0x7f {
+            return vec![0x80 | size as u8];
+        }
+        if size < 0x3fff {
+            return vec![0x40 | ((size >> 8) as u8), size as u8];
+        }
+        vec![0x20 | ((size >> 16) as u8), (size >> 8) as u8, size as u8]
+    }
+
+    fn webm(
+        duration_ticks: f64,
+        timestamp_scale: Option<u64>,
+        unknown_segment_size: bool,
+    ) -> Vec<u8> {
+        let mut info_payload = Vec::new();
+        if let Some(scale) = timestamp_scale {
+            let scale_bytes = scale.to_be_bytes();
+            let first_non_zero = scale_bytes
+                .iter()
+                .position(|byte| *byte != 0)
+                .unwrap_or(scale_bytes.len() - 1);
+            info_payload.extend_from_slice(&ebml_element(
+                &[0x2a, 0xd7, 0xb1],
+                &scale_bytes[first_non_zero..],
+            ));
+        }
+        info_payload.extend_from_slice(&ebml_element(
+            &[0x44, 0x89],
+            &duration_ticks.to_bits().to_be_bytes(),
+        ));
+        let info = ebml_element(&[0x15, 0x49, 0xa9, 0x66], &info_payload);
+        let ebml_header = ebml_element(&[0x1a, 0x45, 0xdf, 0xa3], &[]);
+
+        let mut v = ebml_header;
+        v.extend_from_slice(&[0x18, 0x53, 0x80, 0x67]);
+        if unknown_segment_size {
+            v.push(0xff);
+            v.extend_from_slice(&info);
+        } else {
+            v.extend_from_slice(&ebml_size(info.len()));
+            v.extend_from_slice(&info);
+        }
+        v
+    }
+
     #[test]
     fn computes_duration_from_declared_data_size() {
         let w = wav(1, 8000, 16, 32000, &[]);
@@ -829,14 +1017,26 @@ mod tests {
     }
 
     #[test]
-    fn webm_remains_unsupported_without_full_ebml_parser() {
-        assert_eq!(
-            audio_duration_seconds(
-                b"\x1a\x45\xdf\xa3webm",
-                Some("voice.webm"),
-                Some("audio/webm")
-            ),
-            None
-        );
+    fn webm_duration_uses_default_timestamp_scale() {
+        let data = webm(1234.0, None, false);
+        let duration =
+            audio_duration_seconds(&data, Some("voice.webm"), Some("audio/webm")).unwrap();
+        assert!((duration - 1.234).abs() < 0.000001);
+    }
+
+    #[test]
+    fn webm_duration_uses_explicit_timestamp_scale() {
+        let data = webm(2500.0, Some(2_000_000), false);
+        let duration =
+            audio_duration_seconds(&data, Some("voice.webm"), Some("audio/webm")).unwrap();
+        assert!((duration - 5.0).abs() < 0.000001);
+    }
+
+    #[test]
+    fn webm_duration_allows_unknown_segment_size() {
+        let data = webm(42.0, Some(1_000_000), true);
+        let duration =
+            audio_duration_seconds(&data, Some("voice.webm"), Some("audio/webm")).unwrap();
+        assert!((duration - 0.042).abs() < 0.000001);
     }
 }

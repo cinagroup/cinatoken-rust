@@ -94,8 +94,8 @@ A full diff of every Go-registered route against the Rust worker closed these
 ## Incomplete Product Families
 
 - Multipart image/audio relay is no longer entirely absent, but production
-  parity still needs real-file replay for non-WAV audio parsers, a WebM duration
-  strategy, live upstream smoke, image-edit fixture coverage, and billing
+  parity still needs real-file replay for non-WAV/WebM audio parsers, live
+  upstream smoke, image-edit fixture coverage, and billing
   shadow/reconciliation evidence.
 - OpenAI Realtime WebSocket.
 - Subscription core, redemption, and check-in still need production/staging

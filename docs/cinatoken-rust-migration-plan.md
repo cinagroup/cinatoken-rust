@@ -3873,3 +3873,40 @@ Updated local evidence:
 Remaining boundary: strict lint is still not green, and this does not replace
 deployed browser smoke for the Ollama admin flow. Continue with small
 React-owned batches and lower the baseline only after each batch is verified.
+
+### 22.53 2026-07-05 Frontend Mobile Table Lint Paydown
+
+This increment continues the G5 frontend strict-lint cleanup in a shared but
+low-risk UI primitive: the mobile table list renderer used by imported admin
+tables. The target was the last `react-hooks/use-memo` rule family debt.
+
+Implemented in the imported React frontend:
+
+- Removed two `useMemo` wrappers in
+  `apps/web/source/default/src/components/data-table/layout/mobile-card-list.tsx`
+  whose dependency arrays contained computed `map(...).join(...)` expressions.
+- Derived the per-cell column metadata directly during render in both compact
+  and fallback mobile row renderers. This preserves the same visible rows while
+  avoiding non-simple Hook dependency arrays and deleting the paired
+  `react-hooks/exhaustive-deps` disable comments.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 89 errors / 3 warnings
+  / 68 files to 87 errors / 3 warnings / 67 files, and removed the
+  `react-hooks/use-memo` allowance because that rule family is now at zero.
+
+Updated local evidence:
+
+- File-scoped ESLint for
+  `apps/web/source/default/src/components/data-table/layout/mobile-card-list.tsx`:
+  passed with no findings.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 87 errors, 3 warnings, 67 files
+  with findings, and 0 regressions.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,280,117 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green. The largest remaining
+family is still `react-hooks/set-state-in-effect`, followed by `react-hooks/refs`.
+Continue reducing these in small UI-owned batches before G5 production cutover.

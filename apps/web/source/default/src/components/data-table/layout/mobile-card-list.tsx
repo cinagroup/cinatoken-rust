@@ -117,12 +117,7 @@ function CompactRow<TData>({ row }: { row: Row<TData> }) {
     .getVisibleCells()
     .filter((cell) => cell.column.id !== 'select')
 
-  // Read each cell's meta once, then reuse for all categorisation checks.
-  const cellMetas = React.useMemo(
-    () => allCells.map((c) => c.column.columnDef.meta),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allCells.map((c) => c.id).join(',')]
-  )
+  const cellMetas = allCells.map((c) => c.column.columnDef.meta)
 
   const titleCell = allCells.find((_, i) => cellMetas[i]?.mobileTitle)
   const badgeCell = allCells.find((_, i) => cellMetas[i]?.mobileBadge)
@@ -193,11 +188,7 @@ function FallbackRow<TData>({ row }: { row: Row<TData> }) {
     .getVisibleCells()
     .filter((cell) => cell.column.id !== 'select')
 
-  const cellMetas = React.useMemo(
-    () => allCells.map((c) => c.column.columnDef.meta),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allCells.map((c) => c.id).join(',')]
-  )
+  const cellMetas = allCells.map((c) => c.column.columnDef.meta)
 
   const actionsCell = allCells.find((c) => c.column.id === 'actions')
   const contentCells = allCells.filter(

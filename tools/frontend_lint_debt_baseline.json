@@ -1,11 +1,11 @@
 {
   "frontend_dir": "apps/web/source/default",
   "totals": {
-    "errors": 72,
+    "errors": 68,
     "warnings": 2,
     "fixable_errors": 0,
     "fixable_warnings": 0,
-    "files_with_findings": 62
+    "files_with_findings": 60
   },
   "by_rule": {
     "@tanstack/query/exhaustive-deps": {
@@ -33,12 +33,12 @@
       "warnings": 0
     },
     "react-hooks/set-state-in-effect": {
-      "errors": 52,
+      "errors": 48,
       "warnings": 0
     }
   },
   "notes": [
-    "Baseline lowered after hoisting the user-info dialog InfoItem component, refactoring the Ollama models dialog fetch/close effects, deriving mobile table cell metadata without useMemo, splitting the settings page context hook, converting content settings JSON props to keyed lazy state initializers, and deferring wallet/system-settings form initialization out of synchronous effects on 2026-07-05.",
+    "Baseline lowered after hoisting the user-info dialog InfoItem component, refactoring the Ollama models dialog fetch/close effects, deriving mobile table cell metadata without useMemo, splitting the settings page context hook, converting content settings JSON props to keyed lazy state initializers, deferring wallet/system-settings form initialization out of synchronous effects, and converting param-override/upstream-conflict dialogs to keyed or derived local state on 2026-07-05.",
     "This is a no-regression gate for imported frontend lint debt; reduce the numbers as rule families are fixed."
   ]
 }

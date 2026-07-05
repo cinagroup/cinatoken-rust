@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { type ColumnDef, type RowSelectionState } from '@tanstack/react-table'
 import {
@@ -106,27 +106,54 @@ export function UpstreamConflictDialog({
   open,
   onOpenChange,
 }: UpstreamConflictDialogProps) {
+  const models = useModels()
+  const upstreamConflicts = models.upstreamConflicts ?? []
+  const dialogKey = open
+    ? JSON.stringify(
+        upstreamConflicts.map((conflict) => ({
+          modelName: conflict.model_name,
+          fields:
+            conflict.fields?.map((field) => ({
+              field: field.field,
+              local: field.local,
+              upstream: field.upstream,
+            })) ?? [],
+        }))
+      )
+    : 'closed'
+
+  return (
+    <UpstreamConflictDialogContent
+      key={dialogKey}
+      open={open}
+      onOpenChange={onOpenChange}
+      models={models}
+    />
+  )
+}
+
+type UpstreamConflictDialogContentProps = UpstreamConflictDialogProps & {
+  models: ReturnType<typeof useModels>
+}
+
+function UpstreamConflictDialogContent({
+  open,
+  onOpenChange,
+  models,
+}: UpstreamConflictDialogContentProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const {
     upstreamConflicts = [],
     setUpstreamConflicts,
     syncWizardOptions,
-  } = useModels()
+  } = models
   const isMobile = useIsMobile()
   const [search, setSearch] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [pageSize, setPageSize] = useState(10)
   const [pageIndex, setPageIndex] = useState(0)
-
-  useEffect(() => {
-    if (open) {
-      setRowSelection({})
-      setSearch('')
-      setPageIndex(0)
-    }
-  }, [open, upstreamConflicts])
 
   const conflictRows = useMemo<ConflictFieldRow[]>(() => {
     return upstreamConflicts.flatMap((conflict) => {
@@ -353,19 +380,16 @@ export function UpstreamConflictDialog({
   const totalFilteredFields = filteredRows.length
   const totalPages =
     totalFilteredFields === 0 ? 1 : Math.ceil(totalFilteredFields / pageSize)
-
-  useEffect(() => {
-    setPageIndex((prev) => Math.min(prev, Math.max(0, totalPages - 1)))
-  }, [totalPages])
-
-  const pageStart = pageIndex * pageSize
+  const currentPageIndex = Math.min(pageIndex, Math.max(0, totalPages - 1))
+  const pageStart = currentPageIndex * pageSize
   const paginatedRows = filteredRows.slice(pageStart, pageStart + pageSize)
   const displayStart = totalFilteredFields === 0 ? 0 : pageStart + 1
   const displayEnd =
     totalFilteredFields === 0
       ? 0
       : Math.min(pageStart + pageSize, totalFilteredFields)
-  const currentPageDisplay = totalFilteredFields === 0 ? 0 : pageIndex + 1
+  const currentPageDisplay =
+    totalFilteredFields === 0 ? 0 : currentPageIndex + 1
   const totalPagesDisplay = totalFilteredFields === 0 ? 0 : totalPages
 
   const visibleModelCount = matchingModelNames?.size ?? totalModels
@@ -578,9 +602,9 @@ export function UpstreamConflictDialog({
                         size='icon'
                         className='h-7 w-7 sm:h-8 sm:w-8'
                         onClick={() =>
-                          setPageIndex((prev) => Math.max(0, prev - 1))
+                          setPageIndex(Math.max(0, currentPageIndex - 1))
                         }
-                        disabled={pageIndex === 0}
+                        disabled={currentPageIndex === 0}
                         aria-label={t('Previous page')}
                       >
                         <ChevronLeft className='h-3.5 w-3.5 sm:h-4 sm:w-4' />
@@ -596,12 +620,12 @@ export function UpstreamConflictDialog({
                         size='icon'
                         className='h-7 w-7 sm:h-8 sm:w-8'
                         onClick={() =>
-                          setPageIndex((prev) =>
-                            Math.min(totalPages - 1, prev + 1)
+                          setPageIndex(
+                            Math.min(totalPages - 1, currentPageIndex + 1)
                           )
                         }
                         disabled={
-                          pageIndex >= totalPages - 1 ||
+                          currentPageIndex >= totalPages - 1 ||
                           totalFilteredFields === 0
                         }
                         aria-label={t('Next page')}

@@ -4038,3 +4038,47 @@ Updated local evidence:
 Remaining boundary: strict lint is still not green. Continue reducing
 `react-hooks/set-state-in-effect` first, then return to `react-hooks/refs` and
 the remaining immutability/purity findings before G5 production cutover.
+
+### 22.57 2026-07-05 Frontend Editor Dialog Lint Paydown
+
+This increment continues the G5 frontend strict-lint cleanup in two
+operator-facing editor dialogs: channel parameter override editing and model
+upstream conflict resolution.
+
+Implemented in the imported React frontend:
+
+- Converted `ParamOverrideEditorDialog` into a keyed wrapper plus stateful
+  content component. The editor now parses its initial JSON/value only through
+  lazy state initialization when a dialog instance is mounted, instead of
+  synchronously writing a dozen local state fields from an effect when opened.
+- Replaced the parameter editor's selected-operation sync effect with an
+  `activeSelectedOperationId` derived during render. This preserves the
+  fallback-to-first-operation behavior after deletes while keeping list
+  highlighting and the detail pane consistent.
+- Converted `UpstreamConflictDialog` into a keyed wrapper around its stateful
+  content. Opening the dialog or receiving a new conflict set now resets
+  search, row selection, and page state by remounting the content instead of
+  effect-driven state resets.
+- Replaced the upstream conflict page-index clamping effect with a derived
+  `currentPageIndex`, so pagination stays inside bounds without an extra
+  render-following state write.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 72 errors / 2 warnings
+  / 62 files to 68 errors / 2 warnings / 60 files. The rule-family delta is
+  `react-hooks/set-state-in-effect` 52 -> 48.
+
+Updated local evidence:
+
+- File-scoped ESLint for `param-override-editor-dialog.tsx` and
+  `upstream-conflict-dialog.tsx`: passed with no findings.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 68 errors, 2 warnings, 60 files
+  with findings, and 0 regressions.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,280,810 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green. Continue reducing
+`react-hooks/set-state-in-effect` in dialog/form boundaries, then close the
+remaining refs/immutability/purity families before G5 production sign-off.

@@ -20,7 +20,6 @@ import {
   type DragEvent,
   type KeyboardEvent,
   useCallback,
-  useEffect,
   useMemo,
   useState,
 } from 'react'
@@ -1086,20 +1085,32 @@ const buildOperationsJson = (
 export function ParamOverrideEditorDialog(
   props: ParamOverrideEditorDialogProps
 ) {
-  const { t } = useTranslation()
+  const dialogKey = props.open ? props.value : 'closed'
+  return <ParamOverrideEditorDialogContent key={dialogKey} {...props} />
+}
 
-  const [editMode, setEditMode] = useState<'visual' | 'json'>('visual')
-  const [visualMode, setVisualMode] = useState<'operations' | 'legacy'>(
-    'operations'
+function ParamOverrideEditorDialogContent(
+  props: ParamOverrideEditorDialogProps
+) {
+  const { t } = useTranslation()
+  const [initialState] = useState(() => parseInitialState(props.value))
+
+  const [editMode, setEditMode] = useState<'visual' | 'json'>(
+    () => initialState.editMode
   )
-  const [legacyValue, setLegacyValue] = useState('')
-  const [operations, setOperations] = useState<ParamOverrideOperation[]>([
-    createDefaultOperation(),
-  ])
-  const [jsonText, setJsonText] = useState('')
-  const [jsonError, setJsonError] = useState('')
+  const [visualMode, setVisualMode] = useState<'operations' | 'legacy'>(
+    () => initialState.visualMode
+  )
+  const [legacyValue, setLegacyValue] = useState(() => initialState.legacyValue)
+  const [operations, setOperations] = useState<ParamOverrideOperation[]>(
+    () => initialState.operations
+  )
+  const [jsonText, setJsonText] = useState(() => initialState.jsonText)
+  const [jsonError, setJsonError] = useState(() => initialState.jsonError)
   const [operationSearch, setOperationSearch] = useState('')
-  const [selectedOperationId, setSelectedOperationId] = useState('')
+  const [selectedOperationId, setSelectedOperationId] = useState(
+    () => initialState.operations[0]?.id || ''
+  )
   const [expandedConditions, setExpandedConditions] = useState<
     Record<string, boolean>
   >({})
@@ -1108,42 +1119,11 @@ export function ParamOverrideEditorDialog(
   const [dragOverPosition, setDragOverPosition] = useState<'before' | 'after'>(
     'before'
   )
-  const [templatePresetKey, setTemplatePresetKey] =
-    useState('operations_default')
-
-  // Initialize state when dialog opens
-  useEffect(() => {
-    if (!props.open) return
-    const state = parseInitialState(props.value)
-    setEditMode(state.editMode)
-    setVisualMode(state.visualMode)
-    setLegacyValue(state.legacyValue)
-    setOperations(state.operations)
-    setJsonText(state.jsonText)
-    setJsonError(state.jsonError)
-    setOperationSearch('')
-    setSelectedOperationId(state.operations[0]?.id || '')
-    setExpandedConditions({})
-    setDraggedOperationId('')
-    setDragOverOperationId('')
-    setDragOverPosition('before')
-    if (state.visualMode === 'legacy') {
-      setTemplatePresetKey('legacy_default')
-    } else {
-      setTemplatePresetKey('operations_default')
-    }
-  }, [props.open, props.value])
-
-  // Keep selectedOperationId valid
-  useEffect(() => {
-    if (operations.length === 0) {
-      setSelectedOperationId('')
-      return
-    }
-    if (!operations.some((o) => o.id === selectedOperationId)) {
-      setSelectedOperationId(operations[0].id)
-    }
-  }, [operations, selectedOperationId])
+  const [templatePresetKey, setTemplatePresetKey] = useState(() =>
+    initialState.visualMode === 'legacy'
+      ? 'legacy_default'
+      : 'operations_default'
+  )
 
   // Template preset options filtered by group
   const templatePresetOptions = useMemo(
@@ -1179,14 +1159,22 @@ export function ParamOverrideEditorDialog(
     })
   }, [operationSearch, operations])
 
+  const activeSelectedOperationId = useMemo(() => {
+    if (operations.length === 0) return ''
+    if (operations.some((o) => o.id === selectedOperationId)) {
+      return selectedOperationId
+    }
+    return operations[0].id
+  }, [operations, selectedOperationId])
+
   const selectedOperation = useMemo(
-    () => operations.find((o) => o.id === selectedOperationId),
-    [operations, selectedOperationId]
+    () => operations.find((o) => o.id === activeSelectedOperationId),
+    [activeSelectedOperationId, operations]
   )
 
   const selectedOperationIndex = useMemo(
-    () => operations.findIndex((o) => o.id === selectedOperationId),
-    [operations, selectedOperationId]
+    () => operations.findIndex((o) => o.id === activeSelectedOperationId),
+    [activeSelectedOperationId, operations]
   )
 
   const returnErrorDraft = useMemo(() => {
@@ -1881,7 +1869,8 @@ export function ParamOverrideEditorDialog(
                         const index = operations.findIndex(
                           (o) => o.id === operation.id
                         )
-                        const isActive = operation.id === selectedOperationId
+                        const isActive =
+                          operation.id === activeSelectedOperationId
                         const isDragging = operation.id === draggedOperationId
                         const isDropTarget =
                           operation.id === dragOverOperationId &&

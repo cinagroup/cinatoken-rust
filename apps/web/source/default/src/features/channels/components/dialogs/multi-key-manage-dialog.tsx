@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw, Trash2, Power, PowerOff } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -69,6 +69,7 @@ export function MultiKeyManageDialog({
   const { t } = useTranslation()
   const { currentRow } = useChannels()
   const queryClient = useQueryClient()
+  const channelId = currentRow?.id
 
   // Data state
   const [isLoading, setIsLoading] = useState(false)
@@ -87,63 +88,71 @@ export function MultiKeyManageDialog({
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
 
+  const loadKeyStatus = useCallback(
+    async (page: number, size: number, status: number | null) => {
+      if (!channelId) return
+
+      setIsLoading(true)
+      try {
+        const response = await getMultiKeyStatus(
+          channelId,
+          page,
+          size,
+          status === null ? undefined : status
+        )
+
+        if (response.success && response.data) {
+          setKeys(response.data.keys || [])
+          setTotal(response.data.total || 0)
+          setCurrentPage(response.data.page || 1)
+          setPageSize(response.data.page_size || 10)
+          setTotalPages(response.data.total_pages || 0)
+          setEnabledCount(response.data.enabled_count || 0)
+          setManualDisabledCount(response.data.manual_disabled_count || 0)
+          setAutoDisabledCount(response.data.auto_disabled_count || 0)
+        } else {
+          toast.error(response.message || t('Failed to load key status'))
+        }
+      } catch (error: unknown) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t('Failed to load key status')
+        )
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [channelId, t]
+  )
+
   // Reset and load data when dialog opens
   useEffect(() => {
-    if (open && currentRow) {
+    if (!open || !channelId) return
+
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
       setCurrentPage(1)
       setStatusFilter(null)
-      loadKeyStatus(1, pageSize, null)
+      void loadKeyStatus(1, pageSize, null)
+    })
+
+    return () => {
+      cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, currentRow?.id])
-
-  const loadKeyStatus = async (
-    page: number = currentPage,
-    size: number = pageSize,
-    status: number | null = statusFilter
-  ) => {
-    if (!currentRow) return
-
-    setIsLoading(true)
-    try {
-      const response = await getMultiKeyStatus(
-        currentRow.id,
-        page,
-        size,
-        status === null ? undefined : status
-      )
-
-      if (response.success && response.data) {
-        setKeys(response.data.keys || [])
-        setTotal(response.data.total || 0)
-        setCurrentPage(response.data.page || 1)
-        setPageSize(response.data.page_size || 10)
-        setTotalPages(response.data.total_pages || 0)
-        setEnabledCount(response.data.enabled_count || 0)
-        setManualDisabledCount(response.data.manual_disabled_count || 0)
-        setAutoDisabledCount(response.data.auto_disabled_count || 0)
-      } else {
-        toast.error(response.message || t('Failed to load key status'))
-      }
-    } catch (error: unknown) {
-      toast.error(
-        error instanceof Error ? error.message : t('Failed to load key status')
-      )
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  }, [channelId, loadKeyStatus, open, pageSize])
 
   const handleStatusFilterChange = (value: string) => {
     const newFilter = value === 'all' ? null : parseInt(value)
     setStatusFilter(newFilter)
     setCurrentPage(1)
-    loadKeyStatus(1, pageSize, newFilter)
+    void loadKeyStatus(1, pageSize, newFilter)
   }
 
   const handlePageChange = (newPage: number) => {
     setCurrentPage(newPage)
-    loadKeyStatus(newPage, pageSize)
+    void loadKeyStatus(newPage, pageSize, statusFilter)
   }
 
   const performAction = async () => {
@@ -177,9 +186,9 @@ export function MultiKeyManageDialog({
         const isBulkAction = type.includes('all') || type === 'delete-disabled'
         if (isBulkAction) {
           setCurrentPage(1)
-          loadKeyStatus(1, pageSize)
+          void loadKeyStatus(1, pageSize, statusFilter)
         } else {
-          loadKeyStatus(currentPage, pageSize)
+          void loadKeyStatus(currentPage, pageSize, statusFilter)
         }
       } else {
         toast.error(response?.message || t('Operation failed'))
@@ -299,7 +308,9 @@ export function MultiKeyManageDialog({
               <Button
                 variant='outline'
                 size='sm'
-                onClick={() => loadKeyStatus()}
+                onClick={() =>
+                  void loadKeyStatus(currentPage, pageSize, statusFilter)
+                }
                 disabled={isLoading}
               >
                 <RefreshCw className='h-4 w-4' />

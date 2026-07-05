@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
 import {
@@ -63,6 +63,16 @@ type RiskAcknowledgementDialogProps = {
   className?: string
 }
 
+type RiskAcknowledgementDialogContentProps = Omit<
+  RiskAcknowledgementDialogProps,
+  'requiredTextParts'
+> & {
+  normalizedRequiredTextParts: NormalizedRequiredTextPart[]
+  requiredTextInputCount: number
+  requiredTextToDisplay: string
+  hasSegmentedRequiredText: boolean
+}
+
 export function RiskAcknowledgementDialog({
   open,
   onOpenChange,
@@ -82,42 +92,100 @@ export function RiskAcknowledgementDialog({
   onConfirm,
   className,
 }: RiskAcknowledgementDialogProps) {
-  const { t } = useTranslation()
-  const [checkedItems, setCheckedItems] = useState<boolean[]>([])
-  const [typedText, setTypedText] = useState('')
-  const [typedTextParts, setTypedTextParts] = useState<string[]>([])
+  const { normalizedRequiredTextParts, requiredTextInputCount } =
+    useMemo(() => {
+      return requiredTextParts.reduce(
+        (acc, part) => {
+          if (part.type === 'input') {
+            return {
+              normalizedRequiredTextParts: [
+                ...acc.normalizedRequiredTextParts,
+                { ...part, inputIndex: acc.requiredTextInputCount },
+              ],
+              requiredTextInputCount: acc.requiredTextInputCount + 1,
+            }
+          }
 
-  const normalizedRequiredTextParts = useMemo<
-    NormalizedRequiredTextPart[]
-  >(() => {
-    let inputIndex = 0
-    return requiredTextParts.map((part) => {
-      if (part.type === 'input') {
-        const normalizedPart = { ...part, inputIndex }
-        inputIndex += 1
-        return normalizedPart
-      }
-      return part
-    })
-  }, [requiredTextParts])
+          return {
+            ...acc,
+            normalizedRequiredTextParts: [
+              ...acc.normalizedRequiredTextParts,
+              part,
+            ],
+          }
+        },
+        {
+          normalizedRequiredTextParts: [] as NormalizedRequiredTextPart[],
+          requiredTextInputCount: 0,
+        }
+      )
+    }, [requiredTextParts])
 
-  const requiredTextInputCount = useMemo(
-    () =>
-      normalizedRequiredTextParts.filter((part) => part.type === 'input')
-        .length,
-    [normalizedRequiredTextParts]
-  )
   const hasSegmentedRequiredText = requiredTextInputCount > 0
   const requiredTextToDisplay = hasSegmentedRequiredText
     ? normalizedRequiredTextParts.map((part) => part.text).join('')
     : requiredText
+  const contentKey = open
+    ? `${checklist.length}:${requiredTextInputCount}`
+    : 'closed'
 
-  useEffect(() => {
-    if (!open) return
-    setCheckedItems(Array(checklist.length).fill(false))
-    setTypedText('')
-    setTypedTextParts(Array(requiredTextInputCount).fill(''))
-  }, [open, checklist.length, requiredTextInputCount])
+  return (
+    <RiskAcknowledgementDialogContent
+      key={contentKey}
+      open={open}
+      onOpenChange={onOpenChange}
+      title={title}
+      description={description}
+      items={items}
+      checklist={checklist}
+      requiredText={requiredText}
+      normalizedRequiredTextParts={normalizedRequiredTextParts}
+      requiredTextInputCount={requiredTextInputCount}
+      requiredTextToDisplay={requiredTextToDisplay}
+      hasSegmentedRequiredText={hasSegmentedRequiredText}
+      inputPrompt={inputPrompt}
+      inputPlaceholder={inputPlaceholder}
+      mismatchHint={mismatchHint}
+      confirmText={confirmText}
+      cancelText={cancelText}
+      destructive={destructive}
+      isLoading={isLoading}
+      onConfirm={onConfirm}
+      className={className}
+    />
+  )
+}
+
+function RiskAcknowledgementDialogContent({
+  open,
+  onOpenChange,
+  title,
+  description,
+  items = [],
+  checklist = [],
+  requiredText = '',
+  normalizedRequiredTextParts,
+  requiredTextInputCount,
+  requiredTextToDisplay,
+  hasSegmentedRequiredText,
+  inputPrompt,
+  inputPlaceholder,
+  mismatchHint,
+  confirmText,
+  cancelText,
+  destructive = true,
+  isLoading = false,
+  onConfirm,
+  className,
+}: RiskAcknowledgementDialogContentProps) {
+  const { t } = useTranslation()
+  const [checkedItems, setCheckedItems] = useState<boolean[]>(() =>
+    Array.from({ length: checklist.length }, () => false)
+  )
+  const [typedText, setTypedText] = useState('')
+  const [typedTextParts, setTypedTextParts] = useState<string[]>(() =>
+    Array.from({ length: requiredTextInputCount }, () => '')
+  )
 
   const allChecked = useMemo(() => {
     if (checklist.length === 0) return true

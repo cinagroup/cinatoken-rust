@@ -4082,3 +4082,62 @@ Updated local evidence:
 Remaining boundary: strict lint is still not green. Continue reducing
 `react-hooks/set-state-in-effect` in dialog/form boundaries, then close the
 remaining refs/immutability/purity families before G5 production sign-off.
+
+### 22.58 2026-07-05 Frontend Form And Subscription Lint Paydown
+
+This increment takes a larger G5 strict-lint step across imported React
+operator surfaces while keeping the migration focused on behavior-preserving
+state initialization and event-boundary cleanup. No billing expression semantics
+were changed in this batch.
+
+Implemented in the imported React frontend:
+
+- Converted `RiskAcknowledgementDialog` to compute segmented required-text
+  input indices with a pure reducer and moved acknowledgement/checklist local
+  state into a keyed inner dialog body. Reopening the dialog or changing the
+  input/checklist shape now resets local state by remounting instead of a sync
+  effect.
+- Refactored `MultiKeyManageDialog` to declare its loader as a stable callback
+  before use, pass pagination/filter arguments explicitly, and queue the
+  open-time reset/load work behind a cleanup-guarded microtask.
+- Updated account custom-OAuth binding refresh to run outside the synchronous
+  effect body and changed custom OAuth binding redirects to
+  `window.location.assign`.
+- Tightened playground query keys by making translated fallback error text an
+  explicit TanStack Query dependency instead of implicitly closing over `t`.
+- Deferred OAuth and Passkey settings form submission wiring until submit/save
+  event time, avoiding render-time `react-hook-form` ref access while keeping
+  the same `SettingsForm` and `SettingsPageFormActions` contract.
+- Updated user-subscription management to depend on a narrowed `userId`, queue
+  open-time reset/load work, and preserve the existing create/invalidate/delete
+  flows.
+- Replaced render-time `Date.now()` usage in wallet subscription plans with a
+  state-backed timestamp snapshot refreshed when subscription data reloads.
+- Deferred channel-affinity default-value reset and cache-stat refresh work out
+  of synchronous effect bodies.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 68 errors / 2 warnings
+  / 60 files to 50 errors / 2 warnings / 51 files. The rule-family deltas are:
+  `react-hooks/set-state-in-effect` 48 -> 42, `react-hooks/refs` 9 -> 5,
+  `@tanstack/query/exhaustive-deps` 3 -> 1, `react-hooks/immutability` 5 -> 2,
+  `react-hooks/preserve-manual-memoization` 1 -> 0, and `react-hooks/purity`
+  2 -> 0.
+
+Updated local evidence:
+
+- File-scoped ESLint for the touched frontend files: passed with no findings.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run format:check` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 50 errors, 2 warnings, 51 files
+  with findings, and 0 regressions.
+- `git diff --check`: passed.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,281,822 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green. The remaining current
+baseline is 50 ESLint errors / 2 warnings, dominated by
+`react-hooks/set-state-in-effect` (42 errors), with smaller refs,
+immutability, TanStack Query, and hook dependency families still pending before
+G5 production sign-off.

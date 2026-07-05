@@ -86,7 +86,16 @@ export function AccountBindingsTab({
   }, [customProviders])
 
   useEffect(() => {
-    fetchCustomBindings()
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void fetchCustomBindings()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [fetchCustomBindings])
 
   const handleUnbindCustom = async () => {
@@ -115,7 +124,9 @@ export function AccountBindingsTab({
 
   const handleBindCustomOAuth = (provider: { id: string; name: string }) => {
     const redirectUrl = `${window.location.origin}/oauth/${provider.id}?bind=true`
-    window.location.href = `/api/oauth/${provider.id}?redirect=${encodeURIComponent(redirectUrl)}`
+    window.location.assign(
+      `/api/oauth/${provider.id}?redirect=${encodeURIComponent(redirectUrl)}`
+    )
   }
 
   useEffect(() => {

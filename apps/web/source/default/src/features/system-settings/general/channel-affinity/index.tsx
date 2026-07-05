@@ -165,28 +165,36 @@ export function ChannelAffinitySection(props: Props) {
   const [fillTemplateDialogOpen, setFillTemplateDialogOpen] = useState(false)
 
   useEffect(() => {
-    setEnabled(props.defaultValues['channel_affinity_setting.enabled'])
-    setSwitchOnSuccess(
-      props.defaultValues['channel_affinity_setting.switch_on_success']
-    )
-    setKeepOnChannelDisabled(
-      props.defaultValues['channel_affinity_setting.keep_on_channel_disabled']
-    )
-    setMaxEntries(props.defaultValues['channel_affinity_setting.max_entries'])
-    setDefaultTtl(
-      props.defaultValues['channel_affinity_setting.default_ttl_seconds']
-    )
-    const parsed = parseRules(
-      props.defaultValues['channel_affinity_setting.rules']
-    )
-    setRules(parsed)
-    setJsonText(
-      JSON.stringify(
-        parsed.map(({ id: _, ...r }) => r),
-        null,
-        2
+    const defaultValues = props.defaultValues
+    let cancelled = false
+
+    queueMicrotask(() => {
+      if (cancelled) return
+      setEnabled(defaultValues['channel_affinity_setting.enabled'])
+      setSwitchOnSuccess(
+        defaultValues['channel_affinity_setting.switch_on_success']
       )
-    )
+      setKeepOnChannelDisabled(
+        defaultValues['channel_affinity_setting.keep_on_channel_disabled']
+      )
+      setMaxEntries(defaultValues['channel_affinity_setting.max_entries'])
+      setDefaultTtl(
+        defaultValues['channel_affinity_setting.default_ttl_seconds']
+      )
+      const parsed = parseRules(defaultValues['channel_affinity_setting.rules'])
+      setRules(parsed)
+      setJsonText(
+        JSON.stringify(
+          parsed.map(({ id: _, ...r }) => r),
+          null,
+          2
+        )
+      )
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [props.defaultValues])
 
   const refreshCache = useCallback(async () => {
@@ -202,7 +210,16 @@ export function ChannelAffinitySection(props: Props) {
   }, [t])
 
   useEffect(() => {
-    refreshCache()
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void refreshCache()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [refreshCache])
 
   const appendCliTemplates = () => {

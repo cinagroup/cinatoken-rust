@@ -278,15 +278,23 @@ export function OAuthSection(props: OAuthSectionProps) {
     toast.success(t('Form reset to saved values'))
   }
 
+  const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    void form.handleSubmit(onSubmit)(event)
+  }
+
+  const handleSave = () => {
+    void form.handleSubmit(onSubmit)()
+  }
+
   return (
     <>
       <FormNavigationGuard when={form.formState.isDirty} />
 
       <SettingsSection title={t('OAuth Integrations')}>
         <Form {...form}>
-          <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
+          <SettingsForm onSubmit={handleFormSubmit}>
             <SettingsPageFormActions
-              onSave={form.handleSubmit(onSubmit)}
+              onSave={handleSave}
               onReset={handleReset}
               isSaving={updateOption.isPending}
               isResetDisabled={!form.formState.isDirty}

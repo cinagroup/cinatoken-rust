@@ -1,0 +1,19 @@
+{
+  "dist_dir": "apps/web/source/default/dist",
+  "budgets": {
+    "total_raw_bytes": 20500000,
+    "total_gzip_bytes": 4900000,
+    "js_raw_bytes": 19500000,
+    "js_gzip_bytes": 4600000,
+    "css_raw_bytes": 500000,
+    "css_gzip_bytes": 80000,
+    "initial_js_raw_bytes": 4800000,
+    "initial_js_gzip_bytes": 1350000,
+    "largest_js_raw_bytes": 5600000,
+    "largest_js_gzip_bytes": 1100000
+  },
+  "notes": [
+    "Budgets are based on the 2026-07-05 Rsbuild production output with a small ratchet margin.",
+    "Tighten these thresholds after splitting heavy route-specific chunks; do not raise them without documenting the migration reason."
+  ]
+}

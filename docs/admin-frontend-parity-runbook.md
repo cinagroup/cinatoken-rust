@@ -194,14 +194,17 @@ bun run build
 5. Run route smoke for hard refreshes on `/dashboard`, `/channels`, `/keys`,
    `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`,
    and `/profile`.
-6. Confirm no secret value appears in the static bundle:
+6. Confirm no secret value appears in the static bundle and the bundle stays
+   inside the reviewed ratchet budget:
 
 ```powershell
-rg -n "UPSTASH|SECRET|TOKEN|PRIVATE|CLIENT_SECRET|WEBHOOK|API_KEY" dist
+bun run check:web:bundle
+bun run check:web:bundle-budget
 ```
 
 Use an allowlist for public names such as `TURNSTILE_SITE_KEY`; secret values
-must never be present.
+must never be present. Do not raise bundle budgets without recording the
+migration reason and the follow-up plan to split heavy route-specific chunks.
 
 ## Auth And Session Strategy
 
@@ -354,7 +357,8 @@ G5 must pass these before Scenario B:
 - Logs do not include raw bearer tokens, cookies, token keys, channel keys,
   OAuth secrets, payment secrets, Turnstile secrets, or full provider
   credentials.
-- Frontend bundle scan shows no secret values.
+- Frontend bundle scan shows no secret values and the bundle-size budget gate
+  passes.
 - Admin reveal routes have elevated auth and critical rate limits.
 - Generated bearer credentials, affiliation codes, and payment/order suffixes
   use Worker CSPRNG sources; `Math.random()` is not acceptable for security
@@ -431,7 +435,8 @@ G5 passes only when:
 5. Sensitive mutations write audit entries and preserve request IDs.
 6. Token/channel/model/option changes invalidate caches or document a safe TTL.
 7. No secret appears in frontend bundles, Worker logs, smoke reports, or API
-   responses that should be redacted.
+   responses that should be redacted; the frontend bundle-size budget gate
+   passes or has a documented exception approved for the cutover.
 8. Payment/subscription routes are either deferred to Go or covered by the
    billing parity runbook with idempotency evidence.
 9. OAuth/Passkey/2FA routes are either migrated and tested or covered by a

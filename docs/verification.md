@@ -4,6 +4,19 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `bun run check:web:bundle-budget`: passed after adding the executable
+  frontend bundle-size budget. It scanned 245 built assets in
+  `apps/web/source/default/dist`: 18.94 MB raw / 4.49 MB gzip total,
+  18.25 MB raw / 4.14 MB gzip JavaScript, 4.29 MB raw / 1.23 MB gzip
+  initial JavaScript, and 5.28 MB raw / 1.00 MB gzip for the largest
+  JavaScript chunk; all 10 configured budgets passed.
+- `bun run check`: passed after wiring the frontend bundle-size budget into
+  the main verification chain, covering frontend type/build, bundle redaction
+  audit, bundle budget audit, route-debt baseline, `cargo fmt --all --check`,
+  Rust workspace tests excluding the Worker, and Worker wasm check. The route
+  audit reported 214 frontend Worker-facing routes, 304 Worker routes, 0
+  missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:bundle`: passed after adding the frontend bundle
   redaction audit. It scanned 460 built frontend text assets
   (37,280,170 bytes) across `apps/web/source/default/dist` and

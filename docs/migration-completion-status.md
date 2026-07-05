@@ -94,7 +94,8 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Billing shadow comparison and exact tokenizer/media parity.
 - Relay weighted channel-selection staging evidence for distribution, retry,
   auto-group, affinity, and provider-family filter behavior.
-- Frontend lint cleanup and bundle-size reduction.
+- Frontend strict lint cleanup, bundle-size reduction, and budget ratchet
+  tightening after heavy route-specific chunks are split.
 
 ## Incomplete Product Families
 

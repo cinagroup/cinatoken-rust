@@ -95,15 +95,19 @@ direct-URL error handling.
 
 ## Automated Contract Audit
 
-The repository now has two complementary frontend checks:
+The repository has complementary frontend checks for route compatibility,
+static-bundle secret hygiene, bundle-size budgets, and public staging HTTP
+contract:
 
 ```powershell
 bun run audit:web:routes
+bun run audit:web:bundle
+bun run audit:web:bundle-budget
 bun run check:web:staging
 ```
 
 `audit:web:routes` parses the default frontend with a TypeScript
-Program/TypeChecker and compares 212 distinct frontend calls with Worker router
+Program/TypeChecker and compares 214 distinct frontend calls with Worker router
 registrations. The 2026-07-03 and 2026-07-04 compatibility batches reduced
 unmatched calls from 122 to 63 by closing routes and removing one
 false-positive call:
@@ -166,13 +170,12 @@ false-positive call:
   rankings from the status capability clamp.
 
 `bun run check:web:routes` additionally enforces the reviewed debt baseline:
-31 missing calls / 0 payment-deferred calls with a stable SHA-256 route-set
-digest and category counts. New
-unclassified calls or an unreviewed route-set change fail the check. The
-remaining calls include capability-hidden product families and deferred auth
-families; operations-debt and payment-debt are currently zero. Local wrapper methods are
-inferred, while non-HTTP calls such as `endsWith('/v1')` are no longer counted.
-Hidden navigation still does not imply implementation.
+214 frontend Worker-facing calls, 304 Worker routes, 0 missing calls, categories
+`{}`, and SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. New
+unclassified calls or an unreviewed route-set change fail the check. Local
+wrapper methods are inferred, while non-HTTP calls such as `endsWith('/v1')`
+are no longer counted. Hidden navigation still does not imply implementation.
 
 `check:web:staging` verifies the public staging deployment without mutating
 state. Its seven checks cover status capability clamps, setup shape, 11 SPA
@@ -182,15 +185,26 @@ contract evidence, not rendered DOM or authenticated workflow evidence.
 
 ## Bundle Budget
 
-The verified production build is approximately:
+`tools/frontend_bundle_budget.json` records the current ratchet budget for the
+canonical build output in `apps/web/source/default/dist`. Run the executable
+budget audit after every production build:
 
-- 18.9 MB total uncompressed;
-- 4.4 MB total gzip;
-- largest chunks approximately 5.3 MB, 2.7 MB and 1.9 MB.
+```powershell
+bun run audit:web:bundle-budget
+```
 
-Before production G5 approval, record a bundle budget and split heavy,
-route-specific dependencies. A successful build alone is not a performance
-gate.
+As of 2026-07-05, the verified production build is:
+
+- 245 files;
+- 18.94 MB total raw / 4.49 MB total gzip;
+- 18.25 MB JavaScript raw / 4.14 MB JavaScript gzip;
+- 4.29 MB initial JavaScript raw / 1.23 MB initial JavaScript gzip;
+- 5.28 MB raw / 1.00 MB gzip for the largest JavaScript chunk.
+
+The budget currently prevents accidental growth; it does not prove that the
+bundle is already optimal. Before production G5 approval, keep the budget in
+CI and split heavy route-specific dependencies where the deployed browser smoke
+or performance runbook shows user-visible load cost.
 
 ## Auth
 
@@ -212,7 +226,7 @@ Run a bundle scan after every production build and review matches rather than
 blindly allowlisting broad words:
 
 ```powershell
-rg -n "CLIENT_SECRET|PRIVATE_KEY|SESSION_SECRET|WEBHOOK_SECRET|UPSTASH_REDIS_REST_TOKEN" apps/web/dist
+bun run audit:web:bundle
 ```
 
 ## Required Staging Evidence

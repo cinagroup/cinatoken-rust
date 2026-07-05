@@ -3721,3 +3721,47 @@ sign-off. CI retention, explicit allowlist documentation if benign findings are
 ever introduced, staging artifact/hash evidence, lint debt closure,
 bundle-size budget enforcement, and deployed browser smoke remain required
 before production frontend cutover.
+
+### 22.49 2026-07-05 Frontend Bundle-Size Budget Gate
+
+This increment turns the G5 frontend bundle-size budget from a planning note
+into an executable check. The goal is not to claim that the imported React
+frontend is already optimized; it is to stop unnoticed growth while the
+Go/VPS-hosted frontend is being moved to Worker Static Assets and while heavy
+route-specific chunks are split in later performance work.
+
+Implemented in Rust migration tooling:
+
+- Added `tools/frontend_bundle_budget.json` with explicit raw and gzip budgets
+  for the canonical build output in `apps/web/source/default/dist`.
+- Added `tools/audit_frontend_bundle_budget.mjs`, a Bun/Node script that scans
+  all built static assets, calculates gzip size with deterministic Node gzip,
+  groups total, JavaScript, CSS, initial JavaScript, and largest JavaScript
+  chunk metrics, and reports budget failures without mutating the bundle.
+- Root package scripts now expose `bun run audit:web:bundle-budget` for manual
+  inspection and `bun run check:web:bundle-budget` for fail-on-budget mode.
+- The main `bun run check` chain now runs the budget gate after frontend
+  type/build and bundle redaction, before the frontend route audit.
+- `docs/frontend-deploy.md` now records the budget command, current measured
+  output, and the explicit caveat that this is a ratchet gate rather than full
+  performance approval.
+
+Updated local evidence:
+
+- `bun run check:web:bundle-budget`: passed, scanning 245 files in
+  `apps/web/source/default/dist`: 18.94 MB raw / 4.49 MB gzip total,
+  18.25 MB raw / 4.14 MB gzip JavaScript, 4.29 MB raw / 1.23 MB gzip initial
+  JavaScript, and 5.28 MB raw / 1.00 MB gzip for the largest JavaScript chunk;
+  all 10 configured budgets passed.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit, bundle budget audit, route-debt audit, `cargo fmt --all --check`,
+  Rust workspace tests excluding the Worker, and Worker wasm check.
+- `bun run check:web:routes`: passed with 214 frontend Worker-facing routes,
+  304 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Remaining boundary: this closes the missing executable bundle-budget gate, not
+the broader frontend performance gate. Strict lint cleanup, heavy
+route-specific chunk splitting, deployed desktop/mobile browser smoke, staging
+artifact/hash evidence, and performance/capacity report evidence remain
+required before production frontend cutover.

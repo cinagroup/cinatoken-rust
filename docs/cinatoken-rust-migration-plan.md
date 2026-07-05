@@ -3437,3 +3437,43 @@ auth parity for dashboard media elements, provider credential refetch
 (`Gemini`, `Vertex`, `OpenAI`/`Sora` content endpoints), R2 retention policy,
 provider replay fixtures, Sora remix origin-task/channel-lock resolution, and
 async task billing settlement evidence remain required before G7 video cutover.
+
+### 22.43 2026-07-05 OpenAI Video Content TokenOrUserAuth Parity
+
+This increment closes the dashboard media-link auth gap for
+`GET /v1/videos/:task_id/content`. Source Go wires this route through
+`middleware.TokenOrUserAuth()`, which tries browser session auth first and then
+falls back to API-token auth. The Rust route now follows that shape for the
+already-owned stored-URL/data-URL proxy slice.
+
+Implemented in Rust:
+
+- The content proxy now attempts Rust session-cookie auth first using the
+  existing `admin::parse_session_claims` codec.
+- Session access is still owner-scoped: the route reloads the session user from
+  D1, requires `USER_STATUS_ENABLED`, and then queries `tasks` by that user id
+  plus `task_id`.
+- If no valid session is present, the route falls back to the existing
+  Bearer/x-api-key token authentication for API clients.
+- The route keeps the OpenAI-style error envelope used by Go `VideoProxy`
+  instead of returning the task-fetch `{code,message,data}` envelope.
+- API-token clients are not forced to configure browser session auth; when an
+  unparseable session cookie is accompanied by a valid API key, token fallback
+  remains available.
+
+Updated local evidence:
+
+- `cargo fmt --all`: passed;
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 17
+  passed, including the new enabled/missing/disabled session-user owner check.
+- `cargo test -p cinatoken-worker --lib`: 370 passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed;
+- `bun run check`: passed, including frontend type/build, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check.
+
+Remaining boundary: this completes the session-auth slice for dashboard video
+media links, not full video artifact ownership. Credentialed provider refetch,
+R2 retention policy, provider replay fixtures, Sora remix origin-task/channel
+lock resolution, and async task billing settlement evidence remain required
+before G7 video cutover.

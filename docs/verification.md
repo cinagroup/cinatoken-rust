@@ -4,6 +4,22 @@ Last checked: 2026-07-05
 
 ## Passed
 
+- `cargo fmt --all`: passed after adding session-auth parity to the OpenAI
+  video content proxy.
+- `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 17
+  passed after adding TokenOrUserAuth-style session fallback coverage for the
+  OpenAI video content proxy.
+- `cargo test -p cinatoken-worker --lib`: 370 passed after adding session-auth
+  parity to the OpenAI video content proxy.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding session-auth parity to the content proxy; the only warnings were
+  the pre-existing `dead_code` warnings in `d1_repositories.rs`.
+- `bun run check`: passed after adding session-auth parity to the content
+  proxy, covering frontend type/build, route-debt baseline,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check. The route audit remained 214 frontend Worker-facing
+  routes, 298 Worker routes, 0 missing calls, categories `{}`, and SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `cargo fmt --all`: passed after adding the first OpenAI video content proxy
   slice.
 - `cargo test -p cinatoken-worker --lib task_orchestration::tests::`: 16

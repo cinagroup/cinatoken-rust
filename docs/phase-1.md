@@ -244,7 +244,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   calls/assignments, and API-prefixed JSX `href`/`src` attributes. The
   reviewed baseline covers 214 Worker-facing frontend routes with 0 missing
   calls, and the frontend task-log video content link is Worker-owned through
-  the token-owner-scoped `/v1/videos/:task_id/content` route.
+  the token-or-session-owner-scoped `/v1/videos/:task_id/content` route.
 - OpenAI-compatible video create/fetch shell: `POST /v1/videos` now reuses the
   Worker task submit orchestration but returns an OpenAI video `queued` object,
   while `GET /v1/videos/:task_id` returns a token-owner-scoped DB-backed video
@@ -258,9 +258,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   ported for Ali status/error mapping, Doubao/Kling/Vidu/Jimeng/Hailuo error
   shapes, Kling provider time/seconds fields, Doubao legacy `task_id`, and
   Gemini/Vertex Veo model extraction from encoded upstream operation names.
-  `GET /v1/videos/:task_id/content` now serves completed, token-owner-scoped
-  tasks from stored result/provider URLs or bounded `data:` URLs with SSRF
-  validation and streaming upstream response passthrough. `/v1/videos/:video_id/remix`
+  `GET /v1/videos/:task_id/content` now serves completed,
+  token-or-session-owner-scoped tasks from stored result/provider URLs or
+  bounded `data:` URLs with SSRF validation and streaming upstream response
+  passthrough. `/v1/videos/:video_id/remix`
   remains a structured 501 boundary until remix origin-task resolution is
   ported.
 - Admin CRUD P0 surface (`crates/worker/src/admin_crud.rs`): admin + self log
@@ -436,10 +437,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   billing shadow evidence.
 - Continue the async-video G7 path by adding provider replay fixtures for the
   newly ported OpenAI video serializers/content proxy, completing artifact
-  retrieval gaps that require provider credentials, adding session-auth parity
-  for dashboard media links, porting Sora remix origin-task/channel-lock
-  resolution, and moving video artifact retrieval/retention into Queue/R2
-  before full production ownership.
+  retrieval gaps that require provider credentials, porting Sora remix
+  origin-task/channel-lock resolution, and moving video artifact
+  retrieval/retention into Queue/R2 before full production ownership.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

@@ -221,7 +221,8 @@ not the SPA shell (§21.6).
 
 3. **Dual-auth video proxy.** `GET /v1/videos/:task_id/content` uses
    `TokenOrUserAuth` so both dashboard sessions and API tokens work. The Rust
-   auth layer needs a combined resolver for this one route.
+   route now has a dedicated combined resolver for this one route: session
+   owner scope first, then API-token owner scope.
 
 4. **Anonymous, signature-verified webhooks are a distinct security class.**
    Stripe/Creem/Waffo/Waffo-Pancake(`:env`)/Epay (+ subscription Epay) notify

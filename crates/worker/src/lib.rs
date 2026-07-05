@@ -1064,8 +1064,8 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await
         })
         // Source Go exposes this as a TokenOrUserAuth video proxy. Rust now
-        // owns the token-authenticated, stored-URL/data-URL proxy slice; session
-        // auth and provider credential refetch remain explicit G7 follow-ups.
+        // owns the token-or-session-authenticated stored-URL/data-URL proxy
+        // slice; provider credential refetch remains an explicit G7 follow-up.
         .get_async("/v1/videos/:task_id/content", |req, ctx| async move {
             let task_id = ctx.param("task_id").cloned();
             task_orchestration::handle_openai_video_content_by_id(req, ctx.env, task_id.as_ref())

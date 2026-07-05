@@ -18,6 +18,7 @@ use base64::{
     },
     Engine as _,
 };
+use cinatoken_auth::USER_STATUS_ENABLED;
 use cinatoken_ssrf::SsrfPolicy;
 use cinatoken_tasks::providers::poll_request::{self, HttpMethod, PollRequest};
 use cinatoken_tasks::providers::{
@@ -1924,6 +1925,76 @@ async fn authenticate_fetch(
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum VideoContentSessionAuthError {
+    MissingUser,
+    DisabledUser,
+}
+
+fn active_session_video_user_id(
+    user: Option<&crate::d1_repositories::AdminUserRow>,
+) -> Result<i64, VideoContentSessionAuthError> {
+    let user = user.ok_or(VideoContentSessionAuthError::MissingUser)?;
+    if user.status != USER_STATUS_ENABLED {
+        return Err(VideoContentSessionAuthError::DisabledUser);
+    }
+    Ok(user.id)
+}
+
+/// Go `TokenOrUserAuth` parity for `/v1/videos/:task_id/content`: dashboard
+/// sessions are tried first, then API tokens for programmatic clients.
+async fn authenticate_video_content_user_id(
+    req: &Request,
+    env: &Env,
+    db: &worker::D1Database,
+) -> worker::Result<std::result::Result<i64, Response>> {
+    let api_key = crate::relay::extract_api_key(req);
+    match crate::admin::parse_session_claims(req, env).await {
+        Ok(Ok(Some(claims))) => {
+            let user = crate::d1_repositories::find_user_by_id(db, claims.id).await?;
+            return match active_session_video_user_id(user.as_ref()) {
+                Ok(user_id) => Ok(Ok(user_id)),
+                Err(VideoContentSessionAuthError::MissingUser) => Ok(Err(video_proxy_error(
+                    401,
+                    "authentication_error",
+                    "invalid session user",
+                )?)),
+                Err(VideoContentSessionAuthError::DisabledUser) => Ok(Err(video_proxy_error(
+                    403,
+                    "permission_error",
+                    "user is disabled",
+                )?)),
+            };
+        }
+        Ok(Ok(None)) => {}
+        Ok(Err(_response)) if api_key.is_none() => {
+            return Ok(Err(video_proxy_error(
+                500,
+                "server_error",
+                "failed to parse session",
+            )?));
+        }
+        Ok(Err(_response)) => {}
+        Err(err) => return Err(err),
+    }
+
+    let Some(api_key) = api_key else {
+        return Ok(Err(video_proxy_error(
+            401,
+            "authentication_error",
+            "missing api key or session",
+        )?));
+    };
+    match crate::d1_repositories::authenticate_token(db, &api_key).await? {
+        Some(auth) => Ok(Ok(auth.user_id)),
+        None => Ok(Err(video_proxy_error(
+            401,
+            "authentication_error",
+            "invalid api key",
+        )?)),
+    }
+}
+
 /// `GET /v1/video/generations/:task_id` + `GET /suno/fetch/:id` (Go
 /// `RelayTaskFetch` by-id): the owner's task as a `{code:"success", data:
 /// TaskDto}` envelope. Bounded vs Go (documented): the Gemini/Vertex
@@ -1992,8 +2063,8 @@ pub async fn handle_openai_video_content_by_id(
     task_id: Option<&String>,
 ) -> worker::Result<Response> {
     let db = env.d1("DB")?;
-    let auth = match authenticate_fetch(&req, &db).await? {
-        Ok(auth) => auth,
+    let user_id = match authenticate_video_content_user_id(&req, &env, &db).await? {
+        Ok(user_id) => user_id,
         Err(response) => return Ok(response),
     };
     let Some(task_id) = task_id
@@ -2002,7 +2073,7 @@ pub async fn handle_openai_video_content_by_id(
     else {
         return video_proxy_error(400, "invalid_request_error", "task_id is required");
     };
-    let Some(row) = crate::task_repository::find_task_dto(&db, auth.user_id, task_id).await? else {
+    let Some(row) = crate::task_repository::find_task_dto(&db, user_id, task_id).await? else {
         return video_proxy_error(404, "invalid_request_error", "Task not found");
     };
     let url = match video_content_source_url(&row) {
@@ -2193,6 +2264,49 @@ mod tests {
             data: "{}".to_string(),
             private_data: r#"{"result_url":"https://cdn.example/video.mp4"}"#.to_string(),
         }
+    }
+
+    fn admin_user_row(id: i64, status: i32) -> crate::d1_repositories::AdminUserRow {
+        crate::d1_repositories::AdminUserRow {
+            id,
+            username: "alice".to_string(),
+            display_name: "Alice".to_string(),
+            role: 1,
+            status,
+            email: String::new(),
+            github_id: String::new(),
+            discord_id: String::new(),
+            oidc_id: String::new(),
+            wechat_id: String::new(),
+            telegram_id: String::new(),
+            linux_do_id: String::new(),
+            password: String::new(),
+            quota: 100,
+            used_quota: 0,
+            request_count: 0,
+            group: "default".to_string(),
+            aff_count: 0,
+            aff_quota: 0,
+            aff_history_quota: 0,
+            created_at: 100,
+            last_login_at: 100,
+        }
+    }
+
+    #[test]
+    fn active_session_video_user_requires_existing_enabled_user() {
+        let enabled = admin_user_row(42, USER_STATUS_ENABLED);
+        assert_eq!(active_session_video_user_id(Some(&enabled)), Ok(42));
+        assert_eq!(
+            active_session_video_user_id(None),
+            Err(VideoContentSessionAuthError::MissingUser)
+        );
+
+        let disabled = admin_user_row(42, cinatoken_auth::USER_STATUS_DISABLED);
+        assert_eq!(
+            active_session_video_user_id(Some(&disabled)),
+            Err(VideoContentSessionAuthError::DisabledUser)
+        );
     }
 
     #[test]

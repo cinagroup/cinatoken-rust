@@ -4684,3 +4684,48 @@ Remaining migration gaps:
   relay, based on staging evidence.
 - Add route-level AI Gateway policy controls after live tenant metadata and
   dispatch smoke are captured.
+
+### 22.69 2026-07-05 WFP Tenant Response Header Hygiene
+
+This increment hardens the WFP tenant proxy boundary without changing the
+tenant's deliberately thin responsibility model. The main relay still owns
+auth, channel policy, billing, audit, and model selection; the WFP tenant
+runtime streams already-authorized requests to Cloudflare AI Gateway and now
+returns only a narrow public response-header surface.
+
+Implemented:
+
+- The Rust/Wasm tenant runtime now reconstructs upstream responses from the
+  upstream body stream plus an explicit safe response-header allowlist instead
+  of returning AI Gateway/provider response headers wholesale.
+- The generated JS fallback now uses the same response-header hygiene pattern
+  before adding its tenant/runtime marker headers.
+- The allowlist keeps public interoperability headers such as `content-type`,
+  cache validators, `retry-after`, and common provider request IDs.
+- The tenant boundary intentionally does not forward upstream `authorization`,
+  `set-cookie`, `content-length`, transfer/platform headers, `cf-aig-*`
+  observability headers, or upstream `x-cinatoken-*` headers. AI Gateway log IDs
+  and step metadata remain platform-internal observability signals rather than
+  part of the public tenant HTTP contract.
+- Request and response bodies remain streamed; the tenant still does not call
+  `json()`/`bytes()` on large AI requests or responses.
+
+Validation:
+
+- `cargo test -p cinatoken-wfp-tenant` passed (5 tests).
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed (6 generated
+  fallback/control-plane tests).
+- `bun run check` passed, including frontend gates, WFP tenant deploy-plan and
+  generated fallback gates, workspace tests, and Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run live WFP dispatch smoke and capture redacted response-header evidence for
+  generated fallback and Rust/Wasm artifact routes. The smoke should prove that
+  tenant/runtime marker headers are present, safe provider IDs such as
+  `openai-request-id` or `anthropic-request-id` are preserved when upstream
+  sends them, and `cf-aig-*`, `set-cookie`, `authorization`, and
+  `content-length` are absent.
+- Decide whether any AI Gateway correlation ID should be exposed through a
+  separate operator-only diagnostic response or log lookup path instead of the
+  public tenant relay response.

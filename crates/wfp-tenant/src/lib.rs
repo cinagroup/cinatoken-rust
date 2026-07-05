@@ -18,6 +18,20 @@ const STATUS_PATH: &str = "/__cinatoken/tenant/status";
 const SERVICE_NAME: &str = "cinatoken-wfp-tenant-rust";
 const AI_GATEWAY_BASE: &str = "https://api.cloudflare.com/client/v4";
 const UNKNOWN_TENANT: &str = "unknown";
+const SAFE_RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "cache-control",
+    "content-language",
+    "expires",
+    "last-modified",
+    "etag",
+    "vary",
+    "retry-after",
+    "x-request-id",
+    "request-id",
+    "openai-request-id",
+    "anthropic-request-id",
+];
 const SUPPORTED_ROUTES: &[TenantRoute] = &[
     TenantRoute {
         public_path: "/v1/chat/completions",
@@ -144,15 +158,12 @@ async fn forward_ai_gateway(req: Request, env: Env, route: TenantRoute) -> Worke
         init.with_body(Some(body));
     }
     let outbound = Request::new_with_init(target.as_str(), &init)?;
-    let mut response = Fetch::Request(outbound).send().await?;
-    response.headers_mut().set(
-        "x-cinatoken-wfp-tenant",
-        &runtime_value(&env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
-    )?;
-    response
-        .headers_mut()
-        .set("x-cinatoken-wfp-runtime", "rust-wasm")?;
-    Ok(response)
+    let mut upstream = Fetch::Request(outbound).send().await?;
+    let status = upstream.status_code();
+    let headers = tenant_response_headers(upstream.headers(), &env)?;
+    Ok(Response::from_stream(upstream.stream()?)?
+        .with_status(status)
+        .with_headers(headers))
 }
 
 fn target_route(path: &str) -> Option<TenantRoute> {
@@ -211,6 +222,30 @@ fn upstream_headers(
     Ok(headers)
 }
 
+fn tenant_response_headers(upstream: &Headers, env: &Env) -> WorkerResult<Headers> {
+    let mut headers = safe_response_headers(upstream)?;
+    headers.set("x-cinatoken-wfp-tenant", &tenant_id(env))?;
+    headers.set("x-cinatoken-wfp-runtime", "rust-wasm")?;
+    Ok(headers)
+}
+
+fn safe_response_headers(upstream: &Headers) -> WorkerResult<Headers> {
+    let mut headers = Headers::new();
+    for name in SAFE_RESPONSE_HEADERS {
+        if let Some(value) = upstream.get(name)? {
+            headers.set(name, &value)?;
+        }
+    }
+    Ok(headers)
+}
+
+#[cfg(test)]
+fn is_safe_response_header(name: &str) -> bool {
+    SAFE_RESPONSE_HEADERS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
 fn ai_gateway_metadata_value(tenant_id: &str, route: TenantRoute) -> String {
     json!({
         "tenant_id": tenant_id,
@@ -227,6 +262,10 @@ fn copy_header(req: &Request, output: &mut Headers, name: &str) -> WorkerResult<
         output.set(name, &value)?;
     }
     Ok(())
+}
+
+fn tenant_id(env: &Env) -> String {
+    runtime_value(env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| UNKNOWN_TENANT.to_string())
 }
 
 fn runtime_value(env: &Env, name: &str) -> Option<String> {
@@ -336,6 +375,38 @@ mod tests {
                 .unwrap()
                 .values()
                 .all(|value| value.is_string()));
+        }
+    }
+
+    #[test]
+    fn response_header_allowlist_keeps_only_public_headers() {
+        for header in [
+            "content-type",
+            "cache-control",
+            "retry-after",
+            "x-request-id",
+            "openai-request-id",
+            "anthropic-request-id",
+            "Content-Type",
+        ] {
+            assert!(is_safe_response_header(header), "expected {header} to pass");
+        }
+
+        for header in [
+            "authorization",
+            "set-cookie",
+            "cf-aig-log-id",
+            "cf-aig-step",
+            "cf-ray",
+            "server",
+            "content-length",
+            "transfer-encoding",
+            "x-cinatoken-wfp-tenant",
+        ] {
+            assert!(
+                !is_safe_response_header(header),
+                "expected {header} to be blocked"
+            );
         }
     }
 }

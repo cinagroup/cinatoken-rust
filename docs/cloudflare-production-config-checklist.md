@@ -374,9 +374,13 @@ Smoke order:
    `/v1/messages`, `/v1/embeddings`, and `/ai/run`. Confirm the fallback status
    reports `runtime: "js-fallback"`, the artifact status reports
    `runtime: "rust-wasm"`, client `Authorization` is not forwarded, and AI
-   Gateway logs include flat tenant metadata for each route family. Keep legacy
-   `/v1/completions` on the main relay unless Cloudflare documents a matching
-   REST endpoint or a provider-native tenant path is explicitly added.
+   Gateway logs include flat tenant metadata for each route family. Capture
+   redacted response headers and verify tenant/runtime marker headers are
+   present while `cf-aig-*`, `authorization`, `set-cookie`, `content-length`,
+   transfer/platform headers, and upstream `x-cinatoken-*` headers are absent.
+   Keep legacy `/v1/completions` on the main relay unless Cloudflare documents
+   a matching REST endpoint or a provider-native tenant path is explicitly
+   added.
 
 ### Migration prerequisite
 

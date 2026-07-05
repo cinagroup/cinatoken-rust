@@ -1214,12 +1214,27 @@ baseline above.
   authorization. The inbound request body is passed through as a
   `ReadableStream` via `RequestInit`; the Rust runtime does not call `bytes()`
   or `json()` on the AI request body. Local evidence:
-  `bun run check:wfp-tenant` (passed; 4 tenant tests, 6 generated fallback
-  tests, and wasm32 check), `cargo test -p cinatoken-wfp-tenant` (4 passed),
+  `bun run check:wfp-tenant` (passed; 5 tenant tests, 6 generated fallback
+  tests, and wasm32 check), `cargo test -p cinatoken-wfp-tenant` (5 passed),
   `cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown`
   (passed), `cargo test -p cinatoken-worker --lib wfp_tenant` (6 passed),
   and `bun run check` (passed; frontend route audit 214 calls / 307 Worker
   routes / 0 missing calls; existing worker dead-code warnings only).
+
+- **WFP tenant response-header hygiene - locally verified (2026-07-05).** The
+  Rust/Wasm tenant runtime and generated JS fallback now rebuild AI Gateway
+  responses with a safe public header allowlist while preserving streamed
+  response bodies. Public interoperability headers such as `content-type`,
+  cache validators, `retry-after`, and common provider request IDs may pass
+  through; upstream `authorization`, `set-cookie`, `content-length`,
+  transfer/platform headers, `cf-aig-*` observability headers, and upstream
+  `x-cinatoken-*` headers are not exposed to tenant clients. Local evidence:
+  `cargo test -p cinatoken-wfp-tenant` (5 passed) and
+  `cargo test -p cinatoken-worker --lib wfp_tenant` (6 passed), plus
+  `bun run check` (passed; frontend gates, WFP deploy-plan/generated fallback
+  gates, workspace tests, and Worker/WFP wasm32 checks). Live WFP smoke still
+  needs redacted response-header evidence for both the generated fallback and
+  the Rust/Wasm artifact.
 
 - **WFP Rust/Wasm artifact deploy uploader - locally verified (2026-07-05).**
   Added `tools/deploy_wfp_tenant_artifact.mjs` and `bun run deploy:wfp-tenant`

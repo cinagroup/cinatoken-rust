@@ -422,6 +422,20 @@ const SUPPORTED_ROUTES = [
   "/v1/embeddings",
   "/ai/run"
 ];
+const SAFE_RESPONSE_HEADERS = [
+  "content-type",
+  "cache-control",
+  "content-language",
+  "expires",
+  "last-modified",
+  "etag",
+  "vary",
+  "retry-after",
+  "x-request-id",
+  "request-id",
+  "openai-request-id",
+  "anthropic-request-id"
+];
 
 export default {
   async fetch(request, env) {
@@ -458,7 +472,7 @@ export default {
       body: request.body,
       redirect: "error"
     });
-    const responseHeaders = new Headers(upstream.headers);
+    const responseHeaders = safeResponseHeaders(upstream.headers);
     responseHeaders.set("x-cinatoken-wfp-tenant", env.CINATOKEN_TENANT_ID || "unknown");
     responseHeaders.set("x-cinatoken-wfp-runtime", "js-fallback");
     return new Response(upstream.body, {
@@ -490,6 +504,15 @@ function upstreamHeaders(input, env, pathname) {
     route: pathname,
     api: routeFamily(pathname)
   }));
+  return headers;
+}
+
+function safeResponseHeaders(input) {
+  const headers = new Headers();
+  for (const name of SAFE_RESPONSE_HEADERS) {
+    const value = input.get(name);
+    if (value) headers.set(name, value);
+  }
   return headers;
 }
 
@@ -707,6 +730,9 @@ mod tests {
         assert!(script.contains("runtime: \"js-fallback\""));
         assert!(script.contains("body_mode: \"streamed_request_body\""));
         assert!(script.contains("x-cinatoken-wfp-runtime"));
+        assert!(script.contains("safeResponseHeaders(upstream.headers)"));
+        assert!(script.contains("SAFE_RESPONSE_HEADERS"));
+        assert!(!script.contains("new Headers(upstream.headers)"));
         assert!(!script.contains("input.get(\"authorization\")"));
         assert!(!script.contains("await request.json()"));
     }

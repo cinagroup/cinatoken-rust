@@ -74,9 +74,23 @@ async function sourceFiles(directory) {
 
 function expressionText(node, checker, seen = new Set()) {
   if (!node) return null;
+  node = unwrapExpression(node);
   if (ts.isStringLiteralLike(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) {
+    const object = expressionTarget(node.expression, checker, seen);
+    return expressionText(
+      objectProperty(object, node.name.text, checker),
+      checker,
+      seen,
+    );
+  }
+  if (ts.isElementAccessExpression(node)) {
+    const object = expressionTarget(node.expression, checker, seen);
+    const key = expressionText(node.argumentExpression, checker, seen);
+    return expressionText(objectProperty(object, key, checker), checker, seen);
+  }
   if (ts.isIdentifier(node) && checker) {
-    const symbol = checker.getSymbolAtLocation(node);
+    const symbol = resolvedSymbol(checker, node);
     if (symbol && !seen.has(symbol)) {
       const nextSeen = new Set(seen);
       nextSeen.add(symbol);
@@ -123,14 +137,65 @@ function expressionText(node, checker, seen = new Set()) {
   return null;
 }
 
-function objectProperty(object, name) {
-  if (!object || !ts.isObjectLiteralExpression(object)) return null;
+function unwrapExpression(node) {
+  while (
+    node &&
+    (ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isTypeAssertionExpression(node) ||
+      ts.isSatisfiesExpression(node) ||
+      ts.isNonNullExpression(node))
+  ) {
+    node = node.expression;
+  }
+  return node;
+}
+
+function resolvedSymbol(checker, node) {
+  const symbol = checker.getSymbolAtLocation(node);
+  if (!symbol) return null;
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    return checker.getAliasedSymbol(symbol);
+  }
+  return symbol;
+}
+
+function expressionTarget(node, checker, seen) {
+  node = unwrapExpression(node);
+  if (!node || !checker) return node;
+  if (ts.isIdentifier(node)) {
+    const symbol = resolvedSymbol(checker, node);
+    if (!symbol || seen.has(symbol)) return node;
+    const nextSeen = new Set(seen);
+    nextSeen.add(symbol);
+    for (const declaration of symbol.declarations ?? []) {
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+        return unwrapExpression(declaration.initializer);
+      }
+    }
+  }
+  return node;
+}
+
+function objectProperty(object, name, checker) {
+  object = unwrapExpression(object);
+  if (!name || !object || !ts.isObjectLiteralExpression(object)) return null;
   for (const property of object.properties) {
     if (!ts.isPropertyAssignment(property)) continue;
-    const propertyName = property.name.getText().replace(/^['"]|['"]$/g, "");
+    const propertyName = propertyNameText(property.name, checker);
     if (propertyName === name) return property.initializer;
   }
   return null;
+}
+
+function propertyNameText(name, checker) {
+  if (!name) return null;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) {
+    return expressionText(name.expression, checker);
+  }
+  return name.getText().replace(/^['"]|['"]$/g, "");
 }
 
 function methodFromLocalHelper(node, checker) {
@@ -199,6 +264,93 @@ function pathFromCall(node, checker) {
   return expressionText(objectProperty(config, "url"), checker);
 }
 
+function methodFromNewExpression(node, checker) {
+  const name = constructorName(node.expression);
+  if (name === "EventSource") return "GET";
+  if (name !== "SSE") return null;
+  const method = expressionText(
+    objectProperty(node.arguments?.[1], "method"),
+    checker,
+  );
+  return method?.toUpperCase() ?? "GET";
+}
+
+function pathFromNewExpression(node, checker) {
+  return node.arguments?.[0]
+    ? expressionText(node.arguments[0], checker)
+    : null;
+}
+
+function constructorName(expression) {
+  expression = unwrapExpression(expression);
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression)) return expression.name.text;
+  return null;
+}
+
+function pathFromJsxAttribute(node, checker) {
+  if (!["href", "src"].includes(node.name.text)) return null;
+  if (!node.initializer) return null;
+  if (ts.isStringLiteral(node.initializer)) return node.initializer.text;
+  if (ts.isJsxExpression(node.initializer)) {
+    return expressionText(node.initializer.expression, checker);
+  }
+  return null;
+}
+
+function pathFromNavigationCall(node, checker) {
+  if (!ts.isPropertyAccessExpression(node.expression)) return null;
+  const property = node.expression.name.text;
+  if (property === "open" && isWindowExpression(node.expression.expression)) {
+    return node.arguments[0]
+      ? expressionText(node.arguments[0], checker)
+      : null;
+  }
+  if (
+    ["assign", "replace"].includes(property) &&
+    isLocationExpression(node.expression.expression)
+  ) {
+    return node.arguments[0]
+      ? expressionText(node.arguments[0], checker)
+      : null;
+  }
+  return null;
+}
+
+function pathFromNavigationAssignment(node, checker) {
+  if (
+    !ts.isBinaryExpression(node) ||
+    node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !isLocationHref(node.left)
+  ) {
+    return null;
+  }
+  return expressionText(node.right, checker);
+}
+
+function isLocationHref(node) {
+  return (
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "href" &&
+    isLocationExpression(node.expression)
+  );
+}
+
+function isLocationExpression(node) {
+  node = unwrapExpression(node);
+  if (ts.isIdentifier(node)) return node.text === "location";
+  return (
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "location" &&
+    isWindowExpression(node.expression)
+  );
+}
+
+function isWindowExpression(node) {
+  node = unwrapExpression(node);
+  return ts.isIdentifier(node) && node.text === "window";
+}
+
 function normalizePath(value) {
   if (!value) return null;
   let normalized = value.trim();
@@ -215,6 +367,7 @@ function lineOf(sourceFile, node) {
 
 async function frontendCalls() {
   const calls = new Map();
+  const detectionKinds = new Map();
   const files = await sourceFiles(frontendRoot);
   const program = ts.createProgram(files, {
     allowJs: true,
@@ -226,6 +379,16 @@ async function frontendCalls() {
     target: ts.ScriptTarget.Latest,
   });
   const checker = program.getTypeChecker();
+  const addRoute = (sourceFile, file, node, method, route, kind) => {
+    if (!method || !route) return;
+    const key = `${method} ${route}`;
+    const location = `${path
+      .relative(repoRoot, file)
+      .replaceAll("\\", "/")}:${lineOf(sourceFile, node)}`;
+    if (!calls.has(key)) calls.set(key, []);
+    calls.get(key).push(location);
+    detectionKinds.set(kind, (detectionKinds.get(kind) ?? 0) + 1);
+  };
   for (const file of files) {
     const sourceFile = program.getSourceFile(file);
     if (!sourceFile) continue;
@@ -234,21 +397,54 @@ async function frontendCalls() {
         const route = normalizePath(pathFromCall(node, checker));
         if (route) {
           const method = methodFromCall(node, checker);
-          if (!method) {
-            ts.forEachChild(node, visit);
-            return;
-          }
-          const key = `${method} ${route}`;
-          const location = `${path.relative(repoRoot, file).replaceAll("\\", "/")}:${lineOf(sourceFile, node)}`;
-          if (!calls.has(key)) calls.set(key, []);
-          calls.get(key).push(location);
+          if (method) addRoute(sourceFile, file, node, method, route, "call");
+        }
+
+        const navigationRoute = normalizePath(
+          pathFromNavigationCall(node, checker),
+        );
+        if (navigationRoute) {
+          addRoute(
+            sourceFile,
+            file,
+            node,
+            "GET",
+            navigationRoute,
+            "navigation",
+          );
+        }
+      }
+      if (ts.isNewExpression(node)) {
+        const route = normalizePath(pathFromNewExpression(node, checker));
+        if (route) {
+          const method = methodFromNewExpression(node, checker);
+          if (method) addRoute(sourceFile, file, node, method, route, "stream");
+        }
+      }
+      if (ts.isBinaryExpression(node)) {
+        const route = normalizePath(pathFromNavigationAssignment(node, checker));
+        if (route) {
+          addRoute(sourceFile, file, node, "GET", route, "navigation");
+        }
+      }
+      if (ts.isJsxAttribute(node)) {
+        const route = normalizePath(pathFromJsxAttribute(node, checker));
+        if (route) {
+          addRoute(sourceFile, file, node, "GET", route, "jsx-attribute");
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(sourceFile);
   }
-  return calls;
+  return {
+    calls,
+    detectionKinds: Object.fromEntries(
+      [...detectionKinds.entries()].sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
+  };
 }
 
 function workerRoutes(source) {
@@ -372,7 +568,7 @@ function sha256(values) {
   return createHash("sha256").update(values.join("\n")).digest("hex");
 }
 
-const calls = await frontendCalls();
+const { calls, detectionKinds } = await frontendCalls();
 const routerSource = await readFile(workerRouterPath, "utf8");
 const routes = workerRoutes(routerSource);
 const missing = [...calls.entries()]
@@ -398,6 +594,7 @@ console.log(
   JSON.stringify(
     {
       frontend_calls: calls.size,
+      frontend_detection_kinds: detectionKinds,
       worker_routes: routes.length,
       missing_calls: missing.length,
       missing_sha256: missingDigest,
@@ -423,6 +620,25 @@ if (
 if (process.argv.includes("--check-baseline")) {
   const baseline = JSON.parse(await readFile(debtBaselinePath, "utf8"));
   const errors = [];
+  if (
+    Object.hasOwn(baseline, "frontend_calls") &&
+    baseline.frontend_calls !== calls.size
+  ) {
+    errors.push(
+      `frontend_calls changed: expected ${baseline.frontend_calls}, received ${calls.size}`,
+    );
+  }
+  if (
+    Object.hasOwn(baseline, "frontend_detection_kinds") &&
+    JSON.stringify(baseline.frontend_detection_kinds) !==
+      JSON.stringify(detectionKinds)
+  ) {
+    errors.push(
+      `frontend detection kinds changed: expected ${JSON.stringify(
+        baseline.frontend_detection_kinds,
+      )}, received ${JSON.stringify(detectionKinds)}`,
+    );
+  }
   if (baseline.missing_calls !== missing.length) {
     errors.push(
       `missing_calls changed: expected ${baseline.missing_calls}, received ${missing.length}`,

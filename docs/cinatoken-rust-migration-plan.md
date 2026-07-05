@@ -3214,3 +3214,42 @@ cannot be estimated locally; they continue to forward upstream and simply do not
 add extra preflight tokens. Production ownership still requires real-file
 fixture replay across the supported upload formats, live transcription/
 translation smoke, and billing shadow/reconciliation evidence.
+
+### 22.38 2026-07-05 Broadened Frontend Route Audit Delta
+
+This increment supersedes the audit caveat left in 22.28/22.29 for local
+frontend route-debt evidence. The previous audit proved explicit API call
+expressions, but it missed constant-driven endpoint objects, SSE constructors,
+navigation assignments/calls, and API-prefixed JSX `href`/`src` attributes.
+
+Implemented in Rust/tooling:
+
+- `tools/audit_frontend_routes.mjs` now resolves imported constant endpoint
+  objects such as the playground `API_ENDPOINTS`, including `as const` object
+  literals and property access.
+- The audit now recognizes `new SSE(path, { method })`, `window.open(...)`,
+  `location.assign/replace(...)`, `window.location.href = ...`, and
+  API-prefixed JSX `href`/`src` attributes as Worker-facing frontend routes.
+- `tools/frontend_route_debt_baseline.json` now pins the audit surface itself:
+  214 unique Worker-facing frontend routes with detection kinds
+  `call=243`, `jsx-attribute=1`, `navigation=1`, and `stream=1`, in addition
+  to the missing-route digest.
+- The broadened audit surfaced the task-log video preview link
+  `GET /v1/videos/:task_id/content`, which is present in Go
+  `router/video-router.go` under `TokenOrUserAuth`. Rust now owns that path as
+  a structured fail-closed 501 route rather than leaving it as a 404.
+
+Updated local evidence:
+
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:
+  214 frontend routes, 295 Worker routes, 0 missing calls;
+- `cargo fmt --all --check`: passed;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+
+Remaining boundary: this is stronger local route-ownership evidence, not a
+browser-production proof. Dynamic runtime OAuth/provider redirects,
+feature-flag-hidden UI branches, credentialed redirects, and routes only
+visible with production data still require deployed browser smoke. The
+`/v1/videos/:task_id/content` route is deliberately fail-closed until the G7
+Queue/R2/video proxy design, provider-specific replay, and task billing
+settlement evidence exist.

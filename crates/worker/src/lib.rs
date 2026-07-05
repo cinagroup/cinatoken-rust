@@ -1058,6 +1058,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let task_id = ctx.param("task_id").cloned();
             task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await
         })
+        // Source Go exposes this as a TokenOrUserAuth video proxy. Rust keeps
+        // the frontend content link Worker-owned but fail-closed until the
+        // G7 Queue/R2/video-proxy path has provider-specific replay evidence.
+        .get("/v1/videos/:task_id/content", |_, _| {
+            relay::relay_not_implemented()
+        })
         .get_async("/suno/fetch/:id", |req, ctx| async move {
             let task_id = ctx.param("id").cloned();
             task_orchestration::handle_task_fetch_by_id(req, ctx.env, task_id.as_ref()).await

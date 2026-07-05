@@ -239,6 +239,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   fallback (`is_static_asset_path` + `env.assets("ASSETS")`) + `build:web` /
   `build:all` scripts. Same-origin deployment keeps the React dashboard's
   cookie auth working without frontend changes.
+- Frontend route audit broadening: `tools/audit_frontend_routes.mjs` now
+  resolves imported constant endpoint objects, SSE constructors, navigation
+  calls/assignments, and API-prefixed JSX `href`/`src` attributes. The
+  reviewed baseline covers 214 Worker-facing frontend routes with 0 missing
+  calls, and the frontend task-log video content link is Worker-owned through a
+  structured fail-closed `/v1/videos/:task_id/content` route boundary.
 - Admin CRUD P0 surface (`crates/worker/src/admin_crud.rs`): admin + self log
   list/stat/delete, root-only option list/update with sensitive-key
   filtering, and user-scoped token CRUD with key masking, ownership

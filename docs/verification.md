@@ -1,9 +1,25 @@
 # Verification
 
-Last checked: 2026-07-04
+Last checked: 2026-07-05
 
 ## Passed
 
+- `bun tools/audit_frontend_routes.mjs --summary --fail-on-unclassified --check-baseline`:
+  214 frontend Worker-facing routes, detection kinds
+  `call=243` / `jsx-attribute=1` / `navigation=1` / `stream=1`,
+  295 Worker routes, 0 missing calls, categories `{}`, SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- `bun run check`: passed after the broadened frontend route-audit slice,
+  covering frontend build, route-debt baseline, rustfmt check, Rust workspace
+  tests excluding the Worker, and Worker wasm check.
+- `cargo test -p cinatoken-worker --lib`: 353 passed after adding the
+  fail-closed video-content route boundary.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the fail-closed `/v1/videos/:task_id/content` Worker route;
+  the only warnings were the pre-existing `dead_code` warnings in
+  `d1_repositories.rs`.
+- `cargo fmt --all --check`: passed after broadening the frontend route audit
+  and adding the video-content route boundary.
 - `cargo test -p cinatoken-worker --lib`: 350 passed after CSPRNG hardening for
   relay weighted channel selection; generated user access tokens, affiliation
   codes, and subscription balance-pay order suffixes remain covered.
@@ -24,7 +40,7 @@ Last checked: 2026-07-04
   SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 
 Older entries below are historical evidence; their route-debt counts may be
-superseded by the current 0-call / 0 capability-hidden / 0 payment-deferred
+superseded by the current 0 missing-call / 0 unclassified / 0 deferred-debt
 baseline above.
 
 - `cargo test -p cinatoken-worker --lib`: 303 passed after adding Creem wallet

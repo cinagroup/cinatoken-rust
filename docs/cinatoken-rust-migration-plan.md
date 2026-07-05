@@ -3993,3 +3993,48 @@ Remaining boundary: strict lint is still not green. The largest remaining
 family is still `react-hooks/set-state-in-effect`; continue paying it down in
 small operator-owned UI batches and lower the baseline only after each
 verified batch.
+
+### 22.56 2026-07-05 Frontend Wallet And Ratio Dialog Lint Paydown
+
+This increment keeps reducing the G5 frontend strict-lint gate in two
+operator-facing surfaces: wallet recharge and the system-settings group-ratio
+visual editor.
+
+Implemented in the imported React frontend:
+
+- Updated `Wallet` to initialize the billing-history dialog state from
+  `initialShowHistory` with a lazy state initializer instead of opening the
+  dialog through a render-following effect.
+- Deferred wallet mount-time user refresh and first top-up amount calculation
+  through cleanup-guarded microtasks. This preserves the existing fetch and
+  default payment amount behavior while removing synchronous state writes from
+  effect bodies.
+- Split `SimpleGroupDialog` and `GroupOverrideDialog` in the group-ratio visual
+  editor into keyed outer wrappers plus stateful inner dialog bodies. Opening a
+  new/edit dialog now initializes local form inputs once through lazy state
+  initializers instead of effect-driven resets.
+- Left the group-pricing table's external JSON synchronization in place for
+  now because it preserves row identity and input focus when local edits echo
+  back through parent settings state. That one remaining lint item should be
+  fixed only with a design that keeps the same editing behavior.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 77 errors / 2 warnings
+  / 63 files to 72 errors / 2 warnings / 62 files. The rule-family delta is
+  `react-hooks/set-state-in-effect` 57 -> 52.
+
+Updated local evidence:
+
+- File-scoped ESLint for `wallet/index.tsx` and
+  `group-ratio-visual-editor.tsx`: wallet passed with no findings; the visual
+  editor is reduced from three findings to one retained table-sync finding.
+- `bun run typecheck` in `apps/web/source/default`: passed.
+- `bun run audit:web:lint-debt`: passed with 72 errors, 2 warnings, 62 files
+  with findings, and 0 regressions.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit (460 files / 37,280,681 bytes, 0 findings), bundle budget audit,
+  lint-debt baseline, route-debt audit, `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, and Worker wasm check. The Worker
+  check still reports the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining boundary: strict lint is still not green. Continue reducing
+`react-hooks/set-state-in-effect` first, then return to `react-hooks/refs` and
+the remaining immutability/purity findings before G5 production cutover.

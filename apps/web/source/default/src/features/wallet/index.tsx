@@ -56,7 +56,7 @@ interface WalletProps {
   initialShowHistory?: boolean
 }
 
-export function Wallet(props: WalletProps) {
+export function Wallet({ initialShowHistory }: WalletProps) {
   const { t } = useTranslation()
   const [user, setUser] = useState<UserWalletData | null>(null)
   const [userLoading, setUserLoading] = useState(true)
@@ -67,7 +67,9 @@ export function Wallet(props: WalletProps) {
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
-  const [billingDialogOpen, setBillingDialogOpen] = useState(false)
+  const [billingDialogOpen, setBillingDialogOpen] = useState(
+    () => initialShowHistory === true
+  )
   const [redemptionCode, setRedemptionCode] = useState('')
   const [creemDialogOpen, setCreemDialogOpen] = useState(false)
   const [selectedCreemProduct, setSelectedCreemProduct] =
@@ -120,25 +122,39 @@ export function Wallet(props: WalletProps) {
   }, [])
 
   useEffect(() => {
-    fetchUser()
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void fetchUser()
+      }
+    })
+    return () => {
+      cancelled = true
+    }
   }, [fetchUser])
 
   useEffect(() => {
-    if (props.initialShowHistory) {
-      setBillingDialogOpen(true)
+    if (initialShowHistory) {
       window.history.replaceState({}, '', window.location.pathname)
     }
-  }, [props.initialShowHistory])
+  }, [initialShowHistory])
 
   // Initialize topup amount when topup info is loaded
   useEffect(() => {
     if (topupInfo && topupAmount === 0) {
       const minTopup = getMinTopupAmount(topupInfo)
-      setTopupAmount(minTopup)
-
-      // Calculate initial payment amount with default payment type
       const defaultPaymentType = getDefaultPaymentType(topupInfo)
-      calculatePaymentAmount(minTopup, defaultPaymentType)
+      let cancelled = false
+
+      queueMicrotask(() => {
+        if (cancelled) return
+        setTopupAmount(minTopup)
+        calculatePaymentAmount(minTopup, defaultPaymentType)
+      })
+
+      return () => {
+        cancelled = true
+      }
     }
   }, [topupInfo, topupAmount, calculatePaymentAmount])
 

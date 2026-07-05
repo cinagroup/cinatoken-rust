@@ -974,28 +974,38 @@ function SimpleGroupDialog({
   editData,
   type,
 }: SimpleGroupDialogProps) {
+  const dialogKey = open
+    ? `${type ?? 'none'}:${editData?.name ?? 'new'}:${editData?.value ?? ''}`
+    : 'closed'
+
+  return (
+    <SimpleGroupDialogContent
+      key={dialogKey}
+      open={open}
+      onOpenChange={onOpenChange}
+      onSave={onSave}
+      editData={editData}
+      type={type}
+    />
+  )
+}
+
+function SimpleGroupDialogContent({
+  open,
+  onOpenChange,
+  onSave,
+  editData,
+  type,
+}: SimpleGroupDialogProps) {
   const { t } = useTranslation()
-  const [name, setName] = useState('')
-  const [value, setValue] = useState('')
+  const [name, setName] = useState(() => editData?.name ?? '')
+  const [value, setValue] = useState(() => editData?.value ?? '')
 
   const title = type === 'groupRatio' ? t('group ratio') : t('top-up ratio')
-
-  useEffect(() => {
-    if (!open) {
-      setName('')
-      setValue('')
-      return
-    }
-
-    setName(editData?.name ?? '')
-    setValue(editData?.value ?? '')
-  }, [editData, open])
 
   const handleSave = () => {
     if (!name.trim() || !value.trim()) return
     onSave(name.trim(), value.trim())
-    setName('')
-    setValue('')
   }
 
   return (
@@ -1065,20 +1075,36 @@ function GroupOverrideDialog({
   editData,
   userGroup,
 }: GroupOverrideDialogProps) {
+  const dialogKey = open
+    ? `${userGroup ?? 'none'}:${editData?.targetGroup ?? 'new'}:${editData?.ratio ?? ''}`
+    : 'closed'
+
+  return (
+    <GroupOverrideDialogContent
+      key={dialogKey}
+      open={open}
+      onOpenChange={onOpenChange}
+      onSave={onSave}
+      editData={editData}
+      userGroup={userGroup}
+    />
+  )
+}
+
+function GroupOverrideDialogContent({
+  open,
+  onOpenChange,
+  onSave,
+  editData,
+  userGroup,
+}: GroupOverrideDialogProps) {
   const { t } = useTranslation()
-  const [targetGroup, setTargetGroup] = useState('')
-  const [ratio, setRatio] = useState('')
-
-  useEffect(() => {
-    if (!open) {
-      setTargetGroup('')
-      setRatio('')
-      return
-    }
-
-    setTargetGroup(editData?.targetGroup ?? '')
-    setRatio(editData ? String(editData.ratio) : '')
-  }, [editData, open])
+  const [targetGroup, setTargetGroup] = useState(
+    () => editData?.targetGroup ?? ''
+  )
+  const [ratio, setRatio] = useState(() =>
+    editData ? String(editData.ratio) : ''
+  )
 
   const handleSave = () => {
     if (!targetGroup.trim() || !ratio.trim()) return
@@ -1086,8 +1112,6 @@ function GroupOverrideDialog({
     if (isNaN(parsedRatio)) return
 
     onSave(targetGroup.trim(), parsedRatio, editData?.targetGroup)
-    setTargetGroup('')
-    setRatio('')
   }
 
   return (

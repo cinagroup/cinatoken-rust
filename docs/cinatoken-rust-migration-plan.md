@@ -4960,3 +4960,49 @@ Remaining migration gaps:
 - Capture optional POST route smoke for the default and route-specific AI
   Gateway IDs, then compare the Worker traces and AI Gateway logs before any
   production WFP cutover.
+
+### 22.75 2026-07-05 WFP Internal Dispatch Admin Boundary
+
+This increment closes the main production-safety gap introduced by the WFP
+internal dispatch smoke path. The route remains useful for staging evidence,
+but it now behaves like a control-plane path instead of a public relay bypass.
+
+Implemented:
+
+- Added an admin-auth gate inside `platform_gateway::dispatch_request` before
+  resolving or invoking the `DISPATCHER` binding for
+  `/api/platform/dispatch/:worker/...` internal-path traffic.
+- Kept preview-host dispatch outside that admin gate so tenant preview domains
+  can remain a public WFP surface once their own tenant runtime policy is
+  ready.
+- Extended `tools/smoke_wfp_dispatch.mjs` with `--cookie` and
+  `WFP_SMOKE_COOKIE`. The tool sends the value as the admin `Cookie` header
+  for live internal dispatch smoke, but reports only
+  `adminCookieConfigured` in dry-run/live output.
+- Updated staging and production readiness docs so WFP internal dispatch smoke
+  requires authenticated admin evidence plus an unauthenticated 401/403
+  negative check. Raw session cookies must not be pasted into smoke reports.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed, including
+  the new `internal_dispatch_requires_admin_auth_but_preview_host_does_not`
+  unit test.
+- `bun tools/smoke_wfp_dispatch.mjs --help` passed and documents
+  `--cookie`.
+- `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  https://staging.example.test --worker tenant-smoke --route /v1/responses
+  --cookie session=redacted` passed and printed
+  `adminCookieConfigured: true` without printing the cookie value.
+- `bun run check` passed, including frontend build/redaction/budget/route
+  gates, WFP dispatch and realtime smoke plans, workspace tests, and
+  Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run authenticated WFP internal dispatch status/route smoke against staging
+  after the real `DISPATCHER` binding and tenant script are installed.
+- Capture the unauthenticated 401/403 negative result for the same internal
+  dispatch URL before any production WFP routing decision.
+- Decide whether production ever needs `WFP_INTERNAL_DISPATCH_ENABLED`; the
+  safer default remains off outside staging smoke windows.

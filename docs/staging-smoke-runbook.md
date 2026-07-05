@@ -158,24 +158,27 @@ Pass criteria:
 Run this only after the staging dispatch namespace exists, the tenant Worker is
 uploaded, and `WFP_DISPATCH_ENABLED=true` plus
 `WFP_INTERNAL_DISPATCH_ENABLED=true` are enabled in staging. The default smoke
-checks the internal dispatch path and tenant status route without sending an AI
-request:
+checks the admin-authenticated internal dispatch path and tenant status route
+without sending an AI request:
 
 ```powershell
 $env:WFP_SMOKE_URL = $env:STAGING_BASE_URL
-bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --json
+$env:WFP_SMOKE_COOKIE = "session=<redacted admin session cookie>"
+bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --cookie $env:WFP_SMOKE_COOKIE --json
 ```
 
 If the tenant has staging `CF_ACCOUNT_ID`, `CF_API_TOKEN`, and AI Gateway ID
 bindings, run one explicit AI route smoke with a low-risk payload:
 
 ```powershell
-bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --route /v1/responses --body '{"model":"gpt-4o-mini","input":"wfp dispatch smoke","max_output_tokens":1}' --json
+bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --route /v1/responses --body '{"model":"gpt-4o-mini","input":"wfp dispatch smoke","max_output_tokens":1}' --cookie $env:WFP_SMOKE_COOKIE --json
 ```
 
 Record:
 
 - Command output.
+- Admin-authenticated smoke evidence only; do not paste the raw
+  `WFP_SMOKE_COOKIE` value into the report.
 - Tenant status body, including `runtime`, `forwarding`, `body_mode`, routes,
   and per-route gateway configuration.
 - `x-cinatoken-wfp-route`, `x-cinatoken-wfp-worker`,
@@ -186,7 +189,8 @@ Record:
 
 Pass criteria:
 
-- Status smoke reaches the tenant status route through
+- The same internal dispatch URL without an admin session fails with 401/403,
+  while authenticated admin smoke reaches the tenant status route through
   `/api/platform/dispatch/:worker/...`.
 - `runtime` is `rust-wasm` for the Rust/Wasm artifact path or
   `js-fallback` for the generated fallback path under test.

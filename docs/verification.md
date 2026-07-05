@@ -1267,6 +1267,24 @@ baseline above.
   byte count). Live staging still needs the same tool run against a real
   `DISPATCHER` binding and uploaded tenant script.
 
+- **WFP internal dispatch admin boundary - locally verified (2026-07-05).**
+  The Rust dispatch Worker now requires existing admin session auth before
+  forwarding `/api/platform/dispatch/:worker/...` internal-path traffic to the
+  `DISPATCHER` binding, while preview-host dispatch remains public preview
+  traffic. `tools/smoke_wfp_dispatch.mjs` now accepts `--cookie` or
+  `WFP_SMOKE_COOKIE`, sends it as the admin `Cookie` header, and reports only
+  `adminCookieConfigured` in dry-run/live output. Local evidence:
+  `cargo test -p cinatoken-worker --lib platform_gateway` (passed; 5
+  platform-gateway tests), `bun tools/smoke_wfp_dispatch.mjs --help` (passed),
+  and `bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url
+  https://staging.example.test --worker tenant-smoke --route /v1/responses
+  --cookie session=redacted` (passed; redacted cookie value was not printed).
+  `bun run check` also passed, including frontend gates, WFP dispatch/realtime
+  smoke plans, workspace tests, and Worker/WFP wasm32 checks.
+  Live staging still needs authenticated status/route smoke plus an
+  unauthenticated 401/403 negative check before `WFP_INTERNAL_DISPATCH_ENABLED`
+  is considered production-ready.
+
 - **WFP Rust/Wasm artifact deploy uploader - locally verified (2026-07-05).**
   Added `tools/deploy_wfp_tenant_artifact.mjs` and `bun run deploy:wfp-tenant`
   for local upload of `crates/wfp-tenant/build/worker` to the Cloudflare WFP

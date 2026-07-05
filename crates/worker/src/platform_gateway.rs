@@ -126,6 +126,12 @@ pub async fn dispatch_request(
     env: Env,
     target: DispatchTarget,
 ) -> WorkerResult<Response> {
+    if internal_dispatch_requires_admin_auth(&target) {
+        if let Err(response) = require_admin_auth(&req, &env).await? {
+            return Ok(response);
+        }
+    }
+
     let dispatcher = match env.dynamic_dispatcher(WFP_DISPATCH_BINDING) {
         Ok(dispatcher) => dispatcher,
         Err(err) => {
@@ -248,6 +254,10 @@ fn request_for_dispatch_target(req: Request, target: &DispatchTarget) -> WorkerR
     }
 }
 
+fn internal_dispatch_requires_admin_auth(target: &DispatchTarget) -> bool {
+    target.route_kind == DispatchRouteKind::InternalPath
+}
+
 fn rewrite_request_path(req: Request, tenant_path: &str) -> WorkerResult<Request> {
     let mut url = req.url()?;
     url.set_path(tenant_path);
@@ -362,6 +372,25 @@ mod tests {
 
         let route = internal_dispatch_route("/api/platform/dispatch/tenant-a").unwrap();
         assert_eq!(route.tenant_path, "/");
+    }
+
+    #[test]
+    fn internal_dispatch_requires_admin_auth_but_preview_host_does_not() {
+        let internal = DispatchTarget {
+            route_kind: DispatchRouteKind::InternalPath,
+            public_name: "tenant-a".to_string(),
+            worker_name: "tenant-a".to_string(),
+            tenant_path: Some("/__cinatoken/tenant/status".to_string()),
+        };
+        assert!(internal_dispatch_requires_admin_auth(&internal));
+
+        let preview = DispatchTarget {
+            route_kind: DispatchRouteKind::PreviewHost,
+            public_name: "tenant-a".to_string(),
+            worker_name: "tenant-a".to_string(),
+            tenant_path: None,
+        };
+        assert!(!internal_dispatch_requires_admin_auth(&preview));
     }
 
     #[test]

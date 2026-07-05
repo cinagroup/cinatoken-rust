@@ -27,9 +27,7 @@ async function smoke(options) {
   const plan = buildPlan(options);
   const statusResponse = await fetchWithTimeout(plan.statusUrl, {
     method: "GET",
-    headers: {
-      accept: "application/json",
-    },
+    headers: smokeHeaders(options),
     redirect: "error",
   }, options.timeoutMs);
 
@@ -46,11 +44,10 @@ async function smoke(options) {
   if (plan.routeUrl) {
     const routeResponse = await fetchWithTimeout(plan.routeUrl, {
       method: "POST",
-      headers: {
-        accept: "application/json",
+      headers: smokeHeaders(options, {
         "content-type": "application/json",
         "x-cinatoken-smoke": "wfp-dispatch",
-      },
+      }),
       body: options.bodyText,
       redirect: "error",
     }, options.timeoutMs);
@@ -78,6 +75,7 @@ async function smoke(options) {
     dryRun: false,
     worker: options.worker,
     statusUrl: redactUrl(plan.statusUrl),
+    adminCookieConfigured: Boolean(options.adminCookie),
     status: summarizeTenantStatus(statusBody),
     dispatchHeaders: dispatchHeaders(statusResponse.headers),
     route: routeResult,
@@ -97,10 +95,12 @@ function buildPlan(options) {
     route: options.route,
     method: options.route ? "GET status, then POST route" : "GET status only",
     bodyBytes: options.route ? new TextEncoder().encode(options.bodyText).byteLength : 0,
+    adminCookieConfigured: Boolean(options.adminCookie),
     allowNon2xx: options.allowNon2xx,
     timeoutMs: options.timeoutMs,
     notes: [
       "worker is the public tenant name in /api/platform/dispatch/:worker; WFP_DISPATCH_WORKER_PREFIX is applied by the main Worker.",
+      "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
       "status smoke validates the dispatch binding, internal path rewrite, tenant status contract, and x-cinatoken WFP headers.",
       "route smoke is opt-in and may call the tenant AI Gateway route; use staging credentials and a low-risk payload.",
     ],
@@ -143,6 +143,7 @@ async function normalizeOptions(args) {
     worker: validateWorkerName(value("worker", "WFP_SMOKE_WORKER") || defaultWorker),
     route: normalizedRoute,
     bodyText,
+    adminCookie: optionalHeaderValue(value("cookie", "WFP_SMOKE_COOKIE"), "cookie"),
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaultTimeoutMs,
     allowNon2xx: args.flags.has("allow-non-2xx"),
     dryRun: args.flags.has("dry-run"),
@@ -179,6 +180,7 @@ function usage(exitCode, error) {
       "  --route <path>        Optional POST route: /v1/chat/completions, /v1/responses, /v1/messages, /v1/embeddings, or /ai/run",
       "  --body <json>         Optional JSON body for --route; otherwise a low-token default body is used",
       "  --body-file <path>    Optional JSON body file for --route",
+      "  --cookie <header>     or WFP_SMOKE_COOKIE, admin session Cookie header required for live internal dispatch smoke",
       "  --timeout-ms <ms>     or WFP_SMOKE_TIMEOUT_MS, default 10000",
       "  --allow-non-2xx       Record POST route responses even if the AI Gateway/provider rejects the payload",
       "  --dry-run             Resolve URLs without network",
@@ -186,11 +188,22 @@ function usage(exitCode, error) {
       "",
       "Examples:",
       "  bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url http://127.0.0.1:8787 --worker tenant-smoke",
-      "  bun tools/smoke_wfp_dispatch.mjs --url https://staging.example.com --worker tenant-smoke --json",
-      "  bun tools/smoke_wfp_dispatch.mjs --url https://staging.example.com --worker tenant-smoke --route /v1/responses --body '{\"model\":\"gpt-4o-mini\",\"input\":\"wfp smoke\"}' --json",
+      "  bun tools/smoke_wfp_dispatch.mjs --url https://staging.example.com --worker tenant-smoke --cookie \"$WFP_SMOKE_COOKIE\" --json",
+      "  bun tools/smoke_wfp_dispatch.mjs --url https://staging.example.com --worker tenant-smoke --route /v1/responses --body '{\"model\":\"gpt-4o-mini\",\"input\":\"wfp smoke\"}' --cookie \"$WFP_SMOKE_COOKIE\" --json",
     ].join("\n"),
   );
   process.exit(exitCode);
+}
+
+function smokeHeaders(options, extras = {}) {
+  const headers = {
+    accept: "application/json",
+    ...extras,
+  };
+  if (options.adminCookie) {
+    headers.cookie = options.adminCookie;
+  }
+  return headers;
 }
 
 function normalizeBaseUrl(value) {
@@ -361,6 +374,15 @@ function validatePlainValue(value, name) {
   return trimmed;
 }
 
+function optionalHeaderValue(value, name) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new Error(`${name} must not contain control characters`);
+  }
+  return trimmed;
+}
+
 function required(value, name) {
   if (!value?.trim()) {
     throw new Error(`${name} is required`);
@@ -391,6 +413,7 @@ function printResult(result, options) {
       ...(result.routeUrl ? [`route_url: ${result.routeUrl}`] : []),
       ...(result.route ? [`route: ${typeof result.route === "string" ? result.route : result.route.route}`] : []),
       ...(result.bodyBytes ? [`body_bytes: ${result.bodyBytes}`] : []),
+      ...(Object.hasOwn(result, "adminCookieConfigured") ? [`admin_cookie_configured: ${result.adminCookieConfigured}`] : []),
       ...(result.status ? [`tenant_status: ${JSON.stringify(result.status)}`] : []),
       ...(result.dispatchHeaders ? [`dispatch_headers: ${JSON.stringify(result.dispatchHeaders)}`] : []),
       ...(result.route && typeof result.route === "object"

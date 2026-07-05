@@ -1186,13 +1186,16 @@ baseline above.
   Worker now exposes root-only
   `POST /api/platform/wfp/tenant-script/plan` and
   `POST /api/platform/wfp/tenant-script/deploy` endpoints. The generated tenant
-  Worker forwards supported AI routes to Cloudflare AI Gateway REST with a
-  Worker-owned bearer token, optional `cf-aig-gateway-id`, and streamed request
-  bodies; it does not forward the client's `Authorization` header. The deploy
-  call uploads multipart `metadata` plus `tenant.mjs` to the Workers for
+  Worker forwards supported AI routes, including `/v1/messages`, to
+  Cloudflare AI Gateway REST with a Worker-owned bearer token, optional
+  `cf-aig-gateway-id`, Worker-owned `cf-aig-metadata`, and streamed request
+  bodies; it does not forward the client's `Authorization` header. The fallback
+  status reports `runtime: "js-fallback"` so smoke tests can distinguish it
+  from the Rust/Wasm artifact path. The deploy call uploads multipart
+  `metadata` plus `tenant.mjs` to the Workers for
   Platforms dispatch namespace API and caps Cloudflare API response reads at
   32 KiB. Local evidence:
-  `cargo test -p cinatoken-worker --lib wfp_tenant` (5 passed),
+  `cargo test -p cinatoken-worker --lib wfp_tenant` (6 passed),
   `cargo test -p cinatoken-worker --lib` (388 passed),
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` (passed),
   `git diff --check` (passed), and `bun run check` (passed; route audit
@@ -1201,15 +1204,20 @@ baseline above.
 - **WFP Rust/Wasm tenant runtime - locally verified (2026-07-05).** Added the
   standalone `cinatoken-wfp-tenant` Worker crate under `crates/wfp-tenant`.
   It exposes `GET /__cinatoken/tenant/status` with `runtime: "rust-wasm"` and
-  forwards `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and
-  `/ai/run` to Cloudflare AI Gateway REST using tenant-owned
-  `CF_ACCOUNT_ID`/`CF_API_TOKEN`/`AI_GATEWAY_ID` bindings. The inbound request
-  body is passed through as a `ReadableStream` via `RequestInit`; the Rust
-  runtime does not call `bytes()` or `json()` on the AI request body. Local
-  evidence: `bun run check:wfp-tenant` (passed; 2 tenant tests and wasm32
-  check), `cargo test -p cinatoken-wfp-tenant` (2 passed),
+  forwards `/v1/chat/completions`, `/v1/responses`, `/v1/messages`,
+  `/v1/embeddings`, and `/ai/run` to Cloudflare AI Gateway REST using
+  tenant-owned `CF_ACCOUNT_ID`/`CF_API_TOKEN`/`AI_GATEWAY_ID` bindings. It
+  leaves legacy `/v1/completions` on the main relay because Cloudflare's
+  current REST API docs do not list `/ai/v1/completions`. It attaches flat
+  `cf-aig-metadata` (`tenant_id`, `runtime`,
+  `source`, `route`, `api`) for AI Gateway analytics without forwarding client
+  authorization. The inbound request body is passed through as a
+  `ReadableStream` via `RequestInit`; the Rust runtime does not call `bytes()`
+  or `json()` on the AI request body. Local evidence:
+  `bun run check:wfp-tenant` (passed; 4 tenant tests, 6 generated fallback
+  tests, and wasm32 check), `cargo test -p cinatoken-wfp-tenant` (4 passed),
   `cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown`
-  (passed), `cargo test -p cinatoken-worker --lib wfp_tenant` (5 passed),
+  (passed), `cargo test -p cinatoken-worker --lib wfp_tenant` (6 passed),
   and `bun run check` (passed; frontend route audit 214 calls / 307 Worker
   routes / 0 missing calls; existing worker dead-code warnings only).
 

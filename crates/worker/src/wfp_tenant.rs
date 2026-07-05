@@ -408,11 +408,20 @@ fn upload_metadata(
 
 fn tenant_worker_script() -> String {
     r#"const STATUS_PATH = "/__cinatoken/tenant/status";
-const OPENAI_COMPAT_PATHS = new Set([
+const REST_API_PATHS = new Set([
   "/v1/chat/completions",
   "/v1/responses",
+  "/v1/messages",
   "/v1/embeddings"
 ]);
+const SUPPORTED_ROUTES = [
+  STATUS_PATH,
+  "/v1/chat/completions",
+  "/v1/responses",
+  "/v1/messages",
+  "/v1/embeddings",
+  "/ai/run"
+];
 
 export default {
   async fetch(request, env) {
@@ -420,11 +429,12 @@ export default {
     if (request.method === "GET" && url.pathname === STATUS_PATH) {
       return jsonResponse({
         service: "cinatoken-wfp-tenant",
+        runtime: "js-fallback",
         tenant_id: env.CINATOKEN_TENANT_ID || "unknown",
         ai_gateway_id_configured: Boolean(env.AI_GATEWAY_ID),
         forwarding: "cloudflare-ai-gateway-rest",
-        body_mode: "stream",
-        routes: [STATUS_PATH, "/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/ai/run"]
+        body_mode: "streamed_request_body",
+        routes: SUPPORTED_ROUTES
       });
     }
 
@@ -441,7 +451,7 @@ export default {
 
     const target = new URL(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/ai${upstreamPath}`);
     target.search = url.search;
-    const headers = upstreamHeaders(request.headers, env);
+    const headers = upstreamHeaders(request.headers, env, url.pathname);
     const upstream = await fetch(target.toString(), {
       method: "POST",
       headers,
@@ -450,6 +460,7 @@ export default {
     });
     const responseHeaders = new Headers(upstream.headers);
     responseHeaders.set("x-cinatoken-wfp-tenant", env.CINATOKEN_TENANT_ID || "unknown");
+    responseHeaders.set("x-cinatoken-wfp-runtime", "js-fallback");
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
@@ -459,19 +470,36 @@ export default {
 };
 
 function targetPath(pathname) {
-  if (OPENAI_COMPAT_PATHS.has(pathname)) return pathname;
+  if (REST_API_PATHS.has(pathname)) return pathname;
   if (pathname === "/ai/run") return "/run";
   return null;
 }
 
-function upstreamHeaders(input, env) {
+function upstreamHeaders(input, env, pathname) {
   const headers = new Headers();
   copyHeader(input, headers, "content-type");
   copyHeader(input, headers, "accept");
   headers.set("authorization", `Bearer ${env.CF_API_TOKEN}`);
   if (env.AI_GATEWAY_ID) headers.set("cf-aig-gateway-id", env.AI_GATEWAY_ID);
   headers.set("x-cinatoken-tenant", env.CINATOKEN_TENANT_ID || "unknown");
+  headers.set("x-cinatoken-wfp-runtime", "js-fallback");
+  headers.set("cf-aig-metadata", JSON.stringify({
+    tenant_id: env.CINATOKEN_TENANT_ID || "unknown",
+    runtime: "js-fallback",
+    source: "cinatoken-wfp-tenant",
+    route: pathname,
+    api: routeFamily(pathname)
+  }));
   return headers;
+}
+
+function routeFamily(pathname) {
+  if (pathname === "/v1/chat/completions") return "openai_chat";
+  if (pathname === "/v1/responses") return "openai_responses";
+  if (pathname === "/v1/messages") return "anthropic_messages";
+  if (pathname === "/v1/embeddings") return "openai_embeddings";
+  if (pathname === "/ai/run") return "ai_run";
+  return "unknown";
 }
 
 function copyHeader(input, output, name) {
@@ -675,8 +703,36 @@ mod tests {
         assert!(script.contains("request.body"));
         assert!(script.contains("Bearer ${env.CF_API_TOKEN}"));
         assert!(script.contains("cf-aig-gateway-id"));
+        assert!(script.contains("cf-aig-metadata"));
+        assert!(script.contains("runtime: \"js-fallback\""));
+        assert!(script.contains("body_mode: \"streamed_request_body\""));
+        assert!(script.contains("x-cinatoken-wfp-runtime"));
         assert!(!script.contains("input.get(\"authorization\")"));
         assert!(!script.contains("await request.json()"));
+    }
+
+    #[test]
+    fn tenant_worker_generated_route_manifest_stays_in_sync() {
+        let script = tenant_worker_script();
+        for route in [
+            "/__cinatoken/tenant/status",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/embeddings",
+            "/ai/run",
+        ] {
+            assert!(script.contains(route), "missing generated route {route}");
+        }
+        for family in [
+            "openai_chat",
+            "openai_responses",
+            "anthropic_messages",
+            "openai_embeddings",
+            "ai_run",
+        ] {
+            assert!(script.contains(family), "missing route family {family}");
+        }
     }
 
     #[test]

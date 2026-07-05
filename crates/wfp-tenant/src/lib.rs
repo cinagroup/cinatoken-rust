@@ -17,6 +17,49 @@ use worker::{
 const STATUS_PATH: &str = "/__cinatoken/tenant/status";
 const SERVICE_NAME: &str = "cinatoken-wfp-tenant-rust";
 const AI_GATEWAY_BASE: &str = "https://api.cloudflare.com/client/v4";
+const UNKNOWN_TENANT: &str = "unknown";
+const SUPPORTED_ROUTES: &[TenantRoute] = &[
+    TenantRoute {
+        public_path: "/v1/chat/completions",
+        upstream_path: "/v1/chat/completions",
+        api_family: "openai_chat",
+    },
+    TenantRoute {
+        public_path: "/v1/responses",
+        upstream_path: "/v1/responses",
+        api_family: "openai_responses",
+    },
+    TenantRoute {
+        public_path: "/v1/messages",
+        upstream_path: "/v1/messages",
+        api_family: "anthropic_messages",
+    },
+    TenantRoute {
+        public_path: "/v1/embeddings",
+        upstream_path: "/v1/embeddings",
+        api_family: "openai_embeddings",
+    },
+    TenantRoute {
+        public_path: "/ai/run",
+        upstream_path: "/run",
+        api_family: "ai_run",
+    },
+];
+const SUPPORTED_ROUTE_PATHS: &[&str] = &[
+    STATUS_PATH,
+    "/v1/chat/completions",
+    "/v1/responses",
+    "/v1/messages",
+    "/v1/embeddings",
+    "/ai/run",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TenantRoute {
+    public_path: &'static str,
+    upstream_path: &'static str,
+    api_family: &'static str,
+}
 
 #[derive(Debug, Serialize)]
 struct TenantStatus {
@@ -41,7 +84,7 @@ async fn route(req: Request, env: Env) -> WorkerResult<Response> {
         return tenant_status(&env);
     }
 
-    let Some(upstream_path) = target_path(&path) else {
+    let Some(route) = target_route(&path) else {
         return tenant_error(
             404,
             "unsupported_tenant_route",
@@ -56,7 +99,7 @@ async fn route(req: Request, env: Env) -> WorkerResult<Response> {
         );
     }
 
-    forward_ai_gateway(req, env, upstream_path).await
+    forward_ai_gateway(req, env, route).await
 }
 
 fn tenant_status(env: &Env) -> WorkerResult<Response> {
@@ -64,26 +107,16 @@ fn tenant_status(env: &Env) -> WorkerResult<Response> {
         service: SERVICE_NAME,
         runtime: "rust-wasm",
         tenant_id: runtime_value(env, "CINATOKEN_TENANT_ID")
-            .unwrap_or_else(|| "unknown".to_string()),
+            .unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
         ai_gateway_id_configured: runtime_value(env, "AI_GATEWAY_ID").is_some(),
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
-        routes: &[
-            STATUS_PATH,
-            "/v1/chat/completions",
-            "/v1/responses",
-            "/v1/embeddings",
-            "/ai/run",
-        ],
+        routes: SUPPORTED_ROUTE_PATHS,
     };
     json_response(&status, 200)
 }
 
-async fn forward_ai_gateway(
-    req: Request,
-    env: Env,
-    upstream_path: &'static str,
-) -> WorkerResult<Response> {
+async fn forward_ai_gateway(req: Request, env: Env, route: TenantRoute) -> WorkerResult<Response> {
     let Some(account_id) = runtime_value(&env, "CF_ACCOUNT_ID") else {
         return tenant_error(
             500,
@@ -99,8 +132,8 @@ async fn forward_ai_gateway(
         );
     };
 
-    let target = ai_gateway_url(&account_id, upstream_path, req.url()?.query())?;
-    let headers = upstream_headers(&req, &env, &api_token)?;
+    let target = ai_gateway_url(&account_id, route.upstream_path, req.url()?.query())?;
+    let headers = upstream_headers(&req, &env, &api_token, route)?;
     let body = req.inner().body().map(JsValue::from);
 
     let mut init = RequestInit::new();
@@ -114,7 +147,7 @@ async fn forward_ai_gateway(
     let mut response = Fetch::Request(outbound).send().await?;
     response.headers_mut().set(
         "x-cinatoken-wfp-tenant",
-        &runtime_value(&env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| "unknown".to_string()),
+        &runtime_value(&env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
     )?;
     response
         .headers_mut()
@@ -122,14 +155,11 @@ async fn forward_ai_gateway(
     Ok(response)
 }
 
-fn target_path(path: &str) -> Option<&'static str> {
-    match path {
-        "/v1/chat/completions" => Some("/v1/chat/completions"),
-        "/v1/responses" => Some("/v1/responses"),
-        "/v1/embeddings" => Some("/v1/embeddings"),
-        "/ai/run" => Some("/run"),
-        _ => None,
-    }
+fn target_route(path: &str) -> Option<TenantRoute> {
+    SUPPORTED_ROUTES
+        .iter()
+        .copied()
+        .find(|route| route.public_path == path)
 }
 
 fn ai_gateway_url(account_id: &str, upstream_path: &str, query: Option<&str>) -> WorkerResult<Url> {
@@ -152,7 +182,12 @@ fn ai_gateway_url(account_id: &str, upstream_path: &str, query: Option<&str>) ->
     Ok(url)
 }
 
-fn upstream_headers(req: &Request, env: &Env, api_token: &str) -> WorkerResult<Headers> {
+fn upstream_headers(
+    req: &Request,
+    env: &Env,
+    api_token: &str,
+    route: TenantRoute,
+) -> WorkerResult<Headers> {
     let mut headers = Headers::new();
     copy_header(req, &mut headers, "content-type")?;
     copy_header(req, &mut headers, "accept")?;
@@ -162,10 +197,29 @@ fn upstream_headers(req: &Request, env: &Env, api_token: &str) -> WorkerResult<H
     }
     headers.set(
         "x-cinatoken-tenant",
-        &runtime_value(env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| "unknown".to_string()),
+        &runtime_value(env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
     )?;
     headers.set("x-cinatoken-wfp-runtime", "rust-wasm")?;
+    headers.set(
+        "cf-aig-metadata",
+        &ai_gateway_metadata_value(
+            &runtime_value(env, "CINATOKEN_TENANT_ID")
+                .unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
+            route,
+        ),
+    )?;
     Ok(headers)
+}
+
+fn ai_gateway_metadata_value(tenant_id: &str, route: TenantRoute) -> String {
+    json!({
+        "tenant_id": tenant_id,
+        "runtime": "rust-wasm",
+        "source": SERVICE_NAME,
+        "route": route.public_path,
+        "api": route.api_family,
+    })
+    .to_string()
 }
 
 fn copy_header(req: &Request, output: &mut Headers, name: &str) -> WorkerResult<()> {
@@ -221,13 +275,38 @@ mod tests {
     #[test]
     fn supported_routes_map_to_ai_gateway_paths() {
         assert_eq!(
-            target_path("/v1/chat/completions"),
+            target_route("/v1/chat/completions").map(|route| route.upstream_path),
             Some("/v1/chat/completions")
         );
-        assert_eq!(target_path("/v1/responses"), Some("/v1/responses"));
-        assert_eq!(target_path("/v1/embeddings"), Some("/v1/embeddings"));
-        assert_eq!(target_path("/ai/run"), Some("/run"));
-        assert_eq!(target_path("/v1/models"), None);
+        assert_eq!(
+            target_route("/v1/responses").map(|route| route.upstream_path),
+            Some("/v1/responses")
+        );
+        assert_eq!(
+            target_route("/v1/messages").map(|route| route.upstream_path),
+            Some("/v1/messages")
+        );
+        assert_eq!(
+            target_route("/v1/embeddings").map(|route| route.upstream_path),
+            Some("/v1/embeddings")
+        );
+        assert_eq!(
+            target_route("/ai/run").map(|route| route.upstream_path),
+            Some("/run")
+        );
+        assert_eq!(target_route("/v1/models"), None);
+    }
+
+    #[test]
+    fn status_route_manifest_includes_every_supported_route() {
+        assert!(SUPPORTED_ROUTE_PATHS.contains(&STATUS_PATH));
+        for route in SUPPORTED_ROUTES {
+            assert!(
+                SUPPORTED_ROUTE_PATHS.contains(&route.public_path),
+                "status manifest missing {}",
+                route.public_path
+            );
+        }
     }
 
     #[test]
@@ -239,5 +318,24 @@ mod tests {
         );
         assert!(ai_gateway_url("bad/account", "/v1/responses", None).is_err());
         assert!(ai_gateway_url("", "/v1/responses", None).is_err());
+    }
+
+    #[test]
+    fn ai_gateway_metadata_is_flat_and_route_specific() {
+        for route in SUPPORTED_ROUTES {
+            let metadata = ai_gateway_metadata_value("tenant-a", *route);
+            let parsed: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+            assert_eq!(parsed["tenant_id"], "tenant-a");
+            assert_eq!(parsed["runtime"], "rust-wasm");
+            assert_eq!(parsed["source"], SERVICE_NAME);
+            assert_eq!(parsed["route"], route.public_path);
+            assert_eq!(parsed["api"], route.api_family);
+            assert_eq!(parsed.as_object().unwrap().len(), 5);
+            assert!(parsed
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|value| value.is_string()));
+        }
     }
 }

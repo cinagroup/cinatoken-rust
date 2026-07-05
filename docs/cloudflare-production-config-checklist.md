@@ -369,6 +369,14 @@ Smoke order:
 5. Enable the commented `DISPATCHER` binding and, only then, run an internal
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke with
    `WFP_DISPATCH_ENABLED=true` in staging.
+6. Run route-set parity smoke through the generated fallback and preferred
+   Rust/Wasm artifact for `/v1/chat/completions`, `/v1/responses`,
+   `/v1/messages`, `/v1/embeddings`, and `/ai/run`. Confirm the fallback status
+   reports `runtime: "js-fallback"`, the artifact status reports
+   `runtime: "rust-wasm"`, client `Authorization` is not forwarded, and AI
+   Gateway logs include flat tenant metadata for each route family. Keep legacy
+   `/v1/completions` on the main relay unless Cloudflare documents a matching
+   REST endpoint or a provider-native tenant path is explicitly added.
 
 ### Migration prerequisite
 

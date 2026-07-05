@@ -4620,3 +4620,67 @@ Remaining migration gaps:
   tracking, `response.done` usage handling, settlement/refund, and audit logs.
 - Run a staging hibernation WebSocket smoke, then a live protocol replay, before
   enabling `REALTIME_SESSION_V1_ENABLED` outside a controlled canary.
+
+### 22.68 2026-07-05 WFP Tenant AI Gateway Route Metadata
+
+This increment continues the cinaVibeSDK-inspired Cloudflare platform layer by
+making the WFP tenant runtime more provider-aware while keeping the tenant
+Worker deliberately thin. The main cinatoken relay still owns auth, channel
+policy, billing, and audit; the tenant runtime forwards already-authorized
+traffic to Cloudflare AI Gateway REST with enough route metadata for gateway
+logs, analytics, and future per-tenant policy debugging.
+
+Implemented:
+
+- Replaced the Rust tenant's ad-hoc path match with a small `TenantRoute`
+  table that tracks:
+  - the public tenant route;
+  - the Cloudflare AI Gateway REST upstream path;
+  - a stable API family label for observability.
+- Added `/v1/messages` to the Rust/Wasm tenant runtime and generated JS
+  fallback, mapping it to Cloudflare AI Gateway REST `/ai/v1/messages`.
+  `/v1/messages` remains Anthropic-compatible and must not be used for Workers
+  AI `@cf/...` models.
+- Kept existing tenant routes for `/v1/chat/completions`, `/v1/responses`,
+  `/v1/embeddings`, and `/ai/run`. The request body remains streamed through
+  `RequestInit`; the tenant does not parse large AI request bodies.
+- Left legacy `/v1/completions` on the main relay rather than the WFP tenant
+  REST path, because Cloudflare's current AI Gateway REST docs do not list
+  `/ai/v1/completions`.
+- Added Worker-owned `cf-aig-metadata` on tenant AI Gateway calls with exactly
+  five flat string fields: `tenant_id`, `runtime`, `source`, `route`, and
+  `api`. This follows Cloudflare AI Gateway's metadata constraints and mirrors
+  the cinaVibeSDK practice of attaching application/user context to gateway
+  traffic without exposing provider keys.
+- The generated JS fallback now advertises the same route set, includes
+  `runtime: "js-fallback"` in status, sends the same metadata shape, and
+  returns `x-cinatoken-wfp-runtime: js-fallback` so staging smoke can
+  distinguish fallback vs Rust/Wasm runtime behavior.
+- Client `Authorization` remains intentionally unforwarded from the tenant
+  fallback; only the tenant-owned Cloudflare API token is sent upstream.
+- `bun run check` now includes the main Worker's generated tenant fallback
+  tests via `bun run check:wfp-tenant:worker-script`; this closes the previous
+  gap where the full check excluded `cinatoken-worker` unit tests.
+
+Validation:
+
+- `cargo test -p cinatoken-wfp-tenant` passed (4 tests).
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed (6 tests).
+- `bun run check:wfp-tenant` passed, including the Rust/Wasm runtime tests,
+  generated fallback tests, and WFP tenant wasm32 check.
+- `bun run check:wfp-tenant:deploy-plan` passed.
+- `cargo fmt --all --check` and `git diff --check` passed.
+- `bun run check` passed, including the new generated fallback test gate.
+
+Remaining migration gaps:
+
+- Run live WFP dispatch smoke for both the generated JS fallback and the
+  Rust/Wasm artifact with a real `AI_GATEWAY_ID`, confirming that AI Gateway
+  logs show the tenant metadata and route family labels for
+  `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/embeddings`,
+  and `/ai/run`.
+- Decide whether `/v1/embeddings` should remain on the Cloudflare REST path,
+  move to a provider-native gateway endpoint, or be owned only by the main
+  relay, based on staging evidence.
+- Add route-level AI Gateway policy controls after live tenant metadata and
+  dispatch smoke are captured.

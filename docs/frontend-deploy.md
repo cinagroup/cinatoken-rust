@@ -46,10 +46,9 @@ Strict source quality verification:
 bun run check:web:quality
 ```
 
-As of 2026-07-05, build/typecheck and Prettier pass. Strict lint still reports
-5 errors and 0 warnings; this is tracked debt and the lint rules must not be
-weakened to hide it. The migration check chain now enforces a no-regression
-baseline while the imported React debt is paid down:
+As of 2026-07-05, build/typecheck, Prettier, and strict ESLint pass. The
+migration check chain keeps a zero-debt no-regression baseline so any new React
+or TypeScript lint finding fails verification:
 
 ```powershell
 bun run check:web:lint-debt
@@ -201,7 +200,7 @@ bun run audit:web:bundle-budget
 As of 2026-07-05, the verified production build is:
 
 - 245 files;
-- 18.94 MB total raw / 4.49 MB total gzip;
+- 18.95 MB total raw / 4.49 MB total gzip;
 - 18.25 MB JavaScript raw / 4.14 MB JavaScript gzip;
 - 4.29 MB initial JavaScript raw / 1.23 MB initial JavaScript gzip;
 - 5.28 MB raw / 1.00 MB gzip for the largest JavaScript chunk.

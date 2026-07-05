@@ -261,134 +261,144 @@ export function ModelMutateDrawer({
 
   // Load model data for editing and ratio configuration
   useEffect(() => {
-    if (open && isEditing && modelData?.data) {
-      const model = modelData.data
-      setOldModelName(model.model_name)
+    let cancelled = false
 
-      // Base model data reset
-      const baseModelData = {
-        id: model.id,
-        model_name: model.model_name,
-        description: model.description || '',
-        icon: model.icon || '',
-        tags: parseModelTags(model.tags),
-        vendor_id: model.vendor_id,
-        endpoints: model.endpoints || '',
-        name_rule: model.name_rule || 0,
-        status: model.status === 1,
-        sync_official: model.sync_official === 1,
-        price: '',
-        ratio: '',
-        cacheRatio: '',
-        completionRatio: '',
-        imageRatio: '',
-        audioRatio: '',
-        audioCompletionRatio: '',
-      }
+    queueMicrotask(() => {
+      if (cancelled) return
 
-      // Parse ratio configurations from system settings if available
-      if (modelSettings) {
-        const priceMap = safeJsonParse<Record<string, number>>(
-          modelSettings.ModelPrice,
-          { fallback: {}, silent: true }
-        )
-        const ratioMap = safeJsonParse<Record<string, number>>(
-          modelSettings.ModelRatio,
-          { fallback: {}, silent: true }
-        )
-        const cacheMap = safeJsonParse<Record<string, number>>(
-          modelSettings.CacheRatio,
-          { fallback: {}, silent: true }
-        )
-        const completionMap = safeJsonParse<Record<string, number>>(
-          modelSettings.CompletionRatio,
-          { fallback: {}, silent: true }
-        )
-        const imageMap = safeJsonParse<Record<string, number>>(
-          modelSettings.ImageRatio,
-          { fallback: {}, silent: true }
-        )
-        const audioMap = safeJsonParse<Record<string, number>>(
-          modelSettings.AudioRatio,
-          { fallback: {}, silent: true }
-        )
-        const audioCompletionMap = safeJsonParse<Record<string, number>>(
-          modelSettings.AudioCompletionRatio,
-          { fallback: {}, silent: true }
-        )
+      if (open && isEditing && modelData?.data) {
+        const model = modelData.data
+        setOldModelName(model.model_name)
 
-        // Extract ratio config for this model
-        const modelName = model.model_name
-        const price = priceMap[modelName]
-        const ratio = ratioMap[modelName]
-        const cacheRatio = cacheMap[modelName]
-        const completionRatio = completionMap[modelName]
-        const imageRatio = imageMap[modelName]
-        const audioRatio = audioMap[modelName]
-        const audioCompletionRatio = audioCompletionMap[modelName]
-
-        // Determine pricing mode
-        if (price !== undefined && price !== null) {
-          setPricingMode('per-request')
-          form.reset({
-            ...baseModelData,
-            price: price.toString(),
-          })
-        } else {
-          setPricingMode('per-token')
-          if (ratio !== undefined && ratio !== null) {
-            const tokenPrice = ratio * 2
-            setPromptPrice(tokenPrice.toString())
-            if (completionRatio !== undefined && completionRatio !== null) {
-              const compPrice = tokenPrice * completionRatio
-              setCompletionPrice(compPrice.toString())
-            }
-          }
-          form.reset({
-            ...baseModelData,
-            ratio: ratio?.toString() || '',
-            cacheRatio: cacheRatio?.toString() || '',
-            completionRatio: completionRatio?.toString() || '',
-            imageRatio: imageRatio?.toString() || '',
-            audioRatio: audioRatio?.toString() || '',
-            audioCompletionRatio: audioCompletionRatio?.toString() || '',
-          })
-          setAdvancedOpen(
-            !!(cacheRatio || imageRatio || audioRatio || audioCompletionRatio)
-          )
+        // Base model data reset
+        const baseModelData = {
+          id: model.id,
+          model_name: model.model_name,
+          description: model.description || '',
+          icon: model.icon || '',
+          tags: parseModelTags(model.tags),
+          vendor_id: model.vendor_id,
+          endpoints: model.endpoints || '',
+          name_rule: model.name_rule || 0,
+          status: model.status === 1,
+          sync_official: model.sync_official === 1,
+          price: '',
+          ratio: '',
+          cacheRatio: '',
+          completionRatio: '',
+          imageRatio: '',
+          audioRatio: '',
+          audioCompletionRatio: '',
         }
-      } else {
-        // If system settings not loaded yet, just load base model data
+
+        // Parse ratio configurations from system settings if available
+        if (modelSettings) {
+          const priceMap = safeJsonParse<Record<string, number>>(
+            modelSettings.ModelPrice,
+            { fallback: {}, silent: true }
+          )
+          const ratioMap = safeJsonParse<Record<string, number>>(
+            modelSettings.ModelRatio,
+            { fallback: {}, silent: true }
+          )
+          const cacheMap = safeJsonParse<Record<string, number>>(
+            modelSettings.CacheRatio,
+            { fallback: {}, silent: true }
+          )
+          const completionMap = safeJsonParse<Record<string, number>>(
+            modelSettings.CompletionRatio,
+            { fallback: {}, silent: true }
+          )
+          const imageMap = safeJsonParse<Record<string, number>>(
+            modelSettings.ImageRatio,
+            { fallback: {}, silent: true }
+          )
+          const audioMap = safeJsonParse<Record<string, number>>(
+            modelSettings.AudioRatio,
+            { fallback: {}, silent: true }
+          )
+          const audioCompletionMap = safeJsonParse<Record<string, number>>(
+            modelSettings.AudioCompletionRatio,
+            { fallback: {}, silent: true }
+          )
+
+          // Extract ratio config for this model
+          const modelName = model.model_name
+          const price = priceMap[modelName]
+          const ratio = ratioMap[modelName]
+          const cacheRatio = cacheMap[modelName]
+          const completionRatio = completionMap[modelName]
+          const imageRatio = imageMap[modelName]
+          const audioRatio = audioMap[modelName]
+          const audioCompletionRatio = audioCompletionMap[modelName]
+
+          // Determine pricing mode
+          if (price !== undefined && price !== null) {
+            setPricingMode('per-request')
+            form.reset({
+              ...baseModelData,
+              price: price.toString(),
+            })
+          } else {
+            setPricingMode('per-token')
+            if (ratio !== undefined && ratio !== null) {
+              const tokenPrice = ratio * 2
+              setPromptPrice(tokenPrice.toString())
+              if (completionRatio !== undefined && completionRatio !== null) {
+                const compPrice = tokenPrice * completionRatio
+                setCompletionPrice(compPrice.toString())
+              }
+            }
+            form.reset({
+              ...baseModelData,
+              ratio: ratio?.toString() || '',
+              cacheRatio: cacheRatio?.toString() || '',
+              completionRatio: completionRatio?.toString() || '',
+              imageRatio: imageRatio?.toString() || '',
+              audioRatio: audioRatio?.toString() || '',
+              audioCompletionRatio: audioCompletionRatio?.toString() || '',
+            })
+            setAdvancedOpen(
+              !!(cacheRatio || imageRatio || audioRatio || audioCompletionRatio)
+            )
+          }
+        } else {
+          // If system settings not loaded yet, just load base model data
+          setPricingMode('per-token')
+          form.reset(baseModelData)
+          setAdvancedOpen(false)
+        }
+      } else if (open && !isEditing) {
+        // Pre-fill model name if passed from missing models
+        setOldModelName('')
         setPricingMode('per-token')
-        form.reset(baseModelData)
+        setPricingSubMode('ratio')
+        setPromptPrice('')
+        setCompletionPrice('')
         setAdvancedOpen(false)
+        form.reset({
+          model_name: currentRow?.model_name || '',
+          description: '',
+          icon: '',
+          tags: [],
+          vendor_id: undefined,
+          endpoints: '',
+          name_rule: 0,
+          status: true,
+          sync_official: true,
+          price: '',
+          ratio: '',
+          cacheRatio: '',
+          completionRatio: '',
+          imageRatio: '',
+          audioRatio: '',
+          audioCompletionRatio: '',
+        })
       }
-    } else if (open && !isEditing) {
-      // Pre-fill model name if passed from missing models
-      setOldModelName('')
-      setPricingMode('per-token')
-      setPricingSubMode('ratio')
-      setPromptPrice('')
-      setCompletionPrice('')
-      setAdvancedOpen(false)
-      form.reset({
-        model_name: currentRow?.model_name || '',
-        description: '',
-        icon: '',
-        tags: [],
-        vendor_id: undefined,
-        endpoints: '',
-        name_rule: 0,
-        status: true,
-        sync_official: true,
-        price: '',
-        ratio: '',
-        cacheRatio: '',
-        completionRatio: '',
-        imageRatio: '',
-        audioRatio: '',
-        audioCompletionRatio: '',
-      })
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [open, isEditing, modelData, currentRow, form, modelSettings])
 

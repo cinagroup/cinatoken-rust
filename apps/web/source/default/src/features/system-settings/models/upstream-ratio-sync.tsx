@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckSquare, RefreshCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -163,21 +163,13 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
   // data actually changes, instead of on every render (the `|| []` fallback
   // would otherwise produce a new array reference each render).
   const channels = useMemo(() => channelsData?.data ?? [], [channelsData?.data])
-
-  useEffect(() => {
-    if (channels.length === 0) return
-    setChannelEndpoints((prev) => {
-      let mutated = false
-      const next = { ...prev }
-      for (const channel of channels) {
-        if (!next[channel.id]) {
-          next[channel.id] = getDefaultEndpointForChannel(channel)
-          mutated = true
-        }
-      }
-      return mutated ? next : prev
-    })
-  }, [channels])
+  const channelEndpointsWithDefaults = useMemo(() => {
+    const endpoints = { ...channelEndpoints }
+    for (const channel of channels) {
+      endpoints[channel.id] ||= getDefaultEndpointForChannel(channel)
+    }
+    return endpoints
+  }, [channelEndpoints, channels])
 
   const fetchMutation = useMutation({
     mutationFn: fetchUpstreamRatios,
@@ -261,7 +253,7 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
       id: ch.id,
       name: ch.name,
       base_url: ch.base_url,
-      endpoint: channelEndpoints[ch.id] || DEFAULT_ENDPOINT,
+      endpoint: channelEndpointsWithDefaults[ch.id] || DEFAULT_ENDPOINT,
     }))
 
     fetchMutation.mutate({ upstreams, timeout: 10 })
@@ -553,7 +545,7 @@ export function UpstreamRatioSync({ modelRatios }: UpstreamRatioSyncProps) {
         channels={channels}
         selectedChannelIds={selectedChannelIds}
         onSelectedChannelIdsChange={setSelectedChannelIds}
-        channelEndpoints={channelEndpoints}
+        channelEndpoints={channelEndpointsWithDefaults}
         onChannelEndpointsChange={setChannelEndpoints}
         onConfirm={handleConfirmChannelSelection}
       />

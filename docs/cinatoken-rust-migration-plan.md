@@ -4294,3 +4294,48 @@ current baseline is 5 ESLint errors / 0 warnings across
 `tiered-pricing-editor.tsx`, and `upstream-ratio-sync.tsx`. The last three
 touch billing ratio or billing-expression surfaces and should be handled after
 reading the Go billing-expression notes.
+
+### 22.62 2026-07-05 Frontend Strict Lint Zero
+
+This increment closes the imported React strict-lint debt to zero without
+weakening the lint rules. Before touching the tiered-pricing and upstream
+billing-expression-adjacent surfaces, the Go billing expression notes at
+`C:\cinagroup\cinatoken\pkg\billingexpr\expr.md` were reviewed to preserve the
+expression contract (`p`/`c` fallback semantics, `len` as the tier-condition
+length, real $/1M coefficients, and request rules after `|||`).
+
+Implemented in the imported React frontend:
+
+- Moved model mutation drawer edit/create initialization behind a cancellable
+  microtask so form resets and pricing-mode state no longer happen
+  synchronously inside the effect body.
+- Replaced ratio-settings render-time ref reads with a pure
+  `normalizeModelDefaults()` helper and lazy state initialization; the mutable
+  ref remains the immediate baseline for save diffing.
+- Derived tiered-pricing number-input display values during render when the
+  field is not focused, keeping local draft state only for active editing.
+- Derived upstream ratio-sync endpoint defaults from the current channel list
+  and user overrides instead of mirroring defaults into local state through an
+  effect.
+- Lowered `tools/frontend_lint_debt_baseline.json` from 5 errors / 0 warnings /
+  4 files to 0 errors / 0 warnings / 0 files, making the debt gate a true
+  zero-regression check.
+
+Updated local evidence:
+
+- File-scoped ESLint for `model-mutate-drawer.tsx`, `ratio-settings-card.tsx`,
+  `tiered-pricing-editor.tsx`, and `upstream-ratio-sync.tsx`: passed with no
+  findings.
+- `bun run check:web:lint-debt`: passed with 0 errors, 0 warnings, 0 files with
+  findings, and 0 regressions.
+- `bun run check:web:quality`: passed.
+- `git diff --check`: passed.
+- `bun run check`: passed, including frontend type/build, bundle redaction
+  audit, bundle budget audit, zero-debt lint baseline, route-debt audit,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker wasm check.
+
+Remaining boundary: frontend source quality is now locally green, but G5 still
+needs deployed browser smoke, authenticated session/role/CRUD/2FA flow
+evidence, bundle performance evidence, and production/staging callback smoke
+before production sign-off.

@@ -4,70 +4,15 @@ Last checked: 2026-07-05
 
 ## Passed
 
-- `bun run check:web:lint-debt`: passed after adding the executable frontend
-  lint-debt no-regression baseline. It reports 5 ESLint errors, 0 warnings,
-  4 files with findings, and 0 regressions against
-  `tools/frontend_lint_debt_baseline.json`; the paydown batches hoisted the
-  usage-log user-info `InfoItem` component, reduced
-  `react-hooks/static-components` from 9 errors to 0, and refactored the
-  Ollama models dialog fetch/close effects to remove 3 more React Hooks /
-  React Compiler errors. Shared mobile table rows now derive cell metadata
-  directly, removing the remaining `react-hooks/use-memo` debt family. The
-  settings page context actions now use destructured props and a split
-  non-component hook/context module, reducing `react-hooks/refs` from 13 to 9
-  errors and `react-refresh/only-export-components` from 1 warning to 0.
-  Content settings for announcements, FAQ, and Uptime Kuma now initialize
-  parsed JSON state lazily behind keyed inner components, reducing
-  `react-hooks/set-state-in-effect` from 63 to 57 errors.
-  The wallet page now initializes billing-history state lazily and defers
-  mount/top-up initialization out of synchronous effects, while the
-  group-ratio visual editor now initializes dialog form state through keyed
-  dialog bodies; together these reduce `react-hooks/set-state-in-effect` from
-  57 to 52 errors.
-  The parameter override editor now initializes from keyed lazy state and
-  derives the active operation selection during render, while the upstream
-  conflict dialog resets by key and derives the clamped page index during
-  render; together these reduce `react-hooks/set-state-in-effect` from 52 to
-  48 errors.
-  The latest paydown batch converts risk acknowledgement state to a keyed
-  inner dialog, stabilizes multi-key and account-binding async effect
-  triggers, fixes playground query-key dependencies, defers OAuth/passkey form
-  submission handling until event time, moves subscription/dialog refresh work
-  out of synchronous effects, snapshots subscription-plan time reads, and
-  defers channel-affinity reset/cache refresh work. This reduces strict lint
-  from 68 errors / 2 warnings / 60 files to 50 errors / 2 warnings / 51 files,
-  with `react-hooks/set-state-in-effect` down to 42 errors,
-  `react-hooks/refs` down to 5 errors, `@tanstack/query/exhaustive-deps` down
-  to 1 error, `react-hooks/immutability` down to 2 errors, and the
-  `react-hooks/preserve-manual-memoization` and `react-hooks/purity` families
-  cleared from the current baseline.
-  The latest auth/profile/channel/model dialog cleanup then moves OAuth,
-  Passkey, secure-verification, Codex balance, fetch-models, tag-batch,
-  edit-tag, login legal-consent, deployment extend/rename/sync wizard, profile
-  load, 2FA status/setup, sidebar module loading, and data-table callback ref
-  updates out of render-following synchronous paths. This reduces strict lint
-  from 50 errors / 2 warnings / 51 files to 34 errors / 2 warnings / 35 files,
-  with `react-hooks/set-state-in-effect` down to 29 errors,
-  `react-hooks/refs` down to 4 errors, and `react-hooks/immutability` cleared
-  from the current baseline.
-  The latest wallet/usage/user hook cleanup defers wallet initial fetches,
-  URL-derived usage-log/table filter synchronization, account-binding dialog
-  open/close resets, and theme-radius/minimum-loading updates out of
-  synchronous effect bodies, initializes mobile breakpoint state lazily, and
-  aligns the users table query key with the scalar filters consumed by its
-  query function. This reduces strict lint from 34 errors / 2 warnings / 35
-  files to 22 errors / 2 warnings / 23 files, with
-  `react-hooks/set-state-in-effect` down to 18 errors and the
-  `@tanstack/query/exhaustive-deps` family cleared from the current baseline.
-  The latest shared editor/chart/profile/subscription/settings cleanup defers
-  remaining low-risk prop/URL/default synchronization work out of synchronous
-  effect bodies, fixes React Hook Form save callbacks by resolving
-  `handleSubmit` at event time, stabilizes model-mapping JSON parsing, and
-  removes the final hook dependency warnings. This reduces strict lint from
-  22 errors / 2 warnings / 23 files to 5 errors / 0 warnings / 4 files, with
-  `react-hooks/set-state-in-effect` down to 4 errors,
-  `react-hooks/refs` down to 1 error, and `react-hooks/exhaustive-deps`
-  cleared from the current baseline.
+- `bun run check:web:quality`: passed after closing the imported React strict
+  lint debt to zero without weakening the lint rules. The final cleanup moved
+  model mutation drawer initialization out of synchronous effect state writes,
+  initialized ratio settings saved baselines without render-time ref reads,
+  derived tiered-pricing number-input display values during render, and derived
+  upstream ratio-sync endpoint defaults without effect-driven state mirroring.
+- `bun run check:web:lint-debt`: passed with 0 ESLint errors, 0 warnings,
+  0 files with findings, and 0 regressions against
+  `tools/frontend_lint_debt_baseline.json`.
 - `bun run format:check` in `apps/web/source/default`: passed after removing
   one stale `react-hooks/set-state-in-effect` disable comment from the imported
   frontend source.
@@ -81,7 +26,7 @@ Last checked: 2026-07-05
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:bundle-budget`: passed after adding the executable
   frontend bundle-size budget. It scanned 245 built assets in
-  `apps/web/source/default/dist`: 18.94 MB raw / 4.49 MB gzip total,
+  `apps/web/source/default/dist`: 18.95 MB raw / 4.49 MB gzip total,
   18.25 MB raw / 4.14 MB gzip JavaScript, 4.29 MB raw / 1.23 MB gzip
   initial JavaScript, and 5.28 MB raw / 1.00 MB gzip for the largest
   JavaScript chunk; all 10 configured budgets passed.
@@ -94,7 +39,7 @@ Last checked: 2026-07-05
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check:web:bundle`: passed after adding the frontend bundle
   redaction audit. It scanned 460 built frontend text assets
-  (37,284,372 bytes) across `apps/web/source/default/dist` and
+  (37,284,076 bytes) across `apps/web/source/default/dist` and
   `apps/web/dist`, with 0 findings.
 - `bun run check`: passed after wiring the frontend bundle redaction audit
   into the main verification chain, covering frontend type/build, bundle
@@ -1230,15 +1175,10 @@ bun run check
 
 ## Still Pending
 
-- `bun run check:web:quality` remains red because strict ESLint still reports
-  5 errors and 0 warnings in the imported frontend source. The rules have not
-  been weakened; `bun run check:web:lint-debt` now enforces a no-regression
-  baseline while the debt is paid down in batches. `bun run format:check`
-  passes.
-- The frontend artifact and public HTTP contract are deployed and verified.
-  Rendered browser smoke, authenticated session/role/CRUD/2FA flows, console
-  inspection, and the 2026-07-03 backend route batch deployment remain
-  pending.
+- The frontend artifact and public HTTP contract still need deployed
+  verification. Rendered browser smoke, authenticated session/role/CRUD/2FA
+  flows, console inspection, and the 2026-07-03 backend route batch deployment
+  remain pending.
 - The production bundle-size budget is now enforced locally, but the bundle
   still needs heavy route-specific chunk splitting and deployed browser
   performance evidence before G5 production approval.

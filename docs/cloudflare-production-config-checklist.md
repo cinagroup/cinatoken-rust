@@ -358,6 +358,13 @@ build with `bun run build:wfp-tenant`, then upload the generated
 | `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | var | Optional WFP tenant gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_OPENAI_EMBEDDINGS` | var | Optional WFP tenant gateway override for `/v1/embeddings` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_AI_RUN` | var | Optional WFP tenant gateway override for `/ai/run` | Overrides `AI_GATEWAY_ID` for this route only |
+| `AI_GATEWAY_REQUEST_TIMEOUT_MS` | var | Optional WFP tenant `cf-aig-request-timeout` header | Positive integer milliseconds; controlled by tenant binding, never by caller headers |
+| `AI_GATEWAY_MAX_ATTEMPTS` | var | Optional WFP tenant `cf-aig-max-attempts` header | Positive integer 1-5 |
+| `AI_GATEWAY_RETRY_DELAY_MS` | var | Optional WFP tenant `cf-aig-retry-delay` header | Positive integer 1-5000 milliseconds |
+| `AI_GATEWAY_BACKOFF` | var | Optional WFP tenant `cf-aig-backoff` header | `constant`, `linear`, or `exponential` |
+| `AI_GATEWAY_CACHE_TTL_SECONDS` | var | Optional WFP tenant `cf-aig-cache-ttl` header | Positive integer seconds |
+| `AI_GATEWAY_SKIP_CACHE` | var | Optional WFP tenant `cf-aig-skip-cache` header | `true` or `false`; useful for staging/provider parity smoke |
+| `AI_GATEWAY_COLLECT_LOG` | var | Optional WFP tenant `cf-aig-collect-log` header | `true` or `false`; keep enabled during staging smoke unless a redaction exception is approved |
 
 Smoke order:
 
@@ -374,11 +381,14 @@ Smoke order:
    <tenant> --tenant-id <tenant> --namespace <dispatch-namespace>` first with
    `--dry-run`, then without `--dry-run`, and confirm a 2xx Cloudflare API
    response. When staging uses route-separated AI Gateway policies, pass the
-   matching uploader flags (`--ai-gateway-id-openai-chat`,
-   `--ai-gateway-id-openai-responses`,
-   `--ai-gateway-id-anthropic-messages`,
-   `--ai-gateway-id-openai-embeddings`, and/or `--ai-gateway-id-ai-run`) or
-   set the same-named env vars before upload. Fallback path: call
+    matching uploader flags (`--ai-gateway-id-openai-chat`,
+    `--ai-gateway-id-openai-responses`,
+    `--ai-gateway-id-anthropic-messages`,
+    `--ai-gateway-id-openai-embeddings`, and/or `--ai-gateway-id-ai-run`) or
+   set the same-named env vars before upload. If staging needs per-request AI
+   Gateway controls, pass the matching `--ai-gateway-*` request-policy flags or
+   set the env vars listed above; tenant status must later report configured
+   policy entries as `valid=true`. Fallback path: call
    `/api/platform/wfp/tenant-script/deploy` to upload the generated ES module.
 5. Enable the commented `DISPATCHER` binding and, only then, run an
    admin-authenticated internal
@@ -402,11 +412,12 @@ Smoke order:
    `--expect-runtime js-fallback`, the artifact status reports
    `runtime: "rust-wasm"` by default, `x-cinatoken-wfp-runtime` matches the
    expected runtime, `route_gateways` reports the expected route-specific env
-   names, client `Authorization` is not forwarded, and AI Gateway logs include
-   flat tenant metadata for each route family. If route-specific gateway IDs are
-   set, confirm each route lands in the intended Gateway before comparing
-   provider output. Public preview-host AI route attempts must remain disabled
-   or return `403 tenant_internal_dispatch_required`; only the
+   names, `ai_gateway_request_policy` reports valid configured policy bindings,
+   client `Authorization` is not forwarded, and AI Gateway logs include flat
+   tenant metadata for each route family. If route-specific gateway IDs are set,
+   confirm each route lands in the intended Gateway before comparing provider
+   output. Public preview-host AI route attempts must remain disabled or return
+   `403 tenant_internal_dispatch_required`; only the
    admin-authenticated internal dispatch path is allowed to reach tenant AI
    forwarding. Capture redacted response headers and verify
    tenant/runtime marker headers are present while `cf-aig-*`, `authorization`,

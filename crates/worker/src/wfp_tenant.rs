@@ -33,6 +33,13 @@ const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES
 const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
 const AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV: &str = "AI_GATEWAY_ID_OPENAI_EMBEDDINGS";
 const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
+const AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV: &str = "AI_GATEWAY_REQUEST_TIMEOUT_MS";
+const AI_GATEWAY_MAX_ATTEMPTS_ENV: &str = "AI_GATEWAY_MAX_ATTEMPTS";
+const AI_GATEWAY_RETRY_DELAY_MS_ENV: &str = "AI_GATEWAY_RETRY_DELAY_MS";
+const AI_GATEWAY_BACKOFF_ENV: &str = "AI_GATEWAY_BACKOFF";
+const AI_GATEWAY_CACHE_TTL_SECONDS_ENV: &str = "AI_GATEWAY_CACHE_TTL_SECONDS";
+const AI_GATEWAY_SKIP_CACHE_ENV: &str = "AI_GATEWAY_SKIP_CACHE";
+const AI_GATEWAY_COLLECT_LOG_ENV: &str = "AI_GATEWAY_COLLECT_LOG";
 const TENANT_MODULE_NAME: &str = "tenant.mjs";
 const DEFAULT_COMPATIBILITY_DATE: &str = "2026-06-17";
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
@@ -53,6 +60,13 @@ struct TenantScriptRequest {
     ai_gateway_id_anthropic_messages: Option<String>,
     ai_gateway_id_openai_embeddings: Option<String>,
     ai_gateway_id_ai_run: Option<String>,
+    ai_gateway_request_timeout_ms: Option<String>,
+    ai_gateway_max_attempts: Option<String>,
+    ai_gateway_retry_delay_ms: Option<String>,
+    ai_gateway_backoff: Option<String>,
+    ai_gateway_cache_ttl_seconds: Option<String>,
+    ai_gateway_skip_cache: Option<String>,
+    ai_gateway_collect_log: Option<String>,
     compatibility_date: Option<String>,
     attach_gateway_token: Option<bool>,
 }
@@ -66,6 +80,7 @@ struct TenantScriptPlan {
     api_token: Option<String>,
     ai_gateway_id: Option<String>,
     route_ai_gateway_ids: RouteGatewayIds,
+    ai_gateway_request_policy: GatewayRequestPolicy,
     compatibility_date: String,
     module_name: String,
     script: String,
@@ -93,6 +108,7 @@ struct TenantScriptPlanResponse {
     compatibility_date: String,
     ai_gateway_id_configured: bool,
     route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
+    ai_gateway_request_policy_configured: GatewayRequestPolicyConfigured,
     attach_gateway_token: bool,
     deployable: bool,
     missing: Vec<ConfigRequirement>,
@@ -122,6 +138,7 @@ struct TenantScriptDeployResponse {
     compatibility_date: String,
     ai_gateway_id_configured: bool,
     route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
+    ai_gateway_request_policy_configured: GatewayRequestPolicyConfigured,
     status: u16,
     ok: bool,
     cloudflare_response_preview: String,
@@ -145,6 +162,28 @@ struct RouteGatewayIdConfigured {
     anthropic_messages: bool,
     openai_embeddings: bool,
     ai_run: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GatewayRequestPolicy {
+    request_timeout_ms: Option<String>,
+    max_attempts: Option<String>,
+    retry_delay_ms: Option<String>,
+    backoff: Option<String>,
+    cache_ttl_seconds: Option<String>,
+    skip_cache: Option<String>,
+    collect_log: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct GatewayRequestPolicyConfigured {
+    request_timeout_ms: bool,
+    max_attempts: bool,
+    retry_delay_ms: bool,
+    backoff: bool,
+    cache_ttl_seconds: bool,
+    skip_cache: bool,
+    collect_log: bool,
 }
 
 impl RouteGatewayIds {
@@ -200,6 +239,90 @@ impl RouteGatewayIds {
             ai_run: self.ai_run.is_some(),
         }
     }
+}
+
+impl GatewayRequestPolicy {
+    fn from_request_and_env(env: &Env, request: &TenantScriptRequest) -> Result<Self, String> {
+        Ok(Self {
+            request_timeout_ms: optional_policy_request_or_env(
+                request.ai_gateway_request_timeout_ms.as_deref(),
+                env,
+                AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV,
+                "ai_gateway_request_timeout_ms",
+                GatewayPolicyValidator::PositiveInteger {
+                    min: 1,
+                    max: Some(600_000),
+                },
+            )?,
+            max_attempts: optional_policy_request_or_env(
+                request.ai_gateway_max_attempts.as_deref(),
+                env,
+                AI_GATEWAY_MAX_ATTEMPTS_ENV,
+                "ai_gateway_max_attempts",
+                GatewayPolicyValidator::PositiveInteger {
+                    min: 1,
+                    max: Some(5),
+                },
+            )?,
+            retry_delay_ms: optional_policy_request_or_env(
+                request.ai_gateway_retry_delay_ms.as_deref(),
+                env,
+                AI_GATEWAY_RETRY_DELAY_MS_ENV,
+                "ai_gateway_retry_delay_ms",
+                GatewayPolicyValidator::PositiveInteger {
+                    min: 1,
+                    max: Some(5_000),
+                },
+            )?,
+            backoff: optional_policy_request_or_env(
+                request.ai_gateway_backoff.as_deref(),
+                env,
+                AI_GATEWAY_BACKOFF_ENV,
+                "ai_gateway_backoff",
+                GatewayPolicyValidator::Backoff,
+            )?,
+            cache_ttl_seconds: optional_policy_request_or_env(
+                request.ai_gateway_cache_ttl_seconds.as_deref(),
+                env,
+                AI_GATEWAY_CACHE_TTL_SECONDS_ENV,
+                "ai_gateway_cache_ttl_seconds",
+                GatewayPolicyValidator::PositiveInteger { min: 1, max: None },
+            )?,
+            skip_cache: optional_policy_request_or_env(
+                request.ai_gateway_skip_cache.as_deref(),
+                env,
+                AI_GATEWAY_SKIP_CACHE_ENV,
+                "ai_gateway_skip_cache",
+                GatewayPolicyValidator::Boolean,
+            )?,
+            collect_log: optional_policy_request_or_env(
+                request.ai_gateway_collect_log.as_deref(),
+                env,
+                AI_GATEWAY_COLLECT_LOG_ENV,
+                "ai_gateway_collect_log",
+                GatewayPolicyValidator::Boolean,
+            )?,
+        })
+    }
+
+    fn configured(&self) -> GatewayRequestPolicyConfigured {
+        GatewayRequestPolicyConfigured {
+            request_timeout_ms: self.request_timeout_ms.is_some(),
+            max_attempts: self.max_attempts.is_some(),
+            retry_delay_ms: self.retry_delay_ms.is_some(),
+            backoff: self.backoff.is_some(),
+            cache_ttl_seconds: self.cache_ttl_seconds.is_some(),
+            skip_cache: self.skip_cache.is_some(),
+            collect_log: self.collect_log.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GatewayPolicyValidator {
+    PositiveInteger { min: u32, max: Option<u32> },
+    Boolean,
+    Backoff,
 }
 
 pub async fn plan(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -286,6 +409,7 @@ pub async fn deploy(mut req: Request, env: Env) -> WorkerResult<Response> {
         ai_gateway_id_configured: plan.ai_gateway_id.is_some()
             || plan.route_ai_gateway_ids.any_configured(),
         route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
+        ai_gateway_request_policy_configured: plan.ai_gateway_request_policy.configured(),
         status,
         ok,
         cloudflare_response_preview: preview,
@@ -334,6 +458,7 @@ fn build_tenant_script_plan(
         "ai_gateway_id",
     )?;
     let route_ai_gateway_ids = RouteGatewayIds::from_request_and_env(env, &request)?;
+    let ai_gateway_request_policy = GatewayRequestPolicy::from_request_and_env(env, &request)?;
     let compatibility_date = request
         .compatibility_date
         .as_deref()
@@ -374,6 +499,7 @@ fn build_tenant_script_plan(
         account_id.as_deref(),
         ai_gateway_id.as_deref(),
         &route_ai_gateway_ids,
+        &ai_gateway_request_policy,
         attach_gateway_token
             .then_some(api_token.as_deref())
             .flatten(),
@@ -385,6 +511,7 @@ fn build_tenant_script_plan(
         account_id.as_deref(),
         ai_gateway_id.as_deref(),
         &route_ai_gateway_ids,
+        &ai_gateway_request_policy,
         attach_gateway_token.then_some(Some("<redacted>")).flatten(),
         true,
     );
@@ -406,6 +533,7 @@ fn build_tenant_script_plan(
             api_token,
             ai_gateway_id,
             route_ai_gateway_ids,
+            ai_gateway_request_policy,
             compatibility_date,
             module_name: TENANT_MODULE_NAME.to_string(),
             script,
@@ -444,6 +572,7 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
         ai_gateway_id_configured: plan.ai_gateway_id.is_some()
             || plan.route_ai_gateway_ids.any_configured(),
         route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
+        ai_gateway_request_policy_configured: plan.ai_gateway_request_policy.configured(),
         attach_gateway_token: plan.attach_gateway_token,
         deployable: plan.missing.is_empty(),
         missing: plan.missing.clone(),
@@ -466,6 +595,7 @@ fn upload_metadata(
     account_id: Option<&str>,
     ai_gateway_id: Option<&str>,
     route_ai_gateway_ids: &RouteGatewayIds,
+    ai_gateway_request_policy: &GatewayRequestPolicy,
     api_token: Option<&str>,
     redacted: bool,
 ) -> Value {
@@ -497,6 +627,15 @@ fn upload_metadata(
             }));
         }
     }
+    for (name, value) in gateway_request_policy_binding_values(ai_gateway_request_policy) {
+        if let Some(value) = value {
+            bindings.push(json!({
+                "name": name,
+                "type": "plain_text",
+                "text": value
+            }));
+        }
+    }
     if let Some(api_token) = api_token {
         bindings.push(json!({
             "name": "CF_API_TOKEN",
@@ -509,6 +648,29 @@ fn upload_metadata(
         "compatibility_date": compatibility_date,
         "bindings": bindings
     })
+}
+
+fn gateway_request_policy_binding_values(
+    policy: &GatewayRequestPolicy,
+) -> [(&'static str, Option<&str>); 7] {
+    [
+        (
+            AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV,
+            policy.request_timeout_ms.as_deref(),
+        ),
+        (AI_GATEWAY_MAX_ATTEMPTS_ENV, policy.max_attempts.as_deref()),
+        (
+            AI_GATEWAY_RETRY_DELAY_MS_ENV,
+            policy.retry_delay_ms.as_deref(),
+        ),
+        (AI_GATEWAY_BACKOFF_ENV, policy.backoff.as_deref()),
+        (
+            AI_GATEWAY_CACHE_TTL_SECONDS_ENV,
+            policy.cache_ttl_seconds.as_deref(),
+        ),
+        (AI_GATEWAY_SKIP_CACHE_ENV, policy.skip_cache.as_deref()),
+        (AI_GATEWAY_COLLECT_LOG_ENV, policy.collect_log.as_deref()),
+    ]
 }
 
 fn route_gateway_binding_values(
@@ -589,6 +751,50 @@ const ROUTE_GATEWAY_ENVS = {
   "/v1/embeddings": "AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
   "/ai/run": "AI_GATEWAY_ID_AI_RUN"
 };
+const AI_GATEWAY_REQUEST_POLICIES = [
+  {
+    env: "AI_GATEWAY_REQUEST_TIMEOUT_MS",
+    header: "cf-aig-request-timeout",
+    kind: "positive-integer",
+    min: 1,
+    max: 600000
+  },
+  {
+    env: "AI_GATEWAY_MAX_ATTEMPTS",
+    header: "cf-aig-max-attempts",
+    kind: "positive-integer",
+    min: 1,
+    max: 5
+  },
+  {
+    env: "AI_GATEWAY_RETRY_DELAY_MS",
+    header: "cf-aig-retry-delay",
+    kind: "positive-integer",
+    min: 1,
+    max: 5000
+  },
+  {
+    env: "AI_GATEWAY_BACKOFF",
+    header: "cf-aig-backoff",
+    kind: "backoff"
+  },
+  {
+    env: "AI_GATEWAY_CACHE_TTL_SECONDS",
+    header: "cf-aig-cache-ttl",
+    kind: "positive-integer",
+    min: 1
+  },
+  {
+    env: "AI_GATEWAY_SKIP_CACHE",
+    header: "cf-aig-skip-cache",
+    kind: "boolean"
+  },
+  {
+    env: "AI_GATEWAY_COLLECT_LOG",
+    header: "cf-aig-collect-log",
+    kind: "boolean"
+  }
+];
 const GATEWAY_ID_ENVS = [
   "AI_GATEWAY_ID",
   ...Object.values(ROUTE_GATEWAY_ENVS)
@@ -606,6 +812,7 @@ export default {
         ai_gateway_id_configured: gatewayIdConfigured(env),
         default_ai_gateway_id_configured: Boolean(env.AI_GATEWAY_ID),
         route_gateways: routeGatewayStatus(env),
+        ai_gateway_request_policy: gatewayRequestPolicyStatus(env),
         inbound_sensitive_headers_present: inboundSensitiveHeaders.length > 0,
         inbound_sensitive_headers: inboundSensitiveHeaders,
         inbound_dispatch_route: headerValue(request.headers, WFP_ROUTE_HEADER),
@@ -668,6 +875,7 @@ function upstreamHeaders(input, env, pathname) {
   headers.set("authorization", `Bearer ${env.CF_API_TOKEN}`);
   const gatewayId = routeGatewayId(env, pathname);
   if (gatewayId) headers.set("cf-aig-gateway-id", gatewayId);
+  appendGatewayPolicyHeaders(headers, env);
   headers.set("x-cinatoken-tenant", env.CINATOKEN_TENANT_ID || "unknown");
   headers.set("x-cinatoken-wfp-runtime", "js-fallback");
   headers.set("cf-aig-metadata", JSON.stringify({
@@ -697,6 +905,50 @@ function routeGatewayStatus(env) {
     gateway_env: gatewayEnv,
     gateway_id_configured: Boolean(env[gatewayEnv])
   }));
+}
+
+function appendGatewayPolicyHeaders(headers, env) {
+  for (const policy of AI_GATEWAY_REQUEST_POLICIES) {
+    const configured = Boolean(String(env[policy.env] || "").trim());
+    const value = validatedGatewayPolicyValue(env[policy.env], policy);
+    if (configured && !value) {
+      throw new Error(`${policy.env} is not a valid ${policy.header} value`);
+    }
+    if (value) headers.set(policy.header, value);
+  }
+}
+
+function gatewayRequestPolicyStatus(env) {
+  return AI_GATEWAY_REQUEST_POLICIES.map((policy) => {
+    const value = env[policy.env];
+    return {
+      env: policy.env,
+      header: policy.header,
+      configured: Boolean(String(value || "").trim()),
+      valid: Boolean(validatedGatewayPolicyValue(value, policy))
+    };
+  });
+}
+
+function validatedGatewayPolicyValue(value, policy) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (policy.kind === "positive-integer") {
+    if (!/^\d+$/.test(normalized)) return "";
+    const parsed = Number.parseInt(normalized, 10);
+    if (!Number.isSafeInteger(parsed) || parsed < policy.min) return "";
+    if (policy.max && parsed > policy.max) return "";
+    return String(parsed);
+  }
+  if (policy.kind === "boolean") {
+    const lowered = normalized.toLowerCase();
+    return lowered === "true" || lowered === "false" ? lowered : "";
+  }
+  if (policy.kind === "backoff") {
+    const lowered = normalized.toLowerCase();
+    return ["constant", "linear", "exponential"].includes(lowered) ? lowered : "";
+  }
+  return "";
 }
 
 function inboundSensitiveHeaderNames(input) {
@@ -822,6 +1074,74 @@ fn optional_request_or_env(
         None => None,
     };
     Ok(request_value.or_else(|| runtime_value(env, env_name)))
+}
+
+fn optional_policy_request_or_env(
+    request_value: Option<&str>,
+    env: &Env,
+    env_name: &'static str,
+    field_name: &str,
+    validator: GatewayPolicyValidator,
+) -> Result<Option<String>, String> {
+    let request_value = request_value
+        .and_then(|value| validate_optional_gateway_policy_value(field_name, value, validator))
+        .transpose()?;
+    let env_value = match request_value {
+        Some(value) => return Ok(Some(value)),
+        None => runtime_value(env, env_name),
+    };
+    env_value
+        .as_deref()
+        .and_then(|value| validate_optional_gateway_policy_value(env_name, value, validator))
+        .transpose()
+}
+
+fn validate_optional_gateway_policy_value(
+    name: &str,
+    value: &str,
+    validator: GatewayPolicyValidator,
+) -> Option<Result<String, String>> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(validate_gateway_policy_value(name, value, validator))
+    }
+}
+
+fn validate_gateway_policy_value(
+    name: &str,
+    value: &str,
+    validator: GatewayPolicyValidator,
+) -> Result<String, String> {
+    match validator {
+        GatewayPolicyValidator::PositiveInteger { min, max } => {
+            if !value.chars().all(|ch| ch.is_ascii_digit()) {
+                return Err(format!("{name} must be a positive integer"));
+            }
+            let parsed = value
+                .parse::<u32>()
+                .map_err(|_| format!("{name} must be a positive integer"))?;
+            if parsed < min {
+                return Err(format!("{name} must be at least {min}"));
+            }
+            if let Some(max) = max {
+                if parsed > max {
+                    return Err(format!("{name} must be at most {max}"));
+                }
+            }
+            Ok(parsed.to_string())
+        }
+        GatewayPolicyValidator::Boolean => match value.to_ascii_lowercase().as_str() {
+            "true" => Ok("true".to_string()),
+            "false" => Ok("false".to_string()),
+            _ => Err(format!("{name} must be true or false")),
+        },
+        GatewayPolicyValidator::Backoff => match value.to_ascii_lowercase().as_str() {
+            "constant" | "linear" | "exponential" => Ok(value.to_ascii_lowercase()),
+            _ => Err(format!("{name} must be constant, linear, or exponential")),
+        },
+    }
 }
 
 fn validate_compatibility_date(value: &str) -> Result<String, String> {
@@ -961,6 +1281,16 @@ mod tests {
         assert!(script.contains("AI_GATEWAY_ID_AI_RUN"));
         assert!(script.contains("routeGatewayId(env, pathname)"));
         assert!(script.contains("routeGatewayStatus(env)"));
+        assert!(script.contains("AI_GATEWAY_REQUEST_POLICIES"));
+        assert!(script.contains("gatewayRequestPolicyStatus(env)"));
+        assert!(script.contains("appendGatewayPolicyHeaders(headers, env)"));
+        assert!(script.contains("cf-aig-request-timeout"));
+        assert!(script.contains("cf-aig-max-attempts"));
+        assert!(script.contains("cf-aig-retry-delay"));
+        assert!(script.contains("cf-aig-backoff"));
+        assert!(script.contains("cf-aig-cache-ttl"));
+        assert!(script.contains("cf-aig-skip-cache"));
+        assert!(script.contains("cf-aig-collect-log"));
         assert!(script.contains("cf-aig-metadata"));
         assert!(script.contains("runtime: \"js-fallback\""));
         assert!(script.contains("body_mode: \"streamed_request_body\""));
@@ -1015,6 +1345,7 @@ mod tests {
             Some("account"),
             Some("gateway"),
             &RouteGatewayIds::default(),
+            &GatewayRequestPolicy::default(),
             Some("secret"),
             false,
         );
@@ -1041,6 +1372,7 @@ mod tests {
             Some("account"),
             Some("gateway"),
             &RouteGatewayIds::default(),
+            &GatewayRequestPolicy::default(),
             Some("secret-token"),
             true,
         );
@@ -1063,6 +1395,7 @@ mod tests {
             Some("account"),
             Some("gateway-default"),
             &route_gateway_ids,
+            &GatewayRequestPolicy::default(),
             None,
             false,
         );
@@ -1077,6 +1410,41 @@ mod tests {
         assert!(raw.contains("\"text\":\"gateway-ai-run\""));
         assert!(!raw.contains("AI_GATEWAY_ID_OPENAI_RESPONSES"));
         assert!(!raw.contains("AI_GATEWAY_ID_OPENAI_EMBEDDINGS"));
+    }
+
+    #[test]
+    fn upload_metadata_includes_gateway_request_policy_bindings() {
+        let policy = GatewayRequestPolicy {
+            request_timeout_ms: Some("30000".to_string()),
+            max_attempts: Some("2".to_string()),
+            retry_delay_ms: Some("250".to_string()),
+            backoff: Some("exponential".to_string()),
+            collect_log: Some("true".to_string()),
+            ..GatewayRequestPolicy::default()
+        };
+        let metadata = upload_metadata(
+            "2026-06-17",
+            "tenant-a",
+            Some("account"),
+            Some("gateway-default"),
+            &RouteGatewayIds::default(),
+            &policy,
+            None,
+            false,
+        );
+        let raw = metadata.to_string();
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_REQUEST_TIMEOUT_MS\""));
+        assert!(raw.contains("\"text\":\"30000\""));
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_MAX_ATTEMPTS\""));
+        assert!(raw.contains("\"text\":\"2\""));
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_RETRY_DELAY_MS\""));
+        assert!(raw.contains("\"text\":\"250\""));
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_BACKOFF\""));
+        assert!(raw.contains("\"text\":\"exponential\""));
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_COLLECT_LOG\""));
+        assert!(raw.contains("\"text\":\"true\""));
+        assert!(!raw.contains("AI_GATEWAY_SKIP_CACHE"));
+        assert!(!raw.contains("AI_GATEWAY_CACHE_TTL_SECONDS"));
     }
 
     #[test]

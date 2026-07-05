@@ -23,6 +23,13 @@ const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES
 const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
 const AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV: &str = "AI_GATEWAY_ID_OPENAI_EMBEDDINGS";
 const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
+const AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV: &str = "AI_GATEWAY_REQUEST_TIMEOUT_MS";
+const AI_GATEWAY_MAX_ATTEMPTS_ENV: &str = "AI_GATEWAY_MAX_ATTEMPTS";
+const AI_GATEWAY_RETRY_DELAY_MS_ENV: &str = "AI_GATEWAY_RETRY_DELAY_MS";
+const AI_GATEWAY_BACKOFF_ENV: &str = "AI_GATEWAY_BACKOFF";
+const AI_GATEWAY_CACHE_TTL_SECONDS_ENV: &str = "AI_GATEWAY_CACHE_TTL_SECONDS";
+const AI_GATEWAY_SKIP_CACHE_ENV: &str = "AI_GATEWAY_SKIP_CACHE";
+const AI_GATEWAY_COLLECT_LOG_ENV: &str = "AI_GATEWAY_COLLECT_LOG";
 const WFP_ROUTE_HEADER: &str = "x-cinatoken-wfp-route";
 const WFP_WORKER_HEADER: &str = "x-cinatoken-wfp-worker";
 const WFP_INTERNAL_ROUTE: &str = "internal-path";
@@ -87,6 +94,52 @@ const SUPPORTED_ROUTE_PATHS: &[&str] = &[
     "/v1/embeddings",
     "/ai/run",
 ];
+const AI_GATEWAY_REQUEST_POLICIES: &[AiGatewayRequestPolicy] = &[
+    AiGatewayRequestPolicy {
+        env: AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV,
+        header: "cf-aig-request-timeout",
+        validator: AiGatewayPolicyValidator::PositiveInteger {
+            min: 1,
+            max: Some(600_000),
+        },
+    },
+    AiGatewayRequestPolicy {
+        env: AI_GATEWAY_MAX_ATTEMPTS_ENV,
+        header: "cf-aig-max-attempts",
+        validator: AiGatewayPolicyValidator::PositiveInteger {
+            min: 1,
+            max: Some(5),
+        },
+    },
+    AiGatewayRequestPolicy {
+        env: AI_GATEWAY_RETRY_DELAY_MS_ENV,
+        header: "cf-aig-retry-delay",
+        validator: AiGatewayPolicyValidator::PositiveInteger {
+            min: 1,
+            max: Some(5_000),
+        },
+    },
+    AiGatewayRequestPolicy {
+        env: AI_GATEWAY_BACKOFF_ENV,
+        header: "cf-aig-backoff",
+        validator: AiGatewayPolicyValidator::Backoff,
+    },
+    AiGatewayRequestPolicy {
+        env: AI_GATEWAY_CACHE_TTL_SECONDS_ENV,
+        header: "cf-aig-cache-ttl",
+        validator: AiGatewayPolicyValidator::PositiveInteger { min: 1, max: None },
+    },
+    AiGatewayRequestPolicy {
+        env: AI_GATEWAY_SKIP_CACHE_ENV,
+        header: "cf-aig-skip-cache",
+        validator: AiGatewayPolicyValidator::Boolean,
+    },
+    AiGatewayRequestPolicy {
+        env: AI_GATEWAY_COLLECT_LOG_ENV,
+        header: "cf-aig-collect-log",
+        validator: AiGatewayPolicyValidator::Boolean,
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TenantRoute {
@@ -103,6 +156,7 @@ struct TenantStatus {
     ai_gateway_id_configured: bool,
     default_ai_gateway_id_configured: bool,
     route_gateways: Vec<RouteGatewayStatus>,
+    ai_gateway_request_policy: Vec<AiGatewayRequestPolicyStatus>,
     inbound_sensitive_headers_present: bool,
     inbound_sensitive_headers: Vec<String>,
     inbound_dispatch_route: Option<String>,
@@ -118,6 +172,28 @@ struct RouteGatewayStatus {
     api: &'static str,
     gateway_env: &'static str,
     gateway_id_configured: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AiGatewayRequestPolicyStatus {
+    env: &'static str,
+    header: &'static str,
+    configured: bool,
+    valid: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AiGatewayRequestPolicy {
+    env: &'static str,
+    header: &'static str,
+    validator: AiGatewayPolicyValidator,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AiGatewayPolicyValidator {
+    PositiveInteger { min: u32, max: Option<u32> },
+    Boolean,
+    Backoff,
 }
 
 #[event(fetch)]
@@ -166,6 +242,7 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
         ai_gateway_id_configured,
         default_ai_gateway_id_configured,
         route_gateways,
+        ai_gateway_request_policy: ai_gateway_request_policy_statuses(env),
         inbound_sensitive_headers_present: !inbound_sensitive_headers.is_empty(),
         inbound_sensitive_headers,
         inbound_dispatch_route: request_header(req, WFP_ROUTE_HEADER),
@@ -268,6 +345,7 @@ fn upstream_headers(
     if let Some(gateway_id) = gateway_id_for_route(env, route) {
         headers.set("cf-aig-gateway-id", &gateway_id)?;
     }
+    append_ai_gateway_request_policy_headers(&mut headers, env)?;
     headers.set(
         "x-cinatoken-tenant",
         &runtime_value(env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
@@ -284,11 +362,45 @@ fn upstream_headers(
     Ok(headers)
 }
 
+fn append_ai_gateway_request_policy_headers(headers: &mut Headers, env: &Env) -> WorkerResult<()> {
+    for policy in AI_GATEWAY_REQUEST_POLICIES {
+        let Some(value) = runtime_value(env, policy.env) else {
+            continue;
+        };
+        let Some(header_value) = validate_ai_gateway_policy_value(&value, policy.validator) else {
+            return Err(worker::Error::RustError(format!(
+                "{} is not a valid {} value",
+                policy.env, policy.header
+            )));
+        };
+        headers.set(policy.header, &header_value)?;
+    }
+    Ok(())
+}
+
 fn tenant_response_headers(upstream: &Headers, env: &Env) -> WorkerResult<Headers> {
     let mut headers = safe_response_headers(upstream)?;
     headers.set("x-cinatoken-wfp-tenant", &tenant_id(env))?;
     headers.set("x-cinatoken-wfp-runtime", "rust-wasm")?;
     Ok(headers)
+}
+
+fn ai_gateway_request_policy_statuses(env: &Env) -> Vec<AiGatewayRequestPolicyStatus> {
+    AI_GATEWAY_REQUEST_POLICIES
+        .iter()
+        .map(|policy| {
+            let value = runtime_value(env, policy.env);
+            AiGatewayRequestPolicyStatus {
+                env: policy.env,
+                header: policy.header,
+                configured: value.is_some(),
+                valid: value
+                    .as_deref()
+                    .and_then(|value| validate_ai_gateway_policy_value(value, policy.validator))
+                    .is_some(),
+            }
+        })
+        .collect()
 }
 
 fn route_gateway_statuses(env: &Env) -> Vec<RouteGatewayStatus> {
@@ -323,6 +435,34 @@ fn route_gateway_env_name(route: TenantRoute) -> &'static str {
 
 fn select_gateway_id(route_specific: Option<String>, default: Option<String>) -> Option<String> {
     route_specific.or(default)
+}
+
+fn validate_ai_gateway_policy_value(
+    value: &str,
+    validator: AiGatewayPolicyValidator,
+) -> Option<String> {
+    let value = value.trim();
+    match validator {
+        AiGatewayPolicyValidator::PositiveInteger { min, max } => {
+            if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+            let parsed = value.parse::<u32>().ok()?;
+            if parsed < min || max.is_some_and(|max| parsed > max) {
+                return None;
+            }
+            Some(parsed.to_string())
+        }
+        AiGatewayPolicyValidator::Boolean => match value.to_ascii_lowercase().as_str() {
+            "true" => Some("true".to_string()),
+            "false" => Some("false".to_string()),
+            _ => None,
+        },
+        AiGatewayPolicyValidator::Backoff => match value.to_ascii_lowercase().as_str() {
+            "constant" | "linear" | "exponential" => Some(value.to_ascii_lowercase()),
+            _ => None,
+        },
+    }
 }
 
 fn safe_response_headers(upstream: &Headers) -> WorkerResult<Headers> {
@@ -549,6 +689,51 @@ mod tests {
             Some("default")
         );
         assert!(select_gateway_id(None, None).is_none());
+    }
+
+    #[test]
+    fn ai_gateway_request_policy_values_are_sanitized() {
+        assert_eq!(
+            validate_ai_gateway_policy_value(
+                " 5 ",
+                AiGatewayPolicyValidator::PositiveInteger {
+                    min: 1,
+                    max: Some(5)
+                }
+            )
+            .as_deref(),
+            Some("5")
+        );
+        assert_eq!(
+            validate_ai_gateway_policy_value("LINEAR", AiGatewayPolicyValidator::Backoff)
+                .as_deref(),
+            Some("linear")
+        );
+        assert_eq!(
+            validate_ai_gateway_policy_value("false", AiGatewayPolicyValidator::Boolean).as_deref(),
+            Some("false")
+        );
+        assert!(validate_ai_gateway_policy_value(
+            "6",
+            AiGatewayPolicyValidator::PositiveInteger {
+                min: 1,
+                max: Some(5)
+            }
+        )
+        .is_none());
+        assert!(validate_ai_gateway_policy_value(
+            "0",
+            AiGatewayPolicyValidator::PositiveInteger { min: 1, max: None }
+        )
+        .is_none());
+        assert!(validate_ai_gateway_policy_value(
+            "true; cf-aig-max-attempts=5",
+            AiGatewayPolicyValidator::Boolean
+        )
+        .is_none());
+        assert!(
+            validate_ai_gateway_policy_value("jitter", AiGatewayPolicyValidator::Backoff).is_none()
+        );
     }
 
     #[test]

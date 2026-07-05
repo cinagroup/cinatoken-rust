@@ -184,8 +184,9 @@ Record:
 - Admin-authenticated smoke evidence only; do not paste the raw
   `WFP_SMOKE_COOKIE` value into the report.
 - Tenant status body, including `runtime`, `forwarding`, `body_mode`, routes,
-  per-route gateway configuration, `inbound_sensitive_headers_present`,
-  `inbound_dispatch_route`, and `inbound_dispatch_worker`.
+  per-route gateway configuration, `ai_gateway_request_policy`,
+  `inbound_sensitive_headers_present`, `inbound_dispatch_route`, and
+  `inbound_dispatch_worker`.
 - `x-cinatoken-wfp-route`, `x-cinatoken-wfp-worker`,
   `x-cinatoken-wfp-tenant`, and `x-cinatoken-wfp-runtime` headers.
 - AI Gateway log entry for any opt-in POST route smoke.
@@ -204,6 +205,9 @@ Pass criteria:
   `--expect-runtime js-fallback`.
 - `forwarding` is `cloudflare-ai-gateway-rest`, `body_mode` is streamed, and
   every supported tenant AI route appears in the route manifest.
+- `ai_gateway_request_policy` is present. Any configured policy entry must be
+  `valid=true`; invalid tenant policy binding values fail smoke before route
+  forwarding evidence is accepted.
 - `inbound_sensitive_headers_present` is `false` and
   `inbound_sensitive_headers` is an empty array, proving the dispatch Worker
   stripped the admin cookie, relay/API-key headers, Cloudflare Access client

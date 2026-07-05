@@ -34,7 +34,7 @@
     "check:worker": "cargo check -p cinatoken-worker --target wasm32-unknown-unknown",
     "check:wfp-tenant": "cargo test -p cinatoken-wfp-tenant && bun run check:wfp-tenant:worker-script && cargo check -p cinatoken-wfp-tenant --target wasm32-unknown-unknown",
     "check:wfp-tenant:worker-script": "cargo test -p cinatoken-worker --lib wfp_tenant",
-    "check:wfp-tenant:deploy-plan": "bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --manifest-only --script-name tenant-smoke --tenant-id tenant-smoke --namespace cinatoken-rust-tenants --account-id 00000000000000000000000000000000 --api-token dry-run-token",
+    "check:wfp-tenant:deploy-plan": "bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --manifest-only --script-name tenant-smoke --tenant-id tenant-smoke --namespace cinatoken-rust-tenants --account-id 00000000000000000000000000000000 --api-token dry-run-token --ai-gateway-request-timeout-ms 30000 --ai-gateway-max-attempts 2 --ai-gateway-retry-delay-ms 250 --ai-gateway-backoff exponential --ai-gateway-collect-log true",
     "check:wfp-dispatch:smoke-plan": "bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url http://127.0.0.1:8787 --worker tenant-smoke",
     "check:realtime-session:smoke-plan": "bun tools/smoke_realtime_session.mjs --dry-run --json --url http://127.0.0.1:8787 --session session-smoke",
     "check:cf:dry-run": "wrangler deploy --dry-run --outdir .wrangler/dry-run --minify",

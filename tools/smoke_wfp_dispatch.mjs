@@ -107,7 +107,7 @@ function buildPlan(options) {
       "worker is the public tenant name in /api/platform/dispatch/:worker; WFP_DISPATCH_WORKER_PREFIX is applied by the main Worker.",
       "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
       "the dispatch Worker strips platform/admin credentials before invoking the tenant Worker; live status smoke fails if tenant status reports sensitive inbound headers.",
-      "status smoke validates the dispatch binding, internal path rewrite, controlled internal dispatch markers, expected tenant runtime, tenant status contract, and x-cinatoken WFP headers.",
+      "status smoke validates the dispatch binding, internal path rewrite, controlled internal dispatch markers, expected tenant runtime, AI Gateway policy contract, tenant status contract, and x-cinatoken WFP headers.",
       "route smoke is opt-in and may call the tenant AI Gateway route; use staging credentials and a low-risk payload.",
     ],
   };
@@ -294,11 +294,32 @@ function validateStatusBody(body, expectRuntime, worker) {
   if (!Array.isArray(body.inbound_sensitive_headers) || body.inbound_sensitive_headers.length !== 0) {
     throw new Error("tenant status must expose an empty inbound_sensitive_headers array");
   }
+  validateAiGatewayRequestPolicy(body.ai_gateway_request_policy);
   if (body.inbound_dispatch_route !== "internal-path") {
     throw new Error(`tenant status did not prove internal WFP dispatch: ${body.inbound_dispatch_route}`);
   }
   if (body.inbound_dispatch_worker !== worker) {
     throw new Error(`tenant status worker marker ${body.inbound_dispatch_worker} did not match ${worker}`);
+  }
+}
+
+function validateAiGatewayRequestPolicy(policy) {
+  if (!Array.isArray(policy)) {
+    throw new Error("tenant status must expose ai_gateway_request_policy array");
+  }
+  for (const item of policy) {
+    if (!item || typeof item !== "object") {
+      throw new Error("ai_gateway_request_policy entries must be objects");
+    }
+    if (typeof item.env !== "string" || typeof item.header !== "string") {
+      throw new Error("ai_gateway_request_policy entries must expose env and header names");
+    }
+    if (typeof item.configured !== "boolean" || typeof item.valid !== "boolean") {
+      throw new Error("ai_gateway_request_policy entries must expose configured and valid booleans");
+    }
+    if (item.configured && !item.valid) {
+      throw new Error(`tenant AI Gateway policy ${item.env} is configured but invalid`);
+    }
   }
 }
 
@@ -334,6 +355,7 @@ function summarizeTenantStatus(body) {
     aiGatewayIdConfigured: body.ai_gateway_id_configured,
     defaultAiGatewayIdConfigured: body.default_ai_gateway_id_configured,
     routeGateways: body.route_gateways,
+    aiGatewayRequestPolicy: body.ai_gateway_request_policy,
     inboundSensitiveHeadersPresent: body.inbound_sensitive_headers_present,
     inboundSensitiveHeaders: body.inbound_sensitive_headers,
     inboundDispatchRoute: body.inbound_dispatch_route,

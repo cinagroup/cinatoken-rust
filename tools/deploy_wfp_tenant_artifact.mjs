@@ -43,6 +43,57 @@ const routeGatewayBindings = [
     flag: "ai-gateway-id-ai-run",
   },
 ];
+const aiGatewayPolicyBindings = [
+  {
+    key: "requestTimeoutMs",
+    binding: "AI_GATEWAY_REQUEST_TIMEOUT_MS",
+    flag: "ai-gateway-request-timeout-ms",
+    kind: "positive-integer",
+    min: 1,
+    max: 600000,
+  },
+  {
+    key: "maxAttempts",
+    binding: "AI_GATEWAY_MAX_ATTEMPTS",
+    flag: "ai-gateway-max-attempts",
+    kind: "positive-integer",
+    min: 1,
+    max: 5,
+  },
+  {
+    key: "retryDelayMs",
+    binding: "AI_GATEWAY_RETRY_DELAY_MS",
+    flag: "ai-gateway-retry-delay-ms",
+    kind: "positive-integer",
+    min: 1,
+    max: 5000,
+  },
+  {
+    key: "backoff",
+    binding: "AI_GATEWAY_BACKOFF",
+    flag: "ai-gateway-backoff",
+    kind: "backoff",
+  },
+  {
+    key: "cacheTtlSeconds",
+    binding: "AI_GATEWAY_CACHE_TTL_SECONDS",
+    flag: "ai-gateway-cache-ttl-seconds",
+    kind: "positive-integer",
+    min: 1,
+  },
+  {
+    key: "skipCache",
+    binding: "AI_GATEWAY_SKIP_CACHE",
+    flag: "ai-gateway-skip-cache",
+    kind: "boolean",
+  },
+  {
+    key: "collectLog",
+    binding: "AI_GATEWAY_COLLECT_LOG",
+    flag: "ai-gateway-collect-log",
+    kind: "boolean",
+  },
+];
 
 const args = parseArgs(process.argv.slice(2));
 const options = normalizeOptions(args);
@@ -77,6 +128,7 @@ async function main(options) {
     ? validatePlainValue(options.aiGatewayId, "ai-gateway-id")
     : null;
   const routeAiGatewayIds = validateRouteGatewayIds(options.routeAiGatewayIds);
+  const aiGatewayPolicy = validateAiGatewayPolicy(options.aiGatewayPolicy);
   const apiToken = required(options.apiToken, "api-token");
   const tenantApiToken =
     options.attachGatewayToken && options.tenantApiToken
@@ -92,6 +144,7 @@ async function main(options) {
     accountId,
     aiGatewayId,
     routeAiGatewayIds,
+    aiGatewayPolicy,
     tenantApiToken,
   });
   const uploadUrl = dispatchUploadUrl(accountId, namespace, scriptName);
@@ -111,6 +164,7 @@ async function main(options) {
       mainModule: options.mainModule,
       moduleCount: modules.length,
       routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
+      aiGatewayPolicyConfigured: configuredAiGatewayPolicy(aiGatewayPolicy),
       modules: modules.map((module) => ({
         name: module.name,
         bytes: module.bytes.length,
@@ -153,6 +207,7 @@ async function main(options) {
     mainModule: options.mainModule,
     moduleCount: modules.length,
     routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
+    aiGatewayPolicyConfigured: configuredAiGatewayPolicy(aiGatewayPolicy),
     modules: modules.map((module) => ({
       name: module.name,
       bytes: module.bytes.length,
@@ -217,6 +272,12 @@ function normalizeOptions(args) {
         value(binding.flag, binding.binding),
       ]),
     ),
+    aiGatewayPolicy: Object.fromEntries(
+      aiGatewayPolicyBindings.map((binding) => [
+        binding.key,
+        value(binding.flag, binding.binding),
+      ]),
+    ),
     compatibilityDate:
       value("compatibility-date", "WFP_TENANT_COMPATIBILITY_DATE") ||
       defaultCompatibilityDate,
@@ -251,6 +312,13 @@ function usage(exitCode, error) {
       "  --ai-gateway-id-anthropic-messages <id> or AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
       "  --ai-gateway-id-openai-embeddings <id>  or AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
       "  --ai-gateway-id-ai-run <id>             or AI_GATEWAY_ID_AI_RUN",
+      "  --ai-gateway-request-timeout-ms <ms>    or AI_GATEWAY_REQUEST_TIMEOUT_MS",
+      "  --ai-gateway-max-attempts <1-5>         or AI_GATEWAY_MAX_ATTEMPTS",
+      "  --ai-gateway-retry-delay-ms <1-5000>    or AI_GATEWAY_RETRY_DELAY_MS",
+      "  --ai-gateway-backoff <constant|linear|exponential> or AI_GATEWAY_BACKOFF",
+      "  --ai-gateway-cache-ttl-seconds <s>      or AI_GATEWAY_CACHE_TTL_SECONDS",
+      "  --ai-gateway-skip-cache <true|false>    or AI_GATEWAY_SKIP_CACHE",
+      "  --ai-gateway-collect-log <true|false>   or AI_GATEWAY_COLLECT_LOG",
       "  --worker-prefix <prefix>    or WFP_DISPATCH_WORKER_PREFIX",
       "  --compatibility-date <YYYY-MM-DD>",
       "  --artifact-dir <path>       default crates/wfp-tenant/build/worker",
@@ -313,6 +381,7 @@ function uploadMetadata({
   accountId,
   aiGatewayId,
   routeAiGatewayIds,
+  aiGatewayPolicy,
   tenantApiToken,
 }) {
   const bindings = [
@@ -344,6 +413,16 @@ function uploadMetadata({
       });
     }
   }
+  for (const binding of aiGatewayPolicyBindings) {
+    const value = aiGatewayPolicy?.[binding.key];
+    if (value) {
+      bindings.push({
+        name: binding.binding,
+        type: "plain_text",
+        text: value,
+      });
+    }
+  }
   if (tenantApiToken) {
     bindings.push({
       name: "CF_API_TOKEN",
@@ -357,6 +436,47 @@ function uploadMetadata({
     compatibility_flags: ["nodejs_compat"],
     bindings,
   };
+}
+
+function validateAiGatewayPolicy(values) {
+  return Object.fromEntries(
+    aiGatewayPolicyBindings.map((binding) => [
+      binding.key,
+      values?.[binding.key] ? validateAiGatewayPolicyValue(values[binding.key], binding) : null,
+    ]),
+  );
+}
+
+function validateAiGatewayPolicyValue(value, binding) {
+  const trimmed = required(value, binding.flag).trim();
+  if (binding.kind === "positive-integer") {
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(`${binding.flag} must be a positive integer`);
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isSafeInteger(parsed) || parsed < binding.min) {
+      throw new Error(`${binding.flag} must be at least ${binding.min}`);
+    }
+    if (binding.max && parsed > binding.max) {
+      throw new Error(`${binding.flag} must be at most ${binding.max}`);
+    }
+    return String(parsed);
+  }
+  if (binding.kind === "boolean") {
+    const lowered = trimmed.toLowerCase();
+    if (lowered !== "true" && lowered !== "false") {
+      throw new Error(`${binding.flag} must be true or false`);
+    }
+    return lowered;
+  }
+  if (binding.kind === "backoff") {
+    const lowered = trimmed.toLowerCase();
+    if (!["constant", "linear", "exponential"].includes(lowered)) {
+      throw new Error(`${binding.flag} must be constant, linear, or exponential`);
+    }
+    return lowered;
+  }
+  return validatePlainValue(trimmed, binding.flag);
 }
 
 function validateRouteGatewayIds(values) {
@@ -373,6 +493,12 @@ function validateRouteGatewayIds(values) {
 function configuredRouteGatewayIds(values) {
   return Object.fromEntries(
     routeGatewayBindings.map((binding) => [binding.key, Boolean(values?.[binding.key])]),
+  );
+}
+
+function configuredAiGatewayPolicy(values) {
+  return Object.fromEntries(
+    aiGatewayPolicyBindings.map((binding) => [binding.key, Boolean(values?.[binding.key])]),
   );
 }
 

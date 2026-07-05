@@ -5230,3 +5230,65 @@ Remaining migration gaps:
 - Capture the negative preview-host/public AI result:
   `403 tenant_internal_dispatch_required`, or document that preview-host AI
   routing remains disabled for the cutover window.
+
+### 22.80 2026-07-05 WFP Tenant AI Gateway Request Policy Controls
+
+This increment moves the WFP Rust tenant path closer to a production
+Cloudflare-native multi-model forwarding layer. The previous tenant runtime
+could select a default or route-specific AI Gateway ID, but per-request
+Gateway behavior such as timeout, retry, cache, and log collection still
+depended on out-of-band dashboard defaults. The tenant runtime now has a
+validated binding-only policy surface for those `cf-aig-*` controls, while
+still refusing caller-supplied platform and Gateway control headers.
+
+Implemented:
+
+- Added validated tenant bindings for Cloudflare AI Gateway per-request
+  controls in the Rust/Wasm tenant runtime:
+  - `AI_GATEWAY_REQUEST_TIMEOUT_MS` -> `cf-aig-request-timeout`;
+  - `AI_GATEWAY_MAX_ATTEMPTS` -> `cf-aig-max-attempts`;
+  - `AI_GATEWAY_RETRY_DELAY_MS` -> `cf-aig-retry-delay`;
+  - `AI_GATEWAY_BACKOFF` -> `cf-aig-backoff`;
+  - `AI_GATEWAY_CACHE_TTL_SECONDS` -> `cf-aig-cache-ttl`;
+  - `AI_GATEWAY_SKIP_CACHE` -> `cf-aig-skip-cache`;
+  - `AI_GATEWAY_COLLECT_LOG` -> `cf-aig-collect-log`.
+- Kept the policy controlled by tenant bindings only. The tenant still copies
+  only `content-type` and `accept` from the caller before adding
+  authorization, route gateway ID, tenant metadata, runtime marker, and the
+  validated policy headers.
+- Exposed `ai_gateway_request_policy` in tenant status with env/header names
+  and `configured`/`valid` booleans, without echoing policy values.
+- Mirrored the same runtime behavior in the generated JS fallback tenant
+  script and made invalid configured values fail closed instead of silently
+  skipping Gateway policy.
+- Extended the Rust/Wasm artifact uploader with matching
+  `--ai-gateway-*` policy flags/env vars and plain-text metadata bindings.
+- Extended the Worker-side generated fallback control plane so
+  `/api/platform/wfp/tenant-script/plan` and `deploy` can include the same
+  policy bindings and configured-status response.
+- Updated WFP dispatch smoke so live status smoke fails when any configured
+  `ai_gateway_request_policy` entry is invalid.
+- Updated staging smoke, Cloudflare config, production-readiness, and
+  verification docs so Gateway request policy becomes explicit WFP evidence.
+
+Validation:
+
+- `cargo test -p cinatoken-wfp-tenant` passed (10 tests).
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed (8 tests; 395
+  filtered in the focused run).
+- `bun run check:wfp-tenant:deploy-plan` passed with request-timeout,
+  max-attempts, retry-delay, exponential backoff, and collect-log policy flags.
+- `bun run check:wfp-dispatch:smoke-plan` passed.
+
+Remaining migration gaps:
+
+- Run live WFP status smoke with at least one non-default policy binding and
+  archive `ai_gateway_request_policy` showing configured entries as valid.
+- Run live internal-path tenant AI route smoke and compare AI Gateway logs for
+  selected gateway ID, tenant metadata, retry/cache/logging behavior, and
+  absence of caller-supplied `cf-aig-*` header influence.
+- Keep route/model compatibility evidence explicit: Cloudflare's REST API
+  currently documents `/ai/run`, `/ai/v1/chat/completions`,
+  `/ai/v1/responses`, and `/ai/v1/messages`; `/v1/embeddings` remains tied to
+  the Workers AI/OpenAI-compatible endpoint evidence and must be smoke-tested
+  with the intended model family before production traffic uses it.

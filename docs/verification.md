@@ -1365,6 +1365,26 @@ baseline above.
   Tools. Live dispatch upload still requires a working `worker-build`
   environment plus staging Cloudflare credentials and namespace.
 
+- **WFP tenant AI Gateway request policy controls - locally verified
+  (2026-07-05).** The Rust/Wasm tenant runtime and generated JS fallback now
+  support tenant-bound AI Gateway per-request policy headers:
+  `cf-aig-request-timeout`, `cf-aig-max-attempts`, `cf-aig-retry-delay`,
+  `cf-aig-backoff`, `cf-aig-cache-ttl`, `cf-aig-skip-cache`, and
+  `cf-aig-collect-log`. These headers are generated only from validated
+  `AI_GATEWAY_*` tenant bindings; caller-supplied `cf-aig-*` headers are still
+  not forwarded through the tenant boundary. Tenant status exposes
+  `ai_gateway_request_policy` with env/header/configured/valid booleans, and
+  WFP dispatch smoke fails if any configured policy is invalid. The Rust/Wasm
+  artifact uploader and generated fallback control plane now include the same
+  plain-text policy bindings, with local deploy-plan coverage for timeout,
+  retry attempts, retry delay, backoff, and log collection. Local evidence:
+  `cargo test -p cinatoken-wfp-tenant` (passed; 10 tests),
+  `cargo test -p cinatoken-worker --lib wfp_tenant` (passed; 8 generated
+  fallback/control-plane tests), `bun run check:wfp-tenant:deploy-plan`
+  (passed with policy flags), and `bun run check:wfp-dispatch:smoke-plan`
+  (passed). Live staging still needs policy-bearing status smoke and AI Gateway
+  log evidence showing the selected gateway/policy behavior on route smoke.
+
 - **OpenAI Realtime DO auth boundary - locally verified (2026-07-05).**
   `/v1/realtime` is now an early-dispatch, default-off WebSocket route gated
   by `REALTIME_SESSION_V1_ENABLED`. When enabled, it requires GET,

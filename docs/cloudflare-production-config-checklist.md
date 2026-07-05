@@ -99,9 +99,11 @@ Current `wrangler.toml` is development-shaped:
 - `ENVIRONMENT = "development"`
 - `FRONTEND_BASE_URL = "http://localhost:3000"`
 - `AI_GATEWAY_ID = ""`
+- `CLOUDFLARE_ACCOUNT_ID = ""`
 - WFP/realtime flags default off or empty: `WFP_DISPATCH_ENABLED`,
   `WFP_INTERNAL_DISPATCH_ENABLED`, `WFP_PREVIEW_HOST_SUFFIX`,
-  `WFP_DISPATCH_WORKER_PREFIX`, `REALTIME_SESSION_GATEWAY_ENABLED`
+  `WFP_DISPATCH_WORKER_PREFIX`, `WFP_DISPATCH_NAMESPACE`,
+  `WFP_TENANT_COMPATIBILITY_DATE`, `REALTIME_SESSION_GATEWAY_ENABLED`
 - D1/KV IDs are placeholders
 - R2/Queue names are declared; relay audit logging and async task polling use
   Queue bindings when configured
@@ -145,6 +147,7 @@ Promotion SOP:
    ```powershell
    wrangler secret put --env staging UPSTASH_REDIS_REST_URL
    wrangler secret put --env staging UPSTASH_REDIS_REST_TOKEN
+   wrangler secret put --env staging CLOUDFLARE_API_TOKEN
    # provider keys, JWT/session, payment, OAuth, Turnstile as required by scope
    ```
 
@@ -207,7 +210,7 @@ These must be true for every deployable environment:
 | Service bindings | Optional | Use for Worker-to-Worker calls if split | Same | Platform | Binding type and smoke |
 | `CHANNEL_AFFINITY` Durable Object | Optional | Required before channel-affinity canary | Same | Relay/Platform | Migration entry, affinity smoke, fail-open smoke |
 | `REALTIME_SESSIONS` Durable Object | Optional | Required before realtime/session cutover | Same | Platform/Relay | Migration entry, hibernation WebSocket smoke, protocol bridge smoke |
-| `DISPATCHER` WFP dispatch namespace | Optional | Required before tenant/preview WFP traffic | Required before WFP cutover | Platform | Namespace created, binding uncommented, tenant script smoke |
+| `DISPATCHER` WFP dispatch namespace | Optional | Required before tenant/preview WFP traffic | Required before WFP cutover | Platform | Namespace created, binding uncommented, tenant script plan/deploy smoke |
 | Rate Limiting binding | Optional | Required once relay rate limits move off Upstash | Required before relay canary | Platform/Security | 429 telemetry via Analytics Engine, limit smoke |
 | Workflows | Optional | Required before multi-step async cutover | Required before multi-step async cutover | Platform/Tasks | Workflow smoke and retry test |
 | Containers | Optional | Required before any WASM-incompatible/long-running fallback path | Same | Platform | Container build, Worker->Container smoke |
@@ -254,6 +257,7 @@ Track names, not values.
 | Session/JWT | Session signing/encryption secret names | Admin/frontend cutover | Forced re-auth decision |
 | Turnstile | Turnstile secret names | Public auth/forms | Staging challenge test |
 | Admin bootstrap | Initial root/admin secret name | Operator bootstrap | Rotation after first login |
+| Cloudflare platform | `CLOUDFLARE_API_TOKEN` | WFP tenant script deploy API | Scoped token, deployment smoke, rotation date |
 
 Rules:
 
@@ -318,6 +322,37 @@ captured.
 | `WFP_INTERNAL_DISPATCH_ENABLED` | Enables `/api/platform/dispatch/:worker/...` as an internal dispatch test path | Operator smoke plan; keep off in production unless explicitly needed |
 | `WFP_DISPATCH_WORKER_PREFIX` | Prefixes sanitized tenant names before `DISPATCHER.get()` | Naming convention and collision review |
 | `REALTIME_SESSION_GATEWAY_ENABLED` | Enables `/api/platform/realtime/:session...` -> `REALTIME_SESSIONS` DO forwarding | `REALTIME_SESSIONS` binding and WebSocket hibernation smoke; not a `/v1/realtime` cutover by itself |
+
+### WFP tenant script deploy control plane
+
+The root-only control-plane routes:
+
+- `POST /api/platform/wfp/tenant-script/plan`
+- `POST /api/platform/wfp/tenant-script/deploy`
+
+generate a small tenant Worker module and, for `deploy`, upload it to the
+Cloudflare Workers for Platforms dispatch namespace API. This REST call is
+control-plane only; hot tenant traffic still uses the `DISPATCHER` binding.
+
+| Var/secret | Kind | Required for | Notes |
+| --- | --- | --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | var | Tenant script plan/deploy URL and runtime AI Gateway calls | Plain account identifier; may be left empty until WFP staging |
+| `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace script upload and tenant runtime AI Gateway calls | Never commit; scope to Worker dispatch namespace script edit plus AI Gateway/Workers AI calls needed by the tenant script |
+| `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
+| `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
+| `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
+
+Smoke order:
+
+1. Set `CLOUDFLARE_ACCOUNT_ID`, `WFP_DISPATCH_NAMESPACE`, and
+   `CLOUDFLARE_API_TOKEN` in staging.
+2. Call `/api/platform/wfp/tenant-script/plan` as a root admin and archive the
+   redacted metadata plus generated script.
+3. Call `/api/platform/wfp/tenant-script/deploy` and confirm a 2xx Cloudflare
+   API response.
+4. Enable the commented `DISPATCHER` binding and, only then, run an internal
+   `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke with
+   `WFP_DISPATCH_ENABLED=true` in staging.
 
 ### Migration prerequisite
 

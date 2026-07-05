@@ -227,7 +227,7 @@ fn normalize_host(host: &str) -> Option<String> {
     (!without_port.is_empty()).then(|| without_port.to_string())
 }
 
-fn normalize_worker_name(value: &str) -> Option<String> {
+pub(crate) fn normalize_worker_name(value: &str) -> Option<String> {
     let value = value.trim().to_ascii_lowercase();
     if value.is_empty() || value.len() > 63 {
         return None;
@@ -242,7 +242,7 @@ fn normalize_worker_name(value: &str) -> Option<String> {
     value.chars().all(is_worker_name_char).then_some(value)
 }
 
-fn is_worker_name_char(ch: char) -> bool {
+pub(crate) fn is_worker_name_char(ch: char) -> bool {
     ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_'
 }
 

@@ -577,6 +577,12 @@ Required tasks:
    `/v1/realtime` protocol bridge boundary: pure DO bridge first, or a
    Cloudflare Container fallback for provider-specific native WebSocket edge
    cases.
+8. Use the root-only WFP tenant script control plane to generate and deploy
+   staging tenant Workers before enabling dispatch traffic:
+   `/api/platform/wfp/tenant-script/plan` must produce redacted metadata and a
+   reviewed script, `/api/platform/wfp/tenant-script/deploy` must return a 2xx
+   Cloudflare dispatch namespace API response, and only then may
+   `WFP_DISPATCH_ENABLED` be armed for dispatch smoke.
 
 Exit evidence:
 
@@ -588,6 +594,9 @@ Exit evidence:
 - Payment replay cannot double-credit.
 - Task retry cannot double-charge or lose artifacts.
 - Frontend build and route checks pass under Bun.
+- WFP tenant script deploy smoke proves the Cloudflare dispatch namespace API,
+  `DISPATCHER` binding, and AI Gateway runtime bindings before tenant traffic
+  is routed through the new path.
 
 ## Performance And Cost Plan
 

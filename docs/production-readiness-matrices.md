@@ -345,6 +345,9 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | Provider API keys | D1 channel keys | Encrypted/redacted storage policy | Admin key reveal audit and redaction tests. |
 | Payment/OAuth/Turnstile/JWT/session secrets | Go/VPS-owned today | Cloudflare secrets or forced re-auth/defer plan | Secret inventory without values. |
 | AI Gateway ID | Empty var | Real ID or direct-provider policy | Provider matrix records chosen path. |
+| `DISPATCHER` WFP namespace | Commented binding; tenant script control-plane routes implemented | Real dispatch namespace, binding enabled after live deploy smoke | Root-only plan/deploy route evidence plus internal dispatch status smoke. |
+| `CLOUDFLARE_ACCOUNT_ID`, `WFP_DISPATCH_NAMESPACE`, `WFP_TENANT_COMPATIBILITY_DATE` | Empty/default vars | Real account/namespace/date in staging/prod | Redacted plan response shows deployable metadata. |
+| `CLOUDFLARE_API_TOKEN` | Secret-only; not in config | Scoped secret for dispatch script deploy and tenant AI Gateway runtime | Secret inventory, deploy 2xx, rotation owner. |
 
 Detailed binding and secret ownership is tracked in
 `docs/cloudflare-production-config-checklist.md`.

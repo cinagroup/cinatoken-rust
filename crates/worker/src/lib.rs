@@ -50,6 +50,7 @@ mod rankings_api;
 mod ratio_sync;
 mod realtime_session;
 mod turnstile;
+mod wfp_tenant;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
 
@@ -124,6 +125,14 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/platform/capabilities", |req, ctx| async move {
             platform_gateway::capabilities(req, ctx.env).await
         })
+        .post_async(
+            "/api/platform/wfp/tenant-script/plan",
+            |req, ctx| async move { wfp_tenant::plan(req, ctx.env).await },
+        )
+        .post_async(
+            "/api/platform/wfp/tenant-script/deploy",
+            |req, ctx| async move { wfp_tenant::deploy(req, ctx.env).await },
+        )
         .get_async("/v1/models", |req, ctx| async move {
             relay::list_models(req, ctx.env).await
         })

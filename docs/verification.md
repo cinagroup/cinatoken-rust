@@ -1182,6 +1182,22 @@ baseline above.
   `git diff --check` (passed), and `bun run check` (passed; route audit
   214 frontend calls / 305 Worker routes / 0 missing calls).
 
+- **WFP tenant script control plane - locally verified (2026-07-05).** The
+  Worker now exposes root-only
+  `POST /api/platform/wfp/tenant-script/plan` and
+  `POST /api/platform/wfp/tenant-script/deploy` endpoints. The generated tenant
+  Worker forwards supported AI routes to Cloudflare AI Gateway REST with a
+  Worker-owned bearer token, optional `cf-aig-gateway-id`, and streamed request
+  bodies; it does not forward the client's `Authorization` header. The deploy
+  call uploads multipart `metadata` plus `tenant.mjs` to the Workers for
+  Platforms dispatch namespace API and caps Cloudflare API response reads at
+  32 KiB. Local evidence:
+  `cargo test -p cinatoken-worker --lib wfp_tenant` (5 passed),
+  `cargo test -p cinatoken-worker --lib` (388 passed),
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` (passed),
+  `git diff --check` (passed), and `bun run check` (passed; route audit
+  214 frontend calls / 307 Worker routes / 0 missing calls).
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

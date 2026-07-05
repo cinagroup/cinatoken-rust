@@ -4397,10 +4397,10 @@ Implemented in `cinatoken-rust`:
 
 Remaining migration gaps:
 
-- WFP tenant script packaging/deployment is not yet ported. The next step is a
-  Rust-side deployment service that uploads tenant Workers into the dispatch
-  namespace through Cloudflare's dispatch namespace API, analogous to
-  cinaVibeSDK's deployer.
+- WFP tenant script packaging/deployment now has a Rust-side control-plane
+  foundation (see 22.64), but staging Cloudflare API credentials, namespace
+  creation, live deploy smoke, and dispatch smoke are still required before
+  tenant traffic moves to this path.
 - `/v1/realtime` is still not OpenAI Realtime-compatible. The next protocol
   step is token/session authentication, upstream WebSocket connection handling,
   backpressure/error mapping, and billing/audit accounting through
@@ -4408,3 +4408,52 @@ Remaining migration gaps:
 - AI Gateway is present for Workers AI binding calls via `AI_GATEWAY_ID`, but a
   complete multi-provider AI Gateway policy still needs route-level controls,
   fallback rules, and provider-specific smoke evidence.
+
+### 22.64 2026-07-05 WFP Tenant Script Control Plane
+
+This increment continues the cinaVibeSDK-inspired Cloudflare platform layer by
+adding the missing operator path between "dispatch gateway exists" and "tenant
+worker is actually present in the dispatch namespace".
+
+Implemented:
+
+- Added `crates/worker/src/wfp_tenant.rs`.
+  - `POST /api/platform/wfp/tenant-script/plan` is RootAuth-protected and
+    returns the generated tenant Worker module, redacted Cloudflare upload
+    metadata, upload URL, required config, warnings, and deployability status.
+  - `POST /api/platform/wfp/tenant-script/deploy` is RootAuth-protected and
+    uploads the generated module to Cloudflare's Workers for Platforms dispatch
+    namespace script API using multipart metadata plus `tenant.mjs`.
+  - The generated tenant Worker exposes
+    `GET /__cinatoken/tenant/status` for smoke and forwards
+    `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and `/ai/run`
+    to Cloudflare AI Gateway REST.
+  - The tenant script sets its own `Authorization: Bearer env.CF_API_TOKEN`,
+    optional `cf-aig-gateway-id`, and tenant headers, but does not forward the
+    client request's `Authorization` header.
+  - Request and response bodies stay streamed on tenant runtime traffic; the
+    script deliberately does not read JSON request bodies. Model policy,
+    billing, and audit remain enforced by the main cinatoken relay until a
+    later route-level AI Gateway policy is introduced.
+  - Cloudflare API deployment responses are read with a 32 KiB cap and a
+    20-second abort timeout.
+- Updated `wrangler.toml` with non-secret WFP control-plane vars:
+  `CLOUDFLARE_ACCOUNT_ID`, `WFP_DISPATCH_NAMESPACE`, and
+  `WFP_TENANT_COMPATIBILITY_DATE`. `CLOUDFLARE_API_TOKEN` remains secret-only.
+- Updated the production config checklist and execution plan with the WFP
+  tenant script plan/deploy smoke order.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed.
+
+Remaining migration gaps:
+
+- Create staging and production dispatch namespaces, set a scoped
+  `CLOUDFLARE_API_TOKEN` secret, run live plan/deploy smoke, then enable the
+  `DISPATCHER` binding and `WFP_DISPATCH_ENABLED` in staging.
+- The generated tenant script is an ES module managed by the Rust control
+  plane. A fully Rust/Wasm tenant-worker bundle remains a future packaging
+  option after the WFP deploy path is proven.
+- `/v1/realtime` protocol parity and cross-provider AI Gateway fallback policy
+  remain separate migration tracks.

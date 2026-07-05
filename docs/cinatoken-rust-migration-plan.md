@@ -4682,8 +4682,8 @@ Remaining migration gaps:
 - Decide whether `/v1/embeddings` should remain on the Cloudflare REST path,
   move to a provider-native gateway endpoint, or be owned only by the main
   relay, based on staging evidence.
-- Add route-level AI Gateway policy controls after live tenant metadata and
-  dispatch smoke are captured.
+- Run live smoke for the route-level AI Gateway ID overrides added in section
+  22.71, then capture the intended Gateway ID and tenant metadata per route.
 
 ### 22.69 2026-07-05 WFP Tenant Response Header Hygiene
 
@@ -4768,3 +4768,61 @@ Remaining migration gaps:
 - Capture an internal dispatch POST smoke for at least one tenant AI route to
   prove the rewritten path, query string, headers, and streamed body reach the
   tenant Worker unchanged.
+
+### 22.71 2026-07-05 WFP Tenant Route-Level AI Gateway Selection
+
+This increment moves the WFP tenant path closer to the cinaVibeSDK-style
+multi-gateway forwarding model. The tenant runtime still stays deliberately
+thin: auth, channel selection, billing, audit, and model policy remain in the
+main cinatoken relay, while the WFP tenant Worker streams already-authorized
+requests to Cloudflare AI Gateway. The new behavior lets staging/prod bind
+different Cloudflare AI Gateway IDs per route family without changing request
+bodies or provider payloads.
+
+Implemented:
+
+- The Rust/Wasm tenant runtime now maps each supported tenant AI route to a
+  route-specific Gateway binding and falls back to the default `AI_GATEWAY_ID`
+  when the route override is absent:
+  `AI_GATEWAY_ID_OPENAI_CHAT`, `AI_GATEWAY_ID_OPENAI_RESPONSES`,
+  `AI_GATEWAY_ID_ANTHROPIC_MESSAGES`, `AI_GATEWAY_ID_OPENAI_EMBEDDINGS`, and
+  `AI_GATEWAY_ID_AI_RUN`.
+- The tenant status response now exposes
+  `default_ai_gateway_id_configured` plus per-route `route_gateways` entries
+  with `route`, `api`, `gateway_env`, and `gateway_id_configured`. This gives
+  staging smoke a non-secret way to confirm which Gateway env var applies
+  before live provider output is compared.
+- The generated JS fallback uses the same route-to-Gateway mapping and keeps
+  the same default fallback behavior.
+- The Worker-side tenant script plan/deploy metadata accepts explicit
+  route-level fields (`ai_gateway_id_openai_chat`,
+  `ai_gateway_id_openai_responses`, `ai_gateway_id_anthropic_messages`,
+  `ai_gateway_id_openai_embeddings`, and `ai_gateway_id_ai_run`) and attaches
+  the corresponding plain-text Worker bindings.
+- The local Rust/Wasm artifact uploader now accepts matching CLI flags and env
+  fallbacks, so the preferred `bun run deploy:wfp-tenant` path can upload the
+  route-specific bindings together with `shim.mjs`/Wasm artifacts.
+
+Validation:
+
+- `cargo test -p cinatoken-wfp-tenant` passed (7 tests).
+- `cargo test -p cinatoken-worker --lib wfp_tenant` passed (7 generated
+  fallback/control-plane tests; 388 filtered).
+- `bun run check:wfp-tenant` passed.
+- `bun run check` passed, including frontend gates, WFP deploy-plan/generated
+  fallback gates, workspace tests, and Worker/WFP wasm32 checks.
+- A route-override `bun tools/deploy_wfp_tenant_artifact.mjs --dry-run
+  --manifest-only --json ...` passed and showed expected default, chat,
+  messages, and `/ai/run` Gateway bindings with the tenant `CF_API_TOKEN`
+  redacted.
+
+Remaining migration gaps:
+
+- Run live WFP dispatch smoke with both default and route-specific Gateway IDs
+  and capture AI Gateway logs proving that chat, responses, Anthropic Messages,
+  embeddings, and `/ai/run` land in the intended Gateway while retaining flat
+  tenant metadata.
+- Decide whether staging/prod should use one Gateway per API family, one
+  Gateway per tenant tier, or a default Gateway plus only selected route
+  overrides; record the chosen policy in the provider/channel matrix before
+  canary.

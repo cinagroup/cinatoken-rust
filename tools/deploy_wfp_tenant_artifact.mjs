@@ -16,6 +16,33 @@ const defaultArtifactDir = path.join(
 const defaultMainModule = "shim.mjs";
 const defaultCompatibilityDate = "2026-06-17";
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
+const routeGatewayBindings = [
+  {
+    key: "openaiChat",
+    binding: "AI_GATEWAY_ID_OPENAI_CHAT",
+    flag: "ai-gateway-id-openai-chat",
+  },
+  {
+    key: "openaiResponses",
+    binding: "AI_GATEWAY_ID_OPENAI_RESPONSES",
+    flag: "ai-gateway-id-openai-responses",
+  },
+  {
+    key: "anthropicMessages",
+    binding: "AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
+    flag: "ai-gateway-id-anthropic-messages",
+  },
+  {
+    key: "openaiEmbeddings",
+    binding: "AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
+    flag: "ai-gateway-id-openai-embeddings",
+  },
+  {
+    key: "aiRun",
+    binding: "AI_GATEWAY_ID_AI_RUN",
+    flag: "ai-gateway-id-ai-run",
+  },
+];
 
 const args = parseArgs(process.argv.slice(2));
 const options = normalizeOptions(args);
@@ -49,6 +76,7 @@ async function main(options) {
   const aiGatewayId = options.aiGatewayId
     ? validatePlainValue(options.aiGatewayId, "ai-gateway-id")
     : null;
+  const routeAiGatewayIds = validateRouteGatewayIds(options.routeAiGatewayIds);
   const apiToken = required(options.apiToken, "api-token");
   const tenantApiToken =
     options.attachGatewayToken && options.tenantApiToken
@@ -63,6 +91,7 @@ async function main(options) {
     tenantId,
     accountId,
     aiGatewayId,
+    routeAiGatewayIds,
     tenantApiToken,
   });
   const uploadUrl = dispatchUploadUrl(accountId, namespace, scriptName);
@@ -81,6 +110,7 @@ async function main(options) {
       artifactDir: relativePath(options.artifactDir),
       mainModule: options.mainModule,
       moduleCount: modules.length,
+      routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
       modules: modules.map((module) => ({
         name: module.name,
         bytes: module.bytes.length,
@@ -122,6 +152,7 @@ async function main(options) {
     artifactDir: relativePath(options.artifactDir),
     mainModule: options.mainModule,
     moduleCount: modules.length,
+    routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
     modules: modules.map((module) => ({
       name: module.name,
       bytes: module.bytes.length,
@@ -180,6 +211,12 @@ function normalizeOptions(args) {
       value("tenant-api-token", "WFP_TENANT_CF_API_TOKEN") ||
       value("tenant-api-token", "CLOUDFLARE_AI_GATEWAY_TOKEN"),
     aiGatewayId: value("ai-gateway-id", "AI_GATEWAY_ID"),
+    routeAiGatewayIds: Object.fromEntries(
+      routeGatewayBindings.map((binding) => [
+        binding.key,
+        value(binding.flag, binding.binding),
+      ]),
+    ),
     compatibilityDate:
       value("compatibility-date", "WFP_TENANT_COMPATIBILITY_DATE") ||
       defaultCompatibilityDate,
@@ -209,6 +246,11 @@ function usage(exitCode, error) {
       "  --tenant-id <id>",
       "  --tenant-api-token <token>  or WFP_TENANT_CF_API_TOKEN / CLOUDFLARE_AI_GATEWAY_TOKEN",
       "  --ai-gateway-id <id>        or AI_GATEWAY_ID",
+      "  --ai-gateway-id-openai-chat <id>        or AI_GATEWAY_ID_OPENAI_CHAT",
+      "  --ai-gateway-id-openai-responses <id>   or AI_GATEWAY_ID_OPENAI_RESPONSES",
+      "  --ai-gateway-id-anthropic-messages <id> or AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
+      "  --ai-gateway-id-openai-embeddings <id>  or AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
+      "  --ai-gateway-id-ai-run <id>             or AI_GATEWAY_ID_AI_RUN",
       "  --worker-prefix <prefix>    or WFP_DISPATCH_WORKER_PREFIX",
       "  --compatibility-date <YYYY-MM-DD>",
       "  --artifact-dir <path>       default crates/wfp-tenant/build/worker",
@@ -270,6 +312,7 @@ function uploadMetadata({
   tenantId,
   accountId,
   aiGatewayId,
+  routeAiGatewayIds,
   tenantApiToken,
 }) {
   const bindings = [
@@ -291,6 +334,16 @@ function uploadMetadata({
       text: aiGatewayId,
     });
   }
+  for (const binding of routeGatewayBindings) {
+    const aiGatewayId = routeAiGatewayIds?.[binding.key];
+    if (aiGatewayId) {
+      bindings.push({
+        name: binding.binding,
+        type: "plain_text",
+        text: aiGatewayId,
+      });
+    }
+  }
   if (tenantApiToken) {
     bindings.push({
       name: "CF_API_TOKEN",
@@ -304,6 +357,23 @@ function uploadMetadata({
     compatibility_flags: ["nodejs_compat"],
     bindings,
   };
+}
+
+function validateRouteGatewayIds(values) {
+  return Object.fromEntries(
+    routeGatewayBindings.map((binding) => [
+      binding.key,
+      values?.[binding.key]
+        ? validatePlainValue(values[binding.key], binding.flag)
+        : null,
+    ]),
+  );
+}
+
+function configuredRouteGatewayIds(values) {
+  return Object.fromEntries(
+    routeGatewayBindings.map((binding) => [binding.key, Boolean(values?.[binding.key])]),
+  );
 }
 
 function redactMetadata(metadata) {

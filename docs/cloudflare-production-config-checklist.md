@@ -99,6 +99,10 @@ Current `wrangler.toml` is development-shaped:
 - `ENVIRONMENT = "development"`
 - `FRONTEND_BASE_URL = "http://localhost:3000"`
 - `AI_GATEWAY_ID = ""`
+- Route-specific WFP tenant AI Gateway IDs default empty:
+  `AI_GATEWAY_ID_OPENAI_CHAT`, `AI_GATEWAY_ID_OPENAI_RESPONSES`,
+  `AI_GATEWAY_ID_ANTHROPIC_MESSAGES`, `AI_GATEWAY_ID_OPENAI_EMBEDDINGS`,
+  and `AI_GATEWAY_ID_AI_RUN`
 - `CLOUDFLARE_ACCOUNT_ID = ""`
 - WFP/realtime flags default off or empty: `WFP_DISPATCH_ENABLED`,
   `WFP_INTERNAL_DISPATCH_ENABLED`, `WFP_PREVIEW_HOST_SUFFIX`,
@@ -349,6 +353,11 @@ build with `bun run build:wfp-tenant`, then upload the generated
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
+| `AI_GATEWAY_ID_OPENAI_CHAT` | var | Optional WFP tenant gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only |
+| `AI_GATEWAY_ID_OPENAI_RESPONSES` | var | Optional WFP tenant gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only |
+| `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | var | Optional WFP tenant gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only |
+| `AI_GATEWAY_ID_OPENAI_EMBEDDINGS` | var | Optional WFP tenant gateway override for `/v1/embeddings` | Overrides `AI_GATEWAY_ID` for this route only |
+| `AI_GATEWAY_ID_AI_RUN` | var | Optional WFP tenant gateway override for `/ai/run` | Overrides `AI_GATEWAY_ID` for this route only |
 
 Smoke order:
 
@@ -364,8 +373,13 @@ Smoke order:
 4. Preferred Rust/Wasm path: run `bun run deploy:wfp-tenant -- --script-name
    <tenant> --tenant-id <tenant> --namespace <dispatch-namespace>` first with
    `--dry-run`, then without `--dry-run`, and confirm a 2xx Cloudflare API
-   response. Fallback path: call `/api/platform/wfp/tenant-script/deploy` to
-   upload the generated ES module.
+   response. When staging uses route-separated AI Gateway policies, pass the
+   matching uploader flags (`--ai-gateway-id-openai-chat`,
+   `--ai-gateway-id-openai-responses`,
+   `--ai-gateway-id-anthropic-messages`,
+   `--ai-gateway-id-openai-embeddings`, and/or `--ai-gateway-id-ai-run`) or
+   set the same-named env vars before upload. Fallback path: call
+   `/api/platform/wfp/tenant-script/deploy` to upload the generated ES module.
 5. Enable the commented `DISPATCHER` binding and, only then, run an internal
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke with
    `WFP_DISPATCH_ENABLED=true` in staging. The main Worker rewrites the
@@ -376,11 +390,14 @@ Smoke order:
    Rust/Wasm artifact for `/v1/chat/completions`, `/v1/responses`,
    `/v1/messages`, `/v1/embeddings`, and `/ai/run`. Confirm the fallback status
    reports `runtime: "js-fallback"`, the artifact status reports
-   `runtime: "rust-wasm"`, client `Authorization` is not forwarded, and AI
-   Gateway logs include flat tenant metadata for each route family. Capture
-   redacted response headers and verify tenant/runtime marker headers are
-   present while `cf-aig-*`, `authorization`, `set-cookie`, `content-length`,
-   transfer/platform headers, and upstream `x-cinatoken-*` headers are absent.
+   `runtime: "rust-wasm"`, `route_gateways` reports the expected route-specific
+   env names, client `Authorization` is not forwarded, and AI Gateway logs
+   include flat tenant metadata for each route family. If route-specific gateway
+   IDs are set, confirm each route lands in the intended Gateway before
+   comparing provider output. Capture redacted response headers and verify
+   tenant/runtime marker headers are present while `cf-aig-*`, `authorization`,
+   `set-cookie`, `content-length`, transfer/platform headers, and upstream
+   `x-cinatoken-*` headers are absent.
    Keep legacy `/v1/completions` on the main relay unless Cloudflare documents
    a matching REST endpoint or a provider-native tenant path is explicitly
    added.

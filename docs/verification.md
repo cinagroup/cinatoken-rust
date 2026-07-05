@@ -1288,6 +1288,26 @@ baseline above.
   Realtime bridge, preconsume/settlement/audit, and live hibernation/protocol
   replay remain G7-gated.
 
+- **WFP tenant route-level AI Gateway selection - locally verified
+  (2026-07-05).** The Rust/Wasm tenant runtime and generated JS fallback now
+  support route-specific AI Gateway ID bindings for `/v1/chat/completions`,
+  `/v1/responses`, `/v1/messages`, `/v1/embeddings`, and `/ai/run`, falling
+  back to the default `AI_GATEWAY_ID` when a route override is absent. The
+  tenant status response reports `default_ai_gateway_id_configured` and
+  per-route `route_gateways` entries so staging smoke can prove which gateway
+  env var applies before live traffic is compared. The Worker control-plane
+  plan/deploy metadata and the local `bun run deploy:wfp-tenant` artifact
+  uploader now accept and attach the same route-specific bindings. Local
+  evidence: `cargo test -p cinatoken-wfp-tenant` (7 passed),
+  `cargo test -p cinatoken-worker --lib wfp_tenant` (7 passed; 388 filtered),
+  `bun run check:wfp-tenant` (passed), `bun run check` (passed; frontend route
+  audit 214 calls / 307 Worker routes / 0 missing calls), and a route-override
+  uploader dry-run with `--ai-gateway-id`, `--ai-gateway-id-openai-chat`,
+  `--ai-gateway-id-anthropic-messages`, and `--ai-gateway-id-ai-run` (metadata
+  included the expected plain-text Gateway bindings and redacted `CF_API_TOKEN`).
+  Live staging evidence still needs route-by-route AI Gateway log capture for
+  the configured default and override IDs.
+
 The preferred workspace is now `C:\cinagroup\cinatoken-rust`, which avoids the
 VirtualBox/shared-drive file-lock issues seen under `Z:`. If the old `Z:`
 checkout is used, move Cargo output to a local temp directory before running

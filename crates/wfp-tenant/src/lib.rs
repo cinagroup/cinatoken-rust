@@ -17,6 +17,12 @@ use worker::{
 const STATUS_PATH: &str = "/__cinatoken/tenant/status";
 const SERVICE_NAME: &str = "cinatoken-wfp-tenant-rust";
 const AI_GATEWAY_BASE: &str = "https://api.cloudflare.com/client/v4";
+const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
+const AI_GATEWAY_ID_OPENAI_CHAT_ENV: &str = "AI_GATEWAY_ID_OPENAI_CHAT";
+const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES";
+const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
+const AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV: &str = "AI_GATEWAY_ID_OPENAI_EMBEDDINGS";
+const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
 const UNKNOWN_TENANT: &str = "unknown";
 const SAFE_RESPONSE_HEADERS: &[&str] = &[
     "content-type",
@@ -81,9 +87,19 @@ struct TenantStatus {
     runtime: &'static str,
     tenant_id: String,
     ai_gateway_id_configured: bool,
+    default_ai_gateway_id_configured: bool,
+    route_gateways: Vec<RouteGatewayStatus>,
     forwarding: &'static str,
     body_mode: &'static str,
     routes: &'static [&'static str],
+}
+
+#[derive(Debug, Serialize)]
+struct RouteGatewayStatus {
+    route: &'static str,
+    api: &'static str,
+    gateway_env: &'static str,
+    gateway_id_configured: bool,
 }
 
 #[event(fetch)]
@@ -117,12 +133,20 @@ async fn route(req: Request, env: Env) -> WorkerResult<Response> {
 }
 
 fn tenant_status(env: &Env) -> WorkerResult<Response> {
+    let default_ai_gateway_id_configured = runtime_value(env, AI_GATEWAY_ID_ENV).is_some();
+    let route_gateways = route_gateway_statuses(env);
+    let ai_gateway_id_configured = default_ai_gateway_id_configured
+        || route_gateways
+            .iter()
+            .any(|route| route.gateway_id_configured);
     let status = TenantStatus {
         service: SERVICE_NAME,
         runtime: "rust-wasm",
         tenant_id: runtime_value(env, "CINATOKEN_TENANT_ID")
             .unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
-        ai_gateway_id_configured: runtime_value(env, "AI_GATEWAY_ID").is_some(),
+        ai_gateway_id_configured,
+        default_ai_gateway_id_configured,
+        route_gateways,
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTE_PATHS,
@@ -203,7 +227,7 @@ fn upstream_headers(
     copy_header(req, &mut headers, "content-type")?;
     copy_header(req, &mut headers, "accept")?;
     headers.set("authorization", &format!("Bearer {api_token}"))?;
-    if let Some(gateway_id) = runtime_value(env, "AI_GATEWAY_ID") {
+    if let Some(gateway_id) = gateway_id_for_route(env, route) {
         headers.set("cf-aig-gateway-id", &gateway_id)?;
     }
     headers.set(
@@ -227,6 +251,40 @@ fn tenant_response_headers(upstream: &Headers, env: &Env) -> WorkerResult<Header
     headers.set("x-cinatoken-wfp-tenant", &tenant_id(env))?;
     headers.set("x-cinatoken-wfp-runtime", "rust-wasm")?;
     Ok(headers)
+}
+
+fn route_gateway_statuses(env: &Env) -> Vec<RouteGatewayStatus> {
+    SUPPORTED_ROUTES
+        .iter()
+        .map(|route| RouteGatewayStatus {
+            route: route.public_path,
+            api: route.api_family,
+            gateway_env: route_gateway_env_name(*route),
+            gateway_id_configured: runtime_value(env, route_gateway_env_name(*route)).is_some(),
+        })
+        .collect()
+}
+
+fn gateway_id_for_route(env: &Env, route: TenantRoute) -> Option<String> {
+    select_gateway_id(
+        runtime_value(env, route_gateway_env_name(route)),
+        runtime_value(env, AI_GATEWAY_ID_ENV),
+    )
+}
+
+fn route_gateway_env_name(route: TenantRoute) -> &'static str {
+    match route.api_family {
+        "openai_chat" => AI_GATEWAY_ID_OPENAI_CHAT_ENV,
+        "openai_responses" => AI_GATEWAY_ID_OPENAI_RESPONSES_ENV,
+        "anthropic_messages" => AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
+        "openai_embeddings" => AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV,
+        "ai_run" => AI_GATEWAY_ID_AI_RUN_ENV,
+        _ => AI_GATEWAY_ID_ENV,
+    }
+}
+
+fn select_gateway_id(route_specific: Option<String>, default: Option<String>) -> Option<String> {
+    route_specific.or(default)
 }
 
 fn safe_response_headers(upstream: &Headers) -> WorkerResult<Headers> {
@@ -376,6 +434,47 @@ mod tests {
                 .values()
                 .all(|value| value.is_string()));
         }
+    }
+
+    #[test]
+    fn route_gateway_env_names_are_route_specific() {
+        assert_eq!(
+            route_gateway_env_name(target_route("/v1/chat/completions").unwrap()),
+            AI_GATEWAY_ID_OPENAI_CHAT_ENV
+        );
+        assert_eq!(
+            route_gateway_env_name(target_route("/v1/responses").unwrap()),
+            AI_GATEWAY_ID_OPENAI_RESPONSES_ENV
+        );
+        assert_eq!(
+            route_gateway_env_name(target_route("/v1/messages").unwrap()),
+            AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV
+        );
+        assert_eq!(
+            route_gateway_env_name(target_route("/v1/embeddings").unwrap()),
+            AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV
+        );
+        assert_eq!(
+            route_gateway_env_name(target_route("/ai/run").unwrap()),
+            AI_GATEWAY_ID_AI_RUN_ENV
+        );
+    }
+
+    #[test]
+    fn route_gateway_selection_prefers_route_specific_id() {
+        assert_eq!(
+            select_gateway_id(
+                Some("route-gateway".to_string()),
+                Some("default".to_string())
+            )
+            .as_deref(),
+            Some("route-gateway")
+        );
+        assert_eq!(
+            select_gateway_id(None, Some("default".to_string())).as_deref(),
+            Some("default")
+        );
+        assert!(select_gateway_id(None, None).is_none());
     }
 
     #[test]

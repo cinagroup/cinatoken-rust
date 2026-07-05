@@ -28,6 +28,11 @@ pub const WFP_TENANT_COMPATIBILITY_DATE_ENV: &str = "WFP_TENANT_COMPATIBILITY_DA
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
 const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
 const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
+const AI_GATEWAY_ID_OPENAI_CHAT_ENV: &str = "AI_GATEWAY_ID_OPENAI_CHAT";
+const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES";
+const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
+const AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV: &str = "AI_GATEWAY_ID_OPENAI_EMBEDDINGS";
+const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
 const TENANT_MODULE_NAME: &str = "tenant.mjs";
 const DEFAULT_COMPATIBILITY_DATE: &str = "2026-06-17";
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
@@ -43,6 +48,11 @@ struct TenantScriptRequest {
     tenant_id: Option<String>,
     dispatch_namespace: Option<String>,
     ai_gateway_id: Option<String>,
+    ai_gateway_id_openai_chat: Option<String>,
+    ai_gateway_id_openai_responses: Option<String>,
+    ai_gateway_id_anthropic_messages: Option<String>,
+    ai_gateway_id_openai_embeddings: Option<String>,
+    ai_gateway_id_ai_run: Option<String>,
     compatibility_date: Option<String>,
     attach_gateway_token: Option<bool>,
 }
@@ -55,6 +65,7 @@ struct TenantScriptPlan {
     namespace: Option<String>,
     api_token: Option<String>,
     ai_gateway_id: Option<String>,
+    route_ai_gateway_ids: RouteGatewayIds,
     compatibility_date: String,
     module_name: String,
     script: String,
@@ -81,6 +92,7 @@ struct TenantScriptPlanResponse {
     module_name: String,
     compatibility_date: String,
     ai_gateway_id_configured: bool,
+    route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
     attach_gateway_token: bool,
     deployable: bool,
     missing: Vec<ConfigRequirement>,
@@ -109,11 +121,85 @@ struct TenantScriptDeployResponse {
     module_name: String,
     compatibility_date: String,
     ai_gateway_id_configured: bool,
+    route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
     status: u16,
     ok: bool,
     cloudflare_response_preview: String,
     cloudflare_response_json: Option<Value>,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RouteGatewayIds {
+    openai_chat: Option<String>,
+    openai_responses: Option<String>,
+    anthropic_messages: Option<String>,
+    openai_embeddings: Option<String>,
+    ai_run: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct RouteGatewayIdConfigured {
+    openai_chat: bool,
+    openai_responses: bool,
+    anthropic_messages: bool,
+    openai_embeddings: bool,
+    ai_run: bool,
+}
+
+impl RouteGatewayIds {
+    fn from_request_and_env(env: &Env, request: &TenantScriptRequest) -> Result<Self, String> {
+        Ok(Self {
+            openai_chat: optional_request_or_env(
+                request.ai_gateway_id_openai_chat.as_deref(),
+                env,
+                AI_GATEWAY_ID_OPENAI_CHAT_ENV,
+                "ai_gateway_id_openai_chat",
+            )?,
+            openai_responses: optional_request_or_env(
+                request.ai_gateway_id_openai_responses.as_deref(),
+                env,
+                AI_GATEWAY_ID_OPENAI_RESPONSES_ENV,
+                "ai_gateway_id_openai_responses",
+            )?,
+            anthropic_messages: optional_request_or_env(
+                request.ai_gateway_id_anthropic_messages.as_deref(),
+                env,
+                AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
+                "ai_gateway_id_anthropic_messages",
+            )?,
+            openai_embeddings: optional_request_or_env(
+                request.ai_gateway_id_openai_embeddings.as_deref(),
+                env,
+                AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV,
+                "ai_gateway_id_openai_embeddings",
+            )?,
+            ai_run: optional_request_or_env(
+                request.ai_gateway_id_ai_run.as_deref(),
+                env,
+                AI_GATEWAY_ID_AI_RUN_ENV,
+                "ai_gateway_id_ai_run",
+            )?,
+        })
+    }
+
+    fn any_configured(&self) -> bool {
+        self.openai_chat.is_some()
+            || self.openai_responses.is_some()
+            || self.anthropic_messages.is_some()
+            || self.openai_embeddings.is_some()
+            || self.ai_run.is_some()
+    }
+
+    fn configured(&self) -> RouteGatewayIdConfigured {
+        RouteGatewayIdConfigured {
+            openai_chat: self.openai_chat.is_some(),
+            openai_responses: self.openai_responses.is_some(),
+            anthropic_messages: self.anthropic_messages.is_some(),
+            openai_embeddings: self.openai_embeddings.is_some(),
+            ai_run: self.ai_run.is_some(),
+        }
+    }
 }
 
 pub async fn plan(mut req: Request, env: Env) -> WorkerResult<Response> {
@@ -197,7 +283,9 @@ pub async fn deploy(mut req: Request, env: Env) -> WorkerResult<Response> {
         upload_url,
         module_name: plan.module_name,
         compatibility_date: plan.compatibility_date,
-        ai_gateway_id_configured: plan.ai_gateway_id.is_some(),
+        ai_gateway_id_configured: plan.ai_gateway_id.is_some()
+            || plan.route_ai_gateway_ids.any_configured(),
+        route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
         status,
         ok,
         cloudflare_response_preview: preview,
@@ -221,8 +309,8 @@ fn build_tenant_script_plan(
         runtime_value(env, WFP_DISPATCH_WORKER_PREFIX_ENV).as_deref(),
     )
     .ok_or_else(|| "WFP_DISPATCH_WORKER_PREFIX is not a valid worker-name prefix".to_string())?;
-    let tenant_id = match request.tenant_id {
-        Some(value) => validate_plain_header_value("tenant_id", &value)?,
+    let tenant_id = match request.tenant_id.as_deref() {
+        Some(value) => validate_plain_header_value("tenant_id", value)?,
         None => public_script_name.clone(),
     };
     let namespace = match request
@@ -239,11 +327,13 @@ fn build_tenant_script_plan(
     let account_id =
         runtime_value(env, CLOUDFLARE_ACCOUNT_ID_ENV).and_then(|value| validate_account_id(&value));
     let api_token = secret_or_var(env, CLOUDFLARE_API_TOKEN_ENV);
-    let ai_gateway_id = match request.ai_gateway_id.as_deref() {
-        Some(value) => validate_optional_plain_value("ai_gateway_id", value).transpose()?,
-        None => None,
-    }
-    .or_else(|| runtime_value(env, AI_GATEWAY_ID_ENV));
+    let ai_gateway_id = optional_request_or_env(
+        request.ai_gateway_id.as_deref(),
+        env,
+        AI_GATEWAY_ID_ENV,
+        "ai_gateway_id",
+    )?;
+    let route_ai_gateway_ids = RouteGatewayIds::from_request_and_env(env, &request)?;
     let compatibility_date = request
         .compatibility_date
         .as_deref()
@@ -283,6 +373,7 @@ fn build_tenant_script_plan(
         &tenant_id,
         account_id.as_deref(),
         ai_gateway_id.as_deref(),
+        &route_ai_gateway_ids,
         attach_gateway_token
             .then_some(api_token.as_deref())
             .flatten(),
@@ -293,6 +384,7 @@ fn build_tenant_script_plan(
         &tenant_id,
         account_id.as_deref(),
         ai_gateway_id.as_deref(),
+        &route_ai_gateway_ids,
         attach_gateway_token.then_some(Some("<redacted>")).flatten(),
         true,
     );
@@ -313,6 +405,7 @@ fn build_tenant_script_plan(
             namespace,
             api_token,
             ai_gateway_id,
+            route_ai_gateway_ids,
             compatibility_date,
             module_name: TENANT_MODULE_NAME.to_string(),
             script,
@@ -348,7 +441,9 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
         upload_url: plan.upload_url.clone(),
         module_name: plan.module_name.clone(),
         compatibility_date: plan.compatibility_date.clone(),
-        ai_gateway_id_configured: plan.ai_gateway_id.is_some(),
+        ai_gateway_id_configured: plan.ai_gateway_id.is_some()
+            || plan.route_ai_gateway_ids.any_configured(),
+        route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
         attach_gateway_token: plan.attach_gateway_token,
         deployable: plan.missing.is_empty(),
         missing: plan.missing.clone(),
@@ -370,6 +465,7 @@ fn upload_metadata(
     tenant_id: &str,
     account_id: Option<&str>,
     ai_gateway_id: Option<&str>,
+    route_ai_gateway_ids: &RouteGatewayIds,
     api_token: Option<&str>,
     redacted: bool,
 ) -> Value {
@@ -392,6 +488,15 @@ fn upload_metadata(
             "text": ai_gateway_id
         }));
     }
+    for (name, ai_gateway_id) in route_gateway_binding_values(route_ai_gateway_ids) {
+        if let Some(ai_gateway_id) = ai_gateway_id {
+            bindings.push(json!({
+                "name": name,
+                "type": "plain_text",
+                "text": ai_gateway_id
+            }));
+        }
+    }
     if let Some(api_token) = api_token {
         bindings.push(json!({
             "name": "CF_API_TOKEN",
@@ -404,6 +509,33 @@ fn upload_metadata(
         "compatibility_date": compatibility_date,
         "bindings": bindings
     })
+}
+
+fn route_gateway_binding_values(
+    route_ai_gateway_ids: &RouteGatewayIds,
+) -> [(&'static str, Option<&str>); 5] {
+    [
+        (
+            AI_GATEWAY_ID_OPENAI_CHAT_ENV,
+            route_ai_gateway_ids.openai_chat.as_deref(),
+        ),
+        (
+            AI_GATEWAY_ID_OPENAI_RESPONSES_ENV,
+            route_ai_gateway_ids.openai_responses.as_deref(),
+        ),
+        (
+            AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
+            route_ai_gateway_ids.anthropic_messages.as_deref(),
+        ),
+        (
+            AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV,
+            route_ai_gateway_ids.openai_embeddings.as_deref(),
+        ),
+        (
+            AI_GATEWAY_ID_AI_RUN_ENV,
+            route_ai_gateway_ids.ai_run.as_deref(),
+        ),
+    ]
 }
 
 fn tenant_worker_script() -> String {
@@ -436,6 +568,17 @@ const SAFE_RESPONSE_HEADERS = [
   "openai-request-id",
   "anthropic-request-id"
 ];
+const ROUTE_GATEWAY_ENVS = {
+  "/v1/chat/completions": "AI_GATEWAY_ID_OPENAI_CHAT",
+  "/v1/responses": "AI_GATEWAY_ID_OPENAI_RESPONSES",
+  "/v1/messages": "AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
+  "/v1/embeddings": "AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
+  "/ai/run": "AI_GATEWAY_ID_AI_RUN"
+};
+const GATEWAY_ID_ENVS = [
+  "AI_GATEWAY_ID",
+  ...Object.values(ROUTE_GATEWAY_ENVS)
+];
 
 export default {
   async fetch(request, env) {
@@ -445,7 +588,9 @@ export default {
         service: "cinatoken-wfp-tenant",
         runtime: "js-fallback",
         tenant_id: env.CINATOKEN_TENANT_ID || "unknown",
-        ai_gateway_id_configured: Boolean(env.AI_GATEWAY_ID),
+        ai_gateway_id_configured: gatewayIdConfigured(env),
+        default_ai_gateway_id_configured: Boolean(env.AI_GATEWAY_ID),
+        route_gateways: routeGatewayStatus(env),
         forwarding: "cloudflare-ai-gateway-rest",
         body_mode: "streamed_request_body",
         routes: SUPPORTED_ROUTES
@@ -494,7 +639,8 @@ function upstreamHeaders(input, env, pathname) {
   copyHeader(input, headers, "content-type");
   copyHeader(input, headers, "accept");
   headers.set("authorization", `Bearer ${env.CF_API_TOKEN}`);
-  if (env.AI_GATEWAY_ID) headers.set("cf-aig-gateway-id", env.AI_GATEWAY_ID);
+  const gatewayId = routeGatewayId(env, pathname);
+  if (gatewayId) headers.set("cf-aig-gateway-id", gatewayId);
   headers.set("x-cinatoken-tenant", env.CINATOKEN_TENANT_ID || "unknown");
   headers.set("x-cinatoken-wfp-runtime", "js-fallback");
   headers.set("cf-aig-metadata", JSON.stringify({
@@ -505,6 +651,25 @@ function upstreamHeaders(input, env, pathname) {
     api: routeFamily(pathname)
   }));
   return headers;
+}
+
+function routeGatewayId(env, pathname) {
+  const gatewayEnv = ROUTE_GATEWAY_ENVS[pathname];
+  const routeGatewayId = gatewayEnv ? env[gatewayEnv] : "";
+  return routeGatewayId || env.AI_GATEWAY_ID || "";
+}
+
+function gatewayIdConfigured(env) {
+  return GATEWAY_ID_ENVS.some((name) => Boolean(env[name]));
+}
+
+function routeGatewayStatus(env) {
+  return Object.entries(ROUTE_GATEWAY_ENVS).map(([route, gatewayEnv]) => ({
+    route,
+    api: routeFamily(route),
+    gateway_env: gatewayEnv,
+    gateway_id_configured: Boolean(env[gatewayEnv])
+  }));
 }
 
 function safeResponseHeaders(input) {
@@ -594,6 +759,19 @@ fn validate_optional_plain_value(name: &str, value: &str) -> Option<Result<Strin
     } else {
         Some(validate_plain_header_value(name, value))
     }
+}
+
+fn optional_request_or_env(
+    request_value: Option<&str>,
+    env: &Env,
+    env_name: &'static str,
+    field_name: &str,
+) -> Result<Option<String>, String> {
+    let request_value = match request_value {
+        Some(value) => validate_optional_plain_value(field_name, value).transpose()?,
+        None => None,
+    };
+    Ok(request_value.or_else(|| runtime_value(env, env_name)))
 }
 
 fn validate_compatibility_date(value: &str) -> Result<String, String> {
@@ -726,6 +904,13 @@ mod tests {
         assert!(script.contains("request.body"));
         assert!(script.contains("Bearer ${env.CF_API_TOKEN}"));
         assert!(script.contains("cf-aig-gateway-id"));
+        assert!(script.contains("AI_GATEWAY_ID_OPENAI_CHAT"));
+        assert!(script.contains("AI_GATEWAY_ID_OPENAI_RESPONSES"));
+        assert!(script.contains("AI_GATEWAY_ID_ANTHROPIC_MESSAGES"));
+        assert!(script.contains("AI_GATEWAY_ID_OPENAI_EMBEDDINGS"));
+        assert!(script.contains("AI_GATEWAY_ID_AI_RUN"));
+        assert!(script.contains("routeGatewayId(env, pathname)"));
+        assert!(script.contains("routeGatewayStatus(env)"));
         assert!(script.contains("cf-aig-metadata"));
         assert!(script.contains("runtime: \"js-fallback\""));
         assert!(script.contains("body_mode: \"streamed_request_body\""));
@@ -734,6 +919,7 @@ mod tests {
         assert!(script.contains("SAFE_RESPONSE_HEADERS"));
         assert!(!script.contains("new Headers(upstream.headers)"));
         assert!(!script.contains("input.get(\"authorization\")"));
+        assert!(!script.contains("if (env.AI_GATEWAY_ID) headers.set"));
         assert!(!script.contains("await request.json()"));
     }
 
@@ -768,6 +954,7 @@ mod tests {
             "tenant-a",
             Some("account"),
             Some("gateway"),
+            &RouteGatewayIds::default(),
             Some("secret"),
             false,
         );
@@ -793,12 +980,43 @@ mod tests {
             "tenant-a",
             Some("account"),
             Some("gateway"),
+            &RouteGatewayIds::default(),
             Some("secret-token"),
             true,
         );
         let raw = metadata.to_string();
         assert!(raw.contains("<redacted>"));
         assert!(!raw.contains("secret-token"));
+    }
+
+    #[test]
+    fn upload_metadata_includes_route_specific_gateway_bindings() {
+        let route_gateway_ids = RouteGatewayIds {
+            openai_chat: Some("gateway-chat".to_string()),
+            anthropic_messages: Some("gateway-anthropic".to_string()),
+            ai_run: Some("gateway-ai-run".to_string()),
+            ..RouteGatewayIds::default()
+        };
+        let metadata = upload_metadata(
+            "2026-06-17",
+            "tenant-a",
+            Some("account"),
+            Some("gateway-default"),
+            &route_gateway_ids,
+            None,
+            false,
+        );
+        let raw = metadata.to_string();
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID\""));
+        assert!(raw.contains("\"text\":\"gateway-default\""));
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID_OPENAI_CHAT\""));
+        assert!(raw.contains("\"text\":\"gateway-chat\""));
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID_ANTHROPIC_MESSAGES\""));
+        assert!(raw.contains("\"text\":\"gateway-anthropic\""));
+        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID_AI_RUN\""));
+        assert!(raw.contains("\"text\":\"gateway-ai-run\""));
+        assert!(!raw.contains("AI_GATEWAY_ID_OPENAI_RESPONSES"));
+        assert!(!raw.contains("AI_GATEWAY_ID_OPENAI_EMBEDDINGS"));
     }
 
     #[test]

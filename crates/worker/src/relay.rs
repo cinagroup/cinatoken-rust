@@ -1329,7 +1329,47 @@ async fn relay_endpoint_with_auth(
                             upstream_model,
                         )? {
                             Some(attempt) => {
-                                forward_ai_gateway_rest(&attempt, runtime, &upstream_body).await
+                                match forward_ai_gateway_rest(&attempt, runtime, &upstream_body)
+                                    .await
+                                {
+                                    Ok(response) => {
+                                        let status = response.status_code();
+                                        if should_ai_gateway_direct_fallback(status) {
+                                            worker::console_warn!(
+                                                "relay AI Gateway returned retryable status {}; falling back to direct provider for channel {}",
+                                                status,
+                                                channel.id
+                                            );
+                                            forward_relay_request(
+                                                endpoint.provider,
+                                                &upstream_url,
+                                                &upstream_key,
+                                                &channel,
+                                                &upstream_body,
+                                                &provider_headers,
+                                            )
+                                            .await
+                                        } else {
+                                            Ok(response)
+                                        }
+                                    }
+                                    Err(err) => {
+                                        worker::console_warn!(
+                                            "relay AI Gateway fetch failed; falling back to direct provider for channel {}: {}",
+                                            channel.id,
+                                            err
+                                        );
+                                        forward_relay_request(
+                                            endpoint.provider,
+                                            &upstream_url,
+                                            &upstream_key,
+                                            &channel,
+                                            &upstream_body,
+                                            &provider_headers,
+                                        )
+                                        .await
+                                    }
+                                }
                             }
                             None => {
                                 forward_relay_request(
@@ -2434,6 +2474,10 @@ fn plan_relay_ai_gateway_attempt(
             worker::Error::RustError(format!("failed to build AI Gateway REST URL: {err}"))
         })?;
     Ok(Some(RelayAiGatewayAttempt { url, plan }))
+}
+
+fn should_ai_gateway_direct_fallback(status: u16) -> bool {
+    is_retryable_status(status)
 }
 
 fn parse_positive_usize_env(
@@ -7501,6 +7545,23 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn relay_ai_gateway_direct_fallback_uses_retryable_status_table() {
+        for status in [100, 302, 401, 403, 429, 500, 502, 503, 523, 525, 599] {
+            assert!(
+                should_ai_gateway_direct_fallback(status),
+                "{status} should fall back to direct provider"
+            );
+        }
+
+        for status in [200, 201, 204, 400, 408, 504, 524] {
+            assert!(
+                !should_ai_gateway_direct_fallback(status),
+                "{status} should keep the AI Gateway response"
+            );
+        }
     }
 
     #[test]

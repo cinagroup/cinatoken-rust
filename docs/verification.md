@@ -4,6 +4,28 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the main relay AI Gateway same-channel
+  direct fallback and exposing `relay_ai_gateway_same_channel_fallback_compiled`
+  in the Cloudflare Platform panel. The run covered frontend type/build, bundle
+  redaction audit (460 files, 37,293,618 bytes, 0 findings), bundle budget audit
+  (245 files, 18.96 MB raw / 4.50 MB gzip, all 10 budgets OK), lint-debt
+  baseline (0 errors / 0 warnings / 0 regressions), frontend route audit (215
+  Worker-facing calls / 307 Worker routes / 0 missing calls), WFP tenant
+  deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession smoke
+  dry-run, WFP tenant Worker-script tests (8 passed), `cargo fmt --all
+  --check`, Rust workspace tests excluding the Worker, Worker wasm32 check, and
+  WFP tenant wasm32 check. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-worker --lib relay_ai_gateway -- --nocapture`:
+  passed after adding the main relay AI Gateway same-channel direct fallback
+  capability signal and status-table coverage (8 AI Gateway/platform tests;
+  existing `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib relay -- --nocapture`: passed after
+  routing retryable AI Gateway responses and Gateway fetch errors through the
+  same selected provider channel before the existing cross-channel retry loop
+  (114 tests; existing `d1_repositories.rs` dead-code warnings only).
+- `cargo fmt --all --check`: passed after the AI Gateway same-channel fallback
+  and Cloudflare Platform panel capability row.
 - `bun run check`: passed after wiring the main relay JSON path to the
   default-off Cloudflare AI Gateway REST forwarder and exposing
   `relay_ai_gateway_rest_forwarder_compiled` in the Cloudflare Platform panel.

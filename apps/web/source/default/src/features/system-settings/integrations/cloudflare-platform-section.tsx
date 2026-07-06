@@ -275,6 +275,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Same-channel direct fallback'),
+          description: t(
+            'Retries through the original provider channel when AI Gateway returns a retryable status or fetch error.'
+          ),
+          ready: capabilities.relay_ai_gateway_same_channel_fallback_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Router cutover readiness'),
           description: t(
             'Requires account, gateway ID, runtime token, and explicit router gate.'

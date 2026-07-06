@@ -402,6 +402,7 @@ export type PlatformCapabilities = {
   relay_ai_gateway_cutover_guards: string[]
   relay_ai_gateway_channel_opt_in_supported: boolean
   relay_ai_gateway_rest_forwarder_compiled: boolean
+  relay_ai_gateway_same_channel_fallback_compiled: boolean
   channel_affinity_do_available: boolean
   realtime_sessions_do_available: boolean
   wfp_dispatch_binding_available: boolean

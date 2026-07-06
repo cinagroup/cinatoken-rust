@@ -5661,7 +5661,61 @@ Remaining migration gaps:
   provider-prefixed AI Gateway name.
 - Capture AI Gateway logs plus relay audit/billing output proving usage parsing
   and settlement remain unchanged.
-- Decide whether retryable Gateway responses should trigger same-channel direct
-  fallback before moving to the next planned channel, or whether the current
-  attempt-plan fallback is sufficient for canary.
+- Add the focused channel editor toggle for `other_info.ai_gateway.enabled`.
+
+### 22.87 2026-07-06 Main Relay AI Gateway Same-Channel Fallback
+
+This increment closes the local M7 fallback policy decision before staging
+canary. The main relay still uses the default-off AI Gateway forwarder only
+after the runtime gate, channel opt-in, provider-prefix, route, and custom
+`base_url` guards pass; once a request is attempted through Cloudflare AI
+Gateway, retryable Gateway failure now falls back through the original selected
+provider channel before the existing cross-channel retry loop sees the result.
+
+Implemented:
+
+- Added `should_ai_gateway_direct_fallback` in `crates/worker/src/relay.rs`.
+  It deliberately reuses the existing Go-compatible `is_retryable_status`
+  table instead of inventing a separate Gateway-only status matrix.
+- Updated the JSON relay attempt loop so `forward_ai_gateway_rest` has a
+  same-channel direct fallback on:
+  - Gateway responses whose status is retryable under the compiled relay retry
+    policy, for example 401/403/429/5xx ranges except the intentionally
+    non-retried timeout statuses.
+  - Gateway fetch errors before a Gateway response is available.
+- Kept Gateway response bodies unread on fallback. This avoids adding an
+  unbounded response read in the Worker hot path and leaves provider response
+  parsing/settlement on the direct response that actually reaches the normal
+  relay completion pipeline.
+- Preserved channel failure accounting semantics: a Gateway-side failure alone
+  does not auto-disable the provider channel. If the direct fallback response is
+  itself retryable, the existing retry loop records the channel failure,
+  performs keyword disable checks when configured, and walks the planned
+  candidate set exactly as before.
+- Exposed `relay_ai_gateway_same_channel_fallback_compiled` through
+  `/api/platform/capabilities` and added a read-only Cloudflare Platform panel
+  row so operators can see that the canary fallback path is compiled.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib relay_ai_gateway -- --nocapture`
+  passed (8 AI Gateway/platform tests; existing `d1_repositories.rs` dead-code
+  warnings only).
+- `cargo test -p cinatoken-worker --lib relay -- --nocapture` passed (114
+  relay/platform-filtered tests; existing `d1_repositories.rs` dead-code
+  warnings only), including the same-channel fallback status-table coverage.
+- `cargo fmt --all --check` passed.
+- `bun run check` passed, covering frontend type/build, bundle redaction/budget,
+  lint-debt baseline, route audit, WFP tenant deploy/dispatch dry-runs,
+  RealtimeSession dry-run, WFP tenant Worker-script tests, Rust workspace tests,
+  and Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run a staging canary with a real Cloudflare account/gateway/token and one
+  `other_info.ai_gateway.enabled=true` channel whose mapped model uses a
+  provider-prefixed AI Gateway name.
+- Capture AI Gateway logs plus relay audit/billing output proving usage parsing
+  and settlement remain unchanged after both Gateway-success and direct-fallback
+  attempts.
 - Add the focused channel editor toggle for `other_info.ai_gateway.enabled`.

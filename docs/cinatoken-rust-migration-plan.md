@@ -6728,3 +6728,64 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.105 2026-07-06 Realtime Platform Header-Boundary Smoke Gate
+
+This increment turns the Realtime platform upstream-header boundary into an
+executable smoke gate. It still does not claim that the full upstream Realtime
+bridge, queued backpressure, or billing settlement is production-complete.
+Instead, it proves that the staging-only platform path can be tested against a
+client that tries to forge the internal upstream handoff headers normally added
+only by authenticated `/v1/realtime`.
+
+Implemented:
+
+- Added `--expect-platform-header-boundary` to
+  `tools/smoke_realtime_session.mjs`.
+  - In live platform mode, the Bun WebSocket client now forges
+    `x-cinatoken-realtime-upstream-plan` and
+    `x-cinatoken-realtime-upstream-connect` during the WebSocket handshake.
+  - The smoke then verifies `pong`, WebSocket status, control frame, HTTP
+    status, and restored attachment evidence all report
+    `upstream_connect_handoff=false`, no upstream plan, no active upstream
+    bridge, and `control.status=upstream_bridge_not_wired`.
+  - The live mode triggers capabilities preflight by default, so staging runs
+    prove `realtime_session_platform_header_boundary_compiled=true` unless
+    `--skip-capabilities` is explicitly used.
+- Added `--self-test-platform-header-boundary` and
+  `check:realtime-session:platform-header-boundary-contract`.
+  - The local contract self-test proves the smoke verifier rejects a forged
+    handoff marker, caller-supplied upstream plan, active bridge status, and
+    active bridge count before any staging artifact is accepted.
+- Added `check:realtime-session:platform-header-boundary-plan` and included
+  both the contract and dry-run plan in `bun run check`.
+- Updated the staging smoke runbook and verification ledger so operators run
+  the contract, normal platform smoke, platform header-boundary smoke,
+  frame-limit smoke, and optional v1 smoke as separate evidence slices.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:platform-header-boundary-contract` passed
+  and emitted clean plus negative validator cases.
+- `bun run check:realtime-session:platform-header-boundary-plan` passed and
+  emitted a redacted dry-run plan with
+  `expectPlatformHeaderBoundary=true`, `capabilitiesPreflight=true`, and the
+  two forged internal upstream header names.
+- `bun run check` passed, covering frontend build/audits, WFP dry-run smoke,
+  Realtime bridge replay/platform/header-boundary/frame-limit/v1 dry-run smoke
+  plans, relay AI Gateway canary dry-run, Rust workspace tests excluding the
+  Worker, Worker wasm32 check, and WFP tenant wasm32 check.
+
+Remaining migration gaps:
+
+- Run the new platform header-boundary smoke against staging with
+  `REALTIME_SESSION_GATEWAY_ENABLED=true` and archive the
+  `platformHeaderBoundary` result, HTTP status, and Worker trace link.
+- Add a real or mock upstream WebSocket replay harness that forces upstream
+  close, upstream error, upstream event-stream failure, accept failure, and
+  upstream-to-client send failure through the live DO pump.
+- Add queued backpressure/flow-control and Realtime billing/audit settlement
+  before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.

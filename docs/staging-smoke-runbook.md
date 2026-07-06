@@ -370,6 +370,14 @@ metadata without opening a network socket:
 bun run check:realtime-session:bridge-replay-contract
 ```
 
+Also run the local platform header-boundary validator self-test. It proves the
+smoke verifier rejects forged upstream handoff markers, upstream plans, active
+bridge status, and active bridge counts before any staging evidence is trusted:
+
+```powershell
+bun run check:realtime-session:platform-header-boundary-contract
+```
+
 Then use the platform smoke path because it
 does not require a live relay token or upstream provider credentials:
 
@@ -377,6 +385,16 @@ does not require a live relay token or upstream provider credentials:
 $env:REALTIME_SMOKE_URL = $env:STAGING_BASE_URL
 $env:REALTIME_SMOKE_COOKIE = "session=<redacted admin session cookie>"
 bun run smoke:realtime-session -- --url $env:REALTIME_SMOKE_URL --session session-smoke --cookie $env:REALTIME_SMOKE_COOKIE --expect-platform-ready --json
+```
+
+Then run the platform header-boundary live smoke. This uses Bun's WebSocket
+handshake headers to forge `x-cinatoken-realtime-upstream-plan` and
+`x-cinatoken-realtime-upstream-connect` on the staging-only platform path, and
+requires the Durable Object evidence to show no upstream handoff or active
+bridge:
+
+```powershell
+bun run smoke:realtime-session -- --url $env:REALTIME_SMOKE_URL --session session-smoke --cookie $env:REALTIME_SMOKE_COOKIE --expect-platform-ready --expect-platform-header-boundary --json
 ```
 
 Then run the platform frame-limit terminal event smoke. This sends a
@@ -402,6 +420,9 @@ Record:
   upstream close handling, upstream error/event-stream/accept failures,
   client-to-upstream and upstream-to-client send-failure metadata, and the
   frame-too-large terminal event contract.
+- Platform header-boundary self-test output, including the clean case plus
+  rejected forged handoff marker, forged upstream plan, active bridge status,
+  and active bridge count cases.
 - `/api/platform/capabilities` Realtime fields, including
   `realtime_session_cutover_guards`,
   `realtime_session_auth_boundary_compiled`,
@@ -424,6 +445,10 @@ Record:
 - WebSocket `realtime_session_status` frame.
 - WebSocket `realtime_session_control` probe response, including
   `text_bytes`, `text_chars`, `rawProbeEchoed=false`, and no `received` field.
+- Platform header-boundary smoke output, including
+  `platformHeaderBoundary.forgedHeaderNames`, `upstreamConnectHandoff=false`,
+  `upstreamPresent=false`, `activeUpstreamBridges=0`, and HTTP attachments
+  without upstream plans.
 - Frame-limit smoke output, including `frameLimitControlFrame`,
   `frameLimitClose`, and `bridgeTerminalEvent`.
 - HTTP status response for the platform session path.
@@ -482,7 +507,10 @@ Pass criteria:
   `x-cinatoken-realtime-upstream-plan` and
   `x-cinatoken-realtime-upstream-connect` before forwarding to the Durable
   Object. Only the authenticated `/v1/realtime` gateway may attach those
-  request-scoped upstream handoff headers.
+  request-scoped upstream handoff headers. The platform header-boundary smoke
+  must show `upstream_connect_handoff=false`, no upstream plan in pong/status/
+  control/HTTP attachment evidence, `control.status=upstream_bridge_not_wired`,
+  and `active_upstream_bridges=0`.
 - Terminal bridge evidence is metadata-only: live
   `realtime_session_bridge_event` frames and persisted
   `metrics.last_bridge_terminal_event` include event name, direction, close

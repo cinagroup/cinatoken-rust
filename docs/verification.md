@@ -4,6 +4,22 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `node --check tools/smoke_realtime_session.mjs`,
+  `bun run check:realtime-session:platform-header-boundary-contract`, and
+  `bun run check:realtime-session:platform-header-boundary-plan`: passed after
+  adding a Realtime platform header-boundary smoke mode. The local contract
+  self-test proves the verifier rejects forged upstream handoff markers,
+  caller-supplied upstream plans, active bridge statuses, and active bridge
+  counts; the dry-run plan now emits the forged internal upstream header names
+  and sets `expectPlatformHeaderBoundary=true`.
+- `bun run check`: passed after adding the Realtime platform header-boundary
+  contract and dry-run plan to the default check chain. The run covered
+  frontend build and audits, WFP dry-run smoke, Realtime bridge replay,
+  platform smoke, platform header-boundary contract/plan, frame-limit and v1
+  dry-run smoke plans, relay AI Gateway canary dry-run, Rust workspace tests
+  excluding the Worker, Worker wasm32 check, and WFP tenant wasm32 check;
+  existing warnings were limited to the known `d1_repositories.rs` dead-code
+  warnings.
 - `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
   passed after adding the Realtime platform upstream-header boundary,
   filtering caller-supplied internal upstream handoff headers from the platform

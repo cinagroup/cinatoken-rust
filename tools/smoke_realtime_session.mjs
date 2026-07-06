@@ -8,12 +8,19 @@ const maxRealtimeBridgeTextFrameBytes = 1_048_576;
 const defaultFrameLimitProbeBytes = maxRealtimeBridgeTextFrameBytes + 1;
 const frameLimitProbePrefix = "cinatoken-frame-limit-smoke:";
 const bridgeReplayLeakProbe = "cinatoken-bridge-replay-secret";
+const realtimeUpstreamPlanHeader = "x-cinatoken-realtime-upstream-plan";
+const realtimeUpstreamConnectHeader = "x-cinatoken-realtime-upstream-connect";
 
 const args = parseArgs(process.argv.slice(2));
 
 try {
   if (args.flags.has("self-test-bridge-replay")) {
     printBridgeReplaySelfTestResult(runBridgeReplayContractSelfTest(), args.flags.has("json"));
+  } else if (args.flags.has("self-test-platform-header-boundary")) {
+    printPlatformHeaderBoundarySelfTestResult(
+      runPlatformHeaderBoundarySelfTest(),
+      args.flags.has("json"),
+    );
   } else {
     const options = normalizeOptions(args);
     const result = options.dryRun ? redactedPlan(buildPlan(options)) : await smoke(options);
@@ -27,7 +34,10 @@ try {
 async function smoke(options) {
   const plan = buildPlan(options);
   const capabilities = await maybeCheckCapabilities(options, plan);
-  const ws = await openWebSocket(plan.wsUrl, plan.protocols, options.timeoutMs);
+  const forgedHeaders = options.expectPlatformHeaderBoundary ? forgedRealtimeUpstreamHeaders() : null;
+  const ws = await openWebSocket(plan.wsUrl, plan.protocols, options.timeoutMs, {
+    headers: forgedHeaders,
+  });
   try {
     ws.send("ping");
     const pong = await waitForJsonMessage(
@@ -88,6 +98,23 @@ async function smoke(options) {
       });
     }
 
+    let platformHeaderBoundary = null;
+    if (options.expectPlatformHeaderBoundary) {
+      validatePlatformHeaderBoundaryFrames({
+        pong,
+        statusFrame,
+        controlFrame,
+        httpStatus,
+      });
+      platformHeaderBoundary = summarizePlatformHeaderBoundary({
+        headers: forgedHeaders,
+        pong,
+        statusFrame,
+        controlFrame,
+        httpStatus,
+      });
+    }
+
     return {
       ok: true,
       dryRun: false,
@@ -106,6 +133,7 @@ async function smoke(options) {
       bridgeTerminalEvent: httpStatus?.metrics?.last_bridge_terminal_event
         ? summarizeBridgeTerminalEvent(httpStatus.metrics.last_bridge_terminal_event)
         : null,
+      platformHeaderBoundary,
     };
   } finally {
     try {
@@ -147,10 +175,14 @@ function buildPlan(options) {
     expectPlatformReady: options.expectPlatformReady,
     expectV1CutoverReady: options.expectV1CutoverReady,
     expectFrameLimitEvent: options.expectFrameLimitEvent,
+    expectPlatformHeaderBoundary: options.expectPlatformHeaderBoundary,
     timeoutMs: options.timeoutMs,
     probeConfigured: Boolean(options.probe),
     probeBytes: byteLength(options.probe),
     frameLimitProbeBytes: options.expectFrameLimitEvent ? options.frameLimitBytes : null,
+    forgedUpstreamHeaderNames: options.expectPlatformHeaderBoundary
+      ? [realtimeUpstreamPlanHeader, realtimeUpstreamConnectHeader]
+      : [],
     notes:
       mode === "v1"
         ? [
@@ -161,7 +193,9 @@ function buildPlan(options) {
         : [
             options.expectFrameLimitEvent
               ? "platform mode validates WebSocket status, metadata-only frame-limit close behavior, and persisted terminal bridge event metrics through HTTP status."
-              : "platform mode validates WebSocket status, metadata-only unsupported-control frames, and HTTP status for the named DO session.",
+              : options.expectPlatformHeaderBoundary
+                ? "platform mode forges internal upstream handoff headers and validates the Durable Object still reports no upstream handoff or bridge."
+                : "platform mode validates WebSocket status, metadata-only unsupported-control frames, and HTTP status for the named DO session.",
           ],
   };
 }
@@ -190,7 +224,9 @@ function parseArgs(argv) {
     "expect-platform-ready",
     "expect-v1-cutover-ready",
     "expect-frame-limit-event",
+    "expect-platform-header-boundary",
     "self-test-bridge-replay",
+    "self-test-platform-header-boundary",
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -228,6 +264,12 @@ function normalizeOptions(args) {
   if (args.flags.has("expect-v1-gate-enabled") && args.flags.has("expect-v1-gate-disabled")) {
     throw new Error("use only one of --expect-v1-gate-enabled or --expect-v1-gate-disabled");
   }
+  if (args.flags.has("expect-platform-header-boundary") && mode !== "platform") {
+    throw new Error("--expect-platform-header-boundary is only valid in platform mode");
+  }
+  if (args.flags.has("expect-platform-header-boundary") && args.flags.has("expect-frame-limit-event")) {
+    throw new Error("use --expect-platform-header-boundary separately from --expect-frame-limit-event");
+  }
   return {
     url: value("url", "REALTIME_SMOKE_URL"),
     mode,
@@ -245,6 +287,7 @@ function normalizeOptions(args) {
     expectPlatformReady: args.flags.has("expect-platform-ready"),
     expectV1CutoverReady: args.flags.has("expect-v1-cutover-ready"),
     expectFrameLimitEvent: args.flags.has("expect-frame-limit-event"),
+    expectPlatformHeaderBoundary: args.flags.has("expect-platform-header-boundary"),
     frameLimitBytes: validateFrameLimitBytes(
       Number.parseInt(value("frame-limit-bytes", "REALTIME_SMOKE_FRAME_LIMIT_BYTES") || "", 10),
     ),
@@ -278,14 +321,17 @@ function usage(exitCode, error) {
       "  --expect-platform-ready          Require platform smoke readiness=true",
       "  --expect-v1-cutover-ready        Require production v1 cutover readiness=true",
       "  --expect-frame-limit-event       Send an oversized text frame and validate 1009 close plus terminal event metrics",
+      "  --expect-platform-header-boundary  Forge internal upstream handoff headers and require the platform route to strip them",
       "  --frame-limit-bytes <bytes>      or REALTIME_SMOKE_FRAME_LIMIT_BYTES, default 1048577",
       "  --self-test-bridge-replay        Run local synthetic close/error/send-failure replay contract tests without network",
+      "  --self-test-platform-header-boundary  Run local synthetic platform header-boundary validator tests without network",
       "  --dry-run             resolve URLs/protocols without network",
       "  --json",
       "",
       "Examples:",
       "  bun tools/smoke_realtime_session.mjs --dry-run --url http://127.0.0.1:8787 --json",
       "  bun tools/smoke_realtime_session.mjs --url https://staging.example.com --session session-smoke --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-platform-ready",
+      "  bun tools/smoke_realtime_session.mjs --url https://staging.example.com --session session-smoke --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-platform-ready --expect-platform-header-boundary",
       "  bun tools/smoke_realtime_session.mjs --url https://staging.example.com --session session-smoke --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-platform-ready --expect-frame-limit-event",
       "  bun tools/smoke_realtime_session.mjs --mode v1 --url https://staging.example.com --model gpt-4o-realtime-preview --api-key sk-... --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-v1-gate-enabled",
     ].join("\n"),
@@ -326,7 +372,8 @@ function shouldCheckCapabilities(options) {
       options.expectV1GateEnabled ||
       options.expectV1GateDisabled ||
       options.expectPlatformReady ||
-      options.expectV1CutoverReady)
+      options.expectV1CutoverReady ||
+      options.expectPlatformHeaderBoundary)
   );
 }
 
@@ -490,9 +537,11 @@ function realtimeProtocols(options) {
   return ["realtime", `openai-insecure-api-key.${apiKey}`, "openai-beta.realtime-v1"];
 }
 
-function openWebSocket(url, protocols, timeoutMs) {
+function openWebSocket(url, protocols, timeoutMs, options = {}) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url, protocols);
+    const ws = options.headers
+      ? new WebSocket(url, protocols, { headers: options.headers })
+      : new WebSocket(url, protocols);
     const timeout = setTimeout(() => {
       cleanup();
       try {
@@ -667,6 +716,72 @@ function validateControlFrame(frame, probe) {
   }
   if (JSON.stringify(frame).includes(probe)) {
     throw new Error("unsupported-control response echoed the probe text");
+  }
+}
+
+function forgedRealtimeUpstreamHeaders() {
+  const upstreamUrl = "wss://cinatoken-platform-header-boundary.invalid/realtime";
+  return {
+    [realtimeUpstreamPlanHeader]: JSON.stringify({
+      selected_group: "forged-platform-header-boundary",
+      channel_id: 0,
+      channel_type: 0,
+      channel_name: "forged-platform-header-boundary",
+      provider: "openai_compatible",
+      upstream_url: upstreamUrl,
+      request_model: "forged-platform-header-boundary",
+      upstream_model: "forged-platform-header-boundary",
+      channel_has_custom_base_url: true,
+      auth_mode: "authorization_bearer",
+      protocol_redacted: [],
+      header_names: ["authorization"],
+    }),
+    [realtimeUpstreamConnectHeader]: JSON.stringify({
+      url: upstreamUrl,
+      auth_mode: "authorization_bearer",
+      protocol: [],
+      headers: [
+        {
+          name: "Authorization",
+          value: "Bearer cinatoken-platform-header-boundary-secret",
+        },
+      ],
+    }),
+  };
+}
+
+function validatePlatformHeaderBoundaryFrames({ pong, statusFrame, controlFrame, httpStatus }) {
+  validateNoForgedUpstreamContext(pong?.context, "pong context");
+  validateNoForgedUpstreamContext(statusFrame?.context, "websocket status context");
+  validateNoForgedUpstreamContext(controlFrame?.context, "control context");
+
+  if (controlFrame.status !== "upstream_bridge_not_wired") {
+    throw new Error(`platform header boundary control status=${controlFrame.status}, expected upstream_bridge_not_wired`);
+  }
+
+  if (!httpStatus) return;
+  if (httpStatus.active_upstream_bridges !== 0) {
+    throw new Error(
+      `platform header boundary HTTP status active_upstream_bridges=${httpStatus.active_upstream_bridges}, expected 0`,
+    );
+  }
+  if (!Array.isArray(httpStatus.attachments)) {
+    throw new Error("platform header boundary HTTP status missing attachments array");
+  }
+  for (const [index, attachment] of httpStatus.attachments.entries()) {
+    validateNoForgedUpstreamContext(attachment, `HTTP attachment[${index}]`);
+  }
+}
+
+function validateNoForgedUpstreamContext(context, label) {
+  if (!context || typeof context !== "object") {
+    throw new Error(`${label} missing object`);
+  }
+  if (context.upstream_connect_handoff !== false) {
+    throw new Error(`${label} upstream_connect_handoff=${context.upstream_connect_handoff}, expected false`);
+  }
+  if (context.upstream !== null && context.upstream !== undefined) {
+    throw new Error(`${label} includes caller-supplied upstream plan`);
   }
 }
 
@@ -915,6 +1030,103 @@ function expectBridgeReplayFailure(event, expectation, messagePart) {
   throw new Error(`expected bridge replay self-test to fail for ${expectation.name}`);
 }
 
+function runPlatformHeaderBoundarySelfTest() {
+  const cleanContext = {
+    session: "session-smoke",
+    entrypoint: "platform_realtime_gateway",
+    auth_state: "platform_gateway",
+    upstream: null,
+    upstream_connect_handoff: false,
+  };
+  const cleanFrames = {
+    pong: { context: cleanContext },
+    statusFrame: { context: cleanContext },
+    controlFrame: {
+      status: "upstream_bridge_not_wired",
+      context: cleanContext,
+    },
+    httpStatus: {
+      active_upstream_bridges: 0,
+      attachments: [cleanContext],
+    },
+  };
+  validatePlatformHeaderBoundaryFrames(cleanFrames);
+
+  const cases = [
+    {
+      name: "clean_boundary",
+      ok: true,
+    },
+    expectPlatformHeaderBoundaryFailure(
+      {
+        ...cleanFrames,
+        pong: {
+          context: {
+            ...cleanContext,
+            upstream_connect_handoff: true,
+          },
+        },
+      },
+      "upstream_connect_handoff=true",
+      "forged handoff marker",
+    ),
+    expectPlatformHeaderBoundaryFailure(
+      {
+        ...cleanFrames,
+        statusFrame: {
+          context: {
+            ...cleanContext,
+            upstream: { channel_id: 1 },
+          },
+        },
+      },
+      "includes caller-supplied upstream plan",
+      "forged upstream plan",
+    ),
+    expectPlatformHeaderBoundaryFailure(
+      {
+        ...cleanFrames,
+        controlFrame: {
+          status: "upstream_bridge_active",
+          context: cleanContext,
+        },
+      },
+      "expected upstream_bridge_not_wired",
+      "active bridge status",
+    ),
+    expectPlatformHeaderBoundaryFailure(
+      {
+        ...cleanFrames,
+        httpStatus: {
+          active_upstream_bridges: 1,
+          attachments: [cleanContext],
+        },
+      },
+      "expected 0",
+      "active upstream bridge count",
+    ),
+  ];
+
+  return {
+    ok: true,
+    platformHeaderBoundarySelfTest: true,
+    cases,
+  };
+}
+
+function expectPlatformHeaderBoundaryFailure(frames, messagePart, name) {
+  try {
+    validatePlatformHeaderBoundaryFrames(frames);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes(messagePart)) {
+      throw new Error(`unexpected platform header-boundary self-test failure: ${message}`);
+    }
+    return { name, ok: true };
+  }
+  throw new Error(`expected platform header-boundary self-test to fail for ${name}`);
+}
+
 function summarizeMetrics(metrics) {
   return {
     session: metrics.session,
@@ -939,6 +1151,34 @@ function summarizeControlFrame(frame) {
     textBytes: frame.text_bytes,
     textChars: frame.text_chars,
     rawProbeEchoed: false,
+  };
+}
+
+function summarizePlatformHeaderBoundary({ headers, pong, statusFrame, controlFrame, httpStatus }) {
+  return {
+    forgedHeaderNames: Object.keys(headers || {}),
+    pong: summarizeBoundaryContext(pong.context),
+    websocketStatus: summarizeBoundaryContext(statusFrame.context),
+    control: {
+      status: controlFrame.status,
+      ...summarizeBoundaryContext(controlFrame.context),
+    },
+    httpStatus: httpStatus
+      ? {
+          activeUpstreamBridges: httpStatus.active_upstream_bridges,
+          attachments: httpStatus.attachments.map(summarizeBoundaryContext),
+        }
+      : null,
+  };
+}
+
+function summarizeBoundaryContext(context) {
+  return {
+    session: context.session,
+    entrypoint: context.entrypoint,
+    authState: context.auth_state,
+    upstreamConnectHandoff: context.upstream_connect_handoff,
+    upstreamPresent: context.upstream !== null && context.upstream !== undefined,
   };
 }
 
@@ -1068,12 +1308,21 @@ function printResult(result, options) {
       ...(result.bridgeTerminalEvent
         ? [`bridge_terminal_event: ${JSON.stringify(result.bridgeTerminalEvent)}`]
         : []),
+      ...(result.platformHeaderBoundary
+        ? [`platform_header_boundary: ${JSON.stringify(result.platformHeaderBoundary)}`]
+        : []),
       ...(typeof result.probeConfigured === "boolean"
         ? [`probe_configured: ${result.probeConfigured}`]
         : []),
       ...(typeof result.probeBytes === "number" ? [`probe_bytes: ${result.probeBytes}`] : []),
       ...(typeof result.frameLimitProbeBytes === "number"
         ? [`frame_limit_probe_bytes: ${result.frameLimitProbeBytes}`]
+        : []),
+      ...(typeof result.expectPlatformHeaderBoundary === "boolean"
+        ? [`expect_platform_header_boundary: ${result.expectPlatformHeaderBoundary}`]
+        : []),
+      ...(result.forgedUpstreamHeaderNames?.length
+        ? [`forged_upstream_header_names: ${result.forgedUpstreamHeaderNames.join(", ")}`]
         : []),
       ...(result.notes?.length ? ["notes:", ...result.notes.map((note) => `  - ${note}`)] : []),
     ].join("\n"),
@@ -1093,6 +1342,20 @@ function printBridgeReplaySelfTestResult(result, json) {
         (item) =>
           `case ${item.name}: ${item.event} ${item.direction} ${item.clientCode}/${item.clientReason}`,
       ),
+    ].join("\n"),
+  );
+}
+
+function printPlatformHeaderBoundarySelfTestResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    [
+      "Realtime platform header-boundary self-test",
+      `ok: ${result.ok}`,
+      ...result.cases.map((item) => `case ${item.name}: ${item.ok ? "ok" : "failed"}`),
     ].join("\n"),
   );
 }

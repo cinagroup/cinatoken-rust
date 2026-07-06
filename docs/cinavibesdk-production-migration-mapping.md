@@ -252,7 +252,7 @@ and fallback behavior as the direct path.
 | --- | --- | --- | --- | --- |
 | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/embeddings` | Main Rust relay | AI Gateway primary/fallback forwarding | `RELAY_AI_GATEWAY_ROUTER_ENABLED`, per-channel opt-in | Direct and AI Gateway canary, same-channel fallback, unchanged settlement |
 | `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, frame guard, close/error mapping, send-failure cleanup, terminal event trace, queued backpressure, billing settlement, live protocol replay |
-| `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe |
+| `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe, forged internal upstream header boundary smoke |
 | Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
 | Tenant AI routes | WFP Rust tenant script plus AI Gateway | Dispatch plus AI Gateway proxy | Real `DISPATCHER`, tenant Gateway vars | Route-specific Gateway logs, request policy headers, response-header allowlist |
 | Admin platform readiness | Main Rust Worker | Capability probe | Admin session | `/api/platform/capabilities` matches bindings, gates, and smoke readiness |
@@ -452,9 +452,9 @@ As of the docs reviewed on 2026-07-06:
 - Realtime DO has the session substrate, planners, connect contract,
   gateway-to-DO handoff, outbound fetch-upgrade adapter, and transient bridge
   lifecycle/frame guard/close mapping/send-failure cleanup plus terminal event
-  trace metadata plus a smoke-level bridge replay contract self-test, but still
-  lacks queued backpressure/live replay proof and billing settlement required
-  for production `/v1/realtime`.
+  trace metadata plus smoke-level bridge replay and platform header-boundary
+  contract self-tests, but still lacks queued backpressure/live upstream replay
+  proof and billing settlement required for production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
   response-header smoke guard, but still needs a real paid-plan `DISPATCHER`
   binding, uploaded tenant artifact, and live internal dispatch smoke.

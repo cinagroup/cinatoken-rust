@@ -380,6 +380,7 @@ Record:
   `realtime_session_auth_boundary_compiled`,
   `realtime_session_metrics_persisted_compiled`,
   `realtime_session_control_no_echo_compiled`,
+  `realtime_session_upstream_bridge_planner_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -394,8 +395,9 @@ Pass criteria:
 - `REALTIME_SESSIONS` binding is present and the gateway flag under test is on
   only in staging.
 - Platform capabilities report hibernation, auth boundary, persisted metrics,
-  and no-echo controls as compiled; `realtime_session_platform_smoke_ready=true`
-  before the platform WebSocket smoke runs.
+  no-echo controls, and the upstream bridge planner as compiled;
+  `realtime_session_platform_smoke_ready=true` before the platform WebSocket
+  smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
   lifecycle metrics.
 - Metrics show at least one connect and at least two text messages from the

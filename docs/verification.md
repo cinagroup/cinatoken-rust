@@ -4,6 +4,36 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the Realtime upstream bridge planner,
+  capability signal, frontend Cloudflare Platform row, smoke preflight
+  assertion, and migration docs. The run covered frontend type/build, bundle
+  redaction audit (460 files, 37,298,736 bytes, 0 findings), bundle budget
+  audit (245 files, 18.96 MB raw / 4.50 MB gzip, all 10 budgets OK),
+  lint-debt baseline (0 errors / 0 warnings / 0 regressions), frontend route
+  audit (215 Worker-facing calls / 307 Worker routes / 0 missing calls), WFP
+  tenant deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession
+  platform and v1 dry-run smoke plans, relay AI Gateway canary smoke dry-run,
+  WFP tenant Worker-script tests (8 passed), `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, Worker wasm32 check, and WFP tenant
+  wasm32 check. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime upstream URL/handshake planner (15 filtered
+  Realtime/platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_bridge_planner_compiled` in platform
+  capabilities (13 platform tests; existing `d1_repositories.rs` dead-code
+  warnings only).
+- `node --check tools/smoke_realtime_session.mjs`, `bun run
+  check:realtime-session:smoke-plan`, and `bun run
+  check:realtime-session:v1-smoke-plan`: passed after requiring the upstream
+  bridge planner capability in live capabilities preflight while preserving
+  redacted dry-run Realtime subprotocol output.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform row
+  and frontend platform capability type.
 - `bun run check`: passed after adding the Realtime Durable Object readiness
   contract, frontend Cloudflare Platform rows, capabilities preflight support
   in `tools/smoke_realtime_session.mjs`, and the

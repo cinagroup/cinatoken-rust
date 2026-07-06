@@ -69,6 +69,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_auth_boundary_compiled,
         capabilities.realtime_session_metrics_persisted_compiled,
         capabilities.realtime_session_control_no_echo_compiled,
+        capabilities.realtime_session_upstream_bridge_planner_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -442,6 +443,15 @@ function buildCapabilityGroups(
           missingVariant: capabilities.realtime_session_gateway_enabled
             ? 'warning'
             : 'neutral',
+        },
+        {
+          label: t('Upstream bridge planner'),
+          description: t(
+            'Builds upstream Realtime WebSocket URL and handshake metadata with secret redaction before the full bridge is enabled.'
+          ),
+          ready: capabilities.realtime_session_upstream_bridge_planner_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
         },
         {
           label: t('Upstream realtime bridge'),

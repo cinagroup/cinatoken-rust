@@ -6,9 +6,13 @@
 //! attachments for resume metadata, and a tiny control protocol for smoke
 //! testing.
 
-use cinatoken_relay::token_fingerprint;
+use cinatoken_relay::{
+    openai_compatible::{default_base_url, upstream_v1_url},
+    token_fingerprint,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use url::Url;
 use worker::{
     durable_object, Env, Method, Request, Response, Result as WorkerResult, State, WebSocket,
     WebSocketIncomingMessage, WebSocketPair,
@@ -19,6 +23,7 @@ use crate::platform_gateway::env_flag;
 pub const REALTIME_SESSIONS_BINDING: &str = "REALTIME_SESSIONS";
 pub const REALTIME_SESSION_GATEWAY_ENABLED_ENV: &str = "REALTIME_SESSION_GATEWAY_ENABLED";
 pub const REALTIME_SESSION_V1_ENABLED_ENV: &str = "REALTIME_SESSION_V1_ENABLED";
+pub const REALTIME_UPSTREAM_BRIDGE_PLANNER_COMPILED: bool = true;
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
 pub const REALTIME_OPENAI_PATH: &str = "/v1/realtime";
 pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
@@ -34,6 +39,11 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
 
 const SESSION_TAG_PREFIX: &str = "session:";
 const OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX: &str = "openai-insecure-api-key.";
+const OPENAI_REALTIME_PROTOCOL: &str = "realtime";
+const OPENAI_REALTIME_BETA_PROTOCOL: &str = "openai-beta.realtime-v1";
+const OPENAI_REALTIME_BETA_HEADER_VALUE: &str = "realtime=v1";
+const CHANNEL_TYPE_AZURE: i32 = 3;
+const AZURE_DEFAULT_API_VERSION: &str = "2025-04-01-preview";
 const SESSION_METRICS_KEY: &str = "session_metrics_v1";
 const MAX_STORED_TEXT_CHARS: usize = 160;
 const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
@@ -84,6 +94,52 @@ struct RealtimeApiKey {
 struct RealtimeTextControlSummary {
     text_chars: usize,
     text_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RealtimeUpstreamProvider {
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible,
+    #[serde(rename = "azure_openai")]
+    AzureOpenAi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RealtimeUpstreamAuthMode {
+    RealtimeSubprotocol,
+    AuthorizationBearer,
+    AzureApiKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RealtimeUpstreamBridgePlan {
+    provider: RealtimeUpstreamProvider,
+    url: String,
+    model: String,
+    channel_type: i32,
+    channel_has_custom_base_url: bool,
+    auth_mode: RealtimeUpstreamAuthMode,
+    protocol_redacted: Vec<String>,
+    header_names: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RealtimeUpstreamBridgeInput<'a> {
+    channel_type: i32,
+    base_url: Option<&'a str>,
+    model: &'a str,
+    upstream_api_key: &'a str,
+    api_version: Option<&'a str>,
+    client_requested_subprotocol: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealtimeUpstreamBridgeHandshake {
+    auth_mode: RealtimeUpstreamAuthMode,
+    protocol: Vec<String>,
+    headers: Vec<(&'static str, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -564,6 +620,196 @@ fn realtime_text_control_summary(message: &str) -> RealtimeTextControlSummary {
     }
 }
 
+pub(crate) fn realtime_upstream_bridge_planner_compiled() -> bool {
+    REALTIME_UPSTREAM_BRIDGE_PLANNER_COMPILED
+        && realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+            channel_type: 1,
+            base_url: Some("https://api.openai.com"),
+            model: "gpt-4o-realtime-preview",
+            upstream_api_key: "planner-smoke-key",
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+        .is_ok()
+        && realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+            channel_type: CHANNEL_TYPE_AZURE,
+            base_url: Some("https://example.openai.azure.com"),
+            model: "gpt-4o-realtime-deployment",
+            upstream_api_key: "planner-smoke-key",
+            api_version: Some(AZURE_DEFAULT_API_VERSION),
+            client_requested_subprotocol: true,
+        })
+        .is_ok()
+}
+
+fn realtime_upstream_bridge_plan(
+    input: RealtimeUpstreamBridgeInput<'_>,
+) -> Result<RealtimeUpstreamBridgePlan, String> {
+    let model = non_empty_trimmed(input.model, "model")?;
+    let upstream_api_key = non_empty_trimmed(input.upstream_api_key, "upstream_api_key")?;
+    let provider = realtime_upstream_provider(input.channel_type);
+    let url = match provider {
+        RealtimeUpstreamProvider::OpenAiCompatible => {
+            openai_realtime_upstream_url(input.channel_type, input.base_url, &model)?
+        }
+        RealtimeUpstreamProvider::AzureOpenAi => azure_realtime_upstream_url(
+            input
+                .base_url
+                .unwrap_or_else(|| default_base_url(input.channel_type)),
+            &model,
+            input.api_version,
+        )?,
+    };
+    let handshake = realtime_upstream_bridge_handshake(
+        provider,
+        &upstream_api_key,
+        input.client_requested_subprotocol,
+    );
+    let protocol_redacted = handshake
+        .protocol
+        .iter()
+        .map(|value| redact_realtime_protocol_token(value))
+        .collect::<Vec<_>>();
+    let header_names = handshake
+        .headers
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>();
+
+    Ok(RealtimeUpstreamBridgePlan {
+        provider,
+        url,
+        model,
+        channel_type: input.channel_type,
+        channel_has_custom_base_url: input
+            .base_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some(),
+        auth_mode: handshake.auth_mode,
+        protocol_redacted,
+        header_names,
+    })
+}
+
+fn realtime_upstream_provider(channel_type: i32) -> RealtimeUpstreamProvider {
+    if channel_type == CHANNEL_TYPE_AZURE {
+        RealtimeUpstreamProvider::AzureOpenAi
+    } else {
+        RealtimeUpstreamProvider::OpenAiCompatible
+    }
+}
+
+fn openai_realtime_upstream_url(
+    channel_type: i32,
+    base_url: Option<&str>,
+    model: &str,
+) -> Result<String, String> {
+    let mut url = Url::parse(&upstream_v1_url(channel_type, base_url, "realtime"))
+        .map_err(|err| format!("invalid OpenAI-compatible realtime upstream URL: {err}"))?;
+    set_realtime_websocket_scheme(&mut url)?;
+    url.query_pairs_mut().append_pair("model", model);
+    Ok(url.to_string())
+}
+
+fn azure_realtime_upstream_url(
+    base_url: &str,
+    deployment: &str,
+    api_version: Option<&str>,
+) -> Result<String, String> {
+    let base_url = non_empty_trimmed(base_url, "base_url")?;
+    let api_version = api_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(AZURE_DEFAULT_API_VERSION);
+    let mut url = Url::parse(&base_url)
+        .map_err(|err| format!("invalid Azure realtime upstream base URL: {err}"))?;
+    set_realtime_websocket_scheme(&mut url)?;
+    let path = append_url_path(url.path(), "/openai/realtime");
+    url.set_path(&path);
+    url.set_query(None);
+    url.query_pairs_mut()
+        .append_pair("deployment", deployment)
+        .append_pair("api-version", api_version);
+    Ok(url.to_string())
+}
+
+fn set_realtime_websocket_scheme(url: &mut Url) -> Result<(), String> {
+    let scheme = match url.scheme() {
+        "https" | "wss" => "wss",
+        "http" | "ws" => "ws",
+        other => {
+            return Err(format!("unsupported realtime upstream URL scheme: {other}"));
+        }
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| format!("failed to set realtime upstream scheme to {scheme}"))
+}
+
+fn append_url_path(base_path: &str, request_path: &str) -> String {
+    let base_path = base_path.trim_end_matches('/');
+    let request_path = request_path.trim_start_matches('/');
+    if base_path.is_empty() {
+        format!("/{request_path}")
+    } else {
+        format!("{base_path}/{request_path}")
+    }
+}
+
+fn realtime_upstream_bridge_handshake(
+    provider: RealtimeUpstreamProvider,
+    upstream_api_key: &str,
+    client_requested_subprotocol: bool,
+) -> RealtimeUpstreamBridgeHandshake {
+    match provider {
+        RealtimeUpstreamProvider::AzureOpenAi => RealtimeUpstreamBridgeHandshake {
+            auth_mode: RealtimeUpstreamAuthMode::AzureApiKey,
+            protocol: Vec::new(),
+            headers: vec![("api-key", upstream_api_key.to_string())],
+        },
+        RealtimeUpstreamProvider::OpenAiCompatible if client_requested_subprotocol => {
+            RealtimeUpstreamBridgeHandshake {
+                auth_mode: RealtimeUpstreamAuthMode::RealtimeSubprotocol,
+                protocol: realtime_upstream_protocols(upstream_api_key),
+                headers: Vec::new(),
+            }
+        }
+        RealtimeUpstreamProvider::OpenAiCompatible => RealtimeUpstreamBridgeHandshake {
+            auth_mode: RealtimeUpstreamAuthMode::AuthorizationBearer,
+            protocol: Vec::new(),
+            headers: vec![
+                ("openai-beta", OPENAI_REALTIME_BETA_HEADER_VALUE.to_string()),
+                ("authorization", format!("Bearer {upstream_api_key}")),
+            ],
+        },
+    }
+}
+
+fn realtime_upstream_protocols(upstream_api_key: &str) -> Vec<String> {
+    vec![
+        OPENAI_REALTIME_PROTOCOL.to_string(),
+        format!("{OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX}{upstream_api_key}"),
+        OPENAI_REALTIME_BETA_PROTOCOL.to_string(),
+    ]
+}
+
+fn redact_realtime_protocol_token(value: &str) -> String {
+    if value.starts_with(OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX) {
+        format!("{OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX}<redacted>")
+    } else {
+        value.to_string()
+    }
+}
+
+fn non_empty_trimmed(value: &str, name: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(format!("{name} is required"))
+    } else {
+        Ok(value.to_string())
+    }
+}
+
 fn realtime_error_response(
     code: &str,
     message: &str,
@@ -892,6 +1138,108 @@ mod tests {
         let raw = serde_json::to_string(&summary).unwrap();
         assert!(!raw.contains("secret client payload"));
         assert!(!raw.contains("云"));
+    }
+
+    #[test]
+    fn realtime_openai_upstream_plan_uses_wss_realtime_model_query() {
+        let plan = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+            channel_type: 1,
+            base_url: Some("https://api.openai.com"),
+            model: "gpt-4o-realtime-preview",
+            upstream_api_key: "sk-upstream",
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+
+        assert_eq!(
+            plan.url,
+            "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+        );
+        assert_eq!(plan.provider, RealtimeUpstreamProvider::OpenAiCompatible);
+        assert_eq!(
+            plan.auth_mode,
+            RealtimeUpstreamAuthMode::RealtimeSubprotocol
+        );
+        assert_eq!(
+            plan.protocol_redacted,
+            vec![
+                "realtime".to_string(),
+                "openai-insecure-api-key.<redacted>".to_string(),
+                "openai-beta.realtime-v1".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn realtime_openai_upstream_plan_preserves_local_ws_scheme() {
+        let plan = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+            channel_type: 1,
+            base_url: Some("http://localhost:8787"),
+            model: "gpt-realtime-local",
+            upstream_api_key: "sk-upstream",
+            api_version: None,
+            client_requested_subprotocol: false,
+        })
+        .unwrap();
+
+        assert_eq!(
+            plan.url,
+            "ws://localhost:8787/v1/realtime?model=gpt-realtime-local"
+        );
+        assert_eq!(
+            plan.auth_mode,
+            RealtimeUpstreamAuthMode::AuthorizationBearer
+        );
+        assert_eq!(plan.header_names, vec!["openai-beta", "authorization"]);
+        assert!(plan.protocol_redacted.is_empty());
+    }
+
+    #[test]
+    fn realtime_azure_upstream_plan_uses_deployment_and_api_version() {
+        let plan = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+            channel_type: CHANNEL_TYPE_AZURE,
+            base_url: Some("https://example.openai.azure.com"),
+            model: "gpt-4o-realtime-deployment",
+            upstream_api_key: "azure-secret",
+            api_version: Some("2025-04-01-preview"),
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+
+        assert_eq!(
+            plan.url,
+            "wss://example.openai.azure.com/openai/realtime?deployment=gpt-4o-realtime-deployment&api-version=2025-04-01-preview"
+        );
+        assert_eq!(plan.provider, RealtimeUpstreamProvider::AzureOpenAi);
+        assert_eq!(plan.auth_mode, RealtimeUpstreamAuthMode::AzureApiKey);
+        assert_eq!(plan.header_names, vec!["api-key"]);
+        assert!(plan.protocol_redacted.is_empty());
+    }
+
+    #[test]
+    fn realtime_upstream_secret_handshake_is_not_serialized_in_plan() {
+        let secret = "sk-live-secret";
+        let handshake = realtime_upstream_bridge_handshake(
+            RealtimeUpstreamProvider::OpenAiCompatible,
+            secret,
+            true,
+        );
+        assert!(handshake.protocol.iter().any(|item| item.contains(secret)));
+
+        let plan = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+            channel_type: 1,
+            base_url: Some("https://api.openai.com"),
+            model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+        let raw = serde_json::to_string(&plan).unwrap();
+        assert!(!raw.contains(secret));
+        assert!(!raw.contains("Bearer sk-"));
+        assert!(raw.contains("openai-insecure-api-key.<redacted>"));
     }
 
     #[test]

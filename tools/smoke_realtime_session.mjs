@@ -302,6 +302,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_metrics_persisted_compiled === true,
     realtime_session_control_no_echo_compiled:
       data.realtime_session_control_no_echo_compiled === true,
+    realtime_session_upstream_bridge_planner_compiled:
+      data.realtime_session_upstream_bridge_planner_compiled === true,
     realtime_session_upstream_bridge_compiled:
       data.realtime_session_upstream_bridge_compiled === true,
     realtime_session_billing_settlement_compiled:
@@ -318,6 +320,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_auth_boundary_compiled", true],
     ["realtime_session_metrics_persisted_compiled", true],
     ["realtime_session_control_no_echo_compiled", true],
+    ["realtime_session_upstream_bridge_planner_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
       throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);

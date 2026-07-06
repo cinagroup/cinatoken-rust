@@ -5874,6 +5874,12 @@ Validation:
 - `bun run check:realtime-session:v1-smoke-plan` passed.
 - `bun run typecheck`, `bun run lint`, and `bun run format:check` in
   `apps/web/source/default` passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with warnings limited to the known `d1_repositories.rs` dead-code items.
+- `bun run check` passed, covering frontend build, bundle redaction/budget,
+  lint-debt, route audit, WFP deploy/dispatch dry-runs, Realtime platform and
+  v1 dry-runs, relay AI Gateway dry-run, Rust workspace tests, and Worker/WFP
+  wasm32 checks.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
 - `bun run check` passed, covering frontend build, bundle redaction/budget,
   lint-debt, route audit, WFP deploy/dispatch dry-runs, Realtime platform and
@@ -5888,3 +5894,66 @@ Remaining migration gaps:
   `/v1/realtime` gate is enabled.
 - Capture live staging platform and v1 Realtime smoke with real
   `REALTIME_SESSIONS`, admin session, low-risk relay token, and Worker logs.
+
+### 22.91 2026-07-06 Realtime Upstream Bridge Planner
+
+This increment advances the Realtime G7 path without prematurely claiming full
+OpenAI Realtime protocol parity. The previous DO contract made the upstream
+bridge visible as a production blocker; this step turns the first bridge
+dependency, upstream URL and handshake planning, into compiled and tested Rust
+logic with an explicit secret-redaction boundary.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_PLANNER_COMPILED=true` and exposed
+  `realtime_session_upstream_bridge_planner_compiled` from
+  `/api/platform/capabilities`.
+- Added a pure Realtime upstream planner in
+  `crates/worker/src/realtime_session.rs`:
+  - OpenAI-compatible channels build `ws/wss` `/v1/realtime?model=...`
+    upstream URLs using the same version-aware upstream URL helper used by the
+    REST relay.
+  - Azure Realtime builds
+    `/openai/realtime?deployment=...&api-version=...` with the Go default
+    `2025-04-01-preview` fallback.
+  - OpenAI-compatible handshakes distinguish client-requested subprotocol auth
+    (`realtime`, `openai-insecure-api-key.<key>`,
+    `openai-beta.realtime-v1`) from header auth (`openai-beta:
+    realtime=v1`, `Authorization: Bearer ...`).
+  - Azure handshakes use `api-key` and do not inherit the OpenAI beta header
+    path, matching the Go adaptor's early Azure branch.
+- Kept the secret-bearing handshake as a non-serialized internal value. The
+  serializable plan contains only the upstream URL, model, channel type, auth
+  mode, header names, and redacted protocol values.
+- Updated the default frontend Cloudflare Platform panel with an **Upstream
+  bridge planner** row, separate from the still-false **Upstream realtime
+  bridge** row.
+- Updated `tools/smoke_realtime_session.mjs` capabilities preflight to require
+  `realtime_session_upstream_bridge_planner_compiled=true` whenever the
+  admin-only capabilities preflight is used.
+- Updated `docs/staging-smoke-runbook.md` so Realtime smoke evidence records
+  the planner signal separately from bridge and billing readiness.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (15 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:v1-smoke-plan` passed.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default` passed.
+
+Remaining migration gaps:
+
+- Select the actual upstream channel for `/v1/realtime` and pass only a
+  request-scoped secret-bearing bridge plan into the DO; do not persist raw
+  upstream keys in DO storage or socket attachments.
+- Wire the bidirectional upstream WebSocket bridge with bounded queues,
+  close/error mapping, and no raw payload/token persistence in status paths.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

@@ -6342,3 +6342,51 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.98 2026-07-06 Realtime Upstream Close Mapping
+
+This increment makes the transient Realtime bridge's close/error behavior an
+operator-visible and testable contract. It still does not claim live upstream
+protocol replay or full queued backpressure. Instead, it removes scattered magic
+close codes and centralizes the deterministic mapping that staging replay must
+prove later.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_CLOSE_MAPPING_COMPILED=true` and exposed
+  `realtime_session_upstream_bridge_close_mapping_compiled` from
+  `/api/platform/capabilities`.
+- Added `upstream_bridge_close_mapping` to the Realtime cutover guard list and
+  required it in the v1 cutover readiness helper.
+- Centralized bridge close behavior for client close, client error, upstream
+  connect failure, upstream event-stream failure, upstream accept failure,
+  frame-too-large, upstream close, and upstream error paths.
+- Preserved WebSocket close-code safety: normal upstream `1000` propagates as
+  `1000`, reserved/unsafe upstream codes such as `1006` map to `1011`,
+  application codes such as `4000` pass through, and oversized bridge frames
+  close both sides with `1009`.
+- Updated the transient upstream cleanup path so client websocket errors close
+  the upstream bridge with `1011/client_websocket_error`, while normal client
+  closes keep the existing `1000/client_websocket_closed` behavior.
+- Added unit coverage for the close mapping contract and updated the frontend
+  Cloudflare Platform panel plus Realtime smoke preflight checks.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (36 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+
+Remaining migration gaps:
+
+- Add true queued backpressure/flow-control behavior once the Rust Worker API
+  can observe or wrap socket buffered bytes safely.
+- Capture live staging upstream close/error/protocol replay evidence and compare
+  actual socket close frames against the compiled close mapping before declaring
+  `realtime_session_upstream_bridge_compiled=true`.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

@@ -316,6 +316,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_upstream_bridge_lifecycle_compiled === true,
     realtime_session_upstream_bridge_frame_guard_compiled:
       data.realtime_session_upstream_bridge_frame_guard_compiled === true,
+    realtime_session_upstream_bridge_close_mapping_compiled:
+      data.realtime_session_upstream_bridge_close_mapping_compiled === true,
     realtime_session_upstream_bridge_compiled:
       data.realtime_session_upstream_bridge_compiled === true,
     realtime_session_billing_settlement_compiled:
@@ -339,6 +341,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_upstream_fetch_upgrade_adapter_compiled", true],
     ["realtime_session_upstream_bridge_lifecycle_compiled", true],
     ["realtime_session_upstream_bridge_frame_guard_compiled", true],
+    ["realtime_session_upstream_bridge_close_mapping_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
       throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);
@@ -352,6 +355,7 @@ function validateCapabilities(capabilities, options) {
     "upstream_fetch_upgrade_adapter",
     "upstream_bridge_lifecycle",
     "upstream_bridge_frame_guard",
+    "upstream_bridge_close_mapping",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",

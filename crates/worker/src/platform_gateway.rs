@@ -15,6 +15,7 @@ use worker::{Env, Headers, Request, RequestInit, Response, Result as WorkerResul
 
 use crate::admin::{envelope_ok_response, require_admin_auth};
 use crate::realtime_session::{
+    realtime_upstream_bridge_close_mapping_compiled,
     realtime_upstream_bridge_connect_contract_compiled,
     realtime_upstream_bridge_frame_guard_compiled, realtime_upstream_bridge_lifecycle_compiled,
     realtime_upstream_bridge_planner_compiled, realtime_upstream_channel_planner_compiled,
@@ -105,6 +106,7 @@ struct PlatformCapabilities {
     realtime_session_upstream_fetch_upgrade_adapter_compiled: bool,
     realtime_session_upstream_bridge_lifecycle_compiled: bool,
     realtime_session_upstream_bridge_frame_guard_compiled: bool,
+    realtime_session_upstream_bridge_close_mapping_compiled: bool,
     realtime_session_upstream_bridge_compiled: bool,
     realtime_session_billing_settlement_compiled: bool,
     realtime_session_platform_smoke_ready: bool,
@@ -148,6 +150,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_upstream_bridge_lifecycle_compiled();
     let realtime_session_upstream_bridge_frame_guard_compiled =
         realtime_upstream_bridge_frame_guard_compiled();
+    let realtime_session_upstream_bridge_close_mapping_compiled =
+        realtime_upstream_bridge_close_mapping_compiled();
     let realtime_session_upstream_bridge_compiled = false;
     let realtime_session_billing_settlement_compiled = false;
     let realtime_session_platform_smoke_ready = is_realtime_session_platform_smoke_ready(
@@ -170,6 +174,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_fetch_upgrade_adapter_compiled,
         realtime_session_upstream_bridge_lifecycle_compiled,
         realtime_session_upstream_bridge_frame_guard_compiled,
+        realtime_session_upstream_bridge_close_mapping_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
     );
@@ -208,6 +213,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_fetch_upgrade_adapter_compiled,
         realtime_session_upstream_bridge_lifecycle_compiled,
         realtime_session_upstream_bridge_frame_guard_compiled,
+        realtime_session_upstream_bridge_close_mapping_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
         realtime_session_platform_smoke_ready,
@@ -568,6 +574,7 @@ fn is_realtime_session_v1_cutover_ready(
     upstream_fetch_upgrade_adapter_compiled: bool,
     upstream_bridge_lifecycle_compiled: bool,
     upstream_bridge_frame_guard_compiled: bool,
+    upstream_bridge_close_mapping_compiled: bool,
     upstream_bridge_compiled: bool,
     billing_settlement_compiled: bool,
 ) -> bool {
@@ -583,6 +590,7 @@ fn is_realtime_session_v1_cutover_ready(
         && upstream_fetch_upgrade_adapter_compiled
         && upstream_bridge_lifecycle_compiled
         && upstream_bridge_frame_guard_compiled
+        && upstream_bridge_close_mapping_compiled
         && upstream_bridge_compiled
         && billing_settlement_compiled
 }
@@ -773,6 +781,7 @@ mod tests {
         assert!(guards.contains(&"upstream_fetch_upgrade_adapter"));
         assert!(guards.contains(&"upstream_bridge_lifecycle"));
         assert!(guards.contains(&"upstream_bridge_frame_guard"));
+        assert!(guards.contains(&"upstream_bridge_close_mapping"));
         assert!(guards.contains(&"hibernation_attachment_restore"));
         assert!(guards.contains(&"metadata_only_control_frames"));
         assert!(guards.contains(&"upstream_bridge"));
@@ -801,34 +810,48 @@ mod tests {
     #[test]
     fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
         assert!(is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, true, true, false, true
+            true, true, true, true, true, true, true, true, true, true, true, true, true, false,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, true, true, true, false
+            true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+            false
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, false, true, true, true, true, true, true, true
+            true, true, true, true, true, true, false, true, true, true, true, true, true, true,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, false, true, true, true, true, true, true
+            true, true, true, true, true, true, true, false, true, true, true, true, true, true,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, true, false, true, true, true, true, true
+            true, true, true, true, true, true, true, true, false, true, true, true, true, true,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, true, true, false, true, true, true, true
+            true, true, true, true, true, true, true, true, true, false, true, true, true, true,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, false, true, true, true
+            true, true, true, true, true, true, true, true, true, true, false, true, true, true,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, true, true, true, true, true, true, true, true, true, true, false, true, true
+            true, true, true, true, true, true, true, true, true, true, true, false, true, true,
+            true
         ));
         assert!(!is_realtime_session_v1_cutover_ready(
-            true, false, true, true, true, true, true, true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true, true, true, true, true, false, true,
+            true
+        ));
+        assert!(!is_realtime_session_v1_cutover_ready(
+            true, false, true, true, true, true, true, true, true, true, true, true, true, true,
+            true
         ));
     }
 }

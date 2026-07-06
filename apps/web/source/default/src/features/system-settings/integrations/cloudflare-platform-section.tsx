@@ -76,6 +76,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_fetch_upgrade_adapter_compiled,
         capabilities.realtime_session_upstream_bridge_lifecycle_compiled,
         capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
+        capabilities.realtime_session_upstream_bridge_close_mapping_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -516,6 +517,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream close mapping'),
+          description: t(
+            'Maps Realtime bridge close, error, accept failure, and message-too-big paths to deterministic WebSocket close codes and redacted reasons.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_close_mapping_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

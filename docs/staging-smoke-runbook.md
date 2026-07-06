@@ -387,6 +387,7 @@ Record:
   `realtime_session_upstream_fetch_upgrade_adapter_compiled`,
   `realtime_session_upstream_bridge_lifecycle_compiled`,
   `realtime_session_upstream_bridge_frame_guard_compiled`,
+  `realtime_session_upstream_bridge_close_mapping_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -404,7 +405,8 @@ Pass criteria:
   no-echo controls, the upstream bridge planner, the upstream channel planner,
   the request-scoped upstream connect contract, and the gateway-to-DO connect
   handoff plus upstream fetch-upgrade adapter and transient bridge lifecycle as
-  compiled, including the text/binary frame guard;
+  compiled, including the text/binary frame guard and bridge close/error
+  mapping;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -425,6 +427,12 @@ Pass criteria:
 - Oversized bridge frames are rejected with WebSocket close code `1009` and
   metadata-only frame kind/byte-count/max-byte evidence; raw frame payloads are
   never logged, stored, or echoed.
+- Close/error replay evidence matches the compiled mapping: normal upstream
+  close `1000` stays `1000`, reserved/unsafe upstream close codes such as
+  `1006` map to `1011`, application close codes such as `4000` pass through,
+  upstream errors close the client with `1011/upstream_bridge_error`, and
+  client websocket errors close the upstream bridge with
+  `1011/client_websocket_error`.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge

@@ -78,6 +78,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
         capabilities.realtime_session_upstream_bridge_close_mapping_compiled,
         capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
+        capabilities.realtime_session_upstream_bridge_event_trace_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -538,6 +539,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream event trace'),
+          description: t(
+            'Emits and persists sanitized terminal bridge event metadata for close, error, frame-limit, and send-failure evidence without storing payloads.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_event_trace_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

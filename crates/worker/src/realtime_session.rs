@@ -34,6 +34,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CLOSE_MAPPING_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
@@ -49,6 +50,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_frame_guard",
     "upstream_bridge_close_mapping",
     "upstream_bridge_send_failure_guard",
+    "upstream_bridge_event_trace",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",
@@ -265,6 +267,13 @@ struct RealtimeBridgeFrameRejection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeBridgeFrameMetadata {
+    kind: RealtimeBridgeFrameKind,
+    bytes: usize,
+    max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RealtimeBridgeCloseCause {
     ClientClosed,
     ClientError,
@@ -284,6 +293,21 @@ struct RealtimeBridgeCloseAction {
     client_reason: &'static str,
     upstream_code: Option<u16>,
     upstream_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct RealtimeBridgeTerminalEvent {
+    event: String,
+    direction: String,
+    occurred_at_ms: f64,
+    client_code: u16,
+    client_reason: String,
+    upstream_code: Option<u16>,
+    upstream_reason: Option<String>,
+    upstream_close_code: Option<u16>,
+    frame_kind: Option<String>,
+    frame_bytes: Option<usize>,
+    frame_max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -308,6 +332,8 @@ struct RealtimeSessionMetrics {
     last_close_code: Option<usize>,
     last_close_reason: Option<String>,
     last_error: Option<String>,
+    #[serde(default)]
+    last_bridge_terminal_event: Option<RealtimeBridgeTerminalEvent>,
 }
 
 #[durable_object]
@@ -402,15 +428,26 @@ impl DurableObject for RealtimeSession {
             WebSocketIncomingMessage::String(message) => {
                 let summary = realtime_text_control_summary(&message);
                 if let Some(rejection) = realtime_text_frame_guard_rejection(&message) {
-                    metrics.record_error(
-                        attachment.as_ref(),
-                        js_sys::Date::now(),
-                        REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
-                    );
-                    metrics_changed = true;
+                    let now_ms = js_sys::Date::now();
                     let close_action =
                         realtime_bridge_close_action(RealtimeBridgeCloseCause::FrameTooLarge);
-                    ws.send(&json!({
+                    metrics.record_error(
+                        attachment.as_ref(),
+                        now_ms,
+                        REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
+                    );
+                    metrics.record_bridge_terminal_event(
+                        attachment.as_ref(),
+                        now_ms,
+                        realtime_bridge_terminal_event(
+                            RealtimeBridgeCloseCause::FrameTooLarge,
+                            close_action,
+                            now_ms,
+                            Some(realtime_bridge_frame_metadata_from_rejection(rejection)),
+                        ),
+                    );
+                    metrics_changed = true;
+                    let _ = ws.send(&json!({
                         "type": "realtime_session_control",
                         "status": REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
                         "frame_kind": rejection.kind.as_str(),
@@ -418,14 +455,14 @@ impl DurableObject for RealtimeSession {
                         "text_chars": summary.text_chars,
                         "text_bytes": rejection.bytes,
                         "max_bytes": rejection.max_bytes
-                    }))?;
+                    }));
                     if let Some(attachment) = attachment.as_ref() {
                         self.close_upstream_bridge_for(attachment, close_action);
                     }
-                    ws.close(
+                    let _ = ws.close(
                         Some(close_action.client_code),
                         Some(close_action.client_reason),
-                    )?;
+                    );
                     if metrics_changed {
                         self.store_metrics(&metrics).await?;
                     }
@@ -446,13 +483,28 @@ impl DurableObject for RealtimeSession {
                         }))?;
                     }
                     Err(_) => {
+                        let now_ms = js_sys::Date::now();
                         let close_action = realtime_bridge_close_action(
                             RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
                         );
                         metrics.record_error(
                             attachment.as_ref(),
-                            js_sys::Date::now(),
+                            now_ms,
                             REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
+                        );
+                        metrics.record_bridge_terminal_event(
+                            attachment.as_ref(),
+                            now_ms,
+                            realtime_bridge_terminal_event(
+                                RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
+                                close_action,
+                                now_ms,
+                                Some(RealtimeBridgeFrameMetadata {
+                                    kind: RealtimeBridgeFrameKind::Text,
+                                    bytes: summary.text_bytes,
+                                    max_bytes: None,
+                                }),
+                            ),
                         );
                         metrics_changed = true;
                         let _ = ws.send(&json!({
@@ -474,29 +526,40 @@ impl DurableObject for RealtimeSession {
             }
             WebSocketIncomingMessage::Binary(bytes) => {
                 if let Some(rejection) = realtime_binary_frame_guard_rejection(&bytes) {
-                    metrics.record_error(
-                        attachment.as_ref(),
-                        js_sys::Date::now(),
-                        REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
-                    );
-                    metrics_changed = true;
+                    let now_ms = js_sys::Date::now();
                     let close_action =
                         realtime_bridge_close_action(RealtimeBridgeCloseCause::FrameTooLarge);
-                    ws.send(&json!({
+                    metrics.record_error(
+                        attachment.as_ref(),
+                        now_ms,
+                        REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
+                    );
+                    metrics.record_bridge_terminal_event(
+                        attachment.as_ref(),
+                        now_ms,
+                        realtime_bridge_terminal_event(
+                            RealtimeBridgeCloseCause::FrameTooLarge,
+                            close_action,
+                            now_ms,
+                            Some(realtime_bridge_frame_metadata_from_rejection(rejection)),
+                        ),
+                    );
+                    metrics_changed = true;
+                    let _ = ws.send(&json!({
                         "type": "realtime_session_control",
                         "status": REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
                         "frame_kind": rejection.kind.as_str(),
                         "context": context,
                         "binary_bytes": rejection.bytes,
                         "max_bytes": rejection.max_bytes
-                    }))?;
+                    }));
                     if let Some(attachment) = attachment.as_ref() {
                         self.close_upstream_bridge_for(attachment, close_action);
                     }
-                    ws.close(
+                    let _ = ws.close(
                         Some(close_action.client_code),
                         Some(close_action.client_reason),
-                    )?;
+                    );
                     if metrics_changed {
                         self.store_metrics(&metrics).await?;
                     }
@@ -516,13 +579,28 @@ impl DurableObject for RealtimeSession {
                         }))?;
                     }
                     Err(_) => {
+                        let now_ms = js_sys::Date::now();
                         let close_action = realtime_bridge_close_action(
                             RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
                         );
                         metrics.record_error(
                             attachment.as_ref(),
-                            js_sys::Date::now(),
+                            now_ms,
                             REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
+                        );
+                        metrics.record_bridge_terminal_event(
+                            attachment.as_ref(),
+                            now_ms,
+                            realtime_bridge_terminal_event(
+                                RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
+                                close_action,
+                                now_ms,
+                                Some(RealtimeBridgeFrameMetadata {
+                                    kind: RealtimeBridgeFrameKind::Binary,
+                                    bytes: bytes.len(),
+                                    max_bytes: None,
+                                }),
+                            ),
                         );
                         metrics_changed = true;
                         let _ = ws.send(&json!({
@@ -564,12 +642,24 @@ impl DurableObject for RealtimeSession {
             .as_ref()
             .map(|attachment| attachment.session.clone())
             .unwrap_or_else(|| self.state.id().to_string());
+        let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientClosed);
         if let Some(attachment) = attachment.as_ref() {
-            let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientClosed);
             self.close_upstream_bridge_for(attachment, action);
         }
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_close(attachment.as_ref(), now_ms, code, &reason);
+        if !realtime_bridge_generated_close_reason(&reason) {
+            metrics.record_bridge_terminal_event(
+                attachment.as_ref(),
+                now_ms,
+                realtime_bridge_terminal_event(
+                    RealtimeBridgeCloseCause::ClientClosed,
+                    action,
+                    now_ms,
+                    None,
+                ),
+            );
+        }
         self.store_metrics(&metrics).await?;
         Ok(())
     }
@@ -585,12 +675,22 @@ impl DurableObject for RealtimeSession {
             .as_ref()
             .map(|attachment| attachment.session.clone())
             .unwrap_or_else(|| self.state.id().to_string());
+        let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientError);
         if let Some(attachment) = attachment.as_ref() {
-            let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientError);
             self.close_upstream_bridge_for(attachment, action);
         }
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_error(attachment.as_ref(), now_ms, &error.to_string());
+        metrics.record_bridge_terminal_event(
+            attachment.as_ref(),
+            now_ms,
+            realtime_bridge_terminal_event(
+                RealtimeBridgeCloseCause::ClientError,
+                action,
+                now_ms,
+                None,
+            ),
+        );
         self.store_metrics(&metrics).await?;
         Ok(())
     }
@@ -617,14 +717,25 @@ impl RealtimeSession {
                 .is_err()
             {
                 worker::console_warn!("RealtimeSession upstream bridge connect failed");
-                metrics.record_error(
-                    Some(&attachment),
-                    js_sys::Date::now(),
-                    REALTIME_BRIDGE_REASON_CONNECT_FAILED,
-                );
+                let now_ms = js_sys::Date::now();
                 let action =
                     realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamConnectFailed);
-                server.close(Some(action.client_code), Some(action.client_reason))?;
+                metrics.record_error(
+                    Some(&attachment),
+                    now_ms,
+                    REALTIME_BRIDGE_REASON_CONNECT_FAILED,
+                );
+                metrics.record_bridge_terminal_event(
+                    Some(&attachment),
+                    now_ms,
+                    realtime_bridge_terminal_event(
+                        RealtimeBridgeCloseCause::UpstreamConnectFailed,
+                        action,
+                        now_ms,
+                        None,
+                    ),
+                );
+                let _ = server.close(Some(action.client_code), Some(action.client_reason));
             }
         }
         self.store_metrics(&metrics).await?;
@@ -639,7 +750,8 @@ impl RealtimeSession {
     ) -> WorkerResult<()> {
         let upstream = connect_realtime_upstream(handoff).await?;
         let bridge_key = realtime_upstream_bridge_key(attachment);
-        spawn_realtime_upstream_event_pump(upstream.clone(), client.clone());
+        let context = attachment_context_json(Some(attachment));
+        spawn_realtime_upstream_event_pump(upstream.clone(), client.clone(), context);
         self.upstream_bridges
             .insert(bridge_key, RealtimeUpstreamBridgeRuntime { upstream });
         Ok(())
@@ -742,6 +854,7 @@ impl RealtimeSessionMetrics {
             last_close_code: None,
             last_close_reason: None,
             last_error: None,
+            last_bridge_terminal_event: None,
         }
     }
 
@@ -787,6 +900,16 @@ impl RealtimeSessionMetrics {
         self.error_count = self.error_count.saturating_add(1);
         self.last_error_at_ms = Some(now_ms);
         self.last_error = truncate_stored_text(error);
+        self.record_context(attachment, now_ms);
+    }
+
+    fn record_bridge_terminal_event(
+        &mut self,
+        attachment: Option<&SocketAttachment>,
+        now_ms: f64,
+        event: RealtimeBridgeTerminalEvent,
+    ) {
+        self.last_bridge_terminal_event = Some(event);
         self.record_context(attachment, now_ms);
     }
 
@@ -1282,6 +1405,58 @@ pub(crate) fn realtime_upstream_bridge_send_failure_guard_compiled() -> bool {
         && client_forward.upstream_reason == Some(REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED)
 }
 
+pub(crate) fn realtime_upstream_bridge_event_trace_compiled() -> bool {
+    let close_action = realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamClosed(1006));
+    let close_event = realtime_bridge_terminal_event(
+        RealtimeBridgeCloseCause::UpstreamClosed(1006),
+        close_action,
+        10.0,
+        None,
+    );
+    let frame_action = realtime_bridge_close_action(RealtimeBridgeCloseCause::FrameTooLarge);
+    let frame_event = realtime_bridge_terminal_event(
+        RealtimeBridgeCloseCause::FrameTooLarge,
+        frame_action,
+        11.0,
+        Some(RealtimeBridgeFrameMetadata {
+            kind: RealtimeBridgeFrameKind::Text,
+            bytes: MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1,
+            max_bytes: Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES),
+        }),
+    );
+    let send_action =
+        realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamToClientSendFailed);
+    let send_event = realtime_bridge_terminal_event(
+        RealtimeBridgeCloseCause::UpstreamToClientSendFailed,
+        send_action,
+        12.0,
+        Some(RealtimeBridgeFrameMetadata {
+            kind: RealtimeBridgeFrameKind::Binary,
+            bytes: 32,
+            max_bytes: None,
+        }),
+    );
+
+    REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED
+        && close_event.event == "upstream_closed"
+        && close_event.direction == "upstream_to_client"
+        && close_event.client_code == REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE
+        && close_event.upstream_close_code == Some(1006)
+        && close_event.frame_kind.is_none()
+        && frame_event.event == "frame_too_large"
+        && frame_event.client_code == REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE
+        && frame_event.frame_kind.as_deref() == Some("text")
+        && frame_event.frame_bytes == Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1)
+        && frame_event.frame_max_bytes == Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES)
+        && send_event.event == "upstream_to_client_send_failed"
+        && send_event.client_reason == REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED
+        && send_event.upstream_reason.as_deref()
+            == Some(REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED)
+        && send_event.frame_kind.as_deref() == Some("binary")
+        && send_event.frame_bytes == Some(32)
+        && send_event.frame_max_bytes.is_none()
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -1480,21 +1655,22 @@ async fn connect_realtime_upstream(
     })
 }
 
-fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
+fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, context: Value) {
     wasm_bindgen_futures::spawn_local(async move {
         let mut events = match upstream.events() {
             Ok(events) => events,
             Err(_) => {
-                let action = realtime_bridge_close_action(
-                    RealtimeBridgeCloseCause::UpstreamEventStreamFailed,
-                );
+                let cause = RealtimeBridgeCloseCause::UpstreamEventStreamFailed;
+                let action = realtime_bridge_close_action(cause);
+                send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
                 let _ = client.close(Some(action.client_code), Some(action.client_reason));
                 return;
             }
         };
         if upstream.accept().is_err() {
-            let action =
-                realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamAcceptFailed);
+            let cause = RealtimeBridgeCloseCause::UpstreamAcceptFailed;
+            let action = realtime_bridge_close_action(cause);
+            send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
             let _ = client.close(Some(action.client_code), Some(action.client_reason));
             return;
         }
@@ -1503,9 +1679,15 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
             match event {
                 Ok(WebsocketEvent::Message(message)) => {
                     if let Some(text) = message.text() {
-                        if realtime_text_frame_guard_rejection(&text).is_some() {
-                            let action = realtime_bridge_close_action(
-                                RealtimeBridgeCloseCause::FrameTooLarge,
+                        if let Some(rejection) = realtime_text_frame_guard_rejection(&text) {
+                            let cause = RealtimeBridgeCloseCause::FrameTooLarge;
+                            let action = realtime_bridge_close_action(cause);
+                            send_realtime_bridge_terminal_event(
+                                &client,
+                                &context,
+                                cause,
+                                action,
+                                Some(realtime_bridge_frame_metadata_from_rejection(rejection)),
                             );
                             if let (Some(code), Some(reason)) =
                                 (action.upstream_code, action.upstream_reason)
@@ -1516,9 +1698,20 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
                         }
-                        if client.send_with_str(text).is_err() {
-                            let action = realtime_bridge_close_action(
-                                RealtimeBridgeCloseCause::UpstreamToClientSendFailed,
+                        let text_bytes = text.as_bytes().len();
+                        if client.send_with_str(&text).is_err() {
+                            let cause = RealtimeBridgeCloseCause::UpstreamToClientSendFailed;
+                            let action = realtime_bridge_close_action(cause);
+                            send_realtime_bridge_terminal_event(
+                                &client,
+                                &context,
+                                cause,
+                                action,
+                                Some(RealtimeBridgeFrameMetadata {
+                                    kind: RealtimeBridgeFrameKind::Text,
+                                    bytes: text_bytes,
+                                    max_bytes: None,
+                                }),
                             );
                             if let (Some(code), Some(reason)) =
                                 (action.upstream_code, action.upstream_reason)
@@ -1530,9 +1723,15 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
                             break;
                         }
                     } else if let Some(bytes) = message.bytes() {
-                        if realtime_binary_frame_guard_rejection(&bytes).is_some() {
-                            let action = realtime_bridge_close_action(
-                                RealtimeBridgeCloseCause::FrameTooLarge,
+                        if let Some(rejection) = realtime_binary_frame_guard_rejection(&bytes) {
+                            let cause = RealtimeBridgeCloseCause::FrameTooLarge;
+                            let action = realtime_bridge_close_action(cause);
+                            send_realtime_bridge_terminal_event(
+                                &client,
+                                &context,
+                                cause,
+                                action,
+                                Some(realtime_bridge_frame_metadata_from_rejection(rejection)),
                             );
                             if let (Some(code), Some(reason)) =
                                 (action.upstream_code, action.upstream_reason)
@@ -1543,9 +1742,20 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
                         }
-                        if client.send_with_bytes(bytes).is_err() {
-                            let action = realtime_bridge_close_action(
-                                RealtimeBridgeCloseCause::UpstreamToClientSendFailed,
+                        let byte_len = bytes.len();
+                        if client.send_with_bytes(&bytes).is_err() {
+                            let cause = RealtimeBridgeCloseCause::UpstreamToClientSendFailed;
+                            let action = realtime_bridge_close_action(cause);
+                            send_realtime_bridge_terminal_event(
+                                &client,
+                                &context,
+                                cause,
+                                action,
+                                Some(RealtimeBridgeFrameMetadata {
+                                    kind: RealtimeBridgeFrameKind::Binary,
+                                    bytes: byte_len,
+                                    max_bytes: None,
+                                }),
                             );
                             if let (Some(code), Some(reason)) =
                                 (action.upstream_code, action.upstream_reason)
@@ -1559,21 +1769,113 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
                     }
                 }
                 Ok(WebsocketEvent::Close(close)) => {
-                    let action = realtime_bridge_close_action(
-                        RealtimeBridgeCloseCause::UpstreamClosed(close.code()),
-                    );
+                    let cause = RealtimeBridgeCloseCause::UpstreamClosed(close.code());
+                    let action = realtime_bridge_close_action(cause);
+                    send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
                     let _ = client.close(Some(action.client_code), Some(action.client_reason));
                     break;
                 }
                 Err(_) => {
-                    let action =
-                        realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamError);
+                    let cause = RealtimeBridgeCloseCause::UpstreamError;
+                    let action = realtime_bridge_close_action(cause);
+                    send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
                     let _ = client.close(Some(action.client_code), Some(action.client_reason));
                     break;
                 }
             }
         }
     });
+}
+
+fn send_realtime_bridge_terminal_event(
+    client: &WebSocket,
+    context: &Value,
+    cause: RealtimeBridgeCloseCause,
+    action: RealtimeBridgeCloseAction,
+    frame: Option<RealtimeBridgeFrameMetadata>,
+) {
+    let event = realtime_bridge_terminal_event(cause, action, js_sys::Date::now(), frame);
+    let _ = client.send(&json!({
+        "type": "realtime_session_bridge_event",
+        "status": event.event.as_str(),
+        "context": context,
+        "event": &event
+    }));
+}
+
+fn realtime_bridge_frame_metadata_from_rejection(
+    rejection: RealtimeBridgeFrameRejection,
+) -> RealtimeBridgeFrameMetadata {
+    RealtimeBridgeFrameMetadata {
+        kind: rejection.kind,
+        bytes: rejection.bytes,
+        max_bytes: Some(rejection.max_bytes),
+    }
+}
+
+fn realtime_bridge_terminal_event(
+    cause: RealtimeBridgeCloseCause,
+    action: RealtimeBridgeCloseAction,
+    occurred_at_ms: f64,
+    frame: Option<RealtimeBridgeFrameMetadata>,
+) -> RealtimeBridgeTerminalEvent {
+    let (event, direction, upstream_close_code) = realtime_bridge_terminal_event_labels(cause);
+    RealtimeBridgeTerminalEvent {
+        event: event.to_string(),
+        direction: direction.to_string(),
+        occurred_at_ms,
+        client_code: action.client_code,
+        client_reason: action.client_reason.to_string(),
+        upstream_code: action.upstream_code,
+        upstream_reason: action.upstream_reason.map(str::to_string),
+        upstream_close_code,
+        frame_kind: frame.map(|frame| frame.kind.as_str().to_string()),
+        frame_bytes: frame.map(|frame| frame.bytes),
+        frame_max_bytes: frame.and_then(|frame| frame.max_bytes),
+    }
+}
+
+fn realtime_bridge_terminal_event_labels(
+    cause: RealtimeBridgeCloseCause,
+) -> (&'static str, &'static str, Option<u16>) {
+    match cause {
+        RealtimeBridgeCloseCause::ClientClosed => ("client_closed", "client_to_upstream", None),
+        RealtimeBridgeCloseCause::ClientError => ("client_error", "client_to_upstream", None),
+        RealtimeBridgeCloseCause::UpstreamConnectFailed => {
+            ("upstream_connect_failed", "upstream_to_client", None)
+        }
+        RealtimeBridgeCloseCause::UpstreamEventStreamFailed => {
+            ("upstream_event_stream_failed", "upstream_to_client", None)
+        }
+        RealtimeBridgeCloseCause::UpstreamAcceptFailed => {
+            ("upstream_accept_failed", "upstream_to_client", None)
+        }
+        RealtimeBridgeCloseCause::FrameTooLarge => ("frame_too_large", "bridge", None),
+        RealtimeBridgeCloseCause::UpstreamClosed(code) => {
+            ("upstream_closed", "upstream_to_client", Some(code))
+        }
+        RealtimeBridgeCloseCause::UpstreamError => ("upstream_error", "upstream_to_client", None),
+        RealtimeBridgeCloseCause::ClientToUpstreamSendFailed => {
+            ("client_to_upstream_send_failed", "client_to_upstream", None)
+        }
+        RealtimeBridgeCloseCause::UpstreamToClientSendFailed => {
+            ("upstream_to_client_send_failed", "upstream_to_client", None)
+        }
+    }
+}
+
+fn realtime_bridge_generated_close_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        REALTIME_BRIDGE_REASON_CONNECT_FAILED
+            | REALTIME_BRIDGE_REASON_EVENT_STREAM_FAILED
+            | REALTIME_BRIDGE_REASON_ACCEPT_FAILED
+            | REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE
+            | REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED
+            | REALTIME_BRIDGE_REASON_UPSTREAM_ERROR
+            | REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED
+            | REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED
+    )
 }
 
 impl RealtimeBridgeFrameKind {
@@ -2194,6 +2496,20 @@ mod tests {
             &WebSocketIncomingMessage::Binary(vec![1]),
         );
         metrics.record_close(Some(&attachment), 5.0, 1000, "normal close");
+        metrics.record_bridge_terminal_event(
+            Some(&attachment),
+            6.0,
+            realtime_bridge_terminal_event(
+                RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
+                realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientToUpstreamSendFailed),
+                6.0,
+                Some(RealtimeBridgeFrameMetadata {
+                    kind: RealtimeBridgeFrameKind::Text,
+                    bytes: "secret client payload".len(),
+                    max_bytes: None,
+                }),
+            ),
+        );
 
         assert_eq!(metrics.connected_count, 1);
         assert_eq!(metrics.text_message_count, 1);
@@ -2207,6 +2523,13 @@ mod tests {
         assert_eq!(metrics.last_token_fingerprint.as_deref(), Some("fp-token"));
         assert_eq!(metrics.last_close_code, Some(1000));
         assert_eq!(metrics.last_close_reason.as_deref(), Some("normal close"));
+        assert_eq!(
+            metrics
+                .last_bridge_terminal_event
+                .as_ref()
+                .map(|event| event.event.as_str()),
+            Some("client_to_upstream_send_failed")
+        );
         let raw = serde_json::to_string(&metrics).unwrap();
         assert!(!raw.contains("secret client payload"));
         assert!(!raw.contains("openai-insecure-api-key.sk"));
@@ -2372,6 +2695,65 @@ mod tests {
                 upstream_reason: Some("client_bridge_forward_failed"),
             }
         );
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_terminal_event_trace_is_metadata_only() {
+        let upstream_close = realtime_bridge_terminal_event(
+            RealtimeBridgeCloseCause::UpstreamClosed(1006),
+            realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamClosed(1006)),
+            10.0,
+            None,
+        );
+        assert_eq!(upstream_close.event, "upstream_closed");
+        assert_eq!(upstream_close.direction, "upstream_to_client");
+        assert_eq!(upstream_close.client_code, 1011);
+        assert_eq!(upstream_close.upstream_close_code, Some(1006));
+        assert!(upstream_close.frame_kind.is_none());
+
+        let frame_too_large = realtime_bridge_terminal_event(
+            RealtimeBridgeCloseCause::FrameTooLarge,
+            realtime_bridge_close_action(RealtimeBridgeCloseCause::FrameTooLarge),
+            11.0,
+            Some(RealtimeBridgeFrameMetadata {
+                kind: RealtimeBridgeFrameKind::Text,
+                bytes: MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1,
+                max_bytes: Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES),
+            }),
+        );
+        assert_eq!(frame_too_large.event, "frame_too_large");
+        assert_eq!(frame_too_large.frame_kind.as_deref(), Some("text"));
+        assert_eq!(
+            frame_too_large.frame_bytes,
+            Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1)
+        );
+        assert_eq!(
+            frame_too_large.frame_max_bytes,
+            Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES)
+        );
+
+        let raw = serde_json::to_string(&frame_too_large).unwrap();
+        assert!(!raw.contains("secret client payload"));
+        assert!(!raw.contains("openai-insecure-api-key.sk"));
+    }
+
+    #[test]
+    fn realtime_bridge_generated_close_reasons_do_not_overwrite_specific_events() {
+        for reason in [
+            REALTIME_BRIDGE_REASON_CONNECT_FAILED,
+            REALTIME_BRIDGE_REASON_EVENT_STREAM_FAILED,
+            REALTIME_BRIDGE_REASON_ACCEPT_FAILED,
+            REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
+            REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED,
+            REALTIME_BRIDGE_REASON_UPSTREAM_ERROR,
+            REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
+            REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED,
+        ] {
+            assert!(realtime_bridge_generated_close_reason(reason));
+        }
+        assert!(!realtime_bridge_generated_close_reason(
+            REALTIME_BRIDGE_REASON_CLIENT_CLOSED
+        ));
     }
 
     #[test]
@@ -2702,6 +3084,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_send_failure_guard_contract_is_compiled() {
         assert!(realtime_upstream_bridge_send_failure_guard_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_event_trace_contract_is_compiled() {
+        assert!(realtime_upstream_bridge_event_trace_compiled());
     }
 
     #[test]

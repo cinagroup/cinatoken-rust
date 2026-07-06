@@ -6448,3 +6448,60 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.100 2026-07-06 Realtime Upstream Event Trace
+
+This increment makes the Realtime bridge terminal behavior easier to prove in
+staging without widening what crosses Durable Object serialization boundaries.
+It does not complete queued backpressure/flow-control and it does not replace
+real live protocol replay. Instead, it adds a sanitized event trace for the
+close/error/frame-limit/send-failure paths that are already compiled, so smoke
+tests and operators can compare observed bridge outcomes with the compiled
+mapping.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED=true`, the
+  `upstream_bridge_event_trace` cutover guard, and
+  `realtime_session_upstream_bridge_event_trace_compiled` in
+  `/api/platform/capabilities`.
+- Added `RealtimeBridgeTerminalEvent` metadata to `RealtimeSessionMetrics` as
+  `last_bridge_terminal_event`, with `serde(default)` so existing Durable
+  Object storage snapshots remain readable.
+- DO-observed terminal paths now persist metadata-only bridge events:
+  client close, client websocket error, upstream connect failure,
+  frame-too-large rejection, and client-to-upstream send failure.
+- The detached upstream event pump now emits a best-effort live
+  `realtime_session_bridge_event` frame before closing the client for upstream
+  event-stream failure, upstream accept failure, upstream frame-too-large,
+  upstream close, upstream error, and upstream-to-client send failure.
+- Event payloads include only event labels, direction, close codes/reasons,
+  optional upstream close code, and optional frame byte counts. They never store
+  or echo raw Realtime frame payloads, bearer tokens, upstream keys, or
+  `openai-insecure-api-key.<secret>` protocol values.
+- Updated the Cloudflare Platform panel, Realtime smoke preflight, staging
+  smoke runbook, production readiness matrix, layered architecture notes, and
+  cinaVibeSDK production mapping to expose the new evidence signal.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (41 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `cargo fmt --all --check` and `node --check tools/smoke_realtime_session.mjs`
+  passed.
+
+Remaining migration gaps:
+
+- Add true queued backpressure/flow-control behavior once the Rust Worker API
+  can observe or wrap socket buffered bytes safely.
+- Capture live staging close/error/send-failure/protocol replay with a real or
+  mock upstream and compare the observed `realtime_session_bridge_event` frames
+  plus persisted `last_bridge_terminal_event` against the compiled mapping
+  before declaring `realtime_session_upstream_bridge_compiled=true`.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

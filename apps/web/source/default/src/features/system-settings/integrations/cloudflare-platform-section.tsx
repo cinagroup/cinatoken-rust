@@ -170,6 +170,8 @@ function buildCapabilityGroups(
 ): CapabilityGroup[] {
   const relayAiGatewayRoutes =
     capabilities.relay_ai_gateway_rest_routes.join(', ') || t('No routes')
+  const relayAiGatewayGuards =
+    capabilities.relay_ai_gateway_cutover_guards.join(', ') || t('No guards')
 
   return [
     {
@@ -241,6 +243,17 @@ function buildCapabilityGroups(
           }),
           ready: capabilities.relay_ai_gateway_rest_routes.length > 0,
           readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Cutover guard policy'),
+          description: t('Compiled guards: {{guards}}', {
+            guards: relayAiGatewayGuards,
+          }),
+          ready: capabilities.relay_ai_gateway_cutover_guards.length > 0,
+          readyLabel: t('{{count}} guards', {
+            count: capabilities.relay_ai_gateway_cutover_guards.length,
+          }),
           missingLabel: t('Missing'),
         },
         {

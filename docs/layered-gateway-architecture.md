@@ -1,6 +1,9 @@
 # Layered Gateway Architecture — Implementation Scheme
 
-> **Status:** Design, ready-to-execute · 2026-07-06
+> **Status:** Partially implemented · updated 2026-07-06 — the provider registry
+> (wired), the AI-Gateway cutover planner, the RealtimeSession DO substrate, and
+> the WFP dispatch layer have all landed behind env gates. See the **Status
+> ledger (TS → Rust)** below for what is wired vs. gated vs. pending, per pillar.
 > **Scope:** Introduce a three-layer split (scheduling gateway → Durable Objects →
 > Workers-for-Platforms tenant scripts) plus a cross-cutting AI-Gateway router on
 > top of the existing relay/billing engine, reusing **cinaVibeSDK's** official
@@ -11,7 +14,7 @@
 > wins**; where it conflicts with plan `§21`, the reconciliation notes in §7 below
 > are authoritative.
 > **Grounding:** Every claim is anchored to `file:line` verified against the repo
-> at `HEAD` (post `2c4a68f`) and the vendored `worker` crate `0.5.0` source. It
+> after the 2026-07-06 AI Gateway guard increment and the vendored `worker` crate `0.5.0` source. It
 > corrects the earlier draft (`reference.md`, 2026-07-04), which predates several
 > now-live subsystems — see §2.
 
@@ -70,6 +73,46 @@ Net topology (unchanged in spirit from the draft, corrected in mechanism):
 
 ---
 
+## §L. Status ledger (TS → Rust) — updated 2026-07-06
+
+Since this doc was first written, a large fraction of the layered architecture has
+**already landed in the tree** (from commit `bbcec3b` through this increment), each behind an env
+gate in the proven `RELAY_CHANNEL_AFFINITY_ENABLED` style. The milestone bodies in
+§4 remain the plan of record; this ledger is the authoritative current state. Three
+maturity levels are used:
+
+- **Wired** — code exists *and* runs on a live request path.
+- **Gated substrate** — code exists, compiles, is tested and bound, but is inert
+  behind an `*_ENABLED=false` flag / commented binding and not yet on a hot path.
+- **Pending** — not started.
+
+| Pillar / milestone | Paradigm | Maturity | What landed | What remains | Evidence |
+|---|---|---|---|---|---|
+| M2 Provider registry | — | **Wired** | `ProviderRegistry::resolve` drives per-endpoint provider routing on the live relay path | Fold remaining private-enum branches into adapters | `crates/providers/src/routing.rs:77-80`; called at `crates/worker/src/relay.rs:194` |
+| M7 AiGateway router | C | **Gated substrate (pure, unwired)** | Full cutover **decision ladder** + security coupling, gateway **URL builders**, model-author classifier, 8 cutover guards, admin readiness panel — all pure & unit-tested | **Wire the planner into the relay forward loop**: build+send the gateway request, fall back to direct, settle through `crates/billing` | `crates/providers/src/ai_gateway.rs` (722 ln): `plan_ai_gateway_cutover:190`, `provider_gateway_url:318`, `rest_gateway_url:341`, guards `:89-98`; gate `RELAY_AI_GATEWAY_ROUTER_ENABLED` + readiness `platform_gateway.rs:100-106` |
+| M8 WFP dispatch | B | **Gated substrate** | `dispatch_target_for_request` + `dispatch_request` via `dynamic_dispatcher().get().fetch_request`, credential/marker **header stripping**, worker-name sanitization, preview-host + internal-path routing, admin-auth gate, tenant-script SDK crate | Uncomment `[[dispatch_namespaces]]` binding (needs paid WFP plan); end-to-end tenant smoke | `crates/worker/src/platform_gateway.rs` (627 ln): dispatch `:135-218`, header strip `:34-43,361-368`; `crates/wfp-tenant/src/lib.rs` (814 ln); binding commented `wrangler.toml:67,162,262`; gates `WFP_DISPATCH_ENABLED`/`WFP_INTERNAL_DISPATCH_ENABLED` |
+| M6 RealtimeSession | A | **Gated substrate (bridge stubbed)** | `#[durable_object]` with WS **hibernation** (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`), per-socket `SocketAttachment`, lifecycle metrics persisted to DO storage | **Upstream bridge** (`WebSocket::connect` to OpenAI) — currently returns `upstream_bridge_not_wired`; **usage accumulation + Go-formula settle** (none yet); protocol parity | `crates/worker/src/realtime_session.rs` (918 ln): DO `:103-252`, stub `:188-197`, 501 gate `:411`; binding **active** `wrangler.toml:117,216,317`; gates `REALTIME_SESSION_V1_ENABLED`/`REALTIME_SESSION_GATEWAY_ENABLED` |
+| M4 QuotaCoordinator | — | **Pending** | — | Build the shadow-first per-token DO (§4 M4) | no `crates/coordinator` yet |
+| M5 Task correctness / TaskRunner | — | **Pending** | — | M5a correctness fixes (starvation sweep, MJ units bug, refund-in-CAS), then optional DO | cron poller live at `crates/worker/src/lib.rs:1255` |
+
+**Two refinements the landed code makes over this doc's original design:**
+
+1. **The AiGateway key-URL coupling is *stricter* than cinaVibeSDK.** vibesdk honors a
+   user-supplied gateway `baseURL` *through* the gateway when the key is the user's
+   own. cinatoken-rust routes **any** channel with a custom base URL to the **direct**
+   provider path — `is_user_credential` only changes the *reason* code
+   (`UserBaseUrlOverrideRequiresDirect` vs `CustomBaseUrlWithoutUserCredential`), not
+   the outcome (`ai_gateway.rs:203-210`). A platform secret is never paired with a
+   caller-controlled URL, and a user credential + custom URL still bypasses the shared
+   gateway rather than routing platform traffic through a tenant's endpoint. This is a
+   deliberate hardening; §1 Paradigm C's mapping row is updated to match.
+2. **The WFP dispatch path hardens vibesdk's verbatim header forwarding.** vibesdk
+   forwards raw request headers and copies tenant response headers unchanged
+   (`worker/index.ts:164`); cinatoken-rust strips credential + `x-cinatoken-*` headers
+   before dispatch and only re-adds controlled route markers (`platform_gateway.rs:34-43,361-368`).
+
+---
+
 ## 1. cinaVibeSDK paradigm reuse (the design anchor)
 
 The task is explicitly to **reuse cinaVibeSDK's official paradigms**. Three map
@@ -106,7 +149,7 @@ supports.
 | Unified AI Gateway baseURL (`/compat`, `/{provider}`) | `resolve_gateway_url()` — extends the existing `AI_GATEWAY_ID` js_sys-reflection routing (`relay.rs:3195-3276`) |
 | `AGENT_CONFIG` primary + fallback model per action | Primary+fallback **already exists** as `plan_relay_attempts` (N-attempt, `relay.rs:1551-1635`); this becomes labeled config + a `fallback_model` field |
 | `executeInference` exp-backoff + fallback; no-retry on RateLimit/Security/cancel | Already implemented: `is_retryable_status` table (`crates/relay/src/retry.rs:37-45`) + `plan_relay_attempts` loop |
-| `getApiKey` resolution chain + **security coupling** (user `baseUrl` honored only with user key) | `resolve_api_key()` returning `is_user_credential`; `honor_override = base_url.is_some() && is_user_credential` — **net-new**, no BYOK base_url override exists today |
+| `getApiKey` resolution chain + **security coupling** (user `baseUrl` honored only with user key) | **Landed** as `plan_ai_gateway_cutover` with `is_user_credential` (`ai_gateway.rs:190-210`) — and *stricter* than vibesdk: any custom base URL routes **direct**, never through the shared gateway (see §L note 1) |
 | Per-model `creditCost` weighted limiting | **Keep the finer tiered-expression engine** (`crates/billing`) — do not regress to fixed cost |
 
 ---
@@ -195,6 +238,9 @@ by clearing the flag, no redeploy required.
   `GATEWAY_PIPELINE_TRAIT_ENABLED` until parity is proven.
 
 ### M2 — Activate `ProviderRegistry` (1 wk)
+- **Status (2026-07-06): Wired.** `ProviderRegistry::resolve` (`crates/providers/src/routing.rs:77-80`)
+  drives per-endpoint provider routing on the live relay path (`relay.rs:194`). Remaining:
+  fold any residual private-enum branches into per-provider adapters.
 - **Scope:** Replace the private 3-variant `RelayProviderKind`
   {`OpenAiCompatible`,`AnthropicMessages`,`GeminiNative`} (`relay.rs:82-87`) with a
   `ProviderAdapter` registry (`crates/providers/src/lib.rs`, now seeded with
@@ -261,6 +307,13 @@ by clearing the flag, no redeploy required.
 - **Rollback:** M5a is pure correctness (keep). M5b flag off → cron-only.
 
 ### M6 — `RealtimeSession` DO (3 wk) — Paradigm A
+- **Status (2026-07-06): Gated substrate, upstream bridge stubbed.** The DO with WS
+  hibernation (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`)
+  and persisted lifecycle metrics has landed (`crates/worker/src/realtime_session.rs`,
+  918 ln), with the `REALTIME_SESSIONS` binding + `new_sqlite_classes` active in all 3
+  envs, gated `REALTIME_SESSION_V1_ENABLED=false`. **Remaining:** the `WebSocket::connect`
+  upstream bridge (returns `upstream_bridge_not_wired` today, `:188-197`), usage
+  accumulation, and the Go-formula settlement below — none implemented yet.
 - **Scope:** `/v1/realtime` WS relay. Client WS via `WebSocketPair::new` +
   `Response::from_websocket` (`websocket.rs:24-35`, `response.rs:86-89`); upstream
   OpenAI WS via `WebSocket::connect` (**confirmed present**, `websocket.rs:77`).
@@ -286,6 +339,15 @@ by clearing the flag, no redeploy required.
 - **Rollback:** flag off → `/v1/realtime` returns the current structured 501.
 
 ### M7 — `AiGatewayRouter` (2 wk) — Paradigm C
+- **Status (2026-07-06): Gated substrate, decision logic complete but unwired.** The
+  cutover decision ladder (`plan_ai_gateway_cutover`), gateway URL builders
+  (`provider_gateway_url`/`rest_gateway_url`), model-author classifier, and 8 cutover
+  guards have landed as pure, fully unit-tested logic (`crates/providers/src/ai_gateway.rs`,
+  722 ln) and feed the admin readiness panel (`platform_gateway.rs:100-116`), gated
+  `RELAY_AI_GATEWAY_ROUTER_ENABLED=false`. The key-URL coupling is **stricter** than the
+  scope below (§L note 1). **Remaining:** wire the planner into the relay forward loop
+  (build+send the gateway request, direct fallback, settle through `crates/billing`) —
+  no caller in the relay path yet.
 - **Scope:** Unified gateway URL resolution (`gateway.ai.cloudflare.com/v1/{account}/{gateway}/{provider}`
   for AI-Gateway-supported providers; direct otherwise), extending the existing
   `AI_GATEWAY_ID` routing. Promote `plan_relay_attempts` to explicit
@@ -303,6 +365,14 @@ by clearing the flag, no redeploy required.
 - **Rollback:** router defaults to today's direct/AI-binding paths.
 
 ### M8 — WFP dispatch namespace (2 wk, multi-tenant only) — Paradigm B
+- **Status (2026-07-06): Gated substrate, binding still commented.** Dispatch routing
+  (`dispatch_target_for_request`/`dispatch_request` over `dynamic_dispatcher().get().fetch_request`),
+  credential/`x-cinatoken-*` header stripping, worker-name sanitization, preview-host +
+  internal-path routing with an admin-auth gate, and a tenant-script SDK crate have
+  landed (`crates/worker/src/platform_gateway.rs` 627 ln; `crates/wfp-tenant/src/lib.rs`
+  814 ln), gated `WFP_DISPATCH_ENABLED=false`. **Remaining:** uncomment
+  `[[dispatch_namespaces]]` (`wrangler.toml:67,162,262`; needs a paid WFP plan)
+  and run an end-to-end tenant smoke.
 - **Scope:** Add the `[dispatch_namespaces]` binding (absent today).
   `resolve_tenant()` by Host → `dynamic_dispatcher("DISPATCHER").get(tenant)?.fetch_request(req)`
   behind `dispatcher_available()`; default-tenant fallback = the in-gateway
@@ -362,16 +432,16 @@ shipping a silent correctness gap.
 | `LOG_QUEUE` consumer + DLQ | `LOG_QUEUE` | **Live** |
 | Cron task poller (`* * * * *`) | — | **Live** (staging; prod gated by G8) |
 | `ChannelAffinity` DO | `CHANNEL_AFFINITY` | **Live** (gated) |
-| `QuotaCoordinator` DO | `QUOTA_COORD` | **New (M4)** — `new_sqlite_classes` |
-| `TaskRunner` DO | `TASK_RUNNER` | **New (M5b)** |
-| `RealtimeSession` DO | `REALTIME` | **New (M6)** |
-| AI Gateway routing | `AI_GATEWAY_ID` var | **Live var, extend (M7)** |
-| WFP dispatch namespace | `DISPATCHER` | **New (M8)**, paid-plan gated |
+| `QuotaCoordinator` DO | `QUOTA_COORD` | **Pending (M4)** — `new_sqlite_classes` |
+| `TaskRunner` DO | `TASK_RUNNER` | **Pending (M5b)** |
+| `RealtimeSession` DO | `REALTIME_SESSIONS` | **Substrate live, gated** (binding + `new_sqlite_classes` active; `REALTIME_SESSION_V1_ENABLED=false`) |
+| AI Gateway routing | `AI_GATEWAY_ID` var | **Planner live, unwired** (`RELAY_AI_GATEWAY_ROUTER_ENABLED=false`) |
+| WFP dispatch namespace | `DISPATCHER` | **Dispatch code live, gated**; `[[dispatch_namespaces]]` binding commented, paid-plan gated |
 
 Each new DO adds a `[[durable_objects.bindings]]` + `[[migrations]] new_sqlite_classes`
 entry in **all three** env scopes (dev/staging/prod), matching the affinity
-precedent. No new cargo feature is required (`durable`/`websocket` modules are
-unconditional in `0.5.0`).
+precedent (`RealtimeSession` already follows this). No new cargo feature is required
+(`durable`/`websocket` modules are unconditional in `0.5.0`).
 
 ---
 
@@ -429,3 +499,10 @@ Multi-tenant (last, paid-plan gated)
 Critical path to first user-visible value: **M1→M2→M7** (better routing/fallback)
 and **M5a** (task reliability) land before any DO bake completes. Realtime (M6)
 and WFP (M8) are the long-pole, correctly last.
+
+**Where we actually are (2026-07-06, see §L):** M2 is wired; M6/M7/M8 have landed as
+gated substrate (DO hibernation, cutover planner, dispatch layer) but are **not yet on
+a hot path** — the remaining work for each is the *wiring/execution* step, not the
+foundation. The highest-leverage next increment is wiring the M7 cutover planner into
+the relay forward loop (pure logic already tested), followed by the M6 upstream bridge +
+settlement. M4/M5 remain pending and unblocked.

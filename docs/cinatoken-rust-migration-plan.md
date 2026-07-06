@@ -5492,3 +5492,71 @@ Remaining migration gaps:
 - Run staging capability-panel smoke with real `CLOUDFLARE_ACCOUNT_ID`,
   `AI_GATEWAY_ID`, and a scoped token, leaving
   `RELAY_AI_GATEWAY_ROUTER_ENABLED=false` until a controlled canary window.
+
+### 22.84 2026-07-06 Main Relay AI Gateway Cutover Guard Policy
+
+This increment advances M7 from "route readiness is visible" to "route
+cutover has an executable guard policy" while still keeping main-relay traffic
+on direct-provider URLs. It follows the current Cloudflare REST model where
+third-party Gateway requests use provider-prefixed model names such as
+`openai/...`, `anthropic/...`, `google/...`, and `xai/...`, and where Workers
+AI models use `@cf/...` plus the Worker/Gateway-specific header requirements.
+
+Implemented:
+
+- Added a pure `plan_ai_gateway_cutover` decision function in
+  `crates/providers`.
+  - Inputs model the staged cutover contract: router readiness, per-channel
+    opt-in, provider family, relay route, mapped upstream model, custom
+    `base_url` presence, and whether the resolved credential is user-owned.
+  - Successful decisions return the AI Gateway REST endpoint, classified model
+    author, and whether the route requires an explicit Gateway ID header.
+  - Blocked decisions return structured direct-provider fallback reasons:
+    router not ready, channel not opted in, unsupported provider, unsupported
+    endpoint path, missing provider prefix, endpoint/model schema mismatch,
+    custom base URL without a user credential, or user base URL override that
+    must remain direct.
+- Extended model author classification with `xai/...` so documented third-party
+  Gateway examples are not treated as unknown during canary planning.
+- Kept custom `base_url` channels on the direct-provider path. This encodes the
+  key/base-url coupling blocker before request-builder work begins: a future
+  cutover must not route platform credentials through a user-supplied URL, and
+  must not ignore a user-owned base URL override.
+- Blocked Workers AI models on the Anthropic Messages endpoint because the
+  current Gateway docs describe `/ai/v1/messages` as Anthropic-schema traffic
+  and explicitly separate Workers AI support.
+- Added the operator-visible
+  `MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS` checklist:
+  `router_ready`, `channel_opted_in`, `supported_rest_endpoint`,
+  `prefixed_ai_gateway_model`, `endpoint_model_schema_match`,
+  `custom_base_url_security_coupled`, `direct_provider_fallback`, and
+  `billing_settlement_invariant`.
+- Extended `/api/platform/capabilities` with
+  `relay_ai_gateway_cutover_guards`, then updated the Cloudflare Platform
+  frontend panel to show the compiled guard policy beside the REST route
+  planner and router readiness state.
+
+Validation:
+
+- `cargo test -p cinatoken-providers` passed (17 tests), including the new
+  cutover planner success/fallback cases.
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed (10 tests;
+  existing `d1_repositories.rs` dead-code warnings only), including the new
+  operator-visible guard list.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default` passed after the frontend panel update.
+
+Remaining migration gaps:
+
+- Wire a real per-channel AI Gateway opt-in source into relay channel reads
+  before using the policy in request attempts. Candidate storage is
+  `channels.other_info` for a compatible first step or a dedicated D1 column if
+  operators need indexed/queryable rollout state.
+- Build the actual main-relay AI Gateway REST request path only after direct
+  fallback, provider response parsing, safe header construction, and unchanged
+  billing settlement are covered by tests.
+- Decide whether `/v1/embeddings` remains direct, receives provider-specific
+  Gateway handling, or stays WFP-tenant-only until Cloudflare REST route
+  evidence is clearer.
+- Run staging capability-panel smoke with real account/gateway/token
+  configuration while leaving `RELAY_AI_GATEWAY_ROUTER_ENABLED=false`.

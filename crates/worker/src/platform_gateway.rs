@@ -5,7 +5,9 @@
 //! forwards preview/tenant traffic to scripts inside a dispatch namespace. The
 //! feature is off by default and only activates when explicitly configured.
 
-use cinatoken_providers::ai_gateway::MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS;
+use cinatoken_providers::ai_gateway::{
+    MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS, MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS,
+};
 use serde::Serialize;
 use serde_json::json;
 use wasm_bindgen::JsValue;
@@ -73,6 +75,7 @@ struct PlatformCapabilities {
     relay_ai_gateway_router_enabled: bool,
     relay_ai_gateway_router_ready: bool,
     relay_ai_gateway_rest_routes: Vec<&'static str>,
+    relay_ai_gateway_cutover_guards: Vec<&'static str>,
     channel_affinity_do_available: bool,
     realtime_sessions_do_available: bool,
     wfp_dispatch_binding_available: bool,
@@ -110,6 +113,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_router_enabled,
         relay_ai_gateway_router_ready,
         relay_ai_gateway_rest_routes: relay_ai_gateway_rest_routes(),
+        relay_ai_gateway_cutover_guards: relay_ai_gateway_cutover_guards(),
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
         realtime_sessions_do_available: env.durable_object("REALTIME_SESSIONS").is_ok(),
         wfp_dispatch_binding_available: env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok(),
@@ -432,6 +436,10 @@ fn relay_ai_gateway_rest_routes() -> Vec<&'static str> {
         .collect()
 }
 
+fn relay_ai_gateway_cutover_guards() -> Vec<&'static str> {
+    MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS.to_vec()
+}
+
 fn is_relay_ai_gateway_router_ready(
     router_enabled: bool,
     account_configured: bool,
@@ -598,6 +606,14 @@ mod tests {
             relay_ai_gateway_rest_routes(),
             vec!["chat/completions", "responses", "messages"]
         );
+    }
+
+    #[test]
+    fn relay_ai_gateway_cutover_guards_are_operator_visible() {
+        assert!(relay_ai_gateway_cutover_guards().contains(&"router_ready"));
+        assert!(relay_ai_gateway_cutover_guards().contains(&"channel_opted_in"));
+        assert!(relay_ai_gateway_cutover_guards().contains(&"direct_provider_fallback"));
+        assert!(relay_ai_gateway_cutover_guards().contains(&"billing_settlement_invariant"));
     }
 
     #[test]

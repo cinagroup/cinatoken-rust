@@ -4,6 +4,29 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the main relay AI Gateway cutover guard
+  policy and exposing `relay_ai_gateway_cutover_guards` in the Cloudflare
+  Platform panel. The run covered frontend type/build, bundle redaction audit
+  (460 files, 37,292,857 bytes, 0 findings), bundle budget audit (245 files,
+  18.96 MB raw / 4.50 MB gzip, all 10 budgets OK), lint-debt baseline (0
+  errors / 0 warnings / 0 regressions), frontend route audit (215
+  Worker-facing calls / 307 Worker routes / 0 missing calls), WFP tenant
+  deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession smoke
+  dry-run, WFP tenant Worker-script tests (8 passed), `cargo fmt --all
+  --check`, Rust workspace tests excluding the Worker, Worker wasm32 check, and
+  WFP tenant wasm32 check. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-providers`: passed after adding the main relay
+  AI Gateway cutover guard policy (17 tests), including router/channel opt-in
+  gates, provider-prefix enforcement, custom `base_url` direct fallback, and
+  Workers AI Messages schema rejection.
+- `cargo test -p cinatoken-worker --lib platform_gateway`: passed after
+  exposing compiled main relay AI Gateway cutover guards in
+  `/api/platform/capabilities` (10 tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the cutover guard policy row
+  to the Cloudflare Platform settings panel.
 - `bun run check`: passed after adding the main relay AI Gateway REST readiness
   planner, default-off `RELAY_AI_GATEWAY_ROUTER_ENABLED` config, and read-only
   frontend readiness panel. The run covered frontend type/build, bundle

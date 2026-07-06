@@ -86,6 +86,17 @@ pub const MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS: &[AiGatewayRestRoutePlan] = &[
     },
 ];
 
+pub const MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS: &[&str] = &[
+    "router_ready",
+    "channel_opted_in",
+    "supported_rest_endpoint",
+    "prefixed_ai_gateway_model",
+    "endpoint_model_schema_match",
+    "custom_base_url_security_coupled",
+    "direct_provider_fallback",
+    "billing_settlement_invariant",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiGatewayRestPlanError {
     UnsupportedProvider,
@@ -114,8 +125,124 @@ pub enum AiGatewayModelAuthor {
     OpenAi,
     Anthropic,
     Google,
+    Xai,
     WorkersAi,
     Unknown,
+}
+
+impl AiGatewayModelAuthor {
+    pub fn requires_gateway_id_header(self) -> bool {
+        self == Self::WorkersAi
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AiGatewayCutoverInput<'a> {
+    pub router_ready: bool,
+    pub channel_opted_in: bool,
+    pub provider: ProviderKind,
+    pub relay_path: &'a str,
+    pub model: &'a str,
+    pub channel_has_custom_base_url: bool,
+    pub is_user_credential: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AiGatewayCutoverPlan {
+    pub endpoint: AiGatewayRestEndpoint,
+    pub model_author: AiGatewayModelAuthor,
+    pub requires_gateway_id_header: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiGatewayCutoverDecision {
+    UseGateway(AiGatewayCutoverPlan),
+    UseDirect { reason: AiGatewayCutoverBlockReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiGatewayCutoverBlockReason {
+    RouterNotReady,
+    ChannelNotOptedIn,
+    UnsupportedProvider,
+    UnsupportedEndpointPath,
+    MissingProviderPrefix,
+    ModelEndpointSchemaMismatch,
+    CustomBaseUrlWithoutUserCredential,
+    UserBaseUrlOverrideRequiresDirect,
+}
+
+impl AiGatewayCutoverBlockReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RouterNotReady => "router_not_ready",
+            Self::ChannelNotOptedIn => "channel_not_opted_in",
+            Self::UnsupportedProvider => "unsupported_provider",
+            Self::UnsupportedEndpointPath => "unsupported_endpoint_path",
+            Self::MissingProviderPrefix => "missing_provider_prefix",
+            Self::ModelEndpointSchemaMismatch => "model_endpoint_schema_mismatch",
+            Self::CustomBaseUrlWithoutUserCredential => "custom_base_url_without_user_credential",
+            Self::UserBaseUrlOverrideRequiresDirect => "user_base_url_override_requires_direct",
+        }
+    }
+}
+
+pub fn plan_ai_gateway_cutover(input: AiGatewayCutoverInput<'_>) -> AiGatewayCutoverDecision {
+    if !input.router_ready {
+        return AiGatewayCutoverDecision::UseDirect {
+            reason: AiGatewayCutoverBlockReason::RouterNotReady,
+        };
+    }
+
+    if !input.channel_opted_in {
+        return AiGatewayCutoverDecision::UseDirect {
+            reason: AiGatewayCutoverBlockReason::ChannelNotOptedIn,
+        };
+    }
+
+    if input.channel_has_custom_base_url {
+        let reason = if input.is_user_credential {
+            AiGatewayCutoverBlockReason::UserBaseUrlOverrideRequiresDirect
+        } else {
+            AiGatewayCutoverBlockReason::CustomBaseUrlWithoutUserCredential
+        };
+        return AiGatewayCutoverDecision::UseDirect { reason };
+    }
+
+    let endpoint = match rest_endpoint_for_relay_route(input.provider, input.relay_path) {
+        Ok(endpoint) => endpoint,
+        Err(AiGatewayRestPlanError::UnsupportedProvider) => {
+            return AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::UnsupportedProvider,
+            }
+        }
+        Err(AiGatewayRestPlanError::UnsupportedEndpointPath) => {
+            return AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::UnsupportedEndpointPath,
+            }
+        }
+    };
+
+    let model_author = classify_ai_gateway_model_author(input.model);
+    if model_author == AiGatewayModelAuthor::Unknown {
+        return AiGatewayCutoverDecision::UseDirect {
+            reason: AiGatewayCutoverBlockReason::MissingProviderPrefix,
+        };
+    }
+
+    if endpoint == AiGatewayRestEndpoint::Messages
+        && model_author == AiGatewayModelAuthor::WorkersAi
+    {
+        return AiGatewayCutoverDecision::UseDirect {
+            reason: AiGatewayCutoverBlockReason::ModelEndpointSchemaMismatch,
+        };
+    }
+
+    AiGatewayCutoverDecision::UseGateway(AiGatewayCutoverPlan {
+        endpoint,
+        model_author,
+        requires_gateway_id_header: model_author.requires_gateway_id_header(),
+    })
 }
 
 pub fn rest_endpoint_for_relay_route(
@@ -152,6 +279,8 @@ pub fn classify_ai_gateway_model_author(model: &str) -> AiGatewayModelAuthor {
         AiGatewayModelAuthor::Anthropic
     } else if model.starts_with("google/") {
         AiGatewayModelAuthor::Google
+    } else if model.starts_with("xai/") {
+        AiGatewayModelAuthor::Xai
     } else if model.starts_with("@cf/") || model.starts_with("cloudflare/") {
         AiGatewayModelAuthor::WorkersAi
     } else {
@@ -411,10 +540,183 @@ mod tests {
             AiGatewayModelAuthor::Google
         );
         assert_eq!(
+            classify_ai_gateway_model_author("xai/grok-3"),
+            AiGatewayModelAuthor::Xai
+        );
+        assert_eq!(
             classify_ai_gateway_model_author("@cf/meta/llama-3.1-8b-instruct"),
             AiGatewayModelAuthor::WorkersAi
         );
         assert!(has_ai_gateway_provider_prefix("openai/gpt-4o-mini"));
         assert!(!has_ai_gateway_provider_prefix("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn cutover_planner_allows_prefixed_supported_main_relay_routes() {
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "chat/completions",
+                model: "openai/gpt-4.1",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseGateway(AiGatewayCutoverPlan {
+                endpoint: AiGatewayRestEndpoint::ChatCompletions,
+                model_author: AiGatewayModelAuthor::OpenAi,
+                requires_gateway_id_header: false,
+            })
+        );
+
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "responses",
+                model: "xai/grok-3",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseGateway(AiGatewayCutoverPlan {
+                endpoint: AiGatewayRestEndpoint::Responses,
+                model_author: AiGatewayModelAuthor::Xai,
+                requires_gateway_id_header: false,
+            })
+        );
+    }
+
+    #[test]
+    fn cutover_planner_keeps_default_off_and_channel_opt_in_gates() {
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: false,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "chat/completions",
+                model: "openai/gpt-4.1",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::RouterNotReady,
+            }
+        );
+
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: false,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "chat/completions",
+                model: "openai/gpt-4.1",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::ChannelNotOptedIn,
+            }
+        );
+    }
+
+    #[test]
+    fn cutover_planner_rejects_unsupported_routes_and_unprefixed_models() {
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "embeddings",
+                model: "openai/text-embedding-3-small",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::UnsupportedEndpointPath,
+            }
+        );
+
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::GeminiNative,
+                relay_path: "v1beta/models/gemini:generateContent",
+                model: "google/gemini-2.0-flash",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::UnsupportedProvider,
+            }
+        );
+
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "chat/completions",
+                model: "gpt-4o-mini",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::MissingProviderPrefix,
+            }
+        );
+    }
+
+    #[test]
+    fn cutover_planner_keeps_custom_base_urls_on_direct_provider_path() {
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "chat/completions",
+                model: "openai/gpt-4.1",
+                channel_has_custom_base_url: true,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::CustomBaseUrlWithoutUserCredential,
+            }
+        );
+
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "chat/completions",
+                model: "openai/gpt-4.1",
+                channel_has_custom_base_url: true,
+                is_user_credential: true,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::UserBaseUrlOverrideRequiresDirect,
+            }
+        );
+    }
+
+    #[test]
+    fn cutover_planner_rejects_workers_ai_messages_schema_mismatch() {
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::AnthropicMessages,
+                relay_path: "messages",
+                model: "@cf/meta/llama-3.1-8b-instruct",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseDirect {
+                reason: AiGatewayCutoverBlockReason::ModelEndpointSchemaMismatch,
+            }
+        );
     }
 }

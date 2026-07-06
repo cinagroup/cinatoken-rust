@@ -6862,6 +6862,69 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.112 2026-07-06 Realtime Startup Queue Drain Probe
+
+This increment closes the narrow evidence gap left by the runtime queue work:
+operators can now prove a non-zero startup queue against a dedicated mock
+upstream, then prove the same frame drains to the upstream once the bridge
+accept path resumes. The mechanism is deliberately scoped to mock-channel
+metadata, not caller input or a production feature flag.
+
+Implemented:
+
+- Added an optional `startup_queue_probe_delay_ms` value to the redacted
+  Realtime upstream plan and the request-scoped upstream connect handoff. It is
+  omitted by default and carries no provider secret.
+- The Realtime upstream event pump now honors that value only before
+  `upstream.accept()`, after the upstream event stream is available. During
+  the delay, client frames enter the existing bounded pending queue; after
+  accept, the normal FIFO drain path forwards them.
+- `/v1/realtime` only sets this delay when the selected channel has explicit
+  mock metadata in `channels.other_info`:
+  `{"realtime_mock_upstream":{"queue_probe_delay_ms":500}}`. The legacy
+  `{"realtime_mock_upstream":true}` marker continues to behave like a normal
+  mock channel and does not enable delay. Values must be numeric, non-zero, and
+  at most 1000 ms.
+- Extended `tools/smoke_realtime_upstream_replay.mjs` with
+  `startup-queue-drain`. The live flow sends the probe before the WebSocket
+  `status` control frame, requires
+  `active_upstream_bridges=1`, `queued_upstream_frames=1`, and
+  `queued_upstream_bytes=<probe bytes>` before drain, then requires the mock to
+  receive the forwarded frame and the Worker to emit the existing
+  metadata-only terminal bridge event.
+- The dry-run `localD1Seed` plan now writes the queue-probe metadata only for
+  this scenario and warns operators to keep the channel isolated from
+  production traffic.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `node --check tools/smoke_realtime_upstream_replay.mjs` passed.
+- `bun run check:realtime-session:mock-upstream-replay-contract` passed and
+  now covers the queue/drain scenario in self-test.
+- `bun run check:realtime-session:mock-upstream-replay-plan` passed.
+- `bun tools/smoke_realtime_upstream_replay.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --api-key dry-run-token --scenario
+  startup-queue-drain` passed and emitted queue-probe seed metadata.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed.
+- `cargo test -p cinatoken-worker --lib relay -- --nocapture` passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check` passed.
+- `git diff --check` passed.
+
+Remaining migration gaps:
+
+- Archive an actual local/staging live run of `startup-queue-drain` after the
+  reviewed D1 seed is applied in an isolated environment.
+- Add safe staging fault injection for upstream socket abort/error,
+  event-stream failure, accept failure, and upstream-to-client send failure;
+  those paths remain contract-covered but not fully live-harness-covered.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.
+
 ### 22.111 2026-07-06 Realtime WebSocket Runtime Status Evidence
 
 This increment closes an observability gap in the Realtime v1 smoke path. The

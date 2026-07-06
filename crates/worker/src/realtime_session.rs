@@ -16,9 +16,10 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::time::Duration;
 use url::Url;
 use worker::{
-    durable_object, Env, Fetch, Method, Request, Response, Result as WorkerResult, State,
+    durable_object, Delay, Env, Fetch, Method, Request, Response, Result as WorkerResult, State,
     WebSocket, WebSocketIncomingMessage, WebSocketPair, WebsocketEvent,
 };
 
@@ -202,6 +203,8 @@ pub(crate) struct RealtimeSelectedUpstreamPlan {
     auth_mode: RealtimeUpstreamAuthMode,
     protocol_redacted: Vec<String>,
     header_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    startup_queue_probe_delay_ms: Option<u32>,
 }
 
 pub(crate) struct RealtimeSelectedUpstream {
@@ -231,6 +234,7 @@ pub(crate) struct RealtimeSelectedUpstreamInput<'a> {
     pub upstream_api_key: &'a str,
     pub api_version: Option<&'a str>,
     pub client_requested_subprotocol: bool,
+    pub startup_queue_probe_delay_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +257,8 @@ struct RealtimeUpstreamBridgeConnectHandoff {
     auth_mode: RealtimeUpstreamAuthMode,
     protocol: Vec<String>,
     headers: Vec<RealtimeUpstreamConnectHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    startup_queue_probe_delay_ms: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -961,7 +967,12 @@ impl RealtimeSession {
                 pending: RealtimeBridgePendingQueue::default(),
             })),
         };
-        spawn_realtime_upstream_event_pump(runtime.state.clone(), client.clone(), context);
+        spawn_realtime_upstream_event_pump(
+            runtime.state.clone(),
+            client.clone(),
+            context,
+            handoff.startup_queue_probe_delay_ms,
+        );
         self.upstream_bridges.insert(bridge_key, runtime);
         Ok(())
     }
@@ -1407,6 +1418,7 @@ pub(crate) fn realtime_upstream_channel_planner_compiled() -> bool {
         upstream_api_key: "planner-smoke-key",
         api_version: None,
         client_requested_subprotocol: true,
+        startup_queue_probe_delay_ms: None,
     }) else {
         return false;
     };
@@ -1493,6 +1505,7 @@ pub(crate) fn realtime_upstream_connect_handoff_compiled() -> bool {
         upstream_api_key: secret,
         api_version: None,
         client_requested_subprotocol: true,
+        startup_queue_probe_delay_ms: None,
     }) else {
         return false;
     };
@@ -1538,6 +1551,7 @@ pub(crate) fn realtime_upstream_fetch_upgrade_adapter_compiled() -> bool {
         upstream_api_key: secret,
         api_version: None,
         client_requested_subprotocol: false,
+        startup_queue_probe_delay_ms: None,
     }) else {
         return false;
     };
@@ -1884,6 +1898,7 @@ pub(crate) fn realtime_selected_upstream(
             .into_iter()
             .map(str::to_string)
             .collect(),
+        startup_queue_probe_delay_ms: input.startup_queue_probe_delay_ms,
     };
     let connect_handoff = RealtimeUpstreamBridgeConnectHandoff {
         url: plan.upstream_url.clone(),
@@ -1896,6 +1911,7 @@ pub(crate) fn realtime_selected_upstream(
                 value,
             })
             .collect(),
+        startup_queue_probe_delay_ms: input.startup_queue_probe_delay_ms,
     };
     Ok(RealtimeSelectedUpstream {
         plan,
@@ -2077,6 +2093,7 @@ fn spawn_realtime_upstream_event_pump(
     runtime_state: Rc<RefCell<RealtimeUpstreamBridgeState>>,
     client: WebSocket,
     context: Value,
+    startup_queue_probe_delay_ms: Option<u32>,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
         let upstream = runtime_state.borrow().upstream.clone();
@@ -2091,6 +2108,12 @@ fn spawn_realtime_upstream_event_pump(
                 return;
             }
         };
+        if let Some(delay_ms) = startup_queue_probe_delay_ms.filter(|delay_ms| *delay_ms > 0) {
+            Delay::from(Duration::from_millis(u64::from(delay_ms))).await;
+            if runtime_state.borrow().closed {
+                return;
+            }
+        }
         if upstream.accept().is_err() {
             let cause = RealtimeBridgeCloseCause::UpstreamAcceptFailed;
             let action = realtime_bridge_close_action(cause);
@@ -3876,6 +3899,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            startup_queue_probe_delay_ms: None,
         })
         .unwrap();
         let header = realtime_upstream_plan_header_value(&plan).unwrap();
@@ -3903,6 +3927,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            startup_queue_probe_delay_ms: None,
         })
         .unwrap();
         let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
@@ -3927,6 +3952,36 @@ mod tests {
     }
 
     #[test]
+    fn realtime_startup_queue_probe_delay_round_trips_without_secret() {
+        let secret = "sk-live-secret";
+        let selected = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 42,
+            channel_type: 1,
+            channel_name: "primary-openai",
+            channel_base_url: Some("https://api.openai.com"),
+            request_model: "gpt-4o-realtime-preview",
+            upstream_model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+            startup_queue_probe_delay_ms: Some(250),
+        })
+        .unwrap();
+        let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
+        let connect_header =
+            realtime_upstream_connect_header_value(&selected.connect_handoff).unwrap();
+        let decoded_plan = realtime_upstream_plan_from_header_value(&plan_header).unwrap();
+        let decoded_handoff =
+            realtime_upstream_connect_handoff_from_header_value(&connect_header).unwrap();
+
+        assert_eq!(decoded_plan.startup_queue_probe_delay_ms, Some(250));
+        assert_eq!(decoded_handoff.startup_queue_probe_delay_ms, Some(250));
+        assert!(!plan_header.contains(secret));
+        assert!(connect_header.contains(secret));
+    }
+
+    #[test]
     fn realtime_header_auth_handoff_fetch_plan_carries_headers_only_request_scoped() {
         let secret = "sk-live-secret";
         let selected = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
@@ -3940,6 +3995,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: false,
+            startup_queue_probe_delay_ms: None,
         })
         .unwrap();
         let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
@@ -4022,6 +4078,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: Some("2025-04-01-preview"),
             client_requested_subprotocol: true,
+            startup_queue_probe_delay_ms: None,
         })
         .unwrap();
         let fetch_plan = realtime_upstream_fetch_request_plan(&selected.connect_handoff).unwrap();
@@ -4052,6 +4109,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            startup_queue_probe_delay_ms: None,
         })
         .unwrap();
         let attachment = SocketAttachment {

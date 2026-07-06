@@ -4,6 +4,21 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `node --check tools/smoke_realtime_upstream_replay.mjs`,
+  `bun run check:realtime-session:mock-upstream-replay-contract`,
+  `bun run check:realtime-session:mock-upstream-replay-plan`,
+  `bun tools/smoke_realtime_upstream_replay.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --api-key dry-run-token --scenario
+  startup-queue-drain`, `cargo test -p cinatoken-worker --lib
+  realtime_session -- --nocapture`, `cargo test -p cinatoken-worker --lib
+  relay -- --nocapture`, `cargo check -p cinatoken-worker --target
+  wasm32-unknown-unknown`, and `bun run check`: passed after adding the
+  Realtime startup queue/drain mock probe. The mock replay harness now has a
+  `startup-queue-drain` scenario that uses explicit mock-channel
+  `other_info.realtime_mock_upstream.queue_probe_delay_ms` metadata to pause
+  upstream accept, observes one queued client frame through WebSocket runtime
+  status, and requires the live run to drain that frame to the mock upstream
+  without exposing raw payload or API-key material.
 - `node --check tools/smoke_realtime_session.mjs`,
   `node --check tools/smoke_realtime_upstream_replay.mjs`,
   `bun tools/smoke_realtime_session.mjs --self-test-platform-header-boundary --json`,

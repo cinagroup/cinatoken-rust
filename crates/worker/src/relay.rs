@@ -83,6 +83,7 @@ const EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const IMAGE_JSON_RESPONSE_LIMIT_BYTES: usize = 24 * 1024 * 1024;
 const RERANK_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const GEMINI_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const REALTIME_MOCK_QUEUE_PROBE_MAX_DELAY_MS: u64 = 1_000;
 const ESTIMATED_IMAGE_INPUT_TOKENS: i64 = 520;
 const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
 const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
@@ -2341,6 +2342,9 @@ pub(crate) async fn plan_realtime_upstream_channel(
                 upstream_api_key: &upstream_key,
                 api_version: None,
                 client_requested_subprotocol,
+                startup_queue_probe_delay_ms: realtime_mock_queue_probe_delay_ms(
+                    &channel.other_info,
+                ),
             },
         )
         .map_err(|err| {
@@ -2352,6 +2356,19 @@ pub(crate) async fn plan_realtime_upstream_channel(
         "no usable realtime upstream channel is available",
         503,
     ))
+}
+
+fn realtime_mock_queue_probe_delay_ms(other_info: &str) -> Option<u32> {
+    let value: Value = serde_json::from_str(other_info.trim()).ok()?;
+    let mock = value.get("realtime_mock_upstream")?.as_object()?;
+    let delay = mock
+        .get("queue_probe_delay_ms")
+        .or_else(|| mock.get("startup_queue_probe_delay_ms"))?
+        .as_u64()?;
+    if delay == 0 || delay > REALTIME_MOCK_QUEUE_PROBE_MAX_DELAY_MS {
+        return None;
+    }
+    Some(delay as u32)
 }
 
 fn relay_token_rate_limit_key(auth: &AuthenticatedToken) -> String {
@@ -6040,6 +6057,55 @@ mod tests {
             affinity::CACHE_TOKEN_RATE_MODE_CACHED_OVER_PROMPT
         );
         assert_eq!(affinity_cached_token_rate_mode("embeddings", 1), "");
+    }
+
+    #[test]
+    fn realtime_mock_queue_probe_delay_requires_explicit_mock_object() {
+        assert_eq!(realtime_mock_queue_probe_delay_ms("{}"), None);
+        assert_eq!(
+            realtime_mock_queue_probe_delay_ms(r#"{"realtime_mock_upstream":true}"#),
+            None
+        );
+        assert_eq!(
+            realtime_mock_queue_probe_delay_ms(
+                r#"{"realtime_mock_upstream":{"queue_probe_delay_ms":250}}"#
+            ),
+            Some(250)
+        );
+        assert_eq!(
+            realtime_mock_queue_probe_delay_ms(
+                r#"{"realtime_mock_upstream":{"startup_queue_probe_delay_ms":500}}"#
+            ),
+            Some(500)
+        );
+    }
+
+    #[test]
+    fn realtime_mock_queue_probe_delay_clamps_to_safe_bounds() {
+        assert_eq!(
+            realtime_mock_queue_probe_delay_ms(
+                r#"{"realtime_mock_upstream":{"queue_probe_delay_ms":0}}"#
+            ),
+            None
+        );
+        assert_eq!(
+            realtime_mock_queue_probe_delay_ms(
+                r#"{"realtime_mock_upstream":{"queue_probe_delay_ms":1001}}"#
+            ),
+            None
+        );
+        assert_eq!(
+            realtime_mock_queue_probe_delay_ms(
+                r#"{"realtime_mock_upstream":{"queue_probe_delay_ms":"250"}}"#
+            ),
+            None
+        );
+        assert_eq!(
+            realtime_mock_queue_probe_delay_ms(
+                r#"{"realtime_mock_upstream":{"queue_probe_delay_ms":1000}}"#
+            ),
+            Some(1000)
+        );
     }
 
     #[test]

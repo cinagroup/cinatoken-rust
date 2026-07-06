@@ -381,12 +381,14 @@ bun run check:realtime-session:upstream-replay-contract
 
 Then run the local mock upstream replay harness self-test and dry-run plan. The
 self-test validates the harness expectations for externally inducible live
-paths (`upstream-normal-close` and `upstream-frame-limit`) and records the
+paths (`upstream-normal-close`, `upstream-frame-limit`, and
+`startup-queue-drain`) and records the
 fault paths that still need Worker-side fault injection. The dry-run prints the
 redacted `/v1/realtime` plan plus the channel `base_url` that must point at the
 mock upstream. The harness also sends a WebSocket `status` control frame before
-its replay probe and requires one active upstream bridge with zero queued
-upstream frames/bytes:
+ordinary replay probes and requires one active upstream bridge with zero queued
+upstream frames/bytes. For `startup-queue-drain`, it sends the probe first and
+requires one queued upstream frame before the delayed accept path drains it:
 
 ```powershell
 bun run check:realtime-session:mock-upstream-replay-contract
@@ -397,7 +399,10 @@ The dry-run plan now includes a review-only `localD1Seed` block with SQL for a
 dedicated smoke user, token, OpenAI-compatible channel, and ability row. Review
 the SQL before applying it to a local or isolated staging D1 database; the
 smoke tool never writes D1 by itself. After applying the SQL, use the emitted
-`localD1Seed.smokeApiKey` as the live replay `--api-key`.
+`localD1Seed.smokeApiKey` as the live replay `--api-key`. The
+`startup-queue-drain` dry-run intentionally writes
+`channels.other_info.realtime_mock_upstream.queue_probe_delay_ms` for the
+dedicated mock channel; do not copy that metadata onto production channels.
 
 Also run the local platform header-boundary validator self-test. It proves the
 smoke verifier rejects forged upstream handoff markers, upstream plans, active
@@ -456,6 +461,7 @@ $env:REALTIME_UPSTREAM_REPLAY_URL = "http://127.0.0.1:8787"
 $env:REALTIME_UPSTREAM_REPLAY_API_KEY = "sk-cinatoken-realtime-mock-local"
 bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-normal-close --confirm-live --json
 bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-frame-limit --confirm-live --json
+bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario startup-queue-drain --confirm-live --json
 ```
 
 Record:
@@ -471,8 +477,9 @@ Record:
   terminal evidence, and redaction rejection cases.
 - Mock upstream replay harness self-test and dry-run output, including the
   redacted worker WebSocket URL, mock upstream URL, required channel
-  `base_url`, review-only `localD1Seed` SQL, live scenarios covered, and
-  planned fault-injection-only scenarios.
+  `base_url`, review-only `localD1Seed` SQL, queue-probe metadata for
+  `startup-queue-drain`, live scenarios covered, and planned
+  fault-injection-only scenarios.
 - Live mock upstream replay output when available, including mock connection
   count, forwarded client frame byte metadata, upstream frame byte metadata,
   observed WebSocket runtime status, observed
@@ -574,7 +581,10 @@ Pass criteria:
   channel prepared from reviewed `localD1Seed` SQL or an equivalent audited
   channel/token setup, prove the mock received the forwarded client frame, and
   observe a metadata-only `realtime_session_bridge_event` plus matching client
-  close.
+  close. For `startup-queue-drain`, the accepted evidence must also show
+  `runtimeStatusProbePhase=after_probe_before_drain`,
+  `queued_upstream_frames=1`, and `queued_upstream_bytes` equal to the probe
+  byte length before the mock receives the drained frame.
   `upstream-error`, `upstream-event-stream-failed`,
   `upstream-accept-failed`, and `upstream-to-client-send-failure` remain
   separate fault-injection evidence until the Worker has an explicit safe

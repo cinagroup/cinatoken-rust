@@ -45,6 +45,21 @@ const scenarios = new Map(
         frameMaxBytes: maxRealtimeBridgeTextFrameBytes,
       },
     },
+    {
+      name: "startup-queue-drain",
+      mockAction: "close_after_first_client_frame",
+      closeCode: 1000,
+      closeReason: "mock_upstream_startup_queue_drain",
+      queueProbe: true,
+      queueProbeDelayMs: 500,
+      expectedEvent: {
+        event: "upstream_closed",
+        direction: "upstream_to_client",
+        clientCode: 1000,
+        clientReason: "upstream_bridge_closed",
+        upstreamCloseCode: 1000,
+      },
+    },
   ].map((scenario) => [scenario.name, scenario]),
 );
 
@@ -183,7 +198,7 @@ function usage(exitCode, error) {
       "Usage: bun tools/smoke_realtime_upstream_replay.mjs --url <worker-origin> --api-key <staging-token> [options]",
       "",
       "Options:",
-      "  --scenario <name>       upstream-normal-close or upstream-frame-limit",
+      "  --scenario <name>       upstream-normal-close, upstream-frame-limit, or startup-queue-drain",
       "  --model <model>         or REALTIME_UPSTREAM_REPLAY_MODEL",
       "  --api-key <token>       or REALTIME_UPSTREAM_REPLAY_API_KEY",
       "  --probe <text>          or REALTIME_UPSTREAM_REPLAY_PROBE",
@@ -245,11 +260,8 @@ function buildPlan(options) {
       ],
     },
     localD1Seed: buildLocalD1SeedPlan(options, expectedChannelBaseUrl),
-    expectedRuntimeStatusBeforeProbe: {
-      active_upstream_bridges: 1,
-      queued_upstream_frames: 0,
-      queued_upstream_bytes: 0,
-    },
+    runtimeStatusProbePhase: options.scenario.queueProbe ? "after_probe_before_drain" : "before_probe",
+    expectedRuntimeStatus: expectedRuntimeStatusForScenario(options.scenario, options.probe),
     expectedBridgeEvent: options.scenario.expectedEvent,
     probeBytes: byteLength(options.probe),
     timeoutMs: options.timeoutMs,
@@ -257,7 +269,9 @@ function buildPlan(options) {
     notes: [
       "Local mock replay is intended for wrangler dev or another Worker runtime that can reach the mock URL.",
       "Cloudflare staging cannot reach 127.0.0.1 directly; use a public mock endpoint or tunnel for remote staging.",
-      "Live replay sends a WebSocket status control frame before the probe and requires one active upstream bridge with an empty pending queue.",
+      options.scenario.queueProbe
+        ? "Live replay sends the probe before the status control frame and expects one queued upstream frame before the delayed upstream accept drains it."
+        : "Live replay sends a WebSocket status control frame before the probe and requires one active upstream bridge with an empty pending queue.",
       "The live smoke fails unless the mock receives the forwarded client frame and the Worker emits a metadata-only realtime_session_bridge_event.",
     ],
   };
@@ -275,17 +289,15 @@ async function runLiveReplay(options, plan) {
   const server = options.externalMock ? null : startMockServer(options, stats);
   try {
     const ws = await openWebSocket(plan.workerRealtimeUrl, plan.protocols, options.timeoutMs);
-    const statusPromise = waitForJsonMessage(
-      ws,
-      (message) => message.type === "realtime_session_status",
-      options.timeoutMs,
-      "realtime_session_status",
-    );
-    ws.send("status");
-    const statusFrame = await statusPromise;
-    validateRuntimeStatusFrame(statusFrame, options.scenario.name);
     const outcomePromise = waitForBridgeEventAndClose(ws, options.timeoutMs);
-    ws.send(options.probe);
+    let statusFrame;
+    if (options.scenario.queueProbe) {
+      ws.send(options.probe);
+      statusFrame = await requestRuntimeStatus(ws, options);
+    } else {
+      statusFrame = await requestRuntimeStatus(ws, options);
+      ws.send(options.probe);
+    }
     const outcome = await outcomePromise;
     validateLiveReplayOutcome(outcome, stats, options, statusFrame);
     return {
@@ -308,6 +320,19 @@ async function runLiveReplay(options, plan) {
       server.stop(true);
     }
   }
+}
+
+async function requestRuntimeStatus(ws, options) {
+  const statusPromise = waitForJsonMessage(
+    ws,
+    (message) => message.type === "realtime_session_status",
+    options.timeoutMs,
+    "realtime_session_status",
+  );
+  ws.send("status");
+  const statusFrame = await statusPromise;
+  validateRuntimeStatusFrame(statusFrame, options);
+  return statusFrame;
 }
 
 function startMockServer(options, stats) {
@@ -498,7 +523,7 @@ function waitForBridgeEventAndClose(ws, timeoutMs) {
 
 function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null) {
   if (statusFrame) {
-    validateRuntimeStatusFrame(statusFrame, options.scenario.name);
+    validateRuntimeStatusFrame(statusFrame, options);
   }
   validateBridgeEvent(outcome.bridgeEvent, options.scenario.expectedEvent, options.scenario.name);
   if (outcome.close.code !== options.scenario.expectedEvent.clientCode) {
@@ -527,15 +552,26 @@ function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null) 
   validateNoRawLeaks({ outcome, statusFrame }, options);
 }
 
-function validateRuntimeStatusFrame(frame, scenarioName) {
+function expectedRuntimeStatusForScenario(scenario, probe) {
+  return scenario.queueProbe
+    ? {
+        active_upstream_bridges: 1,
+        queued_upstream_frames: 1,
+        queued_upstream_bytes: byteLength(probe),
+      }
+    : {
+        active_upstream_bridges: 1,
+        queued_upstream_frames: 0,
+        queued_upstream_bytes: 0,
+      };
+}
+
+function validateRuntimeStatusFrame(frame, options) {
+  const scenarioName = options.scenario.name;
   if (!frame || typeof frame !== "object") {
     throw new Error(`missing runtime status frame for ${scenarioName}`);
   }
-  const expected = {
-    active_upstream_bridges: 1,
-    queued_upstream_frames: 0,
-    queued_upstream_bytes: 0,
-  };
+  const expected = expectedRuntimeStatusForScenario(options.scenario, options.probe);
   for (const [field, expectedValue] of Object.entries(expected)) {
     if (frame[field] !== expectedValue) {
       throw new Error(`runtime status ${field}=${frame[field]}, expected ${expectedValue}`);
@@ -614,9 +650,9 @@ function runSelfTest() {
     if (JSON.stringify(plan).includes(baseOptions.apiKey)) {
       throw new Error(`self-test ${scenario.name} leaked API key in redacted plan`);
     }
-    validateSeedPlan(plan.localD1Seed, scenario.name);
+    validateSeedPlan(plan.localD1Seed, scenario);
     const outcome = syntheticOutcome(scenario);
-    const statusFrame = syntheticRuntimeStatusFrame();
+    const statusFrame = syntheticRuntimeStatusFrame(scenario, options.probe);
     validateLiveReplayOutcome(outcome, syntheticStats(options.probe), options, statusFrame);
     cases.push({
       name: scenario.name,
@@ -692,12 +728,11 @@ function syntheticStats(probe) {
   };
 }
 
-function syntheticRuntimeStatusFrame() {
+function syntheticRuntimeStatusFrame(scenario, probe) {
+  const expected = expectedRuntimeStatusForScenario(scenario, probe);
   return {
     type: "realtime_session_status",
-    active_upstream_bridges: 1,
-    queued_upstream_frames: 0,
-    queued_upstream_bytes: 0,
+    ...expected,
     metrics: {
       connected_count: 1,
       text_message_count: 1,
@@ -718,6 +753,9 @@ function buildLocalD1SeedPlan(options, expectedChannelBaseUrl) {
   const channelName = `realtime-mock-upstream-${channelId}`;
   const mockChannelKey = `mock-upstream-key-${channelId}`;
   const affCode = `rtmock${userId}`;
+  const otherInfo = options.scenario.queueProbe
+    ? { realtime_mock_upstream: { queue_probe_delay_ms: options.scenario.queueProbeDelayMs } }
+    : { realtime_mock_upstream: true };
   const statements = [
     `INSERT INTO users (id, username, password, display_name, role, status, email, quota, used_quota, request_count, "group", aff_code, created_at, deleted_at)
 VALUES (${userId}, ${sqlString(username)}, 'disabled-local-smoke-user', 'Realtime Mock Smoke', 1, 1, '', 100000000, 0, 0, ${sqlString(group)}, ${sqlString(affCode)}, ${now}, NULL)
@@ -742,7 +780,7 @@ ON CONFLICT(id) DO UPDATE SET
   "group" = excluded."group",
   deleted_at = NULL;`,
     `INSERT INTO channels (id, type, "key", status, name, weight, created_time, base_url, other, balance, models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban, other_info, channel_info, settings)
-VALUES (${channelId}, ${openaiCompatibleChannelType}, ${sqlString(mockChannelKey)}, 1, ${sqlString(channelName)}, 1000, ${now}, ${sqlString(expectedChannelBaseUrl)}, '', 0, ${sqlString(model)}, ${sqlString(group)}, 0, NULL, '', 1000, 0, ${sqlString(JSON.stringify({ realtime_mock_upstream: true }))}, '{}', '')
+VALUES (${channelId}, ${openaiCompatibleChannelType}, ${sqlString(mockChannelKey)}, 1, ${sqlString(channelName)}, 1000, ${now}, ${sqlString(expectedChannelBaseUrl)}, '', 0, ${sqlString(model)}, ${sqlString(group)}, 0, NULL, '', 1000, 0, ${sqlString(JSON.stringify(otherInfo))}, '{}', '')
 ON CONFLICT(id) DO UPDATE SET
   type = excluded.type,
   "key" = excluded."key",
@@ -772,18 +810,25 @@ VALUES (${sqlString(group)}, ${sqlString(model)}, ${channelId}, 1, 1000, 1000);`
     channelGroup: group,
     channelModel: model,
     channelBaseUrl: expectedChannelBaseUrl,
+    channelOtherInfo: otherInfo,
     warnings: [
       "Review this SQL before execution; the smoke tool never writes D1 by itself.",
       "Use only a dedicated non-production D1 database or an isolated staging test channel.",
       "Do not pass production token keys; the seed token key is intentionally printed for live smoke use.",
       "If a row id or unique username/key is already used, change the seed ids/token key before applying.",
       "For live replay, pass the seed smokeApiKey as --api-key after applying the SQL.",
+      ...(options.scenario.queueProbe
+        ? [
+            `This scenario intentionally delays upstream accept/drain by ${options.scenario.queueProbeDelayMs}ms and must stay isolated from production traffic.`,
+          ]
+        : []),
     ],
     statements,
   };
 }
 
-function validateSeedPlan(plan, scenarioName) {
+function validateSeedPlan(plan, scenario) {
+  const scenarioName = scenario.name;
   if (!plan || !Array.isArray(plan.statements) || plan.statements.length !== 5) {
     throw new Error(`self-test ${scenarioName} generated an invalid D1 seed plan`);
   }
@@ -795,6 +840,13 @@ function validateSeedPlan(plan, scenarioName) {
   }
   if (!sql.includes(plan.channelBaseUrl) || !sql.includes(plan.channelModel)) {
     throw new Error(`self-test ${scenarioName} seed plan missing channel base URL or model`);
+  }
+  if (scenario.queueProbe) {
+    if (!sql.includes("queue_probe_delay_ms") || !sql.includes(String(scenario.queueProbeDelayMs))) {
+      throw new Error(`self-test ${scenarioName} seed plan missing queue probe delay metadata`);
+    }
+  } else if (sql.includes("queue_probe_delay_ms")) {
+    throw new Error(`self-test ${scenarioName} seed plan unexpectedly includes queue probe delay metadata`);
   }
 }
 

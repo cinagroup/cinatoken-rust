@@ -25,6 +25,7 @@ pub const REALTIME_SESSION_GATEWAY_ENABLED_ENV: &str = "REALTIME_SESSION_GATEWAY
 pub const REALTIME_SESSION_V1_ENABLED_ENV: &str = "REALTIME_SESSION_V1_ENABLED";
 pub const REALTIME_UPSTREAM_BRIDGE_PLANNER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_CHANNEL_PLANNER_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
 pub const REALTIME_OPENAI_PATH: &str = "/v1/realtime";
@@ -175,6 +176,13 @@ pub(crate) struct RealtimeSelectedUpstreamInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RealtimeUpstreamBridgeHandshake {
     auth_mode: RealtimeUpstreamAuthMode,
+    protocol: Vec<String>,
+    headers: Vec<(&'static str, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealtimeUpstreamBridgeConnectSpec {
+    redacted_plan: RealtimeUpstreamBridgePlan,
     protocol: Vec<String>,
     headers: Vec<(&'static str, String)>,
 }
@@ -719,6 +727,67 @@ pub(crate) fn realtime_upstream_channel_planner_compiled() -> bool {
     realtime_upstream_plan_from_header_value(&header).as_ref() == Some(&plan)
 }
 
+pub(crate) fn realtime_upstream_bridge_connect_contract_compiled() -> bool {
+    if !REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED {
+        return false;
+    }
+    let secret = "connect-contract-smoke-key";
+    let Ok(openai_subprotocol) =
+        realtime_upstream_bridge_connect_spec(RealtimeUpstreamBridgeInput {
+            channel_type: 1,
+            base_url: Some("https://api.openai.com"),
+            model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+    else {
+        return false;
+    };
+    let Ok(openai_headers) = realtime_upstream_bridge_connect_spec(RealtimeUpstreamBridgeInput {
+        channel_type: 1,
+        base_url: Some("https://api.openai.com"),
+        model: "gpt-4o-realtime-preview",
+        upstream_api_key: secret,
+        api_version: None,
+        client_requested_subprotocol: false,
+    }) else {
+        return false;
+    };
+    let Ok(azure) = realtime_upstream_bridge_connect_spec(RealtimeUpstreamBridgeInput {
+        channel_type: CHANNEL_TYPE_AZURE,
+        base_url: Some("https://example.openai.azure.com"),
+        model: "gpt-4o-realtime-deployment",
+        upstream_api_key: secret,
+        api_version: Some(AZURE_DEFAULT_API_VERSION),
+        client_requested_subprotocol: true,
+    }) else {
+        return false;
+    };
+
+    let openai_plan = serde_json::to_string(&openai_subprotocol.redacted_plan).unwrap_or_default();
+    let headers_plan = serde_json::to_string(&openai_headers.redacted_plan).unwrap_or_default();
+    let azure_plan = serde_json::to_string(&azure.redacted_plan).unwrap_or_default();
+    openai_subprotocol
+        .protocol
+        .iter()
+        .any(|value| value.contains(secret))
+        && openai_subprotocol.headers.is_empty()
+        && !openai_plan.contains(secret)
+        && openai_headers.protocol.is_empty()
+        && openai_headers
+            .headers
+            .iter()
+            .any(|(name, value)| *name == "authorization" && value == &format!("Bearer {secret}"))
+        && !headers_plan.contains(secret)
+        && azure.protocol.is_empty()
+        && azure
+            .headers
+            .iter()
+            .any(|(name, value)| *name == "api-key" && value == secret)
+        && !azure_plan.contains(secret)
+}
+
 pub(crate) fn realtime_selected_upstream_plan(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstreamPlan, String> {
@@ -793,6 +862,12 @@ fn realtime_upstream_plan_from_header_value(value: &str) -> Option<RealtimeSelec
 fn realtime_upstream_bridge_plan(
     input: RealtimeUpstreamBridgeInput<'_>,
 ) -> Result<RealtimeUpstreamBridgePlan, String> {
+    realtime_upstream_bridge_connect_spec(input).map(|spec| spec.redacted_plan)
+}
+
+fn realtime_upstream_bridge_connect_spec(
+    input: RealtimeUpstreamBridgeInput<'_>,
+) -> Result<RealtimeUpstreamBridgeConnectSpec, String> {
     let model = non_empty_trimmed(input.model, "model")?;
     let upstream_api_key = non_empty_trimmed(input.upstream_api_key, "upstream_api_key")?;
     let provider = realtime_upstream_provider(input.channel_type);
@@ -824,7 +899,7 @@ fn realtime_upstream_bridge_plan(
         .map(|(name, _)| *name)
         .collect::<Vec<_>>();
 
-    Ok(RealtimeUpstreamBridgePlan {
+    let redacted_plan = RealtimeUpstreamBridgePlan {
         provider,
         url,
         model,
@@ -837,6 +912,12 @@ fn realtime_upstream_bridge_plan(
         auth_mode: handshake.auth_mode,
         protocol_redacted,
         header_names,
+    };
+
+    Ok(RealtimeUpstreamBridgeConnectSpec {
+        redacted_plan,
+        protocol: handshake.protocol,
+        headers: handshake.headers,
     })
 }
 
@@ -1402,6 +1483,93 @@ mod tests {
     }
 
     #[test]
+    fn realtime_openai_subprotocol_connect_spec_keeps_secret_request_scoped() {
+        let secret = "sk-live-secret";
+        let spec = realtime_upstream_bridge_connect_spec(RealtimeUpstreamBridgeInput {
+            channel_type: 1,
+            base_url: Some("https://api.openai.com"),
+            model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+
+        assert!(spec.headers.is_empty());
+        assert!(spec.protocol.iter().any(|value| value.contains(secret)));
+        assert_eq!(
+            spec.redacted_plan.auth_mode,
+            RealtimeUpstreamAuthMode::RealtimeSubprotocol
+        );
+        assert_eq!(
+            spec.redacted_plan.protocol_redacted,
+            vec![
+                "realtime".to_string(),
+                "openai-insecure-api-key.<redacted>".to_string(),
+                "openai-beta.realtime-v1".to_string(),
+            ]
+        );
+        let raw_plan = serde_json::to_string(&spec.redacted_plan).unwrap();
+        assert!(!raw_plan.contains(secret));
+        assert!(!raw_plan.contains("Bearer sk-"));
+    }
+
+    #[test]
+    fn realtime_openai_header_connect_spec_keeps_secret_request_scoped() {
+        let secret = "sk-live-secret";
+        let spec = realtime_upstream_bridge_connect_spec(RealtimeUpstreamBridgeInput {
+            channel_type: 1,
+            base_url: Some("https://api.openai.com"),
+            model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: false,
+        })
+        .unwrap();
+
+        assert!(spec.protocol.is_empty());
+        assert!(spec
+            .headers
+            .iter()
+            .any(|(name, value)| *name == "authorization" && value == "Bearer sk-live-secret"));
+        assert_eq!(
+            spec.redacted_plan.auth_mode,
+            RealtimeUpstreamAuthMode::AuthorizationBearer
+        );
+        assert_eq!(
+            spec.redacted_plan.header_names,
+            vec!["openai-beta", "authorization"]
+        );
+        let raw_plan = serde_json::to_string(&spec.redacted_plan).unwrap();
+        assert!(!raw_plan.contains(secret));
+        assert!(!raw_plan.contains("Bearer sk-"));
+    }
+
+    #[test]
+    fn realtime_azure_connect_spec_uses_api_key_without_serializing_secret() {
+        let secret = "azure-secret";
+        let spec = realtime_upstream_bridge_connect_spec(RealtimeUpstreamBridgeInput {
+            channel_type: CHANNEL_TYPE_AZURE,
+            base_url: Some("https://example.openai.azure.com"),
+            model: "gpt-4o-realtime-deployment",
+            upstream_api_key: secret,
+            api_version: Some("2025-04-01-preview"),
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+
+        assert!(spec.protocol.is_empty());
+        assert_eq!(spec.headers, vec![("api-key", secret.to_string())]);
+        assert_eq!(
+            spec.redacted_plan.auth_mode,
+            RealtimeUpstreamAuthMode::AzureApiKey
+        );
+        assert_eq!(spec.redacted_plan.header_names, vec!["api-key"]);
+        let raw_plan = serde_json::to_string(&spec.redacted_plan).unwrap();
+        assert!(!raw_plan.contains(secret));
+    }
+
+    #[test]
     fn realtime_selected_upstream_plan_header_round_trips_without_secret() {
         let secret = "sk-live-secret";
         let plan = realtime_selected_upstream_plan(RealtimeSelectedUpstreamInput {
@@ -1431,6 +1599,11 @@ mod tests {
     #[test]
     fn realtime_upstream_channel_planner_self_check_passes() {
         assert!(realtime_upstream_channel_planner_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_connect_contract_self_check_passes() {
+        assert!(realtime_upstream_bridge_connect_contract_compiled());
     }
 
     #[test]

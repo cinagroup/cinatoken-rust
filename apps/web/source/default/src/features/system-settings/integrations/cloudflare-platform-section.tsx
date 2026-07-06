@@ -71,6 +71,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_control_no_echo_compiled,
         capabilities.realtime_session_upstream_bridge_planner_compiled,
         capabilities.realtime_session_upstream_channel_planner_compiled,
+        capabilities.realtime_session_upstream_bridge_connect_contract_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -461,6 +462,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_channel_planner_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream connect contract'),
+          description: t(
+            'Builds the request-scoped upstream WebSocket connect spec with secret-bearing headers or subprotocols while exposing only redacted metadata to attachments and status paths.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_connect_contract_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

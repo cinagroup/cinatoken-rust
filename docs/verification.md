@@ -4,6 +4,40 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the Realtime upstream connect-contract
+  capability, frontend Cloudflare Platform row, smoke preflight assertion, and
+  migration docs. The run covered frontend type/build, bundle redaction audit
+  (460 files, 37,299,515 bytes, 0 findings), bundle budget audit (245 files,
+  18.96 MB raw / 4.50 MB gzip, all 10 budgets OK), lint-debt baseline (0
+  errors / 0 warnings / 0 regressions), frontend route audit (215
+  Worker-facing calls / 307 Worker routes / 0 missing calls), WFP tenant
+  deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession platform and
+  v1 dry-run smoke plans, relay AI Gateway canary smoke dry-run, WFP tenant
+  Worker-script tests (8 passed), `cargo fmt --all --check`, Rust workspace
+  tests excluding the Worker, Worker wasm32 check, and WFP tenant wasm32 check.
+  Existing warnings were limited to the known `d1_repositories.rs` dead-code
+  warnings.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime upstream connect contract, request-scoped
+  secret-bearing OpenAI/Azure connect spec, and redacted-plan serialization
+  checks (21 filtered Realtime/platform tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_bridge_connect_contract_compiled` in platform
+  capabilities and requiring it in v1 cutover readiness (13 platform tests;
+  existing `d1_repositories.rs` dead-code warnings only).
+- `node --check tools/smoke_realtime_session.mjs`, `bun run
+  check:realtime-session:smoke-plan`, and `bun run
+  check:realtime-session:v1-smoke-plan`: passed after requiring the upstream
+  connect-contract capability in live capabilities preflight while preserving
+  dry-run redaction of Realtime subprotocol credentials.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform
+  connect-contract capability row and frontend platform capability type.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after the connect-contract changes; warnings were limited to the known
+  `d1_repositories.rs` dead-code items.
 - `bun run check`: passed after adding the Realtime upstream channel selection
   planner, redacted upstream-plan DO attachment/status context, platform
   capability signal, frontend Cloudflare Platform row, smoke preflight

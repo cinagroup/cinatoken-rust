@@ -6019,3 +6019,71 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.93 2026-07-06 Realtime Upstream Connect Contract
+
+This increment advances the Realtime G7 bridge path by separating the
+secret-bearing upstream WebSocket connect contract from the redacted plan that
+can safely cross Durable Object serialization boundaries. It intentionally does
+not mark the full upstream bridge as wired.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED=true` and exposed
+  `realtime_session_upstream_bridge_connect_contract_compiled` from
+  `/api/platform/capabilities`.
+- Added an internal `RealtimeUpstreamBridgeConnectSpec` in
+  `crates/worker/src/realtime_session.rs`. The spec contains the request-scoped
+  upstream headers/subprotocols needed for a future outbound WebSocket
+  connection, while its embedded redacted plan remains the only serializable
+  metadata surface.
+- Refactored the existing upstream bridge planner to derive its
+  `RealtimeUpstreamBridgePlan` from the connect spec, keeping OpenAI-compatible
+  and Azure URL/auth decisions in one place:
+  - OpenAI-compatible subprotocol auth keeps
+    `openai-insecure-api-key.<secret>` only in the request-scoped protocol
+    vector and exposes `openai-insecure-api-key.<redacted>` in the plan.
+  - OpenAI-compatible header auth keeps `Authorization: Bearer <secret>` only
+    in request-scoped headers and exposes only header names.
+  - Azure Realtime keeps `api-key` only in request-scoped headers and exposes
+    only the `api-key` header name.
+- Required the connect-contract signal in the v1 cutover guard function without
+  changing the production result: `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, and
+  `realtime_session_v1_cutover_ready` remain false.
+- Updated the frontend Cloudflare Platform panel, Realtime smoke preflight,
+  staging smoke runbook, production readiness matrix, and layered architecture
+  document to show the connect contract separately from the planner and the
+  still-missing full bridge.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (21 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:smoke-plan` passed.
+- `bun run check:realtime-session:v1-smoke-plan` passed.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default` passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with warnings limited to the known `d1_repositories.rs` dead-code items.
+- `bun run check` passed, covering frontend build, bundle redaction/budget,
+  lint-debt, route audit, WFP deploy/dispatch dry-runs, Realtime platform and
+  v1 dry-runs, relay AI Gateway dry-run, WFP tenant Worker-script tests, Rust
+  workspace tests, and Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Wire the actual bidirectional upstream Realtime WebSocket bridge using the
+  request-scoped connect spec, with bounded queues/backpressure and close/error
+  mapping.
+- Preserve the hibernation boundary: accepted client sockets can hibernate, but
+  outbound upstream sockets must be treated as transient active-session handles
+  and rebuilt/closed deliberately.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

@@ -270,6 +270,65 @@ Pass criteria:
 - Reserve/refund/settlement behavior matches the billing mode under test.
 - Response body handling is bounded or streamed according to the route policy.
 
+## Phase 3b: Main Relay AI Gateway Canary Smoke
+
+Run this only after:
+
+- `CLOUDFLARE_ACCOUNT_ID`, `AI_GATEWAY_ID`, and
+  `CLOUDFLARE_AI_GATEWAY_TOKEN` or a scoped `CLOUDFLARE_API_TOKEN` are
+  configured in staging.
+- `RELAY_AI_GATEWAY_ROUTER_ENABLED=true` is enabled in the staging Worker only.
+- One staging channel has been enabled through the channel editor
+  **Cloudflare AI Gateway canary** switch, producing
+  `channels.other_info.ai_gateway.enabled=true`.
+- The channel's model mapping resolves the test model to a Cloudflare
+  AI Gateway provider-prefixed model such as `openai/gpt-4.1`.
+
+First run the dry-run plan:
+
+```powershell
+bun run smoke:relay-ai-gateway -- --dry-run --json --url $env:STAGING_BASE_URL --model openai/gpt-4.1
+```
+
+Then run the live low-token canary. This command is deliberately gated by
+`--confirm-live` because it can call a paid upstream provider:
+
+```powershell
+$env:RELAY_AI_GATEWAY_SMOKE_COOKIE = "session=<redacted admin session cookie>"
+$env:RELAY_AI_GATEWAY_SMOKE_API_KEY = "<redacted staging relay token>"
+bun run smoke:relay-ai-gateway -- --url $env:STAGING_BASE_URL --cookie $env:RELAY_AI_GATEWAY_SMOKE_COOKIE --api-key $env:RELAY_AI_GATEWAY_SMOKE_API_KEY --model openai/gpt-4.1 --expect-router-ready --confirm-live --json
+```
+
+For Anthropic-schema canaries, use:
+
+```powershell
+bun run smoke:relay-ai-gateway -- --url $env:STAGING_BASE_URL --endpoint messages --model anthropic/claude-sonnet-4-5 --cookie $env:RELAY_AI_GATEWAY_SMOKE_COOKIE --api-key $env:RELAY_AI_GATEWAY_SMOKE_API_KEY --expect-router-ready --confirm-live --json
+```
+
+Record:
+
+- Command output, with raw cookie and API key values redacted.
+- `/api/platform/capabilities` fields proving router readiness,
+  channel opt-in support, compiled forwarder, and compiled same-channel
+  fallback.
+- Relay response status, safe request IDs, and response content type.
+- Cloudflare AI Gateway log entry for the same timestamp/model/gateway.
+- Relay audit and billing rows proving usage parsing, settlement, and quota
+  delta.
+- If a retryable Gateway failure is induced, evidence that the same selected
+  channel fell back to the direct provider path without double settlement.
+
+Pass criteria:
+
+- `relay_ai_gateway_router_ready=true` before the relay POST is attempted.
+- The live relay request uses a provider-prefixed model and the targeted
+  channel's canary metadata is enabled through the editor, not manual D1 edits.
+- AI Gateway logs show the request under the intended account/gateway.
+- Relay audit/billing proves the same settlement semantics as direct-provider
+  traffic for Gateway success and, when tested, fallback.
+- The global router gate is turned back off or left scoped to the approved
+  staging canary window after evidence capture.
+
 ## Phase 4: SSE Relay Smoke
 
 Use `docs/route-provider-parity-runbook.md` for stream passthrough,

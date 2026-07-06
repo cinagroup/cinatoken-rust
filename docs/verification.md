@@ -4,6 +4,24 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the main relay AI Gateway canary smoke
+  harness and wiring `check:relay-ai-gateway:smoke-plan` into the root check.
+  The run covered frontend type/build, bundle redaction audit (460 files,
+  37,295,970 bytes, 0 findings), bundle budget audit (245 files, 18.96 MB raw /
+  4.50 MB gzip, all 10 budgets OK), lint-debt baseline (0 errors / 0 warnings /
+  0 regressions), frontend route audit (215 Worker-facing calls / 307 Worker
+  routes / 0 missing calls), WFP tenant deploy-plan dry-run, WFP dispatch smoke
+  dry-run, RealtimeSession smoke dry-run, relay AI Gateway canary smoke
+  dry-run, WFP tenant Worker-script tests (8 passed), `cargo fmt --all
+  --check`, Rust workspace tests excluding the Worker, Worker wasm32 check, and
+  WFP tenant wasm32 check. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `node --check tools/smoke_relay_ai_gateway_canary.mjs`, `bun run
+  check:relay-ai-gateway:smoke-plan`, `bun tools/smoke_relay_ai_gateway_canary.mjs
+  --help`, and targeted relay dry-runs for `/v1/chat/completions`,
+  `/v1/responses`, and `/v1/messages`: passed after adding the staging
+  canary harness. The `/v1/messages` guard rejected a Workers AI `@cf/...`
+  model as expected.
 - `bun run check`: passed after adding the channel editor **Cloudflare AI
   Gateway canary** toggle and documenting the M7 operator-control closure. The
   run covered frontend type/build, bundle redaction audit (460 files,

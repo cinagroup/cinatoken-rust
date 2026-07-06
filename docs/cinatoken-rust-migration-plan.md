@@ -5770,3 +5770,50 @@ Remaining migration gaps:
 - Capture AI Gateway logs plus relay audit/billing output proving usage parsing
   and settlement remain unchanged after both Gateway-success and direct-fallback
   attempts.
+
+### 22.89 2026-07-06 Main Relay AI Gateway Canary Smoke Harness
+
+This increment turns the remaining M7 staging canary instructions into an
+executable smoke harness. The main relay AI Gateway path already has a
+default-off runtime gate, per-channel `other_info` opt-in, provider-prefix
+policy, REST forwarder, same-channel fallback, and an operator-facing channel
+toggle. The missing local piece was a repeatable command that proves the
+staging Worker is actually ready before sending a low-token canary request.
+
+Implemented:
+
+- Added `tools/smoke_relay_ai_gateway_canary.mjs`.
+  - Default `--dry-run` usage resolves the capabilities URL, relay URL, model,
+    and request size without network access.
+  - Live mode requires explicit `--confirm-live` because it may call a paid
+    upstream provider through the relay.
+  - The capabilities step fetches admin-only `/api/platform/capabilities` and
+    validates channel opt-in support, compiled REST forwarder, compiled
+    same-channel fallback, compiled REST routes, and cutover guard visibility.
+  - The relay step sends a low-token non-stream request to
+    `/v1/chat/completions`, `/v1/responses`, or `/v1/messages` using a
+    provider-prefixed model. `/v1/messages` rejects `@cf/` Workers AI models
+    because the Gateway REST docs define it as Anthropic-schema traffic.
+  - Optional `--expect-router-ready`, `--expect-router-enabled`, and
+    `--expect-router-disabled` flags make staging gate assertions explicit.
+  - Output redacts credentials and reminds operators to capture AI Gateway
+    logs plus relay audit/billing evidence.
+- Added `smoke:relay-ai-gateway` and `check:relay-ai-gateway:smoke-plan` Bun
+  scripts, and included the dry-run plan in the root `bun run check` chain.
+- Extended `docs/staging-smoke-runbook.md` with a dedicated **Main Relay
+  AI Gateway Canary Smoke** phase covering prerequisites, dry-run, live chat
+  and Anthropic Messages examples, evidence to record, and pass criteria.
+
+Validation:
+
+- `bun run check:relay-ai-gateway:smoke-plan` passed.
+- `bun tools/smoke_relay_ai_gateway_canary.mjs --help` passed.
+
+Remaining migration gaps:
+
+- Run the new live smoke against staging with real Cloudflare account/gateway
+  credentials, an admin session cookie, a low-risk relay token, and one channel
+  enabled through the editor toggle.
+- Capture AI Gateway logs plus relay audit/billing output proving usage parsing
+  and settlement remain unchanged after both Gateway-success and direct-fallback
+  attempts.

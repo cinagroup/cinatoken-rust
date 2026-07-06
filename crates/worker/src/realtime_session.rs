@@ -31,6 +31,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_CONNECT_HANDOFF_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_FETCH_UPGRADE_ADAPTER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
@@ -43,6 +44,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_channel_selection",
     "upstream_fetch_upgrade_adapter",
     "upstream_bridge_lifecycle",
+    "upstream_bridge_frame_guard",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",
@@ -62,6 +64,9 @@ const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
 const MAX_UPSTREAM_PLAN_HEADER_CHARS: usize = 1800;
 const MAX_UPSTREAM_CONNECT_HEADER_CHARS: usize = 3600;
+const MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES: usize = 1_048_576;
+const MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES: usize = 1_048_576;
+const REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE: u16 = 1009;
 const SESSION_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const SESSION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -230,6 +235,19 @@ struct RealtimeUpstreamBridgeRuntime {
     upstream: WebSocket,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RealtimeBridgeFrameKind {
+    Text,
+    Binary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeBridgeFrameRejection {
+    kind: RealtimeBridgeFrameKind,
+    bytes: usize,
+    max_bytes: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct RealtimeSessionMetrics {
     session: String,
@@ -345,6 +363,34 @@ impl DurableObject for RealtimeSession {
             }
             WebSocketIncomingMessage::String(message) => {
                 let summary = realtime_text_control_summary(&message);
+                if let Some(rejection) = realtime_text_frame_guard_rejection(&message) {
+                    metrics.record_error(
+                        attachment.as_ref(),
+                        js_sys::Date::now(),
+                        "upstream_bridge_frame_too_large",
+                    );
+                    metrics_changed = true;
+                    ws.send(&json!({
+                        "type": "realtime_session_control",
+                        "status": "upstream_bridge_frame_too_large",
+                        "frame_kind": rejection.kind.as_str(),
+                        "context": context,
+                        "text_chars": summary.text_chars,
+                        "text_bytes": rejection.bytes,
+                        "max_bytes": rejection.max_bytes
+                    }))?;
+                    if let Some(attachment) = attachment.as_ref() {
+                        self.close_upstream_bridge(attachment);
+                    }
+                    ws.close(
+                        Some(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE),
+                        Some("upstream_bridge_frame_too_large"),
+                    )?;
+                    if metrics_changed {
+                        self.store_metrics(&metrics).await?;
+                    }
+                    return Ok(());
+                }
                 match self.forward_text_to_upstream(attachment.as_ref(), &message) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -377,6 +423,33 @@ impl DurableObject for RealtimeSession {
                 }
             }
             WebSocketIncomingMessage::Binary(bytes) => {
+                if let Some(rejection) = realtime_binary_frame_guard_rejection(&bytes) {
+                    metrics.record_error(
+                        attachment.as_ref(),
+                        js_sys::Date::now(),
+                        "upstream_bridge_frame_too_large",
+                    );
+                    metrics_changed = true;
+                    ws.send(&json!({
+                        "type": "realtime_session_control",
+                        "status": "upstream_bridge_frame_too_large",
+                        "frame_kind": rejection.kind.as_str(),
+                        "context": context,
+                        "binary_bytes": rejection.bytes,
+                        "max_bytes": rejection.max_bytes
+                    }))?;
+                    if let Some(attachment) = attachment.as_ref() {
+                        self.close_upstream_bridge(attachment);
+                    }
+                    ws.close(
+                        Some(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE),
+                        Some("upstream_bridge_frame_too_large"),
+                    )?;
+                    if metrics_changed {
+                        self.store_metrics(&metrics).await?;
+                    }
+                    return Ok(());
+                }
                 match self.forward_binary_to_upstream(attachment.as_ref(), &bytes) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -1057,6 +1130,43 @@ pub(crate) fn realtime_upstream_bridge_lifecycle_compiled() -> bool {
         && realtime_client_close_code_from_upstream(4000) == 4000
 }
 
+pub(crate) fn realtime_upstream_bridge_frame_guard_compiled() -> bool {
+    REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED
+        && realtime_frame_guard_rejection(
+            RealtimeBridgeFrameKind::Text,
+            MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+            MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+        )
+        .is_none()
+        && realtime_frame_guard_rejection(
+            RealtimeBridgeFrameKind::Text,
+            MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1,
+            MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+        )
+        .is_some_and(|rejection| {
+            rejection.kind == RealtimeBridgeFrameKind::Text
+                && rejection.bytes == MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1
+                && rejection.max_bytes == MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES
+        })
+        && realtime_frame_guard_rejection(
+            RealtimeBridgeFrameKind::Binary,
+            MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES,
+            MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES,
+        )
+        .is_none()
+        && realtime_frame_guard_rejection(
+            RealtimeBridgeFrameKind::Binary,
+            MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES + 1,
+            MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES,
+        )
+        .is_some_and(|rejection| {
+            rejection.kind == RealtimeBridgeFrameKind::Binary
+                && rejection.bytes == MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES + 1
+                && rejection.max_bytes == MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES
+        })
+        && REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE == 1009
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -1273,10 +1383,32 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
             match event {
                 Ok(WebsocketEvent::Message(message)) => {
                     if let Some(text) = message.text() {
+                        if realtime_text_frame_guard_rejection(&text).is_some() {
+                            let _ = upstream.close(
+                                Some(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE),
+                                Some("upstream_bridge_frame_too_large"),
+                            );
+                            let _ = client.close(
+                                Some(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE),
+                                Some("upstream_bridge_frame_too_large"),
+                            );
+                            break;
+                        }
                         if client.send_with_str(text).is_err() {
                             break;
                         }
                     } else if let Some(bytes) = message.bytes() {
+                        if realtime_binary_frame_guard_rejection(&bytes).is_some() {
+                            let _ = upstream.close(
+                                Some(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE),
+                                Some("upstream_bridge_frame_too_large"),
+                            );
+                            let _ = client.close(
+                                Some(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE),
+                                Some("upstream_bridge_frame_too_large"),
+                            );
+                            break;
+                        }
                         if client.send_with_bytes(bytes).is_err() {
                             break;
                         }
@@ -1294,6 +1426,43 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
             }
         }
     });
+}
+
+impl RealtimeBridgeFrameKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Binary => "binary",
+        }
+    }
+}
+
+fn realtime_text_frame_guard_rejection(message: &str) -> Option<RealtimeBridgeFrameRejection> {
+    realtime_frame_guard_rejection(
+        RealtimeBridgeFrameKind::Text,
+        message.as_bytes().len(),
+        MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+    )
+}
+
+fn realtime_binary_frame_guard_rejection(bytes: &[u8]) -> Option<RealtimeBridgeFrameRejection> {
+    realtime_frame_guard_rejection(
+        RealtimeBridgeFrameKind::Binary,
+        bytes.len(),
+        MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES,
+    )
+}
+
+fn realtime_frame_guard_rejection(
+    kind: RealtimeBridgeFrameKind,
+    bytes: usize,
+    max_bytes: usize,
+) -> Option<RealtimeBridgeFrameRejection> {
+    (bytes > max_bytes).then_some(RealtimeBridgeFrameRejection {
+        kind,
+        bytes,
+        max_bytes,
+    })
 }
 
 fn realtime_upstream_bridge_key(attachment: &SocketAttachment) -> String {
@@ -1890,6 +2059,59 @@ mod tests {
     }
 
     #[test]
+    fn realtime_upstream_bridge_frame_guard_is_byte_bounded() {
+        assert!(realtime_frame_guard_rejection(
+            RealtimeBridgeFrameKind::Text,
+            MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+            MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+        )
+        .is_none());
+        assert_eq!(
+            realtime_frame_guard_rejection(
+                RealtimeBridgeFrameKind::Text,
+                MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1,
+                MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+            ),
+            Some(RealtimeBridgeFrameRejection {
+                kind: RealtimeBridgeFrameKind::Text,
+                bytes: MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1,
+                max_bytes: MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES,
+            })
+        );
+        assert!(realtime_frame_guard_rejection(
+            RealtimeBridgeFrameKind::Binary,
+            MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES,
+            MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES,
+        )
+        .is_none());
+        assert_eq!(
+            realtime_frame_guard_rejection(
+                RealtimeBridgeFrameKind::Binary,
+                MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES + 1,
+                MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES,
+            )
+            .map(|rejection| rejection.kind.as_str()),
+            Some("binary")
+        );
+        assert_eq!(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE, 1009);
+    }
+
+    #[test]
+    fn realtime_text_frame_guard_counts_utf8_bytes_not_chars() {
+        let text = "云".repeat(4);
+        let rejection = realtime_frame_guard_rejection(
+            RealtimeBridgeFrameKind::Text,
+            text.as_bytes().len(),
+            text.chars().count(),
+        )
+        .unwrap();
+
+        assert_eq!(rejection.bytes, 12);
+        assert_eq!(rejection.max_bytes, 4);
+        assert_eq!(rejection.kind.as_str(), "text");
+    }
+
+    #[test]
     fn realtime_openai_upstream_plan_uses_wss_realtime_model_query() {
         let plan = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
             channel_type: 1,
@@ -2187,6 +2409,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_lifecycle_contract_is_compiled() {
         assert!(realtime_upstream_bridge_lifecycle_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_frame_guard_contract_is_compiled() {
+        assert!(realtime_upstream_bridge_frame_guard_compiled());
     }
 
     #[test]

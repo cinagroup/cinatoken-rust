@@ -75,6 +75,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_connect_handoff_compiled,
         capabilities.realtime_session_upstream_fetch_upgrade_adapter_compiled,
         capabilities.realtime_session_upstream_bridge_lifecycle_compiled,
+        capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -505,6 +506,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_lifecycle_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream frame guard'),
+          description: t(
+            'Rejects oversized Realtime bridge text and binary frames with message-too-big close handling before full backpressure support is enabled.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

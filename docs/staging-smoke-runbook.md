@@ -386,6 +386,7 @@ Record:
   `realtime_session_upstream_connect_handoff_compiled`,
   `realtime_session_upstream_fetch_upgrade_adapter_compiled`,
   `realtime_session_upstream_bridge_lifecycle_compiled`,
+  `realtime_session_upstream_bridge_frame_guard_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -403,7 +404,7 @@ Pass criteria:
   no-echo controls, the upstream bridge planner, the upstream channel planner,
   the request-scoped upstream connect contract, and the gateway-to-DO connect
   handoff plus upstream fetch-upgrade adapter and transient bridge lifecycle as
-  compiled;
+  compiled, including the text/binary frame guard;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -421,11 +422,14 @@ Pass criteria:
 - If the DO is hibernated/restarted and the outbound upstream socket is no
   longer active, client frames return `upstream_bridge_not_active` rather than
   implying that the upstream session was resumed.
+- Oversized bridge frames are rejected with WebSocket close code `1009` and
+  metadata-only frame kind/byte-count/max-byte evidence; raw frame payloads are
+  never logged, stored, or echoed.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge
-  path has bounded backpressure/error mapping, billing settlement, audit
-  logging, and live protocol replay evidence; `/v1/realtime` remains off in
+  path has queued backpressure/flow-control, billing settlement, audit logging,
+  and live close/error/protocol replay evidence; `/v1/realtime` remains off in
   production until that changes.
 
 ## Phase 5: Billing Shadow Smoke

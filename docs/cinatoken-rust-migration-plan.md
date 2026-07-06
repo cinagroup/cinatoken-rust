@@ -6292,3 +6292,53 @@ Remaining migration gaps:
 - Capture live staging `/v1/realtime` protocol replay with real
   `REALTIME_SESSIONS`, relay-token auth, selected upstream channel, and
   redacted capability evidence.
+
+### 22.97 2026-07-06 Realtime Upstream Frame Guard
+
+This increment hardens the active Realtime upstream bridge without claiming
+complete backpressure parity. The Cloudflare Worker WebSocket API exposes a
+`bufferedAmount` concept, but the current Rust `worker` crate wrapper used by
+the project does not expose it directly. This step therefore adds a
+Worker-compiled frame guard around the bridge: oversized text or binary frames
+are rejected before forwarding, using WebSocket close code `1009` and
+metadata-only control/error records that never store the frame payload.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED=true` and exposed
+  `realtime_session_upstream_bridge_frame_guard_compiled` from
+  `/api/platform/capabilities`.
+- Added `upstream_bridge_frame_guard` to the Realtime cutover guard list and
+  required it in the v1 cutover readiness helper.
+- Added 1 MiB text and binary frame limits for the transient bridge path:
+  client-to-upstream frames are checked before forwarding, and
+  upstream-to-client frames are checked before sending to the accepted client
+  socket.
+- Oversized frames close the affected bridge with `1009` (`message too big`)
+  and record only safe metadata such as frame kind, byte count, max bytes, and
+  the existing sanitized socket context. Client-originated oversized frames also
+  tear down the transient upstream WebSocket before closing the client socket.
+- Added byte-oriented tests, including UTF-8 text where character count and byte
+  count differ, plus a compiled self-check for the frame guard.
+- Updated the frontend Cloudflare Platform panel, capability types, smoke
+  harness preflight, staging smoke runbook, layered architecture, production
+  readiness matrix, cinaVibeSDK mapping, and verification docs.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (34 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+
+Remaining migration gaps:
+
+- Add true queued backpressure/flow-control behavior once the Rust Worker API
+  can observe or wrap socket buffered bytes safely.
+- Add live close/error replay evidence with a staging upstream/mock provider
+  before declaring `realtime_session_upstream_bridge_compiled=true`.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

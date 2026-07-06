@@ -4,6 +4,42 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime upstream bridge frame guard, byte-bounded
+  text/binary forwarding checks, 1009 message-too-big close handling, UTF-8
+  byte-count coverage, upstream bridge teardown for rejected client frames, and
+  frame-guard compiled self-check (34 filtered Realtime/platform tests;
+  existing `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_bridge_frame_guard_compiled` in platform
+  capabilities and requiring it in v1 cutover readiness while keeping full
+  bridge and billing false (13 platform tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the Realtime upstream bridge frame guard (known
+  `d1_repositories.rs` dead-code warnings only).
+- `node --check tools/smoke_realtime_session.mjs` and
+  `bun run check:realtime-session:v1-smoke-plan`: passed after adding the
+  Realtime upstream bridge frame guard capability and cutover guard checks.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform frame
+  guard capability field and row.
+- `bun run check`: passed after adding the Realtime upstream bridge frame
+  guard, 1 MiB text/binary forwarding checks, 1009 message-too-big close
+  handling, upstream bridge teardown for rejected client frames, platform
+  capability signal, frontend Cloudflare Platform row, smoke preflight guard,
+  and migration docs. The run covered frontend type/build, bundle redaction
+  audit (460 files, 37,301,016 bytes, 0 findings), bundle budget audit (245
+  files, 18.96 MB raw / 4.50 MB gzip, all 10 budgets OK), lint-debt baseline
+  (0 errors / 0 warnings / 0 regressions), frontend route audit (215
+  Worker-facing calls / 307 Worker routes / 0 missing calls), WFP tenant
+  deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession platform and
+  v1 dry-run smoke plans, relay AI Gateway canary smoke dry-run, WFP tenant
+  Worker-script tests (8 passed), `cargo fmt --all --check`, Rust workspace
+  tests excluding the Worker, Worker wasm32 check, and WFP tenant wasm32 check.
+  Existing warnings were limited to the known `d1_repositories.rs` dead-code
+  warnings.
 - `bun run check`: passed after adding the Realtime upstream bridge lifecycle,
   transient DO bridge registry, active client-to-upstream forwarding,
   upstream-to-client event pump, platform capability signal, frontend

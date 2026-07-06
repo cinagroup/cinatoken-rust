@@ -370,6 +370,15 @@ metadata without opening a network socket:
 bun run check:realtime-session:bridge-replay-contract
 ```
 
+Then run the ordered upstream replay contract self-test. It validates the
+mock/live replay evidence shape across active bridge status, forwarded frame
+metadata, terminal event, client close mapping, persisted terminal event, and
+payload/token redaction before any live upstream replay artifact is accepted:
+
+```powershell
+bun run check:realtime-session:upstream-replay-contract
+```
+
 Also run the local platform header-boundary validator self-test. It proves the
 smoke verifier rejects forged upstream handoff markers, upstream plans, active
 bridge status, and active bridge counts before any staging evidence is trusted:
@@ -420,6 +429,10 @@ Record:
   upstream close handling, upstream error/event-stream/accept failures,
   client-to-upstream and upstream-to-client send-failure metadata, and the
   frame-too-large terminal event contract.
+- Upstream replay contract self-test output, including ordered scenarios for
+  active bridge status, client-to-upstream forwarding, upstream terminal
+  close/error/frame-limit/send-failure events, client close mapping, persisted
+  terminal evidence, and redaction rejection cases.
 - Platform header-boundary self-test output, including the clean case plus
   rejected forged handoff marker, forged upstream plan, active bridge status,
   and active bridge count cases.
@@ -438,6 +451,7 @@ Record:
   `realtime_session_upstream_bridge_close_mapping_compiled`,
   `realtime_session_upstream_bridge_send_failure_guard_compiled`,
   `realtime_session_upstream_bridge_event_trace_compiled`,
+  `realtime_session_upstream_bridge_replay_contract_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -464,8 +478,9 @@ Pass criteria:
   handoff plus upstream fetch-upgrade adapter and transient bridge lifecycle as
   compiled, including the text/binary frame guard and bridge close/error
   mapping plus the upstream send-failure guard, terminal event trace, and
-  platform upstream-header boundary; `realtime_session_platform_smoke_ready=true`
-  before the platform WebSocket smoke runs.
+  upstream replay contract plus platform upstream-header boundary;
+  `realtime_session_platform_smoke_ready=true` before the platform WebSocket
+  smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
   lifecycle metrics.
 - Metrics show at least one connect and at least two text messages from the
@@ -503,6 +518,11 @@ Pass criteria:
   accepted. It is not a substitute for a real or mock upstream replay run, but
   it proves the smoke verifier will reject mismatched close codes/reasons,
   directions, frame metadata, or leaked probe/API-key material.
+- The upstream replay contract self-test passes before live upstream replay
+  artifacts are accepted. It is not a substitute for the eventual live/mock
+  upstream server run, but it proves the evidence validator rejects inactive
+  pre-terminal status, missing persisted terminal events, wrong client close
+  reasons, and leaked raw frame/API-key material.
 - Platform Realtime routes strip caller-supplied
   `x-cinatoken-realtime-upstream-plan` and
   `x-cinatoken-realtime-upstream-connect` before forwarding to the Durable

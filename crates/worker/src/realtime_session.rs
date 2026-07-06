@@ -35,6 +35,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CLOSE_MAPPING_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_REPLAY_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -52,6 +53,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_close_mapping",
     "upstream_bridge_send_failure_guard",
     "upstream_bridge_event_trace",
+    "upstream_bridge_replay_contract",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -315,6 +317,24 @@ struct RealtimeBridgeTerminalEvent {
     frame_kind: Option<String>,
     frame_bytes: Option<usize>,
     frame_max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeBridgeReplayScenario {
+    name: &'static str,
+    active_status_before_terminal: &'static str,
+    terminal_cause: RealtimeBridgeCloseCause,
+    terminal_frame: Option<RealtimeBridgeFrameMetadata>,
+    expected_event: &'static str,
+    expected_direction: &'static str,
+    expected_client_code: u16,
+    expected_client_reason: &'static str,
+    expected_upstream_code: Option<u16>,
+    expected_upstream_reason: Option<&'static str>,
+    expected_upstream_close_code: Option<u16>,
+    expected_frame_kind: Option<&'static str>,
+    expected_frame_bytes: Option<usize>,
+    expected_frame_max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1465,6 +1485,15 @@ pub(crate) fn realtime_upstream_bridge_event_trace_compiled() -> bool {
         && send_event.frame_max_bytes.is_none()
 }
 
+pub(crate) fn realtime_upstream_bridge_replay_contract_compiled() -> bool {
+    REALTIME_UPSTREAM_BRIDGE_REPLAY_CONTRACT_COMPILED
+        && realtime_client_message_bridge_status(true, true) == "upstream_bridge_active"
+        && realtime_client_message_bridge_status(true, false) == "upstream_bridge_not_active"
+        && realtime_bridge_replay_contract_scenarios()
+            .iter()
+            .all(realtime_bridge_replay_scenario_matches)
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -1836,6 +1865,124 @@ fn send_realtime_bridge_terminal_event(
         "context": context,
         "event": &event
     }));
+}
+
+fn realtime_bridge_replay_contract_scenarios() -> [RealtimeBridgeReplayScenario; 5] {
+    [
+        RealtimeBridgeReplayScenario {
+            name: "client_text_then_upstream_normal_close",
+            active_status_before_terminal: "upstream_bridge_active",
+            terminal_cause: RealtimeBridgeCloseCause::UpstreamClosed(1000),
+            terminal_frame: None,
+            expected_event: "upstream_closed",
+            expected_direction: "upstream_to_client",
+            expected_client_code: REALTIME_BRIDGE_NORMAL_CLOSE_CODE,
+            expected_client_reason: REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED,
+            expected_upstream_code: None,
+            expected_upstream_reason: None,
+            expected_upstream_close_code: Some(1000),
+            expected_frame_kind: None,
+            expected_frame_bytes: None,
+            expected_frame_max_bytes: None,
+        },
+        RealtimeBridgeReplayScenario {
+            name: "client_binary_then_upstream_reserved_close",
+            active_status_before_terminal: "upstream_bridge_active",
+            terminal_cause: RealtimeBridgeCloseCause::UpstreamClosed(1006),
+            terminal_frame: None,
+            expected_event: "upstream_closed",
+            expected_direction: "upstream_to_client",
+            expected_client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+            expected_client_reason: REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED,
+            expected_upstream_code: None,
+            expected_upstream_reason: None,
+            expected_upstream_close_code: Some(1006),
+            expected_frame_kind: None,
+            expected_frame_bytes: None,
+            expected_frame_max_bytes: None,
+        },
+        RealtimeBridgeReplayScenario {
+            name: "upstream_error_after_client_forward",
+            active_status_before_terminal: "upstream_bridge_active",
+            terminal_cause: RealtimeBridgeCloseCause::UpstreamError,
+            terminal_frame: None,
+            expected_event: "upstream_error",
+            expected_direction: "upstream_to_client",
+            expected_client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+            expected_client_reason: REALTIME_BRIDGE_REASON_UPSTREAM_ERROR,
+            expected_upstream_code: None,
+            expected_upstream_reason: None,
+            expected_upstream_close_code: None,
+            expected_frame_kind: None,
+            expected_frame_bytes: None,
+            expected_frame_max_bytes: None,
+        },
+        RealtimeBridgeReplayScenario {
+            name: "upstream_oversized_text_frame",
+            active_status_before_terminal: "upstream_bridge_active",
+            terminal_cause: RealtimeBridgeCloseCause::FrameTooLarge,
+            terminal_frame: Some(RealtimeBridgeFrameMetadata {
+                kind: RealtimeBridgeFrameKind::Text,
+                bytes: MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1,
+                max_bytes: Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES),
+            }),
+            expected_event: "frame_too_large",
+            expected_direction: "bridge",
+            expected_client_code: REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE,
+            expected_client_reason: REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE,
+            expected_upstream_code: Some(REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE),
+            expected_upstream_reason: Some(REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE),
+            expected_upstream_close_code: None,
+            expected_frame_kind: Some("text"),
+            expected_frame_bytes: Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES + 1),
+            expected_frame_max_bytes: Some(MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES),
+        },
+        RealtimeBridgeReplayScenario {
+            name: "upstream_to_client_send_failure_binary",
+            active_status_before_terminal: "upstream_bridge_active",
+            terminal_cause: RealtimeBridgeCloseCause::UpstreamToClientSendFailed,
+            terminal_frame: Some(RealtimeBridgeFrameMetadata {
+                kind: RealtimeBridgeFrameKind::Binary,
+                bytes: 32,
+                max_bytes: None,
+            }),
+            expected_event: "upstream_to_client_send_failed",
+            expected_direction: "upstream_to_client",
+            expected_client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+            expected_client_reason: REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED,
+            expected_upstream_code: Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE),
+            expected_upstream_reason: Some(REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED),
+            expected_upstream_close_code: None,
+            expected_frame_kind: Some("binary"),
+            expected_frame_bytes: Some(32),
+            expected_frame_max_bytes: None,
+        },
+    ]
+}
+
+fn realtime_bridge_replay_scenario_matches(scenario: &RealtimeBridgeReplayScenario) -> bool {
+    let action = realtime_bridge_close_action(scenario.terminal_cause);
+    let event = realtime_bridge_terminal_event(
+        scenario.terminal_cause,
+        action,
+        13.0,
+        scenario.terminal_frame,
+    );
+    let serialized = serde_json::to_string(&event).unwrap_or_default();
+
+    scenario.active_status_before_terminal == "upstream_bridge_active"
+        && event.event == scenario.expected_event
+        && event.direction == scenario.expected_direction
+        && event.client_code == scenario.expected_client_code
+        && event.client_reason == scenario.expected_client_reason
+        && event.upstream_code == scenario.expected_upstream_code
+        && event.upstream_reason.as_deref() == scenario.expected_upstream_reason
+        && event.upstream_close_code == scenario.expected_upstream_close_code
+        && event.frame_kind.as_deref() == scenario.expected_frame_kind
+        && event.frame_bytes == scenario.expected_frame_bytes
+        && event.frame_max_bytes == scenario.expected_frame_max_bytes
+        && !serialized.contains("cinatoken-bridge-replay-secret")
+        && !serialized.contains(OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX)
 }
 
 fn realtime_bridge_frame_metadata_from_rejection(
@@ -3147,6 +3294,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_event_trace_contract_is_compiled() {
         assert!(realtime_upstream_bridge_event_trace_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_replay_contract_is_compiled() {
+        assert!(realtime_upstream_bridge_replay_contract_compiled());
     }
 
     #[test]

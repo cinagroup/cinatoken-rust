@@ -8,6 +8,7 @@ const maxRealtimeBridgeTextFrameBytes = 1_048_576;
 const defaultFrameLimitProbeBytes = maxRealtimeBridgeTextFrameBytes + 1;
 const frameLimitProbePrefix = "cinatoken-frame-limit-smoke:";
 const bridgeReplayLeakProbe = "cinatoken-bridge-replay-secret";
+const upstreamReplayLeakProbe = "cinatoken-upstream-replay-secret";
 const realtimeUpstreamPlanHeader = "x-cinatoken-realtime-upstream-plan";
 const realtimeUpstreamConnectHeader = "x-cinatoken-realtime-upstream-connect";
 
@@ -16,6 +17,8 @@ const args = parseArgs(process.argv.slice(2));
 try {
   if (args.flags.has("self-test-bridge-replay")) {
     printBridgeReplaySelfTestResult(runBridgeReplayContractSelfTest(), args.flags.has("json"));
+  } else if (args.flags.has("self-test-upstream-replay")) {
+    printUpstreamReplaySelfTestResult(runUpstreamReplayContractSelfTest(), args.flags.has("json"));
   } else if (args.flags.has("self-test-platform-header-boundary")) {
     printPlatformHeaderBoundarySelfTestResult(
       runPlatformHeaderBoundarySelfTest(),
@@ -226,6 +229,7 @@ function parseArgs(argv) {
     "expect-frame-limit-event",
     "expect-platform-header-boundary",
     "self-test-bridge-replay",
+    "self-test-upstream-replay",
     "self-test-platform-header-boundary",
   ]);
   for (let i = 0; i < argv.length; i += 1) {
@@ -324,6 +328,7 @@ function usage(exitCode, error) {
       "  --expect-platform-header-boundary  Forge internal upstream handoff headers and require the platform route to strip them",
       "  --frame-limit-bytes <bytes>      or REALTIME_SMOKE_FRAME_LIMIT_BYTES, default 1048577",
       "  --self-test-bridge-replay        Run local synthetic close/error/send-failure replay contract tests without network",
+      "  --self-test-upstream-replay      Run ordered mock upstream replay scenario contract tests without network",
       "  --self-test-platform-header-boundary  Run local synthetic platform header-boundary validator tests without network",
       "  --dry-run             resolve URLs/protocols without network",
       "  --json",
@@ -427,6 +432,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_upstream_bridge_send_failure_guard_compiled === true,
     realtime_session_upstream_bridge_event_trace_compiled:
       data.realtime_session_upstream_bridge_event_trace_compiled === true,
+    realtime_session_upstream_bridge_replay_contract_compiled:
+      data.realtime_session_upstream_bridge_replay_contract_compiled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
     realtime_session_upstream_bridge_compiled:
@@ -455,6 +462,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_upstream_bridge_close_mapping_compiled", true],
     ["realtime_session_upstream_bridge_send_failure_guard_compiled", true],
     ["realtime_session_upstream_bridge_event_trace_compiled", true],
+    ["realtime_session_upstream_bridge_replay_contract_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
@@ -472,6 +480,7 @@ function validateCapabilities(capabilities, options) {
     "upstream_bridge_close_mapping",
     "upstream_bridge_send_failure_guard",
     "upstream_bridge_event_trace",
+    "upstream_bridge_replay_contract",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -1030,6 +1039,211 @@ function expectBridgeReplayFailure(event, expectation, messagePart) {
   throw new Error(`expected bridge replay self-test to fail for ${expectation.name}`);
 }
 
+function runUpstreamReplayContractSelfTest() {
+  const scenarios = upstreamReplayContractScenarios();
+  const cases = [];
+  for (const scenario of scenarios) {
+    const replay = syntheticUpstreamReplay(scenario);
+    validateUpstreamReplayScenario(replay, scenario);
+    cases.push({
+      name: scenario.name,
+      ok: true,
+      terminalEvent: scenario.terminal.name,
+      clientClose: {
+        code: scenario.terminal.clientCode,
+        reason: scenario.terminal.clientReason,
+      },
+      forwardedFrames: scenario.forwardedFrames.length,
+    });
+  }
+
+  const clean = syntheticUpstreamReplay(scenarios[0]);
+  expectUpstreamReplayFailure(
+    {
+      ...clean,
+      bridgeStatusBeforeTerminal: "upstream_bridge_not_active",
+    },
+    scenarios[0],
+    "before terminal status",
+    "rejects inactive bridge before terminal event",
+  );
+  expectUpstreamReplayFailure(
+    {
+      ...clean,
+      persistedTerminalEvent: null,
+    },
+    scenarios[0],
+    "missing persisted terminal event",
+    "requires persisted terminal event",
+  );
+  expectUpstreamReplayFailure(
+    {
+      ...clean,
+      clientClose: {
+        code: 1000,
+        reason: "wrong_close_reason",
+      },
+    },
+    scenarios[0],
+    "client close reason",
+    "rejects wrong client close",
+  );
+  expectUpstreamReplayFailure(
+    {
+      ...clean,
+      forwardedFrames: [
+        {
+          ...clean.forwardedFrames[0],
+          rawPayload: upstreamReplayLeakProbe,
+        },
+      ],
+    },
+    scenarios[0],
+    "leaked raw probe",
+    "rejects raw payload leakage",
+  );
+
+  return {
+    ok: true,
+    upstreamReplayContractSelfTest: true,
+    cases,
+  };
+}
+
+function upstreamReplayContractScenarios() {
+  const expectations = new Map(
+    bridgeReplayContractExpectations().map((expectation) => [expectation.name, expectation]),
+  );
+  const expectation = (name) => {
+    const item = expectations.get(name);
+    if (!item) throw new Error(`missing upstream replay expectation: ${name}`);
+    return item;
+  };
+  return [
+    {
+      name: "client_text_then_upstream_normal_close",
+      forwardedFrames: [{ direction: "client_to_upstream", kind: "text", bytes: 32 }],
+      terminal: expectation("upstream_closed_normal"),
+    },
+    {
+      name: "client_binary_then_upstream_reserved_close",
+      forwardedFrames: [{ direction: "client_to_upstream", kind: "binary", bytes: 16 }],
+      terminal: expectation("upstream_closed_reserved_code"),
+    },
+    {
+      name: "client_text_then_upstream_error",
+      forwardedFrames: [{ direction: "client_to_upstream", kind: "text", bytes: 48 }],
+      terminal: expectation("upstream_error"),
+    },
+    {
+      name: "upstream_oversized_text_frame",
+      forwardedFrames: [{ direction: "upstream_to_client", kind: "text", bytes: defaultFrameLimitProbeBytes }],
+      terminal: bridgeReplayExpectationForEvent("frame_too_large", defaultFrameLimitProbeBytes),
+    },
+    {
+      name: "upstream_binary_send_failure",
+      forwardedFrames: [{ direction: "upstream_to_client", kind: "binary", bytes: 32 }],
+      terminal: expectation("upstream_to_client_send_failed_binary"),
+    },
+  ];
+}
+
+function syntheticUpstreamReplay(scenario) {
+  const terminalEvent = syntheticBridgeTerminalEvent(scenario.terminal);
+  return {
+    scenario: scenario.name,
+    bridgeStatusBeforeTerminal: "upstream_bridge_active",
+    forwardedFrames: scenario.forwardedFrames.map((frame) => ({ ...frame })),
+    terminalEvent,
+    clientClose: {
+      code: scenario.terminal.clientCode,
+      reason: scenario.terminal.clientReason,
+    },
+    bridgeStatusAfterTerminal: "upstream_bridge_not_active",
+    persistedTerminalEvent: { ...terminalEvent },
+  };
+}
+
+function validateUpstreamReplayScenario(replay, scenario) {
+  if (!replay || typeof replay !== "object") {
+    throw new Error(`missing upstream replay scenario ${scenario.name}`);
+  }
+  if (replay.bridgeStatusBeforeTerminal !== "upstream_bridge_active") {
+    throw new Error(
+      `upstream replay ${scenario.name} before terminal status=${replay.bridgeStatusBeforeTerminal}, expected upstream_bridge_active`,
+    );
+  }
+  if (replay.bridgeStatusAfterTerminal !== "upstream_bridge_not_active") {
+    throw new Error(
+      `upstream replay ${scenario.name} after terminal status=${replay.bridgeStatusAfterTerminal}, expected upstream_bridge_not_active`,
+    );
+  }
+  validateUpstreamReplayForwardedFrames(replay.forwardedFrames, scenario);
+  validateBridgeTerminalEventExpectation(replay.terminalEvent, scenario.terminal);
+  if (!replay.persistedTerminalEvent) {
+    throw new Error(`upstream replay ${scenario.name} missing persisted terminal event`);
+  }
+  validateBridgeTerminalEventExpectation(replay.persistedTerminalEvent, scenario.terminal);
+  if (replay.clientClose?.code !== scenario.terminal.clientCode) {
+    throw new Error(
+      `upstream replay ${scenario.name} client close code=${replay.clientClose?.code}, expected ${scenario.terminal.clientCode}`,
+    );
+  }
+  if (replay.clientClose?.reason !== scenario.terminal.clientReason) {
+    throw new Error(
+      `upstream replay ${scenario.name} client close reason=${replay.clientClose?.reason}, expected ${scenario.terminal.clientReason}`,
+    );
+  }
+  const raw = JSON.stringify(replay);
+  for (const leaked of [
+    upstreamReplayLeakProbe,
+    bridgeReplayLeakProbe,
+    frameLimitProbePrefix,
+    "openai-insecure-api-key.",
+  ]) {
+    if (raw.includes(leaked)) {
+      throw new Error(`upstream replay ${scenario.name} leaked raw probe or protocol secret`);
+    }
+  }
+}
+
+function validateUpstreamReplayForwardedFrames(frames, scenario) {
+  if (!Array.isArray(frames)) {
+    throw new Error(`upstream replay ${scenario.name} missing forwarded frame array`);
+  }
+  if (frames.length !== scenario.forwardedFrames.length) {
+    throw new Error(
+      `upstream replay ${scenario.name} forwarded frame count=${frames.length}, expected ${scenario.forwardedFrames.length}`,
+    );
+  }
+  for (const [index, expected] of scenario.forwardedFrames.entries()) {
+    const frame = frames[index] || {};
+    for (const field of ["direction", "kind", "bytes"]) {
+      if (frame[field] !== expected[field]) {
+        throw new Error(
+          `upstream replay ${scenario.name} forwarded frame[${index}] ${field}=${frame[field]}, expected ${expected[field]}`,
+        );
+      }
+    }
+    if ("rawPayload" in frame || "payload" in frame) {
+      throw new Error(`upstream replay ${scenario.name} forwarded frame[${index}] leaked raw probe`);
+    }
+  }
+}
+
+function expectUpstreamReplayFailure(replay, scenario, messagePart, name) {
+  try {
+    validateUpstreamReplayScenario(replay, scenario);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes(messagePart)) {
+      throw new Error(`unexpected upstream replay self-test failure for ${name}: ${message}`);
+    }
+    return;
+  }
+  throw new Error(`expected upstream replay self-test to fail for ${name}`);
+}
+
 function runPlatformHeaderBoundarySelfTest() {
   const cleanContext = {
     session: "session-smoke",
@@ -1341,6 +1555,23 @@ function printBridgeReplaySelfTestResult(result, json) {
       ...result.cases.map(
         (item) =>
           `case ${item.name}: ${item.event} ${item.direction} ${item.clientCode}/${item.clientReason}`,
+      ),
+    ].join("\n"),
+  );
+}
+
+function printUpstreamReplaySelfTestResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    [
+      "Realtime upstream replay contract self-test",
+      `ok: ${result.ok}`,
+      ...result.cases.map(
+        (item) =>
+          `case ${item.name}: ${item.terminalEvent} ${item.clientClose.code}/${item.clientClose.reason}`,
       ),
     ].join("\n"),
   );

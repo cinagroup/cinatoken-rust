@@ -6789,3 +6789,75 @@ Remaining migration gaps:
   before `realtime_session_upstream_bridge_compiled`,
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.106 2026-07-06 Realtime Upstream Replay Contract Gate
+
+This increment adds a stronger contract gate for the Realtime DO upstream pump
+without claiming that the production bridge, queued backpressure, or billing
+settlement is finished. The previous bridge replay self-test validated isolated
+terminal event shapes. This step adds ordered replay scenarios that model the
+evidence a live or mock upstream replay run must produce: active bridge status,
+forwarded frame metadata, terminal event, client close mapping, persisted
+terminal evidence, and explicit rejection of raw payload/API-key leakage.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_REPLAY_CONTRACT_COMPILED` and
+  `realtime_upstream_bridge_replay_contract_compiled()` in
+  `crates/worker/src/realtime_session.rs`.
+  - The Rust self-check covers ordered scenarios for client text/binary
+    forwarding followed by upstream normal close, reserved close, upstream
+    error, upstream oversized text-frame handling, and upstream-to-client binary
+    send failure.
+  - The contract proves the session reports `upstream_bridge_active` before
+    the terminal event and `upstream_bridge_not_active` after terminal cleanup,
+    while terminal events remain metadata-only.
+- Exposed
+  `realtime_session_upstream_bridge_replay_contract_compiled` through
+  `/api/platform/capabilities`, added `upstream_bridge_replay_contract` to the
+  Realtime cutover guards, and required it for v1 cutover readiness while
+  leaving `realtime_session_upstream_bridge_compiled=false` and
+  `realtime_session_billing_settlement_compiled=false`.
+- Added the upstream replay contract to the Cloudflare Platform frontend
+  readiness model and Realtime sessions panel.
+- Added `--self-test-upstream-replay` to
+  `tools/smoke_realtime_session.mjs` and wired
+  `check:realtime-session:upstream-replay-contract` into `bun run check`.
+  - The self-test validates ordered replay evidence and negative cases for
+    inactive pre-terminal status, missing persisted terminal event, wrong
+    client close reason, and leaked raw frame/API-key material.
+- Updated the staging smoke runbook, production readiness matrix,
+  cinaVibeSDK mapping, source route inventory, and verification ledger.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:upstream-replay-contract` passed and emitted
+  five ordered replay scenarios.
+- `bun run check:realtime-session:bridge-replay-contract`,
+  `bun run check:realtime-session:smoke-plan`, and
+  `bun run check:realtime-session:v1-smoke-plan` passed.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (44 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `bun run check:web` passed after the frontend capability row/type update.
+- `bun run check` passed, covering frontend build/audits, WFP dry-run smoke,
+  Realtime bridge replay/upstream replay/platform/header-boundary/frame-limit/
+  v1 dry-run smoke plans, relay AI Gateway canary dry-run, Rust workspace
+  tests excluding the Worker, Worker wasm32 check, and WFP tenant wasm32 check.
+
+Remaining migration gaps:
+
+- Replace the local replay contract with a live or local mock upstream
+  WebSocket replay harness that drives the actual DO pump through upstream
+  close, upstream error, event-stream/accept failure, frame-limit, and
+  upstream-to-client send-failure paths.
+- Add queued backpressure/flow-control so the active bridge does not depend on
+  direct immediate `WebSocket.send*` success for production traffic.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.

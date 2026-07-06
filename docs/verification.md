@@ -5,6 +5,35 @@ Last checked: 2026-07-06
 ## Passed
 
 - `node --check tools/smoke_realtime_session.mjs`,
+  `bun run check:realtime-session:bridge-replay-contract`,
+  `bun run check:realtime-session:upstream-replay-contract`,
+  `bun run check:realtime-session:smoke-plan`, and
+  `bun run check:realtime-session:v1-smoke-plan`: passed after adding the
+  Realtime upstream replay contract gate. The new self-test validates ordered
+  replay scenarios from active bridge status through forwarded frame metadata,
+  terminal event, client close mapping, persisted terminal evidence, and
+  negative redaction/status/close cases without opening a network socket.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Rust-side
+  `realtime_session_upstream_bridge_replay_contract_compiled` contract
+  (44 filtered Realtime/platform tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_bridge_replay_contract_compiled` in platform
+  capabilities and requiring it in v1 cutover readiness while keeping full
+  upstream bridge and billing settlement false (13 platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `bun run check:web`: passed after adding the Cloudflare Platform UI type,
+  readiness count, and row for the Realtime upstream replay contract.
+- `bun run check`: passed after adding the Realtime upstream replay contract
+  gate to the default check chain. The run covered frontend build and audits,
+  WFP dry-run smoke, Realtime bridge replay, upstream replay, platform
+  header-boundary, platform/frame-limit/v1 dry-run smoke plans, relay AI
+  Gateway canary dry-run, Rust workspace tests excluding the Worker, Worker
+  wasm32 check, and WFP tenant wasm32 check; existing warnings were limited to
+  the known `d1_repositories.rs` dead-code warnings.
+- `node --check tools/smoke_realtime_session.mjs`,
   `bun run check:realtime-session:platform-header-boundary-contract`, and
   `bun run check:realtime-session:platform-header-boundary-plan`: passed after
   adding a Realtime platform header-boundary smoke mode. The local contract

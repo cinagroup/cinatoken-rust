@@ -79,6 +79,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_close_mapping_compiled,
         capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
         capabilities.realtime_session_upstream_bridge_event_trace_compiled,
+        capabilities.realtime_session_upstream_bridge_replay_contract_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
       ]
     : []
@@ -550,6 +551,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_event_trace_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream replay contract'),
+          description: t(
+            'Validates ordered mock/live replay scenarios from active bridge status through terminal event, close mapping, persisted evidence, and no payload leakage.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_replay_contract_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

@@ -4,6 +4,34 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after wiring the main relay JSON path to the
+  default-off Cloudflare AI Gateway REST forwarder and exposing
+  `relay_ai_gateway_rest_forwarder_compiled` in the Cloudflare Platform panel.
+  The run covered frontend type/build, bundle redaction audit (460 files,
+  37,293,347 bytes, 0 findings), bundle budget audit (245 files, 18.96 MB raw /
+  4.50 MB gzip, all 10 budgets OK), lint-debt baseline (0 errors / 0 warnings /
+  0 regressions), frontend route audit (215 Worker-facing calls / 307 Worker
+  routes / 0 missing calls), WFP tenant deploy-plan dry-run, WFP dispatch smoke
+  dry-run, RealtimeSession smoke dry-run, WFP tenant Worker-script tests (8
+  passed), `cargo fmt --all --check`, Rust workspace tests excluding the
+  Worker, Worker wasm32 check, and WFP tenant wasm32 check. Existing warnings
+  were limited to the known `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-providers`: passed after reusing the provider-owned
+  AI Gateway cutover planner for the main relay forwarder (17 tests).
+- `cargo test -p cinatoken-worker --lib relay`: passed after adding the relay
+  AI Gateway runtime gate, channel opt-in/default-direct planning, and REST
+  request builder tests (113 tests; existing `d1_repositories.rs` dead-code
+  warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway`: passed after
+  exposing the compiled forwarder capability in `/api/platform/capabilities`
+  (10 tests; existing `d1_repositories.rs` dead-code warnings only).
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform panel
+  row for the compiled main relay AI Gateway REST forwarder.
+- `cargo fmt --all --check`, `cargo check -p cinatoken-worker --target
+  wasm32-unknown-unknown`, `bun run check:web:bundle`, `bun run
+  check:web:bundle-budget`, and `bun run check:web:routes`: passed for the
+  final documentation/forwarder verification pass.
 - `bun run check`: passed after wiring relay channel `other_info` into the main
   relay AI Gateway opt-in metadata path and exposing
   `relay_ai_gateway_channel_opt_in_supported` in the Cloudflare Platform panel.

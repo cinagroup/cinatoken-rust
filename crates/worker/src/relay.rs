@@ -13,6 +13,10 @@ use cinatoken_core::{
     Candidate, ErrorBody, MediaTokenFlags,
 };
 use cinatoken_providers::{
+    ai_gateway::{
+        plan_ai_gateway_cutover, rest_gateway_endpoint_url, AiGatewayCutoverDecision,
+        AiGatewayCutoverInput, AiGatewayCutoverPlan,
+    },
     ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry,
 };
 use cinatoken_relay::{
@@ -45,6 +49,11 @@ const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
 const RELAY_JSON_BODY_LIMIT_ENV: &str = "RELAY_JSON_BODY_LIMIT_BYTES";
 const RELAY_JSON_RESPONSE_LIMIT_ENV: &str = "RELAY_JSON_RESPONSE_LIMIT_BYTES";
 const RELAY_RETRY_TIMES_ENV: &str = "RELAY_RETRY_TIMES";
+const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
+const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
+const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
+const CLOUDFLARE_AI_GATEWAY_TOKEN_ENV: &str = "CLOUDFLARE_AI_GATEWAY_TOKEN";
+const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
 /// When set (`true`/`1`), a missing or invalid upstream usage block triggers
 /// Go's estimate-and-bill fallback instead of refunding the reserve. Default off
 /// preserves the current refund-on-missing behavior; flipping it on is the
@@ -1217,6 +1226,7 @@ async fn relay_endpoint_with_auth(
     let attempt_count = attempt_plan.len();
     let inject_stream_options = stream_options_inject_enabled(&env);
     let keyword_ban_enabled = channel_keyword_ban_enabled(&env);
+    let ai_gateway_runtime = RelayAiGatewayRuntime::from_env(&env);
 
     for (attempt_index, plan) in attempt_plan.into_iter().enumerate() {
         let RelayAttemptPlan {
@@ -1307,15 +1317,44 @@ async fn relay_endpoint_with_auth(
                         forward_workers_ai_binding(&env, &upstream_model, &upstream_body).await
                     }
                 } else {
-                    forward_relay_request(
-                        endpoint.provider,
-                        &upstream_url,
-                        &upstream_key,
-                        &channel,
-                        &upstream_body,
-                        &provider_headers,
-                    )
-                    .await
+                    let upstream_model = upstream_body
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&model);
+                    match ai_gateway_runtime.as_ref() {
+                        Some(runtime) => match plan_relay_ai_gateway_attempt(
+                            runtime,
+                            &endpoint,
+                            &channel,
+                            upstream_model,
+                        )? {
+                            Some(attempt) => {
+                                forward_ai_gateway_rest(&attempt, runtime, &upstream_body).await
+                            }
+                            None => {
+                                forward_relay_request(
+                                    endpoint.provider,
+                                    &upstream_url,
+                                    &upstream_key,
+                                    &channel,
+                                    &upstream_body,
+                                    &provider_headers,
+                                )
+                                .await
+                            }
+                        },
+                        None => {
+                            forward_relay_request(
+                                endpoint.provider,
+                                &upstream_url,
+                                &upstream_key,
+                                &channel,
+                                &upstream_body,
+                                &provider_headers,
+                            )
+                            .await
+                        }
+                    }
                 }
             }
             RelayRequestBody::Raw {
@@ -2301,6 +2340,102 @@ fn optional_env_var(env: &Env, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn optional_secret_or_env_var(env: &Env, name: &str) -> Option<String> {
+    env.secret(name)
+        .ok()
+        .map(|value| value.to_string())
+        .or_else(|| optional_env_var(env, name))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_flag(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Clone)]
+struct RelayAiGatewayRuntime {
+    account_id: String,
+    gateway_id: String,
+    api_token: String,
+}
+
+impl RelayAiGatewayRuntime {
+    fn from_env(env: &Env) -> Option<Self> {
+        Self::from_values(
+            env_flag(optional_env_var(env, RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV).as_deref()),
+            optional_env_var(env, CLOUDFLARE_ACCOUNT_ID_ENV),
+            optional_env_var(env, AI_GATEWAY_ID_ENV),
+            optional_secret_or_env_var(env, CLOUDFLARE_AI_GATEWAY_TOKEN_ENV)
+                .or_else(|| optional_secret_or_env_var(env, CLOUDFLARE_API_TOKEN_ENV)),
+        )
+    }
+
+    fn from_values(
+        router_enabled: bool,
+        account_id: Option<String>,
+        gateway_id: Option<String>,
+        api_token: Option<String>,
+    ) -> Option<Self> {
+        if !router_enabled {
+            return None;
+        }
+        Some(Self {
+            account_id: account_id?.trim().to_string(),
+            gateway_id: gateway_id?.trim().to_string(),
+            api_token: api_token?.trim().to_string(),
+        })
+        .filter(|runtime| {
+            !runtime.account_id.is_empty()
+                && !runtime.gateway_id.is_empty()
+                && !runtime.api_token.is_empty()
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelayAiGatewayAttempt {
+    url: String,
+    plan: AiGatewayCutoverPlan,
+}
+
+fn plan_relay_ai_gateway_attempt(
+    runtime: &RelayAiGatewayRuntime,
+    endpoint: &RelayEndpoint,
+    channel: &RelayChannel,
+    upstream_model: &str,
+) -> worker::Result<Option<RelayAiGatewayAttempt>> {
+    let decision = plan_ai_gateway_cutover(AiGatewayCutoverInput {
+        router_ready: true,
+        channel_opted_in: channel.ai_gateway_opted_in(),
+        provider: endpoint.registry_provider_kind(),
+        relay_path: &endpoint.upstream_path,
+        model: upstream_model,
+        channel_has_custom_base_url: channel
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty()),
+        is_user_credential: false,
+    });
+    let AiGatewayCutoverDecision::UseGateway(plan) = decision else {
+        return Ok(None);
+    };
+    let url =
+        rest_gateway_endpoint_url(&runtime.account_id, plan.endpoint, None).map_err(|err| {
+            worker::Error::RustError(format!("failed to build AI Gateway REST URL: {err}"))
+        })?;
+    Ok(Some(RelayAiGatewayAttempt { url, plan }))
+}
+
 fn parse_positive_usize_env(
     name: &str,
     value: Option<String>,
@@ -3206,6 +3341,27 @@ async fn forward_relay_request(
 /// `run(model, inputs, {gateway})` the JS binding exposes (workers-rs 0.5 only
 /// wraps the 2-arg form, hence the reflection). Non-stream only — the caller
 /// rejects stream requests for binding channels before getting here.
+async fn forward_ai_gateway_rest(
+    attempt: &RelayAiGatewayAttempt,
+    runtime: &RelayAiGatewayRuntime,
+    body: &Value,
+) -> worker::Result<Response> {
+    let body = serde_json::to_string(body)?;
+    let mut headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("authorization", &format!("Bearer {}", runtime.api_token))?;
+    if attempt.plan.requires_gateway_id_header || !runtime.gateway_id.is_empty() {
+        headers.set("cf-aig-gateway-id", &runtime.gateway_id)?;
+    }
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body)));
+    let outbound = Request::new_with_init(&attempt.url, &init)?;
+    Fetch::Request(outbound).send().await
+}
+
 async fn forward_workers_ai_binding(
     env: &Env,
     model: &str,
@@ -7211,6 +7367,140 @@ mod tests {
             priority,
             weight,
         }
+    }
+
+    fn ai_gateway_runtime_for_tests() -> RelayAiGatewayRuntime {
+        RelayAiGatewayRuntime::from_values(
+            true,
+            Some("acct123".to_string()),
+            Some("default".to_string()),
+            Some("cf-token".to_string()),
+        )
+        .unwrap()
+    }
+
+    fn ai_gateway_chat_endpoint_for_tests() -> RelayEndpoint {
+        RelayEndpoint {
+            display_name: "chat completions",
+            cache_family: "openai_compatible",
+            upstream_path: "chat/completions".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            supports_streaming: true,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        }
+    }
+
+    #[test]
+    fn relay_ai_gateway_runtime_requires_gate_and_complete_config() {
+        assert!(RelayAiGatewayRuntime::from_values(
+            false,
+            Some("acct".to_string()),
+            Some("gw".to_string()),
+            Some("token".to_string())
+        )
+        .is_none());
+        assert!(RelayAiGatewayRuntime::from_values(
+            true,
+            None,
+            Some("gw".to_string()),
+            Some("token".to_string())
+        )
+        .is_none());
+        assert!(RelayAiGatewayRuntime::from_values(
+            true,
+            Some("acct".to_string()),
+            None,
+            Some("token".to_string())
+        )
+        .is_none());
+        assert!(RelayAiGatewayRuntime::from_values(
+            true,
+            Some("acct".to_string()),
+            Some("gw".to_string()),
+            None
+        )
+        .is_none());
+
+        let runtime = RelayAiGatewayRuntime::from_values(
+            true,
+            Some(" acct ".to_string()),
+            Some(" gw ".to_string()),
+            Some(" token ".to_string()),
+        )
+        .unwrap();
+        assert_eq!(runtime.account_id, "acct");
+        assert_eq!(runtime.gateway_id, "gw");
+        assert_eq!(runtime.api_token, "token");
+    }
+
+    #[test]
+    fn relay_ai_gateway_attempt_requires_channel_opt_in_and_prefixed_model() {
+        let runtime = ai_gateway_runtime_for_tests();
+        let endpoint = ai_gateway_chat_endpoint_for_tests();
+        let mut channel = test_channel(1, 0, 1);
+
+        assert!(
+            plan_relay_ai_gateway_attempt(&runtime, &endpoint, &channel, "openai/gpt-4.1")
+                .unwrap()
+                .is_none()
+        );
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(
+            plan_relay_ai_gateway_attempt(&runtime, &endpoint, &channel, "gpt-4.1")
+                .unwrap()
+                .is_none()
+        );
+
+        let attempt =
+            plan_relay_ai_gateway_attempt(&runtime, &endpoint, &channel, "openai/gpt-4.1")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            attempt.url,
+            "https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1/chat/completions"
+        );
+        assert!(!attempt.plan.requires_gateway_id_header);
+    }
+
+    #[test]
+    fn relay_ai_gateway_attempt_keeps_custom_base_url_direct() {
+        let runtime = ai_gateway_runtime_for_tests();
+        let endpoint = ai_gateway_chat_endpoint_for_tests();
+        let mut channel = test_channel(1, 0, 1);
+        channel.other_info = r#"{"ai_gateway":true}"#.to_string();
+        channel.base_url = Some("https://custom.example/v1".to_string());
+
+        assert!(
+            plan_relay_ai_gateway_attempt(&runtime, &endpoint, &channel, "openai/gpt-4.1")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn relay_ai_gateway_attempt_rejects_unsupported_endpoint() {
+        let runtime = ai_gateway_runtime_for_tests();
+        let mut endpoint = ai_gateway_chat_endpoint_for_tests();
+        endpoint.upstream_path = "embeddings".to_string();
+        let mut channel = test_channel(1, 0, 1);
+        channel.other_info = r#"{"ai_gateway":true}"#.to_string();
+
+        assert!(plan_relay_ai_gateway_attempt(
+            &runtime,
+            &endpoint,
+            &channel,
+            "openai/text-embedding-3-small"
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

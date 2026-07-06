@@ -266,6 +266,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('REST request forwarder'),
+          description: t(
+            'Builds Cloudflare AI Gateway REST requests only when the router gate and channel opt-in allow it.'
+          ),
+          ready: capabilities.relay_ai_gateway_rest_forwarder_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Router cutover readiness'),
           description: t(
             'Requires account, gateway ID, runtime token, and explicit router gate.'

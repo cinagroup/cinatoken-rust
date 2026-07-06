@@ -5609,3 +5609,59 @@ Remaining migration gaps:
   behind `RELAY_AI_GATEWAY_ROUTER_ENABLED`.
 - Add a focused channel editor toggle for the supported `other_info.ai_gateway`
   shape after the request path canary is wired.
+
+### 22.86 2026-07-06 Main Relay AI Gateway REST Forwarder
+
+This increment wires the M7 request builder into the main relay attempt loop,
+still default-off behind `RELAY_AI_GATEWAY_ROUTER_ENABLED=false`. It uses the
+previously landed guard policy plus channel opt-in metadata to decide whether a
+JSON relay attempt may be sent to Cloudflare AI Gateway REST; all blocked or
+unsupported cases keep the existing direct-provider path.
+
+Implemented:
+
+- Added `RelayAiGatewayRuntime` in `crates/worker/src/relay.rs`.
+  - It is present only when the explicit router gate is enabled and
+    `CLOUDFLARE_ACCOUNT_ID`, `AI_GATEWAY_ID`, and either
+    `CLOUDFLARE_AI_GATEWAY_TOKEN` or `CLOUDFLARE_API_TOKEN` are configured.
+  - The narrower `CLOUDFLARE_AI_GATEWAY_TOKEN` is preferred over the broader
+    Cloudflare API token.
+- Added `plan_relay_ai_gateway_attempt` to bridge the Worker relay loop to
+  `crates/providers::ai_gateway::plan_ai_gateway_cutover`.
+  - It feeds the post-model-mapping upstream model, selected endpoint path, D1
+    channel opt-in, and custom `base_url` state into the pure planner.
+  - Unsupported endpoints such as embeddings, unprefixed models, non-opted
+    channels, and custom base URL channels remain direct.
+- Added `forward_ai_gateway_rest`.
+  - It POSTs the already-transformed JSON body to the account-scoped Cloudflare
+    REST endpoint returned by `rest_gateway_endpoint_url`.
+  - It uses Worker-owned Cloudflare credentials and `cf-aig-gateway-id`; caller
+    `Authorization`, `x-api-key`, Anthropic beta/version headers, and provider
+    channel keys are not forwarded to Cloudflare AI Gateway.
+  - It does not read the upstream response body, so the existing streaming and
+    bounded response handling remains the only response consumption path.
+- Inserted the request builder only in the JSON relay path. Multipart/raw upload
+  endpoints stay direct because they are outside the current AI Gateway REST
+  route plan.
+- Exposed `relay_ai_gateway_rest_forwarder_compiled` through
+  `/api/platform/capabilities` and added a Cloudflare Platform panel row.
+
+Validation:
+
+- `cargo test -p cinatoken-providers` passed (17 tests), preserving the pure
+  planner and URL helper behavior.
+- `cargo test -p cinatoken-worker --lib relay` passed (113 tests; existing
+  `d1_repositories.rs` dead-code warnings only), including new runtime config
+  and per-channel planner bridge cases.
+
+Remaining migration gaps:
+
+- Run a staging canary with a real Cloudflare account/gateway/token and one
+  `other_info.ai_gateway.enabled=true` channel whose mapped model uses a
+  provider-prefixed AI Gateway name.
+- Capture AI Gateway logs plus relay audit/billing output proving usage parsing
+  and settlement remain unchanged.
+- Decide whether retryable Gateway responses should trigger same-channel direct
+  fallback before moving to the next planned channel, or whether the current
+  attempt-plan fallback is sufficient for canary.
+- Add the focused channel editor toggle for `other_info.ai_gateway.enabled`.

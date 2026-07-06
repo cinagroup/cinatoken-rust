@@ -89,7 +89,7 @@ maturity levels are used:
 | Pillar / milestone | Paradigm | Maturity | What landed | What remains | Evidence |
 |---|---|---|---|---|---|
 | M2 Provider registry | — | **Wired** | `ProviderRegistry::resolve` drives per-endpoint provider routing on the live relay path | Fold remaining private-enum branches into adapters | `crates/providers/src/routing.rs:77-80`; called at `crates/worker/src/relay.rs:194` |
-| M7 AiGateway router | C | **Gated substrate (pure, unwired)** | Full cutover **decision ladder** + security coupling, gateway **URL builders**, model-author classifier, 8 cutover guards, `channels.other_info` opt-in metadata support, admin readiness panel — all pure & unit-tested | **Wire the planner into the relay forward loop**: build+send the gateway request, fall back to direct, settle through `crates/billing` | `crates/providers/src/ai_gateway.rs` (722 ln): `plan_ai_gateway_cutover:190`, `provider_gateway_url:318`, `rest_gateway_url:341`, guards `:89-98`; `crates/storage/src/lib.rs` opt-in parser; gate `RELAY_AI_GATEWAY_ROUTER_ENABLED` + readiness `platform_gateway.rs:100-116` |
+| M7 AiGateway router | C | **Gated substrate (forwarder wired)** | Full cutover **decision ladder** + security coupling, gateway **URL builders**, model-author classifier, 8 cutover guards, `channels.other_info` opt-in metadata support, default-off REST forwarder, admin readiness panel | Live staging canary, AI Gateway log capture, billing/usage evidence, and same-channel direct fallback decision | `crates/providers/src/ai_gateway.rs` (722 ln): `plan_ai_gateway_cutover:190`, `rest_gateway_endpoint_url:353`, guards `:89-98`; `crates/storage/src/lib.rs` opt-in parser; `crates/worker/src/relay.rs` runtime/forwarder; gate `RELAY_AI_GATEWAY_ROUTER_ENABLED` + readiness `platform_gateway.rs:100-116` |
 | M8 WFP dispatch | B | **Gated substrate** | `dispatch_target_for_request` + `dispatch_request` via `dynamic_dispatcher().get().fetch_request`, credential/marker **header stripping**, worker-name sanitization, preview-host + internal-path routing, admin-auth gate, tenant-script SDK crate | Uncomment `[[dispatch_namespaces]]` binding (needs paid WFP plan); end-to-end tenant smoke | `crates/worker/src/platform_gateway.rs` (627 ln): dispatch `:135-218`, header strip `:34-43,361-368`; `crates/wfp-tenant/src/lib.rs` (814 ln); binding commented `wrangler.toml:67,162,262`; gates `WFP_DISPATCH_ENABLED`/`WFP_INTERNAL_DISPATCH_ENABLED` |
 | M6 RealtimeSession | A | **Gated substrate (bridge stubbed)** | `#[durable_object]` with WS **hibernation** (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`), per-socket `SocketAttachment`, lifecycle metrics persisted to DO storage | **Upstream bridge** (`WebSocket::connect` to OpenAI) — currently returns `upstream_bridge_not_wired`; **usage accumulation + Go-formula settle** (none yet); protocol parity | `crates/worker/src/realtime_session.rs` (918 ln): DO `:103-252`, stub `:188-197`, 501 gate `:411`; binding **active** `wrangler.toml:117,216,317`; gates `REALTIME_SESSION_V1_ENABLED`/`REALTIME_SESSION_GATEWAY_ENABLED` |
 | M4 QuotaCoordinator | — | **Pending** | — | Build the shadow-first per-token DO (§4 M4) | no `crates/coordinator` yet |
@@ -339,17 +339,18 @@ by clearing the flag, no redeploy required.
 - **Rollback:** flag off → `/v1/realtime` returns the current structured 501.
 
 ### M7 — `AiGatewayRouter` (2 wk) — Paradigm C
-- **Status (2026-07-06): Gated substrate, decision logic complete but unwired.** The
+- **Status (2026-07-06): Gated substrate, request builder wired.** The
   cutover decision ladder (`plan_ai_gateway_cutover`), gateway URL builders
   (`provider_gateway_url`/`rest_gateway_url`), model-author classifier, and 8 cutover
   guards have landed as pure, fully unit-tested logic (`crates/providers/src/ai_gateway.rs`,
   722 ln). Relay channel reads now also carry `channels.other_info` opt-in metadata
-  via `RelayChannel::ai_gateway_opted_in()`, and both surfaces feed the admin readiness
+  via `RelayChannel::ai_gateway_opted_in()`. The Worker relay loop now builds Cloudflare
+  AI Gateway REST requests for JSON attempts only when the runtime gate, route planner,
+  provider-prefixed model, and channel opt-in all pass; both surfaces feed the admin readiness
   panel (`platform_gateway.rs:100-116`), gated
   `RELAY_AI_GATEWAY_ROUTER_ENABLED=false`. The key-URL coupling is **stricter** than the
-  scope below (§L note 1). **Remaining:** wire the planner into the relay forward loop
-  (build+send the gateway request, direct fallback, settle through `crates/billing`) —
-  no caller in the relay path yet.
+  scope below (§L note 1). **Remaining:** live staging canary, AI Gateway log capture,
+  billing/usage evidence, and a same-channel direct fallback decision.
 - **Scope:** Unified gateway URL resolution (`gateway.ai.cloudflare.com/v1/{account}/{gateway}/{provider}`
   for AI-Gateway-supported providers; direct otherwise), extending the existing
   `AI_GATEWAY_ID` routing. Promote `plan_relay_attempts` to explicit
@@ -437,7 +438,7 @@ shipping a silent correctness gap.
 | `QuotaCoordinator` DO | `QUOTA_COORD` | **Pending (M4)** — `new_sqlite_classes` |
 | `TaskRunner` DO | `TASK_RUNNER` | **Pending (M5b)** |
 | `RealtimeSession` DO | `REALTIME_SESSIONS` | **Substrate live, gated** (binding + `new_sqlite_classes` active; `REALTIME_SESSION_V1_ENABLED=false`) |
-| AI Gateway routing | `AI_GATEWAY_ID` var | **Planner live, unwired** (`RELAY_AI_GATEWAY_ROUTER_ENABLED=false`) |
+| AI Gateway routing | `AI_GATEWAY_ID` var | **Forwarder wired, gated** (`RELAY_AI_GATEWAY_ROUTER_ENABLED=false`; channel opt-in required) |
 | WFP dispatch namespace | `DISPATCHER` | **Dispatch code live, gated**; `[[dispatch_namespaces]]` binding commented, paid-plan gated |
 
 Each new DO adds a `[[durable_objects.bindings]]` + `[[migrations]] new_sqlite_classes`
@@ -502,9 +503,8 @@ Critical path to first user-visible value: **M1→M2→M7** (better routing/fall
 and **M5a** (task reliability) land before any DO bake completes. Realtime (M6)
 and WFP (M8) are the long-pole, correctly last.
 
-**Where we actually are (2026-07-06, see §L):** M2 is wired; M6/M7/M8 have landed as
-gated substrate (DO hibernation, cutover planner, dispatch layer) but are **not yet on
-a hot path** — the remaining work for each is the *wiring/execution* step, not the
-foundation. The highest-leverage next increment is wiring the M7 cutover planner into
-the relay forward loop (pure logic already tested), followed by the M6 upstream bridge +
-settlement. M4/M5 remain pending and unblocked.
+**Where we actually are (2026-07-06, see §L):** M2 is wired; M7 has a default-off
+request builder in the relay loop; M6/M8 have landed as gated substrate (DO
+hibernation, dispatch layer) but are **not yet on a hot path**. The highest-leverage
+next increment is staging proof for M7 (real Gateway logs + unchanged billing), followed
+by the M6 upstream bridge + settlement. M4/M5 remain pending and unblocked.

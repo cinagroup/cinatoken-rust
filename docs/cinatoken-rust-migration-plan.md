@@ -5560,3 +5560,52 @@ Remaining migration gaps:
   evidence is clearer.
 - Run staging capability-panel smoke with real account/gateway/token
   configuration while leaving `RELAY_AI_GATEWAY_ROUTER_ENABLED=false`.
+
+### 22.85 2026-07-06 Main Relay AI Gateway Channel Opt-In Metadata
+
+This increment wires the first real per-channel source for the M7 AI Gateway
+canary gate without redirecting traffic. The previous cutover guard policy had
+a `channel_opted_in` input; relay channel reads now carry the data needed to
+drive that input from D1 and the read-through channel cache.
+
+Implemented:
+
+- Extended `cinatoken_storage::RelayChannel` with `other_info` and a pure
+  `ai_gateway_opted_in()` helper.
+  - The helper reads compatible JSON shapes from `channels.other_info`:
+    `{"ai_gateway":{"enabled":true}}`, `{"ai_gateway":true}`,
+    `{"relay_ai_gateway":true}`, or `{"relay_ai_gateway_enabled":true}`.
+  - String and numeric boolean forms such as `"yes"`, `"on"`, `1`, `"off"`,
+    and `0` are accepted for operator convenience.
+  - Invalid JSON, missing fields, and explicit false values default to no
+    opt-in.
+- Kept old relay cache entries compatible by defaulting missing `other_info` to
+  an empty string during deserialization. This avoids a cache schema bump while
+  preserving the default-direct behavior.
+- Updated Worker D1 channel selection for:
+  - ability-backed relay channel selection;
+  - channel CSV fallback selection;
+  - origin-task-locked channel lookup by id.
+- Exposed `relay_ai_gateway_channel_opt_in_supported` from
+  `/api/platform/capabilities` and added a Cloudflare Platform panel row so
+  staging operators can see that the opt-in metadata path is compiled.
+
+Validation:
+
+- `cargo test -p cinatoken-storage` passed (4 tests), including opt-in JSON
+  parsing and old-cache compatibility.
+- `cargo test -p cinatoken-relay cache::tests` passed (5 tests), confirming
+  cached relay channels round-trip with the new field.
+- `cargo test -p cinatoken-worker --lib relay` passed (109 tests; existing
+  `d1_repositories.rs` dead-code warnings only), confirming the new D1 selected
+  field and `RelayChannel` shape do not break relay planning, transforms, or
+  provider URL resolution.
+
+Remaining migration gaps:
+
+- Use `RelayChannel::ai_gateway_opted_in()` to feed
+  `plan_ai_gateway_cutover` in the relay attempt loop.
+- Add the actual AI Gateway REST forwarder and direct-provider fallback path
+  behind `RELAY_AI_GATEWAY_ROUTER_ENABLED`.
+- Add a focused channel editor toggle for the supported `other_info.ai_gateway`
+  shape after the request path canary is wired.

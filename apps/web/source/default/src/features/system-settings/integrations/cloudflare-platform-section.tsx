@@ -257,6 +257,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Channel opt-in metadata'),
+          description: t(
+            'Reads per-channel AI Gateway opt-in from channel other_info before traffic canary.'
+          ),
+          ready: capabilities.relay_ai_gateway_channel_opt_in_supported,
+          readyLabel: t('Supported'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Router cutover readiness'),
           description: t(
             'Requires account, gateway ID, runtime token, and explicit router gate.'

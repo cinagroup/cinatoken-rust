@@ -244,6 +244,7 @@ dependencies = [
  "async-trait",
  "cinatoken-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

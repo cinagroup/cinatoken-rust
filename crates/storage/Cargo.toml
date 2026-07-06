@@ -10,3 +10,4 @@ rust-version.workspace = true
 async-trait.workspace = true
 cinatoken-core = { path = "../core" }
 serde.workspace = true
+serde_json.workspace = true

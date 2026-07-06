@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct UserQuota {
@@ -55,6 +56,8 @@ pub struct RelayChannel {
     pub channel_group: String,
     pub model_mapping: Option<String>,
     pub openai_organization: Option<String>,
+    #[serde(default)]
+    pub other_info: String,
     /// Selection priority tier (higher = preferred). Maps to `abilities.priority`
     /// for ability-matched channels, `channels.priority` for CSV-matched ones.
     #[serde(default)]
@@ -62,6 +65,58 @@ pub struct RelayChannel {
     /// Weighted-random weight within a priority tier. 0 is treated as uniform.
     #[serde(default)]
     pub weight: i32,
+}
+
+impl RelayChannel {
+    pub fn ai_gateway_opted_in(&self) -> bool {
+        channel_ai_gateway_opted_in(&self.other_info)
+    }
+}
+
+pub fn channel_ai_gateway_opted_in(other_info: &str) -> bool {
+    let other_info = other_info.trim();
+    if other_info.is_empty() {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(other_info) else {
+        return false;
+    };
+    ai_gateway_opt_in_value(&value).unwrap_or(false)
+}
+
+fn ai_gateway_opt_in_value(value: &Value) -> Option<bool> {
+    if let Some(enabled) = value
+        .get("ai_gateway")
+        .and_then(ai_gateway_opt_in_nested_value)
+    {
+        return Some(enabled);
+    }
+    if let Some(enabled) = value
+        .get("relay_ai_gateway")
+        .and_then(ai_gateway_opt_in_nested_value)
+    {
+        return Some(enabled);
+    }
+    value
+        .get("relay_ai_gateway_enabled")
+        .and_then(ai_gateway_bool_value)
+}
+
+fn ai_gateway_opt_in_nested_value(value: &Value) -> Option<bool> {
+    ai_gateway_bool_value(value).or_else(|| value.get("enabled").and_then(ai_gateway_bool_value))
+}
+
+fn ai_gateway_bool_value(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_i64().map(|number| number != 0),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" | "enabled" => Some(true),
+            "false" | "0" | "no" | "off" | "disabled" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -214,5 +269,50 @@ mod tests {
         auth.model_limits_enabled = 1;
         assert!(auth.has_unlimited_quota());
         assert!(auth.has_model_limits());
+    }
+
+    #[test]
+    fn relay_channel_ai_gateway_opt_in_reads_compatible_other_info_shapes() {
+        for other_info in [
+            r#"{"ai_gateway":{"enabled":true}}"#,
+            r#"{"ai_gateway":true}"#,
+            r#"{"relay_ai_gateway":true}"#,
+            r#"{"relay_ai_gateway_enabled":"yes"}"#,
+            r#"{"ai_gateway":{"enabled":1}}"#,
+        ] {
+            assert!(channel_ai_gateway_opted_in(other_info), "{other_info}");
+        }
+
+        for other_info in [
+            "",
+            "{}",
+            "not-json",
+            r#"{"ai_gateway":{"enabled":false}}"#,
+            r#"{"relay_ai_gateway":"off"}"#,
+            r#"{"relay_ai_gateway_enabled":0}"#,
+        ] {
+            assert!(!channel_ai_gateway_opted_in(other_info), "{other_info}");
+        }
+    }
+
+    #[test]
+    fn relay_channel_deserializes_old_cache_without_other_info() {
+        let channel: RelayChannel = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "channel_type": 1,
+            "key": "sk-test",
+            "name": "openai",
+            "base_url": null,
+            "models": "gpt-test",
+            "channel_group": "default",
+            "model_mapping": null,
+            "openai_organization": null,
+            "priority": 0,
+            "weight": 0
+        }))
+        .unwrap();
+
+        assert_eq!(channel.other_info, "");
+        assert!(!channel.ai_gateway_opted_in());
     }
 }

@@ -4,6 +4,31 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after wiring relay channel `other_info` into the main
+  relay AI Gateway opt-in metadata path and exposing
+  `relay_ai_gateway_channel_opt_in_supported` in the Cloudflare Platform panel.
+  The run covered frontend type/build, bundle redaction audit (460 files,
+  37,293,096 bytes, 0 findings), bundle budget audit (245 files, 18.96 MB raw /
+  4.50 MB gzip, all 10 budgets OK), lint-debt baseline (0 errors / 0 warnings /
+  0 regressions), frontend route audit (215 Worker-facing calls / 307 Worker
+  routes / 0 missing calls), WFP tenant deploy-plan dry-run, WFP dispatch smoke
+  dry-run, RealtimeSession smoke dry-run, WFP tenant Worker-script tests (8
+  passed), `cargo fmt --all --check`, Rust workspace tests excluding the
+  Worker, Worker wasm32 check, and WFP tenant wasm32 check. Existing warnings
+  were limited to the known `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-storage`: passed after adding relay channel
+  `other_info` and AI Gateway opt-in metadata parsing (4 tests).
+- `cargo test -p cinatoken-relay cache::tests`: passed after adding
+  `other_info` to cached relay channels (5 tests).
+- `cargo test -p cinatoken-worker --lib relay`: passed after selecting channel
+  `other_info` from D1 relay queries (109 tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway`: passed after adding
+  the channel opt-in metadata support signal to `/api/platform/capabilities`
+  (10 tests; existing `d1_repositories.rs` dead-code warnings only).
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform panel
+  row for channel opt-in metadata support.
 - `bun run check`: passed after adding the main relay AI Gateway cutover guard
   policy and exposing `relay_ai_gateway_cutover_guards` in the Cloudflare
   Platform panel. The run covered frontend type/build, bundle redaction audit

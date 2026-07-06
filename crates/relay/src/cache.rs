@@ -200,6 +200,7 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            other_info: String::new(),
             priority: 0,
             weight: 0,
         }

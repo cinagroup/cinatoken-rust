@@ -21,6 +21,16 @@ pub const REALTIME_SESSION_GATEWAY_ENABLED_ENV: &str = "REALTIME_SESSION_GATEWAY
 pub const REALTIME_SESSION_V1_ENABLED_ENV: &str = "REALTIME_SESSION_V1_ENABLED";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
 pub const REALTIME_OPENAI_PATH: &str = "/v1/realtime";
+pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
+    "platform_gateway_gate",
+    "v1_gateway_gate",
+    "relay_token_auth",
+    "relay_rate_limits",
+    "hibernation_attachment_restore",
+    "metadata_only_control_frames",
+    "upstream_bridge",
+    "billing_settlement",
+];
 
 const SESSION_TAG_PREFIX: &str = "session:";
 const OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX: &str = "openai-insecure-api-key.";

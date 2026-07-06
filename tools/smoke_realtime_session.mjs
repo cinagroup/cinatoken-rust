@@ -18,6 +18,7 @@ try {
 
 async function smoke(options) {
   const plan = buildPlan(options);
+  const capabilities = await maybeCheckCapabilities(options, plan);
   const ws = await openWebSocket(plan.wsUrl, plan.protocols, options.timeoutMs);
   try {
     ws.send("ping");
@@ -62,6 +63,7 @@ async function smoke(options) {
       mode: plan.mode,
       wsUrl: redactUrl(plan.wsUrl),
       statusUrl: plan.statusUrl ? redactUrl(plan.statusUrl) : null,
+      capabilities,
       pongContext: pong.context ?? null,
       websocketMetrics: summarizeMetrics(statusFrame.metrics),
       httpMetrics: httpStatus?.metrics ? summarizeMetrics(httpStatus.metrics) : null,
@@ -81,6 +83,7 @@ function buildPlan(options) {
     mode === "v1"
       ? buildWebSocketUrl(base, "/v1/realtime", { model: options.model })
       : buildWebSocketUrl(base, `/api/platform/realtime/${encodeURIComponent(options.session)}`);
+  const capabilitiesUrl = buildHttpUrl(base, "/api/platform/capabilities");
   const statusUrl =
     mode === "platform"
       ? buildHttpUrl(base, `/api/platform/realtime/${encodeURIComponent(options.session)}/status`)
@@ -89,9 +92,18 @@ function buildPlan(options) {
     ok: true,
     dryRun: options.dryRun,
     mode,
+    capabilitiesUrl,
     wsUrl,
     statusUrl,
     protocols,
+    capabilitiesPreflight: shouldCheckCapabilities(options),
+    adminCookieConfigured: Boolean(options.adminCookie),
+    expectPlatformGateEnabled: options.expectPlatformGateEnabled,
+    expectPlatformGateDisabled: options.expectPlatformGateDisabled,
+    expectV1GateEnabled: options.expectV1GateEnabled,
+    expectV1GateDisabled: options.expectV1GateDisabled,
+    expectPlatformReady: options.expectPlatformReady,
+    expectV1CutoverReady: options.expectV1CutoverReady,
     timeoutMs: options.timeoutMs,
     probeConfigured: Boolean(options.probe),
     probeBytes: byteLength(options.probe),
@@ -109,6 +121,7 @@ function buildPlan(options) {
 function redactedPlan(plan) {
   return {
     ...plan,
+    capabilitiesUrl: redactUrl(plan.capabilitiesUrl),
     wsUrl: redactUrl(plan.wsUrl),
     statusUrl: plan.statusUrl ? redactUrl(plan.statusUrl) : null,
     protocols: plan.protocols.map(redactProtocol),
@@ -118,19 +131,30 @@ function redactedPlan(plan) {
 function parseArgs(argv) {
   const values = new Map();
   const flags = new Set();
+  const flagNames = new Set([
+    "dry-run",
+    "json",
+    "skip-capabilities",
+    "expect-platform-gate-enabled",
+    "expect-platform-gate-disabled",
+    "expect-v1-gate-enabled",
+    "expect-v1-gate-disabled",
+    "expect-platform-ready",
+    "expect-v1-cutover-ready",
+  ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       usage(0);
     }
-    if (arg === "--dry-run" || arg === "--json") {
-      flags.add(arg.slice(2));
+    const key = arg.slice(2);
+    if (flagNames.has(key)) {
+      flags.add(key);
       continue;
     }
     if (!arg.startsWith("--")) {
       usage(2, `Unexpected argument: ${arg}`);
     }
-    const key = arg.slice(2);
     const value = argv[++i];
     if (!value || value.startsWith("--")) {
       usage(2, `${arg} requires a value`);
@@ -147,14 +171,29 @@ function normalizeOptions(args) {
     throw new Error("mode must be platform or v1");
   }
   const timeoutMs = Number.parseInt(value("timeout-ms", "REALTIME_SMOKE_TIMEOUT_MS") || "", 10);
+  const adminCookie = optionalHeaderValue(value("cookie", "REALTIME_SMOKE_COOKIE"), "cookie");
+  if (args.flags.has("expect-platform-gate-enabled") && args.flags.has("expect-platform-gate-disabled")) {
+    throw new Error("use only one of --expect-platform-gate-enabled or --expect-platform-gate-disabled");
+  }
+  if (args.flags.has("expect-v1-gate-enabled") && args.flags.has("expect-v1-gate-disabled")) {
+    throw new Error("use only one of --expect-v1-gate-enabled or --expect-v1-gate-disabled");
+  }
   return {
     url: value("url", "REALTIME_SMOKE_URL"),
     mode,
     session: validateSessionName(value("session", "REALTIME_SMOKE_SESSION") || defaultSession),
     model: validatePlainValue(value("model", "REALTIME_SMOKE_MODEL") || defaultModel, "model"),
     apiKey: value("api-key", "REALTIME_SMOKE_API_KEY") || "",
+    adminCookie,
     probe: validatePlainValue(value("probe", "REALTIME_SMOKE_PROBE") || defaultProbe, "probe"),
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaultTimeoutMs,
+    skipCapabilities: args.flags.has("skip-capabilities"),
+    expectPlatformGateEnabled: args.flags.has("expect-platform-gate-enabled"),
+    expectPlatformGateDisabled: args.flags.has("expect-platform-gate-disabled"),
+    expectV1GateEnabled: args.flags.has("expect-v1-gate-enabled"),
+    expectV1GateDisabled: args.flags.has("expect-v1-gate-disabled"),
+    expectPlatformReady: args.flags.has("expect-platform-ready"),
+    expectV1CutoverReady: args.flags.has("expect-v1-cutover-ready"),
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
   };
@@ -174,18 +213,148 @@ function usage(exitCode, error) {
       "  --session <name>      or REALTIME_SMOKE_SESSION (platform mode)",
       "  --model <model>       or REALTIME_SMOKE_MODEL (v1 mode)",
       "  --api-key <token>     or REALTIME_SMOKE_API_KEY (v1 mode)",
+      "  --cookie <header>     or REALTIME_SMOKE_COOKIE, admin Cookie for capabilities preflight",
       "  --probe <text>        or REALTIME_SMOKE_PROBE, default is a safe fixed probe",
       "  --timeout-ms <ms>     or REALTIME_SMOKE_TIMEOUT_MS, default 10000",
+      "  --skip-capabilities   Do not preflight /api/platform/capabilities",
+      "  --expect-platform-gate-enabled   Require REALTIME_SESSION_GATEWAY_ENABLED=true",
+      "  --expect-platform-gate-disabled  Require REALTIME_SESSION_GATEWAY_ENABLED=false",
+      "  --expect-v1-gate-enabled         Require REALTIME_SESSION_V1_ENABLED=true",
+      "  --expect-v1-gate-disabled        Require REALTIME_SESSION_V1_ENABLED=false",
+      "  --expect-platform-ready          Require platform smoke readiness=true",
+      "  --expect-v1-cutover-ready        Require production v1 cutover readiness=true",
       "  --dry-run             resolve URLs/protocols without network",
       "  --json",
       "",
       "Examples:",
       "  bun tools/smoke_realtime_session.mjs --dry-run --url http://127.0.0.1:8787 --json",
-      "  bun tools/smoke_realtime_session.mjs --url https://staging.example.com --session session-smoke",
-      "  bun tools/smoke_realtime_session.mjs --mode v1 --url https://staging.example.com --model gpt-4o-realtime-preview --api-key sk-...",
+      "  bun tools/smoke_realtime_session.mjs --url https://staging.example.com --session session-smoke --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-platform-ready",
+      "  bun tools/smoke_realtime_session.mjs --mode v1 --url https://staging.example.com --model gpt-4o-realtime-preview --api-key sk-... --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-v1-gate-enabled",
     ].join("\n"),
   );
   process.exit(exitCode);
+}
+
+async function maybeCheckCapabilities(options, plan) {
+  if (!shouldCheckCapabilities(options)) return null;
+  if (!options.adminCookie) {
+    throw new Error("capabilities preflight requires --cookie or REALTIME_SMOKE_COOKIE");
+  }
+  const response = await fetch(plan.capabilitiesUrl, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      cookie: options.adminCookie,
+    },
+    redirect: "error",
+  });
+  const capabilities = await readCapabilitiesEnvelope(response);
+  validateCapabilities(capabilities, options);
+  if (options.mode === "platform" && !capabilities.realtime_session_platform_smoke_ready) {
+    throw new Error("platform capabilities reported realtime_session_platform_smoke_ready=false");
+  }
+  if (options.mode === "v1" && !capabilities.realtime_session_v1_enabled) {
+    throw new Error("platform capabilities reported realtime_session_v1_enabled=false");
+  }
+  return capabilities;
+}
+
+function shouldCheckCapabilities(options) {
+  return (
+    !options.skipCapabilities &&
+    (Boolean(options.adminCookie) ||
+      options.expectPlatformGateEnabled ||
+      options.expectPlatformGateDisabled ||
+      options.expectV1GateEnabled ||
+      options.expectV1GateDisabled ||
+      options.expectPlatformReady ||
+      options.expectV1CutoverReady)
+  );
+}
+
+async function readCapabilitiesEnvelope(response) {
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`platform capabilities failed: ${response.status} ${response.statusText}: ${text.slice(0, 1024)}`);
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`platform capabilities returned non-JSON response: ${error.message}: ${text.slice(0, 1024)}`);
+  }
+  if (!body || typeof body !== "object" || body.success !== true || !body.data) {
+    throw new Error("platform capabilities did not return a successful {success,data} envelope");
+  }
+  return summarizeCapabilities(body.data);
+}
+
+function summarizeCapabilities(data) {
+  return {
+    realtime_sessions_do_available: data.realtime_sessions_do_available === true,
+    realtime_session_gateway_enabled: data.realtime_session_gateway_enabled === true,
+    realtime_session_v1_enabled: data.realtime_session_v1_enabled === true,
+    do_websocket_hibernation_compiled: data.do_websocket_hibernation_compiled === true,
+    realtime_session_cutover_guards: arrayOfStrings(data.realtime_session_cutover_guards),
+    realtime_session_auth_boundary_compiled:
+      data.realtime_session_auth_boundary_compiled === true,
+    realtime_session_metrics_persisted_compiled:
+      data.realtime_session_metrics_persisted_compiled === true,
+    realtime_session_control_no_echo_compiled:
+      data.realtime_session_control_no_echo_compiled === true,
+    realtime_session_upstream_bridge_compiled:
+      data.realtime_session_upstream_bridge_compiled === true,
+    realtime_session_billing_settlement_compiled:
+      data.realtime_session_billing_settlement_compiled === true,
+    realtime_session_platform_smoke_ready:
+      data.realtime_session_platform_smoke_ready === true,
+    realtime_session_v1_cutover_ready: data.realtime_session_v1_cutover_ready === true,
+  };
+}
+
+function validateCapabilities(capabilities, options) {
+  for (const [field, expected] of [
+    ["do_websocket_hibernation_compiled", true],
+    ["realtime_session_auth_boundary_compiled", true],
+    ["realtime_session_metrics_persisted_compiled", true],
+    ["realtime_session_control_no_echo_compiled", true],
+  ]) {
+    if (capabilities[field] !== expected) {
+      throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);
+    }
+  }
+  for (const guard of [
+    "platform_gateway_gate",
+    "v1_gateway_gate",
+    "relay_token_auth",
+    "relay_rate_limits",
+    "hibernation_attachment_restore",
+    "metadata_only_control_frames",
+    "upstream_bridge",
+    "billing_settlement",
+  ]) {
+    if (!capabilities.realtime_session_cutover_guards.includes(guard)) {
+      throw new Error(`platform capabilities missing realtime guard ${guard}`);
+    }
+  }
+  if (options.expectPlatformGateEnabled && !capabilities.realtime_session_gateway_enabled) {
+    throw new Error("expected realtime_session_gateway_enabled=true");
+  }
+  if (options.expectPlatformGateDisabled && capabilities.realtime_session_gateway_enabled) {
+    throw new Error("expected realtime_session_gateway_enabled=false");
+  }
+  if (options.expectV1GateEnabled && !capabilities.realtime_session_v1_enabled) {
+    throw new Error("expected realtime_session_v1_enabled=true");
+  }
+  if (options.expectV1GateDisabled && capabilities.realtime_session_v1_enabled) {
+    throw new Error("expected realtime_session_v1_enabled=false");
+  }
+  if (options.expectPlatformReady && !capabilities.realtime_session_platform_smoke_ready) {
+    throw new Error("expected realtime_session_platform_smoke_ready=true");
+  }
+  if (options.expectV1CutoverReady && !capabilities.realtime_session_v1_cutover_ready) {
+    throw new Error("expected realtime_session_v1_cutover_ready=true");
+  }
 }
 
 function normalizeBaseUrl(value) {
@@ -372,6 +541,20 @@ function summarizeControlFrame(frame) {
 
 function byteLength(value) {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function arrayOfStrings(value) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || "")).filter(Boolean)
+    : [];
+}
+
+function optionalHeaderValue(value, name) {
+  if (!value) return "";
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${name} must not contain newlines`);
+  }
+  return value;
 }
 
 function validateSessionName(value) {

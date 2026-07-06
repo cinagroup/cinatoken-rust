@@ -360,7 +360,8 @@ does not require a live relay token or upstream provider credentials:
 
 ```powershell
 $env:REALTIME_SMOKE_URL = $env:STAGING_BASE_URL
-bun run smoke:realtime-session -- --url $env:REALTIME_SMOKE_URL --session session-smoke --json
+$env:REALTIME_SMOKE_COOKIE = "session=<redacted admin session cookie>"
+bun run smoke:realtime-session -- --url $env:REALTIME_SMOKE_URL --session session-smoke --cookie $env:REALTIME_SMOKE_COOKIE --expect-platform-ready --json
 ```
 
 If `/v1/realtime` is explicitly enabled in staging and a low-risk relay token is
@@ -368,12 +369,19 @@ available, also run the OpenAI-compatible entry smoke:
 
 ```powershell
 $env:REALTIME_SMOKE_API_KEY = "<redacted staging token>"
-bun run smoke:realtime-session -- --mode v1 --url $env:STAGING_BASE_URL --model gpt-4o-realtime-preview --api-key $env:REALTIME_SMOKE_API_KEY --json
+bun run smoke:realtime-session -- --mode v1 --url $env:STAGING_BASE_URL --model gpt-4o-realtime-preview --api-key $env:REALTIME_SMOKE_API_KEY --cookie $env:REALTIME_SMOKE_COOKIE --expect-v1-gate-enabled --json
 ```
 
 Record:
 
 - Command output with URLs and protocols redacted.
+- `/api/platform/capabilities` Realtime fields, including
+  `realtime_session_cutover_guards`,
+  `realtime_session_auth_boundary_compiled`,
+  `realtime_session_metrics_persisted_compiled`,
+  `realtime_session_control_no_echo_compiled`,
+  `realtime_session_platform_smoke_ready`, and
+  `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
 - WebSocket `realtime_session_status` frame.
 - WebSocket `realtime_session_control` probe response, including
@@ -385,6 +393,9 @@ Pass criteria:
 
 - `REALTIME_SESSIONS` binding is present and the gateway flag under test is on
   only in staging.
+- Platform capabilities report hibernation, auth boundary, persisted metrics,
+  and no-echo controls as compiled; `realtime_session_platform_smoke_ready=true`
+  before the platform WebSocket smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
   lifecycle metrics.
 - Metrics show at least one connect and at least two text messages from the
@@ -394,9 +405,10 @@ Pass criteria:
   message payloads, raw bearer tokens, or raw Realtime protocol API keys.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
-- `/v1/realtime` remains off in production until upstream bridge,
+- `realtime_session_v1_cutover_ready` remains false until upstream bridge,
   backpressure/error mapping, billing settlement, audit logging, and live
-  protocol replay evidence are complete.
+  protocol replay evidence are complete; `/v1/realtime` remains off in
+  production until that changes.
 
 ## Phase 5: Billing Shadow Smoke
 

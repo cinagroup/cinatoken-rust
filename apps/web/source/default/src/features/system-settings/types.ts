@@ -413,6 +413,14 @@ export type PlatformCapabilities = {
   realtime_session_gateway_enabled: boolean
   realtime_session_v1_enabled: boolean
   do_websocket_hibernation_compiled: boolean
+  realtime_session_cutover_guards: string[]
+  realtime_session_auth_boundary_compiled: boolean
+  realtime_session_metrics_persisted_compiled: boolean
+  realtime_session_control_no_echo_compiled: boolean
+  realtime_session_upstream_bridge_compiled: boolean
+  realtime_session_billing_settlement_compiled: boolean
+  realtime_session_platform_smoke_ready: boolean
+  realtime_session_v1_cutover_ready: boolean
 }
 
 export type PlatformCapabilitiesResponse = {

@@ -5817,3 +5817,74 @@ Remaining migration gaps:
 - Capture AI Gateway logs plus relay audit/billing output proving usage parsing
   and settlement remain unchanged after both Gateway-success and direct-fallback
   attempts.
+
+### 22.90 2026-07-06 Realtime DO Readiness Contract
+
+This increment tightens the cinaVibeSDK-inspired Durable Object side of the
+Cloudflare platform architecture. The RealtimeSession DO already provides the
+hibernatable WebSocket substrate and metadata-only smoke/control behavior; the
+missing operator contract was a precise distinction between the DO foundation
+that is ready to smoke and the upstream/billing pieces that still block
+production `/v1/realtime` ownership.
+
+Implemented:
+
+- Added `REALTIME_SESSION_CUTOVER_GUARDS` in
+  `crates/worker/src/realtime_session.rs` to make the Realtime cutover gates
+  explicit: platform gate, v1 gate, relay token auth, relay rate limits,
+  hibernation attachment restore, metadata-only control frames, upstream
+  bridge, and billing settlement.
+- Extended `/api/platform/capabilities` with Realtime readiness fields:
+  - `realtime_session_cutover_guards`;
+  - `realtime_session_auth_boundary_compiled`;
+  - `realtime_session_metrics_persisted_compiled`;
+  - `realtime_session_control_no_echo_compiled`;
+  - `realtime_session_upstream_bridge_compiled`;
+  - `realtime_session_billing_settlement_compiled`;
+  - `realtime_session_platform_smoke_ready`;
+  - `realtime_session_v1_cutover_ready`.
+- Kept `realtime_session_upstream_bridge_compiled=false`,
+  `realtime_session_billing_settlement_compiled=false`, and therefore
+  `realtime_session_v1_cutover_ready=false` until real upstream bridging,
+  backpressure/error mapping, audit, and billing settlement are implemented.
+- Updated the default frontend Cloudflare Platform panel to show the Realtime
+  auth boundary, persisted metrics, no-echo controls, cutover guards, platform
+  smoke readiness, upstream bridge gap, billing settlement gap, and production
+  v1 readiness separately.
+- Enhanced `tools/smoke_realtime_session.mjs` with an optional admin
+  `/api/platform/capabilities` preflight. Live staging smoke can now require
+  `--expect-platform-ready` or `--expect-v1-gate-enabled` before opening the
+  WebSocket.
+- Added `check:realtime-session:v1-smoke-plan` to the root check chain so the
+  OpenAI-compatible `/v1/realtime` dry-run plan is continuously verified.
+- Updated `docs/staging-smoke-runbook.md` and
+  `docs/production-readiness-matrices.md` with the new Realtime readiness
+  fields and smoke evidence requirements.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (11 filtered Realtime/platform tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:smoke-plan` passed.
+- `bun run check:realtime-session:v1-smoke-plan` passed.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default` passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check` passed, covering frontend build, bundle redaction/budget,
+  lint-debt, route audit, WFP deploy/dispatch dry-runs, Realtime platform and
+  v1 dry-runs, relay AI Gateway dry-run, Rust workspace tests, and Worker/WFP
+  wasm32 checks.
+
+Remaining migration gaps:
+
+- Wire the actual upstream Realtime WebSocket bridge with bounded
+  backpressure/error mapping and no raw payload/token persistence.
+- Add billing/audit settlement for Realtime usage before any production
+  `/v1/realtime` gate is enabled.
+- Capture live staging platform and v1 Realtime smoke with real
+  `REALTIME_SESSIONS`, admin session, low-risk relay token, and Worker logs.

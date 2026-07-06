@@ -15,7 +15,8 @@ use worker::{Env, Headers, Request, RequestInit, Response, Result as WorkerResul
 
 use crate::admin::{envelope_ok_response, require_admin_auth};
 use crate::realtime_session::{
-    REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
+    REALTIME_SESSION_CUTOVER_GUARDS, REALTIME_SESSION_GATEWAY_ENABLED_ENV,
+    REALTIME_SESSION_V1_ENABLED_ENV,
 };
 
 pub const WFP_DISPATCH_BINDING: &str = "DISPATCHER";
@@ -89,6 +90,14 @@ struct PlatformCapabilities {
     realtime_session_gateway_enabled: bool,
     realtime_session_v1_enabled: bool,
     do_websocket_hibernation_compiled: bool,
+    realtime_session_cutover_guards: Vec<&'static str>,
+    realtime_session_auth_boundary_compiled: bool,
+    realtime_session_metrics_persisted_compiled: bool,
+    realtime_session_control_no_echo_compiled: bool,
+    realtime_session_upstream_bridge_compiled: bool,
+    realtime_session_billing_settlement_compiled: bool,
+    realtime_session_platform_smoke_ready: bool,
+    realtime_session_v1_cutover_ready: bool,
 }
 
 /// Admin-only capability probe for the production migration cockpit.
@@ -107,6 +116,32 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         ai_gateway_id_configured,
         cloudflare_ai_gateway_token_configured,
     );
+    let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
+    let realtime_session_gateway_enabled = env_flag(&env, REALTIME_SESSION_GATEWAY_ENABLED_ENV);
+    let realtime_session_v1_enabled = env_flag(&env, REALTIME_SESSION_V1_ENABLED_ENV);
+    let do_websocket_hibernation_compiled = true;
+    let realtime_session_auth_boundary_compiled = true;
+    let realtime_session_metrics_persisted_compiled = true;
+    let realtime_session_control_no_echo_compiled = true;
+    let realtime_session_upstream_bridge_compiled = false;
+    let realtime_session_billing_settlement_compiled = false;
+    let realtime_session_platform_smoke_ready = is_realtime_session_platform_smoke_ready(
+        realtime_sessions_do_available,
+        realtime_session_gateway_enabled,
+        do_websocket_hibernation_compiled,
+        realtime_session_metrics_persisted_compiled,
+        realtime_session_control_no_echo_compiled,
+    );
+    let realtime_session_v1_cutover_ready = is_realtime_session_v1_cutover_ready(
+        realtime_sessions_do_available,
+        realtime_session_v1_enabled,
+        realtime_session_auth_boundary_compiled,
+        do_websocket_hibernation_compiled,
+        realtime_session_metrics_persisted_compiled,
+        realtime_session_control_no_echo_compiled,
+        realtime_session_upstream_bridge_compiled,
+        realtime_session_billing_settlement_compiled,
+    );
 
     let capabilities = PlatformCapabilities {
         ai_binding_available: env.ai("AI").is_ok(),
@@ -121,16 +156,24 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_rest_forwarder_compiled: true,
         relay_ai_gateway_same_channel_fallback_compiled: true,
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
-        realtime_sessions_do_available: env.durable_object("REALTIME_SESSIONS").is_ok(),
+        realtime_sessions_do_available,
         wfp_dispatch_binding_available: env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok(),
         wfp_dispatch_enabled: env_flag(&env, WFP_DISPATCH_ENABLED_ENV),
         wfp_internal_dispatch_enabled: env_flag(&env, WFP_INTERNAL_DISPATCH_ENABLED_ENV),
         wfp_preview_host_suffix_configured: runtime_value(&env, WFP_PREVIEW_HOST_SUFFIX_ENV)
             .is_some(),
         wfp_worker_prefix_configured: runtime_value(&env, WFP_DISPATCH_WORKER_PREFIX_ENV).is_some(),
-        realtime_session_gateway_enabled: env_flag(&env, REALTIME_SESSION_GATEWAY_ENABLED_ENV),
-        realtime_session_v1_enabled: env_flag(&env, REALTIME_SESSION_V1_ENABLED_ENV),
-        do_websocket_hibernation_compiled: true,
+        realtime_session_gateway_enabled,
+        realtime_session_v1_enabled,
+        do_websocket_hibernation_compiled,
+        realtime_session_cutover_guards: realtime_session_cutover_guards(),
+        realtime_session_auth_boundary_compiled,
+        realtime_session_metrics_persisted_compiled,
+        realtime_session_control_no_echo_compiled,
+        realtime_session_upstream_bridge_compiled,
+        realtime_session_billing_settlement_compiled,
+        realtime_session_platform_smoke_ready,
+        realtime_session_v1_cutover_ready,
     };
 
     envelope_ok_response(&capabilities)
@@ -446,6 +489,10 @@ fn relay_ai_gateway_cutover_guards() -> Vec<&'static str> {
     MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS.to_vec()
 }
 
+fn realtime_session_cutover_guards() -> Vec<&'static str> {
+    REALTIME_SESSION_CUTOVER_GUARDS.to_vec()
+}
+
 fn is_relay_ai_gateway_router_ready(
     router_enabled: bool,
     account_configured: bool,
@@ -453,6 +500,41 @@ fn is_relay_ai_gateway_router_ready(
     token_configured: bool,
 ) -> bool {
     router_enabled && account_configured && gateway_id_configured && token_configured
+}
+
+fn is_realtime_session_platform_smoke_ready(
+    do_available: bool,
+    platform_gate_enabled: bool,
+    hibernation_compiled: bool,
+    metrics_persisted_compiled: bool,
+    control_no_echo_compiled: bool,
+) -> bool {
+    do_available
+        && platform_gate_enabled
+        && hibernation_compiled
+        && metrics_persisted_compiled
+        && control_no_echo_compiled
+}
+
+#[allow(clippy::too_many_arguments)]
+fn is_realtime_session_v1_cutover_ready(
+    do_available: bool,
+    v1_gate_enabled: bool,
+    auth_boundary_compiled: bool,
+    hibernation_compiled: bool,
+    metrics_persisted_compiled: bool,
+    control_no_echo_compiled: bool,
+    upstream_bridge_compiled: bool,
+    billing_settlement_compiled: bool,
+) -> bool {
+    do_available
+        && v1_gate_enabled
+        && auth_boundary_compiled
+        && hibernation_compiled
+        && metrics_persisted_compiled
+        && control_no_echo_compiled
+        && upstream_bridge_compiled
+        && billing_settlement_compiled
 }
 
 fn gateway_error(status: u16, code: &str, message: &str) -> WorkerResult<Response> {
@@ -629,5 +711,53 @@ mod tests {
         assert!(!is_relay_ai_gateway_router_ready(true, false, true, true));
         assert!(!is_relay_ai_gateway_router_ready(true, true, false, true));
         assert!(!is_relay_ai_gateway_router_ready(true, true, true, false));
+    }
+
+    #[test]
+    fn realtime_session_cutover_guards_expose_remaining_blockers() {
+        let guards = realtime_session_cutover_guards();
+        assert!(guards.contains(&"platform_gateway_gate"));
+        assert!(guards.contains(&"v1_gateway_gate"));
+        assert!(guards.contains(&"relay_token_auth"));
+        assert!(guards.contains(&"relay_rate_limits"));
+        assert!(guards.contains(&"hibernation_attachment_restore"));
+        assert!(guards.contains(&"metadata_only_control_frames"));
+        assert!(guards.contains(&"upstream_bridge"));
+        assert!(guards.contains(&"billing_settlement"));
+    }
+
+    #[test]
+    fn realtime_platform_smoke_ready_requires_do_gate_and_safe_control_surface() {
+        assert!(is_realtime_session_platform_smoke_ready(
+            true, true, true, true, true
+        ));
+        assert!(!is_realtime_session_platform_smoke_ready(
+            false, true, true, true, true
+        ));
+        assert!(!is_realtime_session_platform_smoke_ready(
+            true, false, true, true, true
+        ));
+        assert!(!is_realtime_session_platform_smoke_ready(
+            true, true, true, false, true
+        ));
+        assert!(!is_realtime_session_platform_smoke_ready(
+            true, true, true, true, false
+        ));
+    }
+
+    #[test]
+    fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
+        assert!(is_realtime_session_v1_cutover_ready(
+            true, true, true, true, true, true, true, true
+        ));
+        assert!(!is_realtime_session_v1_cutover_ready(
+            true, true, true, true, true, true, false, true
+        ));
+        assert!(!is_realtime_session_v1_cutover_ready(
+            true, true, true, true, true, true, true, false
+        ));
+        assert!(!is_realtime_session_v1_cutover_ready(
+            true, false, true, true, true, true, true, true
+        ));
     }
 }

@@ -66,6 +66,9 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_sessions_do_available,
         capabilities.wfp_dispatch_binding_available,
         capabilities.do_websocket_hibernation_compiled,
+        capabilities.realtime_session_auth_boundary_compiled,
+        capabilities.realtime_session_metrics_persisted_compiled,
+        capabilities.realtime_session_control_no_echo_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -172,6 +175,8 @@ function buildCapabilityGroups(
     capabilities.relay_ai_gateway_rest_routes.join(', ') || t('No routes')
   const relayAiGatewayGuards =
     capabilities.relay_ai_gateway_cutover_guards.join(', ') || t('No guards')
+  const realtimeSessionGuards =
+    capabilities.realtime_session_cutover_guards.join(', ') || t('No guards')
 
   return [
     {
@@ -373,6 +378,44 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Relay token auth boundary'),
+          description: t(
+            '/v1/realtime checks relay token auth, model access, quota, and rate limits before selecting a DO session.'
+          ),
+          ready: capabilities.realtime_session_auth_boundary_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Persistent lifecycle metrics'),
+          description: t(
+            'Stores connect/message/close/error counters in Durable Object storage for resume smoke evidence.'
+          ),
+          ready: capabilities.realtime_session_metrics_persisted_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Control frame no-echo'),
+          description: t(
+            'Unsupported-control responses report byte counts without echoing raw client payloads or tokens.'
+          ),
+          ready: capabilities.realtime_session_control_no_echo_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime cutover guards'),
+          description: t('Compiled guards: {{guards}}', {
+            guards: realtimeSessionGuards,
+          }),
+          ready: capabilities.realtime_session_cutover_guards.length > 0,
+          readyLabel: t('{{count}} guards', {
+            count: capabilities.realtime_session_cutover_guards.length,
+          }),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Platform realtime smoke gate'),
           description: t('Runtime flag REALTIME_SESSION_GATEWAY_ENABLED.'),
           ready: capabilities.realtime_session_gateway_enabled,
@@ -387,6 +430,50 @@ function buildCapabilityGroups(
           readyLabel: t('Enabled'),
           missingLabel: t('Off'),
           missingVariant: 'neutral',
+        },
+        {
+          label: t('Platform smoke readiness'),
+          description: t(
+            'Requires the REALTIME_SESSIONS binding, platform smoke gate, hibernation path, metrics, and no-echo controls.'
+          ),
+          ready: capabilities.realtime_session_platform_smoke_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Waiting'),
+          missingVariant: capabilities.realtime_session_gateway_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Upstream realtime bridge'),
+          description: t(
+            'Bridges the DO session to an upstream Realtime WebSocket with backpressure and error mapping.'
+          ),
+          ready: capabilities.realtime_session_upstream_bridge_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Not wired'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Realtime billing settlement'),
+          description: t(
+            'Required before production /v1/realtime can charge, refund, and audit provider usage.'
+          ),
+          ready: capabilities.realtime_session_billing_settlement_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Not wired'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('v1 production readiness'),
+          description: t(
+            'Requires DO binding, v1 gate, auth boundary, hibernation, metrics, no-echo controls, upstream bridge, and billing settlement.'
+          ),
+          ready: capabilities.realtime_session_v1_cutover_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant: capabilities.realtime_session_v1_enabled
+            ? 'warning'
+            : 'neutral',
         },
       ],
     },

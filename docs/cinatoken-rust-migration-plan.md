@@ -6505,3 +6505,54 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.101 2026-07-06 Realtime Frame-Limit Event Smoke Harness
+
+This increment turns one Realtime terminal-event path into an executable
+staging proof without claiming full upstream protocol replay. The cinaVibeSDK
+pattern keeps the scheduling gateway, long-session Durable Object, and
+operator evidence separate: the Worker/DO path owns the session behavior, while
+the smoke harness proves the metadata-only contract before production gates are
+allowed to move.
+
+Implemented:
+
+- Extended `tools/smoke_realtime_session.mjs` with
+  `--expect-frame-limit-event` and `--frame-limit-bytes`.
+  - The default probe is `1_048_577` ASCII bytes, one byte over the current
+    Realtime bridge text-frame limit.
+  - The live smoke waits for the metadata-only
+    `realtime_session_control` frame and the WebSocket close event together,
+    so the close cannot race past the verifier.
+  - It validates close code `1009`, close reason
+    `upstream_bridge_frame_too_large`, frame kind `text`, byte counts, and
+    max-byte evidence.
+- In platform mode, the smoke then reads the HTTP status endpoint and verifies
+  `metrics.last_bridge_terminal_event` persisted as `frame_too_large` with the
+  expected direction, close code/reason, frame kind, frame byte count, and
+  frame max-byte count.
+- The summary output now includes `lastBridgeTerminalEvent`,
+  `frameLimitControlFrame`, `frameLimitClose`, and `bridgeTerminalEvent`
+  fields so staging evidence can be copied directly into the smoke runbook.
+- Added `check:realtime-session:frame-limit-smoke-plan` and included it in
+  `bun run check`, preserving a dry-run contract for the new smoke mode.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:frame-limit-smoke-plan` passed and produced
+  a redacted dry-run plan with `expectFrameLimitEvent=true` and
+  `frameLimitProbeBytes=1048577`.
+
+Remaining migration gaps:
+
+- Run the new frame-limit event smoke against staging with
+  `REALTIME_SESSION_GATEWAY_ENABLED=true` and archive the control frame, close
+  event, and persisted `last_bridge_terminal_event` evidence.
+- Add a mock or real upstream replay harness for upstream close/error and
+  upstream-to-client send-failure `realtime_session_bridge_event` frames.
+- Add true queued backpressure/flow-control behavior once the Rust Worker API
+  can observe or wrap socket buffered bytes safely.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

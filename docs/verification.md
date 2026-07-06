@@ -4,6 +4,11 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `node --check tools/smoke_realtime_session.mjs` and
+  `bun run check:realtime-session:frame-limit-smoke-plan`: passed after adding
+  `--expect-frame-limit-event`, `--frame-limit-bytes`, frame-limit close
+  validation, and persisted `last_bridge_terminal_event` validation to the
+  Realtime smoke harness.
 - `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
   passed after adding the Realtime upstream bridge terminal event trace,
   `last_bridge_terminal_event` metrics field, metadata-only live
@@ -25,12 +30,11 @@ Last checked: 2026-07-06
 - `bun run typecheck`, `bun run lint`, and `bun run format:check` in
   `apps/web/source/default`: passed after adding the Cloudflare Platform event
   trace capability field and row.
-- `bun run check`: passed after adding the Realtime upstream bridge event trace,
-  metadata-only terminal event surface, platform capability signal, frontend
-  Cloudflare Platform row, smoke preflight guard, and migration docs. The run
+- `bun run check`: passed after adding the Realtime frame-limit terminal event
+  smoke plan to the default check chain. The run
   covered frontend type/build, bundle redaction audit, bundle budget audit,
   lint-debt baseline, frontend route audit, WFP tenant deploy-plan dry-run, WFP
-  dispatch smoke dry-run, RealtimeSession platform and v1 dry-run smoke plans,
+  dispatch smoke dry-run, RealtimeSession platform, frame-limit, and v1 dry-run smoke plans,
   relay AI Gateway canary smoke dry-run, WFP tenant Worker-script tests,
   `cargo fmt --all --check`, Rust workspace tests excluding the Worker, Worker
   wasm32 check, and WFP tenant wasm32 check. Existing warnings were limited to

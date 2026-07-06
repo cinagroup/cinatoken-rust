@@ -155,7 +155,9 @@ Current mapped status from existing docs:
   1009 close handling, deterministic close/error code mapping, and fail-closed
   cleanup when either forwarding direction cannot enqueue a frame. Sanitized
   terminal bridge event trace metadata is now available through live bridge
-  event frames and persisted session metrics.
+  event frames and persisted session metrics, and the smoke harness can now
+  prove the frame-limit terminal event path through platform status without a
+  paid upstream call.
 - Production-grade bridge hardening and realtime billing settlement are still
   blockers. `realtime_session_v1_cutover_ready` must remain false until queued
   backpressure/flow-control, live close/error replay, and settlement are proven.

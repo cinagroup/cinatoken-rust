@@ -319,7 +319,10 @@ by clearing the flag, no redeploy required.
   oversized bridge frames with WebSocket close code 1009, bridge close/error
   paths now have deterministic code/reason mapping, send failures in either
   bridge direction close both sockets with safe 1011 reasons, and sanitized
-  terminal bridge events are emitted/persisted as metadata-only evidence.
+  terminal bridge events are emitted/persisted as metadata-only evidence. The
+  Realtime smoke harness now has a platform frame-limit event mode that proves
+  the 1009 close plus persisted `last_bridge_terminal_event` without a paid
+  upstream call.
   **Remaining:** production bridge hardening (queued backpressure/flow control
   and full live protocol replay evidence), usage
   accumulation, and the Go-formula settlement below remains unimplemented.

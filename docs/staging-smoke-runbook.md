@@ -364,6 +364,14 @@ $env:REALTIME_SMOKE_COOKIE = "session=<redacted admin session cookie>"
 bun run smoke:realtime-session -- --url $env:REALTIME_SMOKE_URL --session session-smoke --cookie $env:REALTIME_SMOKE_COOKIE --expect-platform-ready --json
 ```
 
+Then run the platform frame-limit terminal event smoke. This sends a
+metadata-only oversized text-frame probe and validates the close event plus
+persisted terminal metrics; it does not require a live upstream provider:
+
+```powershell
+bun run smoke:realtime-session -- --url $env:REALTIME_SMOKE_URL --session session-smoke --cookie $env:REALTIME_SMOKE_COOKIE --expect-platform-ready --expect-frame-limit-event --json
+```
+
 If `/v1/realtime` is explicitly enabled in staging and a low-risk relay token is
 available, also run the OpenAI-compatible entry smoke:
 
@@ -396,6 +404,8 @@ Record:
 - WebSocket `realtime_session_status` frame.
 - WebSocket `realtime_session_control` probe response, including
   `text_bytes`, `text_chars`, `rawProbeEchoed=false`, and no `received` field.
+- Frame-limit smoke output, including `frameLimitControlFrame`,
+  `frameLimitClose`, and `bridgeTerminalEvent`.
 - HTTP status response for the platform session path.
 - Worker log/trace link for the WebSocket accept and status request.
 
@@ -415,7 +425,8 @@ Pass criteria:
   lifecycle metrics.
 - Metrics show at least one connect and at least two text messages from the
   WebSocket status frame; platform HTTP status shows at least three text
-  messages after `ping`, `status`, and the unsupported-control probe.
+  messages after `ping`, `status`, and the unsupported-control or frame-limit
+  probe.
 - Neither persisted metrics nor unsupported-control responses store or echo raw
   message payloads, raw bearer tokens, or raw Realtime protocol API keys.
 - For `/v1/realtime` smoke, socket status/control context includes a redacted
@@ -428,7 +439,10 @@ Pass criteria:
   implying that the upstream session was resumed.
 - Oversized bridge frames are rejected with WebSocket close code `1009` and
   metadata-only frame kind/byte-count/max-byte evidence; raw frame payloads are
-  never logged, stored, or echoed.
+  never logged, stored, or echoed. The frame-limit smoke must show
+  `frameLimitControlFrame.status=upstream_bridge_frame_too_large`,
+  `frameLimitClose.code=1009`, and
+  `bridgeTerminalEvent.event=frame_too_large`.
 - Close/error replay evidence matches the compiled mapping: normal upstream
   close `1000` stays `1000`, reserved/unsafe upstream close codes such as
   `1006` map to `1011`, application close codes such as `4000` pass through,

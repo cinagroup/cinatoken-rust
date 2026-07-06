@@ -4,6 +4,9 @@ const defaultSession = "session-smoke";
 const defaultModel = "gpt-4o-realtime-preview";
 const defaultTimeoutMs = 10_000;
 const defaultProbe = "cinatoken realtime smoke probe";
+const maxRealtimeBridgeTextFrameBytes = 1_048_576;
+const defaultFrameLimitProbeBytes = maxRealtimeBridgeTextFrameBytes + 1;
+const frameLimitProbePrefix = "cinatoken-frame-limit-smoke:";
 
 const args = parseArgs(process.argv.slice(2));
 const options = normalizeOptions(args);
@@ -38,14 +41,33 @@ async function smoke(options) {
     );
     validateMetrics(statusFrame.metrics, "websocket status metrics");
 
-    ws.send(options.probe);
-    const controlFrame = await waitForJsonMessage(
-      ws,
-      (message) => message.type === "realtime_session_control",
-      options.timeoutMs,
-      "realtime_session_control",
-    );
-    validateControlFrame(controlFrame, options.probe);
+    let controlFrame = null;
+    let frameLimitControlFrame = null;
+    let frameLimitClose = null;
+    if (options.expectFrameLimitEvent) {
+      const probe = makeFrameLimitProbe(options.frameLimitBytes);
+      const outcomePromise = waitForJsonMessageThenClose(
+        ws,
+        (message) => message.type === "realtime_session_control",
+        options.timeoutMs,
+        "frame-limit realtime_session_control",
+      );
+      ws.send(probe);
+      const outcome = await outcomePromise;
+      frameLimitControlFrame = outcome.message;
+      frameLimitClose = outcome.close;
+      validateFrameLimitControlFrame(frameLimitControlFrame, options.frameLimitBytes);
+      validateFrameLimitClose(frameLimitClose);
+    } else {
+      ws.send(options.probe);
+      controlFrame = await waitForJsonMessage(
+        ws,
+        (message) => message.type === "realtime_session_control",
+        options.timeoutMs,
+        "realtime_session_control",
+      );
+      validateControlFrame(controlFrame, options.probe);
+    }
 
     let httpStatus = null;
     if (plan.statusUrl) {
@@ -54,7 +76,11 @@ async function smoke(options) {
         throw new Error(`HTTP status smoke failed: ${response.status} ${response.statusText}`);
       }
       httpStatus = await response.json();
-      validateMetrics(httpStatus.metrics, "HTTP status metrics", { minTextMessageCount: 3 });
+      validateMetrics(httpStatus.metrics, "HTTP status metrics", {
+        minTextMessageCount: 3,
+        expectedBridgeEvent: options.expectFrameLimitEvent ? "frame_too_large" : null,
+        expectedBridgeFrameBytes: options.expectFrameLimitEvent ? options.frameLimitBytes : null,
+      });
     }
 
     return {
@@ -67,10 +93,21 @@ async function smoke(options) {
       pongContext: pong.context ?? null,
       websocketMetrics: summarizeMetrics(statusFrame.metrics),
       httpMetrics: httpStatus?.metrics ? summarizeMetrics(httpStatus.metrics) : null,
-      controlFrame: summarizeControlFrame(controlFrame),
+      controlFrame: controlFrame ? summarizeControlFrame(controlFrame) : null,
+      frameLimitControlFrame: frameLimitControlFrame
+        ? summarizeFrameLimitControlFrame(frameLimitControlFrame)
+        : null,
+      frameLimitClose,
+      bridgeTerminalEvent: httpStatus?.metrics?.last_bridge_terminal_event
+        ? summarizeBridgeTerminalEvent(httpStatus.metrics.last_bridge_terminal_event)
+        : null,
     };
   } finally {
-    ws.close(1000, "cinatoken realtime smoke complete");
+    try {
+      ws.close(1000, "cinatoken realtime smoke complete");
+    } catch {
+      // Frame-limit smoke expects the server to close the socket first.
+    }
   }
 }
 
@@ -104,16 +141,22 @@ function buildPlan(options) {
     expectV1GateDisabled: options.expectV1GateDisabled,
     expectPlatformReady: options.expectPlatformReady,
     expectV1CutoverReady: options.expectV1CutoverReady,
+    expectFrameLimitEvent: options.expectFrameLimitEvent,
     timeoutMs: options.timeoutMs,
     probeConfigured: Boolean(options.probe),
     probeBytes: byteLength(options.probe),
+    frameLimitProbeBytes: options.expectFrameLimitEvent ? options.frameLimitBytes : null,
     notes:
       mode === "v1"
         ? [
-            "v1 mode validates WebSocket status and metadata-only unsupported-control frames; the DO session name is derived from gateway auth context.",
+            options.expectFrameLimitEvent
+              ? "v1 mode validates WebSocket status plus metadata-only frame-limit close behavior; persisted terminal metrics require platform status smoke."
+              : "v1 mode validates WebSocket status and metadata-only unsupported-control frames; the DO session name is derived from gateway auth context.",
           ]
         : [
-            "platform mode validates WebSocket status, metadata-only unsupported-control frames, and HTTP status for the named DO session.",
+            options.expectFrameLimitEvent
+              ? "platform mode validates WebSocket status, metadata-only frame-limit close behavior, and persisted terminal bridge event metrics through HTTP status."
+              : "platform mode validates WebSocket status, metadata-only unsupported-control frames, and HTTP status for the named DO session.",
           ],
   };
 }
@@ -141,6 +184,7 @@ function parseArgs(argv) {
     "expect-v1-gate-disabled",
     "expect-platform-ready",
     "expect-v1-cutover-ready",
+    "expect-frame-limit-event",
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -194,6 +238,10 @@ function normalizeOptions(args) {
     expectV1GateDisabled: args.flags.has("expect-v1-gate-disabled"),
     expectPlatformReady: args.flags.has("expect-platform-ready"),
     expectV1CutoverReady: args.flags.has("expect-v1-cutover-ready"),
+    expectFrameLimitEvent: args.flags.has("expect-frame-limit-event"),
+    frameLimitBytes: validateFrameLimitBytes(
+      Number.parseInt(value("frame-limit-bytes", "REALTIME_SMOKE_FRAME_LIMIT_BYTES") || "", 10),
+    ),
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
   };
@@ -223,12 +271,15 @@ function usage(exitCode, error) {
       "  --expect-v1-gate-disabled        Require REALTIME_SESSION_V1_ENABLED=false",
       "  --expect-platform-ready          Require platform smoke readiness=true",
       "  --expect-v1-cutover-ready        Require production v1 cutover readiness=true",
+      "  --expect-frame-limit-event       Send an oversized text frame and validate 1009 close plus terminal event metrics",
+      "  --frame-limit-bytes <bytes>      or REALTIME_SMOKE_FRAME_LIMIT_BYTES, default 1048577",
       "  --dry-run             resolve URLs/protocols without network",
       "  --json",
       "",
       "Examples:",
       "  bun tools/smoke_realtime_session.mjs --dry-run --url http://127.0.0.1:8787 --json",
       "  bun tools/smoke_realtime_session.mjs --url https://staging.example.com --session session-smoke --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-platform-ready",
+      "  bun tools/smoke_realtime_session.mjs --url https://staging.example.com --session session-smoke --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-platform-ready --expect-frame-limit-event",
       "  bun tools/smoke_realtime_session.mjs --mode v1 --url https://staging.example.com --model gpt-4o-realtime-preview --api-key sk-... --cookie \"$REALTIME_SMOKE_COOKIE\" --expect-v1-gate-enabled",
     ].join("\n"),
   );
@@ -502,6 +553,56 @@ function waitForJsonMessage(ws, predicate, timeoutMs, label) {
   });
 }
 
+function waitForJsonMessageThenClose(ws, predicate, timeoutMs, label) {
+  return new Promise((resolve, reject) => {
+    let matchedMessage = null;
+    let closeEvent = null;
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for ${label} and close after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("error", onError);
+      ws.removeEventListener("close", onClose);
+    };
+    const maybeResolve = () => {
+      if (matchedMessage && closeEvent) {
+        cleanup();
+        resolve({ message: matchedMessage, close: closeEvent });
+      }
+    };
+    const onMessage = async (event) => {
+      try {
+        const text = await messageText(event.data);
+        const parsed = JSON.parse(text);
+        if (predicate(parsed)) {
+          matchedMessage = parsed;
+          maybeResolve();
+        }
+      } catch {
+        // Ignore non-JSON frames until the expected control frame arrives.
+      }
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error(`WebSocket error while waiting for ${label} and close`));
+    };
+    const onClose = (event) => {
+      closeEvent = {
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+      };
+      maybeResolve();
+    };
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("error", onError);
+    ws.addEventListener("close", onClose);
+  });
+}
+
 async function messageText(data) {
   if (typeof data === "string") return data;
   if (data instanceof Blob) return data.text();
@@ -525,6 +626,13 @@ function validateMetrics(metrics, label, options = {}) {
   }
   if (metrics.text_message_count < minTextMessageCount) {
     throw new Error(`${label} did not record the expected control messages`);
+  }
+  if (options.expectedBridgeEvent) {
+    validateBridgeTerminalEvent(
+      metrics.last_bridge_terminal_event,
+      options.expectedBridgeEvent,
+      options.expectedBridgeFrameBytes,
+    );
   }
 }
 
@@ -551,6 +659,86 @@ function validateControlFrame(frame, probe) {
   }
 }
 
+function validateFrameLimitControlFrame(frame, expectedBytes) {
+  if (!frame || typeof frame !== "object") {
+    throw new Error("frame-limit control response missing JSON object");
+  }
+  if (frame.status !== "upstream_bridge_frame_too_large") {
+    throw new Error(`frame-limit control response has unexpected status: ${frame.status}`);
+  }
+  if (frame.frame_kind !== "text") {
+    throw new Error(`frame-limit control response frame_kind=${frame.frame_kind}, expected text`);
+  }
+  if (frame.text_bytes !== expectedBytes) {
+    throw new Error(`frame-limit control response text_bytes=${frame.text_bytes}, expected ${expectedBytes}`);
+  }
+  if (frame.text_chars !== expectedBytes) {
+    throw new Error(`frame-limit control response text_chars=${frame.text_chars}, expected ${expectedBytes}`);
+  }
+  if (frame.max_bytes !== maxRealtimeBridgeTextFrameBytes) {
+    throw new Error(
+      `frame-limit control response max_bytes=${frame.max_bytes}, expected ${maxRealtimeBridgeTextFrameBytes}`,
+    );
+  }
+  if (Object.hasOwn(frame, "received")) {
+    throw new Error("frame-limit control response echoed a received payload field");
+  }
+  if (JSON.stringify(frame).includes(frameLimitProbePrefix)) {
+    throw new Error("frame-limit control response echoed the oversized probe text");
+  }
+}
+
+function validateFrameLimitClose(close) {
+  if (!close || typeof close !== "object") {
+    throw new Error("frame-limit close event missing object");
+  }
+  if (close.code !== 1009) {
+    throw new Error(`frame-limit close code=${close.code}, expected 1009`);
+  }
+  if (close.reason !== "upstream_bridge_frame_too_large") {
+    throw new Error(`frame-limit close reason=${close.reason}, expected upstream_bridge_frame_too_large`);
+  }
+}
+
+function validateBridgeTerminalEvent(event, expectedEvent, expectedFrameBytes) {
+  if (!event || typeof event !== "object") {
+    throw new Error(`HTTP status metrics missing last_bridge_terminal_event=${expectedEvent}`);
+  }
+  if (event.event !== expectedEvent) {
+    throw new Error(`last_bridge_terminal_event.event=${event.event}, expected ${expectedEvent}`);
+  }
+  if (event.event === "frame_too_large") {
+    if (event.direction !== "bridge") {
+      throw new Error(`last_bridge_terminal_event.direction=${event.direction}, expected bridge`);
+    }
+    if (event.client_code !== 1009) {
+      throw new Error(`last_bridge_terminal_event.client_code=${event.client_code}, expected 1009`);
+    }
+    if (event.client_reason !== "upstream_bridge_frame_too_large") {
+      throw new Error(
+        `last_bridge_terminal_event.client_reason=${event.client_reason}, expected upstream_bridge_frame_too_large`,
+      );
+    }
+    if (event.frame_kind !== "text") {
+      throw new Error(`last_bridge_terminal_event.frame_kind=${event.frame_kind}, expected text`);
+    }
+    if (event.frame_bytes !== expectedFrameBytes) {
+      throw new Error(
+        `last_bridge_terminal_event.frame_bytes=${event.frame_bytes}, expected ${expectedFrameBytes}`,
+      );
+    }
+    if (event.frame_max_bytes !== maxRealtimeBridgeTextFrameBytes) {
+      throw new Error(
+        `last_bridge_terminal_event.frame_max_bytes=${event.frame_max_bytes}, expected ${maxRealtimeBridgeTextFrameBytes}`,
+      );
+    }
+  }
+  const raw = JSON.stringify(event);
+  if (raw.includes(frameLimitProbePrefix) || raw.includes("openai-insecure-api-key.")) {
+    throw new Error("last_bridge_terminal_event leaked raw probe text or realtime protocol secret");
+  }
+}
+
 function summarizeMetrics(metrics) {
   return {
     session: metrics.session,
@@ -563,6 +751,9 @@ function summarizeMetrics(metrics) {
     lastModel: metrics.last_model,
     lastTokenSource: metrics.last_token_source,
     lastAuthState: metrics.last_auth_state,
+    lastBridgeTerminalEvent: metrics.last_bridge_terminal_event
+      ? summarizeBridgeTerminalEvent(metrics.last_bridge_terminal_event)
+      : null,
   };
 }
 
@@ -572,6 +763,32 @@ function summarizeControlFrame(frame) {
     textBytes: frame.text_bytes,
     textChars: frame.text_chars,
     rawProbeEchoed: false,
+  };
+}
+
+function summarizeFrameLimitControlFrame(frame) {
+  return {
+    status: frame.status,
+    frameKind: frame.frame_kind,
+    textBytes: frame.text_bytes,
+    textChars: frame.text_chars,
+    maxBytes: frame.max_bytes,
+    rawProbeEchoed: false,
+  };
+}
+
+function summarizeBridgeTerminalEvent(event) {
+  return {
+    event: event.event,
+    direction: event.direction,
+    clientCode: event.client_code,
+    clientReason: event.client_reason,
+    upstreamCode: event.upstream_code ?? null,
+    upstreamReason: event.upstream_reason ?? null,
+    upstreamCloseCode: event.upstream_close_code ?? null,
+    frameKind: event.frame_kind ?? null,
+    frameBytes: event.frame_bytes ?? null,
+    frameMaxBytes: event.frame_max_bytes ?? null,
   };
 }
 
@@ -599,6 +816,27 @@ function validateSessionName(value) {
     throw new Error("session must be 1-96 chars of letters, digits, underscore, or dash");
   }
   return session;
+}
+
+function validateFrameLimitBytes(value) {
+  if (!Number.isFinite(value)) return defaultFrameLimitProbeBytes;
+  if (!Number.isInteger(value)) {
+    throw new Error("frame-limit-bytes must be an integer");
+  }
+  if (value <= maxRealtimeBridgeTextFrameBytes) {
+    throw new Error(`frame-limit-bytes must be greater than ${maxRealtimeBridgeTextFrameBytes}`);
+  }
+  if (value > maxRealtimeBridgeTextFrameBytes * 2) {
+    throw new Error(`frame-limit-bytes must be at most ${maxRealtimeBridgeTextFrameBytes * 2}`);
+  }
+  if (value <= byteLength(frameLimitProbePrefix)) {
+    throw new Error("frame-limit-bytes must be larger than the fixed smoke probe prefix");
+  }
+  return value;
+}
+
+function makeFrameLimitProbe(bytes) {
+  return `${frameLimitProbePrefix}${"x".repeat(bytes - byteLength(frameLimitProbePrefix))}`;
 }
 
 function validatePlainValue(value, name) {
@@ -647,10 +885,20 @@ function printResult(result, options) {
         : []),
       ...(result.httpMetrics ? [`http_metrics: ${JSON.stringify(result.httpMetrics)}`] : []),
       ...(result.controlFrame ? [`control_frame: ${JSON.stringify(result.controlFrame)}`] : []),
+      ...(result.frameLimitControlFrame
+        ? [`frame_limit_control_frame: ${JSON.stringify(result.frameLimitControlFrame)}`]
+        : []),
+      ...(result.frameLimitClose ? [`frame_limit_close: ${JSON.stringify(result.frameLimitClose)}`] : []),
+      ...(result.bridgeTerminalEvent
+        ? [`bridge_terminal_event: ${JSON.stringify(result.bridgeTerminalEvent)}`]
+        : []),
       ...(typeof result.probeConfigured === "boolean"
         ? [`probe_configured: ${result.probeConfigured}`]
         : []),
       ...(typeof result.probeBytes === "number" ? [`probe_bytes: ${result.probeBytes}`] : []),
+      ...(typeof result.frameLimitProbeBytes === "number"
+        ? [`frame_limit_probe_bytes: ${result.frameLimitProbeBytes}`]
+        : []),
       ...(result.notes?.length ? ["notes:", ...result.notes.map((note) => `  - ${note}`)] : []),
     ].join("\n"),
   );

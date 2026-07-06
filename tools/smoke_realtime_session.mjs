@@ -58,6 +58,7 @@ async function smoke(options) {
       "realtime_session_status",
     );
     validateMetrics(statusFrame.metrics, "websocket status metrics");
+    validateRuntimeStatusCounters(statusFrame, "websocket status");
 
     let controlFrame = null;
     let frameLimitControlFrame = null;
@@ -128,6 +129,8 @@ async function smoke(options) {
       pongContext: pong.context ?? null,
       websocketMetrics: summarizeMetrics(statusFrame.metrics),
       httpMetrics: httpStatus?.metrics ? summarizeMetrics(httpStatus.metrics) : null,
+      websocketRuntimeStatus: summarizeRuntimeStatus(statusFrame),
+      httpRuntimeStatus: httpStatus ? summarizeRuntimeStatus(httpStatus) : null,
       controlFrame: controlFrame ? summarizeControlFrame(controlFrame) : null,
       frameLimitControlFrame: frameLimitControlFrame
         ? summarizeFrameLimitControlFrame(frameLimitControlFrame)
@@ -713,6 +716,21 @@ function validateMetrics(metrics, label, options = {}) {
   }
 }
 
+function validateRuntimeStatusCounters(frame, label, options = {}) {
+  if (!frame || typeof frame !== "object") {
+    throw new Error(`${label} missing runtime status object`);
+  }
+  const expected = options.expected ?? {};
+  for (const key of ["active_upstream_bridges", "queued_upstream_frames", "queued_upstream_bytes"]) {
+    if (!Number.isInteger(frame[key]) || frame[key] < 0) {
+      throw new Error(`${label} missing non-negative integer ${key}`);
+    }
+    if (Object.hasOwn(expected, key) && frame[key] !== expected[key]) {
+      throw new Error(`${label} ${key}=${frame[key]}, expected ${expected[key]}`);
+    }
+  }
+}
+
 function validateControlFrame(frame, probe) {
   if (!frame || typeof frame !== "object") {
     throw new Error("unsupported-control response missing JSON object");
@@ -771,6 +789,13 @@ function validatePlatformHeaderBoundaryFrames({ pong, statusFrame, controlFrame,
   validateNoForgedUpstreamContext(pong?.context, "pong context");
   validateNoForgedUpstreamContext(statusFrame?.context, "websocket status context");
   validateNoForgedUpstreamContext(controlFrame?.context, "control context");
+  validateRuntimeStatusCounters(statusFrame, "platform header boundary websocket status", {
+    expected: {
+      active_upstream_bridges: 0,
+      queued_upstream_frames: 0,
+      queued_upstream_bytes: 0,
+    },
+  });
 
   if (controlFrame.status !== "upstream_bridge_not_wired") {
     throw new Error(`platform header boundary control status=${controlFrame.status}, expected upstream_bridge_not_wired`);
@@ -1283,7 +1308,12 @@ function runPlatformHeaderBoundarySelfTest() {
   };
   const cleanFrames = {
     pong: { context: cleanContext },
-    statusFrame: { context: cleanContext },
+    statusFrame: {
+      context: cleanContext,
+      active_upstream_bridges: 0,
+      queued_upstream_frames: 0,
+      queued_upstream_bytes: 0,
+    },
     controlFrame: {
       status: "upstream_bridge_not_wired",
       context: cleanContext,
@@ -1323,6 +1353,9 @@ function runPlatformHeaderBoundarySelfTest() {
             ...cleanContext,
             upstream: { channel_id: 1 },
           },
+          active_upstream_bridges: 0,
+          queued_upstream_frames: 0,
+          queued_upstream_bytes: 0,
         },
       },
       "includes caller-supplied upstream plan",
@@ -1439,6 +1472,14 @@ function summarizeFrameLimitControlFrame(frame) {
     textChars: frame.text_chars,
     maxBytes: frame.max_bytes,
     rawProbeEchoed: false,
+  };
+}
+
+function summarizeRuntimeStatus(frame) {
+  return {
+    activeUpstreamBridges: frame.active_upstream_bridges,
+    queuedUpstreamFrames: frame.queued_upstream_frames,
+    queuedUpstreamBytes: frame.queued_upstream_bytes,
   };
 }
 

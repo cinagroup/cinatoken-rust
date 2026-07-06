@@ -525,10 +525,16 @@ impl DurableObject for RealtimeSession {
                 }))?;
             }
             WebSocketIncomingMessage::String(message) if message.trim() == "status" => {
+                self.drop_closed_upstream_bridges();
+                let (active_upstream_bridges, queued_upstream_frames, queued_upstream_bytes) =
+                    self.upstream_bridge_runtime_status();
                 ws.send(&json!({
                     "type": "realtime_session_status",
                     "context": context,
-                    "metrics": metrics
+                    "metrics": metrics,
+                    "active_upstream_bridges": active_upstream_bridges,
+                    "queued_upstream_frames": queued_upstream_frames,
+                    "queued_upstream_bytes": queued_upstream_bytes
                 }))?;
             }
             WebSocketIncomingMessage::String(message) => {

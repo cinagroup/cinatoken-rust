@@ -163,7 +163,10 @@ Current mapped status from existing docs:
   32 pending frames / 4 MiB pending bytes, fail-closed
   `backpressure_overflow`, and metadata-only overflow events. The transient
   bridge runtime now uses that policy for an in-memory FIFO client-to-upstream
-  queue before upstream accept and exposes aggregate queued frame/byte status.
+  queue before upstream accept and exposes aggregate queued frame/byte status
+  through both HTTP status and WebSocket `status` control frames. The mock
+  upstream replay harness now records active/empty-queue runtime status before
+  sending its live probe frame.
 - Production-grade bridge hardening and realtime billing settlement are still
   blockers. `realtime_session_v1_cutover_ready` must remain false until live
   queue/drain evidence, live close/error replay, live mock/real upstream replay

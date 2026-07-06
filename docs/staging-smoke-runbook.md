@@ -384,7 +384,9 @@ self-test validates the harness expectations for externally inducible live
 paths (`upstream-normal-close` and `upstream-frame-limit`) and records the
 fault paths that still need Worker-side fault injection. The dry-run prints the
 redacted `/v1/realtime` plan plus the channel `base_url` that must point at the
-mock upstream:
+mock upstream. The harness also sends a WebSocket `status` control frame before
+its replay probe and requires one active upstream bridge with zero queued
+upstream frames/bytes:
 
 ```powershell
 bun run check:realtime-session:mock-upstream-replay-contract
@@ -473,7 +475,8 @@ Record:
   planned fault-injection-only scenarios.
 - Live mock upstream replay output when available, including mock connection
   count, forwarded client frame byte metadata, upstream frame byte metadata,
-  observed `realtime_session_bridge_event`, and client close event.
+  observed WebSocket runtime status, observed
+  `realtime_session_bridge_event`, and client close event.
 - Platform header-boundary self-test output, including the clean case plus
   rejected forged handoff marker, forged upstream plan, active bridge status,
   and active bridge count cases.

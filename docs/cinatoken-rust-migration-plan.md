@@ -6862,6 +6862,64 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.111 2026-07-06 Realtime WebSocket Runtime Status Evidence
+
+This increment closes an observability gap in the Realtime v1 smoke path. The
+HTTP status route already exposed active upstream bridge and pending queue
+counters, but the `/v1/realtime` live smoke could not read that runtime state
+because it does not know the generated Durable Object session name. The WebSocket
+`status` control frame now reports the same bridge runtime counters, allowing
+mock upstream replay to prove the bridge is active before sending the probe
+frame.
+
+Implemented:
+
+- WebSocket `status` responses now include:
+  - `active_upstream_bridges`;
+  - `queued_upstream_frames`;
+  - `queued_upstream_bytes`.
+- The platform smoke validator now treats those fields as required
+  non-negative integers and, for the forged upstream-header boundary case,
+  requires all three counters to be zero on both WebSocket and HTTP status.
+- The live mock upstream replay harness now sends a `status` control frame
+  before the replay probe and requires:
+  - exactly one active upstream bridge;
+  - zero queued upstream frames;
+  - zero queued upstream bytes.
+- The live replay output records `observedRuntimeStatus` next to the terminal
+  bridge event, so staging artifacts can distinguish "the bridge was active"
+  from "a later close event looked plausible."
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `node --check tools/smoke_realtime_upstream_replay.mjs` passed.
+- `bun tools/smoke_realtime_session.mjs --self-test-platform-header-boundary --json`
+  passed with WebSocket runtime-status counter validation.
+- `bun tools/smoke_realtime_upstream_replay.mjs --self-test --json` passed and
+  now records expected active/empty-queue runtime status for both live mock
+  scenarios.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed with 49 filtered Realtime/platform tests.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check` passed across frontend build/audits, WFP dry-run smoke,
+  Realtime smoke contracts, relay AI Gateway dry-run, Rust workspace tests,
+  Worker wasm32 check, and WFP tenant wasm32 check.
+
+Remaining migration gaps:
+
+- Capture live local/staging evidence that early client frames queued before
+  upstream accept are drained in order against a mock upstream; this increment
+  proves v1 live smoke can now observe runtime counters, but it does not yet
+  force a non-zero queue window.
+- Add safe staging fault injection for upstream socket abort/error,
+  event-stream failure, accept failure, and upstream-to-client send failure;
+  those paths remain contract-covered but not fully live-harness-covered.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.
+
 ### 22.110 2026-07-06 Realtime Upstream Backpressure Runtime Queue
 
 This increment wires the previously compiled backpressure policy into the

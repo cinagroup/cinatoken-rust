@@ -245,6 +245,11 @@ function buildPlan(options) {
       ],
     },
     localD1Seed: buildLocalD1SeedPlan(options, expectedChannelBaseUrl),
+    expectedRuntimeStatusBeforeProbe: {
+      active_upstream_bridges: 1,
+      queued_upstream_frames: 0,
+      queued_upstream_bytes: 0,
+    },
     expectedBridgeEvent: options.scenario.expectedEvent,
     probeBytes: byteLength(options.probe),
     timeoutMs: options.timeoutMs,
@@ -252,6 +257,7 @@ function buildPlan(options) {
     notes: [
       "Local mock replay is intended for wrangler dev or another Worker runtime that can reach the mock URL.",
       "Cloudflare staging cannot reach 127.0.0.1 directly; use a public mock endpoint or tunnel for remote staging.",
+      "Live replay sends a WebSocket status control frame before the probe and requires one active upstream bridge with an empty pending queue.",
       "The live smoke fails unless the mock receives the forwarded client frame and the Worker emits a metadata-only realtime_session_bridge_event.",
     ],
   };
@@ -269,10 +275,19 @@ async function runLiveReplay(options, plan) {
   const server = options.externalMock ? null : startMockServer(options, stats);
   try {
     const ws = await openWebSocket(plan.workerRealtimeUrl, plan.protocols, options.timeoutMs);
+    const statusPromise = waitForJsonMessage(
+      ws,
+      (message) => message.type === "realtime_session_status",
+      options.timeoutMs,
+      "realtime_session_status",
+    );
+    ws.send("status");
+    const statusFrame = await statusPromise;
+    validateRuntimeStatusFrame(statusFrame, options.scenario.name);
     const outcomePromise = waitForBridgeEventAndClose(ws, options.timeoutMs);
     ws.send(options.probe);
     const outcome = await outcomePromise;
-    validateLiveReplayOutcome(outcome, stats, options);
+    validateLiveReplayOutcome(outcome, stats, options, statusFrame);
     return {
       ok: true,
       dryRun: false,
@@ -280,6 +295,7 @@ async function runLiveReplay(options, plan) {
       workerRealtimeUrl: redactUrl(plan.workerRealtimeUrl),
       mock: sanitizeMockSummary(plan.mock, stats),
       expectedBridgeEvent: options.scenario.expectedEvent,
+      observedRuntimeStatus: summarizeRuntimeStatus(statusFrame),
       observedBridgeEvent: summarizeBridgeEvent(outcome.bridgeEvent),
       clientClose: outcome.close,
       forwardedClientFrames: stats.receivedFrames,
@@ -390,6 +406,45 @@ function openWebSocket(url, protocols, timeoutMs) {
   });
 }
 
+function waitForJsonMessage(ws, predicate, timeoutMs, label) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for ${label} after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("error", onError);
+      ws.removeEventListener("close", onClose);
+    };
+    const onMessage = async (event) => {
+      const text = await messageText(event.data);
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return;
+      }
+      if (predicate(parsed)) {
+        cleanup();
+        resolve(parsed);
+      }
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error(`WebSocket error while waiting for ${label}`));
+    };
+    const onClose = (event) => {
+      cleanup();
+      reject(new Error(`WebSocket closed before ${label}: ${event.code} ${event.reason}`.trim()));
+    };
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("error", onError);
+    ws.addEventListener("close", onClose);
+  });
+}
+
 function waitForBridgeEventAndClose(ws, timeoutMs) {
   return new Promise((resolve, reject) => {
     let bridgeEvent = null;
@@ -441,7 +496,10 @@ function waitForBridgeEventAndClose(ws, timeoutMs) {
   });
 }
 
-function validateLiveReplayOutcome(outcome, stats, options) {
+function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null) {
+  if (statusFrame) {
+    validateRuntimeStatusFrame(statusFrame, options.scenario.name);
+  }
   validateBridgeEvent(outcome.bridgeEvent, options.scenario.expectedEvent, options.scenario.name);
   if (outcome.close.code !== options.scenario.expectedEvent.clientCode) {
     throw new Error(
@@ -466,7 +524,23 @@ function validateLiveReplayOutcome(outcome, stats, options) {
   if (outcome.bridgeEvent.context?.upstream_connect_handoff !== true) {
     throw new Error("bridge event context did not prove upstream_connect_handoff=true");
   }
-  validateNoRawLeaks(outcome, options);
+  validateNoRawLeaks({ outcome, statusFrame }, options);
+}
+
+function validateRuntimeStatusFrame(frame, scenarioName) {
+  if (!frame || typeof frame !== "object") {
+    throw new Error(`missing runtime status frame for ${scenarioName}`);
+  }
+  const expected = {
+    active_upstream_bridges: 1,
+    queued_upstream_frames: 0,
+    queued_upstream_bytes: 0,
+  };
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    if (frame[field] !== expectedValue) {
+      throw new Error(`runtime status ${field}=${frame[field]}, expected ${expectedValue}`);
+    }
+  }
 }
 
 function validateBridgeEvent(frame, expected, scenarioName) {
@@ -542,12 +616,14 @@ function runSelfTest() {
     }
     validateSeedPlan(plan.localD1Seed, scenario.name);
     const outcome = syntheticOutcome(scenario);
-    validateLiveReplayOutcome(outcome, syntheticStats(options.probe), options);
+    const statusFrame = syntheticRuntimeStatusFrame();
+    validateLiveReplayOutcome(outcome, syntheticStats(options.probe), options, statusFrame);
     cases.push({
       name: scenario.name,
       ok: true,
       event: scenario.expectedEvent.event,
       clientClose: scenario.expectedEvent.clientCode,
+      runtimeStatus: summarizeRuntimeStatus(statusFrame),
     });
   }
   expectFailure(
@@ -613,6 +689,20 @@ function syntheticStats(probe) {
     sentFrames: [],
     closeEvents: [],
     errors: [],
+  };
+}
+
+function syntheticRuntimeStatusFrame() {
+  return {
+    type: "realtime_session_status",
+    active_upstream_bridges: 1,
+    queued_upstream_frames: 0,
+    queued_upstream_bytes: 0,
+    metrics: {
+      connected_count: 1,
+      text_message_count: 1,
+      updated_at_ms: 1_788_192_000_000,
+    },
   };
 }
 
@@ -742,6 +832,14 @@ function summarizeBridgeEvent(frame) {
       frameBytes: event.frame_bytes ?? null,
       frameMaxBytes: event.frame_max_bytes ?? null,
     },
+  };
+}
+
+function summarizeRuntimeStatus(frame) {
+  return {
+    activeUpstreamBridges: frame.active_upstream_bridges,
+    queuedUpstreamFrames: frame.queued_upstream_frames,
+    queuedUpstreamBytes: frame.queued_upstream_bytes,
   };
 }
 

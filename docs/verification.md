@@ -5,6 +5,19 @@ Last checked: 2026-07-06
 ## Passed
 
 - `node --check tools/smoke_realtime_session.mjs`,
+  `node --check tools/smoke_realtime_upstream_replay.mjs`,
+  `bun tools/smoke_realtime_session.mjs --self-test-platform-header-boundary --json`,
+  `bun tools/smoke_realtime_upstream_replay.mjs --self-test --json`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`, and
+  `bun run check`:
+  passed after adding Realtime WebSocket runtime-status counters. WebSocket
+  `status` frames now expose `active_upstream_bridges`,
+  `queued_upstream_frames`, and `queued_upstream_bytes`; the platform
+  header-boundary self-test requires zero bridge/queue counters, and the mock
+  upstream replay self-test requires one active upstream bridge with an empty
+  pending queue before sending its probe frame.
+- `node --check tools/smoke_realtime_session.mjs`,
   `bun run check:realtime-session:bridge-replay-contract`,
   `bun tools/smoke_realtime_session.mjs --self-test-platform-header-boundary`,
   `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,

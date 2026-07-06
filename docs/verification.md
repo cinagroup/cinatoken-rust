@@ -7,11 +7,13 @@ Last checked: 2026-07-06
 - `node --check tools/smoke_realtime_upstream_replay.mjs`,
   `bun run check:realtime-session:mock-upstream-replay-contract`, and
   `bun run check:realtime-session:mock-upstream-replay-plan`: passed after
-  adding the Realtime mock upstream replay harness. The new tool provides a
-  `--confirm-live` local/mock WebSocket replay path for `upstream-normal-close`
-  and `upstream-frame-limit`, while the default check chain validates the
-  harness expectations and a redacted dry-run plan without opening a network
-  socket.
+  adding the Realtime mock upstream replay harness and local D1 seed plan. The
+  tool provides a `--confirm-live` local/mock WebSocket replay path for
+  `upstream-normal-close` and `upstream-frame-limit`, while the default check
+  chain validates the harness expectations and a redacted dry-run plan without
+  opening a network socket. The dry-run now emits review-only SQL for a
+  dedicated local/staging smoke user, relay token, OpenAI-compatible channel,
+  and ability row.
 - `bun run check`: passed after wiring the Realtime mock upstream replay
   contract and dry-run plan into the default chain. The run covered frontend
   build and audits, WFP dry-run smoke, Realtime bridge replay/upstream replay/

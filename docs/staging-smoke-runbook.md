@@ -391,6 +391,12 @@ bun run check:realtime-session:mock-upstream-replay-contract
 bun run check:realtime-session:mock-upstream-replay-plan
 ```
 
+The dry-run plan now includes a review-only `localD1Seed` block with SQL for a
+dedicated smoke user, token, OpenAI-compatible channel, and ability row. Review
+the SQL before applying it to a local or isolated staging D1 database; the
+smoke tool never writes D1 by itself. After applying the SQL, use the emitted
+`localD1Seed.smokeApiKey` as the live replay `--api-key`.
+
 Also run the local platform header-boundary validator self-test. It proves the
 smoke verifier rejects forged upstream handoff markers, upstream plans, active
 bridge status, and active bridge counts before any staging evidence is trusted:
@@ -436,15 +442,16 @@ bun run smoke:realtime-session -- --mode v1 --url $env:STAGING_BASE_URL --model 
 
 If a local `wrangler dev` Worker or a staging Worker can reach a dedicated mock
 upstream endpoint, run the live mock upstream replay. For local development,
-configure a dedicated enabled OpenAI-compatible channel for
-`gpt-4o-realtime-preview` whose `base_url` is `http://127.0.0.1:8799/`; the
-Worker appends `/v1/realtime?model=...`. For remote Cloudflare staging, do not
-use `127.0.0.1`; use a public mock endpoint or a temporary tunnel and set the
-test channel `base_url` to that reachable origin.
+apply the reviewed `localD1Seed` SQL from the dry-run output so the dedicated
+enabled OpenAI-compatible channel for `gpt-4o-realtime-preview` points at
+`http://127.0.0.1:8799/`; the Worker appends `/v1/realtime?model=...`. For
+remote Cloudflare staging, do not use `127.0.0.1`; use a public mock endpoint
+or a temporary tunnel and set the test channel `base_url` to that reachable
+origin before applying the reviewed seed SQL.
 
 ```powershell
 $env:REALTIME_UPSTREAM_REPLAY_URL = "http://127.0.0.1:8787"
-$env:REALTIME_UPSTREAM_REPLAY_API_KEY = "<redacted staging token>"
+$env:REALTIME_UPSTREAM_REPLAY_API_KEY = "sk-cinatoken-realtime-mock-local"
 bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-normal-close --confirm-live --json
 bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-frame-limit --confirm-live --json
 ```
@@ -462,8 +469,8 @@ Record:
   terminal evidence, and redaction rejection cases.
 - Mock upstream replay harness self-test and dry-run output, including the
   redacted worker WebSocket URL, mock upstream URL, required channel
-  `base_url`, live scenarios covered, and planned fault-injection-only
-  scenarios.
+  `base_url`, review-only `localD1Seed` SQL, live scenarios covered, and
+  planned fault-injection-only scenarios.
 - Live mock upstream replay output when available, including mock connection
   count, forwarded client frame byte metadata, upstream frame byte metadata,
   observed `realtime_session_bridge_event`, and client close event.
@@ -559,8 +566,10 @@ Pass criteria:
   reasons, and leaked raw frame/API-key material.
 - The mock upstream replay harness self-test and dry-run plan pass before live
   artifacts are accepted. A live run must use a dedicated non-production
-  channel, prove the mock received the forwarded client frame, and observe a
-  metadata-only `realtime_session_bridge_event` plus matching client close.
+  channel prepared from reviewed `localD1Seed` SQL or an equivalent audited
+  channel/token setup, prove the mock received the forwarded client frame, and
+  observe a metadata-only `realtime_session_bridge_event` plus matching client
+  close.
   `upstream-error`, `upstream-event-stream-failed`,
   `upstream-accept-failed`, and `upstream-to-client-send-failure` remain
   separate fault-injection evidence until the Worker has an explicit safe

@@ -6862,6 +6862,64 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
+
+This increment makes the mock upstream replay harness closer to a repeatable
+live smoke by generating the local/staging D1 data needed for `/v1/realtime`
+channel selection. The tool still does not write D1 automatically: operators
+must review the SQL and apply it only to a local `wrangler dev` database or an
+isolated staging test database.
+
+Implemented:
+
+- Extended `tools/smoke_realtime_upstream_replay.mjs --dry-run` with a
+  `localD1Seed` block.
+  - The seed plan creates or updates a dedicated smoke user, relay token,
+    OpenAI-compatible channel, and ability row for
+    `gpt-4o-realtime-preview`.
+  - The default non-production token key is
+    `sk-cinatoken-realtime-mock-local`.
+  - The channel is type `1` (OpenAI-compatible), status-enabled, high-priority,
+    auto-ban disabled, and points at the mock upstream `base_url` selected by
+    the dry-run plan.
+  - The ability row gives the selected group and Realtime model an explicit
+    channel hit, so live replay no longer depends on manual channel-editor
+    setup or CSV fallback guessing.
+- Added seed-plan validation to the harness self-test so regressions fail if
+  the dry-run no longer emits user/token/channel/ability SQL tied to the model
+  and channel base URL.
+- Updated the staging smoke runbook to require review of `localD1Seed` before
+  live mock replay and to use the emitted smoke API key for the live harness.
+
+Validation:
+
+- `node --check tools/smoke_realtime_upstream_replay.mjs` passed.
+- `bun tools/smoke_realtime_upstream_replay.mjs --self-test --json` passed and
+  validated the generated seed plan.
+- `bun tools/smoke_realtime_upstream_replay.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --api-key dry-run-token` passed and emitted reviewed
+  SQL for the local D1 smoke user/token/channel/ability setup.
+- `bun run check` passed, covering the new mock upstream replay seed-plan
+  validation inside the default check chain plus the existing frontend,
+  WFP, Realtime, relay AI Gateway, Rust workspace, Worker wasm32, and WFP
+  tenant wasm32 gates.
+
+Remaining migration gaps:
+
+- Apply the reviewed seed SQL in a local or isolated staging D1, enable
+  `/v1/realtime` only in that environment, and archive actual live mock
+  upstream replay output for `upstream-normal-close` and
+  `upstream-frame-limit`.
+- Add safe staging fault injection for upstream socket abort/error,
+  event-stream failure, accept failure, and upstream-to-client send failure;
+  those paths remain contract-covered but not live-harness-covered.
+- Add queued backpressure/flow-control so the active bridge does not depend on
+  direct immediate `WebSocket.send*` success for production traffic.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.
+
 ### 22.107 2026-07-06 Realtime Mock Upstream Replay Harness
 
 This increment starts replacing the purely local upstream replay contract with

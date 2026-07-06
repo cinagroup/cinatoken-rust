@@ -6,6 +6,11 @@ const defaultTimeoutMs = 10_000;
 const defaultMockHost = "127.0.0.1";
 const defaultMockPort = 8799;
 const defaultMockPath = "/v1/realtime";
+const defaultSeedId = 910_001;
+const defaultSeedUsername = "realtime-mock-smoke";
+const defaultSeedGroup = "default";
+const defaultSeedTokenKey = "sk-cinatoken-realtime-mock-local";
+const openaiCompatibleChannelType = 1;
 const maxRealtimeBridgeTextFrameBytes = 1_048_576;
 const upstreamReplayProbePrefix = "cinatoken-upstream-live-frame-limit:";
 
@@ -141,6 +146,30 @@ function normalizeOptions(parsed) {
       "expected-channel-base-url",
       "REALTIME_UPSTREAM_REPLAY_EXPECTED_CHANNEL_BASE_URL",
     ),
+    seedUserId: validatePositiveInteger(
+      value("seed-user-id", "REALTIME_UPSTREAM_REPLAY_SEED_USER_ID") || String(defaultSeedId),
+      "seed-user-id",
+    ),
+    seedTokenId: validatePositiveInteger(
+      value("seed-token-id", "REALTIME_UPSTREAM_REPLAY_SEED_TOKEN_ID") || String(defaultSeedId),
+      "seed-token-id",
+    ),
+    seedChannelId: validatePositiveInteger(
+      value("seed-channel-id", "REALTIME_UPSTREAM_REPLAY_SEED_CHANNEL_ID") || String(defaultSeedId),
+      "seed-channel-id",
+    ),
+    seedUsername: validateSeedIdentifier(
+      value("seed-username", "REALTIME_UPSTREAM_REPLAY_SEED_USERNAME") || defaultSeedUsername,
+      "seed-username",
+    ),
+    seedGroup: validateSeedIdentifier(
+      value("seed-group", "REALTIME_UPSTREAM_REPLAY_SEED_GROUP") || defaultSeedGroup,
+      "seed-group",
+    ),
+    seedTokenKey: validatePlainValue(
+      value("seed-token-key", "REALTIME_UPSTREAM_REPLAY_SEED_TOKEN_KEY") || defaultSeedTokenKey,
+      "seed-token-key",
+    ),
     externalMock,
     dryRun,
     json: parsed.flags.has("json"),
@@ -163,6 +192,12 @@ function usage(exitCode, error) {
       "  --mock-port <port>      local mock port, default 8799",
       "  --mock-base-url <url>   channel base_url expected to reach the mock",
       "  --expected-channel-base-url <url>  optional operator assertion for the D1 channel",
+      "  --seed-user-id <id>     default 910001, for generated local D1 seed SQL",
+      "  --seed-token-id <id>    default 910001, for generated local D1 seed SQL",
+      "  --seed-channel-id <id>  default 910001, for generated local D1 seed SQL",
+      "  --seed-username <name>  default realtime-mock-smoke, for generated seed SQL",
+      "  --seed-group <group>    default default, for generated seed SQL",
+      "  --seed-token-key <key>  default sk-cinatoken-realtime-mock-local",
       "  --external-mock         do not start a local Bun mock server",
       "  --confirm-live          required for network replay",
       "  --dry-run               print the redacted replay plan without network",
@@ -209,6 +244,7 @@ function buildPlan(options) {
         "Use a non-production channel key; the mock does not require a real provider key.",
       ],
     },
+    localD1Seed: buildLocalD1SeedPlan(options, expectedChannelBaseUrl),
     expectedBridgeEvent: options.scenario.expectedEvent,
     probeBytes: byteLength(options.probe),
     timeoutMs: options.timeoutMs,
@@ -491,6 +527,12 @@ function runSelfTest() {
     externalMock: false,
     dryRun: true,
     json: true,
+    seedUserId: defaultSeedId,
+    seedTokenId: defaultSeedId,
+    seedChannelId: defaultSeedId,
+    seedUsername: defaultSeedUsername,
+    seedGroup: defaultSeedGroup,
+    seedTokenKey: defaultSeedTokenKey,
   };
   for (const scenario of scenarios.values()) {
     const options = { ...baseOptions, scenario };
@@ -498,6 +540,7 @@ function runSelfTest() {
     if (JSON.stringify(plan).includes(baseOptions.apiKey)) {
       throw new Error(`self-test ${scenario.name} leaked API key in redacted plan`);
     }
+    validateSeedPlan(plan.localD1Seed, scenario.name);
     const outcome = syntheticOutcome(scenario);
     validateLiveReplayOutcome(outcome, syntheticStats(options.probe), options);
     cases.push({
@@ -571,6 +614,98 @@ function syntheticStats(probe) {
     closeEvents: [],
     errors: [],
   };
+}
+
+function buildLocalD1SeedPlan(options, expectedChannelBaseUrl) {
+  const now = Math.floor(Date.now() / 1000);
+  const userId = options.seedUserId;
+  const tokenId = options.seedTokenId;
+  const channelId = options.seedChannelId;
+  const username = options.seedUsername;
+  const group = options.seedGroup;
+  const model = options.model;
+  const tokenKey = options.seedTokenKey;
+  const channelName = `realtime-mock-upstream-${channelId}`;
+  const mockChannelKey = `mock-upstream-key-${channelId}`;
+  const affCode = `rtmock${userId}`;
+  const statements = [
+    `INSERT INTO users (id, username, password, display_name, role, status, email, quota, used_quota, request_count, "group", aff_code, created_at, deleted_at)
+VALUES (${userId}, ${sqlString(username)}, 'disabled-local-smoke-user', 'Realtime Mock Smoke', 1, 1, '', 100000000, 0, 0, ${sqlString(group)}, ${sqlString(affCode)}, ${now}, NULL)
+ON CONFLICT(id) DO UPDATE SET
+  username = excluded.username,
+  display_name = excluded.display_name,
+  status = 1,
+  quota = 100000000,
+  "group" = excluded."group",
+  deleted_at = NULL;`,
+    `INSERT INTO tokens (id, user_id, "key", status, name, created_time, accessed_time, expired_time, remain_quota, unlimited_quota, model_limits_enabled, model_limits, allow_ips, used_quota, "group", cross_group_retry, deleted_at)
+VALUES (${tokenId}, ${userId}, ${sqlString(tokenKey)}, 1, 'realtime mock smoke token', ${now}, 0, -1, 0, 1, 1, ${sqlString(model)}, '', 0, ${sqlString(group)}, 0, NULL)
+ON CONFLICT(id) DO UPDATE SET
+  user_id = excluded.user_id,
+  "key" = excluded."key",
+  status = 1,
+  expired_time = -1,
+  remain_quota = 0,
+  unlimited_quota = 1,
+  model_limits_enabled = 1,
+  model_limits = excluded.model_limits,
+  "group" = excluded."group",
+  deleted_at = NULL;`,
+    `INSERT INTO channels (id, type, "key", status, name, weight, created_time, base_url, other, balance, models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban, other_info, channel_info, settings)
+VALUES (${channelId}, ${openaiCompatibleChannelType}, ${sqlString(mockChannelKey)}, 1, ${sqlString(channelName)}, 1000, ${now}, ${sqlString(expectedChannelBaseUrl)}, '', 0, ${sqlString(model)}, ${sqlString(group)}, 0, NULL, '', 1000, 0, ${sqlString(JSON.stringify({ realtime_mock_upstream: true }))}, '{}', '')
+ON CONFLICT(id) DO UPDATE SET
+  type = excluded.type,
+  "key" = excluded."key",
+  status = 1,
+  name = excluded.name,
+  weight = excluded.weight,
+  base_url = excluded.base_url,
+  models = excluded.models,
+  "group" = excluded."group",
+  priority = excluded.priority,
+  auto_ban = 0,
+  other_info = excluded.other_info;`,
+    `DELETE FROM abilities WHERE channel_id = ${channelId};`,
+    `INSERT INTO abilities (group_name, model, channel_id, enabled, priority, weight)
+VALUES (${sqlString(group)}, ${sqlString(model)}, ${channelId}, 1, 1000, 1000);`,
+  ];
+  return {
+    reviewOnly: true,
+    appliesTo: "local wrangler dev or isolated staging D1 only",
+    commandExample:
+      "wrangler d1 execute <DB_NAME> --local --file <reviewed-realtime-mock-seed.sql>",
+    smokeApiKey: tokenKey,
+    userId,
+    tokenId,
+    channelId,
+    channelType: openaiCompatibleChannelType,
+    channelGroup: group,
+    channelModel: model,
+    channelBaseUrl: expectedChannelBaseUrl,
+    warnings: [
+      "Review this SQL before execution; the smoke tool never writes D1 by itself.",
+      "Use only a dedicated non-production D1 database or an isolated staging test channel.",
+      "Do not pass production token keys; the seed token key is intentionally printed for live smoke use.",
+      "If a row id or unique username/key is already used, change the seed ids/token key before applying.",
+      "For live replay, pass the seed smokeApiKey as --api-key after applying the SQL.",
+    ],
+    statements,
+  };
+}
+
+function validateSeedPlan(plan, scenarioName) {
+  if (!plan || !Array.isArray(plan.statements) || plan.statements.length !== 5) {
+    throw new Error(`self-test ${scenarioName} generated an invalid D1 seed plan`);
+  }
+  const sql = plan.statements.join("\n");
+  for (const expected of ["INSERT INTO users", "INSERT INTO tokens", "INSERT INTO channels", "INSERT INTO abilities"]) {
+    if (!sql.includes(expected)) {
+      throw new Error(`self-test ${scenarioName} seed plan missing ${expected}`);
+    }
+  }
+  if (!sql.includes(plan.channelBaseUrl) || !sql.includes(plan.channelModel)) {
+    throw new Error(`self-test ${scenarioName} seed plan missing channel base URL or model`);
+  }
 }
 
 function expectFailure(fn, messagePart) {
@@ -672,6 +807,26 @@ function normalizeHttpBaseUrl(value, name) {
   return url.toString();
 }
 
+function validatePositiveInteger(value, name) {
+  const text = required(value, name);
+  if (!/^\d+$/.test(text)) {
+    throw new Error(`${name} must be an integer between 1 and 2147483647`);
+  }
+  const parsed = Number.parseInt(text, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 2_147_483_647) {
+    throw new Error(`${name} must be an integer between 1 and 2147483647`);
+  }
+  return parsed;
+}
+
+function validateSeedIdentifier(value, name) {
+  const trimmed = validatePlainValue(value, name);
+  if (trimmed.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+    throw new Error(`${name} must be 1-64 chars of letters, digits, underscore, or dash`);
+  }
+  return trimmed;
+}
+
 function validatePath(value, name) {
   const path = required(value, name);
   if (!path.startsWith("/") || /[\r\n]/.test(path)) {
@@ -686,6 +841,10 @@ function validatePlainValue(value, name) {
     throw new Error(`${name} must not contain control characters`);
   }
   return trimmed;
+}
+
+function sqlString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
 }
 
 function required(value, name) {
@@ -761,7 +920,11 @@ function printResult(result, json) {
         `worker_realtime_url: ${result.workerRealtimeUrl}`,
         `mock_upstream_url: ${result.mock.upstreamUrl}`,
         `expected_channel_base_url: ${result.expectedChannel.baseUrl}`,
+        `local_d1_seed_channel_id: ${result.localD1Seed.channelId}`,
+        `local_d1_seed_smoke_api_key: ${result.localD1Seed.smokeApiKey}`,
         `probe_bytes: ${result.probeBytes}`,
+        "local_d1_seed_sql:",
+        ...result.localD1Seed.statements.map((statement) => indentMultiline(statement, "  ")),
         "notes:",
         ...result.notes.map((note) => `  - ${note}`),
       ].join("\n"),
@@ -791,4 +954,11 @@ function printResult(result, json) {
       `forwarded_client_frames: ${JSON.stringify(result.forwardedClientFrames)}`,
     ].join("\n"),
   );
+}
+
+function indentMultiline(value, prefix) {
+  return String(value)
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
 }

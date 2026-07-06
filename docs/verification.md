@@ -6,6 +6,20 @@ Last checked: 2026-07-06
 
 - `node --check tools/smoke_realtime_session.mjs`,
   `bun run check:realtime-session:bridge-replay-contract`,
+  `bun tools/smoke_realtime_session.mjs --self-test-platform-header-boundary`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`, and
+  `bun run check`:
+  passed after wiring the Realtime upstream backpressure runtime queue. The
+  Durable Object bridge now queues bounded transient client frames until the
+  upstream socket is accepted, drains them FIFO, exposes
+  `queued_upstream_frames` / `queued_upstream_bytes` in status responses, and
+  reports
+  `realtime_session_upstream_bridge_backpressure_runtime_compiled` while full
+  upstream bridge and billing settlement readiness remain false.
+- `node --check tools/smoke_realtime_session.mjs`,
+  `bun run check:realtime-session:bridge-replay-contract`,
   `cargo fmt --all --check`,
   `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`, and
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:

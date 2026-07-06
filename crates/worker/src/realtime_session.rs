@@ -13,7 +13,9 @@ use cinatoken_relay::{
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use url::Url;
 use worker::{
     durable_object, Env, Fetch, Method, Request, Response, Result as WorkerResult, State,
@@ -37,6 +39,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_REPLAY_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_POLICY_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_RUNTIME_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -56,6 +59,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_event_trace",
     "upstream_bridge_replay_contract",
     "upstream_bridge_backpressure_policy",
+    "upstream_bridge_backpressure_runtime",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -121,6 +125,8 @@ struct RealtimeSessionStatus {
     session: String,
     active_websockets: usize,
     active_upstream_bridges: usize,
+    queued_upstream_frames: usize,
+    queued_upstream_bytes: usize,
     restored_attachments: usize,
     hibernation: bool,
     observability: &'static str,
@@ -264,7 +270,31 @@ struct RealtimeUpstreamFetchRequestPlan {
 }
 
 struct RealtimeUpstreamBridgeRuntime {
+    state: Rc<RefCell<RealtimeUpstreamBridgeState>>,
+}
+
+struct RealtimeUpstreamBridgeState {
     upstream: WebSocket,
+    upstream_ready: bool,
+    closed: bool,
+    pending: RealtimeBridgePendingQueue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct RealtimeBridgePendingQueue {
+    frames: VecDeque<RealtimeBridgeQueuedFrame>,
+    bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RealtimeBridgeQueuedFrame {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeBridgeDrainFailure {
+    frame: RealtimeBridgeFrameMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,6 +344,14 @@ struct RealtimeBridgeBackpressureOverflow {
 enum RealtimeBridgeBackpressureDecision {
     SendNow,
     Queue,
+    Overflow(RealtimeBridgeBackpressureOverflow),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RealtimeBridgeForwardResult {
+    Sent,
+    Queued,
+    NotActive,
     Overflow(RealtimeBridgeBackpressureOverflow),
 }
 
@@ -415,12 +453,15 @@ impl DurableObject for RealtimeSession {
     }
 
     async fn fetch(&mut self, req: Request) -> WorkerResult<Response> {
+        self.drop_closed_upstream_bridges();
         let session = session_from_request(&req).unwrap_or_else(|| self.state.id().to_string());
         if wants_websocket(&req) {
             return self.accept_websocket(req, session).await;
         }
 
         let sockets = self.state.get_websockets();
+        let (active_upstream_bridges, queued_upstream_frames, queued_upstream_bytes) =
+            self.upstream_bridge_runtime_status();
         let attachments = sockets
             .iter()
             .filter_map(|ws| {
@@ -445,7 +486,9 @@ impl DurableObject for RealtimeSession {
         Response::from_json(&RealtimeSessionStatus {
             session,
             active_websockets: sockets.len(),
-            active_upstream_bridges: self.upstream_bridges.len(),
+            active_upstream_bridges,
+            queued_upstream_frames,
+            queued_upstream_bytes,
             restored_attachments,
             hibernation: true,
             observability: "durable_object_storage",
@@ -531,9 +574,10 @@ impl DurableObject for RealtimeSession {
                     }
                     return Ok(());
                 }
-                match self.forward_text_to_upstream(attachment.as_ref(), &message) {
-                    Ok(true) => {}
-                    Ok(false) => {
+                match self.forward_text_to_upstream(attachment.as_ref(), message) {
+                    Ok(RealtimeBridgeForwardResult::Sent)
+                    | Ok(RealtimeBridgeForwardResult::Queued) => {}
+                    Ok(RealtimeBridgeForwardResult::NotActive) => {
                         ws.send(&json!({
                             "type": "realtime_session_control",
                             "status": realtime_client_message_bridge_status(
@@ -544,6 +588,50 @@ impl DurableObject for RealtimeSession {
                             "text_chars": summary.text_chars,
                             "text_bytes": summary.text_bytes
                         }))?;
+                    }
+                    Ok(RealtimeBridgeForwardResult::Overflow(overflow)) => {
+                        let now_ms = js_sys::Date::now();
+                        let close_action = realtime_bridge_close_action(
+                            RealtimeBridgeCloseCause::BackpressureOverflow,
+                        );
+                        metrics.record_error(
+                            attachment.as_ref(),
+                            now_ms,
+                            REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
+                        );
+                        metrics.record_bridge_terminal_event(
+                            attachment.as_ref(),
+                            now_ms,
+                            realtime_bridge_terminal_event(
+                                RealtimeBridgeCloseCause::BackpressureOverflow,
+                                close_action,
+                                now_ms,
+                                Some(RealtimeBridgeFrameMetadata {
+                                    kind: RealtimeBridgeFrameKind::Text,
+                                    bytes: summary.text_bytes,
+                                    max_bytes: None,
+                                }),
+                            ),
+                        );
+                        metrics_changed = true;
+                        let _ = ws.send(&json!({
+                            "type": "realtime_session_control",
+                            "status": REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
+                            "context": context,
+                            "text_chars": summary.text_chars,
+                            "text_bytes": summary.text_bytes,
+                            "pending_frames": overflow.pending_frames,
+                            "pending_bytes": overflow.pending_bytes,
+                            "max_pending_frames": MAX_REALTIME_BRIDGE_PENDING_FRAMES,
+                            "max_pending_bytes": MAX_REALTIME_BRIDGE_PENDING_BYTES
+                        }));
+                        if let Some(attachment) = attachment.as_ref() {
+                            self.close_upstream_bridge_for(attachment, close_action);
+                        }
+                        let _ = ws.close(
+                            Some(close_action.client_code),
+                            Some(close_action.client_reason),
+                        );
                     }
                     Err(_) => {
                         let now_ms = js_sys::Date::now();
@@ -628,9 +716,11 @@ impl DurableObject for RealtimeSession {
                     }
                     return Ok(());
                 }
-                match self.forward_binary_to_upstream(attachment.as_ref(), &bytes) {
-                    Ok(true) => {}
-                    Ok(false) => {
+                let binary_bytes = bytes.len();
+                match self.forward_binary_to_upstream(attachment.as_ref(), bytes) {
+                    Ok(RealtimeBridgeForwardResult::Sent)
+                    | Ok(RealtimeBridgeForwardResult::Queued) => {}
+                    Ok(RealtimeBridgeForwardResult::NotActive) => {
                         ws.send(&json!({
                             "type": "realtime_session_control",
                             "status": realtime_client_message_bridge_status(
@@ -638,8 +728,51 @@ impl DurableObject for RealtimeSession {
                                 false
                             ),
                             "context": context,
-                            "binary_bytes": bytes.len()
+                            "binary_bytes": binary_bytes
                         }))?;
+                    }
+                    Ok(RealtimeBridgeForwardResult::Overflow(overflow)) => {
+                        let now_ms = js_sys::Date::now();
+                        let close_action = realtime_bridge_close_action(
+                            RealtimeBridgeCloseCause::BackpressureOverflow,
+                        );
+                        metrics.record_error(
+                            attachment.as_ref(),
+                            now_ms,
+                            REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
+                        );
+                        metrics.record_bridge_terminal_event(
+                            attachment.as_ref(),
+                            now_ms,
+                            realtime_bridge_terminal_event(
+                                RealtimeBridgeCloseCause::BackpressureOverflow,
+                                close_action,
+                                now_ms,
+                                Some(RealtimeBridgeFrameMetadata {
+                                    kind: RealtimeBridgeFrameKind::Binary,
+                                    bytes: binary_bytes,
+                                    max_bytes: None,
+                                }),
+                            ),
+                        );
+                        metrics_changed = true;
+                        let _ = ws.send(&json!({
+                            "type": "realtime_session_control",
+                            "status": REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
+                            "context": context,
+                            "binary_bytes": binary_bytes,
+                            "pending_frames": overflow.pending_frames,
+                            "pending_bytes": overflow.pending_bytes,
+                            "max_pending_frames": MAX_REALTIME_BRIDGE_PENDING_FRAMES,
+                            "max_pending_bytes": MAX_REALTIME_BRIDGE_PENDING_BYTES
+                        }));
+                        if let Some(attachment) = attachment.as_ref() {
+                            self.close_upstream_bridge_for(attachment, close_action);
+                        }
+                        let _ = ws.close(
+                            Some(close_action.client_code),
+                            Some(close_action.client_reason),
+                        );
                     }
                     Err(_) => {
                         let now_ms = js_sys::Date::now();
@@ -660,7 +793,7 @@ impl DurableObject for RealtimeSession {
                                 now_ms,
                                 Some(RealtimeBridgeFrameMetadata {
                                     kind: RealtimeBridgeFrameKind::Binary,
-                                    bytes: bytes.len(),
+                                    bytes: binary_bytes,
                                     max_bytes: None,
                                 }),
                             ),
@@ -670,7 +803,7 @@ impl DurableObject for RealtimeSession {
                             "type": "realtime_session_control",
                             "status": REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
                             "context": context,
-                            "binary_bytes": bytes.len()
+                            "binary_bytes": binary_bytes
                         }));
                         if let Some(attachment) = attachment.as_ref() {
                             self.close_upstream_bridge_for(attachment, close_action);
@@ -814,42 +947,64 @@ impl RealtimeSession {
         let upstream = connect_realtime_upstream(handoff).await?;
         let bridge_key = realtime_upstream_bridge_key(attachment);
         let context = attachment_context_json(Some(attachment));
-        spawn_realtime_upstream_event_pump(upstream.clone(), client.clone(), context);
-        self.upstream_bridges
-            .insert(bridge_key, RealtimeUpstreamBridgeRuntime { upstream });
+        let runtime = RealtimeUpstreamBridgeRuntime {
+            state: Rc::new(RefCell::new(RealtimeUpstreamBridgeState {
+                upstream,
+                upstream_ready: false,
+                closed: false,
+                pending: RealtimeBridgePendingQueue::default(),
+            })),
+        };
+        spawn_realtime_upstream_event_pump(runtime.state.clone(), client.clone(), context);
+        self.upstream_bridges.insert(bridge_key, runtime);
         Ok(())
     }
 
     fn forward_text_to_upstream(
-        &self,
+        &mut self,
         attachment: Option<&SocketAttachment>,
-        message: &str,
-    ) -> WorkerResult<bool> {
-        let Some(upstream) = attachment.and_then(|item| self.upstream_bridge_for_attachment(item))
-        else {
-            return Ok(false);
-        };
-        upstream.send_with_str(message)?;
-        Ok(true)
+        message: String,
+    ) -> WorkerResult<RealtimeBridgeForwardResult> {
+        self.forward_frame_to_upstream(attachment, RealtimeBridgeQueuedFrame::Text(message))
     }
 
     fn forward_binary_to_upstream(
-        &self,
+        &mut self,
         attachment: Option<&SocketAttachment>,
-        bytes: &[u8],
-    ) -> WorkerResult<bool> {
-        let Some(upstream) = attachment.and_then(|item| self.upstream_bridge_for_attachment(item))
-        else {
-            return Ok(false);
-        };
-        upstream.send_with_bytes(bytes)?;
-        Ok(true)
+        bytes: Vec<u8>,
+    ) -> WorkerResult<RealtimeBridgeForwardResult> {
+        self.forward_frame_to_upstream(attachment, RealtimeBridgeQueuedFrame::Binary(bytes))
     }
 
-    fn upstream_bridge_for_attachment(&self, attachment: &SocketAttachment) -> Option<&WebSocket> {
-        self.upstream_bridges
-            .get(&realtime_upstream_bridge_key(attachment))
-            .map(|runtime| &runtime.upstream)
+    fn forward_frame_to_upstream(
+        &mut self,
+        attachment: Option<&SocketAttachment>,
+        frame: RealtimeBridgeQueuedFrame,
+    ) -> WorkerResult<RealtimeBridgeForwardResult> {
+        self.drop_closed_upstream_bridges();
+        let Some(runtime) = attachment.and_then(|item| {
+            self.upstream_bridges
+                .get(&realtime_upstream_bridge_key(item))
+        }) else {
+            return Ok(RealtimeBridgeForwardResult::NotActive);
+        };
+
+        let mut state = runtime.state.borrow_mut();
+        if state.closed {
+            return Ok(RealtimeBridgeForwardResult::NotActive);
+        }
+        if state.upstream_ready && state.pending.is_empty() {
+            frame.send_to_upstream(&state.upstream)?;
+            return Ok(RealtimeBridgeForwardResult::Sent);
+        }
+
+        match state
+            .pending
+            .try_enqueue(realtime_bridge_backpressure_policy(), frame)
+        {
+            Ok(_) => Ok(RealtimeBridgeForwardResult::Queued),
+            Err(overflow) => Ok(RealtimeBridgeForwardResult::Overflow(overflow)),
+        }
     }
 
     fn close_upstream_bridge_for(
@@ -861,10 +1016,29 @@ impl RealtimeSession {
             .upstream_bridges
             .remove(&realtime_upstream_bridge_key(attachment))
         {
-            if let (Some(code), Some(reason)) = (action.upstream_code, action.upstream_reason) {
-                let _ = runtime.upstream.close(Some(code), Some(reason));
-            }
+            close_realtime_upstream_runtime(&runtime.state, action);
         }
+    }
+
+    fn drop_closed_upstream_bridges(&mut self) {
+        self.upstream_bridges
+            .retain(|_, runtime| !runtime.state.borrow().closed);
+    }
+
+    fn upstream_bridge_runtime_status(&self) -> (usize, usize, usize) {
+        let mut active = 0;
+        let mut queued_frames = 0;
+        let mut queued_bytes = 0;
+        for runtime in self.upstream_bridges.values() {
+            let state = runtime.state.borrow();
+            if state.closed {
+                continue;
+            }
+            active += 1;
+            queued_frames += state.pending.len();
+            queued_bytes += state.pending.bytes();
+        }
+        (active, queued_frames, queued_bytes)
     }
 
     async fn load_metrics(
@@ -1617,6 +1791,57 @@ pub(crate) fn realtime_upstream_bridge_backpressure_policy_compiled() -> bool {
         && overflow_event.frame_max_bytes.is_none()
 }
 
+pub(crate) fn realtime_upstream_bridge_backpressure_runtime_compiled() -> bool {
+    if !REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_RUNTIME_COMPILED {
+        return false;
+    }
+    let policy = realtime_bridge_backpressure_policy();
+    let mut pending = RealtimeBridgePendingQueue::default();
+
+    let first = RealtimeBridgeQueuedFrame::Text("first".to_string());
+    let second = RealtimeBridgeQueuedFrame::Binary(vec![1, 2, 3]);
+    let first_metadata = first.metadata();
+    let second_metadata = second.metadata();
+
+    let Ok(first_state) = pending.try_enqueue(policy, first) else {
+        return false;
+    };
+    let Ok(second_state) = pending.try_enqueue(policy, second) else {
+        return false;
+    };
+    let Some(popped_first) = pending.pop_front() else {
+        return false;
+    };
+    let Some(popped_second) = pending.pop_front() else {
+        return false;
+    };
+
+    let mut bounded = RealtimeBridgePendingQueue::default();
+    for _ in 0..policy.max_pending_frames {
+        if bounded
+            .try_enqueue(policy, RealtimeBridgeQueuedFrame::Text("x".to_string()))
+            .is_err()
+        {
+            return false;
+        }
+    }
+
+    first_state.pending_frames == 1
+        && first_state.pending_bytes == first_metadata.bytes
+        && second_state.pending_frames == 2
+        && second_state.pending_bytes == first_metadata.bytes + second_metadata.bytes
+        && popped_first.metadata() == first_metadata
+        && popped_second.metadata() == second_metadata
+        && pending.is_empty()
+        && pending.bytes() == 0
+        && matches!(
+            bounded.try_enqueue(policy, RealtimeBridgeQueuedFrame::Text("y".to_string())),
+            Err(overflow)
+                if overflow.pending_frames == policy.max_pending_frames
+                    && overflow.incoming_bytes == 1
+        )
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -1842,13 +2067,19 @@ async fn connect_realtime_upstream(
     })
 }
 
-fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, context: Value) {
+fn spawn_realtime_upstream_event_pump(
+    runtime_state: Rc<RefCell<RealtimeUpstreamBridgeState>>,
+    client: WebSocket,
+    context: Value,
+) {
     wasm_bindgen_futures::spawn_local(async move {
+        let upstream = runtime_state.borrow().upstream.clone();
         let mut events = match upstream.events() {
             Ok(events) => events,
             Err(_) => {
                 let cause = RealtimeBridgeCloseCause::UpstreamEventStreamFailed;
                 let action = realtime_bridge_close_action(cause);
+                close_realtime_upstream_runtime(&runtime_state, action);
                 send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
                 let _ = client.close(Some(action.client_code), Some(action.client_reason));
                 return;
@@ -1857,7 +2088,30 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
         if upstream.accept().is_err() {
             let cause = RealtimeBridgeCloseCause::UpstreamAcceptFailed;
             let action = realtime_bridge_close_action(cause);
+            close_realtime_upstream_runtime(&runtime_state, action);
             send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
+            let _ = client.close(Some(action.client_code), Some(action.client_reason));
+            return;
+        }
+        let drain_failure = {
+            let mut state = runtime_state.borrow_mut();
+            if state.closed {
+                return;
+            }
+            state.upstream_ready = true;
+            realtime_bridge_drain_pending_to_upstream(&mut state).err()
+        };
+        if let Some(failure) = drain_failure {
+            let cause = RealtimeBridgeCloseCause::ClientToUpstreamSendFailed;
+            let action = realtime_bridge_close_action(cause);
+            close_realtime_upstream_runtime(&runtime_state, action);
+            send_realtime_bridge_terminal_event(
+                &client,
+                &context,
+                cause,
+                action,
+                Some(failure.frame),
+            );
             let _ = client.close(Some(action.client_code), Some(action.client_reason));
             return;
         }
@@ -1876,11 +2130,7 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
                                 action,
                                 Some(realtime_bridge_frame_metadata_from_rejection(rejection)),
                             );
-                            if let (Some(code), Some(reason)) =
-                                (action.upstream_code, action.upstream_reason)
-                            {
-                                let _ = upstream.close(Some(code), Some(reason));
-                            }
+                            close_realtime_upstream_runtime(&runtime_state, action);
                             let _ =
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
@@ -1900,11 +2150,7 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
                                     max_bytes: None,
                                 }),
                             );
-                            if let (Some(code), Some(reason)) =
-                                (action.upstream_code, action.upstream_reason)
-                            {
-                                let _ = upstream.close(Some(code), Some(reason));
-                            }
+                            close_realtime_upstream_runtime(&runtime_state, action);
                             let _ =
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
@@ -1920,11 +2166,7 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
                                 action,
                                 Some(realtime_bridge_frame_metadata_from_rejection(rejection)),
                             );
-                            if let (Some(code), Some(reason)) =
-                                (action.upstream_code, action.upstream_reason)
-                            {
-                                let _ = upstream.close(Some(code), Some(reason));
-                            }
+                            close_realtime_upstream_runtime(&runtime_state, action);
                             let _ =
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
@@ -1944,11 +2186,7 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
                                     max_bytes: None,
                                 }),
                             );
-                            if let (Some(code), Some(reason)) =
-                                (action.upstream_code, action.upstream_reason)
-                            {
-                                let _ = upstream.close(Some(code), Some(reason));
-                            }
+                            close_realtime_upstream_runtime(&runtime_state, action);
                             let _ =
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
@@ -1958,6 +2196,7 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
                 Ok(WebsocketEvent::Close(close)) => {
                     let cause = RealtimeBridgeCloseCause::UpstreamClosed(close.code());
                     let action = realtime_bridge_close_action(cause);
+                    mark_realtime_upstream_runtime_closed(&runtime_state);
                     send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
                     let _ = client.close(Some(action.client_code), Some(action.client_reason));
                     break;
@@ -1965,6 +2204,7 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
                 Err(_) => {
                     let cause = RealtimeBridgeCloseCause::UpstreamError;
                     let action = realtime_bridge_close_action(cause);
+                    mark_realtime_upstream_runtime_closed(&runtime_state);
                     send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
                     let _ = client.close(Some(action.client_code), Some(action.client_reason));
                     break;
@@ -1972,6 +2212,29 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket, co
             }
         }
     });
+}
+
+fn mark_realtime_upstream_runtime_closed(runtime_state: &Rc<RefCell<RealtimeUpstreamBridgeState>>) {
+    let mut state = runtime_state.borrow_mut();
+    state.closed = true;
+    state.upstream_ready = false;
+    state.pending.clear();
+}
+
+fn close_realtime_upstream_runtime(
+    runtime_state: &Rc<RefCell<RealtimeUpstreamBridgeState>>,
+    action: RealtimeBridgeCloseAction,
+) {
+    let mut state = runtime_state.borrow_mut();
+    if state.closed {
+        return;
+    }
+    state.closed = true;
+    state.upstream_ready = false;
+    state.pending.clear();
+    if let (Some(code), Some(reason)) = (action.upstream_code, action.upstream_reason) {
+        let _ = state.upstream.close(Some(code), Some(reason));
+    }
 }
 
 fn send_realtime_bridge_terminal_event(
@@ -2212,6 +2475,93 @@ impl RealtimeBridgeFrameKind {
             Self::Binary => "binary",
         }
     }
+}
+
+impl RealtimeBridgePendingQueue {
+    fn state(&self) -> RealtimeBridgeQueueState {
+        RealtimeBridgeQueueState {
+            pending_frames: self.frames.len(),
+            pending_bytes: self.bytes,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    fn try_enqueue(
+        &mut self,
+        policy: RealtimeBridgeBackpressurePolicy,
+        frame: RealtimeBridgeQueuedFrame,
+    ) -> Result<RealtimeBridgeQueueState, RealtimeBridgeBackpressureOverflow> {
+        let metadata = frame.metadata();
+        match realtime_bridge_backpressure_decision(policy, self.state(), metadata) {
+            RealtimeBridgeBackpressureDecision::Overflow(overflow) => Err(overflow),
+            RealtimeBridgeBackpressureDecision::SendNow
+            | RealtimeBridgeBackpressureDecision::Queue => {
+                self.bytes = self.bytes.saturating_add(metadata.bytes);
+                self.frames.push_back(frame);
+                Ok(self.state())
+            }
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<RealtimeBridgeQueuedFrame> {
+        let frame = self.frames.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(frame.metadata().bytes);
+        Some(frame)
+    }
+
+    fn clear(&mut self) {
+        self.frames.clear();
+        self.bytes = 0;
+    }
+}
+
+impl RealtimeBridgeQueuedFrame {
+    fn metadata(&self) -> RealtimeBridgeFrameMetadata {
+        match self {
+            Self::Text(text) => RealtimeBridgeFrameMetadata {
+                kind: RealtimeBridgeFrameKind::Text,
+                bytes: text.as_bytes().len(),
+                max_bytes: None,
+            },
+            Self::Binary(bytes) => RealtimeBridgeFrameMetadata {
+                kind: RealtimeBridgeFrameKind::Binary,
+                bytes: bytes.len(),
+                max_bytes: None,
+            },
+        }
+    }
+
+    fn send_to_upstream(&self, upstream: &WebSocket) -> WorkerResult<()> {
+        match self {
+            Self::Text(text) => upstream.send_with_str(text),
+            Self::Binary(bytes) => upstream.send_with_bytes(bytes),
+        }
+    }
+}
+
+fn realtime_bridge_drain_pending_to_upstream(
+    state: &mut RealtimeUpstreamBridgeState,
+) -> Result<usize, RealtimeBridgeDrainFailure> {
+    let mut sent = 0;
+    while let Some(frame) = state.pending.pop_front() {
+        let metadata = frame.metadata();
+        if frame.send_to_upstream(&state.upstream).is_err() {
+            return Err(RealtimeBridgeDrainFailure { frame: metadata });
+        }
+        sent += 1;
+    }
+    Ok(sent)
 }
 
 fn realtime_text_frame_guard_rejection(message: &str) -> Option<RealtimeBridgeFrameRejection> {
@@ -3158,6 +3508,59 @@ mod tests {
     }
 
     #[test]
+    fn realtime_upstream_bridge_pending_queue_is_bounded_and_fifo() {
+        let policy = realtime_bridge_backpressure_policy();
+        let mut queue = RealtimeBridgePendingQueue::default();
+
+        let state = queue
+            .try_enqueue(
+                policy,
+                RealtimeBridgeQueuedFrame::Text("client-one".to_string()),
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            RealtimeBridgeQueueState {
+                pending_frames: 1,
+                pending_bytes: 10,
+            }
+        );
+
+        let state = queue
+            .try_enqueue(policy, RealtimeBridgeQueuedFrame::Binary(vec![1, 2, 3, 4]))
+            .unwrap();
+        assert_eq!(
+            state,
+            RealtimeBridgeQueueState {
+                pending_frames: 2,
+                pending_bytes: 14,
+            }
+        );
+
+        assert!(matches!(
+            queue.pop_front(),
+            Some(RealtimeBridgeQueuedFrame::Text(text)) if text == "client-one"
+        ));
+        assert!(matches!(
+            queue.pop_front(),
+            Some(RealtimeBridgeQueuedFrame::Binary(bytes)) if bytes == vec![1, 2, 3, 4]
+        ));
+        assert!(queue.is_empty());
+        assert_eq!(queue.bytes(), 0);
+
+        for _ in 0..policy.max_pending_frames {
+            queue
+                .try_enqueue(policy, RealtimeBridgeQueuedFrame::Text("x".to_string()))
+                .unwrap();
+        }
+        let overflow = queue
+            .try_enqueue(policy, RealtimeBridgeQueuedFrame::Text("y".to_string()))
+            .unwrap_err();
+        assert_eq!(overflow.pending_frames, policy.max_pending_frames);
+        assert_eq!(overflow.incoming_bytes, 1);
+    }
+
+    #[test]
     fn realtime_upstream_bridge_backpressure_overflow_event_is_metadata_only() {
         let frame = RealtimeBridgeFrameMetadata {
             kind: RealtimeBridgeFrameKind::Text,
@@ -3592,6 +3995,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_backpressure_policy_contract_is_compiled() {
         assert!(realtime_upstream_bridge_backpressure_policy_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_backpressure_runtime_contract_is_compiled() {
+        assert!(realtime_upstream_bridge_backpressure_runtime_compiled());
     }
 
     #[test]

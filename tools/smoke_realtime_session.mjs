@@ -436,6 +436,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_upstream_bridge_replay_contract_compiled === true,
     realtime_session_upstream_bridge_backpressure_policy_compiled:
       data.realtime_session_upstream_bridge_backpressure_policy_compiled === true,
+    realtime_session_upstream_bridge_backpressure_runtime_compiled:
+      data.realtime_session_upstream_bridge_backpressure_runtime_compiled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
     realtime_session_upstream_bridge_compiled:
@@ -466,6 +468,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_upstream_bridge_event_trace_compiled", true],
     ["realtime_session_upstream_bridge_replay_contract_compiled", true],
     ["realtime_session_upstream_bridge_backpressure_policy_compiled", true],
+    ["realtime_session_upstream_bridge_backpressure_runtime_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
@@ -485,6 +488,7 @@ function validateCapabilities(capabilities, options) {
     "upstream_bridge_event_trace",
     "upstream_bridge_replay_contract",
     "upstream_bridge_backpressure_policy",
+    "upstream_bridge_backpressure_runtime",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -776,6 +780,16 @@ function validatePlatformHeaderBoundaryFrames({ pong, statusFrame, controlFrame,
   if (httpStatus.active_upstream_bridges !== 0) {
     throw new Error(
       `platform header boundary HTTP status active_upstream_bridges=${httpStatus.active_upstream_bridges}, expected 0`,
+    );
+  }
+  if (httpStatus.queued_upstream_frames !== 0) {
+    throw new Error(
+      `platform header boundary HTTP status queued_upstream_frames=${httpStatus.queued_upstream_frames}, expected 0`,
+    );
+  }
+  if (httpStatus.queued_upstream_bytes !== 0) {
+    throw new Error(
+      `platform header boundary HTTP status queued_upstream_bytes=${httpStatus.queued_upstream_bytes}, expected 0`,
     );
   }
   if (!Array.isArray(httpStatus.attachments)) {
@@ -1276,6 +1290,8 @@ function runPlatformHeaderBoundarySelfTest() {
     },
     httpStatus: {
       active_upstream_bridges: 0,
+      queued_upstream_frames: 0,
+      queued_upstream_bytes: 0,
       attachments: [cleanContext],
     },
   };
@@ -1328,6 +1344,8 @@ function runPlatformHeaderBoundarySelfTest() {
         ...cleanFrames,
         httpStatus: {
           active_upstream_bridges: 1,
+          queued_upstream_frames: 0,
+          queued_upstream_bytes: 0,
           attachments: [cleanContext],
         },
       },
@@ -1395,6 +1413,8 @@ function summarizePlatformHeaderBoundary({ headers, pong, statusFrame, controlFr
     httpStatus: httpStatus
       ? {
           activeUpstreamBridges: httpStatus.active_upstream_bridges,
+          queuedUpstreamFrames: httpStatus.queued_upstream_frames,
+          queuedUpstreamBytes: httpStatus.queued_upstream_bytes,
           attachments: httpStatus.attachments.map(summarizeBoundaryContext),
         }
       : null,

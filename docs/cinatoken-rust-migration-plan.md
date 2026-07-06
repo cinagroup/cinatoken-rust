@@ -6862,6 +6862,69 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.110 2026-07-06 Realtime Upstream Backpressure Runtime Queue
+
+This increment wires the previously compiled backpressure policy into the
+transient Realtime upstream bridge runtime. It does not persist queued frames
+and does not claim hibernation can resume an upstream OpenAI Realtime socket:
+the queue is deliberately in-memory, per active DO instance, and bounded for
+short startup/backlog windows only.
+
+Implemented:
+
+- Extended `RealtimeUpstreamBridgeRuntime` from a bare upstream socket to a
+  transient runtime state with:
+  - `upstream_ready`;
+  - `closed`;
+  - a FIFO pending frame queue;
+  - pending frame/byte counters.
+- Client text/binary frames now use a shared `RealtimeBridgeQueuedFrame` path:
+  - if the upstream socket is accepted and the queue is empty, the frame sends
+    immediately;
+  - if the upstream socket is not accepted yet, or a backlog already exists,
+    the frame enters the bounded pending queue;
+  - if the queue would exceed 32 frames or 4 MiB, the bridge records a
+    metadata-only `backpressure_overflow` terminal event and closes client and
+    upstream sides with `1011/upstream_bridge_backpressure_overflow`.
+- The upstream event pump now marks the runtime ready after upstream
+  `accept()`, drains pending frames in FIFO order, and fail-closes with the
+  existing client-to-upstream send-failure terminal event if draining fails.
+- `/api/platform/realtime/:session/status` now reports aggregate
+  `queued_upstream_frames` and `queued_upstream_bytes`, while still treating
+  the queue as transient runtime state rather than durable session data.
+- Added `upstream_bridge_backpressure_runtime` to
+  `REALTIME_SESSION_CUTOVER_GUARDS` and exposed
+  `realtime_session_upstream_bridge_backpressure_runtime_compiled` through
+  `/api/platform/capabilities`.
+- Updated the smoke preflight and the frontend Cloudflare platform panel so
+  operators can see both the backpressure policy and runtime queue gates.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:bridge-replay-contract` passed and retained
+  the `backpressure_overflow_text` metadata-only terminal case.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed with 49 filtered Realtime/platform tests, including FIFO queue,
+  overflow, and runtime compiled-contract checks.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed with 13 filtered platform tests, including the new v1 cutover gate.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check` passed across frontend build/audits, smoke contracts,
+  workspace tests, Worker wasm32 check, and WFP tenant wasm32 check.
+
+Remaining migration gaps:
+
+- Capture live local/staging evidence that early client frames queued before
+  upstream accept are drained in order against a mock upstream.
+- Add safe staging fault injection for upstream socket abort/error,
+  event-stream failure, accept failure, and upstream-to-client send failure;
+  those paths remain contract-covered but not fully live-harness-covered.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.
+
 ### 22.109 2026-07-06 Realtime Upstream Backpressure Policy Contract
 
 This increment moves the Realtime bridge hardening work from scattered TODOs to

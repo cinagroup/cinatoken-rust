@@ -494,6 +494,7 @@ Record:
   `realtime_session_upstream_bridge_event_trace_compiled`,
   `realtime_session_upstream_bridge_replay_contract_compiled`,
   `realtime_session_upstream_bridge_backpressure_policy_compiled`,
+  `realtime_session_upstream_bridge_backpressure_runtime_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -592,8 +593,8 @@ Pass criteria:
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge
-  path has queued backpressure/flow-control, billing settlement, audit logging,
-  and live close/error/protocol replay evidence; `/v1/realtime` remains off in
+  path has live queue/drain evidence, billing settlement, audit logging, and
+  live close/error/protocol replay evidence; `/v1/realtime` remains off in
   production until that changes.
 
 ## Phase 5: Billing Shadow Smoke

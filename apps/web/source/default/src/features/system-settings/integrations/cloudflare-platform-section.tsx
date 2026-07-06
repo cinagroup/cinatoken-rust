@@ -80,6 +80,8 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
         capabilities.realtime_session_upstream_bridge_event_trace_compiled,
         capabilities.realtime_session_upstream_bridge_replay_contract_compiled,
+        capabilities.realtime_session_upstream_bridge_backpressure_policy_compiled,
+        capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
       ]
     : []
@@ -517,7 +519,7 @@ function buildCapabilityGroups(
         {
           label: t('Upstream frame guard'),
           description: t(
-            'Rejects oversized Realtime bridge text and binary frames with message-too-big close handling before full backpressure support is enabled.'
+            'Rejects oversized Realtime bridge text and binary frames with message-too-big close handling alongside the bounded backpressure queue.'
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
@@ -561,6 +563,26 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_replay_contract_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream backpressure policy'),
+          description: t(
+            'Defines bounded pending frame and byte limits plus metadata-only fail-closed overflow handling for the Realtime bridge.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_backpressure_policy_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream backpressure runtime'),
+          description: t(
+            'Queues client frames in bounded transient memory until the upstream Realtime socket is accepted, then drains them in order or closes fail-closed on overflow.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

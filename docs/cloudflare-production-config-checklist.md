@@ -99,6 +99,7 @@ Current `wrangler.toml` is development-shaped:
 - `ENVIRONMENT = "development"`
 - `FRONTEND_BASE_URL = "http://localhost:3000"`
 - `AI_GATEWAY_ID = ""`
+- `RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"`
 - Route-specific WFP tenant AI Gateway IDs default empty:
   `AI_GATEWAY_ID_OPENAI_CHAT`, `AI_GATEWAY_ID_OPENAI_RESPONSES`,
   `AI_GATEWAY_ID_ANTHROPIC_MESSAGES`, `AI_GATEWAY_ID_OPENAI_EMBEDDINGS`,
@@ -350,11 +351,13 @@ build with `bun run build:wfp-tenant`, then upload the generated
 | Var/secret | Kind | Required for | Notes |
 | --- | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | var | Tenant script plan/deploy URL and runtime AI Gateway calls | Plain account identifier; may be left empty until WFP staging |
-| `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace script upload and tenant runtime AI Gateway calls | Never commit; scope to Worker dispatch namespace script edit plus AI Gateway/Workers AI calls needed by the tenant script |
+| `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace script upload, tenant runtime AI Gateway calls, and fallback main-relay AI Gateway readiness signal | Never commit; scope to Worker dispatch namespace script edit plus AI Gateway/Workers AI calls needed by the tenant script |
+| `CLOUDFLARE_AI_GATEWAY_TOKEN` | secret | Preferred main-relay AI Gateway REST runtime token once the router is canaried | Prefer this narrower runtime secret over reusing the WFP dispatch deploy token |
 | `WFP_TENANT_CF_API_TOKEN` or `CLOUDFLARE_AI_GATEWAY_TOKEN` | local secret/env for artifact uploader | Optional tenant runtime `CF_API_TOKEN` binding | Prefer this over reusing the dispatch deploy token for staging/prod tenant runtime calls |
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
+| `RELAY_AI_GATEWAY_ROUTER_ENABLED` | var | Main relay AI Gateway REST router gate | Must stay `false` until route/provider prefix policy, fallback, billing settlement, and staging panel evidence are approved |
 | `AI_GATEWAY_ID_OPENAI_CHAT` | var | Optional WFP tenant gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_OPENAI_RESPONSES` | var | Optional WFP tenant gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | var | Optional WFP tenant gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only |

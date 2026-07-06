@@ -122,7 +122,7 @@ export function CloudflarePlatformSection() {
 
         {capabilities ? (
           <>
-            <div className='grid gap-4 lg:grid-cols-3'>
+            <div className='grid gap-4 lg:grid-cols-2 xl:grid-cols-4'>
               {buildCapabilityGroups(capabilities, t).map((group) => (
                 <CapabilityGroupCard key={group.title} group={group} />
               ))}
@@ -148,6 +148,11 @@ export function CloudflarePlatformSection() {
                     '/v1/realtime remains gated separately from the platform realtime smoke path until upstream bridge and billing settlement are verified.'
                   )}
                 </li>
+                <li>
+                  {t(
+                    'Main relay AI Gateway routing stays default-off until route compatibility, provider-prefix policy, fallback behavior, and settlement evidence are captured.'
+                  )}
+                </li>
               </ul>
             </div>
           </>
@@ -163,6 +168,9 @@ function buildCapabilityGroups(
   capabilities: PlatformCapabilities,
   t: (key: string, options?: Record<string, unknown>) => string
 ): CapabilityGroup[] {
+  const relayAiGatewayRoutes =
+    capabilities.relay_ai_gateway_rest_routes.join(', ') || t('No routes')
+
   return [
     {
       title: t('Runtime bindings'),
@@ -192,6 +200,60 @@ function buildCapabilityGroups(
           ready: capabilities.channel_affinity_do_available,
           readyLabel: t('Bound'),
           missingLabel: t('Missing'),
+        },
+      ],
+    },
+    {
+      title: t('AI Gateway router'),
+      description: t(
+        'Default-off REST routing readiness for the main Rust relay.'
+      ),
+      rows: [
+        {
+          label: t('Cloudflare account ID'),
+          description: t('Required for account-scoped AI Gateway REST calls.'),
+          ready: capabilities.cloudflare_account_id_configured,
+          readyLabel: t('Configured'),
+          missingLabel: t('Not configured'),
+        },
+        {
+          label: t('Gateway runtime token'),
+          description: t(
+            'Secret used by the Worker when the relay router is enabled.'
+          ),
+          ready: capabilities.cloudflare_ai_gateway_token_configured,
+          readyLabel: t('Configured'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Main relay router gate'),
+          description: t('Runtime flag RELAY_AI_GATEWAY_ROUTER_ENABLED.'),
+          ready: capabilities.relay_ai_gateway_router_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Off'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('REST route planner'),
+          description: t('Compiled for {{count}} route families: {{routes}}', {
+            count: capabilities.relay_ai_gateway_rest_routes.length,
+            routes: relayAiGatewayRoutes,
+          }),
+          ready: capabilities.relay_ai_gateway_rest_routes.length > 0,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Router cutover readiness'),
+          description: t(
+            'Requires account, gateway ID, runtime token, and explicit router gate.'
+          ),
+          ready: capabilities.relay_ai_gateway_router_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Waiting'),
+          missingVariant: capabilities.relay_ai_gateway_router_enabled
+            ? 'warning'
+            : 'neutral',
         },
       ],
     },
@@ -328,8 +390,8 @@ function CapabilityGroupCard({ group }: { group: CapabilityGroup }) {
 
 function CapabilitySkeleton() {
   return (
-    <div className='grid gap-4 lg:grid-cols-3'>
-      {[0, 1, 2].map((index) => (
+    <div className='grid gap-4 lg:grid-cols-2 xl:grid-cols-4'>
+      {[0, 1, 2, 3].map((index) => (
         <div key={index} className='space-y-3 rounded-lg border p-4'>
           <Skeleton className='h-4 w-40' />
           <Skeleton className='h-3 w-full' />

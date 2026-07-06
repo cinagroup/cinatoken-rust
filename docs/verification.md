@@ -4,6 +4,29 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the main relay AI Gateway REST readiness
+  planner, default-off `RELAY_AI_GATEWAY_ROUTER_ENABLED` config, and read-only
+  frontend readiness panel. The run covered frontend type/build, bundle
+  redaction audit (460 files, 37,292,545 bytes, 0 findings), bundle budget
+  audit (245 files, 18.96 MB raw / 4.50 MB gzip, all 10 budgets OK),
+  lint-debt baseline (0 errors / 0 warnings / 0 regressions), frontend route
+  audit (215 Worker-facing calls / 307 Worker routes / 0 missing calls), WFP
+  tenant deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession smoke
+  dry-run, WFP tenant Worker-script tests (8 passed), `cargo fmt --all
+  --check`, Rust workspace tests excluding the Worker, Worker wasm32 check, and
+  WFP tenant wasm32 check. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-providers`: passed after adding the main relay
+  AI Gateway REST readiness planner, endpoint URL helper, and model author
+  classifier (12 tests).
+- `cargo test -p cinatoken-worker --lib platform_gateway`: passed after
+  exposing main relay AI Gateway readiness in `/api/platform/capabilities` (9
+  tests; existing `d1_repositories.rs` dead-code warnings only).
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the read-only AI Gateway
+  router readiness group to the Cloudflare Platform settings panel.
+- `cargo fmt --all --check`: passed after the main relay AI Gateway readiness
+  planner increment.
 - `bun run check`: passed after adding the provider route registry, Cloudflare
   AI Gateway URL helpers, and layered gateway architecture document. The run
   covered frontend type/build, bundle redaction audit (460 files, 37,290,926

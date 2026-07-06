@@ -5,6 +5,7 @@
 //! forwards preview/tenant traffic to scripts inside a dispatch namespace. The
 //! feature is off by default and only activates when explicitly configured.
 
+use cinatoken_providers::ai_gateway::MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS;
 use serde::Serialize;
 use serde_json::json;
 use wasm_bindgen::JsValue;
@@ -20,7 +21,12 @@ pub const WFP_DISPATCH_ENABLED_ENV: &str = "WFP_DISPATCH_ENABLED";
 pub const WFP_INTERNAL_DISPATCH_ENABLED_ENV: &str = "WFP_INTERNAL_DISPATCH_ENABLED";
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
+pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
 pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
+const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
+const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
+const CLOUDFLARE_AI_GATEWAY_TOKEN_ENV: &str = "CLOUDFLARE_AI_GATEWAY_TOKEN";
+const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
 const WFP_ROUTE_REQUEST_HEADER: &str = "x-cinatoken-wfp-route";
 const WFP_WORKER_REQUEST_HEADER: &str = "x-cinatoken-wfp-worker";
 const BLOCKED_DISPATCH_REQUEST_HEADERS: &[&str] = &[
@@ -62,6 +68,11 @@ impl DispatchRouteKind {
 struct PlatformCapabilities {
     ai_binding_available: bool,
     ai_gateway_id_configured: bool,
+    cloudflare_account_id_configured: bool,
+    cloudflare_ai_gateway_token_configured: bool,
+    relay_ai_gateway_router_enabled: bool,
+    relay_ai_gateway_router_ready: bool,
+    relay_ai_gateway_rest_routes: Vec<&'static str>,
     channel_affinity_do_available: bool,
     realtime_sessions_do_available: bool,
     wfp_dispatch_binding_available: bool,
@@ -80,9 +91,25 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(response);
     }
 
+    let ai_gateway_id_configured = runtime_value(&env, AI_GATEWAY_ID_ENV).is_some();
+    let cloudflare_account_id_configured = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV).is_some();
+    let cloudflare_ai_gateway_token_configured = cloudflare_ai_gateway_token_configured(&env);
+    let relay_ai_gateway_router_enabled = env_flag(&env, RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV);
+    let relay_ai_gateway_router_ready = is_relay_ai_gateway_router_ready(
+        relay_ai_gateway_router_enabled,
+        cloudflare_account_id_configured,
+        ai_gateway_id_configured,
+        cloudflare_ai_gateway_token_configured,
+    );
+
     let capabilities = PlatformCapabilities {
         ai_binding_available: env.ai("AI").is_ok(),
-        ai_gateway_id_configured: runtime_value(&env, "AI_GATEWAY_ID").is_some(),
+        ai_gateway_id_configured,
+        cloudflare_account_id_configured,
+        cloudflare_ai_gateway_token_configured,
+        relay_ai_gateway_router_enabled,
+        relay_ai_gateway_router_ready,
+        relay_ai_gateway_rest_routes: relay_ai_gateway_rest_routes(),
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
         realtime_sessions_do_available: env.durable_object("REALTIME_SESSIONS").is_ok(),
         wfp_dispatch_binding_available: env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok(),
@@ -384,6 +411,36 @@ pub(crate) fn runtime_value(env: &Env, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn secret_or_var(env: &Env, name: &str) -> Option<String> {
+    env.secret(name)
+        .map(|value| value.to_string())
+        .ok()
+        .or_else(|| runtime_value(env, name))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn cloudflare_ai_gateway_token_configured(env: &Env) -> bool {
+    secret_or_var(env, CLOUDFLARE_AI_GATEWAY_TOKEN_ENV).is_some()
+        || secret_or_var(env, CLOUDFLARE_API_TOKEN_ENV).is_some()
+}
+
+fn relay_ai_gateway_rest_routes() -> Vec<&'static str> {
+    MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS
+        .iter()
+        .map(|plan| plan.rest_endpoint.relay_path())
+        .collect()
+}
+
+fn is_relay_ai_gateway_router_ready(
+    router_enabled: bool,
+    account_configured: bool,
+    gateway_id_configured: bool,
+    token_configured: bool,
+) -> bool {
+    router_enabled && account_configured && gateway_id_configured && token_configured
+}
+
 fn gateway_error(status: u16, code: &str, message: &str) -> WorkerResult<Response> {
     crate::json_with_status(
         &json!({
@@ -533,5 +590,22 @@ mod tests {
         assert!(prefixed_worker_name("tenant-a", Some("bad.prefix.")).is_none());
         assert!(normalize_worker_name("").is_none());
         assert!(normalize_worker_name("bad/path").is_none());
+    }
+
+    #[test]
+    fn relay_ai_gateway_rest_routes_match_compiled_main_relay_plan() {
+        assert_eq!(
+            relay_ai_gateway_rest_routes(),
+            vec!["chat/completions", "responses", "messages"]
+        );
+    }
+
+    #[test]
+    fn relay_ai_gateway_router_ready_requires_explicit_gate_and_config() {
+        assert!(is_relay_ai_gateway_router_ready(true, true, true, true));
+        assert!(!is_relay_ai_gateway_router_ready(false, true, true, true));
+        assert!(!is_relay_ai_gateway_router_ready(true, false, true, true));
+        assert!(!is_relay_ai_gateway_router_ready(true, true, false, true));
+        assert!(!is_relay_ai_gateway_router_ready(true, true, true, false));
     }
 }

@@ -5411,3 +5411,84 @@ Remaining migration gaps:
   main-relay traffic is redirected through Cloudflare AI Gateway.
 - Keep WFP tenant AI Gateway routing separate from the main relay until live
   dispatch namespace upload and AI Gateway log smoke evidence exist.
+
+### 22.83 2026-07-06 Main Relay AI Gateway REST Readiness Planner
+
+This increment advances M7 without redirecting production traffic. Cloudflare's
+current AI Gateway REST surface documents account-scoped `/ai/run`,
+`/ai/v1/chat/completions`, `/ai/v1/responses`, and `/ai/v1/messages`; the main
+relay now has a pure planner and operator-visible readiness state for the route
+families that can be evaluated safely before any cutover.
+
+Implemented:
+
+- Added `AiGatewayRestEndpoint`, `AiGatewayRestRoutePlan`, and
+  `MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS` in `crates/providers`.
+  - The main relay compiled plan covers OpenAI-compatible
+    `chat/completions`, OpenAI-compatible `responses`, and Anthropic
+    `messages`.
+  - Workers AI `/ai/run` is represented by the planner for future binding/WFP
+    coordination, but it is not advertised as a main-relay REST cutover route.
+  - Legacy `/v1/completions`, `/v1/embeddings`, rerank, image/audio routes, and
+    Gemini native URLs deliberately return unsupported planner errors until
+    provider-specific transforms, usage parsing, and live AI Gateway evidence
+    exist.
+- Added `rest_gateway_endpoint_url` so future code can build both documented
+  AI Gateway REST shapes correctly: `/ai/v1/...` for chat/responses/messages
+  and `/ai/run` for Workers AI calls.
+- Added model author classification for the provider-prefix policy gate:
+  `openai/...`, `anthropic/...`, `google/...`, `@cf/...`, and
+  `cloudflare/...` are classified; unprefixed models remain explicit unknowns.
+- Extended `/api/platform/capabilities` with main relay AI Gateway readiness
+  fields:
+  - `cloudflare_account_id_configured`;
+  - `cloudflare_ai_gateway_token_configured`;
+  - `relay_ai_gateway_router_enabled`;
+  - `relay_ai_gateway_router_ready`;
+  - `relay_ai_gateway_rest_routes`.
+- Introduced the default-off runtime gate
+  `RELAY_AI_GATEWAY_ROUTER_ENABLED`. The router is only considered ready when
+  all of these are true: `CLOUDFLARE_ACCOUNT_ID`, `AI_GATEWAY_ID`,
+  `CLOUDFLARE_AI_GATEWAY_TOKEN` or `CLOUDFLARE_API_TOKEN`, and the explicit
+  router gate.
+- Added `RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"` to development, staging,
+  and production `wrangler.toml` vars so environment reviews see the default-off
+  canary gate explicitly.
+- Updated the admin Cloudflare Platform panel with a fourth read-only group,
+  **AI Gateway router**, showing account/token readiness, the main relay gate,
+  compiled REST route families, and cutover readiness.
+- Updated the production readiness matrix and Cloudflare config checklist with
+  the new router gate and preferred `CLOUDFLARE_AI_GATEWAY_TOKEN` runtime
+  secret.
+
+Validation:
+
+- `cargo test -p cinatoken-providers` passed (12 tests), including the new REST
+  route planner and model author classifier cases.
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed (9 tests;
+  existing `d1_repositories.rs` dead-code warnings only), including the new
+  readiness gate helper and compiled route-list checks.
+- `bun run typecheck` in `apps/web/source/default` passed.
+- `bun run lint` in `apps/web/source/default` passed.
+- `cargo fmt --all --check` passed.
+- `bun run format:check` in `apps/web/source/default` passed after formatting
+  the updated Cloudflare Platform panel.
+- `bun run check` passed after this increment. The run covered frontend
+  type/build, bundle redaction audit, bundle budget audit, lint-debt audit,
+  frontend route audit, WFP tenant deploy-plan dry-run, WFP dispatch smoke
+  dry-run, RealtimeSession smoke dry-run, WFP tenant Worker-script tests,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, Worker
+  wasm32 check, and WFP tenant wasm32 check. Existing warnings remained limited
+  to known `d1_repositories.rs` dead-code warnings.
+
+Remaining migration gaps:
+
+- Add the actual main-relay AI Gateway request builder only after route-level
+  provider-prefix policy, token/base-url coupling, direct-provider fallback,
+  and billing settlement invariants are proven.
+- Decide whether `/v1/embeddings` should stay direct, move through a
+  provider-native Gateway path, or remain WFP-tenant-only until Cloudflare REST
+  route evidence is clearer.
+- Run staging capability-panel smoke with real `CLOUDFLARE_ACCOUNT_ID`,
+  `AI_GATEWAY_ID`, and a scoped token, leaving
+  `RELAY_AI_GATEWAY_ROUTER_ENABLED=false` until a controlled canary window.

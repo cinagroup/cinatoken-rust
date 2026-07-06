@@ -394,6 +394,11 @@ export type UpstreamRatiosResponse = {
 export type PlatformCapabilities = {
   ai_binding_available: boolean
   ai_gateway_id_configured: boolean
+  cloudflare_account_id_configured: boolean
+  cloudflare_ai_gateway_token_configured: boolean
+  relay_ai_gateway_router_enabled: boolean
+  relay_ai_gateway_router_ready: boolean
+  relay_ai_gateway_rest_routes: string[]
   channel_affinity_do_available: boolean
   realtime_sessions_do_available: boolean
   wfp_dispatch_binding_available: boolean

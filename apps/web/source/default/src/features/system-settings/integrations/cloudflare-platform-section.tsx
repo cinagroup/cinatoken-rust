@@ -74,6 +74,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_connect_contract_compiled,
         capabilities.realtime_session_upstream_connect_handoff_compiled,
         capabilities.realtime_session_upstream_fetch_upgrade_adapter_compiled,
+        capabilities.realtime_session_upstream_bridge_lifecycle_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -494,6 +495,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_fetch_upgrade_adapter_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream bridge lifecycle'),
+          description: t(
+            'Tracks the transient upstream Realtime WebSocket bridge lifecycle, forwards client frames when active, and reports a not-active state after hibernation or restart.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_lifecycle_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

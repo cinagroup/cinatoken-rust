@@ -91,7 +91,7 @@ maturity levels are used:
 | M2 Provider registry | — | **Wired** | `ProviderRegistry::resolve` drives per-endpoint provider routing on the live relay path | Fold remaining private-enum branches into adapters | `crates/providers/src/routing.rs:77-80`; called at `crates/worker/src/relay.rs:194` |
 | M7 AiGateway router | C | **Gated substrate (fallback wired)** | Full cutover **decision ladder** + security coupling, gateway **URL builders**, model-author classifier, 8 cutover guards, `channels.other_info` opt-in metadata support, default-off REST forwarder, same-channel direct fallback, admin readiness panel | Live staging canary, AI Gateway log capture, and billing/usage evidence | `crates/providers/src/ai_gateway.rs` (722 ln): `plan_ai_gateway_cutover:190`, `rest_gateway_endpoint_url:353`, guards `:89-98`; `crates/storage/src/lib.rs` opt-in parser; `crates/worker/src/relay.rs` runtime/forwarder/fallback; gate `RELAY_AI_GATEWAY_ROUTER_ENABLED` + readiness `platform_gateway.rs:100-116` |
 | M8 WFP dispatch | B | **Gated substrate** | `dispatch_target_for_request` + `dispatch_request` via `dynamic_dispatcher().get().fetch_request`, credential/marker **header stripping**, worker-name sanitization, preview-host + internal-path routing, admin-auth gate, tenant-script SDK crate | Uncomment `[[dispatch_namespaces]]` binding (needs paid WFP plan); end-to-end tenant smoke | `crates/worker/src/platform_gateway.rs` (627 ln): dispatch `:135-218`, header strip `:34-43,361-368`; `crates/wfp-tenant/src/lib.rs` (814 ln); binding commented `wrangler.toml:67,162,262`; gates `WFP_DISPATCH_ENABLED`/`WFP_INTERNAL_DISPATCH_ENABLED` |
-| M6 RealtimeSession | A | **Gated substrate (fetch-upgrade adapter compiled)** | `#[durable_object]` with WS **hibernation** (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`), per-socket `SocketAttachment`, lifecycle metrics persisted to DO storage, upstream URL/handshake planner, `/v1/realtime` D1/cache channel selection with secret-redacted plan summaries in socket attachments, request-scoped upstream connect specs, gateway-to-DO secret handoff with no raw key persistence, and a Worker-native upstream fetch-upgrade adapter for outbound WebSocket handshakes | **Bidirectional upstream bridge/pump** still returns `upstream_bridge_not_wired`; **usage accumulation + Go-formula settle** (none yet); protocol parity | `crates/worker/src/realtime_session.rs`: DO + planners/handoff/fetch-upgrade adapter; `crates/worker/src/relay.rs`: Realtime channel selection helper; binding **active** `wrangler.toml:117,216,317`; gates `REALTIME_SESSION_V1_ENABLED`/`REALTIME_SESSION_GATEWAY_ENABLED` |
+| M6 RealtimeSession | A | **Gated substrate (transient bridge lifecycle compiled)** | `#[durable_object]` with WS **hibernation** (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`), per-socket `SocketAttachment`, lifecycle metrics persisted to DO storage, upstream URL/handshake planner, `/v1/realtime` D1/cache channel selection with secret-redacted plan summaries in socket attachments, request-scoped upstream connect specs, gateway-to-DO secret handoff with no raw key persistence, Worker-native upstream fetch-upgrade adapter, and an in-memory upstream bridge registry that forwards client frames while active and reports `upstream_bridge_not_active` after hibernation/restart | Production-grade bridge hardening: bounded queues/backpressure, live close/error replay evidence, **usage accumulation + Go-formula settle** (none yet), protocol parity | `crates/worker/src/realtime_session.rs`: DO + planners/handoff/fetch-upgrade adapter/transient lifecycle; `crates/worker/src/relay.rs`: Realtime channel selection helper; binding **active** `wrangler.toml:117,216,317`; gates `REALTIME_SESSION_V1_ENABLED`/`REALTIME_SESSION_GATEWAY_ENABLED` |
 | M4 QuotaCoordinator | — | **Pending** | — | Build the shadow-first per-token DO (§4 M4) | no `crates/coordinator` yet |
 | M5 Task correctness / TaskRunner | — | **Pending** | — | M5a correctness fixes (starvation sweep, MJ units bug, refund-in-CAS), then optional DO | cron poller live at `crates/worker/src/lib.rs:1255` |
 
@@ -307,15 +307,17 @@ by clearing the flag, no redeploy required.
 - **Rollback:** M5a is pure correctness (keep). M5b flag off → cron-only.
 
 ### M6 — `RealtimeSession` DO (3 wk) — Paradigm A
-- **Status (2026-07-06): Gated substrate, upstream fetch-upgrade adapter compiled.** The DO with WS
+- **Status (2026-07-06): Gated substrate, transient upstream bridge lifecycle compiled.** The DO with WS
   hibernation (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`)
   and persisted lifecycle metrics has landed (`crates/worker/src/realtime_session.rs`),
   with the `REALTIME_SESSIONS` binding + `new_sqlite_classes` active in all 3
   envs, gated `REALTIME_SESSION_V1_ENABLED=false`. The request-scoped connect
   handoff can now be turned into a Worker `Fetch::Request` WebSocket upgrade
-  without persisting upstream secrets. **Remaining:** the bidirectional outbound
-  upstream bridge/pump (returns `upstream_bridge_not_wired` today, `:188-197`), usage
-  accumulation, and the Go-formula settlement below — none implemented yet.
+  without persisting upstream secrets, and active DO instances now keep a
+  transient upstream WebSocket registry for client-to-upstream forwarding plus
+  upstream-to-client event pumping. **Remaining:** production bridge hardening
+  (bounded queues/backpressure and live close/error replay evidence), usage
+  accumulation, and the Go-formula settlement below remains unimplemented.
 - **Planner landed:** OpenAI-compatible `/v1/realtime?model=...`, Azure
   `/openai/realtime?deployment=...&api-version=...`, and secret-redacted
   Realtime handshake summaries are compiled and exposed as a separate

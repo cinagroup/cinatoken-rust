@@ -385,6 +385,7 @@ Record:
   `realtime_session_upstream_bridge_connect_contract_compiled`,
   `realtime_session_upstream_connect_handoff_compiled`,
   `realtime_session_upstream_fetch_upgrade_adapter_compiled`,
+  `realtime_session_upstream_bridge_lifecycle_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -401,7 +402,8 @@ Pass criteria:
 - Platform capabilities report hibernation, auth boundary, persisted metrics,
   no-echo controls, the upstream bridge planner, the upstream channel planner,
   the request-scoped upstream connect contract, and the gateway-to-DO connect
-  handoff plus upstream fetch-upgrade adapter as compiled;
+  handoff plus upstream fetch-upgrade adapter and transient bridge lifecycle as
+  compiled;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -416,11 +418,14 @@ Pass criteria:
   model, provider, auth mode, header names/protocol names) plus
   `upstream_connect_handoff=true`, and never includes the raw upstream key,
   bearer header value, or `openai-insecure-api-key.<secret>` protocol value.
+- If the DO is hibernated/restarted and the outbound upstream socket is no
+  longer active, client frames return `upstream_bridge_not_active` rather than
+  implying that the upstream session was resumed.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
-- `realtime_session_v1_cutover_ready` remains false until upstream bridge,
-  backpressure/error mapping, billing settlement, audit logging, and live
-  protocol replay evidence are complete; `/v1/realtime` remains off in
+- `realtime_session_v1_cutover_ready` remains false until the production bridge
+  path has bounded backpressure/error mapping, billing settlement, audit
+  logging, and live protocol replay evidence; `/v1/realtime` remains off in
   production until that changes.
 
 ## Phase 5: Billing Shadow Smoke

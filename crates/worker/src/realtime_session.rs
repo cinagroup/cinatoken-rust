@@ -10,12 +10,14 @@ use cinatoken_relay::{
     openai_compatible::{default_base_url, upstream_v1_url},
     token_fingerprint,
 };
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use url::Url;
 use worker::{
     durable_object, Env, Fetch, Method, Request, Response, Result as WorkerResult, State,
-    WebSocket, WebSocketIncomingMessage, WebSocketPair,
+    WebSocket, WebSocketIncomingMessage, WebSocketPair, WebsocketEvent,
 };
 
 use crate::platform_gateway::env_flag;
@@ -28,6 +30,7 @@ pub const REALTIME_UPSTREAM_CHANNEL_PLANNER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_CONNECT_HANDOFF_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_FETCH_UPGRADE_ADAPTER_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
@@ -39,6 +42,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "relay_rate_limits",
     "upstream_channel_selection",
     "upstream_fetch_upgrade_adapter",
+    "upstream_bridge_lifecycle",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",
@@ -79,6 +83,7 @@ struct SocketAttachment {
 struct RealtimeSessionStatus {
     session: String,
     active_websockets: usize,
+    active_upstream_bridges: usize,
     restored_attachments: usize,
     hibernation: bool,
     observability: &'static str,
@@ -221,6 +226,10 @@ struct RealtimeUpstreamFetchRequestPlan {
     headers: Vec<(String, String)>,
 }
 
+struct RealtimeUpstreamBridgeRuntime {
+    upstream: WebSocket,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct RealtimeSessionMetrics {
     session: String,
@@ -248,12 +257,16 @@ struct RealtimeSessionMetrics {
 #[durable_object]
 pub struct RealtimeSession {
     state: State,
+    upstream_bridges: HashMap<String, RealtimeUpstreamBridgeRuntime>,
 }
 
 #[durable_object]
 impl DurableObject for RealtimeSession {
     fn new(state: State, _env: Env) -> Self {
-        Self { state }
+        Self {
+            state,
+            upstream_bridges: HashMap::new(),
+        }
     }
 
     async fn fetch(&mut self, req: Request) -> WorkerResult<Response> {
@@ -287,6 +300,7 @@ impl DurableObject for RealtimeSession {
         Response::from_json(&RealtimeSessionStatus {
             session,
             active_websockets: sockets.len(),
+            active_upstream_bridges: self.upstream_bridges.len(),
             restored_attachments,
             hibernation: true,
             observability: "durable_object_storage",
@@ -312,6 +326,7 @@ impl DurableObject for RealtimeSession {
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_message(attachment.as_ref(), now_ms, &message);
         self.store_metrics(&metrics).await?;
+        let mut metrics_changed = false;
         let context = attachment_context_json(attachment.as_ref());
         match message {
             WebSocketIncomingMessage::String(message) if message.trim() == "ping" => {
@@ -330,22 +345,70 @@ impl DurableObject for RealtimeSession {
             }
             WebSocketIncomingMessage::String(message) => {
                 let summary = realtime_text_control_summary(&message);
-                ws.send(&json!({
-                    "type": "realtime_session_control",
-                    "status": "upstream_bridge_not_wired",
-                    "context": context,
-                    "text_chars": summary.text_chars,
-                    "text_bytes": summary.text_bytes
-                }))?;
+                match self.forward_text_to_upstream(attachment.as_ref(), &message) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        ws.send(&json!({
+                            "type": "realtime_session_control",
+                            "status": realtime_client_message_bridge_status(
+                                attachment.as_ref().map(|item| item.upstream_connect_handoff).unwrap_or(false),
+                                false
+                            ),
+                            "context": context,
+                            "text_chars": summary.text_chars,
+                            "text_bytes": summary.text_bytes
+                        }))?;
+                    }
+                    Err(_) => {
+                        metrics.record_error(
+                            attachment.as_ref(),
+                            js_sys::Date::now(),
+                            "upstream_bridge_forward_failed",
+                        );
+                        metrics_changed = true;
+                        ws.send(&json!({
+                            "type": "realtime_session_control",
+                            "status": "upstream_bridge_forward_failed",
+                            "context": context,
+                            "text_chars": summary.text_chars,
+                            "text_bytes": summary.text_bytes
+                        }))?;
+                    }
+                }
             }
             WebSocketIncomingMessage::Binary(bytes) => {
-                ws.send(&json!({
-                    "type": "realtime_session_control",
-                    "status": "upstream_bridge_not_wired",
-                    "context": context,
-                    "binary_bytes": bytes.len()
-                }))?;
+                match self.forward_binary_to_upstream(attachment.as_ref(), &bytes) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        ws.send(&json!({
+                            "type": "realtime_session_control",
+                            "status": realtime_client_message_bridge_status(
+                                attachment.as_ref().map(|item| item.upstream_connect_handoff).unwrap_or(false),
+                                false
+                            ),
+                            "context": context,
+                            "binary_bytes": bytes.len()
+                        }))?;
+                    }
+                    Err(_) => {
+                        metrics.record_error(
+                            attachment.as_ref(),
+                            js_sys::Date::now(),
+                            "upstream_bridge_forward_failed",
+                        );
+                        metrics_changed = true;
+                        ws.send(&json!({
+                            "type": "realtime_session_control",
+                            "status": "upstream_bridge_forward_failed",
+                            "context": context,
+                            "binary_bytes": bytes.len()
+                        }))?;
+                    }
+                }
             }
+        }
+        if metrics_changed {
+            self.store_metrics(&metrics).await?;
         }
         Ok(())
     }
@@ -366,6 +429,9 @@ impl DurableObject for RealtimeSession {
             .as_ref()
             .map(|attachment| attachment.session.clone())
             .unwrap_or_else(|| self.state.id().to_string());
+        if let Some(attachment) = attachment.as_ref() {
+            self.close_upstream_bridge(attachment);
+        }
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_close(attachment.as_ref(), now_ms, code, &reason);
         self.store_metrics(&metrics).await?;
@@ -383,6 +449,9 @@ impl DurableObject for RealtimeSession {
             .as_ref()
             .map(|attachment| attachment.session.clone())
             .unwrap_or_else(|| self.state.id().to_string());
+        if let Some(attachment) = attachment.as_ref() {
+            self.close_upstream_bridge(attachment);
+        }
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_error(attachment.as_ref(), now_ms, &error.to_string());
         self.store_metrics(&metrics).await?;
@@ -396,6 +465,7 @@ impl RealtimeSession {
         let client = pair.client;
         let server = pair.server;
         let attachment = socket_attachment_from_request(&req, session.clone());
+        let handoff = realtime_upstream_connect_handoff_from_request(&req);
         server.serialize_attachment(attachment.clone())?;
         let tag = format!("{SESSION_TAG_PREFIX}{session}");
         self.state
@@ -403,8 +473,80 @@ impl RealtimeSession {
         let now_ms = js_sys::Date::now();
         let mut metrics = self.load_metrics(&attachment.session, now_ms).await?;
         metrics.record_connect(&attachment, now_ms);
+        if let Some(handoff) = handoff.as_ref() {
+            if self
+                .start_upstream_bridge(&server, &attachment, handoff)
+                .await
+                .is_err()
+            {
+                worker::console_warn!("RealtimeSession upstream bridge connect failed");
+                metrics.record_error(
+                    Some(&attachment),
+                    js_sys::Date::now(),
+                    "upstream_bridge_connect_failed",
+                );
+                server.close(Some(1011), Some("upstream_bridge_connect_failed"))?;
+            }
+        }
         self.store_metrics(&metrics).await?;
         Response::from_websocket(client)
+    }
+
+    async fn start_upstream_bridge(
+        &mut self,
+        client: &WebSocket,
+        attachment: &SocketAttachment,
+        handoff: &RealtimeUpstreamBridgeConnectHandoff,
+    ) -> WorkerResult<()> {
+        let upstream = connect_realtime_upstream(handoff).await?;
+        let bridge_key = realtime_upstream_bridge_key(attachment);
+        spawn_realtime_upstream_event_pump(upstream.clone(), client.clone());
+        self.upstream_bridges
+            .insert(bridge_key, RealtimeUpstreamBridgeRuntime { upstream });
+        Ok(())
+    }
+
+    fn forward_text_to_upstream(
+        &self,
+        attachment: Option<&SocketAttachment>,
+        message: &str,
+    ) -> WorkerResult<bool> {
+        let Some(upstream) = attachment.and_then(|item| self.upstream_bridge_for_attachment(item))
+        else {
+            return Ok(false);
+        };
+        upstream.send_with_str(message)?;
+        Ok(true)
+    }
+
+    fn forward_binary_to_upstream(
+        &self,
+        attachment: Option<&SocketAttachment>,
+        bytes: &[u8],
+    ) -> WorkerResult<bool> {
+        let Some(upstream) = attachment.and_then(|item| self.upstream_bridge_for_attachment(item))
+        else {
+            return Ok(false);
+        };
+        upstream.send_with_bytes(bytes)?;
+        Ok(true)
+    }
+
+    fn upstream_bridge_for_attachment(&self, attachment: &SocketAttachment) -> Option<&WebSocket> {
+        self.upstream_bridges
+            .get(&realtime_upstream_bridge_key(attachment))
+            .map(|runtime| &runtime.upstream)
+    }
+
+    fn close_upstream_bridge(&mut self, attachment: &SocketAttachment) {
+        if let Some(runtime) = self
+            .upstream_bridges
+            .remove(&realtime_upstream_bridge_key(attachment))
+        {
+            let _ = runtime
+                .upstream
+                .close(Some(1000), Some("client_websocket_closed"));
+        }
     }
 
     async fn load_metrics(
@@ -905,6 +1047,16 @@ pub(crate) fn realtime_upstream_fetch_upgrade_adapter_compiled() -> bool {
             .any(|(name, value)| name.eq_ignore_ascii_case("openai-beta") && value == "realtime=v1")
 }
 
+pub(crate) fn realtime_upstream_bridge_lifecycle_compiled() -> bool {
+    REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED
+        && realtime_client_message_bridge_status(false, false) == "upstream_bridge_not_wired"
+        && realtime_client_message_bridge_status(true, false) == "upstream_bridge_not_active"
+        && realtime_client_message_bridge_status(true, true) == "upstream_bridge_active"
+        && realtime_client_close_code_from_upstream(1000) == 1000
+        && realtime_client_close_code_from_upstream(1005) == 1011
+        && realtime_client_close_code_from_upstream(4000) == 4000
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -1090,7 +1242,6 @@ fn realtime_upstream_fetch_upgrade_request(
     Ok(request)
 }
 
-#[allow(dead_code)]
 async fn connect_realtime_upstream(
     handoff: &RealtimeUpstreamBridgeConnectHandoff,
 ) -> WorkerResult<WebSocket> {
@@ -1102,6 +1253,72 @@ async fn connect_realtime_upstream(
             "realtime upstream did not accept WebSocket upgrade: status {status}"
         ))
     })
+}
+
+fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut events = match upstream.events() {
+            Ok(events) => events,
+            Err(_) => {
+                let _ = client.close(Some(1011), Some("upstream_bridge_event_stream_failed"));
+                return;
+            }
+        };
+        if upstream.accept().is_err() {
+            let _ = client.close(Some(1011), Some("upstream_bridge_accept_failed"));
+            return;
+        }
+
+        while let Some(event) = events.next().await {
+            match event {
+                Ok(WebsocketEvent::Message(message)) => {
+                    if let Some(text) = message.text() {
+                        if client.send_with_str(text).is_err() {
+                            break;
+                        }
+                    } else if let Some(bytes) = message.bytes() {
+                        if client.send_with_bytes(bytes).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Ok(WebsocketEvent::Close(close)) => {
+                    let code = realtime_client_close_code_from_upstream(close.code());
+                    let _ = client.close(Some(code), Some("upstream_bridge_closed"));
+                    break;
+                }
+                Err(_) => {
+                    let _ = client.close(Some(1011), Some("upstream_bridge_error"));
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn realtime_upstream_bridge_key(attachment: &SocketAttachment) -> String {
+    format!("{}:{:.3}", attachment.session, attachment.connected_at_ms)
+}
+
+fn realtime_client_message_bridge_status(
+    upstream_connect_handoff: bool,
+    active_bridge: bool,
+) -> &'static str {
+    if active_bridge {
+        "upstream_bridge_active"
+    } else if upstream_connect_handoff {
+        "upstream_bridge_not_active"
+    } else {
+        "upstream_bridge_not_wired"
+    }
+}
+
+fn realtime_client_close_code_from_upstream(code: u16) -> u16 {
+    match code {
+        1000..=1014 if !matches!(code, 1004 | 1005 | 1006) => code,
+        3000..=4999 => code,
+        _ => 1011,
+    }
 }
 
 fn realtime_upstream_bridge_plan(
@@ -1627,6 +1844,52 @@ mod tests {
     }
 
     #[test]
+    fn realtime_upstream_bridge_lifecycle_status_is_explicit() {
+        assert_eq!(
+            realtime_client_message_bridge_status(false, false),
+            "upstream_bridge_not_wired"
+        );
+        assert_eq!(
+            realtime_client_message_bridge_status(true, false),
+            "upstream_bridge_not_active"
+        );
+        assert_eq!(
+            realtime_client_message_bridge_status(true, true),
+            "upstream_bridge_active"
+        );
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_close_code_mapping_avoids_reserved_codes() {
+        assert_eq!(realtime_client_close_code_from_upstream(1000), 1000);
+        assert_eq!(realtime_client_close_code_from_upstream(1005), 1011);
+        assert_eq!(realtime_client_close_code_from_upstream(1006), 1011);
+        assert_eq!(realtime_client_close_code_from_upstream(1015), 1011);
+        assert_eq!(realtime_client_close_code_from_upstream(4000), 4000);
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_key_is_stable_without_secrets() {
+        let attachment = SocketAttachment {
+            session: "rt-session".to_string(),
+            connected_at_ms: 10.1234,
+            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            entrypoint: "openai_realtime_v1".to_string(),
+            model: Some("gpt-4o-realtime-preview".to_string()),
+            token_source: Some("authorization".to_string()),
+            token_fingerprint: Some("fp-token".to_string()),
+            auth_state: "gateway_checked".to_string(),
+            upstream: None,
+            upstream_connect_handoff: true,
+        };
+
+        let key = realtime_upstream_bridge_key(&attachment);
+
+        assert_eq!(key, "rt-session:10.123");
+        assert!(!key.contains("openai-insecure-api-key"));
+    }
+
+    #[test]
     fn realtime_openai_upstream_plan_uses_wss_realtime_model_query() {
         let plan = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
             channel_type: 1,
@@ -1919,6 +2182,11 @@ mod tests {
     #[test]
     fn realtime_fetch_upgrade_adapter_contract_is_compiled() {
         assert!(realtime_upstream_fetch_upgrade_adapter_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_lifecycle_contract_is_compiled() {
+        assert!(realtime_upstream_bridge_lifecycle_compiled());
     }
 
     #[test]

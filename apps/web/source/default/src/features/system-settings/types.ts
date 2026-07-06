@@ -422,6 +422,7 @@ export type PlatformCapabilities = {
   realtime_session_upstream_bridge_connect_contract_compiled: boolean
   realtime_session_upstream_connect_handoff_compiled: boolean
   realtime_session_upstream_fetch_upgrade_adapter_compiled: boolean
+  realtime_session_upstream_bridge_lifecycle_compiled: boolean
   realtime_session_upstream_bridge_compiled: boolean
   realtime_session_billing_settlement_compiled: boolean
   realtime_session_platform_smoke_ready: boolean

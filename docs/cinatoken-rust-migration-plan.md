@@ -6226,3 +6226,69 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.96 2026-07-06 Realtime Upstream Bridge Lifecycle
+
+This increment wires the first active Realtime upstream bridge lifecycle without
+claiming production parity. The Durable Object now attempts the request-scoped
+upstream WebSocket upgrade for `/v1/realtime`, keeps the upstream socket only in
+memory for the active DO instance, forwards client text/binary frames while the
+bridge is active, and pumps upstream text/binary frames back to the client. It
+also explicitly preserves the Cloudflare hibernation boundary: accepted client
+sockets can be restored from attachments, but an outbound upstream WebSocket
+cannot be restored after eviction, so resumed client frames report
+`upstream_bridge_not_active`.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED=true` and exposed
+  `realtime_session_upstream_bridge_lifecycle_compiled` from
+  `/api/platform/capabilities`.
+- Added a transient in-memory upstream bridge registry to `RealtimeSession`,
+  keyed by sanitized session metadata rather than bearer tokens or upstream
+  provider keys.
+- Wired `accept_websocket` to read the request-scoped upstream connect handoff,
+  call `connect_realtime_upstream`, and start an upstream event pump for the
+  active DO instance.
+- Updated `websocket_message` so non-control client text/binary frames are
+  forwarded to the active upstream socket. If the attachment says a handoff
+  existed but the active runtime bridge is gone, the DO returns
+  `upstream_bridge_not_active`; platform-only sockets still return
+  `upstream_bridge_not_wired`.
+- Added close/error cleanup that closes and removes the transient upstream
+  socket when the client socket closes or errors.
+- Added safe close-code mapping so reserved upstream close codes such as 1005
+  or 1006 are not replayed to clients.
+- Kept `realtime_session_upstream_bridge_compiled=false`,
+  `realtime_session_billing_settlement_compiled=false`, and
+  `realtime_session_v1_cutover_ready=false`; the new lifecycle signal is a
+  prerequisite, not the production bridge declaration.
+- Updated the frontend Cloudflare Platform panel, capability types, smoke
+  harness preflight, staging smoke runbook, layered architecture, production
+  readiness matrix, cinaVibeSDK mapping, and verification docs.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (31 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with warnings limited to the known `d1_repositories.rs` dead-code items.
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:v1-smoke-plan` passed.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default` passed.
+
+Remaining migration gaps:
+
+- Add bounded queues/backpressure policy and live close/error replay evidence
+  before declaring `realtime_session_upstream_bridge_compiled=true`.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.
+- Capture live staging `/v1/realtime` protocol replay with real
+  `REALTIME_SESSIONS`, relay-token auth, selected upstream channel, and
+  redacted capability evidence.

@@ -4,6 +4,41 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the Realtime upstream bridge lifecycle,
+  transient DO bridge registry, active client-to-upstream forwarding,
+  upstream-to-client event pump, platform capability signal, frontend
+  Cloudflare Platform row, smoke preflight guard, and migration docs. The run
+  covered frontend type/build, bundle redaction audit (460 files, 37,300,658
+  bytes, 0 findings), bundle budget audit (245 files, 18.96 MB raw / 4.50 MB
+  gzip, all 10 budgets OK), lint-debt baseline (0 errors / 0 warnings / 0
+  regressions), frontend route audit (215 Worker-facing calls / 307 Worker
+  routes / 0 missing calls), WFP tenant deploy-plan dry-run, WFP dispatch smoke
+  dry-run, RealtimeSession platform and v1 dry-run smoke plans, relay AI
+  Gateway canary smoke dry-run, WFP tenant Worker-script tests (8 passed),
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, Worker
+  wasm32 check, and WFP tenant wasm32 check. Existing warnings were limited to
+  the known `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime upstream bridge lifecycle registry, active
+  client-to-upstream forwarding, upstream event pump, explicit
+  `upstream_bridge_not_active` hibernation/restart behavior, close-code
+  mapping, and lifecycle compiled self-check (31 filtered Realtime/platform
+  tests; existing `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_bridge_lifecycle_compiled` in platform
+  capabilities and requiring it in v1 cutover readiness while keeping full
+  bridge and billing false (13 platform tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after wiring the transient Realtime upstream bridge lifecycle (known
+  `d1_repositories.rs` dead-code warnings only).
+- `node --check tools/smoke_realtime_session.mjs` and
+  `bun run check:realtime-session:v1-smoke-plan`: passed after adding the
+  Realtime upstream bridge lifecycle capability and cutover guard checks.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform
+  lifecycle capability field and row.
 - `bun run check`: passed after adding the Realtime upstream fetch-upgrade
   adapter, platform capability signal, frontend Cloudflare Platform row, smoke
   preflight assertion, and cinaVibeSDK production mapping docs. The run covered

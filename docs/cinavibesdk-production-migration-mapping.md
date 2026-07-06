@@ -149,11 +149,12 @@ Current mapped status from existing docs:
 
 - `REALTIME_SESSIONS` binding and the Rust DO substrate are present.
 - `/v1/realtime` is default-off behind `REALTIME_SESSION_V1_ENABLED`.
-- Planner, channel selection, connect contract, secret handoff, and the
-  Worker-native fetch-upgrade adapter are compiled.
-- The actual bidirectional upstream bridge and realtime billing settlement are
-  still production blockers. `realtime_session_v1_cutover_ready` must remain
-  false until those are proven.
+- Planner, channel selection, connect contract, secret handoff, the
+  Worker-native fetch-upgrade adapter, and the transient bridge lifecycle are
+  compiled.
+- Production-grade bridge hardening and realtime billing settlement are still
+  blockers. `realtime_session_v1_cutover_ready` must remain false until bounded
+  backpressure/error mapping, live replay, and settlement are proven.
 
 Production rule:
 
@@ -239,7 +240,7 @@ and fallback behavior as the direct path.
 | Route or traffic family | Production owner | cinaVibeSDK pattern used | Main gates | Required evidence |
 | --- | --- | --- | --- | --- |
 | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/embeddings` | Main Rust relay | AI Gateway primary/fallback forwarding | `RELAY_AI_GATEWAY_ROUTER_ENABLED`, per-channel opt-in | Direct and AI Gateway canary, same-channel fallback, unchanged settlement |
-| `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Bidirectional upstream bridge/pump, backpressure, close/error mapping, billing settlement, live protocol replay |
+| `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, bounded backpressure, close/error mapping, billing settlement, live protocol replay |
 | `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe |
 | Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
 | Tenant AI routes | WFP Rust tenant script plus AI Gateway | Dispatch plus AI Gateway proxy | Real `DISPATCHER`, tenant Gateway vars | Route-specific Gateway logs, request policy headers, response-header allowlist |
@@ -438,9 +439,9 @@ As of the docs reviewed on 2026-07-06:
 - Main relay AI Gateway forwarding is wired as gated substrate, but still needs
   live staging canary evidence and billing log comparison before cutover.
 - Realtime DO has the session substrate, planners, connect contract,
-  gateway-to-DO handoff, and outbound fetch-upgrade adapter, but lacks the full
-  bidirectional upstream bridge/pump and billing settlement required for
-  production `/v1/realtime`.
+  gateway-to-DO handoff, outbound fetch-upgrade adapter, and transient bridge
+  lifecycle, but still lacks bounded backpressure/live replay proof and billing
+  settlement required for production `/v1/realtime`.
 - WFP dispatch has code and local Rust/Wasm tenant checks, but still needs a
   real paid-plan `DISPATCHER` binding, uploaded tenant artifact, and live
   internal dispatch smoke.

@@ -33,6 +33,7 @@ pub const REALTIME_UPSTREAM_FETCH_UPGRADE_ADAPTER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CLOSE_MAPPING_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
@@ -47,6 +48,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_lifecycle",
     "upstream_bridge_frame_guard",
     "upstream_bridge_close_mapping",
+    "upstream_bridge_send_failure_guard",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",
@@ -79,6 +81,8 @@ const REALTIME_BRIDGE_REASON_ACCEPT_FAILED: &str = "upstream_bridge_accept_faile
 const REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE: &str = "upstream_bridge_frame_too_large";
 const REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED: &str = "upstream_bridge_closed";
 const REALTIME_BRIDGE_REASON_UPSTREAM_ERROR: &str = "upstream_bridge_error";
+const REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED: &str = "upstream_bridge_forward_failed";
+const REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED: &str = "client_bridge_forward_failed";
 const SESSION_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const SESSION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -270,6 +274,8 @@ enum RealtimeBridgeCloseCause {
     FrameTooLarge,
     UpstreamClosed(u16),
     UpstreamError,
+    ClientToUpstreamSendFailed,
+    UpstreamToClientSendFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,19 +446,29 @@ impl DurableObject for RealtimeSession {
                         }))?;
                     }
                     Err(_) => {
+                        let close_action = realtime_bridge_close_action(
+                            RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
+                        );
                         metrics.record_error(
                             attachment.as_ref(),
                             js_sys::Date::now(),
-                            "upstream_bridge_forward_failed",
+                            REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
                         );
                         metrics_changed = true;
-                        ws.send(&json!({
+                        let _ = ws.send(&json!({
                             "type": "realtime_session_control",
-                            "status": "upstream_bridge_forward_failed",
+                            "status": REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
                             "context": context,
                             "text_chars": summary.text_chars,
                             "text_bytes": summary.text_bytes
-                        }))?;
+                        }));
+                        if let Some(attachment) = attachment.as_ref() {
+                            self.close_upstream_bridge_for(attachment, close_action);
+                        }
+                        let _ = ws.close(
+                            Some(close_action.client_code),
+                            Some(close_action.client_reason),
+                        );
                     }
                 }
             }
@@ -500,18 +516,28 @@ impl DurableObject for RealtimeSession {
                         }))?;
                     }
                     Err(_) => {
+                        let close_action = realtime_bridge_close_action(
+                            RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
+                        );
                         metrics.record_error(
                             attachment.as_ref(),
                             js_sys::Date::now(),
-                            "upstream_bridge_forward_failed",
+                            REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
                         );
                         metrics_changed = true;
-                        ws.send(&json!({
+                        let _ = ws.send(&json!({
                             "type": "realtime_session_control",
-                            "status": "upstream_bridge_forward_failed",
+                            "status": REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
                             "context": context,
                             "binary_bytes": bytes.len()
-                        }))?;
+                        }));
+                        if let Some(attachment) = attachment.as_ref() {
+                            self.close_upstream_bridge_for(attachment, close_action);
+                        }
+                        let _ = ws.close(
+                            Some(close_action.client_code),
+                            Some(close_action.client_reason),
+                        );
                     }
                 }
             }
@@ -1239,6 +1265,23 @@ pub(crate) fn realtime_upstream_bridge_close_mapping_compiled() -> bool {
         && upstream_error.client_reason == REALTIME_BRIDGE_REASON_UPSTREAM_ERROR
 }
 
+pub(crate) fn realtime_upstream_bridge_send_failure_guard_compiled() -> bool {
+    let upstream_forward =
+        realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientToUpstreamSendFailed);
+    let client_forward =
+        realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamToClientSendFailed);
+
+    REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED
+        && upstream_forward.client_code == REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE
+        && upstream_forward.client_reason == REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED
+        && upstream_forward.upstream_code == Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE)
+        && upstream_forward.upstream_reason == Some(REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED)
+        && client_forward.client_code == REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE
+        && client_forward.client_reason == REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED
+        && client_forward.upstream_code == Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE)
+        && client_forward.upstream_reason == Some(REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED)
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -1474,6 +1517,16 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
                             break;
                         }
                         if client.send_with_str(text).is_err() {
+                            let action = realtime_bridge_close_action(
+                                RealtimeBridgeCloseCause::UpstreamToClientSendFailed,
+                            );
+                            if let (Some(code), Some(reason)) =
+                                (action.upstream_code, action.upstream_reason)
+                            {
+                                let _ = upstream.close(Some(code), Some(reason));
+                            }
+                            let _ =
+                                client.close(Some(action.client_code), Some(action.client_reason));
                             break;
                         }
                     } else if let Some(bytes) = message.bytes() {
@@ -1491,6 +1544,16 @@ fn spawn_realtime_upstream_event_pump(upstream: WebSocket, client: WebSocket) {
                             break;
                         }
                         if client.send_with_bytes(bytes).is_err() {
+                            let action = realtime_bridge_close_action(
+                                RealtimeBridgeCloseCause::UpstreamToClientSendFailed,
+                            );
+                            if let (Some(code), Some(reason)) =
+                                (action.upstream_code, action.upstream_reason)
+                            {
+                                let _ = upstream.close(Some(code), Some(reason));
+                            }
+                            let _ =
+                                client.close(Some(action.client_code), Some(action.client_reason));
                             break;
                         }
                     }
@@ -1599,6 +1662,18 @@ fn realtime_bridge_close_action(cause: RealtimeBridgeCloseCause) -> RealtimeBrid
             client_reason: REALTIME_BRIDGE_REASON_UPSTREAM_ERROR,
             upstream_code: None,
             upstream_reason: None,
+        },
+        RealtimeBridgeCloseCause::ClientToUpstreamSendFailed => RealtimeBridgeCloseAction {
+            client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+            client_reason: REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
+            upstream_code: Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE),
+            upstream_reason: Some(REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED),
+        },
+        RealtimeBridgeCloseCause::UpstreamToClientSendFailed => RealtimeBridgeCloseAction {
+            client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+            client_reason: REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED,
+            upstream_code: Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE),
+            upstream_reason: Some(REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED),
         },
     }
 }
@@ -2278,6 +2353,28 @@ mod tests {
     }
 
     #[test]
+    fn realtime_upstream_bridge_send_failure_guard_is_fail_closed() {
+        assert_eq!(
+            realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientToUpstreamSendFailed),
+            RealtimeBridgeCloseAction {
+                client_code: 1011,
+                client_reason: "upstream_bridge_forward_failed",
+                upstream_code: Some(1011),
+                upstream_reason: Some("upstream_bridge_forward_failed"),
+            }
+        );
+        assert_eq!(
+            realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamToClientSendFailed),
+            RealtimeBridgeCloseAction {
+                client_code: 1011,
+                client_reason: "client_bridge_forward_failed",
+                upstream_code: Some(1011),
+                upstream_reason: Some("client_bridge_forward_failed"),
+            }
+        );
+    }
+
+    #[test]
     fn realtime_text_frame_guard_counts_utf8_bytes_not_chars() {
         let text = "云".repeat(4);
         let rejection = realtime_frame_guard_rejection(
@@ -2600,6 +2697,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_close_mapping_contract_is_compiled() {
         assert!(realtime_upstream_bridge_close_mapping_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_send_failure_guard_contract_is_compiled() {
+        assert!(realtime_upstream_bridge_send_failure_guard_compiled());
     }
 
     #[test]

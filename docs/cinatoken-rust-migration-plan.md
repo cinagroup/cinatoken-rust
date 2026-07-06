@@ -6390,3 +6390,61 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.99 2026-07-06 Realtime Upstream Send Failure Guard
+
+This increment hardens the active transient Realtime bridge one step beyond the
+close/error mapping contract. It still does not claim true queued
+backpressure/flow-control: the current Rust Worker wrapper exposes
+`send_with_str` and `send_with_bytes`, but not a trustworthy queued-byte
+inspection API equivalent to JavaScript `bufferedAmount`. The implemented guard
+therefore focuses on the production-safe invariant we can prove now: if either
+bridge direction cannot enqueue a frame, the session fails closed with
+deterministic close codes and metadata-only diagnostics.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED=true` and exposed
+  `realtime_session_upstream_bridge_send_failure_guard_compiled` from
+  `/api/platform/capabilities`.
+- Added `upstream_bridge_send_failure_guard` to the Realtime cutover guard list
+  and required it in the v1 cutover readiness helper, while keeping the full
+  upstream bridge and billing settlement signals false.
+- Client-to-upstream forwarding failures now record only
+  `upstream_bridge_forward_failed`, send a best-effort metadata-only
+  `realtime_session_control` frame with byte counts, close the upstream bridge,
+  and close the client with `1011/upstream_bridge_forward_failed`.
+- Upstream-to-client forwarding failures now close both sides with
+  `1011/client_bridge_forward_failed`.
+- The failure path deliberately does not store, log, or echo raw bridge
+  payloads; it keeps only bounded metadata such as text/binary byte counts.
+- Updated the Cloudflare Platform admin panel, Realtime smoke preflight checks,
+  staging smoke runbook, production readiness matrix, layered architecture
+  notes, and cinaVibeSDK production mapping.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (38 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with only the known `d1_repositories.rs` dead-code warnings.
+- `node --check tools/smoke_realtime_session.mjs`,
+  `bun run check:realtime-session:v1-smoke-plan`, frontend `bun run typecheck`,
+  `bun run lint`, and `bun run format:check` passed.
+- `bun run check` passed across frontend build/bundle audits, smoke dry-runs,
+  workspace tests, Worker wasm32 check, and WFP tenant wasm32 check.
+
+Remaining migration gaps:
+
+- Add true queued backpressure/flow-control behavior once the Rust Worker API
+  can observe or wrap socket buffered bytes safely.
+- Capture live staging upstream close/error/protocol replay evidence, including
+  send-failure close frames, before declaring
+  `realtime_session_upstream_bridge_compiled=true`.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

@@ -77,6 +77,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_lifecycle_compiled,
         capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
         capabilities.realtime_session_upstream_bridge_close_mapping_compiled,
+        capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -531,9 +532,19 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Upstream send failure guard'),
+          description: t(
+            'Closes both sides of the transient Realtime bridge when either client-to-upstream or upstream-to-client forwarding fails, without recording raw payloads.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Upstream realtime bridge'),
           description: t(
-            'Bridges the DO session to an upstream Realtime WebSocket with backpressure and error mapping.'
+            'Bridges the DO session to an upstream Realtime WebSocket with queued flow-control and production replay evidence.'
           ),
           ready: capabilities.realtime_session_upstream_bridge_compiled,
           readyLabel: t('Compiled'),

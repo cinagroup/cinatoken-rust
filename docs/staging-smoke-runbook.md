@@ -388,6 +388,7 @@ Record:
   `realtime_session_upstream_bridge_lifecycle_compiled`,
   `realtime_session_upstream_bridge_frame_guard_compiled`,
   `realtime_session_upstream_bridge_close_mapping_compiled`,
+  `realtime_session_upstream_bridge_send_failure_guard_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -406,7 +407,7 @@ Pass criteria:
   the request-scoped upstream connect contract, and the gateway-to-DO connect
   handoff plus upstream fetch-upgrade adapter and transient bridge lifecycle as
   compiled, including the text/binary frame guard and bridge close/error
-  mapping;
+  mapping plus the upstream send-failure guard;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -433,6 +434,11 @@ Pass criteria:
   upstream errors close the client with `1011/upstream_bridge_error`, and
   client websocket errors close the upstream bridge with
   `1011/client_websocket_error`.
+- Send-failure evidence is fail-closed and metadata-only: client-to-upstream
+  forwarding failure closes both sides with
+  `1011/upstream_bridge_forward_failed`, upstream-to-client forwarding failure
+  closes both sides with `1011/client_bridge_forward_failed`, and raw bridge
+  payloads are not logged, stored, or echoed in the failure path.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge

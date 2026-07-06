@@ -5,6 +5,37 @@ Last checked: 2026-07-06
 ## Passed
 
 - `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime upstream bridge send-failure guard,
+  fail-closed client-to-upstream and upstream-to-client close mappings,
+  best-effort metadata-only failure control frames, and compiled self-check (38
+  filtered Realtime/platform tests; existing `d1_repositories.rs` dead-code
+  warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_bridge_send_failure_guard_compiled` in platform
+  capabilities and requiring it in v1 cutover readiness while keeping full
+  bridge and billing false (13 platform tests; existing `d1_repositories.rs`
+  dead-code warnings only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the Realtime upstream bridge send-failure guard (known
+  `d1_repositories.rs` dead-code warnings only).
+- `node --check tools/smoke_realtime_session.mjs` and
+  `bun run check:realtime-session:v1-smoke-plan`: passed after adding the
+  Realtime upstream bridge send-failure capability and cutover guard checks.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform
+  send-failure guard capability field and row.
+- `bun run check`: passed after adding the Realtime upstream bridge
+  send-failure guard, fail-closed close actions, platform capability signal,
+  frontend Cloudflare Platform row, smoke preflight guard, and migration docs.
+  The run covered frontend type/build, bundle redaction audit, bundle budget
+  audit, lint-debt baseline, frontend route audit, WFP tenant deploy-plan
+  dry-run, WFP dispatch smoke dry-run, RealtimeSession platform and v1 dry-run
+  smoke plans, relay AI Gateway canary smoke dry-run, WFP tenant Worker-script
+  tests, `cargo fmt --all --check`, Rust workspace tests excluding the Worker,
+  Worker wasm32 check, and WFP tenant wasm32 check. Existing warnings were
+  limited to the known `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
   passed after adding the Realtime upstream bridge close/error mapping contract,
   deterministic client/upstream close actions, unsafe upstream close-code
   sanitization, and close-mapping compiled self-check (36 filtered

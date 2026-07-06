@@ -24,6 +24,8 @@ pub const REALTIME_SESSIONS_BINDING: &str = "REALTIME_SESSIONS";
 pub const REALTIME_SESSION_GATEWAY_ENABLED_ENV: &str = "REALTIME_SESSION_GATEWAY_ENABLED";
 pub const REALTIME_SESSION_V1_ENABLED_ENV: &str = "REALTIME_SESSION_V1_ENABLED";
 pub const REALTIME_UPSTREAM_BRIDGE_PLANNER_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_CHANNEL_PLANNER_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
 pub const REALTIME_OPENAI_PATH: &str = "/v1/realtime";
 pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
@@ -31,6 +33,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "v1_gateway_gate",
     "relay_token_auth",
     "relay_rate_limits",
+    "upstream_channel_selection",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",
@@ -47,6 +50,8 @@ const AZURE_DEFAULT_API_VERSION: &str = "2025-04-01-preview";
 const SESSION_METRICS_KEY: &str = "session_metrics_v1";
 const MAX_STORED_TEXT_CHARS: usize = 160;
 const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
+const MAX_CHANNEL_NAME_CHARS: usize = 80;
+const MAX_UPSTREAM_PLAN_HEADER_CHARS: usize = 1800;
 const SESSION_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const SESSION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -60,6 +65,7 @@ struct SocketAttachment {
     token_source: Option<String>,
     token_fingerprint: Option<String>,
     auth_state: String,
+    upstream: Option<RealtimeSelectedUpstreamPlan>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,6 +88,7 @@ struct RealtimeSocketSummary {
     token_fingerprint: Option<String>,
     auth_state: String,
     connected_at_ms: f64,
+    upstream: Option<RealtimeSelectedUpstreamPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,7 +103,7 @@ struct RealtimeTextControlSummary {
     text_bytes: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RealtimeUpstreamProvider {
     #[serde(rename = "openai_compatible")]
@@ -105,7 +112,7 @@ enum RealtimeUpstreamProvider {
     AzureOpenAi,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RealtimeUpstreamAuthMode {
     RealtimeSubprotocol,
@@ -125,6 +132,22 @@ struct RealtimeUpstreamBridgePlan {
     header_names: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RealtimeSelectedUpstreamPlan {
+    selected_group: String,
+    channel_id: i64,
+    channel_type: i32,
+    channel_name: Option<String>,
+    provider: RealtimeUpstreamProvider,
+    upstream_url: String,
+    request_model: String,
+    upstream_model: String,
+    channel_has_custom_base_url: bool,
+    auth_mode: RealtimeUpstreamAuthMode,
+    protocol_redacted: Vec<String>,
+    header_names: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RealtimeUpstreamBridgeInput<'a> {
     channel_type: i32,
@@ -133,6 +156,20 @@ struct RealtimeUpstreamBridgeInput<'a> {
     upstream_api_key: &'a str,
     api_version: Option<&'a str>,
     client_requested_subprotocol: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RealtimeSelectedUpstreamInput<'a> {
+    pub selected_group: &'a str,
+    pub channel_id: i64,
+    pub channel_type: i32,
+    pub channel_name: &'a str,
+    pub channel_base_url: Option<&'a str>,
+    pub request_model: &'a str,
+    pub upstream_model: &'a str,
+    pub upstream_api_key: &'a str,
+    pub api_version: Option<&'a str>,
+    pub client_requested_subprotocol: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +236,7 @@ impl DurableObject for RealtimeSession {
                 token_fingerprint: attachment.token_fingerprint,
                 auth_state: attachment.auth_state,
                 connected_at_ms: attachment.connected_at_ms,
+                upstream: attachment.upstream,
             })
             .collect::<Vec<_>>();
         let restored_attachments = attachments.len();
@@ -559,8 +597,21 @@ async fn handle_openai_realtime_gateway(req: Request, env: Env) -> WorkerResult<
     {
         return response;
     }
+    let upstream_plan = match crate::relay::plan_realtime_upstream_channel(
+        &db,
+        &env,
+        &auth,
+        &model,
+        client_requested_realtime_subprotocol(&req),
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(response) => return response,
+    };
 
     let session = realtime_session_name(&model, &websocket_key, &token_fingerprint(&api_key.value));
+    let req = attach_realtime_upstream_plan_header(req, &upstream_plan)?;
     fetch_session_stub(req, env, session).await
 }
 
@@ -596,6 +647,7 @@ fn socket_attachment_from_request(req: &Request, session: String) -> SocketAttac
         token_source: api_key.as_ref().map(|key| key.source.to_string()),
         token_fingerprint: api_key.as_ref().map(|key| token_fingerprint(&key.value)),
         auth_state: auth_state_for_path(&req.path()).to_string(),
+        upstream: realtime_upstream_plan_from_request(req),
     }
 }
 
@@ -607,7 +659,8 @@ fn attachment_context_json(attachment: Option<&SocketAttachment>) -> Value {
             "model": attachment.model,
             "token_source": attachment.token_source,
             "token_fingerprint": attachment.token_fingerprint,
-            "auth_state": attachment.auth_state
+            "auth_state": attachment.auth_state,
+            "upstream": attachment.upstream
         }),
         None => Value::Null,
     }
@@ -640,6 +693,101 @@ pub(crate) fn realtime_upstream_bridge_planner_compiled() -> bool {
             client_requested_subprotocol: true,
         })
         .is_ok()
+}
+
+pub(crate) fn realtime_upstream_channel_planner_compiled() -> bool {
+    if !REALTIME_UPSTREAM_CHANNEL_PLANNER_COMPILED {
+        return false;
+    }
+    let Ok(plan) = realtime_selected_upstream_plan(RealtimeSelectedUpstreamInput {
+        selected_group: "default",
+        channel_id: 1,
+        channel_type: 1,
+        channel_name: "openai-primary",
+        channel_base_url: Some("https://api.openai.com"),
+        request_model: "gpt-4o-realtime-preview",
+        upstream_model: "gpt-4o-realtime-preview",
+        upstream_api_key: "planner-smoke-key",
+        api_version: None,
+        client_requested_subprotocol: true,
+    }) else {
+        return false;
+    };
+    let Ok(header) = realtime_upstream_plan_header_value(&plan) else {
+        return false;
+    };
+    realtime_upstream_plan_from_header_value(&header).as_ref() == Some(&plan)
+}
+
+pub(crate) fn realtime_selected_upstream_plan(
+    input: RealtimeSelectedUpstreamInput<'_>,
+) -> Result<RealtimeSelectedUpstreamPlan, String> {
+    let selected_group = non_empty_trimmed(input.selected_group, "selected_group")?;
+    let request_model = non_empty_trimmed(input.request_model, "request_model")?;
+    let upstream_model = non_empty_trimmed(input.upstream_model, "upstream_model")?;
+    let bridge = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+        channel_type: input.channel_type,
+        base_url: input.channel_base_url,
+        model: &upstream_model,
+        upstream_api_key: input.upstream_api_key,
+        api_version: input.api_version,
+        client_requested_subprotocol: input.client_requested_subprotocol,
+    })?;
+    Ok(RealtimeSelectedUpstreamPlan {
+        selected_group,
+        channel_id: input.channel_id,
+        channel_type: input.channel_type,
+        channel_name: truncate_text(input.channel_name, MAX_CHANNEL_NAME_CHARS),
+        provider: bridge.provider,
+        upstream_url: bridge.url,
+        request_model,
+        upstream_model: bridge.model,
+        channel_has_custom_base_url: bridge.channel_has_custom_base_url,
+        auth_mode: bridge.auth_mode,
+        protocol_redacted: bridge.protocol_redacted,
+        header_names: bridge
+            .header_names
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    })
+}
+
+fn attach_realtime_upstream_plan_header(
+    mut req: Request,
+    plan: &RealtimeSelectedUpstreamPlan,
+) -> WorkerResult<Request> {
+    let value = realtime_upstream_plan_header_value(plan)?;
+    req.headers_mut()?
+        .set(REALTIME_UPSTREAM_PLAN_HEADER, &value)?;
+    Ok(req)
+}
+
+fn realtime_upstream_plan_header_value(
+    plan: &RealtimeSelectedUpstreamPlan,
+) -> WorkerResult<String> {
+    let value = serde_json::to_string(plan).map_err(|err| {
+        worker::Error::RustError(format!("failed to encode realtime upstream plan: {err}"))
+    })?;
+    if value.len() > MAX_UPSTREAM_PLAN_HEADER_CHARS {
+        return Err(worker::Error::RustError(format!(
+            "realtime upstream plan exceeds {MAX_UPSTREAM_PLAN_HEADER_CHARS} byte header limit"
+        )));
+    }
+    Ok(value)
+}
+
+fn realtime_upstream_plan_from_request(req: &Request) -> Option<RealtimeSelectedUpstreamPlan> {
+    request_header(req, REALTIME_UPSTREAM_PLAN_HEADER)
+        .as_deref()
+        .and_then(realtime_upstream_plan_from_header_value)
+}
+
+fn realtime_upstream_plan_from_header_value(value: &str) -> Option<RealtimeSelectedUpstreamPlan> {
+    if value.len() > MAX_UPSTREAM_PLAN_HEADER_CHARS {
+        return None;
+    }
+    serde_json::from_str::<RealtimeSelectedUpstreamPlan>(value).ok()
 }
 
 fn realtime_upstream_bridge_plan(
@@ -970,6 +1118,16 @@ fn redacted_realtime_protocols(value: &str) -> Option<String> {
     (!protocols.is_empty()).then(|| protocols.join(","))
 }
 
+fn client_requested_realtime_subprotocol(req: &Request) -> bool {
+    request_header(req, "sec-websocket-protocol")
+        .map(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case(OPENAI_REALTIME_PROTOCOL))
+        })
+        .unwrap_or(false)
+}
+
 fn truncate_protocol_token(value: &str) -> String {
     truncate_text(value, MAX_PROTOCOL_TOKEN_CHARS).unwrap_or_default()
 }
@@ -1095,6 +1253,7 @@ mod tests {
             token_source: Some("authorization".to_string()),
             token_fingerprint: Some("fp-token".to_string()),
             auth_state: "gateway_checked".to_string(),
+            upstream: None,
         };
         let mut metrics = RealtimeSessionMetrics::new("rt-session", 1.0);
         metrics.record_connect(&attachment, 2.0);
@@ -1240,6 +1399,38 @@ mod tests {
         assert!(!raw.contains(secret));
         assert!(!raw.contains("Bearer sk-"));
         assert!(raw.contains("openai-insecure-api-key.<redacted>"));
+    }
+
+    #[test]
+    fn realtime_selected_upstream_plan_header_round_trips_without_secret() {
+        let secret = "sk-live-secret";
+        let plan = realtime_selected_upstream_plan(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 42,
+            channel_type: 1,
+            channel_name: "primary-openai",
+            channel_base_url: Some("https://api.openai.com"),
+            request_model: "gpt-4o-realtime-preview",
+            upstream_model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+        let header = realtime_upstream_plan_header_value(&plan).unwrap();
+        let decoded = realtime_upstream_plan_from_header_value(&header).unwrap();
+        let raw = serde_json::to_string(&decoded).unwrap();
+
+        assert_eq!(decoded, plan);
+        assert!(header.len() < MAX_UPSTREAM_PLAN_HEADER_CHARS);
+        assert!(!raw.contains(secret));
+        assert!(!raw.contains("Bearer sk-"));
+        assert!(raw.contains("openai-insecure-api-key.<redacted>"));
+    }
+
+    #[test]
+    fn realtime_upstream_channel_planner_self_check_passes() {
+        assert!(realtime_upstream_channel_planner_compiled());
     }
 
     #[test]

@@ -2243,6 +2243,117 @@ pub(crate) async fn enforce_relay_rate_limits(
     Ok(())
 }
 
+pub(crate) async fn plan_realtime_upstream_channel(
+    db: &D1Database,
+    env: &Env,
+    auth: &AuthenticatedToken,
+    model: &str,
+    client_requested_subprotocol: bool,
+) -> Result<crate::realtime_session::RealtimeSelectedUpstreamPlan, worker::Result<Response>> {
+    let retry_config = RelayRetryConfig::from_env(env).map_err(|err| {
+        openai_error_response(format!("invalid relay retry configuration: {err}"), 500)
+    })?;
+    let group = auth.effective_group().to_string();
+    let is_auto = group == "auto";
+    let group_pools: Vec<(String, Vec<RelayChannel>)> = if is_auto {
+        let auto_groups =
+            match crate::d1_repositories::resolve_user_auto_groups(db, &auth.user_group).await {
+                Ok(groups) => groups,
+                Err(err) => {
+                    return Err(openai_error_response(
+                        format!("failed to resolve auto groups: {err}"),
+                        500,
+                    ));
+                }
+            };
+        if auto_groups.is_empty() {
+            return Err(json_with_status(
+                &ErrorBody::bad_request("auto groups is not enabled"),
+                503,
+            ));
+        }
+
+        let mut pools = Vec::with_capacity(auto_groups.len());
+        for auto_group in auto_groups {
+            let candidates = select_channels(
+                db,
+                env,
+                model,
+                &auto_group,
+                "openai_compatible",
+                OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            )
+            .await?;
+            pools.push((auto_group, candidates));
+        }
+        pools
+    } else {
+        let candidates = select_channels(
+            db,
+            env,
+            model,
+            &group,
+            "openai_compatible",
+            OPENAI_COMPATIBLE_CHANNEL_TYPES,
+        )
+        .await?;
+        vec![(group.clone(), candidates)]
+    };
+
+    let attempt_plan = plan_relay_attempts(
+        group_pools,
+        is_auto,
+        retry_config.max_attempts(),
+        retry_config.retry_times as i32,
+        true,
+        random_u64_below,
+    )
+    .map_err(worker_error_response)?;
+    let affinity_key =
+        affinity::affinity_enabled(optional_env_var(env, affinity::AFFINITY_ENABLED_ENV))
+            .then(|| affinity::affinity_key(auth.user_id, model, &group));
+    let attempt_plan = if let Some(key) = affinity_key.as_deref() {
+        let preferred = affinity::lookup_preferred_channel(env, key).await;
+        affinity::move_preferred_to_front(attempt_plan, preferred, |plan| plan.channel.id)
+    } else {
+        attempt_plan
+    };
+
+    for RelayAttemptPlan {
+        group: selected_group,
+        channel,
+    } in attempt_plan
+    {
+        let Some(upstream_key) = first_channel_key(&channel.key) else {
+            continue;
+        };
+        let upstream_model = mapped_model_name(model, channel.model_mapping.as_deref())
+            .unwrap_or_else(|| model.to_string());
+        return crate::realtime_session::realtime_selected_upstream_plan(
+            crate::realtime_session::RealtimeSelectedUpstreamInput {
+                selected_group: &selected_group,
+                channel_id: channel.id,
+                channel_type: channel.channel_type,
+                channel_name: &channel.name,
+                channel_base_url: channel.base_url.as_deref(),
+                request_model: model,
+                upstream_model: &upstream_model,
+                upstream_api_key: &upstream_key,
+                api_version: None,
+                client_requested_subprotocol,
+            },
+        )
+        .map_err(|err| {
+            openai_error_response(format!("realtime upstream planning failed: {err}"), 500)
+        });
+    }
+
+    Err(openai_error_response(
+        "no usable realtime upstream channel is available",
+        503,
+    ))
+}
+
 fn relay_token_rate_limit_key(auth: &AuthenticatedToken) -> String {
     if auth.token_id > 0 {
         format!("token:{}", auth.token_id)

@@ -5957,3 +5957,65 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_upstream_bridge_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.92 2026-07-06 Realtime Upstream Channel Selection Planner
+
+This increment closes the first post-planner Realtime gap: authenticated
+`/v1/realtime` requests now select an actual relay channel before the request is
+handed to the hibernatable `RealtimeSession` Durable Object. It still does not
+claim full Realtime protocol parity; the DO continues to answer unsupported
+client frames with `upstream_bridge_not_wired` until the bidirectional upstream
+WebSocket bridge, backpressure, close/error mapping, and Realtime settlement are
+implemented.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_CHANNEL_PLANNER_COMPILED=true` and exposed
+  `realtime_session_upstream_channel_planner_compiled` from
+  `/api/platform/capabilities`.
+- Added `relay::plan_realtime_upstream_channel`, which reuses the existing
+  OpenAI-compatible relay path:
+  - token-authenticated `effective_group()` selection;
+  - `auto` group resolution through `resolve_user_auto_groups`;
+  - relay read-through channel cache/D1 selection;
+  - `plan_relay_attempts` priority/weight ordering with Worker CSPRNG;
+  - channel-affinity preference move-to-front when the DO gate is enabled;
+  - model mapping via `mapped_model_name`;
+  - first usable channel key extraction without serializing the key.
+- `/v1/realtime` now performs auth, rate limits, and upstream channel planning
+  before constructing the DO session name. Planning failure returns the normal
+  OpenAI-shaped relay error response instead of creating a half-initialized DO
+  session.
+- `RealtimeSession` accepts only a bounded
+  `x-cinatoken-realtime-upstream-plan` JSON header containing a redacted
+  summary: selected group, channel id/type, truncated channel name, provider,
+  upstream URL/model, auth mode, header names, and redacted protocol names.
+  Raw upstream API keys and bearer values remain outside serialized headers,
+  socket attachments, metrics, status frames, and control frames.
+- DO status and control context now include the redacted upstream summary for
+  `/v1/realtime` smoke evidence, while the platform-only
+  `/api/platform/realtime/:session...` smoke path continues to run without an
+  upstream plan.
+- Updated the Cloudflare Platform panel, Realtime smoke harness, production
+  readiness matrix, staging smoke runbook, and layered architecture document
+  with the new channel-selection signal.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (17 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `node --check tools/smoke_realtime_session.mjs` passed.
+
+Remaining migration gaps:
+
+- Wire the actual bidirectional upstream Realtime WebSocket bridge and keep
+  secret-bearing upstream handshakes request-scoped.
+- Add bounded queues/backpressure, close/error mapping, and live protocol replay
+  evidence before `realtime_session_upstream_bridge_compiled` can become true.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

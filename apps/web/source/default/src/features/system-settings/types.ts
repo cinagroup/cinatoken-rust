@@ -418,6 +418,7 @@ export type PlatformCapabilities = {
   realtime_session_metrics_persisted_compiled: boolean
   realtime_session_control_no_echo_compiled: boolean
   realtime_session_upstream_bridge_planner_compiled: boolean
+  realtime_session_upstream_channel_planner_compiled: boolean
   realtime_session_upstream_bridge_compiled: boolean
   realtime_session_billing_settlement_compiled: boolean
   realtime_session_platform_smoke_ready: boolean

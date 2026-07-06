@@ -70,6 +70,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_metrics_persisted_compiled,
         capabilities.realtime_session_control_no_echo_compiled,
         capabilities.realtime_session_upstream_bridge_planner_compiled,
+        capabilities.realtime_session_upstream_channel_planner_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -450,6 +451,16 @@ function buildCapabilityGroups(
             'Builds upstream Realtime WebSocket URL and handshake metadata with secret redaction before the full bridge is enabled.'
           ),
           ready: capabilities.realtime_session_upstream_bridge_planner_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream channel selection'),
+          description: t(
+            'Selects the authenticated /v1/realtime upstream channel through the relay D1/cache routing path and passes only a redacted plan to the Durable Object.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_channel_planner_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

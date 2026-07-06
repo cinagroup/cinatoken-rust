@@ -6862,6 +6862,63 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.109 2026-07-06 Realtime Upstream Backpressure Policy Contract
+
+This increment moves the Realtime bridge hardening work from scattered TODOs to
+an explicit, operator-visible backpressure policy contract. It still does not
+claim the runtime queued bridge is production-complete: the active bridge can
+forward while the outbound socket is live, but a full queued drain loop remains
+a later migration step.
+
+Implemented:
+
+- Added `upstream_bridge_backpressure_policy` to
+  `REALTIME_SESSION_CUTOVER_GUARDS` and exposed
+  `realtime_session_upstream_bridge_backpressure_policy_compiled` through
+  `/api/platform/capabilities`.
+- Added a pure Rust backpressure policy with bounded queue inputs:
+  - maximum pending frames: `32`;
+  - maximum pending bytes: `4 MiB`;
+  - empty queues produce a `SendNow` decision;
+  - non-empty queues within limits produce a `Queue` decision;
+  - frame-count or byte-limit overflow produces a fail-closed
+    `backpressure_overflow` terminal event and closes client/upstream sides
+    with `1011/upstream_bridge_backpressure_overflow`.
+- Extended the bridge replay/event-trace contract with a metadata-only
+  `backpressure_overflow_text` case. The event records frame kind and byte
+  count but never stores or emits raw payloads or Realtime API-key protocols.
+- Required the new capability field and guard in
+  `tools/smoke_realtime_session.mjs`, so capability preflight fails if the
+  backpressure policy disappears.
+- Required the new policy gate in `is_realtime_session_v1_cutover_ready`.
+  Full v1 cutover remains false because `realtime_session_upstream_bridge_compiled`
+  and `realtime_session_billing_settlement_compiled` are still false.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:bridge-replay-contract` passed and now emits
+  the `backpressure_overflow_text` metadata-only terminal case.
+- `cargo fmt --all --check` passed.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed with 47 filtered Realtime/platform tests.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed with 13 filtered platform tests.
+
+Remaining migration gaps:
+
+- Wire the policy into a real runtime queued drain loop that can absorb bounded
+  short bursts, preserve frame ordering, and fail closed on queue overflow.
+- Capture live staging evidence for backpressure/flow-control behavior with
+  hibernation/restart semantics, not just the local policy contract.
+- Add safe staging fault injection for upstream socket abort/error,
+  event-stream failure, accept failure, and upstream-to-client send failure;
+  those paths remain contract-covered but not fully live-harness-covered.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

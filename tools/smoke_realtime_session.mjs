@@ -434,6 +434,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_upstream_bridge_event_trace_compiled === true,
     realtime_session_upstream_bridge_replay_contract_compiled:
       data.realtime_session_upstream_bridge_replay_contract_compiled === true,
+    realtime_session_upstream_bridge_backpressure_policy_compiled:
+      data.realtime_session_upstream_bridge_backpressure_policy_compiled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
     realtime_session_upstream_bridge_compiled:
@@ -463,6 +465,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_upstream_bridge_send_failure_guard_compiled", true],
     ["realtime_session_upstream_bridge_event_trace_compiled", true],
     ["realtime_session_upstream_bridge_replay_contract_compiled", true],
+    ["realtime_session_upstream_bridge_backpressure_policy_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
@@ -481,6 +484,7 @@ function validateCapabilities(capabilities, options) {
     "upstream_bridge_send_failure_guard",
     "upstream_bridge_event_trace",
     "upstream_bridge_replay_contract",
+    "upstream_bridge_backpressure_policy",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -1005,6 +1009,17 @@ function bridgeReplayContractExpectations() {
       upstreamReason: "client_bridge_forward_failed",
       frameKind: "binary",
       frameBytes: 32,
+    },
+    {
+      name: "backpressure_overflow_text",
+      event: "backpressure_overflow",
+      direction: "bridge",
+      clientCode: 1011,
+      clientReason: "upstream_bridge_backpressure_overflow",
+      upstreamCode: 1011,
+      upstreamReason: "upstream_bridge_backpressure_overflow",
+      frameKind: "text",
+      frameBytes: 1024,
     },
     bridgeReplayExpectationForEvent("frame_too_large", defaultFrameLimitProbeBytes),
   ];

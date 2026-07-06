@@ -493,6 +493,7 @@ Record:
   `realtime_session_upstream_bridge_send_failure_guard_compiled`,
   `realtime_session_upstream_bridge_event_trace_compiled`,
   `realtime_session_upstream_bridge_replay_contract_compiled`,
+  `realtime_session_upstream_bridge_backpressure_policy_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.

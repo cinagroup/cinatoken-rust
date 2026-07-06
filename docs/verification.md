@@ -4,6 +4,23 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `node --check tools/smoke_realtime_session.mjs`,
+  `bun run check:realtime-session:bridge-replay-contract`,
+  `cargo fmt --all --check`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`, and
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after adding the Realtime upstream backpressure policy contract. The
+  bridge replay self-test now includes a metadata-only
+  `backpressure_overflow_text` terminal case, and platform capabilities expose
+  `realtime_session_upstream_bridge_backpressure_policy_compiled` while keeping
+  full upstream bridge and billing settlement readiness false.
+- `bun run check`: passed after adding the Realtime upstream backpressure
+  policy contract. The run covered frontend build and audits, WFP dry-run
+  smoke, Realtime bridge replay/upstream replay/mock upstream replay/platform
+  header-boundary/frame-limit/v1 dry-run smoke plans, relay AI Gateway canary
+  dry-run, Rust workspace tests excluding the Worker, Worker wasm32 check, and
+  WFP tenant wasm32 check; existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
 - `node --check tools/smoke_realtime_upstream_replay.mjs`,
   `bun run check:realtime-session:mock-upstream-replay-contract`, and
   `bun run check:realtime-session:mock-upstream-replay-plan`: passed after

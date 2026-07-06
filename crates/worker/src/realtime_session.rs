@@ -36,6 +36,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_CLOSE_MAPPING_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_REPLAY_CONTRACT_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_POLICY_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -54,6 +55,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_send_failure_guard",
     "upstream_bridge_event_trace",
     "upstream_bridge_replay_contract",
+    "upstream_bridge_backpressure_policy",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -81,6 +83,8 @@ const MAX_UPSTREAM_PLAN_HEADER_CHARS: usize = 1800;
 const MAX_UPSTREAM_CONNECT_HEADER_CHARS: usize = 3600;
 const MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES: usize = 1_048_576;
 const MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES: usize = 1_048_576;
+const MAX_REALTIME_BRIDGE_PENDING_FRAMES: usize = 32;
+const MAX_REALTIME_BRIDGE_PENDING_BYTES: usize = 4 * 1_048_576;
 const REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE: u16 = 1009;
 const REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE: u16 = 1011;
 const REALTIME_BRIDGE_NORMAL_CLOSE_CODE: u16 = 1000;
@@ -94,6 +98,7 @@ const REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED: &str = "upstream_bridge_closed";
 const REALTIME_BRIDGE_REASON_UPSTREAM_ERROR: &str = "upstream_bridge_error";
 const REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED: &str = "upstream_bridge_forward_failed";
 const REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED: &str = "client_bridge_forward_failed";
+const REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW: &str = "upstream_bridge_backpressure_overflow";
 const SESSION_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const SESSION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -283,6 +288,36 @@ struct RealtimeBridgeFrameMetadata {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeBridgeQueueState {
+    pending_frames: usize,
+    pending_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeBridgeBackpressurePolicy {
+    max_pending_frames: usize,
+    max_pending_bytes: usize,
+    overflow_close_code: u16,
+    overflow_reason: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeBridgeBackpressureOverflow {
+    pending_frames: usize,
+    pending_bytes: usize,
+    incoming_bytes: usize,
+    max_pending_frames: usize,
+    max_pending_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RealtimeBridgeBackpressureDecision {
+    SendNow,
+    Queue,
+    Overflow(RealtimeBridgeBackpressureOverflow),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RealtimeBridgeCloseCause {
     ClientClosed,
     ClientError,
@@ -294,6 +329,7 @@ enum RealtimeBridgeCloseCause {
     UpstreamError,
     ClientToUpstreamSendFailed,
     UpstreamToClientSendFailed,
+    BackpressureOverflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1464,6 +1500,18 @@ pub(crate) fn realtime_upstream_bridge_event_trace_compiled() -> bool {
             max_bytes: None,
         }),
     );
+    let backpressure_action =
+        realtime_bridge_close_action(RealtimeBridgeCloseCause::BackpressureOverflow);
+    let backpressure_event = realtime_bridge_terminal_event(
+        RealtimeBridgeCloseCause::BackpressureOverflow,
+        backpressure_action,
+        13.0,
+        Some(RealtimeBridgeFrameMetadata {
+            kind: RealtimeBridgeFrameKind::Text,
+            bytes: 1024,
+            max_bytes: None,
+        }),
+    );
 
     REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED
         && close_event.event == "upstream_closed"
@@ -1483,6 +1531,14 @@ pub(crate) fn realtime_upstream_bridge_event_trace_compiled() -> bool {
         && send_event.frame_kind.as_deref() == Some("binary")
         && send_event.frame_bytes == Some(32)
         && send_event.frame_max_bytes.is_none()
+        && backpressure_event.event == "backpressure_overflow"
+        && backpressure_event.direction == "bridge"
+        && backpressure_event.client_reason == REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW
+        && backpressure_event.upstream_reason.as_deref()
+            == Some(REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW)
+        && backpressure_event.frame_kind.as_deref() == Some("text")
+        && backpressure_event.frame_bytes == Some(1024)
+        && backpressure_event.frame_max_bytes.is_none()
 }
 
 pub(crate) fn realtime_upstream_bridge_replay_contract_compiled() -> bool {
@@ -1492,6 +1548,73 @@ pub(crate) fn realtime_upstream_bridge_replay_contract_compiled() -> bool {
         && realtime_bridge_replay_contract_scenarios()
             .iter()
             .all(realtime_bridge_replay_scenario_matches)
+}
+
+pub(crate) fn realtime_upstream_bridge_backpressure_policy_compiled() -> bool {
+    if !REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_POLICY_COMPILED {
+        return false;
+    }
+    let policy = realtime_bridge_backpressure_policy();
+    let frame = RealtimeBridgeFrameMetadata {
+        kind: RealtimeBridgeFrameKind::Text,
+        bytes: 1024,
+        max_bytes: None,
+    };
+    let empty = RealtimeBridgeQueueState {
+        pending_frames: 0,
+        pending_bytes: 0,
+    };
+    let queued = RealtimeBridgeQueueState {
+        pending_frames: 1,
+        pending_bytes: 1024,
+    };
+    let full_by_frame_count = RealtimeBridgeQueueState {
+        pending_frames: policy.max_pending_frames,
+        pending_bytes: 0,
+    };
+    let full_by_bytes = RealtimeBridgeQueueState {
+        pending_frames: 1,
+        pending_bytes: policy.max_pending_bytes,
+    };
+    let overflow_action =
+        realtime_bridge_close_action(RealtimeBridgeCloseCause::BackpressureOverflow);
+    let overflow_event = realtime_bridge_terminal_event(
+        RealtimeBridgeCloseCause::BackpressureOverflow,
+        overflow_action,
+        14.0,
+        Some(frame),
+    );
+
+    policy.max_pending_frames == MAX_REALTIME_BRIDGE_PENDING_FRAMES
+        && policy.max_pending_bytes == MAX_REALTIME_BRIDGE_PENDING_BYTES
+        && policy.overflow_close_code == REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE
+        && policy.overflow_reason == REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW
+        && realtime_bridge_backpressure_decision(policy, empty, frame)
+            == RealtimeBridgeBackpressureDecision::SendNow
+        && realtime_bridge_backpressure_decision(policy, queued, frame)
+            == RealtimeBridgeBackpressureDecision::Queue
+        && matches!(
+            realtime_bridge_backpressure_decision(policy, full_by_frame_count, frame),
+            RealtimeBridgeBackpressureDecision::Overflow(overflow)
+                if overflow.max_pending_frames == policy.max_pending_frames
+                    && overflow.incoming_bytes == frame.bytes
+        )
+        && matches!(
+            realtime_bridge_backpressure_decision(policy, full_by_bytes, frame),
+            RealtimeBridgeBackpressureDecision::Overflow(overflow)
+                if overflow.max_pending_bytes == policy.max_pending_bytes
+                    && overflow.pending_bytes == policy.max_pending_bytes
+        )
+        && overflow_event.event == "backpressure_overflow"
+        && overflow_event.direction == "bridge"
+        && overflow_event.client_code == REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE
+        && overflow_event.client_reason == REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW
+        && overflow_event.upstream_code == Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE)
+        && overflow_event.upstream_reason.as_deref()
+            == Some(REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW)
+        && overflow_event.frame_kind.as_deref() == Some("text")
+        && overflow_event.frame_bytes == Some(frame.bytes)
+        && overflow_event.frame_max_bytes.is_none()
 }
 
 pub(crate) fn realtime_selected_upstream(
@@ -1867,7 +1990,7 @@ fn send_realtime_bridge_terminal_event(
     }));
 }
 
-fn realtime_bridge_replay_contract_scenarios() -> [RealtimeBridgeReplayScenario; 5] {
+fn realtime_bridge_replay_contract_scenarios() -> [RealtimeBridgeReplayScenario; 6] {
     [
         RealtimeBridgeReplayScenario {
             name: "client_text_then_upstream_normal_close",
@@ -1957,6 +2080,26 @@ fn realtime_bridge_replay_contract_scenarios() -> [RealtimeBridgeReplayScenario;
             expected_frame_bytes: Some(32),
             expected_frame_max_bytes: None,
         },
+        RealtimeBridgeReplayScenario {
+            name: "backpressure_overflow_text",
+            active_status_before_terminal: "upstream_bridge_active",
+            terminal_cause: RealtimeBridgeCloseCause::BackpressureOverflow,
+            terminal_frame: Some(RealtimeBridgeFrameMetadata {
+                kind: RealtimeBridgeFrameKind::Text,
+                bytes: 1024,
+                max_bytes: None,
+            }),
+            expected_event: "backpressure_overflow",
+            expected_direction: "bridge",
+            expected_client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+            expected_client_reason: REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
+            expected_upstream_code: Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE),
+            expected_upstream_reason: Some(REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW),
+            expected_upstream_close_code: None,
+            expected_frame_kind: Some("text"),
+            expected_frame_bytes: Some(1024),
+            expected_frame_max_bytes: None,
+        },
     ]
 }
 
@@ -2043,6 +2186,7 @@ fn realtime_bridge_terminal_event_labels(
         RealtimeBridgeCloseCause::UpstreamToClientSendFailed => {
             ("upstream_to_client_send_failed", "upstream_to_client", None)
         }
+        RealtimeBridgeCloseCause::BackpressureOverflow => ("backpressure_overflow", "bridge", None),
     }
 }
 
@@ -2057,6 +2201,7 @@ fn realtime_bridge_generated_close_reason(reason: &str) -> bool {
             | REALTIME_BRIDGE_REASON_UPSTREAM_ERROR
             | REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED
             | REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED
+            | REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW
     )
 }
 
@@ -2159,6 +2304,45 @@ fn realtime_bridge_close_action(cause: RealtimeBridgeCloseCause) -> RealtimeBrid
             upstream_code: Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE),
             upstream_reason: Some(REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED),
         },
+        RealtimeBridgeCloseCause::BackpressureOverflow => RealtimeBridgeCloseAction {
+            client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+            client_reason: REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
+            upstream_code: Some(REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE),
+            upstream_reason: Some(REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW),
+        },
+    }
+}
+
+fn realtime_bridge_backpressure_policy() -> RealtimeBridgeBackpressurePolicy {
+    RealtimeBridgeBackpressurePolicy {
+        max_pending_frames: MAX_REALTIME_BRIDGE_PENDING_FRAMES,
+        max_pending_bytes: MAX_REALTIME_BRIDGE_PENDING_BYTES,
+        overflow_close_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,
+        overflow_reason: REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
+    }
+}
+
+fn realtime_bridge_backpressure_decision(
+    policy: RealtimeBridgeBackpressurePolicy,
+    queue: RealtimeBridgeQueueState,
+    frame: RealtimeBridgeFrameMetadata,
+) -> RealtimeBridgeBackpressureDecision {
+    if queue.pending_frames >= policy.max_pending_frames
+        || queue.pending_bytes.saturating_add(frame.bytes) > policy.max_pending_bytes
+    {
+        return RealtimeBridgeBackpressureDecision::Overflow(RealtimeBridgeBackpressureOverflow {
+            pending_frames: queue.pending_frames,
+            pending_bytes: queue.pending_bytes,
+            incoming_bytes: frame.bytes,
+            max_pending_frames: policy.max_pending_frames,
+            max_pending_bytes: policy.max_pending_bytes,
+        });
+    }
+
+    if queue.pending_frames == 0 && queue.pending_bytes == 0 {
+        RealtimeBridgeBackpressureDecision::SendNow
+    } else {
+        RealtimeBridgeBackpressureDecision::Queue
     }
 }
 
@@ -2903,6 +3087,109 @@ mod tests {
     }
 
     #[test]
+    fn realtime_upstream_bridge_backpressure_policy_is_bounded_and_fail_closed() {
+        let policy = realtime_bridge_backpressure_policy();
+        assert_eq!(policy.max_pending_frames, 32);
+        assert_eq!(policy.max_pending_bytes, 4 * 1_048_576);
+        assert_eq!(policy.overflow_close_code, 1011);
+        assert_eq!(
+            policy.overflow_reason,
+            "upstream_bridge_backpressure_overflow"
+        );
+
+        let frame = RealtimeBridgeFrameMetadata {
+            kind: RealtimeBridgeFrameKind::Text,
+            bytes: 1024,
+            max_bytes: None,
+        };
+
+        assert_eq!(
+            realtime_bridge_backpressure_decision(
+                policy,
+                RealtimeBridgeQueueState {
+                    pending_frames: 0,
+                    pending_bytes: 0,
+                },
+                frame,
+            ),
+            RealtimeBridgeBackpressureDecision::SendNow
+        );
+        assert_eq!(
+            realtime_bridge_backpressure_decision(
+                policy,
+                RealtimeBridgeQueueState {
+                    pending_frames: 1,
+                    pending_bytes: 1024,
+                },
+                frame,
+            ),
+            RealtimeBridgeBackpressureDecision::Queue
+        );
+        assert_eq!(
+            realtime_bridge_backpressure_decision(
+                policy,
+                RealtimeBridgeQueueState {
+                    pending_frames: policy.max_pending_frames,
+                    pending_bytes: 0,
+                },
+                frame,
+            ),
+            RealtimeBridgeBackpressureDecision::Overflow(RealtimeBridgeBackpressureOverflow {
+                pending_frames: policy.max_pending_frames,
+                pending_bytes: 0,
+                incoming_bytes: 1024,
+                max_pending_frames: policy.max_pending_frames,
+                max_pending_bytes: policy.max_pending_bytes,
+            })
+        );
+        assert!(matches!(
+            realtime_bridge_backpressure_decision(
+                policy,
+                RealtimeBridgeQueueState {
+                    pending_frames: 1,
+                    pending_bytes: policy.max_pending_bytes,
+                },
+                frame,
+            ),
+            RealtimeBridgeBackpressureDecision::Overflow(overflow)
+                if overflow.pending_bytes == policy.max_pending_bytes
+                    && overflow.incoming_bytes == frame.bytes
+        ));
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_backpressure_overflow_event_is_metadata_only() {
+        let frame = RealtimeBridgeFrameMetadata {
+            kind: RealtimeBridgeFrameKind::Text,
+            bytes: 1024,
+            max_bytes: None,
+        };
+        let event = realtime_bridge_terminal_event(
+            RealtimeBridgeCloseCause::BackpressureOverflow,
+            realtime_bridge_close_action(RealtimeBridgeCloseCause::BackpressureOverflow),
+            14.0,
+            Some(frame),
+        );
+
+        assert_eq!(event.event, "backpressure_overflow");
+        assert_eq!(event.direction, "bridge");
+        assert_eq!(event.client_code, 1011);
+        assert_eq!(event.client_reason, "upstream_bridge_backpressure_overflow");
+        assert_eq!(event.upstream_code, Some(1011));
+        assert_eq!(
+            event.upstream_reason.as_deref(),
+            Some("upstream_bridge_backpressure_overflow")
+        );
+        assert_eq!(event.frame_kind.as_deref(), Some("text"));
+        assert_eq!(event.frame_bytes, Some(1024));
+        assert!(event.frame_max_bytes.is_none());
+
+        let raw = serde_json::to_string(&event).unwrap();
+        assert!(!raw.contains("secret client payload"));
+        assert!(!raw.contains("openai-insecure-api-key.sk"));
+    }
+
+    #[test]
     fn realtime_upstream_bridge_terminal_event_trace_is_metadata_only() {
         let upstream_close = realtime_bridge_terminal_event(
             RealtimeBridgeCloseCause::UpstreamClosed(1006),
@@ -2953,6 +3240,7 @@ mod tests {
             REALTIME_BRIDGE_REASON_UPSTREAM_ERROR,
             REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED,
             REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED,
+            REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW,
         ] {
             assert!(realtime_bridge_generated_close_reason(reason));
         }
@@ -3299,6 +3587,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_replay_contract_is_compiled() {
         assert!(realtime_upstream_bridge_replay_contract_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_bridge_backpressure_policy_contract_is_compiled() {
+        assert!(realtime_upstream_bridge_backpressure_policy_compiled());
     }
 
     #[test]

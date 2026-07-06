@@ -72,6 +72,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_planner_compiled,
         capabilities.realtime_session_upstream_channel_planner_compiled,
         capabilities.realtime_session_upstream_bridge_connect_contract_compiled,
+        capabilities.realtime_session_upstream_connect_handoff_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -472,6 +473,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_connect_contract_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream connect handoff'),
+          description: t(
+            'Passes the secret-bearing upstream connect material from the relay gateway to the Durable Object only on the live request, while persisting no raw upstream key.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_connect_handoff_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

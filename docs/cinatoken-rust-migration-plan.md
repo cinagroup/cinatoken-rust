@@ -6009,6 +6009,14 @@ Validation:
   passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
   only).
 - `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default` passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with warnings limited to the known `d1_repositories.rs` dead-code items.
+- `bun run check` passed, covering frontend build, bundle redaction/budget,
+  lint-debt, route audit, WFP deploy/dispatch dry-runs, Realtime platform and
+  v1 dry-runs, relay AI Gateway dry-run, WFP tenant Worker-script tests, Rust
+  workspace tests, and Worker/WFP wasm32 checks.
 
 Remaining migration gaps:
 
@@ -6084,6 +6092,65 @@ Remaining migration gaps:
 - Preserve the hibernation boundary: accepted client sockets can hibernate, but
   outbound upstream sockets must be treated as transient active-session handles
   and rebuilt/closed deliberately.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.
+
+### 22.94 2026-07-06 Realtime Upstream Connect Handoff
+
+This increment closes the next bridge prerequisite after the connect contract:
+authenticated `/v1/realtime` channel selection now produces both the redacted
+upstream plan and a request-scoped secret-bearing connect handoff for the
+Durable Object. The full bidirectional bridge still remains intentionally
+disabled.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_CONNECT_HANDOFF_COMPILED=true` and exposed
+  `realtime_session_upstream_connect_handoff_compiled` from
+  `/api/platform/capabilities`.
+- Changed `relay::plan_realtime_upstream_channel` to return
+  `RealtimeSelectedUpstream`, which carries:
+  - the existing redacted `RealtimeSelectedUpstreamPlan` for socket
+    attachments/status/control context;
+  - a secret-bearing `RealtimeUpstreamBridgeConnectHandoff` used only on the
+    gateway-to-DO request.
+- Added `x-cinatoken-realtime-upstream-connect` as a bounded internal request
+  header. It can contain the upstream `Authorization`, Azure `api-key`, or
+  `openai-insecure-api-key.<secret>` subprotocol value, but is never copied
+  into Durable Object socket attachments, metrics, status frames, or control
+  frames.
+- Added a pure upstream fetch-upgrade request plan builder that converts
+  `ws/wss` URLs into Worker `http/https` fetch upgrade requests and preserves
+  request-scoped headers/subprotocols for the future outbound bridge.
+- `RealtimeSession` now records only
+  `upstream_connect_handoff=true/false` in attachment/status/control context,
+  allowing staging smoke to prove the DO received connect material without
+  exposing the raw upstream key.
+- Required the handoff signal in the v1 cutover guard function while keeping
+  `realtime_session_upstream_bridge_compiled=false`,
+  `realtime_session_billing_settlement_compiled=false`, and
+  `realtime_session_v1_cutover_ready=false`.
+- Updated the frontend Cloudflare Platform panel, Realtime smoke preflight,
+  staging smoke runbook, production readiness matrix, layered architecture
+  document, and verification log.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (25 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `node --check tools/smoke_realtime_session.mjs` passed.
+
+Remaining migration gaps:
+
+- Wire the actual bidirectional upstream Realtime WebSocket bridge using the
+  handoff, including open/error/close mapping and bounded queues.
+- Preserve Cloudflare hibernation semantics: client sockets can hibernate, but
+  outbound upstream sockets remain transient active-session handles.
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.

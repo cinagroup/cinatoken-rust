@@ -26,7 +26,9 @@ pub const REALTIME_SESSION_V1_ENABLED_ENV: &str = "REALTIME_SESSION_V1_ENABLED";
 pub const REALTIME_UPSTREAM_BRIDGE_PLANNER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_CHANNEL_PLANNER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_CONNECT_HANDOFF_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
+const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
 pub const REALTIME_OPENAI_PATH: &str = "/v1/realtime";
 pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
@@ -53,6 +55,7 @@ const MAX_STORED_TEXT_CHARS: usize = 160;
 const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
 const MAX_UPSTREAM_PLAN_HEADER_CHARS: usize = 1800;
+const MAX_UPSTREAM_CONNECT_HEADER_CHARS: usize = 3600;
 const SESSION_HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const SESSION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -67,6 +70,7 @@ struct SocketAttachment {
     token_fingerprint: Option<String>,
     auth_state: String,
     upstream: Option<RealtimeSelectedUpstreamPlan>,
+    upstream_connect_handoff: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +94,7 @@ struct RealtimeSocketSummary {
     auth_state: String,
     connected_at_ms: f64,
     upstream: Option<RealtimeSelectedUpstreamPlan>,
+    upstream_connect_handoff: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +154,11 @@ pub(crate) struct RealtimeSelectedUpstreamPlan {
     header_names: Vec<String>,
 }
 
+pub(crate) struct RealtimeSelectedUpstream {
+    plan: RealtimeSelectedUpstreamPlan,
+    connect_handoff: RealtimeUpstreamBridgeConnectHandoff,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RealtimeUpstreamBridgeInput<'a> {
     channel_type: i32,
@@ -185,6 +195,28 @@ struct RealtimeUpstreamBridgeConnectSpec {
     redacted_plan: RealtimeUpstreamBridgePlan,
     protocol: Vec<String>,
     headers: Vec<(&'static str, String)>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RealtimeUpstreamBridgeConnectHandoff {
+    url: String,
+    auth_mode: RealtimeUpstreamAuthMode,
+    protocol: Vec<String>,
+    headers: Vec<RealtimeUpstreamConnectHeader>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RealtimeUpstreamConnectHeader {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealtimeUpstreamFetchRequestPlan {
+    fetch_url: String,
+    upgrade: &'static str,
+    protocol_header: Option<String>,
+    headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -245,6 +277,7 @@ impl DurableObject for RealtimeSession {
                 auth_state: attachment.auth_state,
                 connected_at_ms: attachment.connected_at_ms,
                 upstream: attachment.upstream,
+                upstream_connect_handoff: attachment.upstream_connect_handoff,
             })
             .collect::<Vec<_>>();
         let restored_attachments = attachments.len();
@@ -619,7 +652,7 @@ async fn handle_openai_realtime_gateway(req: Request, env: Env) -> WorkerResult<
     };
 
     let session = realtime_session_name(&model, &websocket_key, &token_fingerprint(&api_key.value));
-    let req = attach_realtime_upstream_plan_header(req, &upstream_plan)?;
+    let req = attach_realtime_upstream_headers(req, &upstream_plan)?;
     fetch_session_stub(req, env, session).await
 }
 
@@ -656,6 +689,7 @@ fn socket_attachment_from_request(req: &Request, session: String) -> SocketAttac
         token_fingerprint: api_key.as_ref().map(|key| token_fingerprint(&key.value)),
         auth_state: auth_state_for_path(&req.path()).to_string(),
         upstream: realtime_upstream_plan_from_request(req),
+        upstream_connect_handoff: realtime_upstream_connect_handoff_from_request(req).is_some(),
     }
 }
 
@@ -668,7 +702,8 @@ fn attachment_context_json(attachment: Option<&SocketAttachment>) -> Value {
             "token_source": attachment.token_source,
             "token_fingerprint": attachment.token_fingerprint,
             "auth_state": attachment.auth_state,
-            "upstream": attachment.upstream
+            "upstream": attachment.upstream,
+            "upstream_connect_handoff": attachment.upstream_connect_handoff
         }),
         None => Value::Null,
     }
@@ -788,13 +823,58 @@ pub(crate) fn realtime_upstream_bridge_connect_contract_compiled() -> bool {
         && !azure_plan.contains(secret)
 }
 
-pub(crate) fn realtime_selected_upstream_plan(
+pub(crate) fn realtime_upstream_connect_handoff_compiled() -> bool {
+    if !REALTIME_UPSTREAM_CONNECT_HANDOFF_COMPILED {
+        return false;
+    }
+    let secret = "connect-handoff-smoke-key";
+    let Ok(selected) = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+        selected_group: "default",
+        channel_id: 1,
+        channel_type: 1,
+        channel_name: "openai-primary",
+        channel_base_url: Some("https://api.openai.com"),
+        request_model: "gpt-4o-realtime-preview",
+        upstream_model: "gpt-4o-realtime-preview",
+        upstream_api_key: secret,
+        api_version: None,
+        client_requested_subprotocol: true,
+    }) else {
+        return false;
+    };
+    let Ok(plan_header) = realtime_upstream_plan_header_value(&selected.plan) else {
+        return false;
+    };
+    let Ok(connect_header) = realtime_upstream_connect_header_value(&selected.connect_handoff)
+    else {
+        return false;
+    };
+    let Some(decoded) = realtime_upstream_connect_handoff_from_header_value(&connect_header) else {
+        return false;
+    };
+    let Ok(fetch_plan) = realtime_upstream_fetch_request_plan(&decoded) else {
+        return false;
+    };
+
+    !plan_header.contains(secret)
+        && connect_header.contains(secret)
+        && fetch_plan.fetch_url
+            == "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+        && fetch_plan.upgrade == "websocket"
+        && fetch_plan
+            .protocol_header
+            .as_deref()
+            .unwrap_or_default()
+            .contains(secret)
+}
+
+pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
-) -> Result<RealtimeSelectedUpstreamPlan, String> {
+) -> Result<RealtimeSelectedUpstream, String> {
     let selected_group = non_empty_trimmed(input.selected_group, "selected_group")?;
     let request_model = non_empty_trimmed(input.request_model, "request_model")?;
     let upstream_model = non_empty_trimmed(input.upstream_model, "upstream_model")?;
-    let bridge = realtime_upstream_bridge_plan(RealtimeUpstreamBridgeInput {
+    let bridge = realtime_upstream_bridge_connect_spec(RealtimeUpstreamBridgeInput {
         channel_type: input.channel_type,
         base_url: input.channel_base_url,
         model: &upstream_model,
@@ -802,33 +882,63 @@ pub(crate) fn realtime_selected_upstream_plan(
         api_version: input.api_version,
         client_requested_subprotocol: input.client_requested_subprotocol,
     })?;
-    Ok(RealtimeSelectedUpstreamPlan {
+    let RealtimeUpstreamBridgeConnectSpec {
+        redacted_plan: bridge_plan,
+        protocol,
+        headers,
+    } = bridge;
+    let plan = RealtimeSelectedUpstreamPlan {
         selected_group,
         channel_id: input.channel_id,
-        channel_type: input.channel_type,
+        channel_type: bridge_plan.channel_type,
         channel_name: truncate_text(input.channel_name, MAX_CHANNEL_NAME_CHARS),
-        provider: bridge.provider,
-        upstream_url: bridge.url,
+        provider: bridge_plan.provider,
+        upstream_url: bridge_plan.url.clone(),
         request_model,
-        upstream_model: bridge.model,
-        channel_has_custom_base_url: bridge.channel_has_custom_base_url,
-        auth_mode: bridge.auth_mode,
-        protocol_redacted: bridge.protocol_redacted,
-        header_names: bridge
+        upstream_model: bridge_plan.model,
+        channel_has_custom_base_url: bridge_plan.channel_has_custom_base_url,
+        auth_mode: bridge_plan.auth_mode,
+        protocol_redacted: bridge_plan.protocol_redacted,
+        header_names: bridge_plan
             .header_names
             .into_iter()
             .map(str::to_string)
             .collect(),
+    };
+    let connect_handoff = RealtimeUpstreamBridgeConnectHandoff {
+        url: plan.upstream_url.clone(),
+        auth_mode: plan.auth_mode,
+        protocol,
+        headers: headers
+            .into_iter()
+            .map(|(name, value)| RealtimeUpstreamConnectHeader {
+                name: name.to_string(),
+                value,
+            })
+            .collect(),
+    };
+    Ok(RealtimeSelectedUpstream {
+        plan,
+        connect_handoff,
     })
 }
 
-fn attach_realtime_upstream_plan_header(
+pub(crate) fn realtime_selected_upstream_plan(
+    input: RealtimeSelectedUpstreamInput<'_>,
+) -> Result<RealtimeSelectedUpstreamPlan, String> {
+    realtime_selected_upstream(input).map(|selected| selected.plan)
+}
+
+fn attach_realtime_upstream_headers(
     mut req: Request,
-    plan: &RealtimeSelectedUpstreamPlan,
+    selected: &RealtimeSelectedUpstream,
 ) -> WorkerResult<Request> {
-    let value = realtime_upstream_plan_header_value(plan)?;
+    let value = realtime_upstream_plan_header_value(&selected.plan)?;
     req.headers_mut()?
         .set(REALTIME_UPSTREAM_PLAN_HEADER, &value)?;
+    let value = realtime_upstream_connect_header_value(&selected.connect_handoff)?;
+    req.headers_mut()?
+        .set(REALTIME_UPSTREAM_CONNECT_HEADER, &value)?;
     Ok(req)
 }
 
@@ -857,6 +967,71 @@ fn realtime_upstream_plan_from_header_value(value: &str) -> Option<RealtimeSelec
         return None;
     }
     serde_json::from_str::<RealtimeSelectedUpstreamPlan>(value).ok()
+}
+
+fn realtime_upstream_connect_header_value(
+    handoff: &RealtimeUpstreamBridgeConnectHandoff,
+) -> WorkerResult<String> {
+    let value = serde_json::to_string(handoff).map_err(|err| {
+        worker::Error::RustError(format!(
+            "failed to encode realtime upstream connect handoff: {err}"
+        ))
+    })?;
+    if value.len() > MAX_UPSTREAM_CONNECT_HEADER_CHARS {
+        return Err(worker::Error::RustError(format!(
+            "realtime upstream connect handoff exceeds {MAX_UPSTREAM_CONNECT_HEADER_CHARS} byte header limit"
+        )));
+    }
+    Ok(value)
+}
+
+fn realtime_upstream_connect_handoff_from_request(
+    req: &Request,
+) -> Option<RealtimeUpstreamBridgeConnectHandoff> {
+    request_header(req, REALTIME_UPSTREAM_CONNECT_HEADER)
+        .as_deref()
+        .and_then(realtime_upstream_connect_handoff_from_header_value)
+}
+
+fn realtime_upstream_connect_handoff_from_header_value(
+    value: &str,
+) -> Option<RealtimeUpstreamBridgeConnectHandoff> {
+    if value.len() > MAX_UPSTREAM_CONNECT_HEADER_CHARS {
+        return None;
+    }
+    serde_json::from_str::<RealtimeUpstreamBridgeConnectHandoff>(value).ok()
+}
+
+fn realtime_upstream_fetch_request_plan(
+    handoff: &RealtimeUpstreamBridgeConnectHandoff,
+) -> Result<RealtimeUpstreamFetchRequestPlan, String> {
+    let mut url = Url::parse(&handoff.url)
+        .map_err(|err| format!("invalid realtime upstream connect URL: {err}"))?;
+    let fetch_scheme = match url.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        "http" => "http",
+        "https" => "https",
+        other => {
+            return Err(format!(
+                "unsupported realtime upstream connect scheme: {other}"
+            ))
+        }
+    };
+    url.set_scheme(fetch_scheme)
+        .map_err(|_| format!("failed to set realtime upstream fetch scheme to {fetch_scheme}"))?;
+    let protocol_header = (!handoff.protocol.is_empty()).then(|| handoff.protocol.join(","));
+    let headers = handoff
+        .headers
+        .iter()
+        .map(|header| (header.name.clone(), header.value.clone()))
+        .collect::<Vec<_>>();
+    Ok(RealtimeUpstreamFetchRequestPlan {
+        fetch_url: url.to_string(),
+        upgrade: "websocket",
+        protocol_header,
+        headers,
+    })
 }
 
 fn realtime_upstream_bridge_plan(
@@ -1335,6 +1510,7 @@ mod tests {
             token_fingerprint: Some("fp-token".to_string()),
             auth_state: "gateway_checked".to_string(),
             upstream: None,
+            upstream_connect_handoff: true,
         };
         let mut metrics = RealtimeSessionMetrics::new("rt-session", 1.0);
         metrics.record_connect(&attachment, 2.0);
@@ -1597,6 +1773,120 @@ mod tests {
     }
 
     #[test]
+    fn realtime_selected_upstream_handoff_round_trips_with_request_scoped_secret() {
+        let secret = "sk-live-secret";
+        let selected = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 42,
+            channel_type: 1,
+            channel_name: "primary-openai",
+            channel_base_url: Some("https://api.openai.com"),
+            request_model: "gpt-4o-realtime-preview",
+            upstream_model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+        let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
+        let connect_header =
+            realtime_upstream_connect_header_value(&selected.connect_handoff).unwrap();
+        let decoded = realtime_upstream_connect_handoff_from_header_value(&connect_header).unwrap();
+        let fetch_plan = realtime_upstream_fetch_request_plan(&decoded).unwrap();
+
+        assert!(!plan_header.contains(secret));
+        assert!(connect_header.contains(secret));
+        assert_eq!(
+            fetch_plan.fetch_url,
+            "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+        );
+        assert_eq!(fetch_plan.upgrade, "websocket");
+        assert!(fetch_plan.headers.is_empty());
+        assert!(fetch_plan
+            .protocol_header
+            .as_deref()
+            .unwrap_or_default()
+            .contains(secret));
+    }
+
+    #[test]
+    fn realtime_header_auth_handoff_fetch_plan_carries_headers_only_request_scoped() {
+        let secret = "sk-live-secret";
+        let selected = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 42,
+            channel_type: 1,
+            channel_name: "primary-openai",
+            channel_base_url: Some("https://api.openai.com"),
+            request_model: "gpt-4o-realtime-preview",
+            upstream_model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: false,
+        })
+        .unwrap();
+        let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
+        let connect_header =
+            realtime_upstream_connect_header_value(&selected.connect_handoff).unwrap();
+        let decoded = realtime_upstream_connect_handoff_from_header_value(&connect_header).unwrap();
+        let fetch_plan = realtime_upstream_fetch_request_plan(&decoded).unwrap();
+
+        assert!(!plan_header.contains(secret));
+        assert!(connect_header.contains(secret));
+        assert!(fetch_plan.protocol_header.is_none());
+        assert_eq!(
+            fetch_plan.headers,
+            vec![
+                ("openai-beta".to_string(), "realtime=v1".to_string()),
+                (
+                    "authorization".to_string(),
+                    "Bearer sk-live-secret".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn realtime_connect_handoff_is_not_serialized_in_attachment_or_metrics() {
+        let secret = "sk-live-secret";
+        let upstream = realtime_selected_upstream_plan(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 42,
+            channel_type: 1,
+            channel_name: "primary-openai",
+            channel_base_url: Some("https://api.openai.com"),
+            request_model: "gpt-4o-realtime-preview",
+            upstream_model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+        let attachment = SocketAttachment {
+            session: "rt-session".to_string(),
+            connected_at_ms: 10.0,
+            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            entrypoint: "openai_realtime_v1".to_string(),
+            model: Some("gpt-4o-realtime-preview".to_string()),
+            token_source: Some("authorization".to_string()),
+            token_fingerprint: Some("fp-token".to_string()),
+            auth_state: "gateway_checked".to_string(),
+            upstream: Some(upstream),
+            upstream_connect_handoff: true,
+        };
+        let mut metrics = RealtimeSessionMetrics::new("rt-session", 1.0);
+        metrics.record_connect(&attachment, 2.0);
+
+        let attachment_raw = serde_json::to_string(&attachment).unwrap();
+        let metrics_raw = serde_json::to_string(&metrics).unwrap();
+        assert!(!attachment_raw.contains(secret));
+        assert!(!attachment_raw.contains("Bearer sk-"));
+        assert!(!metrics_raw.contains(secret));
+        assert!(!metrics_raw.contains("Bearer sk-"));
+        assert!(attachment_raw.contains("\"upstream_connect_handoff\":true"));
+    }
+
+    #[test]
     fn realtime_upstream_channel_planner_self_check_passes() {
         assert!(realtime_upstream_channel_planner_compiled());
     }
@@ -1604,6 +1894,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_connect_contract_self_check_passes() {
         assert!(realtime_upstream_bridge_connect_contract_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_connect_handoff_self_check_passes() {
+        assert!(realtime_upstream_connect_handoff_compiled());
     }
 
     #[test]

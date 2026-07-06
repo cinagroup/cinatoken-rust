@@ -2249,7 +2249,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
     auth: &AuthenticatedToken,
     model: &str,
     client_requested_subprotocol: bool,
-) -> Result<crate::realtime_session::RealtimeSelectedUpstreamPlan, worker::Result<Response>> {
+) -> Result<crate::realtime_session::RealtimeSelectedUpstream, worker::Result<Response>> {
     let retry_config = RelayRetryConfig::from_env(env).map_err(|err| {
         openai_error_response(format!("invalid relay retry configuration: {err}"), 500)
     })?;
@@ -2329,7 +2329,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
         };
         let upstream_model = mapped_model_name(model, channel.model_mapping.as_deref())
             .unwrap_or_else(|| model.to_string());
-        return crate::realtime_session::realtime_selected_upstream_plan(
+        return crate::realtime_session::realtime_selected_upstream(
             crate::realtime_session::RealtimeSelectedUpstreamInput {
                 selected_group: &selected_group,
                 channel_id: channel.id,

@@ -4,6 +4,32 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the Realtime upstream connect handoff,
+  gateway-to-DO secret-bearing request header, frontend Cloudflare Platform
+  row, smoke preflight assertion, and migration docs. The run covered frontend
+  type/build, bundle redaction audit (460 files, 37,299,894 bytes, 0 findings),
+  bundle budget audit (245 files, 18.96 MB raw / 4.50 MB gzip, all 10 budgets
+  OK), lint-debt baseline (0 errors / 0 warnings / 0 regressions), frontend
+  route audit (215 Worker-facing calls / 307 Worker routes / 0 missing calls),
+  WFP tenant deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession
+  platform and v1 dry-run smoke plans, relay AI Gateway canary smoke dry-run,
+  WFP tenant Worker-script tests (8 passed), `cargo fmt --all --check`, Rust
+  workspace tests excluding the Worker, Worker wasm32 check, and WFP tenant
+  wasm32 check. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime upstream connect handoff, gateway-to-DO
+  secret-bearing request header, fetch-upgrade request plan checks, and
+  attachment/metrics no-secret serialization assertions (25 filtered
+  Realtime/platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_connect_handoff_compiled` in platform
+  capabilities and requiring it in v1 cutover readiness (13 platform tests;
+  existing `d1_repositories.rs` dead-code warnings only).
+- `node --check tools/smoke_realtime_session.mjs`: passed after adding the
+  upstream connect-handoff capability to live capabilities preflight.
 - `bun run check`: passed after adding the Realtime upstream connect-contract
   capability, frontend Cloudflare Platform row, smoke preflight assertion, and
   migration docs. The run covered frontend type/build, bundle redaction audit

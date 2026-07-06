@@ -383,6 +383,7 @@ Record:
   `realtime_session_upstream_bridge_planner_compiled`,
   `realtime_session_upstream_channel_planner_compiled`,
   `realtime_session_upstream_bridge_connect_contract_compiled`,
+  `realtime_session_upstream_connect_handoff_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -398,7 +399,8 @@ Pass criteria:
   only in staging.
 - Platform capabilities report hibernation, auth boundary, persisted metrics,
   no-echo controls, the upstream bridge planner, the upstream channel planner,
-  and the request-scoped upstream connect contract as compiled;
+  the request-scoped upstream connect contract, and the gateway-to-DO connect
+  handoff as compiled;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -410,8 +412,9 @@ Pass criteria:
   message payloads, raw bearer tokens, or raw Realtime protocol API keys.
 - For `/v1/realtime` smoke, socket status/control context includes a redacted
   upstream summary (`channel_id`, `channel_type`, selected group, upstream
-  model, provider, auth mode, header names/protocol names) and never includes
-  the raw upstream key or bearer header value.
+  model, provider, auth mode, header names/protocol names) plus
+  `upstream_connect_handoff=true`, and never includes the raw upstream key,
+  bearer header value, or `openai-insecure-api-key.<secret>` protocol value.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until upstream bridge,

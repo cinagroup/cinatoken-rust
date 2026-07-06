@@ -417,6 +417,7 @@ Record:
   `realtime_session_upstream_bridge_close_mapping_compiled`,
   `realtime_session_upstream_bridge_send_failure_guard_compiled`,
   `realtime_session_upstream_bridge_event_trace_compiled`,
+  `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -437,9 +438,9 @@ Pass criteria:
   the request-scoped upstream connect contract, and the gateway-to-DO connect
   handoff plus upstream fetch-upgrade adapter and transient bridge lifecycle as
   compiled, including the text/binary frame guard and bridge close/error
-  mapping plus the upstream send-failure guard and terminal event trace;
-  `realtime_session_platform_smoke_ready=true` before the platform WebSocket
-  smoke runs.
+  mapping plus the upstream send-failure guard, terminal event trace, and
+  platform upstream-header boundary; `realtime_session_platform_smoke_ready=true`
+  before the platform WebSocket smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
   lifecycle metrics.
 - Metrics show at least one connect and at least two text messages from the
@@ -477,6 +478,11 @@ Pass criteria:
   accepted. It is not a substitute for a real or mock upstream replay run, but
   it proves the smoke verifier will reject mismatched close codes/reasons,
   directions, frame metadata, or leaked probe/API-key material.
+- Platform Realtime routes strip caller-supplied
+  `x-cinatoken-realtime-upstream-plan` and
+  `x-cinatoken-realtime-upstream-connect` before forwarding to the Durable
+  Object. Only the authenticated `/v1/realtime` gateway may attach those
+  request-scoped upstream handoff headers.
 - Terminal bridge evidence is metadata-only: live
   `realtime_session_bridge_event` frames and persisted
   `metrics.last_bridge_terminal_event` include event name, direction, close

@@ -4,6 +4,35 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime platform upstream-header boundary,
+  filtering caller-supplied internal upstream handoff headers from the platform
+  gateway path, and moving trusted `/v1/realtime` handoff injection onto a
+  mutable cloned request (43 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_platform_header_boundary_compiled` in platform
+  capabilities and requiring it in platform smoke readiness plus the v1 cutover
+  readiness matrix while keeping full bridge and billing false (13 platform
+  tests; existing `d1_repositories.rs` dead-code warnings only).
+- `node --check tools/smoke_realtime_session.mjs`,
+  `bun run check:realtime-session:smoke-plan`, and
+  `bun run check:realtime-session:v1-smoke-plan`: passed after adding the
+  Realtime platform header-boundary capability and cutover guard checks.
+- `bun run check:web`: passed after adding
+  `realtime_session_platform_header_boundary_compiled` to the Cloudflare
+  Platform settings panel type, readiness count, and capability row.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the Realtime platform upstream-header boundary (known
+  `d1_repositories.rs` dead-code warnings only).
+- `bun run check`: passed after adding the Realtime platform header-boundary
+  capability to the default smoke/readiness chain. The run covered frontend
+  build and audits, WFP dry-run smoke, Realtime bridge replay/platform/frame
+  limit/v1 dry-run smoke plans, relay AI Gateway canary dry-run, Rust workspace
+  tests excluding the Worker, Worker wasm32 check, and WFP tenant wasm32 check;
+  existing warnings were limited to the known `d1_repositories.rs` dead-code
+  warnings.
 - `node --check tools/smoke_realtime_session.mjs` and
   `bun run check:realtime-session:bridge-replay-contract`: passed after adding
   the Realtime bridge replay contract self-test. The self-test covers

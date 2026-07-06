@@ -427,6 +427,7 @@ export type PlatformCapabilities = {
   realtime_session_upstream_bridge_close_mapping_compiled: boolean
   realtime_session_upstream_bridge_send_failure_guard_compiled: boolean
   realtime_session_upstream_bridge_event_trace_compiled: boolean
+  realtime_session_platform_header_boundary_compiled: boolean
   realtime_session_upstream_bridge_compiled: boolean
   realtime_session_billing_settlement_compiled: boolean
   realtime_session_platform_smoke_ready: boolean

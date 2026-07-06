@@ -79,6 +79,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_close_mapping_compiled,
         capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
         capabilities.realtime_session_upstream_bridge_event_trace_compiled,
+        capabilities.realtime_session_platform_header_boundary_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -549,6 +550,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_event_trace_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Platform header boundary'),
+          description: t(
+            'Strips caller-supplied internal Realtime upstream handoff headers before platform gateway requests reach the Durable Object.'
+          ),
+          ready:
+            capabilities.realtime_session_platform_header_boundary_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

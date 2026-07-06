@@ -35,6 +35,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CLOSE_MAPPING_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED: bool = true;
+pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
@@ -51,10 +52,16 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_close_mapping",
     "upstream_bridge_send_failure_guard",
     "upstream_bridge_event_trace",
+    "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",
     "billing_settlement",
+];
+
+const REALTIME_INTERNAL_UPSTREAM_HEADERS: &[&str] = &[
+    REALTIME_UPSTREAM_PLAN_HEADER,
+    REALTIME_UPSTREAM_CONNECT_HEADER,
 ];
 
 const SESSION_TAG_PREFIX: &str = "session:";
@@ -959,6 +966,7 @@ async fn handle_platform_realtime_gateway(req: Request, env: Env) -> WorkerResul
         }
     };
 
+    let req = platform_realtime_gateway_request(&req)?;
     fetch_session_stub(req, env, session).await
 }
 
@@ -1519,9 +1527,10 @@ pub(crate) fn realtime_selected_upstream_plan(
 }
 
 fn attach_realtime_upstream_headers(
-    mut req: Request,
+    req: Request,
     selected: &RealtimeSelectedUpstream,
 ) -> WorkerResult<Request> {
+    let mut req = req.clone_mut()?;
     let value = realtime_upstream_plan_header_value(&selected.plan)?;
     req.headers_mut()?
         .set(REALTIME_UPSTREAM_PLAN_HEADER, &value)?;
@@ -1529,6 +1538,32 @@ fn attach_realtime_upstream_headers(
     req.headers_mut()?
         .set(REALTIME_UPSTREAM_CONNECT_HEADER, &value)?;
     Ok(req)
+}
+
+fn platform_realtime_gateway_request(req: &Request) -> WorkerResult<Request> {
+    let mut forwarded = req.clone_mut()?;
+    let headers = forwarded.headers_mut()?;
+    for name in REALTIME_INTERNAL_UPSTREAM_HEADERS {
+        headers.delete(name)?;
+    }
+    Ok(forwarded)
+}
+
+fn is_realtime_internal_upstream_header(name: &str) -> bool {
+    REALTIME_INTERNAL_UPSTREAM_HEADERS
+        .iter()
+        .any(|internal| internal.eq_ignore_ascii_case(name.trim()))
+}
+
+fn should_forward_platform_realtime_header(name: &str) -> bool {
+    !is_realtime_internal_upstream_header(name)
+}
+
+pub(crate) fn realtime_session_platform_header_boundary_compiled() -> bool {
+    REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED
+        && is_realtime_internal_upstream_header(REALTIME_UPSTREAM_PLAN_HEADER)
+        && is_realtime_internal_upstream_header(REALTIME_UPSTREAM_CONNECT_HEADER)
+        && should_forward_platform_realtime_header("sec-websocket-key")
 }
 
 fn realtime_upstream_plan_header_value(
@@ -2425,6 +2460,29 @@ mod tests {
         );
         assert!(session_from_gateway_path("/api/platform/realtime/../bad").is_none());
         assert!(session_from_gateway_path("/api/platform/realtime/").is_none());
+    }
+
+    #[test]
+    fn platform_realtime_gateway_strips_internal_upstream_headers() {
+        for name in [
+            REALTIME_UPSTREAM_PLAN_HEADER,
+            REALTIME_UPSTREAM_CONNECT_HEADER,
+            "X-Cinatoken-Realtime-Upstream-Plan",
+            " x-cinatoken-realtime-upstream-connect ",
+        ] {
+            assert!(is_realtime_internal_upstream_header(name));
+            assert!(!should_forward_platform_realtime_header(name));
+        }
+
+        for name in ["sec-websocket-key", "upgrade", "authorization", "cookie"] {
+            assert!(!is_realtime_internal_upstream_header(name));
+            assert!(should_forward_platform_realtime_header(name));
+        }
+    }
+
+    #[test]
+    fn realtime_platform_header_boundary_self_check_is_compiled() {
+        assert!(realtime_session_platform_header_boundary_compiled());
     }
 
     #[test]

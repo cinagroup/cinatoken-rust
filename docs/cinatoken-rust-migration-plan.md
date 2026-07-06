@@ -6659,3 +6659,72 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.104 2026-07-06 Realtime Platform Header Boundary
+
+This increment closes a platform-entry trust boundary before the next live or
+mock upstream replay step. The internal Realtime upstream handoff headers are
+request-scoped data created by the authenticated `/v1/realtime` gateway after
+relay-token auth, rate-limit checks, model mapping, and channel selection. The
+staging-only platform path must never let a caller provide those same headers
+directly to the Durable Object.
+
+Implemented:
+
+- Added `REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED=true`,
+  `platform_upstream_header_boundary` to the Realtime cutover guard list, and
+  `realtime_session_platform_header_boundary_compiled` in
+  `/api/platform/capabilities`.
+- Platform Realtime gateway requests now clone the incoming request into a
+  mutable forwarding request and delete
+  `x-cinatoken-realtime-upstream-plan` plus
+  `x-cinatoken-realtime-upstream-connect` before calling the session Durable
+  Object. Normal browser/WebSocket headers continue to flow through unchanged.
+- Trusted `/v1/realtime` upstream handoff injection now also clones the
+  incoming request before setting internal headers. This matches the
+  `worker` crate request mutability model and avoids runtime failures from
+  trying to mutate immutable incoming request headers.
+- Platform smoke readiness and the v1 cutover readiness matrix now require the
+  compiled platform header boundary, while
+  `realtime_session_upstream_bridge_compiled` and
+  `realtime_session_billing_settlement_compiled` intentionally remain false.
+- `tools/smoke_realtime_session.mjs` now summarizes and requires
+  `realtime_session_platform_header_boundary_compiled=true`, and validates the
+  new `platform_upstream_header_boundary` cutover guard.
+- The Cloudflare Platform settings panel now types and displays the new
+  platform header-boundary capability, and includes it in the realtime
+  foundation readiness count.
+- Updated the staging smoke runbook and verification ledger so staging
+  artifacts must record this boundary before Realtime platform smoke evidence
+  is accepted.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (43 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:smoke-plan` passed.
+- `bun run check:realtime-session:v1-smoke-plan` passed.
+- `bun run check:web` passed after adding the Cloudflare Platform UI row.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  (existing `d1_repositories.rs` dead-code warnings only).
+- `bun run check` passed, covering frontend build/audits, WFP dry-run smoke,
+  Realtime bridge replay/platform/frame-limit/v1 dry-run smoke plans, relay AI
+  Gateway canary dry-run, Rust workspace tests excluding the Worker, Worker
+  wasm32 check, and WFP tenant wasm32 check.
+
+Remaining migration gaps:
+
+- Add a real or mock upstream WebSocket replay harness that proves the live DO
+  pump cannot be steered by client-supplied internal handoff headers and still
+  maps upstream close/error/failure paths correctly.
+- Keep the platform gateway flag off outside staging until the header boundary,
+  live replay, WFP tenant isolation, and response-header leakage evidence are
+  archived together.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

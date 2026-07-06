@@ -4,6 +4,26 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the provider route registry, Cloudflare
+  AI Gateway URL helpers, and layered gateway architecture document. The run
+  covered frontend type/build, bundle redaction audit (460 files, 37,290,926
+  bytes, 0 findings), bundle budget audit (245 files, 18.95 MB raw / 4.50 MB
+  gzip, all 10 budgets OK), lint-debt baseline (0 errors / 0 warnings / 0
+  regressions), frontend route audit (215 Worker-facing calls / 307 Worker
+  routes / 0 missing calls), WFP tenant deploy-plan dry-run, WFP dispatch smoke
+  dry-run, RealtimeSession smoke dry-run, WFP tenant Worker-script tests,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker,
+  Worker wasm32 check, and WFP tenant wasm32 check. Existing warnings were
+  limited to the known `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-providers`: passed after adding the provider route
+  registry and Cloudflare AI Gateway URL helpers (8 tests).
+- `cargo test -p cinatoken-worker --lib relay`: passed after routing Worker
+  upstream URL selection through `cinatoken-providers::ProviderRegistry`
+  (106 relay-focused tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the Worker dependency on `cinatoken-providers`; existing warnings
+  remained limited to known `d1_repositories.rs` dead-code items.
 - `bun run check`: passed after adding the admin Operations -> Cloudflare
   Platform readiness panel and extending `/api/platform/capabilities` with
   Realtime gateway/v1 flag state. The run covered frontend type/build, bundle

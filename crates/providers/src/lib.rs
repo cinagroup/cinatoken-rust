@@ -2,14 +2,12 @@ use async_trait::async_trait;
 use cinatoken_core::ApiResult;
 use cinatoken_relay::RelayContext;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderKind {
-    OpenAiCompatible,
-    Anthropic,
-    Gemini,
-    CloudflareWorkersAi,
-    AiGateway,
-}
+pub mod ai_gateway;
+pub mod routing;
+
+pub use routing::{
+    ProviderEndpoint, ProviderKind, ProviderRegistry, ProviderRoute, ProviderRouteError,
+};
 
 #[async_trait(?Send)]
 pub trait ProviderAdapter {

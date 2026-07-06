@@ -12,11 +12,13 @@ use cinatoken_core::{
     is_openai_text_model, openai_chat_format_overhead, select_weighted, ApiError, ApiResult,
     Candidate, ErrorBody, MediaTokenFlags,
 };
+use cinatoken_providers::{
+    ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry,
+};
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
     first_channel_key, ip_allowlist_matches, is_auto_disable_status, is_retryable_status,
-    mapped_model_name, upstream_anthropic_messages_url, upstream_gemini_native_url,
-    upstream_v1_url, usage_summary_from_anthropic_body, usage_summary_from_body,
+    mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
     usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
     ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, GEMINI_CHANNEL_TYPES,
@@ -182,23 +184,32 @@ impl RelayEndpoint {
         self.supports_streaming && self.requested_stream(body)
     }
 
+    #[cfg(test)]
     fn upstream_url(&self, channel: &RelayChannel) -> String {
+        self.try_upstream_url(channel)
+            .expect("relay endpoint should have a valid provider route")
+    }
+
+    fn try_upstream_url(&self, channel: &RelayChannel) -> worker::Result<String> {
+        let route = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: self.registry_provider_kind(),
+            channel_type: channel.channel_type,
+            base_url: channel.base_url.as_deref(),
+            endpoint_path: &self.upstream_path,
+            upstream_query: self.upstream_query.as_deref(),
+            gemini_route: self.gemini_route.as_ref(),
+        })
+        .map_err(|err| {
+            worker::Error::RustError(format!("provider route resolution failed: {err}"))
+        })?;
+        Ok(route.upstream_url)
+    }
+
+    fn registry_provider_kind(&self) -> RegistryProviderKind {
         match self.provider {
-            RelayProviderKind::OpenAiCompatible => upstream_v1_url(
-                channel.channel_type,
-                channel.base_url.as_deref(),
-                &self.upstream_path,
-            ),
-            RelayProviderKind::AnthropicMessages => {
-                upstream_anthropic_messages_url(channel.base_url.as_deref())
-            }
-            RelayProviderKind::GeminiNative => upstream_gemini_native_url(
-                channel.base_url.as_deref(),
-                self.gemini_route
-                    .as_ref()
-                    .expect("Gemini native endpoint must carry parsed route"),
-                self.upstream_query.as_deref(),
-            ),
+            RelayProviderKind::OpenAiCompatible => RegistryProviderKind::OpenAiCompatible,
+            RelayProviderKind::AnthropicMessages => RegistryProviderKind::AnthropicMessages,
+            RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
         }
     }
 
@@ -1224,7 +1235,10 @@ async fn relay_endpoint_with_auth(
             }
         };
 
-        let upstream_url = endpoint.upstream_url(&channel);
+        let upstream_url = match endpoint.try_upstream_url(&channel) {
+            Ok(url) => url,
+            Err(err) => return worker_error_response(err),
+        };
 
         let forward_result = match &request_body {
             RelayRequestBody::Json(_) => {

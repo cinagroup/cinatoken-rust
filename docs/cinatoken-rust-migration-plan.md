@@ -1396,6 +1396,11 @@ production-grade execution details are split into focused runbooks:
   ownership.
 - `docs/staging-smoke-runbook.md` and `docs/cutover-rollback-runbook.md`
   control staging evidence, canary, abort, rollback, and decommission.
+- `docs/layered-gateway-architecture.md` is the implementation scheme for the
+  three-layer split (scheduling gateway → Durable Objects → Workers-for-Platforms
+  tenant scripts) plus the cross-cutting AI-Gateway router, reusing cinaVibeSDK's
+  design paradigms. It reconciles/supersedes §21.4 (realtime) and §21.5 (async
+  tasks); see that document's §7 for precedence.
 
 ## 20. 最终交付形态
 
@@ -5357,3 +5362,52 @@ Remaining migration gaps:
   logs.
 - Run live realtime DO smoke against a real `REALTIME_SESSIONS` binding before
   enabling `/v1/realtime` for any canary traffic.
+
+### 22.82 2026-07-06 Provider Registry And AI Gateway Route Foundation
+
+This increment starts the M2/M7 extraction described in
+`docs/layered-gateway-architecture.md` without changing relay authorization,
+billing, settlement, streaming, or retry behavior. The immediate goal is to move
+provider URL selection out of the Worker hot path into a pure, unit-tested
+registry so the later AI Gateway router can label and redirect provider families
+without reworking the main relay loop.
+
+Implemented:
+
+- Turned `crates/providers` from a placeholder adapter trait into a route
+  foundation with:
+  - `ProviderKind`, `ProviderEndpoint`, `ProviderRoute`, and `ProviderRegistry`;
+  - direct upstream URL resolution for OpenAI-compatible, Anthropic Messages,
+    and Gemini native endpoints;
+  - explicit rejection for binding-only Workers AI and not-yet-configured
+    direct AI Gateway routes;
+  - Cloudflare AI Gateway helper functions for provider-specific gateway URLs
+    and the current REST API shape under
+    `https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/...`.
+- Updated the Worker relay to call `ProviderRegistry::resolve` for upstream URL
+  selection while leaving the existing auth, channel selection, rate-limit,
+  request transform, forward, usage parsing, billing, audit, cache, and retry
+  paths intact.
+- Added the layered gateway architecture document as the formal implementation
+  scheme for the cinaVibeSDK-inspired scheduling gateway, Durable Object,
+  Workers-for-Platforms tenant, and AI Gateway router split.
+- Reconciled stale readiness-matrix wording for queue usage and the Workers
+  AI / AI Gateway foundation so future gates do not treat already-landed code as
+  merely planned.
+
+Validation:
+
+- `cargo test -p cinatoken-providers` passed (8 tests).
+- `cargo test -p cinatoken-worker --lib relay` passed (106 relay-focused tests;
+  existing `d1_repositories.rs` dead-code warnings only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  after adding the new provider crate dependency.
+
+Remaining migration gaps:
+
+- Promote the provider registry from URL selection to full adapter ownership of
+  request transforms, response usage parsing, and provider-specific headers.
+- Add per-channel AI Gateway opt-in and model/provider prefix policy before any
+  main-relay traffic is redirected through Cloudflare AI Gateway.
+- Keep WFP tenant AI Gateway routing separate from the main relay until live
+  dispatch namespace upload and AI Gateway log smoke evidence exist.

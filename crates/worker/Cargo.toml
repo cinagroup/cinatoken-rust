@@ -18,6 +18,7 @@ cinatoken-billing = { path = "../billing" }
 cinatoken-cache = { path = "../cache" }
 cinatoken-core = { path = "../core" }
 cinatoken-payments = { path = "../payments" }
+cinatoken-providers = { path = "../providers" }
 cinatoken-relay = { path = "../relay" }
 cinatoken-session = { path = "../session" }
 cinatoken-ssrf = { path = "../ssrf" }

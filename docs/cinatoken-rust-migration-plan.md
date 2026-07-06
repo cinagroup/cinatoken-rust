@@ -5292,3 +5292,68 @@ Remaining migration gaps:
   `/ai/v1/responses`, and `/ai/v1/messages`; `/v1/embeddings` remains tied to
   the Workers AI/OpenAI-compatible endpoint evidence and must be smoke-tested
   with the intended model family before production traffic uses it.
+
+### 22.81 2026-07-06 Cloudflare Platform Readiness Frontend
+
+This increment turns the Cloudflare-native migration surface from docs-only
+evidence into an operator-visible admin panel. The Rust Worker already exposed
+an admin-authenticated `/api/platform/capabilities` probe for WFP, Durable
+Objects, AI Gateway, and Workers AI bindings; the default frontend now consumes
+that probe in the Operations settings area without adding any production write
+controls.
+
+Implemented:
+
+- Extended the platform capabilities response with the two realtime runtime
+  gates:
+  - `realtime_session_gateway_enabled`;
+  - `realtime_session_v1_enabled`.
+- Added a typed frontend API wrapper for `/api/platform/capabilities`.
+- Added a new Operations settings section, **Cloudflare Platform**, that shows
+  the current readiness of:
+  - Workers AI binding;
+  - AI Gateway ID configuration;
+  - `CHANNEL_AFFINITY` and `REALTIME_SESSIONS` Durable Object bindings;
+  - WFP `DISPATCHER` binding and dispatch/runtime flags;
+  - preview-host and worker-prefix configuration;
+  - compiled Durable Object WebSocket hibernation path;
+  - platform realtime and OpenAI-compatible realtime gates.
+- Kept the panel read-only. WFP deploy, flag flips, and production cutover
+  remain CLI/runbook-controlled until staging smoke and rollback evidence are
+  approved.
+- Added operator notes in the panel so `WFP_DISPATCH_ENABLED`,
+  `WFP_INTERNAL_DISPATCH_ENABLED`, `REALTIME_SESSION_GATEWAY_ENABLED`, and
+  `REALTIME_SESSION_V1_ENABLED` are visually tied to their required staging
+  smoke gates.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed (7 tests;
+  existing `d1_repositories.rs` dead-code warnings only).
+- `bun run typecheck` in `apps/web/source/default` passed.
+- `bun run lint` in `apps/web/source/default` passed.
+- `bun run format:check` in `apps/web/source/default` passed.
+- `cargo fmt --all --check` passed.
+- `bun tools/audit_frontend_routes.mjs --summary --details
+  --fail-on-unclassified` passed with 215 frontend Worker-facing calls, 307
+  Worker routes, 0 missing calls, categories `{}`, and unchanged missing-call
+  SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- `bun run check` passed after intentionally updating the frontend route-debt
+  baseline for the new `/api/platform/capabilities` call. The run covered
+  frontend type/build, bundle redaction, bundle-size budget, lint-debt
+  regression, route audit, WFP tenant deploy-plan dry-run, WFP dispatch smoke
+  dry-run, RealtimeSession smoke dry-run, WFP tenant Worker-script tests,
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, and
+  Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Run authenticated staging browser smoke for
+  `/system-settings/operations/cloudflare-platform` and archive a redacted
+  screenshot/body proving the expected binding/flag state.
+- Run live WFP status and route smoke with real `DISPATCHER` and Rust/Wasm
+  tenant artifact; compare the panel state against tenant status and AI Gateway
+  logs.
+- Run live realtime DO smoke against a real `REALTIME_SESSIONS` binding before
+  enabling `/v1/realtime` for any canary traffic.

@@ -390,3 +390,24 @@ export type UpstreamRatiosResponse = {
     test_results: TestResult[]
   }
 }
+
+export type PlatformCapabilities = {
+  ai_binding_available: boolean
+  ai_gateway_id_configured: boolean
+  channel_affinity_do_available: boolean
+  realtime_sessions_do_available: boolean
+  wfp_dispatch_binding_available: boolean
+  wfp_dispatch_enabled: boolean
+  wfp_internal_dispatch_enabled: boolean
+  wfp_preview_host_suffix_configured: boolean
+  wfp_worker_prefix_configured: boolean
+  realtime_session_gateway_enabled: boolean
+  realtime_session_v1_enabled: boolean
+  do_websocket_hibernation_compiled: boolean
+}
+
+export type PlatformCapabilitiesResponse = {
+  success: boolean
+  message: string
+  data: PlatformCapabilities
+}

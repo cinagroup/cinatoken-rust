@@ -1,9 +1,34 @@
 # Verification
 
-Last checked: 2026-07-05
+Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the admin Operations -> Cloudflare
+  Platform readiness panel and extending `/api/platform/capabilities` with
+  Realtime gateway/v1 flag state. The run covered frontend type/build, bundle
+  redaction audit (460 files, 37,290,926 bytes, 0 findings), bundle budget
+  audit (245 files, 18.95 MB raw / 4.50 MB gzip, all 10 budgets OK),
+  lint-debt baseline (0 errors / 0 warnings / 0 regressions), frontend route
+  audit (215 Worker-facing calls / 307 Worker routes / 0 missing calls), WFP
+  tenant deploy-plan dry-run, WFP dispatch smoke dry-run, RealtimeSession
+  smoke dry-run, WFP tenant Worker-script tests (8 passed), `cargo fmt --all
+  --check`, Rust workspace tests excluding the Worker, and Worker/WFP wasm32
+  checks. Existing warnings were limited to the known `d1_repositories.rs`
+  dead-code warnings.
+- `cargo test -p cinatoken-worker --lib platform_gateway`: passed (7 tests)
+  after extending the platform capability payload with Realtime gateway/v1 flag
+  state.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed for the Cloudflare Platform frontend
+  section.
+- `bun tools/audit_frontend_routes.mjs --summary --details
+  --fail-on-unclassified`: passed after adding the frontend
+  `/api/platform/capabilities` call; the intentional baseline update is 215
+  frontend Worker-facing calls, detection kinds `call=244` /
+  `jsx-attribute=1` / `navigation=1` / `stream=1`, 307 Worker routes, 0
+  missing calls, categories `{}`, and unchanged missing-call SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
 - `bun run check`: passed after adding the cinaVibeSDK-inspired Cloudflare
   platform foundation (default-off WFP dispatch gateway, AdminAuth platform
   capabilities endpoint, and `RealtimeSession` Durable Object hibernation

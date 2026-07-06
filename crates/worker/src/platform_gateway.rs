@@ -11,6 +11,9 @@ use wasm_bindgen::JsValue;
 use worker::{Env, Headers, Request, RequestInit, Response, Result as WorkerResult};
 
 use crate::admin::{envelope_ok_response, require_admin_auth};
+use crate::realtime_session::{
+    REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
+};
 
 pub const WFP_DISPATCH_BINDING: &str = "DISPATCHER";
 pub const WFP_DISPATCH_ENABLED_ENV: &str = "WFP_DISPATCH_ENABLED";
@@ -66,6 +69,8 @@ struct PlatformCapabilities {
     wfp_internal_dispatch_enabled: bool,
     wfp_preview_host_suffix_configured: bool,
     wfp_worker_prefix_configured: bool,
+    realtime_session_gateway_enabled: bool,
+    realtime_session_v1_enabled: bool,
     do_websocket_hibernation_compiled: bool,
 }
 
@@ -86,6 +91,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_preview_host_suffix_configured: runtime_value(&env, WFP_PREVIEW_HOST_SUFFIX_ENV)
             .is_some(),
         wfp_worker_prefix_configured: runtime_value(&env, WFP_DISPATCH_WORKER_PREFIX_ENV).is_some(),
+        realtime_session_gateway_enabled: env_flag(&env, REALTIME_SESSION_GATEWAY_ENABLED_ENV),
+        realtime_session_v1_enabled: env_flag(&env, REALTIME_SESSION_V1_ENABLED_ENV),
         do_websocket_hibernation_compiled: true,
     };
 

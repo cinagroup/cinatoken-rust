@@ -159,7 +159,9 @@ Promotion SOP:
 5. Run the Cloudflare preflight scripts (`bun run check:cf:dry-run` and
    `bun run check:cf:startup`) once `worker-build` is installed.
 6. Deploy with `wrangler deploy --env staging` (or `--env production`).
-7. Verify `/api/status` reports the expected `ENVIRONMENT` and feature flags.
+7. Verify `/api/status` reports the expected `ENVIRONMENT` and feature flags,
+   then open the admin Operations -> Cloudflare Platform panel to confirm
+   `/api/platform/capabilities` matches the intended binding and flag state.
 
 ## Environment Model
 
@@ -470,7 +472,9 @@ G1 can pass only when:
 1. Staging Worker deploys with real resource IDs.
 2. `wrangler types` or the Rust equivalent binding verification is refreshed
    after binding changes.
-3. `/api/status` reports expected staging feature flags.
+3. `/api/status` reports expected staging feature flags, and the admin
+   Operations -> Cloudflare Platform panel reports the expected
+   `/api/platform/capabilities` binding/flag state.
 4. Logs/traces show the status request.
 5. D1 migrations are applied to staging.
 6. Upstash staging credentials are configured or the feature is deliberately
@@ -540,5 +544,7 @@ changes:
 - dry-run/startup result;
 - generated type result;
 - `/api/status` result;
+- `/api/platform/capabilities` result and Cloudflare Platform panel screenshot
+  with secrets redacted;
 - logs/traces evidence;
 - known deviations.

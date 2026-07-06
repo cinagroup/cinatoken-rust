@@ -1,0 +1,343 @@
+/*
+Copyright (C) 2023-2026 CinaGroup
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@cinagroup.com
+*/
+import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { StatusBadge, type StatusVariant } from '@/components/status-badge'
+import { getPlatformCapabilities } from '../api'
+import { SettingsSection } from '../components/settings-section'
+import type { PlatformCapabilities } from '../types'
+
+type CapabilityRow = {
+  label: string
+  description: string
+  ready: boolean
+  readyLabel: string
+  missingLabel: string
+  readyVariant?: StatusVariant
+  missingVariant?: StatusVariant
+}
+
+type CapabilityGroup = {
+  title: string
+  description: string
+  rows: CapabilityRow[]
+}
+
+export function CloudflarePlatformSection() {
+  const { t } = useTranslation()
+  const capabilitiesQuery = useQuery({
+    queryKey: ['platform-capabilities'],
+    queryFn: async () => {
+      const response = await getPlatformCapabilities()
+      if (!response.success) {
+        throw new Error(response.message || 'Failed to load')
+      }
+      return response.data
+    },
+    staleTime: 60 * 1000,
+  })
+
+  const capabilities = capabilitiesQuery.data
+
+  const foundationChecks = capabilities
+    ? [
+        capabilities.ai_binding_available,
+        capabilities.ai_gateway_id_configured,
+        capabilities.channel_affinity_do_available,
+        capabilities.realtime_sessions_do_available,
+        capabilities.wfp_dispatch_binding_available,
+        capabilities.do_websocket_hibernation_compiled,
+      ]
+    : []
+  const readyCount = foundationChecks.filter(Boolean).length
+
+  return (
+    <SettingsSection title={t('Cloudflare Platform')}>
+      <div className='space-y-4'>
+        <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4'>
+          <div className='space-y-1'>
+            <p className='text-sm font-medium'>
+              {t('Cloudflare migration readiness')}
+            </p>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Tracks Worker bindings, Durable Objects, WFP dispatch, AI Gateway, and realtime feature gates reported by the Rust Worker.'
+              )}
+            </p>
+          </div>
+          <div className='flex items-center gap-2'>
+            {capabilities ? (
+              <StatusBadge
+                variant={
+                  readyCount === foundationChecks.length ? 'success' : 'warning'
+                }
+                copyable={false}
+              >
+                {t('{{ready}}/{{total}} foundation signals ready', {
+                  ready: readyCount,
+                  total: foundationChecks.length,
+                })}
+              </StatusBadge>
+            ) : null}
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              disabled={capabilitiesQuery.isFetching}
+              onClick={() => capabilitiesQuery.refetch()}
+            >
+              {capabilitiesQuery.isFetching ? t('Refreshing...') : t('Refresh')}
+            </Button>
+          </div>
+        </div>
+
+        {capabilitiesQuery.isError ? (
+          <Alert variant='destructive'>
+            <AlertDescription>
+              {capabilitiesQuery.error instanceof Error
+                ? capabilitiesQuery.error.message
+                : t('Failed to load Cloudflare platform capabilities')}
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {capabilities ? (
+          <>
+            <div className='grid gap-4 lg:grid-cols-3'>
+              {buildCapabilityGroups(capabilities, t).map((group) => (
+                <CapabilityGroupCard key={group.title} group={group} />
+              ))}
+            </div>
+
+            <div className='rounded-lg border p-4'>
+              <p className='text-sm font-medium'>
+                {t('Production cutover notes')}
+              </p>
+              <ul className='text-muted-foreground mt-2 list-disc space-y-1 ps-5 text-xs'>
+                <li>
+                  {t(
+                    'WFP tenant traffic needs the DISPATCHER binding plus WFP_DISPATCH_ENABLED; preview hosts also need WFP_PREVIEW_HOST_SUFFIX.'
+                  )}
+                </li>
+                <li>
+                  {t(
+                    'The internal dispatch path should stay admin-only and is mainly for staging smoke tests.'
+                  )}
+                </li>
+                <li>
+                  {t(
+                    '/v1/realtime remains gated separately from the platform realtime smoke path until upstream bridge and billing settlement are verified.'
+                  )}
+                </li>
+              </ul>
+            </div>
+          </>
+        ) : (
+          <CapabilitySkeleton />
+        )}
+      </div>
+    </SettingsSection>
+  )
+}
+
+function buildCapabilityGroups(
+  capabilities: PlatformCapabilities,
+  t: (key: string, options?: Record<string, unknown>) => string
+): CapabilityGroup[] {
+  return [
+    {
+      title: t('Runtime bindings'),
+      description: t('Cloudflare bindings required by the Rust relay gateway.'),
+      rows: [
+        {
+          label: t('Workers AI binding'),
+          description: t('Used for direct Workers AI relay channels.'),
+          ready: capabilities.ai_binding_available,
+          readyLabel: t('Bound'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('AI Gateway ID'),
+          description: t(
+            'Enables Gateway routing and analytics for configured paths.'
+          ),
+          ready: capabilities.ai_gateway_id_configured,
+          readyLabel: t('Configured'),
+          missingLabel: t('Not configured'),
+        },
+        {
+          label: t('Channel Affinity Durable Object'),
+          description: t(
+            'Persists sticky channel selection state at the edge.'
+          ),
+          ready: capabilities.channel_affinity_do_available,
+          readyLabel: t('Bound'),
+          missingLabel: t('Missing'),
+        },
+      ],
+    },
+    {
+      title: t('WFP dispatch'),
+      description: t('Workers for Platforms dispatch-worker routing controls.'),
+      rows: [
+        {
+          label: t('Dispatcher binding'),
+          description: t('Required before tenant scripts can receive traffic.'),
+          ready: capabilities.wfp_dispatch_binding_available,
+          readyLabel: t('Bound'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Tenant dispatch gate'),
+          description: t('Runtime flag WFP_DISPATCH_ENABLED.'),
+          ready: capabilities.wfp_dispatch_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Off'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Internal dispatch smoke gate'),
+          description: t(
+            'Admin-only staging path for tenant status and route smoke.'
+          ),
+          ready: capabilities.wfp_internal_dispatch_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Off'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Preview host suffix'),
+          description: t(
+            'Maps tenant preview hostnames into the dispatch namespace.'
+          ),
+          ready: capabilities.wfp_preview_host_suffix_configured,
+          readyLabel: t('Configured'),
+          missingLabel: t('Not configured'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Worker name prefix'),
+          description: t(
+            'Optional tenant script prefix used during dispatch lookup.'
+          ),
+          ready: capabilities.wfp_worker_prefix_configured,
+          readyLabel: t('Configured'),
+          missingLabel: t('Default names'),
+          missingVariant: 'neutral',
+        },
+      ],
+    },
+    {
+      title: t('Realtime sessions'),
+      description: t(
+        'Durable Object hibernation path for long-lived sessions.'
+      ),
+      rows: [
+        {
+          label: t('Realtime Sessions Durable Object'),
+          description: t(
+            'Required for hibernatable WebSocket session ownership.'
+          ),
+          ready: capabilities.realtime_sessions_do_available,
+          readyLabel: t('Bound'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('WebSocket hibernation code path'),
+          description: t(
+            'Confirms the Rust Worker was compiled with the DO hibernation path.'
+          ),
+          ready: capabilities.do_websocket_hibernation_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Platform realtime smoke gate'),
+          description: t('Runtime flag REALTIME_SESSION_GATEWAY_ENABLED.'),
+          ready: capabilities.realtime_session_gateway_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Off'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('OpenAI realtime v1 gate'),
+          description: t('Runtime flag REALTIME_SESSION_V1_ENABLED.'),
+          ready: capabilities.realtime_session_v1_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Off'),
+          missingVariant: 'neutral',
+        },
+      ],
+    },
+  ]
+}
+
+function CapabilityGroupCard({ group }: { group: CapabilityGroup }) {
+  return (
+    <div className='space-y-3 rounded-lg border p-4'>
+      <div className='space-y-1'>
+        <p className='text-sm font-medium'>{group.title}</p>
+        <p className='text-muted-foreground text-xs'>{group.description}</p>
+      </div>
+      <div className='divide-y'>
+        {group.rows.map((row) => (
+          <div
+            key={row.label}
+            className='flex min-w-0 items-start justify-between gap-3 py-3 first:pt-0 last:pb-0'
+          >
+            <div className='min-w-0 space-y-0.5'>
+              <p className='text-sm font-medium'>{row.label}</p>
+              <p className='text-muted-foreground text-xs'>{row.description}</p>
+            </div>
+            <StatusBadge
+              variant={
+                row.ready
+                  ? (row.readyVariant ?? 'success')
+                  : (row.missingVariant ?? 'warning')
+              }
+              copyable={false}
+              className='shrink-0'
+            >
+              {row.ready ? row.readyLabel : row.missingLabel}
+            </StatusBadge>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function CapabilitySkeleton() {
+  return (
+    <div className='grid gap-4 lg:grid-cols-3'>
+      {[0, 1, 2].map((index) => (
+        <div key={index} className='space-y-3 rounded-lg border p-4'>
+          <Skeleton className='h-4 w-40' />
+          <Skeleton className='h-3 w-full' />
+          <Skeleton className='h-12 w-full' />
+          <Skeleton className='h-12 w-full' />
+          <Skeleton className='h-12 w-full' />
+        </div>
+      ))}
+    </div>
+  )
+}

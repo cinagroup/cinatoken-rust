@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@cinagroup.com
 */
 import { SystemBehaviorSection } from '../general/system-behavior-section'
+import { CloudflarePlatformSection } from '../integrations/cloudflare-platform-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
@@ -93,6 +94,11 @@ const OPERATIONS_SECTIONS = [
         }}
       />
     ),
+  },
+  {
+    id: 'cloudflare-platform',
+    titleKey: 'Cloudflare Platform',
+    build: () => <CloudflarePlatformSection />,
   },
   {
     id: 'logs',

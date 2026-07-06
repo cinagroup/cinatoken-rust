@@ -156,6 +156,12 @@ not replace deployed browser smoke for runtime-generated OAuth/provider URLs,
 role/feature-flag-hidden UI branches, credentialed redirects, or routes that
 only become visible with production data.
 
+As of 2026-07-06, the default admin frontend also exposes an Operations ->
+Cloudflare Platform readiness panel backed by the admin-only
+`/api/platform/capabilities` probe. It gives G1/G5 operators a read-only view
+of Workers AI, AI Gateway, Durable Object, WFP dispatch, and realtime gate
+state, but it does not replace live WFP tenant or Realtime DO smoke evidence.
+
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
 | Public status and setup: `/api/status`, `/api/setup`, static content endpoints | `api-router.go`, `web-router.go`, `web/default` | Substantial: Go-compatible status/setup envelopes, public content handlers, and SPA routing implemented; deployed frontend contract smoke pending | JSON/read-only/static assets | G1/G5 | Deploy current frontend/status fixes and capture anonymous/setup/hard-refresh smoke. |

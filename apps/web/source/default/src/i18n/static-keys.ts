@@ -40,6 +40,7 @@ export const STATIC_I18N_KEYS = [
   'Integrations',
   'Models',
   'Maintenance',
+  'Cloudflare Platform',
 
   // Pricing constants
   'Name',

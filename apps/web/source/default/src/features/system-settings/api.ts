@@ -21,6 +21,7 @@ import type {
   ConfirmPaymentComplianceResponse,
   DeleteLogsResponse,
   FetchUpstreamRatiosRequest,
+  PlatformCapabilitiesResponse,
   SystemOptionsResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
@@ -71,6 +72,13 @@ export async function fetchUpstreamRatios(request: FetchUpstreamRatiosRequest) {
   const res = await api.post<UpstreamRatiosResponse>(
     '/api/ratio_sync/fetch',
     request
+  )
+  return res.data
+}
+
+export async function getPlatformCapabilities() {
+  const res = await api.get<PlatformCapabilitiesResponse>(
+    '/api/platform/capabilities'
   )
   return res.data
 }

@@ -5718,4 +5718,55 @@ Remaining migration gaps:
 - Capture AI Gateway logs plus relay audit/billing output proving usage parsing
   and settlement remain unchanged after both Gateway-success and direct-fallback
   attempts.
-- Add the focused channel editor toggle for `other_info.ai_gateway.enabled`.
+
+### 22.88 2026-07-06 Channel AI Gateway Canary Toggle
+
+This increment closes the local operator-control gap for the main-relay
+AI Gateway canary. The relay already reads `channels.other_info` and the
+request path already has default-off Gateway forwarding plus same-channel direct
+fallback; channel operators can now opt an individual channel into that path
+without editing raw metadata by hand.
+
+Implemented:
+
+- Added a focused **Cloudflare AI Gateway canary** switch to the channel editor
+  advanced routing section.
+- Extended the channel form state with `other_info` and `ai_gateway_enabled`.
+  Existing channels load the switch from all compatible backend shapes:
+  `{"ai_gateway":{"enabled":true}}`, `{"ai_gateway":true}`,
+  `{"relay_ai_gateway":true}`, and `{"relay_ai_gateway_enabled":"yes"}`.
+- Normalized writes to the supported production shape
+  `{"ai_gateway":{"enabled":true}}`, while preserving unrelated
+  `other_info` object keys. Disabling the switch removes only the AI Gateway
+  opt-in metadata from a valid object.
+- Kept invalid or non-object legacy `other_info` text unchanged when the switch
+  remains off, so unrelated channel edits do not silently destroy existing
+  data.
+- Sent `other_info` in both channel create and update payloads, and included
+  the switch in advanced-settings expansion/error grouping so opted-in channels
+  are visible to operators.
+- Left the global router gate unchanged: `RELAY_AI_GATEWAY_ROUTER_ENABLED`
+  remains default-off and still requires staging approval before any Gateway
+  canary traffic.
+
+Validation:
+
+- `bun run typecheck` in `apps/web/source/default` passed.
+- `bun run lint` in `apps/web/source/default` passed.
+- `bun run format:check` in `apps/web/source/default` passed after formatting
+  the updated channel form and drawer files.
+- `bun run check` passed after this increment. The run covered frontend
+  type/build, bundle redaction and budget audits, lint-debt and route audits,
+  WFP tenant deploy/dispatch dry-runs, RealtimeSession smoke dry-run, WFP
+  tenant Worker-script tests, Rust workspace tests excluding the Worker, and
+  Worker/WFP wasm32 checks. Existing warnings remained limited to known
+  `d1_repositories.rs` dead-code warnings.
+
+Remaining migration gaps:
+
+- Run a staging canary with a real Cloudflare account/gateway/token and one
+  channel enabled through the editor toggle whose mapped model uses a
+  provider-prefixed AI Gateway name.
+- Capture AI Gateway logs plus relay audit/billing output proving usage parsing
+  and settlement remain unchanged after both Gateway-success and direct-fallback
+  attempts.

@@ -210,6 +210,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.remark?.trim() ||
     values.priority ||
     values.weight ||
+    values.ai_gateway_enabled ||
     values.proxy?.trim() ||
     values.system_prompt?.trim() ||
     values.force_format ||
@@ -375,6 +376,7 @@ export function ChannelMutateDrawer({
     'upstream_model_update_check_enabled'
   )
   const currentSettings = form.watch('settings')
+  const aiGatewayEnabled = form.watch('ai_gateway_enabled')
   const {
     unlocked: doubaoApiEditUnlocked,
     handleClick: handleApiConfigSecretClick,
@@ -2602,6 +2604,46 @@ export function ChannelMutateDrawer({
                             </FormItem>
                           )}
                         />
+
+                        <FormField
+                          control={form.control}
+                          name='ai_gateway_enabled'
+                          render={({ field }) => (
+                            <FormItem
+                              className={sideDrawerSwitchItemClassName()}
+                            >
+                              <div className='space-y-0.5'>
+                                <div className='flex flex-wrap items-center gap-2'>
+                                  <FormLabel>
+                                    {t('Cloudflare AI Gateway canary')}
+                                  </FormLabel>
+                                  <Badge variant='outline'>{t('M7')}</Badge>
+                                </div>
+                                <FormDescription>
+                                  {t(
+                                    'Opt this channel into the default-off main relay AI Gateway router. Use only after provider-prefixed model mapping and upstream checks are ready.'
+                                  )}
+                                </FormDescription>
+                              </div>
+                              <FormControl>
+                                <Switch
+                                  checked={field.value === true}
+                                  onCheckedChange={field.onChange}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+
+                        {aiGatewayEnabled && (
+                          <Alert className='border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-50'>
+                            <AlertDescription>
+                              {t(
+                                'AI Gateway routing is still a canary path. Keep the normal provider route available until staging latency, status-code, and fallback checks pass.'
+                              )}
+                            </AlertDescription>
+                          </Alert>
+                        )}
                       </div>
 
                       <div className='flex flex-col gap-4 border-t pt-4'>

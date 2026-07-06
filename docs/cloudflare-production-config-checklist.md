@@ -357,7 +357,7 @@ build with `bun run build:wfp-tenant`, then upload the generated
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
-| `RELAY_AI_GATEWAY_ROUTER_ENABLED` | var | Main relay AI Gateway REST router gate | Must stay `false` until `channels.other_info` opt-in canary metadata, provider-prefix policy, key/base-url coupling, same-channel direct fallback smoke, billing settlement, forwarder smoke, and staging panel evidence are approved |
+| `RELAY_AI_GATEWAY_ROUTER_ENABLED` | var | Main relay AI Gateway REST router gate | Must stay `false` until channel-editor-created `channels.other_info.ai_gateway.enabled` canary metadata, provider-prefix policy, key/base-url coupling, same-channel direct fallback smoke, billing settlement, forwarder smoke, and staging panel evidence are approved |
 | `AI_GATEWAY_ID_OPENAI_CHAT` | var | Optional WFP tenant gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_OPENAI_RESPONSES` | var | Optional WFP tenant gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | var | Optional WFP tenant gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only |

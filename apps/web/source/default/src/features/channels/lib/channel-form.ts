@@ -170,6 +170,8 @@ export const channelFormSchema = z
       .optional()
       .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
     other: z.string().optional(),
+    other_info: z.string().optional(),
+    ai_gateway_enabled: z.boolean().optional(),
     // Multi-key options (not sent to backend directly)
     multi_key_mode: z.enum(['single', 'batch', 'multi_to_single']).optional(),
     multi_key_type: z.enum(['random', 'polling']).optional(),
@@ -289,6 +291,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   header_override: '',
   settings: '{}',
   other: '',
+  other_info: '',
+  ai_gateway_enabled: false,
   multi_key_mode: 'single',
   multi_key_type: 'random',
   batch_add_set_key_prefix_2_name: false,
@@ -422,6 +426,10 @@ export function transformChannelToFormDefaults(
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
     other: channel.other || '',
+    other_info: channel.other_info || '',
+    ai_gateway_enabled: parseAiGatewayEnabledFromOtherInfo(
+      channel.other_info || ''
+    ),
     multi_key_mode: 'single',
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
     batch_add_set_key_prefix_2_name: false,
@@ -576,6 +584,97 @@ function normalizeBaseUrl(value: string | undefined): string {
     .replace(/\/+$/, '')
 }
 
+function booleanLikeValue(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value !== 'string') return undefined
+
+  switch (value.trim().toLowerCase()) {
+    case 'true':
+    case '1':
+    case 'yes':
+    case 'on':
+    case 'enabled':
+      return true
+    case 'false':
+    case '0':
+    case 'no':
+    case 'off':
+    case 'disabled':
+      return false
+    default:
+      return undefined
+  }
+}
+
+function nestedAiGatewayEnabled(value: unknown): boolean | undefined {
+  return (
+    booleanLikeValue(value) ??
+    (isJsonObjectValue(value) ? booleanLikeValue(value.enabled) : undefined)
+  )
+}
+
+function parseAiGatewayEnabledFromOtherInfo(
+  value: string | undefined
+): boolean {
+  try {
+    const parsed = parseOptionalJson(value)
+    if (!isJsonObjectValue(parsed)) return false
+
+    return (
+      nestedAiGatewayEnabled(parsed.ai_gateway) ??
+      nestedAiGatewayEnabled(parsed.relay_ai_gateway) ??
+      booleanLikeValue(parsed.relay_ai_gateway_enabled) ??
+      false
+    )
+  } catch {
+    return false
+  }
+}
+
+function buildOtherInfoJSON(formData: ChannelFormValues): string {
+  const source = formData.other_info?.trim() || ''
+  let otherInfo: Record<string, unknown> = {}
+
+  if (source) {
+    try {
+      const parsed = JSON.parse(source)
+      if (isJsonObjectValue(parsed)) {
+        otherInfo = parsed
+      } else if (formData.ai_gateway_enabled !== true) {
+        return source
+      }
+    } catch {
+      return formData.ai_gateway_enabled === true
+        ? JSON.stringify({ ai_gateway: { enabled: true } })
+        : source
+    }
+  }
+
+  delete otherInfo.relay_ai_gateway
+  delete otherInfo.relay_ai_gateway_enabled
+
+  if (formData.ai_gateway_enabled === true) {
+    const existing = otherInfo.ai_gateway
+    otherInfo.ai_gateway = {
+      ...(isJsonObjectValue(existing) ? existing : {}),
+      enabled: true,
+    }
+  } else if (isJsonObjectValue(otherInfo.ai_gateway)) {
+    const aiGateway = { ...otherInfo.ai_gateway }
+    delete aiGateway.enabled
+    if (Object.keys(aiGateway).length > 0) {
+      otherInfo.ai_gateway = aiGateway
+    } else {
+      delete otherInfo.ai_gateway
+    }
+  } else {
+    delete otherInfo.ai_gateway
+  }
+
+  return Object.keys(otherInfo).length > 0 ? JSON.stringify(otherInfo) : ''
+}
+
 /**
  * Transform form data to API payload for creating channel
  */
@@ -609,6 +708,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    other_info: buildOtherInfoJSON(formData),
   }
 
   // Clean up empty strings to null for optional fields
@@ -657,6 +757,7 @@ export function transformFormDataToUpdatePayload(
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    other_info: buildOtherInfoJSON(formData),
   }
 
   // Only include key if it was changed (not empty)
@@ -681,6 +782,7 @@ export function transformFormDataToUpdatePayload(
   payload.status_code_mapping = formData.status_code_mapping || ''
   payload.param_override = formData.param_override || ''
   payload.header_override = formData.header_override || ''
+  payload.other_info = buildOtherInfoJSON(formData)
 
   return payload
 }

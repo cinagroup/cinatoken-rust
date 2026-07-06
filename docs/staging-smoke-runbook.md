@@ -362,7 +362,15 @@ Pass criteria:
 
 Realtime remains G7-gated until the upstream OpenAI Realtime bridge and billing
 settlement are wired, but the Cloudflare long-session substrate must be proven
-before that bridge is enabled. Use the platform smoke path first because it
+before that bridge is enabled. First run the local bridge replay contract
+self-test; it validates the expected close/error/send-failure terminal-event
+metadata without opening a network socket:
+
+```powershell
+bun run check:realtime-session:bridge-replay-contract
+```
+
+Then use the platform smoke path because it
 does not require a live relay token or upstream provider credentials:
 
 ```powershell
@@ -390,6 +398,10 @@ bun run smoke:realtime-session -- --mode v1 --url $env:STAGING_BASE_URL --model 
 Record:
 
 - Command output with URLs and protocols redacted.
+- Bridge replay contract self-test output, including normal/reserved/app
+  upstream close handling, upstream error/event-stream/accept failures,
+  client-to-upstream and upstream-to-client send-failure metadata, and the
+  frame-too-large terminal event contract.
 - `/api/platform/capabilities` Realtime fields, including
   `realtime_session_cutover_guards`,
   `realtime_session_auth_boundary_compiled`,
@@ -461,6 +473,10 @@ Pass criteria:
   `1011/upstream_bridge_forward_failed`, upstream-to-client forwarding failure
   closes both sides with `1011/client_bridge_forward_failed`, and raw bridge
   payloads are not logged, stored, or echoed in the failure path.
+- The bridge replay contract self-test passes before live smoke artifacts are
+  accepted. It is not a substitute for a real or mock upstream replay run, but
+  it proves the smoke verifier will reject mismatched close codes/reasons,
+  directions, frame metadata, or leaked probe/API-key material.
 - Terminal bridge evidence is metadata-only: live
   `realtime_session_bridge_event` frames and persisted
   `metrics.last_bridge_terminal_event` include event name, direction, close

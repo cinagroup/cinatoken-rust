@@ -7,13 +7,18 @@ const defaultProbe = "cinatoken realtime smoke probe";
 const maxRealtimeBridgeTextFrameBytes = 1_048_576;
 const defaultFrameLimitProbeBytes = maxRealtimeBridgeTextFrameBytes + 1;
 const frameLimitProbePrefix = "cinatoken-frame-limit-smoke:";
+const bridgeReplayLeakProbe = "cinatoken-bridge-replay-secret";
 
 const args = parseArgs(process.argv.slice(2));
-const options = normalizeOptions(args);
 
 try {
-  const result = options.dryRun ? redactedPlan(buildPlan(options)) : await smoke(options);
-  printResult(result, options);
+  if (args.flags.has("self-test-bridge-replay")) {
+    printBridgeReplaySelfTestResult(runBridgeReplayContractSelfTest(), args.flags.has("json"));
+  } else {
+    const options = normalizeOptions(args);
+    const result = options.dryRun ? redactedPlan(buildPlan(options)) : await smoke(options);
+    printResult(result, options);
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -185,6 +190,7 @@ function parseArgs(argv) {
     "expect-platform-ready",
     "expect-v1-cutover-ready",
     "expect-frame-limit-event",
+    "self-test-bridge-replay",
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -273,6 +279,7 @@ function usage(exitCode, error) {
       "  --expect-v1-cutover-ready        Require production v1 cutover readiness=true",
       "  --expect-frame-limit-event       Send an oversized text frame and validate 1009 close plus terminal event metrics",
       "  --frame-limit-bytes <bytes>      or REALTIME_SMOKE_FRAME_LIMIT_BYTES, default 1048577",
+      "  --self-test-bridge-replay        Run local synthetic close/error/send-failure replay contract tests without network",
       "  --dry-run             resolve URLs/protocols without network",
       "  --json",
       "",
@@ -701,42 +708,207 @@ function validateFrameLimitClose(close) {
 }
 
 function validateBridgeTerminalEvent(event, expectedEvent, expectedFrameBytes) {
+  validateBridgeTerminalEventExpectation(
+    event,
+    bridgeReplayExpectationForEvent(expectedEvent, expectedFrameBytes),
+  );
+}
+
+function bridgeReplayExpectationForEvent(expectedEvent, expectedFrameBytes) {
+  if (expectedEvent === "frame_too_large") {
+    return {
+      name: "frame_too_large_text",
+      event: "frame_too_large",
+      direction: "bridge",
+      clientCode: 1009,
+      clientReason: "upstream_bridge_frame_too_large",
+      upstreamCode: 1009,
+      upstreamReason: "upstream_bridge_frame_too_large",
+      upstreamCloseCode: null,
+      frameKind: "text",
+      frameBytes: expectedFrameBytes,
+      frameMaxBytes: maxRealtimeBridgeTextFrameBytes,
+    };
+  }
+  throw new Error(`unsupported bridge terminal event expectation: ${expectedEvent}`);
+}
+
+function validateBridgeTerminalEventExpectation(event, expectation) {
   if (!event || typeof event !== "object") {
-    throw new Error(`HTTP status metrics missing last_bridge_terminal_event=${expectedEvent}`);
+    throw new Error(`missing bridge terminal event for ${expectation.name}`);
   }
-  if (event.event !== expectedEvent) {
-    throw new Error(`last_bridge_terminal_event.event=${event.event}, expected ${expectedEvent}`);
+  for (const [field, expected] of [
+    ["event", expectation.event],
+    ["direction", expectation.direction],
+    ["client_code", expectation.clientCode],
+    ["client_reason", expectation.clientReason],
+    ["upstream_code", expectation.upstreamCode ?? null],
+    ["upstream_reason", expectation.upstreamReason ?? null],
+    ["upstream_close_code", expectation.upstreamCloseCode ?? null],
+    ["frame_kind", expectation.frameKind ?? null],
+    ["frame_bytes", expectation.frameBytes ?? null],
+    ["frame_max_bytes", expectation.frameMaxBytes ?? null],
+  ]) {
+    const actual = event[field] ?? null;
+    if (actual !== expected) {
+      throw new Error(
+        `bridge terminal event ${expectation.name} ${field}=${actual}, expected ${expected}`,
+      );
+    }
   }
-  if (event.event === "frame_too_large") {
-    if (event.direction !== "bridge") {
-      throw new Error(`last_bridge_terminal_event.direction=${event.direction}, expected bridge`);
-    }
-    if (event.client_code !== 1009) {
-      throw new Error(`last_bridge_terminal_event.client_code=${event.client_code}, expected 1009`);
-    }
-    if (event.client_reason !== "upstream_bridge_frame_too_large") {
-      throw new Error(
-        `last_bridge_terminal_event.client_reason=${event.client_reason}, expected upstream_bridge_frame_too_large`,
-      );
-    }
-    if (event.frame_kind !== "text") {
-      throw new Error(`last_bridge_terminal_event.frame_kind=${event.frame_kind}, expected text`);
-    }
-    if (event.frame_bytes !== expectedFrameBytes) {
-      throw new Error(
-        `last_bridge_terminal_event.frame_bytes=${event.frame_bytes}, expected ${expectedFrameBytes}`,
-      );
-    }
-    if (event.frame_max_bytes !== maxRealtimeBridgeTextFrameBytes) {
-      throw new Error(
-        `last_bridge_terminal_event.frame_max_bytes=${event.frame_max_bytes}, expected ${maxRealtimeBridgeTextFrameBytes}`,
-      );
-    }
+  if (typeof event.occurred_at_ms !== "number") {
+    throw new Error(`bridge terminal event ${expectation.name} missing occurred_at_ms`);
   }
   const raw = JSON.stringify(event);
-  if (raw.includes(frameLimitProbePrefix) || raw.includes("openai-insecure-api-key.")) {
-    throw new Error("last_bridge_terminal_event leaked raw probe text or realtime protocol secret");
+  for (const leaked of [frameLimitProbePrefix, bridgeReplayLeakProbe, "openai-insecure-api-key."]) {
+    if (raw.includes(leaked)) {
+      throw new Error(`bridge terminal event ${expectation.name} leaked raw probe or protocol secret`);
+    }
   }
+}
+
+function runBridgeReplayContractSelfTest() {
+  const cases = bridgeReplayContractExpectations();
+  for (const expectation of cases) {
+    validateBridgeTerminalEventExpectation(syntheticBridgeTerminalEvent(expectation), expectation);
+  }
+
+  expectBridgeReplayFailure(
+    {
+      ...syntheticBridgeTerminalEvent(cases[0]),
+      leaked_probe: bridgeReplayLeakProbe,
+    },
+    cases[0],
+    "leaked raw probe",
+  );
+  expectBridgeReplayFailure(
+    {
+      ...syntheticBridgeTerminalEvent(cases[1]),
+      leaked_protocol: "openai-insecure-api-key.synthetic",
+    },
+    cases[1],
+    "leaked raw probe",
+  );
+
+  return {
+    ok: true,
+    bridgeReplayContractSelfTest: true,
+    cases: cases.map((item) => ({
+      name: item.name,
+      event: item.event,
+      direction: item.direction,
+      clientCode: item.clientCode,
+      clientReason: item.clientReason,
+      upstreamCode: item.upstreamCode ?? null,
+      upstreamReason: item.upstreamReason ?? null,
+      upstreamCloseCode: item.upstreamCloseCode ?? null,
+      frameKind: item.frameKind ?? null,
+      frameBytes: item.frameBytes ?? null,
+      frameMaxBytes: item.frameMaxBytes ?? null,
+    })),
+  };
+}
+
+function bridgeReplayContractExpectations() {
+  return [
+    {
+      name: "upstream_closed_normal",
+      event: "upstream_closed",
+      direction: "upstream_to_client",
+      clientCode: 1000,
+      clientReason: "upstream_bridge_closed",
+      upstreamCloseCode: 1000,
+    },
+    {
+      name: "upstream_closed_reserved_code",
+      event: "upstream_closed",
+      direction: "upstream_to_client",
+      clientCode: 1011,
+      clientReason: "upstream_bridge_closed",
+      upstreamCloseCode: 1006,
+    },
+    {
+      name: "upstream_closed_application_code",
+      event: "upstream_closed",
+      direction: "upstream_to_client",
+      clientCode: 4000,
+      clientReason: "upstream_bridge_closed",
+      upstreamCloseCode: 4000,
+    },
+    {
+      name: "upstream_error",
+      event: "upstream_error",
+      direction: "upstream_to_client",
+      clientCode: 1011,
+      clientReason: "upstream_bridge_error",
+    },
+    {
+      name: "upstream_event_stream_failed",
+      event: "upstream_event_stream_failed",
+      direction: "upstream_to_client",
+      clientCode: 1011,
+      clientReason: "upstream_bridge_event_stream_failed",
+    },
+    {
+      name: "upstream_accept_failed",
+      event: "upstream_accept_failed",
+      direction: "upstream_to_client",
+      clientCode: 1011,
+      clientReason: "upstream_bridge_accept_failed",
+    },
+    {
+      name: "client_to_upstream_send_failed_text",
+      event: "client_to_upstream_send_failed",
+      direction: "client_to_upstream",
+      clientCode: 1011,
+      clientReason: "upstream_bridge_forward_failed",
+      upstreamCode: 1011,
+      upstreamReason: "upstream_bridge_forward_failed",
+      frameKind: "text",
+      frameBytes: 32,
+    },
+    {
+      name: "upstream_to_client_send_failed_binary",
+      event: "upstream_to_client_send_failed",
+      direction: "upstream_to_client",
+      clientCode: 1011,
+      clientReason: "client_bridge_forward_failed",
+      upstreamCode: 1011,
+      upstreamReason: "client_bridge_forward_failed",
+      frameKind: "binary",
+      frameBytes: 32,
+    },
+    bridgeReplayExpectationForEvent("frame_too_large", defaultFrameLimitProbeBytes),
+  ];
+}
+
+function syntheticBridgeTerminalEvent(expectation) {
+  return {
+    event: expectation.event,
+    direction: expectation.direction,
+    occurred_at_ms: 1_788_192_000_000,
+    client_code: expectation.clientCode,
+    client_reason: expectation.clientReason,
+    upstream_code: expectation.upstreamCode ?? null,
+    upstream_reason: expectation.upstreamReason ?? null,
+    upstream_close_code: expectation.upstreamCloseCode ?? null,
+    frame_kind: expectation.frameKind ?? null,
+    frame_bytes: expectation.frameBytes ?? null,
+    frame_max_bytes: expectation.frameMaxBytes ?? null,
+  };
+}
+
+function expectBridgeReplayFailure(event, expectation, messagePart) {
+  try {
+    validateBridgeTerminalEventExpectation(event, expectation);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes(messagePart)) {
+      throw new Error(`unexpected bridge replay self-test failure: ${message}`);
+    }
+    return;
+  }
+  throw new Error(`expected bridge replay self-test to fail for ${expectation.name}`);
 }
 
 function summarizeMetrics(metrics) {
@@ -900,6 +1072,23 @@ function printResult(result, options) {
         ? [`frame_limit_probe_bytes: ${result.frameLimitProbeBytes}`]
         : []),
       ...(result.notes?.length ? ["notes:", ...result.notes.map((note) => `  - ${note}`)] : []),
+    ].join("\n"),
+  );
+}
+
+function printBridgeReplaySelfTestResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    [
+      "Realtime bridge replay contract self-test",
+      `ok: ${result.ok}`,
+      ...result.cases.map(
+        (item) =>
+          `case ${item.name}: ${item.event} ${item.direction} ${item.clientCode}/${item.clientReason}`,
+      ),
     ].join("\n"),
   );
 }

@@ -6607,3 +6607,55 @@ Remaining migration gaps:
   `responseHeaderGuard`, AI Gateway log metadata, and Worker log/trace links.
 - Keep WFP as later multi-tenant enablement; the first single-tenant relay
   production cutover still must not depend on WFP.
+
+### 22.103 2026-07-06 Realtime Bridge Replay Contract Smoke Guard
+
+This increment moves the Realtime DO evidence one step closer to live replay
+without claiming that a real upstream protocol replay has been completed. The
+Rust DO already owns hibernatable sockets, persisted metrics, transient
+upstream bridge state, close/error mapping, frame guards, and metadata-only
+terminal events. The new work makes the smoke harness verify that mapping
+contract independently before staging evidence is accepted.
+
+Implemented:
+
+- Added `--self-test-bridge-replay` to `tools/smoke_realtime_session.mjs`.
+  - The self-test validates normal upstream close `1000`, reserved upstream
+    close `1006` mapping to `1011`, application close `4000` pass-through,
+    upstream error, upstream event-stream failure, upstream accept failure,
+    client-to-upstream send failure, upstream-to-client send failure, and
+    frame-too-large terminal event metadata.
+  - Every case checks event name, direction, client close code/reason,
+    optional upstream close code, optional upstream close action, and optional
+    frame kind/byte counts.
+  - Negative synthetic cases prove the verifier rejects raw probe text and
+    `openai-insecure-api-key.<secret>` protocol leakage in terminal-event
+    metadata.
+- Added `check:realtime-session:bridge-replay-contract` and included it in
+  `bun run check` before the existing platform, frame-limit, and v1 dry-run
+  smoke plans.
+- Updated the staging smoke runbook, verification ledger, production readiness
+  matrix, layered architecture ledger, and cinaVibeSDK migration mapping to
+  distinguish this replay contract gate from the still-required real or mock
+  upstream replay smoke.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:bridge-replay-contract` passed and emitted
+  the full synthetic replay case table.
+- `bun run check:realtime-session:frame-limit-smoke-plan` passed.
+- `bun run check:realtime-session:smoke-plan` passed.
+- `bun run check` passed; existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+
+Remaining migration gaps:
+
+- Add a real or mock upstream WebSocket replay harness that forces upstream
+  close, upstream error, upstream event-stream failure, accept failure, and
+  upstream-to-client send failure through the live DO pump.
+- Add true queued backpressure/flow-control behavior once the Rust Worker API
+  can observe or wrap socket buffered bytes safely.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

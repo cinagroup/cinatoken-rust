@@ -452,8 +452,9 @@ As of the docs reviewed on 2026-07-06:
 - Realtime DO has the session substrate, planners, connect contract,
   gateway-to-DO handoff, outbound fetch-upgrade adapter, and transient bridge
   lifecycle/frame guard/close mapping/send-failure cleanup plus terminal event
-  trace metadata, but still lacks queued backpressure/live replay proof and
-  billing settlement required for production `/v1/realtime`.
+  trace metadata plus a smoke-level bridge replay contract self-test, but still
+  lacks queued backpressure/live replay proof and billing settlement required
+  for production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
   response-header smoke guard, but still needs a real paid-plan `DISPATCHER`
   binding, uploaded tenant artifact, and live internal dispatch smoke.

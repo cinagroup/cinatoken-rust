@@ -5,6 +5,16 @@ Last checked: 2026-07-06
 ## Passed
 
 - `node --check tools/smoke_realtime_session.mjs` and
+  `bun run check:realtime-session:bridge-replay-contract`: passed after adding
+  the Realtime bridge replay contract self-test. The self-test covers
+  upstream normal/reserved/application close-code mapping, upstream error,
+  upstream event-stream/accept failures, client-to-upstream send failure,
+  upstream-to-client send failure, frame-too-large metadata, and raw
+  probe/API-key leakage rejection without requiring a live upstream socket.
+- `bun run check`: passed after adding the Realtime bridge replay contract
+  self-test to the default check chain. Existing warnings were limited to the
+  known `d1_repositories.rs` dead-code warnings.
+- `node --check tools/smoke_realtime_session.mjs` and
   `bun run check:realtime-session:frame-limit-smoke-plan`: passed after adding
   `--expect-frame-limit-event`, `--frame-limit-bytes`, frame-limit close
   validation, and persisted `last_bridge_terminal_event` validation to the

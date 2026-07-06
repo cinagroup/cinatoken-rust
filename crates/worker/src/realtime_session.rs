@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 use worker::{
-    durable_object, Env, Method, Request, Response, Result as WorkerResult, State, WebSocket,
-    WebSocketIncomingMessage, WebSocketPair,
+    durable_object, Env, Fetch, Method, Request, Response, Result as WorkerResult, State,
+    WebSocket, WebSocketIncomingMessage, WebSocketPair,
 };
 
 use crate::platform_gateway::env_flag;
@@ -27,6 +27,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_PLANNER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_CHANNEL_PLANNER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_CONNECT_HANDOFF_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_FETCH_UPGRADE_ADAPTER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
@@ -37,6 +38,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "relay_token_auth",
     "relay_rate_limits",
     "upstream_channel_selection",
+    "upstream_fetch_upgrade_adapter",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
     "upstream_bridge",
@@ -868,6 +870,41 @@ pub(crate) fn realtime_upstream_connect_handoff_compiled() -> bool {
             .contains(secret)
 }
 
+pub(crate) fn realtime_upstream_fetch_upgrade_adapter_compiled() -> bool {
+    if !REALTIME_UPSTREAM_FETCH_UPGRADE_ADAPTER_COMPILED {
+        return false;
+    }
+    let secret = "fetch-upgrade-smoke-key";
+    let Ok(selected) = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+        selected_group: "default",
+        channel_id: 1,
+        channel_type: 1,
+        channel_name: "openai-primary",
+        channel_base_url: Some("https://api.openai.com"),
+        request_model: "gpt-4o-realtime-preview",
+        upstream_model: "gpt-4o-realtime-preview",
+        upstream_api_key: secret,
+        api_version: None,
+        client_requested_subprotocol: false,
+    }) else {
+        return false;
+    };
+    let Ok(fetch_plan) = realtime_upstream_fetch_request_plan(&selected.connect_handoff) else {
+        return false;
+    };
+
+    fetch_plan.fetch_url == "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+        && fetch_plan.upgrade == "websocket"
+        && fetch_plan.protocol_header.is_none()
+        && fetch_plan.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization") && value == &format!("Bearer {secret}")
+        })
+        && fetch_plan
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("openai-beta") && value == "realtime=v1")
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -1031,6 +1068,39 @@ fn realtime_upstream_fetch_request_plan(
         upgrade: "websocket",
         protocol_header,
         headers,
+    })
+}
+
+#[allow(dead_code)]
+fn realtime_upstream_fetch_upgrade_request(
+    handoff: &RealtimeUpstreamBridgeConnectHandoff,
+) -> WorkerResult<Request> {
+    let plan = realtime_upstream_fetch_request_plan(handoff).map_err(worker::Error::RustError)?;
+    let mut request = Request::new(&plan.fetch_url, Method::Get)?;
+    {
+        let headers = request.headers_mut()?;
+        headers.set("Upgrade", plan.upgrade)?;
+        if let Some(protocol) = plan.protocol_header.as_deref() {
+            headers.set("Sec-WebSocket-Protocol", protocol)?;
+        }
+        for (name, value) in plan.headers {
+            headers.set(&name, &value)?;
+        }
+    }
+    Ok(request)
+}
+
+#[allow(dead_code)]
+async fn connect_realtime_upstream(
+    handoff: &RealtimeUpstreamBridgeConnectHandoff,
+) -> WorkerResult<WebSocket> {
+    let request = realtime_upstream_fetch_upgrade_request(handoff)?;
+    let response = Fetch::Request(request).send().await?;
+    let status = response.status_code();
+    response.websocket().ok_or_else(|| {
+        worker::Error::RustError(format!(
+            "realtime upstream did not accept WebSocket upgrade: status {status}"
+        ))
     })
 }
 
@@ -1843,6 +1913,41 @@ mod tests {
                     "Bearer sk-live-secret".to_string()
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn realtime_fetch_upgrade_adapter_contract_is_compiled() {
+        assert!(realtime_upstream_fetch_upgrade_adapter_compiled());
+    }
+
+    #[test]
+    fn realtime_azure_handoff_fetch_plan_carries_api_key_header() {
+        let secret = "azure-secret";
+        let selected = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 3,
+            channel_type: CHANNEL_TYPE_AZURE,
+            channel_name: "azure-realtime",
+            channel_base_url: Some("https://example.openai.azure.com"),
+            request_model: "gpt-4o-realtime-deployment",
+            upstream_model: "gpt-4o-realtime-deployment",
+            upstream_api_key: secret,
+            api_version: Some("2025-04-01-preview"),
+            client_requested_subprotocol: true,
+        })
+        .unwrap();
+        let fetch_plan = realtime_upstream_fetch_request_plan(&selected.connect_handoff).unwrap();
+
+        assert_eq!(
+            fetch_plan.fetch_url,
+            "https://example.openai.azure.com/openai/realtime?deployment=gpt-4o-realtime-deployment&api-version=2025-04-01-preview"
+        );
+        assert_eq!(fetch_plan.upgrade, "websocket");
+        assert!(fetch_plan.protocol_header.is_none());
+        assert_eq!(
+            fetch_plan.headers,
+            vec![("api-key".to_string(), secret.to_string())]
         );
     }
 

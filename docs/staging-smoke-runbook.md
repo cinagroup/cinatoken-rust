@@ -384,6 +384,7 @@ Record:
   `realtime_session_upstream_channel_planner_compiled`,
   `realtime_session_upstream_bridge_connect_contract_compiled`,
   `realtime_session_upstream_connect_handoff_compiled`,
+  `realtime_session_upstream_fetch_upgrade_adapter_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
@@ -400,7 +401,7 @@ Pass criteria:
 - Platform capabilities report hibernation, auth boundary, persisted metrics,
   no-echo controls, the upstream bridge planner, the upstream channel planner,
   the request-scoped upstream connect contract, and the gateway-to-DO connect
-  handoff as compiled;
+  handoff plus upstream fetch-upgrade adapter as compiled;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted

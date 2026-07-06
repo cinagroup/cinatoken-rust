@@ -6154,3 +6154,75 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.95 2026-07-06 Realtime Upstream Fetch-Upgrade Adapter
+
+This increment advances the Realtime G7 bridge path from a request-scoped
+gateway-to-DO handoff to a concrete Worker-native outbound WebSocket upgrade
+adapter. It still does not claim the full bidirectional upstream bridge or
+billing settlement. The production `/v1/realtime` cutover remains blocked until
+the message pump, backpressure, close/error mapping, usage accumulation, and
+settlement evidence land.
+
+Implemented:
+
+- Added `REALTIME_UPSTREAM_FETCH_UPGRADE_ADAPTER_COMPILED=true` and exposed
+  `realtime_session_upstream_fetch_upgrade_adapter_compiled` from
+  `/api/platform/capabilities`.
+- Added `realtime_upstream_fetch_upgrade_request`, which converts the
+  request-scoped `RealtimeUpstreamBridgeConnectHandoff` into a Worker
+  `Request` with:
+  - `Upgrade: websocket`;
+  - `Sec-WebSocket-Protocol` for OpenAI Realtime subprotocol auth;
+  - `openai-beta` + `Authorization: Bearer ...` for OpenAI-compatible header
+    auth;
+  - Azure `api-key` when the selected channel is Azure OpenAI.
+- Added `connect_realtime_upstream`, the async adapter that sends the
+  constructed request with `Fetch::Request(...).send().await` and extracts the
+  upgraded upstream `WebSocket` from the response. This is intentionally not
+  wired into the client-facing message loop yet.
+- Added `upstream_fetch_upgrade_adapter` to the Realtime cutover guard list and
+  required the compiled adapter in the v1 cutover readiness helper while
+  keeping `realtime_session_upstream_bridge_compiled=false`,
+  `realtime_session_billing_settlement_compiled=false`, and
+  `realtime_session_v1_cutover_ready=false`.
+- Updated the frontend Cloudflare Platform panel and capability types with a
+  separate **Upstream fetch-upgrade adapter** row so operators can see this
+  prerequisite independently from the still-false full bridge row.
+- Updated `tools/smoke_realtime_session.mjs` capabilities preflight to require
+  the new compiled signal and guard.
+- Added `docs/cinavibesdk-production-migration-mapping.md`, documenting how the
+  cinaVibeSDK scheduling gateway, DO long-session, WFP dispatch, and AI Gateway
+  patterns map into the Rust/Cloudflare `cinatoken-rust` production plan.
+- Updated the layered architecture, staging smoke runbook, production readiness
+  matrix, and verification log to reflect the new adapter milestone.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed (27 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed (13 platform tests; existing `d1_repositories.rs` dead-code warnings
+  only).
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:v1-smoke-plan` passed.
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default` passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with warnings limited to the known `d1_repositories.rs` dead-code items.
+- `bun run check` passed, covering frontend build, bundle redaction/budget,
+  lint-debt, route audit, WFP deploy/dispatch dry-runs, Realtime platform and
+  v1 dry-runs, relay AI Gateway dry-run, WFP tenant Worker-script tests, Rust
+  workspace tests, and Worker/WFP wasm32 checks.
+
+Remaining migration gaps:
+
+- Wire the actual bidirectional upstream Realtime WebSocket bridge/pump using
+  the adapter, with bounded queues/backpressure and close/error mapping.
+- Preserve Cloudflare hibernation semantics: accepted client sockets can
+  hibernate, but outbound upstream sockets are transient active-session handles
+  and must be rebuilt or closed deliberately.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` can become true.

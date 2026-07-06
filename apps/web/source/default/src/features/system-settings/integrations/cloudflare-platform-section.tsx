@@ -73,6 +73,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_channel_planner_compiled,
         capabilities.realtime_session_upstream_bridge_connect_contract_compiled,
         capabilities.realtime_session_upstream_connect_handoff_compiled,
+        capabilities.realtime_session_upstream_fetch_upgrade_adapter_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -483,6 +484,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_connect_handoff_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Upstream fetch-upgrade adapter'),
+          description: t(
+            'Builds the Worker-native fetch request that upgrades to the selected upstream Realtime WebSocket using request-scoped headers or subprotocols.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_fetch_upgrade_adapter_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

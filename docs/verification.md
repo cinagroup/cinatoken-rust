@@ -4,6 +4,37 @@ Last checked: 2026-07-06
 
 ## Passed
 
+- `bun run check`: passed after adding the Realtime upstream fetch-upgrade
+  adapter, platform capability signal, frontend Cloudflare Platform row, smoke
+  preflight assertion, and cinaVibeSDK production mapping docs. The run covered
+  frontend type/build, bundle redaction audit (460 files, 37,300,273 bytes, 0
+  findings), bundle budget audit (245 files, 18.96 MB raw / 4.50 MB gzip, all
+  10 budgets OK), lint-debt baseline (0 errors / 0 warnings / 0 regressions),
+  frontend route audit (215 Worker-facing calls / 307 Worker routes / 0
+  missing calls), WFP tenant deploy-plan dry-run, WFP dispatch smoke dry-run,
+  RealtimeSession platform and v1 dry-run smoke plans, relay AI Gateway canary
+  smoke dry-run, WFP tenant Worker-script tests (8 passed),
+  `cargo fmt --all --check`, Rust workspace tests excluding the Worker, Worker
+  wasm32 check, and WFP tenant wasm32 check. Existing warnings were limited to
+  the known `d1_repositories.rs` dead-code warnings.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`:
+  passed after adding the Realtime upstream fetch-upgrade adapter and Azure
+  handoff request-plan assertions (27 filtered Realtime/platform tests; existing
+  `d1_repositories.rs` dead-code warnings only).
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`:
+  passed after exposing
+  `realtime_session_upstream_fetch_upgrade_adapter_compiled` in platform
+  capabilities and requiring it in v1 cutover readiness (13 platform tests;
+  existing `d1_repositories.rs` dead-code warnings only).
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed
+  after adding the fetch-upgrade adapter (known `d1_repositories.rs` dead-code
+  warnings only).
+- `bun run typecheck`, `bun run lint`, and `bun run format:check` in
+  `apps/web/source/default`: passed after adding the Cloudflare Platform
+  capability field and row.
+- `node --check tools/smoke_realtime_session.mjs` and
+  `bun run check:realtime-session:v1-smoke-plan`: passed after adding the
+  upstream fetch-upgrade adapter capability and cutover guard checks.
 - `bun run check`: passed after adding the Realtime upstream connect handoff,
   gateway-to-DO secret-bearing request header, frontend Cloudflare Platform
   row, smoke preflight assertion, and migration docs. The run covered frontend

@@ -6861,3 +6861,65 @@ Remaining migration gaps:
   audit logs before `realtime_session_upstream_bridge_compiled`,
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.107 2026-07-06 Realtime Mock Upstream Replay Harness
+
+This increment starts replacing the purely local upstream replay contract with
+an executable mock upstream harness, while still avoiding a production Worker
+backdoor or arbitrary caller-supplied upstream URL. The live path requires
+`--confirm-live` and a dedicated non-production `/v1/realtime` channel whose
+`base_url` points at a reachable mock upstream. For local `wrangler dev`, that
+can be the Bun mock server on `http://127.0.0.1:8799/`; for remote Cloudflare
+staging, the mock endpoint must be public or tunnelled because staging cannot
+reach the operator's localhost.
+
+Implemented:
+
+- Added `tools/smoke_realtime_upstream_replay.mjs`.
+  - `--self-test` validates the harness expectations without network access.
+  - `--dry-run` prints a redacted replay plan, including the Worker
+    `/v1/realtime` WebSocket URL, redacted Realtime subprotocols, mock upstream
+    URL, required channel `base_url`, expected bridge event, and uncovered
+    fault-injection-only scenarios.
+  - Live mode starts a local Bun WebSocket mock upstream unless
+    `--external-mock` is used, connects to the Worker `/v1/realtime` entry,
+    sends a safe fixed probe, requires the mock to receive the forwarded client
+    frame, waits for a metadata-only `realtime_session_bridge_event`, and
+    validates the client close mapping.
+- Covered externally inducible live scenarios:
+  - `upstream-normal-close`: mock closes upstream with code `1000`; the Worker
+    must emit `upstream_closed`, close the client with
+    `1000/upstream_bridge_closed`, and avoid raw payload/API-key leakage.
+  - `upstream-frame-limit`: mock sends a text frame larger than the 1 MiB
+    bridge limit; the Worker must emit `frame_too_large`, close the client with
+    `1009/upstream_bridge_frame_too_large`, and report metadata-only frame byte
+    counts.
+- Wired `check:realtime-session:mock-upstream-replay-contract` and
+  `check:realtime-session:mock-upstream-replay-plan` into `bun run check`.
+- Updated the staging smoke runbook and verification ledger so operators can
+  distinguish default no-network validation from live mock upstream replay
+  evidence.
+
+Validation:
+
+- `node --check tools/smoke_realtime_upstream_replay.mjs` passed.
+- `bun run check:realtime-session:mock-upstream-replay-contract` passed and
+  emitted the live scenario expectations plus the still-planned
+  fault-injection-only scenarios.
+- `bun run check:realtime-session:mock-upstream-replay-plan` passed and emitted
+  a redacted local `wrangler dev` replay plan.
+
+Remaining migration gaps:
+
+- Run and archive live mock upstream replay evidence after a local/staging D1
+  test channel points at the mock upstream and `/v1/realtime` is enabled only
+  in the intended non-production environment.
+- Add safe staging fault injection for upstream socket abort/error,
+  event-stream failure, accept failure, and upstream-to-client send failure;
+  those paths remain contract-covered but not live-harness-covered.
+- Add queued backpressure/flow-control so the active bridge does not depend on
+  direct immediate `WebSocket.send*` success for production traffic.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.

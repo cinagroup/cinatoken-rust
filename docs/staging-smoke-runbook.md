@@ -379,6 +379,18 @@ payload/token redaction before any live upstream replay artifact is accepted:
 bun run check:realtime-session:upstream-replay-contract
 ```
 
+Then run the local mock upstream replay harness self-test and dry-run plan. The
+self-test validates the harness expectations for externally inducible live
+paths (`upstream-normal-close` and `upstream-frame-limit`) and records the
+fault paths that still need Worker-side fault injection. The dry-run prints the
+redacted `/v1/realtime` plan plus the channel `base_url` that must point at the
+mock upstream:
+
+```powershell
+bun run check:realtime-session:mock-upstream-replay-contract
+bun run check:realtime-session:mock-upstream-replay-plan
+```
+
 Also run the local platform header-boundary validator self-test. It proves the
 smoke verifier rejects forged upstream handoff markers, upstream plans, active
 bridge status, and active bridge counts before any staging evidence is trusted:
@@ -422,6 +434,21 @@ $env:REALTIME_SMOKE_API_KEY = "<redacted staging token>"
 bun run smoke:realtime-session -- --mode v1 --url $env:STAGING_BASE_URL --model gpt-4o-realtime-preview --api-key $env:REALTIME_SMOKE_API_KEY --cookie $env:REALTIME_SMOKE_COOKIE --expect-v1-gate-enabled --json
 ```
 
+If a local `wrangler dev` Worker or a staging Worker can reach a dedicated mock
+upstream endpoint, run the live mock upstream replay. For local development,
+configure a dedicated enabled OpenAI-compatible channel for
+`gpt-4o-realtime-preview` whose `base_url` is `http://127.0.0.1:8799/`; the
+Worker appends `/v1/realtime?model=...`. For remote Cloudflare staging, do not
+use `127.0.0.1`; use a public mock endpoint or a temporary tunnel and set the
+test channel `base_url` to that reachable origin.
+
+```powershell
+$env:REALTIME_UPSTREAM_REPLAY_URL = "http://127.0.0.1:8787"
+$env:REALTIME_UPSTREAM_REPLAY_API_KEY = "<redacted staging token>"
+bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-normal-close --confirm-live --json
+bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-frame-limit --confirm-live --json
+```
+
 Record:
 
 - Command output with URLs and protocols redacted.
@@ -433,6 +460,13 @@ Record:
   active bridge status, client-to-upstream forwarding, upstream terminal
   close/error/frame-limit/send-failure events, client close mapping, persisted
   terminal evidence, and redaction rejection cases.
+- Mock upstream replay harness self-test and dry-run output, including the
+  redacted worker WebSocket URL, mock upstream URL, required channel
+  `base_url`, live scenarios covered, and planned fault-injection-only
+  scenarios.
+- Live mock upstream replay output when available, including mock connection
+  count, forwarded client frame byte metadata, upstream frame byte metadata,
+  observed `realtime_session_bridge_event`, and client close event.
 - Platform header-boundary self-test output, including the clean case plus
   rejected forged handoff marker, forged upstream plan, active bridge status,
   and active bridge count cases.
@@ -523,6 +557,14 @@ Pass criteria:
   upstream server run, but it proves the evidence validator rejects inactive
   pre-terminal status, missing persisted terminal events, wrong client close
   reasons, and leaked raw frame/API-key material.
+- The mock upstream replay harness self-test and dry-run plan pass before live
+  artifacts are accepted. A live run must use a dedicated non-production
+  channel, prove the mock received the forwarded client frame, and observe a
+  metadata-only `realtime_session_bridge_event` plus matching client close.
+  `upstream-error`, `upstream-event-stream-failed`,
+  `upstream-accept-failed`, and `upstream-to-client-send-failure` remain
+  separate fault-injection evidence until the Worker has an explicit safe
+  staging mechanism for those paths.
 - Platform Realtime routes strip caller-supplied
   `x-cinatoken-realtime-upstream-plan` and
   `x-cinatoken-realtime-upstream-connect` before forwarding to the Durable

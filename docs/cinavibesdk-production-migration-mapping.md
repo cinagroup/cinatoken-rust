@@ -190,7 +190,12 @@ cinaVibeSDK pattern:
   disabled unless explicitly approved.
 - Inbound sensitive headers must be empty from the tenant's point of view.
 - Tenant responses must pass through a safe response-header allowlist so auth,
-  cookies, `cf-aig-*`, transfer, and platform headers are not leaked.
+  cookies, `cf-aig-*`, upstream transfer metadata, and upstream platform
+  headers are not leaked.
+- Dispatch smoke must enforce that allowlist on both tenant status and opt-in
+  AI route responses, failing on auth/cookie, `cf-aig-*`, and non-WFP
+  `x-cinatoken-*` leakage while recording Cloudflare edge envelope headers
+  separately.
 
 Current mapped status from existing docs:
 
@@ -449,9 +454,9 @@ As of the docs reviewed on 2026-07-06:
   lifecycle/frame guard/close mapping/send-failure cleanup plus terminal event
   trace metadata, but still lacks queued backpressure/live replay proof and
   billing settlement required for production `/v1/realtime`.
-- WFP dispatch has code and local Rust/Wasm tenant checks, but still needs a
-  real paid-plan `DISPATCHER` binding, uploaded tenant artifact, and live
-  internal dispatch smoke.
+- WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
+  response-header smoke guard, but still needs a real paid-plan `DISPATCHER`
+  binding, uploaded tenant artifact, and live internal dispatch smoke.
 - The first production cutover should not depend on WFP. Keep WFP as a later
   multi-tenant extension.
 

@@ -424,10 +424,12 @@ Smoke order:
    output. Public preview-host AI route attempts must remain disabled or return
    `403 tenant_internal_dispatch_required`; only the
    admin-authenticated internal dispatch path is allowed to reach tenant AI
-   forwarding. Capture redacted response headers and verify
-   tenant/runtime marker headers are present while `cf-aig-*`, `authorization`,
-   `set-cookie`, `content-length`, transfer/platform headers, and upstream
-   `x-cinatoken-*` headers are absent.
+   forwarding. `bun run smoke:wfp-dispatch` now enforces the response-header
+   leakage guard: tenant/runtime marker headers must be present while
+   `cf-aig-*`, auth/cookie/API-key headers, non-WFP `x-cinatoken-*`, and
+   upstream provider metadata are absent. Cloudflare edge envelope headers such
+   as `date`, `cf-ray`, content length, and transfer metadata may be recorded
+   separately and do not count as tenant allowlist evidence.
    Keep legacy `/v1/completions` on the main relay unless Cloudflare documents
    a matching REST endpoint or a provider-native tenant path is explicitly
    added.

@@ -1783,12 +1783,23 @@ baseline above.
   tenant status contract (`runtime`, `forwarding`, `body_mode`, route manifest,
   and route-gateway configuration) plus `x-cinatoken-wfp-*` dispatch headers.
   Optional `--route` mode posts a low-risk JSON payload to a supported tenant
-  AI route and records the safe response-header surface. Local evidence:
+  AI route and runs the response-header guard even when `--allow-non-2xx` is
+  used. The guard fails on auth/cookie/API-key headers, `cf-aig-*`, non-WFP
+  `x-cinatoken-*`, unexpected WFP markers, and provider-only metadata, while
+  recording public tenant headers, WFP evidence headers, CORS headers, and
+  Cloudflare edge envelope headers separately. Local evidence:
   `bun tools/smoke_wfp_dispatch.mjs --help` (passed),
   `bun run check:wfp-dispatch:smoke-plan` (passed), and a dry-run route smoke
   for `/v1/responses` (passed with the expected internal dispatch URL and body
-  byte count). Live staging still needs the same tool run against a real
-  `DISPATCHER` binding and uploaded tenant script.
+  byte count). The package check now also includes
+  `bun run check:wfp-dispatch:response-header-smoke-plan` to keep the route
+  response-header contract visible in CI dry-run output. Live staging still
+  needs the same tool run against a real `DISPATCHER` binding and uploaded
+  tenant script. 2026-07-06 update: `node --check
+  tools/smoke_wfp_dispatch.mjs`, `bun run
+  check:wfp-dispatch:response-header-guard`, `bun run
+  check:wfp-dispatch:smoke-plan`, and `bun run
+  check:wfp-dispatch:response-header-smoke-plan` passed.
 
 - **WFP Rust/Wasm runtime smoke expectation - locally verified
   (2026-07-05).** WFP dispatch smoke now defaults to

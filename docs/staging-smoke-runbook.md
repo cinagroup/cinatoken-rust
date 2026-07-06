@@ -189,6 +189,10 @@ Record:
   `inbound_dispatch_worker`.
 - `x-cinatoken-wfp-route`, `x-cinatoken-wfp-worker`,
   `x-cinatoken-wfp-tenant`, and `x-cinatoken-wfp-runtime` headers.
+- `responseHeaderGuard` output from the smoke tool, including observed public
+  headers, WFP evidence headers, platform edge envelope headers, and any
+  unclassified headers. The smoke fails before evidence is accepted if
+  sensitive or upstream-only headers leak.
 - AI Gateway log entry for any opt-in POST route smoke.
 - Worker log/trace link for both the main dispatch Worker and the tenant
   Worker.
@@ -218,9 +222,12 @@ Pass criteria:
   controlled internal-dispatch markers after stripping caller-supplied platform
   markers.
 - Dispatch headers identify `internal-path` and the public tenant worker name.
-- Optional AI route smoke returns the expected staging status and safe
-  response headers only; raw authorization, `cf-aig-*`, and upstream
-  `x-cinatoken-*` headers are not exposed to the caller.
+- Optional AI route smoke returns the expected staging status and passes the
+  smoke tool's response-header guard. Raw authorization/cookie headers,
+  `cf-aig-*`, non-WFP `x-cinatoken-*`, and provider platform metadata are not
+  exposed to the caller; Cloudflare edge envelope headers such as `date`,
+  `cf-ray`, and transfer metadata may be recorded separately and are not tenant
+  allowlist evidence.
 - Tenant AI route smoke only passes through the admin-authenticated internal
   dispatch path. Preview-host/public AI attempts must either remain disabled or
   return `403 tenant_internal_dispatch_required`; the tenant status route may

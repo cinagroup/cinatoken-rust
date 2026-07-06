@@ -15,12 +15,84 @@ const supportedRoutes = new Set([
   "/v1/embeddings",
   "/ai/run",
 ]);
+const tenantPublicResponseHeaders = new Set([
+  "content-type",
+  "cache-control",
+  "content-language",
+  "expires",
+  "last-modified",
+  "etag",
+  "vary",
+  "retry-after",
+  "x-request-id",
+  "request-id",
+  "openai-request-id",
+  "anthropic-request-id",
+]);
+const wfpEvidenceResponseHeaders = new Set([
+  "x-cinatoken-wfp-route",
+  "x-cinatoken-wfp-worker",
+  "x-cinatoken-wfp-tenant",
+  "x-cinatoken-wfp-runtime",
+]);
+const corsResponseHeaders = new Set([
+  "access-control-allow-origin",
+  "access-control-allow-credentials",
+  "access-control-allow-headers",
+  "access-control-allow-methods",
+  "access-control-expose-headers",
+]);
+const edgeEnvelopeResponseHeaders = new Set([
+  "age",
+  "alt-svc",
+  "cf-cache-status",
+  "cf-ray",
+  "connection",
+  "content-encoding",
+  "content-length",
+  "date",
+  "expect-ct",
+  "keep-alive",
+  "nel",
+  "report-to",
+  "server",
+  "strict-transport-security",
+  "transfer-encoding",
+  "x-content-type-options",
+  "x-frame-options",
+  "x-robots-tag",
+  "x-xss-protection",
+]);
+const forbiddenResponseHeaderNames = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "set-cookie2",
+  "x-api-key",
+  "x-goog-api-key",
+  "api-key",
+  "cf-access-client-id",
+  "cf-access-client-secret",
+  "cf-aig-log-id",
+  "cf-aig-step",
+  "cf-aig-cache-status",
+  "cf-aig-metadata",
+  "cf-aig-gateway-id",
+  "x-cinatoken-tenant",
+  "x-cinatoken-smoke",
+]);
 
 try {
   const args = parseArgs(process.argv.slice(2));
-  const options = await normalizeOptions(args);
-  const result = options.dryRun ? buildPlan(options) : await smoke(options);
-  printResult(result, options);
+  if (args.flags.has("self-test-response-header-guard")) {
+    const result = runResponseHeaderGuardSelfTest();
+    printSelfTestResult(result, args.flags.has("json"));
+  } else {
+    const options = await normalizeOptions(args);
+    const result = options.dryRun ? buildPlan(options) : await smoke(options);
+    printResult(result, options);
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -42,6 +114,13 @@ async function smoke(options) {
   const statusBody = await readJsonResponse(statusResponse, "WFP dispatch status");
   validateStatusBody(statusBody, options.expectRuntime, options.worker);
   validateDispatchHeaders(statusResponse.headers, options.worker, options.expectRuntime);
+  const statusHeaderGuard = options.responseHeaderGuard
+    ? validateResponseHeaderGuard(
+        statusResponse.headers,
+        "WFP dispatch status",
+        options.strictResponseHeaderAllowlist,
+      )
+    : null;
 
   let routeResult = null;
   if (plan.routeUrl) {
@@ -62,12 +141,20 @@ async function smoke(options) {
       );
     }
     validateDispatchHeaders(routeResponse.headers, options.worker, options.expectRuntime);
+    const routeHeaderGuard = options.responseHeaderGuard
+      ? validateResponseHeaderGuard(
+          routeResponse.headers,
+          "WFP dispatch route",
+          options.strictResponseHeaderAllowlist,
+        )
+      : null;
     routeResult = {
       route: options.route,
       url: redactUrl(plan.routeUrl),
       status: routeResponse.status,
       ok: routeResponse.ok,
       dispatchHeaders: dispatchHeaders(routeResponse.headers),
+      responseHeaderGuard: routeHeaderGuard,
       responseContentType: routeResponse.headers.get("content-type"),
       responsePreview: preview,
     };
@@ -82,6 +169,7 @@ async function smoke(options) {
     expectRuntime: options.expectRuntime,
     status: summarizeTenantStatus(statusBody),
     dispatchHeaders: dispatchHeaders(statusResponse.headers),
+    responseHeaderGuard: statusHeaderGuard,
     route: routeResult,
   };
 }
@@ -102,12 +190,19 @@ function buildPlan(options) {
     adminCookieConfigured: Boolean(options.adminCookie),
     expectRuntime: options.expectRuntime,
     allowNon2xx: options.allowNon2xx,
+    responseHeaderGuard: options.responseHeaderGuard,
+    strictResponseHeaderAllowlist: options.strictResponseHeaderAllowlist,
+    allowedTenantResponseHeaders: Array.from(tenantPublicResponseHeaders).sort(),
+    allowedWfpEvidenceResponseHeaders: Array.from(wfpEvidenceResponseHeaders).sort(),
+    forbiddenResponseHeaderNames: Array.from(forbiddenResponseHeaderNames).sort(),
+    forbiddenResponseHeaderPrefixes: ["cf-aig-", "x-cinatoken-* except x-cinatoken-wfp-*"],
     timeoutMs: options.timeoutMs,
     notes: [
       "worker is the public tenant name in /api/platform/dispatch/:worker; WFP_DISPATCH_WORKER_PREFIX is applied by the main Worker.",
       "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
       "the dispatch Worker strips platform/admin credentials before invoking the tenant Worker; live status smoke fails if tenant status reports sensitive inbound headers.",
       "status smoke validates the dispatch binding, internal path rewrite, controlled internal dispatch markers, expected tenant runtime, AI Gateway policy contract, tenant status contract, and x-cinatoken WFP headers.",
+      "response-header guard fails live smoke if auth/cookie, cf-aig-*, or non-WFP x-cinatoken-* headers leak; strict mode additionally rejects non-allowlisted headers when the edge envelope is controlled.",
       "route smoke is opt-in and may call the tenant AI Gateway route; use staging credentials and a low-risk payload.",
     ],
   };
@@ -121,7 +216,14 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") {
       usage(0);
     }
-    if (["--dry-run", "--json", "--allow-non-2xx"].includes(arg)) {
+    if ([
+      "--dry-run",
+      "--json",
+      "--allow-non-2xx",
+      "--no-response-header-guard",
+      "--strict-response-header-allowlist",
+      "--self-test-response-header-guard",
+    ].includes(arg)) {
       flags.add(arg.slice(2));
       continue;
     }
@@ -155,6 +257,8 @@ async function normalizeOptions(args) {
     ),
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaultTimeoutMs,
     allowNon2xx: args.flags.has("allow-non-2xx"),
+    responseHeaderGuard: !args.flags.has("no-response-header-guard"),
+    strictResponseHeaderAllowlist: args.flags.has("strict-response-header-allowlist"),
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
   };
@@ -193,6 +297,9 @@ function usage(exitCode, error) {
       "  --expect-runtime <runtime>  rust-wasm, js-fallback, or any; default rust-wasm",
       "  --timeout-ms <ms>     or WFP_SMOKE_TIMEOUT_MS, default 10000",
       "  --allow-non-2xx       Record POST route responses even if the AI Gateway/provider rejects the payload",
+      "  --no-response-header-guard  Disable response header leakage checks",
+      "  --strict-response-header-allowlist  Also reject headers outside the public tenant/WFP/CORS/edge allowlist",
+      "  --self-test-response-header-guard  Run local synthetic guard tests without network",
       "  --dry-run             Resolve URLs without network",
       "  --json",
       "",
@@ -345,6 +452,147 @@ function validateDispatchHeaders(headers, worker, expectRuntime) {
   }
 }
 
+function validateResponseHeaderGuard(headers, label, strictAllowlist) {
+  const observed = headerNames(headers);
+  const forbidden = [];
+  const publicHeaders = [];
+  const wfpHeaders = [];
+  const corsHeaders = [];
+  const edgeEnvelopeHeaders = [];
+  const unclassifiedHeaders = [];
+
+  for (const name of observed) {
+    const forbiddenReason = forbiddenResponseHeaderReason(name);
+    if (forbiddenReason) {
+      forbidden.push({ name, reason: forbiddenReason });
+      continue;
+    }
+    if (tenantPublicResponseHeaders.has(name)) {
+      publicHeaders.push(name);
+    } else if (wfpEvidenceResponseHeaders.has(name)) {
+      wfpHeaders.push(name);
+    } else if (corsResponseHeaders.has(name)) {
+      corsHeaders.push(name);
+    } else if (edgeEnvelopeResponseHeaders.has(name) || name.startsWith("cf-")) {
+      edgeEnvelopeHeaders.push(name);
+    } else {
+      unclassifiedHeaders.push(name);
+    }
+  }
+
+  if (forbidden.length > 0) {
+    throw new Error(
+      `${label} leaked forbidden response headers: ${forbidden
+        .map((item) => `${item.name} (${item.reason})`)
+        .join(", ")}`,
+    );
+  }
+  if (strictAllowlist && unclassifiedHeaders.length > 0) {
+    throw new Error(
+      `${label} exposed response headers outside the strict allowlist: ${unclassifiedHeaders.join(", ")}`,
+    );
+  }
+
+  return {
+    ok: true,
+    strictAllowlist,
+    observedHeaders: observed,
+    publicHeaders,
+    wfpEvidenceHeaders: wfpHeaders,
+    corsHeaders,
+    edgeEnvelopeHeaders,
+    unclassifiedHeaders,
+    forbiddenHeaders: [],
+  };
+}
+
+function headerNames(headers) {
+  return Array.from(headers.keys(), (name) => name.toLowerCase()).sort();
+}
+
+function forbiddenResponseHeaderReason(name) {
+  if (forbiddenResponseHeaderNames.has(name)) {
+    return "sensitive or upstream-only header";
+  }
+  if (name.startsWith("cf-aig-")) {
+    return "Cloudflare AI Gateway request/log metadata must not be exposed";
+  }
+  if (name.startsWith("x-cinatoken-wfp-") && !wfpEvidenceResponseHeaders.has(name)) {
+    return "unexpected WFP platform marker";
+  }
+  if (name.startsWith("x-cinatoken-") && !name.startsWith("x-cinatoken-wfp-")) {
+    return "tenant/upstream cinatoken marker must not be exposed";
+  }
+  if (name.startsWith("openai-") && name !== "openai-request-id") {
+    return "OpenAI upstream metadata is outside the tenant response allowlist";
+  }
+  if (name.startsWith("anthropic-") && name !== "anthropic-request-id") {
+    return "Anthropic upstream metadata is outside the tenant response allowlist";
+  }
+  return null;
+}
+
+function runResponseHeaderGuardSelfTest() {
+  const cases = [];
+  const safe = validateResponseHeaderGuard(
+    new Headers([
+      ["content-type", "application/json"],
+      ["cache-control", "no-store"],
+      ["x-request-id", "req-safe"],
+      ["x-cinatoken-wfp-route", "internal-path"],
+      ["x-cinatoken-wfp-worker", "tenant-smoke"],
+      ["x-cinatoken-wfp-tenant", "tenant-smoke"],
+      ["x-cinatoken-wfp-runtime", "rust-wasm"],
+      ["access-control-allow-origin", "*"],
+      ["date", "Mon, 06 Jul 2026 00:00:00 GMT"],
+      ["cf-ray", "synthetic"],
+    ]),
+    "self-test safe response",
+    true,
+  );
+  cases.push({ name: "safe-response", ok: safe.ok, strictAllowlist: safe.strictAllowlist });
+
+  for (const name of [
+    "authorization",
+    "set-cookie",
+    "cookie",
+    "cf-aig-log-id",
+    "cf-aig-extra",
+    "x-cinatoken-tenant",
+    "x-cinatoken-wfp-debug",
+    "openai-processing-ms",
+    "anthropic-ratelimit-requests-limit",
+  ]) {
+    cases.push(expectHeaderGuardFailure(name, name));
+  }
+
+  validateResponseHeaderGuard(
+    new Headers([["x-debug-unclassified", "ok in non-strict smoke"]]),
+    "self-test non-strict unclassified response",
+    false,
+  );
+  cases.push(expectHeaderGuardFailure("x-debug-unclassified", "strict allowlist"));
+
+  return {
+    ok: true,
+    responseHeaderGuardSelfTest: true,
+    cases,
+  };
+}
+
+function expectHeaderGuardFailure(name, expected) {
+  try {
+    validateResponseHeaderGuard(new Headers([[name, "synthetic"]]), `self-test forbidden ${name}`, true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.toLowerCase().includes(expected.toLowerCase())) {
+      throw new Error(`response header self-test for ${name} failed with unexpected message: ${message}`);
+    }
+    return { name, ok: true };
+  }
+  throw new Error(`response header self-test expected ${name} to fail`);
+}
+
 function summarizeTenantStatus(body) {
   return {
     service: body.service,
@@ -489,10 +737,27 @@ function printResult(result, options) {
       ...(result.expectRuntime ? [`expect_runtime: ${result.expectRuntime}`] : []),
       ...(result.status ? [`tenant_status: ${JSON.stringify(result.status)}`] : []),
       ...(result.dispatchHeaders ? [`dispatch_headers: ${JSON.stringify(result.dispatchHeaders)}`] : []),
+      ...(result.responseHeaderGuard
+        ? [`response_header_guard: ${JSON.stringify(result.responseHeaderGuard)}`]
+        : []),
       ...(result.route && typeof result.route === "object"
         ? [`route_result: ${JSON.stringify(result.route)}`]
         : []),
       ...(result.notes?.length ? ["notes:", ...result.notes.map((note) => `  - ${note}`)] : []),
+    ].join("\n"),
+  );
+}
+
+function printSelfTestResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    [
+      "WFP dispatch response-header guard self-test",
+      `ok: ${result.ok}`,
+      ...result.cases.map((item) => `case ${item.name}: ${item.ok ? "ok" : "failed"}`),
     ].join("\n"),
   );
 }

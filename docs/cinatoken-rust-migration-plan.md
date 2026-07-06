@@ -6556,3 +6556,54 @@ Remaining migration gaps:
 - Add Realtime usage accumulation, pre-consume/refund/final settlement, and
   audit logs before `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready` can become true.
+
+### 22.102 2026-07-06 WFP Dispatch Response-Header Smoke Guard
+
+This increment strengthens the cinaVibeSDK-inspired WFP tenant-script path
+without claiming live WFP cutover. The main Worker still owns the scheduling
+gateway, auth, billing, and dispatch boundary; tenant Workers own only the
+small AI Gateway forwarding surface. The new work turns the existing tenant
+response-header allowlist into a smoke-enforced contract for both status and
+opt-in AI route smoke.
+
+Implemented:
+
+- Extended `tools/smoke_wfp_dispatch.mjs` with a default response-header
+  leakage guard for live status and route smoke.
+  - The guard fails if auth/cookie/API-key headers, `cf-aig-*`, non-WFP
+    `x-cinatoken-*`, unexpected WFP markers, or provider-only upstream metadata
+    appear in the caller-visible response.
+  - Public tenant headers, the four controlled WFP evidence headers, CORS
+    headers, and Cloudflare edge envelope headers are categorized separately in
+    the smoke output.
+  - `--allow-non-2xx` continues to allow staging AI/provider rejection status,
+    but it does not bypass the header leakage guard.
+  - `--strict-response-header-allowlist` is available for controlled live
+    checks that should fail on any unclassified response header.
+- Added `check:wfp-dispatch:response-header-smoke-plan` and included it in
+  `bun run check`, so CI dry-run output now exposes the route-level
+  response-header contract alongside the default status smoke plan.
+- Updated the staging smoke runbook, verification ledger, production readiness
+  matrix, Cloudflare config checklist, layered architecture notes, and
+  cinaVibeSDK mapping to distinguish tenant/upstream header leakage from
+  Cloudflare edge envelope headers that may be added by the platform.
+
+Validation:
+
+- `node --check tools/smoke_wfp_dispatch.mjs` passed.
+- `bun run check:wfp-dispatch:response-header-guard` passed and proved the
+  synthetic safe/forbidden/strict response-header cases.
+- `bun run check:wfp-dispatch:smoke-plan` passed and showed the default
+  status smoke contract.
+- `bun run check:wfp-dispatch:response-header-smoke-plan` passed and showed
+  `responseHeaderGuard=true`, `strictResponseHeaderAllowlist=true`, and the
+  forbidden response-header list.
+
+Remaining migration gaps:
+
+- Run the response-header guard against staging with a real paid-plan
+  `DISPATCHER` binding and uploaded Rust/Wasm tenant artifact.
+- Archive both status and at least one POST AI route smoke result, including
+  `responseHeaderGuard`, AI Gateway log metadata, and Worker log/trace links.
+- Keep WFP as later multi-tenant enablement; the first single-tenant relay
+  production cutover still must not depend on WFP.

@@ -1,10 +1,11 @@
 //! OAuth login (item 4.6) — GitHub provider.
 //!
 //! The frontend initiates the flow: it calls `GET /api/oauth/state` to obtain a
-//! single-use CSRF state nonce (stored in [`crate::flow_state`] `OAuthState`),
-//! redirects the browser to GitHub's authorize URL with that `state`, and GitHub
-//! redirects back to `GET /api/oauth/github?code&state`. This handler validates
-//! the state (single-use `take`), exchanges the code for a token, fetches the
+//! single-use CSRF state nonce (stored in [`crate::flow_state`] `OAuthState`)
+//! and a browser-bound HttpOnly cookie, redirects the browser to GitHub's
+//! authorize URL with that `state`, and GitHub redirects back through the
+//! frontend callback. This handler validates the state against the same browser
+//! cookie (single-use `take`), exchanges the code for a token, fetches the
 //! GitHub user, finds-or-creates the local account (matched by GitHub login),
 //! issues the session cookie, and 302-redirects to the frontend.
 //!
@@ -13,11 +14,10 @@
 //! real GitHub OAuth app + staging to verify (the token/userinfo HTTP hops
 //! cannot be host-tested).
 
-use serde::Serialize;
 use serde_json::Value;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Response, Result as WorkerResult};
 
-use cinatoken_auth::USER_STATUS_DISABLED;
+use cinatoken_auth::USER_STATUS_ENABLED;
 use cinatoken_session::SessionClaims;
 
 use crate::admin::{
@@ -28,6 +28,9 @@ use crate::{d1_repositories, flow_state};
 
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_USER_URL: &str = "https://api.github.com/user";
+const OAUTH_STATE_COOKIE_NAME: &str = "cinatoken_oauth_state";
+const OAUTH_STATE_COOKIE_PATH: &str = "/api/oauth";
+const OAUTH_STATE_COOKIE_MAX_AGE_SECONDS: u64 = 600;
 
 struct GitHubUser {
     login: String,
@@ -45,25 +48,30 @@ pub async fn oauth_state(_req: Request, env: Env) -> WorkerResult<Response> {
             "failed to generate oauth state",
         ));
     };
-    flow_state::put(&env, flow_state::FlowKind::OAuthState, &state, "1").await?;
-    envelope_ok_response(&StateResponse { state })
+    let Some(browser_binding) = crate::admin_2fa::new_pending_token() else {
+        return Ok(envelope_error_response(
+            500,
+            "failed to generate oauth browser binding",
+        ));
+    };
+    flow_state::put(
+        &env,
+        flow_state::FlowKind::OAuthState,
+        &state,
+        &browser_binding,
+    )
+    .await?;
+    let mut response = envelope_ok_response(&state)?;
+    attach_oauth_state_cookie(&mut response, &browser_binding)?;
+    Ok(response)
 }
 
 /// `GET /api/oauth/github?code&state`: GitHub OAuth callback. Validates the
 /// CSRF state, exchanges the code, finds-or-creates the account, issues the
 /// session, and redirects to the frontend.
 pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
-    let state = query_param(&req, "state").unwrap_or_default();
-    // CSRF: the state must match a single-use stored nonce (consumed here).
-    if state.is_empty()
-        || flow_state::take(&env, flow_state::FlowKind::OAuthState, &state)
-            .await?
-            .is_none()
-    {
-        return Ok(envelope_error_response(
-            403,
-            "invalid or expired oauth state",
-        ));
+    if let Err(response) = validate_oauth_state(&req, &env).await? {
+        return Ok(response);
     }
     let Some((client_id, client_secret)) = github_config(&env) else {
         return Ok(envelope_error_response(400, "GitHub login is not enabled"));
@@ -92,7 +100,7 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
 
     // BIND: if the caller is already logged in, link this GitHub login to their
     // existing account instead of logging in / registering (Go GitHubBind).
-    match crate::admin::parse_session_claims(&req, &env).await? {
+    match crate::admin::optional_user_auth(&req, &env).await? {
         Ok(Some(claims)) => {
             if let Some(existing) =
                 d1_repositories::find_user_by_github_id(&db, &github.login).await?
@@ -109,6 +117,7 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             response
                 .headers_mut()
                 .set("Location", &frontend_location(&env))?;
+            attach_clear_oauth_state_cookie(&mut response)?;
             return Ok(response);
         }
         Ok(None) => {}
@@ -144,7 +153,7 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             }
         }
     };
-    if user.status == USER_STATUS_DISABLED {
+    if user.status != USER_STATUS_ENABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
 
@@ -174,6 +183,7 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
 
     let mut response = Response::empty()?.with_status(302);
     attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    attach_clear_oauth_state_cookie(&mut response)?;
     response
         .headers_mut()
         .set("Location", &frontend_location(&env))?;
@@ -187,6 +197,90 @@ fn frontend_location(env: &Env) -> String {
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "/".to_string())
+}
+
+async fn validate_oauth_state(
+    req: &Request,
+    env: &Env,
+) -> WorkerResult<std::result::Result<(), Response>> {
+    let state = query_param(req, "state").unwrap_or_default();
+    if state.is_empty() {
+        return Ok(Err(envelope_error_response(
+            403,
+            "invalid or expired oauth state",
+        )));
+    }
+    let Some(browser_binding) = oauth_state_cookie(req) else {
+        return Ok(Err(envelope_error_response(
+            403,
+            "invalid or expired oauth state",
+        )));
+    };
+    let stored_binding = flow_state::get(env, flow_state::FlowKind::OAuthState, &state).await?;
+    if !oauth_state_binding_matches(stored_binding.as_deref(), Some(&browser_binding)) {
+        return Ok(Err(envelope_error_response(
+            403,
+            "invalid or expired oauth state",
+        )));
+    }
+    let taken_binding = flow_state::take(env, flow_state::FlowKind::OAuthState, &state).await?;
+    if !oauth_state_binding_matches(taken_binding.as_deref(), Some(&browser_binding)) {
+        return Ok(Err(envelope_error_response(
+            403,
+            "invalid or expired oauth state",
+        )));
+    }
+    Ok(Ok(()))
+}
+
+fn oauth_state_binding_matches(stored: Option<&str>, cookie: Option<&str>) -> bool {
+    let Some(stored) = stored else {
+        return false;
+    };
+    let Some(cookie) = cookie else {
+        return false;
+    };
+    !stored.is_empty() && stored == cookie
+}
+
+fn oauth_state_cookie(req: &Request) -> Option<String> {
+    let header = req.headers().get("Cookie").ok().flatten()?;
+    extract_oauth_state_cookie(&header)
+}
+
+fn extract_oauth_state_cookie(cookie_header: &str) -> Option<String> {
+    for pair in cookie_header.split(';') {
+        let trimmed = pair.trim();
+        let (name, value) = trimmed.split_once('=')?;
+        if name == OAUTH_STATE_COOKIE_NAME && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn build_oauth_state_cookie_value(binding: &str) -> String {
+    format!(
+        "{OAUTH_STATE_COOKIE_NAME}={binding}; Path={OAUTH_STATE_COOKIE_PATH}; Max-Age={OAUTH_STATE_COOKIE_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax; Secure"
+    )
+}
+
+fn build_clear_oauth_state_cookie_value() -> String {
+    format!(
+        "{OAUTH_STATE_COOKIE_NAME}=; Path={OAUTH_STATE_COOKIE_PATH}; Max-Age=0; HttpOnly; SameSite=Lax; Secure"
+    )
+}
+
+fn attach_oauth_state_cookie(response: &mut Response, binding: &str) -> WorkerResult<()> {
+    response
+        .headers_mut()
+        .append("Set-Cookie", &build_oauth_state_cookie_value(binding))
+}
+
+fn attach_clear_oauth_state_cookie(response: &mut Response) -> WorkerResult<()> {
+    response
+        .headers_mut()
+        .append("Set-Cookie", &build_clear_oauth_state_cookie_value())
 }
 
 // ---------------------------------------------------------------------------
@@ -213,16 +307,8 @@ struct OidcUser {
 /// the OIDC subject, issues the session, and redirects to the frontend. Inert
 /// unless `OIDC_CLIENT_ID/SECRET/TOKEN_URL/USERINFO_URL/REDIRECT_URI` are set.
 pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
-    let state = query_param(&req, "state").unwrap_or_default();
-    if state.is_empty()
-        || flow_state::take(&env, flow_state::FlowKind::OAuthState, &state)
-            .await?
-            .is_none()
-    {
-        return Ok(envelope_error_response(
-            403,
-            "invalid or expired oauth state",
-        ));
+    if let Err(response) = validate_oauth_state(&req, &env).await? {
+        return Ok(response);
     }
     let Some(config) = oidc_config(&env) else {
         return Ok(envelope_error_response(400, "OIDC login is not enabled"));
@@ -253,7 +339,7 @@ pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
     let now = unix_timestamp();
 
     // BIND: link the OIDC subject to a logged-in account.
-    match crate::admin::parse_session_claims(&req, &env).await? {
+    match crate::admin::optional_user_auth(&req, &env).await? {
         Ok(Some(claims)) => {
             if let Some(existing) = d1_repositories::find_user_by_oidc_id(&db, &oidc.sub).await? {
                 if existing.id != claims.id {
@@ -268,6 +354,7 @@ pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             response
                 .headers_mut()
                 .set("Location", &frontend_location(&env))?;
+            attach_clear_oauth_state_cookie(&mut response)?;
             return Ok(response);
         }
         Ok(None) => {}
@@ -302,7 +389,7 @@ pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             }
         }
     };
-    if user.status == USER_STATUS_DISABLED {
+    if user.status != USER_STATUS_ENABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
 
@@ -330,6 +417,7 @@ pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
     let _ = d1_repositories::update_last_login_at(&db, user.id, now).await;
     let mut response = Response::empty()?.with_status(302);
     attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    attach_clear_oauth_state_cookie(&mut response)?;
     response
         .headers_mut()
         .set("Location", &frontend_location(&env))?;
@@ -441,16 +529,8 @@ struct DiscordUser {
 /// / bind by Discord id). Inert unless `DISCORD_CLIENT_ID/SECRET/REDIRECT_URI`
 /// are configured.
 pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
-    let state = query_param(&req, "state").unwrap_or_default();
-    if state.is_empty()
-        || flow_state::take(&env, flow_state::FlowKind::OAuthState, &state)
-            .await?
-            .is_none()
-    {
-        return Ok(envelope_error_response(
-            403,
-            "invalid or expired oauth state",
-        ));
+    if let Err(response) = validate_oauth_state(&req, &env).await? {
+        return Ok(response);
     }
     let Some((client_id, client_secret, redirect_uri)) = discord_config(&env) else {
         return Ok(envelope_error_response(400, "Discord login is not enabled"));
@@ -477,7 +557,7 @@ pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
     let db = env.d1("DB")?;
     let now = unix_timestamp();
 
-    match crate::admin::parse_session_claims(&req, &env).await? {
+    match crate::admin::optional_user_auth(&req, &env).await? {
         Ok(Some(claims)) => {
             if let Some(existing) =
                 d1_repositories::find_user_by_discord_id(&db, &discord.id).await?
@@ -494,6 +574,7 @@ pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             response
                 .headers_mut()
                 .set("Location", &frontend_location(&env))?;
+            attach_clear_oauth_state_cookie(&mut response)?;
             return Ok(response);
         }
         Ok(None) => {}
@@ -528,7 +609,7 @@ pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
             }
         }
     };
-    if user.status == USER_STATUS_DISABLED {
+    if user.status != USER_STATUS_ENABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
 
@@ -556,6 +637,7 @@ pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
     let _ = d1_repositories::update_last_login_at(&db, user.id, now).await;
     let mut response = Response::empty()?.with_status(302);
     attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    attach_clear_oauth_state_cookie(&mut response)?;
     response
         .headers_mut()
         .set("Location", &frontend_location(&env))?;
@@ -767,7 +849,57 @@ fn query_param(req: &Request, key: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-#[derive(Serialize)]
-struct StateResponse {
-    state: String,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_state_cookie_is_browser_bound_and_short_lived() {
+        let header = build_oauth_state_cookie_value("browser-binding");
+
+        assert!(header.starts_with("cinatoken_oauth_state=browser-binding;"));
+        assert!(header.contains("Path=/api/oauth"));
+        assert!(header.contains("Max-Age=600"));
+        assert!(header.contains("HttpOnly"));
+        assert!(header.contains("SameSite=Lax"));
+        assert!(header.contains("Secure"));
+    }
+
+    #[test]
+    fn clear_oauth_state_cookie_uses_matching_scope() {
+        let header = build_clear_oauth_state_cookie_value();
+
+        assert!(header.starts_with("cinatoken_oauth_state=;"));
+        assert!(header.contains("Path=/api/oauth"));
+        assert!(header.contains("Max-Age=0"));
+        assert!(header.contains("HttpOnly"));
+        assert!(header.contains("SameSite=Lax"));
+        assert!(header.contains("Secure"));
+    }
+
+    #[test]
+    fn oauth_state_cookie_extraction_handles_multiple_cookies() {
+        assert_eq!(
+            extract_oauth_state_cookie("session=abc; cinatoken_oauth_state=bind123; theme=dark"),
+            Some("bind123".to_string())
+        );
+        assert_eq!(
+            extract_oauth_state_cookie("cinatoken_oauth_state=first; session=abc"),
+            Some("first".to_string())
+        );
+        assert_eq!(
+            extract_oauth_state_cookie("cinatoken_oauth_state=; session=abc"),
+            None
+        );
+        assert_eq!(extract_oauth_state_cookie("session=abc"), None);
+    }
+
+    #[test]
+    fn oauth_state_binding_requires_stored_value_and_cookie_match() {
+        assert!(oauth_state_binding_matches(Some("same"), Some("same")));
+        assert!(!oauth_state_binding_matches(Some("same"), Some("other")));
+        assert!(!oauth_state_binding_matches(Some("same"), None));
+        assert!(!oauth_state_binding_matches(None, Some("same")));
+        assert!(!oauth_state_binding_matches(Some(""), Some("")));
+    }
 }

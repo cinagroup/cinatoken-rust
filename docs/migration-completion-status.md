@@ -36,8 +36,9 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   synthetic zero-id token context that preserves user quota, group checks, rate
   limits, streaming, and audit logging without mutating the `tokens` table.
 - Session auth, registration, core user self-service, 2FA,
-  GitHub/Discord/OIDC, Turnstile, secure verification, and live D1
-  role/status/group rechecks before session-authenticated privilege decisions.
+  GitHub/Discord/OIDC with browser-bound state, Turnstile, secure
+  verification, and live D1 role/status/group rechecks before
+  session-authenticated privilege decisions.
 - Passkey route boundary: default-frontend status/delete and
   register/login/verify begin/finish paths are Worker-owned; begin routes create
   KV-backed WebAuthn challenges and finish routes fail closed until verifier
@@ -120,7 +121,8 @@ A full diff of every Go-registered route against the Rust worker closed these
   wallet/subscription checkout and callback routes used by the default frontend
   are Worker-owned. Remaining payment work is staging replay/reconciliation
   evidence rather than an absent default-frontend provider route.
-- Custom OAuth management and several provider-specific OAuth flows.
+- Custom OAuth management, custom OAuth callbacks, and several
+  provider-specific OAuth flows.
 - Long-tail provider/channel operations and performance/ratio-sync need more
   staging evidence.
 - io.net deployment management routes used by the default frontend are
@@ -140,8 +142,9 @@ A full diff of every Go-registered route against the Rust worker closed these
 6. Passkey WebAuthn finish verification must be implemented in a Worker-safe
    verifier or kept disabled with a signed forced-reset/re-enroll policy.
 7. Browser-session production approval still needs `session_epoch` /
-   all-devices revocation and OAuth `state` binding beyond the live D1
-   role/status/group authorization recheck.
+   all-devices revocation beyond the live D1 role/status/group authorization
+   recheck. OAuth production approval still needs deployed replay smoke and
+   custom callback hardening.
 
 ## Current Safe Statement
 

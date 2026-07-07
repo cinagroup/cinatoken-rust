@@ -59,6 +59,17 @@ login/register/bind; gated on `DISCORD_CLIENT_ID/SECRET/REDIRECT_URI`).
 **Remaining:** WeChat (custom QR flow) and `TrustedRedirectDomains` validation
 for the final redirect.
 
+**2026-07-07 update:** fixed GitHub, OIDC, and Discord callbacks now restore the
+Go session-bound CSRF property in the stateless Rust session model. `GET
+/api/oauth/state` returns a Go-compatible bare state string in the envelope
+`data`, stores a CSPRNG browser binding in `flow_state::OAuthState`, and sets a
+short-lived HttpOnly `cinatoken_oauth_state` cookie scoped to `/api/oauth`.
+Callbacks require both the query `state` and the same-browser cookie binding
+before consuming the KV state with `flow_state::take`. OAuth bind branches now
+use live optional session auth before mutating account links. Remaining OAuth
+work: custom/generic callback routing, staging replay smoke, and final redirect
+domain validation.
+
 ## 2FA (TOTP)
 
 - Lifecycle: `Setup2FA` (generate secret) -> `Enable2FA` (verify a TOTP code) ->

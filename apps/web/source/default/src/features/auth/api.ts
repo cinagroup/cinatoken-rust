@@ -89,7 +89,18 @@ export async function getOAuthState(): Promise<string> {
   const aff =
     typeof window !== 'undefined' ? (localStorage.getItem('aff') ?? '') : ''
   const res = await api.get('/api/oauth/state', { params: { aff } })
-  if (res.data?.success) return res.data.data
+  if (res.data?.success) {
+    const data: unknown = res.data.data
+    if (typeof data === 'string') return data
+    if (
+      data &&
+      typeof data === 'object' &&
+      'state' in data &&
+      typeof data.state === 'string'
+    ) {
+      return data.state
+    }
+  }
   return ''
 }
 

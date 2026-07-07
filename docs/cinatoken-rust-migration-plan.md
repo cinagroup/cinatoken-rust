@@ -6862,6 +6862,49 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.115 2026-07-07 Browser-Bound OAuth State
+
+This increment closes the fixed-provider OAuth login-CSRF/session-fixation gap
+without reintroducing mutable server sessions. The Go gateway stores
+`oauth_state` inside the browser session and compares the callback query state
+against that same session. The Rust Worker had made the state single-use in KV,
+but it was not yet bound to the browser that initiated the flow.
+
+Implemented:
+
+- `GET /api/oauth/state` now returns a Go-compatible bare state string in the
+  envelope `data`, stores a separate CSPRNG browser binding in
+  `flow_state::OAuthState`, and sets a short-lived HttpOnly
+  `cinatoken_oauth_state` cookie scoped to `/api/oauth`.
+- GitHub, OIDC, and Discord callbacks now require both the query `state` and
+  the same-browser cookie binding before consuming the KV state with
+  `flow_state::take`.
+- Successful fixed-provider OAuth callbacks clear the browser-binding cookie
+  after login or account binding.
+- OAuth account-binding branches now use live optional session auth, so a stale
+  signed cookie cannot bind a provider after the user is disabled or deleted.
+- OAuth-created/login users now fail closed unless `users.status` is enabled.
+- Frontend OAuth state helpers now accept the Go-compatible string response and
+  tolerate the older Rust `{ state }` shape during transition.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib admin_oauth -- --nocapture` passed with
+  focused browser-bound state tests.
+- `bun run check:web` passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check` passed.
+- `git diff --check` passed.
+
+Remaining migration gaps:
+
+- Custom/generic OAuth callback routing remains planned; the fixed GitHub,
+  Discord, and OIDC callbacks are hardened first.
+- Deployed browser smoke must still prove OAuth login, account binding, replay
+  rejection, and failure UX with real provider apps.
+- Final redirect-domain validation remains a separate hardening item.
+
 ### 22.114 2026-07-07 Live Session Authorization Recheck
 
 This increment closes the biggest immediate session-authorization gap from the

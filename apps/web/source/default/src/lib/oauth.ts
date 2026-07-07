@@ -86,7 +86,16 @@ export async function getOAuthState(): Promise<string | null> {
     }
     const res = await api.get(path)
     if (res.data.success) {
-      return res.data.data
+      const data: unknown = res.data.data
+      if (typeof data === 'string') return data
+      if (
+        data &&
+        typeof data === 'object' &&
+        'state' in data &&
+        typeof data.state === 'string'
+      ) {
+        return data.state
+      }
     }
     return null
   } catch (error) {

@@ -232,7 +232,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   /api/user/login`, `POST /api/user/logout`, `GET /api/user/self`,
   `GET /api/setup`, `POST /api/setup`, plus `require_user_auth` /
   `require_admin_auth` / `require_root_auth` middleware helpers for the next
-  G5 batch.
+  G5 batch. Session guards now re-fetch live D1 user role/status/group, and the
+  fixed GitHub/Discord/OIDC OAuth callbacks require browser-bound single-use
+  state before token exchange.
 - `GET /api/status` reports `session_auth: true` when `SESSION_SECRET` is
   configured.
 - Frontend deploy pipeline: `wrangler.toml` `[assets]` block + Worker SPA

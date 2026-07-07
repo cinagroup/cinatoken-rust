@@ -5,6 +5,21 @@ Last checked: 2026-07-07
 ## Passed
 
 - `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib admin_oauth -- --nocapture`,
+  `bun run check:web`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `git diff --check`, and `bun run check`: passed after adding
+  browser-bound OAuth state for the fixed GitHub/OIDC/Discord callbacks.
+  `/api/oauth/state` now returns a Go-compatible bare state string while
+  setting a short-lived HttpOnly `/api/oauth` browser-binding cookie; callbacks
+  require query `state` plus the same-browser cookie before consuming the KV
+  state. OAuth bind branches now use live optional session auth. The full Bun
+  gate covered frontend build/redaction/budget/lint, route audit
+  (215 frontend calls / 307 Worker routes / 0 missing calls), WFP dry-run
+  checks, Realtime smoke contracts, workspace tests excluding the Worker, and
+  Worker/WFP wasm32 checks. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib admin -- --nocapture`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `git diff --check`, and `bun run check`: passed after adding live D1

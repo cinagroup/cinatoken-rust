@@ -740,10 +740,10 @@ fn refresh_session_claims_from_live_user(
 
 /// Require a logged-in user. On success returns the claims; on failure
 /// returns a 401 envelope response ready to send.
-pub async fn require_user_auth(
+pub async fn optional_user_auth(
     req: &Request,
     env: &Env,
-) -> WorkerResult<std::result::Result<SessionClaims, Response>> {
+) -> WorkerResult<std::result::Result<Option<SessionClaims>, Response>> {
     match parse_session_claims(req, env).await? {
         Ok(Some(claims)) => {
             let db = env.d1("DB")?;
@@ -755,7 +755,7 @@ pub async fn require_user_auth(
                 )));
             };
             match refresh_session_claims_from_live_user(claims, &user) {
-                Ok(claims) => Ok(Ok(claims)),
+                Ok(claims) => Ok(Ok(Some(claims))),
                 Err(LiveSessionRecheckError::Deleted) => Ok(Err(envelope_error_response(
                     401,
                     "session user no longer exists",
@@ -765,6 +765,19 @@ pub async fn require_user_auth(
                 }
             }
         }
+        Ok(None) => Ok(Ok(None)),
+        Err(response) => Ok(Err(response)),
+    }
+}
+
+/// Require a logged-in user. On success returns the claims; on failure
+/// returns a 401 envelope response ready to send.
+pub async fn require_user_auth(
+    req: &Request,
+    env: &Env,
+) -> WorkerResult<std::result::Result<SessionClaims, Response>> {
+    match optional_user_auth(req, env).await? {
+        Ok(Some(claims)) => Ok(Ok(claims)),
         Ok(None) => Ok(Err(envelope_error_response(401, "not logged in"))),
         Err(response) => Ok(Err(response)),
     }

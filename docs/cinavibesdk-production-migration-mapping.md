@@ -445,9 +445,11 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   used outside a canary.
 - Async video/Suno/Midjourney production ownership now has a Worker cron
   timeout sweep before normal provider polling and a CAS-winner refund batch for
-  timeout/video/Suno failure refunds, but still requires staging
-  timeout/provider-failure/no-duplicate-refund replay before the cron can be
-  treated as eviction-proof billing infrastructure.
+  timeout/video/Suno failure refunds. The local
+  `bun run check:task-refund-batch` replay now proves no-duplicate-refund,
+  legacy no-refund, and stale-window unblock semantics before staging, but the
+  cron still requires staging timeout/provider-failure/no-duplicate-refund
+  replay before it can be treated as eviction-proof billing infrastructure.
 - WFP tenant AI routes must either call back through an owned billing path or
   produce equivalent audit and settlement evidence before paid traffic is routed
   there.

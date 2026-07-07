@@ -7284,6 +7284,49 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.122 2026-07-07 Async Task Refund Replay Contract
+
+This increment turns the M5a timeout/refund replay requirement from prose into
+an executable local contract. It is intentionally pre-staging evidence: the
+script uses Bun's in-memory SQLite with the same JSON marker/done guards as the
+Worker D1 batch, so it can run in CI and during local review without mutating
+Cloudflare resources. Live D1 cron replay is still required before production
+ownership.
+
+Implemented:
+
+- Added `tools/smoke_task_refund_batch.mjs`, a self-test harness for the async
+  task refund batch. It replays timeout failure, ordinary provider failure, and
+  Suno provider failure rows through the CAS-winner refund marker, retries the
+  same transition, and asserts user/token quota are credited exactly once.
+- Covered the legacy imported-task timeout branch: the row still fails through
+  CAS, but user quota, token quota, and refund marker fields remain unchanged.
+- Covered the stale-window behavior that motivated the sweep: old timed-out
+  rows are selected first, failed, and the newer unfinished row becomes visible
+  to normal provider polling after the stale rows are cleared.
+- Wired the replay into the default check chain as
+  `bun run check:task-refund-batch`, with JSON output suitable for archived
+  pre-staging evidence.
+- Extended `/api/platform/capabilities` and the default frontend Cloudflare
+  Platform panel with `task_poller_refund_replay_contract_compiled`, keeping the
+  operator cockpit aligned with the new local evidence path.
+
+Validation:
+
+- `bun tools/smoke_task_refund_batch.mjs --self-test --json` passed with five
+  checks: timeout refund once, video provider failure refund once, Suno provider
+  failure refund once, legacy timeout no-refund, and stale-window unblock.
+
+Remaining migration gaps:
+
+- Run the same scenarios against a dedicated staging D1 database through the
+  real Worker scheduled handler, then archive row snapshots, quota deltas,
+  request IDs, and `/api/platform/capabilities` output.
+- Add provider-credential replay and artifact retention evidence before
+  async-video/Suno/Midjourney ownership can move beyond G7 partial status.
+- M5b `TaskRunner` Durable Object alarms remain optional and should wait until
+  this M5a staging evidence is archived.
+
 ### 22.121 2026-07-07 Async Task Refund Batch Guard
 
 This increment closes the first M5a refund-in-CAS repair gap left by the timeout
@@ -7317,12 +7360,16 @@ Validation:
 - `cargo test -p cinatoken-worker --lib task_repository -- --nocapture` passed
   with refund-marker capability tests and the Suno fail-reason terminal-status
   guard.
+- Local replay evidence for the marker/done semantics, legacy no-refund branch,
+  and stale-window unblock was added in 22.122.
 
 Remaining migration gaps:
 
 - Capture staging cron evidence with timed-out video/Suno rows, provider failure
-  rows, token/user quota refunds, no duplicate refund on replay, legacy no-refund
-  behavior, and newer rows continuing to poll after stale rows are cleared.
+  rows, token/user quota refunds, no duplicate refund on replay, legacy
+  no-refund behavior, and newer rows continuing to poll after stale rows are
+  cleared. The local replay contract exists, but does not replace staging D1
+  evidence.
 - Continue M5b only after M5a evidence: optional `TaskRunner` Durable Object
   alarms, cron-as-sweeper fallback, and no-double-poll proof.
 - Provider replay, artifact retention, and task billing reconciliation remain

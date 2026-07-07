@@ -92,6 +92,7 @@ export function CloudflarePlatformSection() {
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
         capabilities.task_poller_refund_batch_compiled,
+        capabilities.task_poller_refund_replay_contract_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -495,6 +496,15 @@ function buildCapabilityGroups(
             'Guards timeout/provider-failure refunds behind the same CAS winner marker before marking the refund complete.'
           ),
           ready: capabilities.task_poller_refund_batch_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Refund replay contract'),
+          description: t(
+            'Pairs the CAS marker, no-duplicate-refund guard, legacy no-refund cutoff, and local Bun replay used before staging.'
+          ),
+          ready: capabilities.task_poller_refund_replay_contract_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

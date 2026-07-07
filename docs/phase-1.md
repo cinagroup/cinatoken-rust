@@ -456,10 +456,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Jimeng submit/fetch replay, harden billing-settlement evidence, and move
   video artifact retrieval/retention into Queue/R2 before full production
   ownership.
-- Capture async-task timeout-sweep staging evidence: seed stale video/Suno task
-  rows and provider-failure rows, prove the Worker cron fails them through CAS,
-  applies the CAS-winner refund batch once, skips legacy imported-row refunds,
-  and continues polling newer tasks after the stale window is cleared.
+- Capture async-task timeout-sweep staging evidence: the local
+  `bun run check:task-refund-batch` replay now covers timeout/provider-failure
+  refunds once, legacy imported-row no-refund behavior, and stale-window
+  unblock; next seed the same stale video/Suno task rows and provider-failure
+  rows in staging D1, prove the Worker cron fails them through CAS, applies the
+  CAS-winner refund batch once, skips legacy imported-row refunds, and
+  continues polling newer tasks after the stale window is cleared.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

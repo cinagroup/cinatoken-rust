@@ -447,6 +447,7 @@ export type PlatformCapabilities = {
   task_poller_scheduled_handler_compiled: boolean
   task_poller_timeout_sweep_compiled: boolean
   task_poller_refund_batch_compiled: boolean
+  task_poller_refund_replay_contract_compiled: boolean
   task_poller_timeout_sweep_enabled: boolean
   task_poller_query_limit: number
   task_poller_timeout_minutes: number

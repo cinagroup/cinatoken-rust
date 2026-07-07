@@ -458,7 +458,7 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 | Channel keys | Provider-specific: bearer key (sora/doubao/ali/hailuo/suno), `Token` (vidu), `mj-api-secret` (mj), `accessKey\|secretKey` (kling JWT / jimeng SigV4), or the **service-account JSON** (vertex). |
 | Pricing | Task billing models are `suno_<action>`, `mj_<action>`, or the video model name — price them or they bill 0. |
 
-| Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_refund_batch_compiled=true`, `task_poller_timeout_sweep_enabled=true`, and the expected query/timeout values before async task canary. |
+| Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_refund_batch_compiled=true`, `task_poller_refund_replay_contract_compiled=true`, `task_poller_timeout_sweep_enabled=true`, and the expected query/timeout values before async task canary. Run `bun run check:task-refund-batch` locally and attach its JSON output before staging D1 replay. |
 
 ## Observability Checklist
 

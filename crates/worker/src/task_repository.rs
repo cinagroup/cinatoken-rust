@@ -565,6 +565,18 @@ pub(crate) fn task_refund_cas_batch_compiled() -> bool {
         && TASK_REFUND_DONE_AT_PATH == "$.task_refund_done_at"
 }
 
+pub(crate) fn task_refund_replay_contract_compiled() -> bool {
+    task_refund_cas_batch_compiled()
+        && LEGACY_TASK_TIMEOUT_CUTOFF_UNIX == 1_740_182_400
+        && task_refund_marker(
+            42,
+            TaskStatus::InProgress,
+            TaskStatus::Failure,
+            "timeout",
+            100,
+        ) == "task-refund:timeout:42:IN_PROGRESS:FAILURE:100"
+}
+
 /// A full task row for the client-facing fetch endpoints (Go `dto.TaskDto`
 /// source fields). Distinct from the poller's lean [`TaskRow`].
 #[derive(Debug, serde::Deserialize)]
@@ -952,6 +964,7 @@ mod tests {
     #[test]
     fn task_refund_batch_markers_are_namespaced_and_compiled() {
         assert!(task_refund_cas_batch_compiled());
+        assert!(task_refund_replay_contract_compiled());
         assert_eq!(TASK_REFUND_MARKER_PATH, "$.task_refund_marker");
         assert_eq!(TASK_REFUND_DONE_AT_PATH, "$.task_refund_done_at");
         assert_eq!(

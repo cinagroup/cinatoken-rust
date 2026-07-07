@@ -4,6 +4,20 @@ Last checked: 2026-07-07
 
 ## Passed
 
+- `bun tools/smoke_task_refund_batch.mjs --self-test --json`,
+  `bun run check:task-refund-batch`,
+  `cargo test -p cinatoken-worker --lib task_repository -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:web`,
+  `bun run check`, and `cargo test -p cinatoken-worker --lib`: passed after
+  adding a local SQLite/D1-shape replay contract for async-task refund batches
+  and surfacing `task_poller_refund_replay_contract_compiled` in the Worker
+  capability probe plus default frontend Cloudflare Platform panel. The harness
+  proves timeout, video-provider failure, and Suno failure refunds credit
+  user/token quota once behind the CAS-winner marker, verifies legacy imported
+  timeout rows fail without refund markers or quota mutation, and shows stale
+  timed-out rows no longer hide a newer unfinished task after the sweep.
 - `cargo fmt --all --check`,
   `cargo test -p cinatoken-worker --lib task_repository -- --nocapture`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,

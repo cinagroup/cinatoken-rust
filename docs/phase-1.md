@@ -464,9 +464,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   CAS-winner refund batch once, skips legacy imported-row refunds, and
   continues polling newer tasks after the stale window is cleared.
 - Continue TaskRunner M5b only after M5a staging evidence: the `TASK_RUNNER`
-  Durable Object alarm foundation is wired default-off, but submit-path arming,
-  live alarm replay, cron-sweeper fallback, and no-double-poll CAS proof remain
-  required before `TASK_RUNNER_DO_ENABLED` can be enabled.
+  Durable Object alarm foundation and video/remix/Suno submit-path arming are
+  wired default-off, but alarm poll-path wiring, live alarm replay,
+  cron-sweeper fallback, and no-double-poll CAS proof remain required before
+  `TASK_RUNNER_DO_ENABLED` can be enabled.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

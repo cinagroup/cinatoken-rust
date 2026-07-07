@@ -10,6 +10,7 @@ use worker::{durable_object, Env, Request, Response, Result as WorkerResult, Sta
 
 pub const TASK_RUNNER_BINDING: &str = "TASK_RUNNER";
 pub const TASK_RUNNER_DO_ENABLED_ENV: &str = "TASK_RUNNER_DO_ENABLED";
+pub const TASK_RUNNER_STAGING_REPLAY_VERIFIED_ENV: &str = "TASK_RUNNER_STAGING_REPLAY_VERIFIED";
 pub const TASK_RUNNER_DEFAULT_ALARM_DELAY_MS: i64 = 15_000;
 pub const TASK_RUNNER_MIN_ALARM_DELAY_MS: i64 = 1_000;
 pub const TASK_RUNNER_MAX_ALARM_DELAY_MS: i64 = 60_000;
@@ -146,6 +147,7 @@ impl TaskRunner {
 pub(crate) fn task_runner_do_foundation_compiled() -> bool {
     TASK_RUNNER_BINDING == "TASK_RUNNER"
         && TASK_RUNNER_DO_ENABLED_ENV == "TASK_RUNNER_DO_ENABLED"
+        && TASK_RUNNER_STAGING_REPLAY_VERIFIED_ENV == "TASK_RUNNER_STAGING_REPLAY_VERIFIED"
         && TASK_RUNNER_RECORD_KEY == "task_runner_record_v1"
 }
 
@@ -158,7 +160,16 @@ pub(crate) fn task_runner_alarm_contract_compiled() -> bool {
 }
 
 pub(crate) fn task_runner_submit_path_compiled() -> bool {
+    task_runner_arm_url("task_abc", TASK_RUNNER_DEFAULT_ALARM_DELAY_MS)
+        == "https://task-runner/arm?task_id=task_abc&delay_ms=15000"
+}
+
+pub(crate) fn task_runner_poll_path_compiled() -> bool {
     false
+}
+
+pub(crate) fn task_runner_staging_replay_verified(env: &Env) -> bool {
+    task_runner_env_flag(env, TASK_RUNNER_STAGING_REPLAY_VERIFIED_ENV)
 }
 
 pub(crate) fn task_runner_cutover_guards() -> Vec<&'static str> {
@@ -171,12 +182,65 @@ pub(crate) fn is_task_runner_cutover_ready(
     foundation_compiled: bool,
     alarm_contract_compiled: bool,
     submit_path_compiled: bool,
+    poll_path_compiled: bool,
+    staging_replay_verified: bool,
 ) -> bool {
     binding_available
         && enabled
         && foundation_compiled
         && alarm_contract_compiled
         && submit_path_compiled
+        && poll_path_compiled
+        && staging_replay_verified
+}
+
+/// Best-effort post-submit alarm arming. A failure must not fail the public
+/// submit response because cron remains the correctness path.
+pub(crate) async fn arm_task_runner_after_submit(env: &Env, task_id: &str) {
+    if !task_runner_env_flag(env, TASK_RUNNER_DO_ENABLED_ENV) {
+        return;
+    }
+    let task_id = sanitize_task_runner_task_id(task_id);
+    if task_id == "unknown" {
+        worker::console_warn!("TaskRunner arm skipped: invalid public task id");
+        return;
+    }
+    let namespace = match env.durable_object(TASK_RUNNER_BINDING) {
+        Ok(namespace) => namespace,
+        Err(err) => {
+            worker::console_warn!("TaskRunner arm skipped: binding unavailable: {}", err);
+            return;
+        }
+    };
+    let object_id = match namespace.id_from_name(&task_runner_instance_name(&task_id)) {
+        Ok(object_id) => object_id,
+        Err(err) => {
+            worker::console_warn!("TaskRunner arm skipped: invalid object id: {}", err);
+            return;
+        }
+    };
+    let stub = match object_id.get_stub() {
+        Ok(stub) => stub,
+        Err(err) => {
+            worker::console_warn!("TaskRunner arm skipped: stub unavailable: {}", err);
+            return;
+        }
+    };
+    let url = task_runner_arm_url(&task_id, TASK_RUNNER_DEFAULT_ALARM_DELAY_MS);
+    let response = match stub.fetch_with_str(&url).await {
+        Ok(response) => response,
+        Err(err) => {
+            worker::console_warn!("TaskRunner arm failed for task {}: {}", task_id, err);
+            return;
+        }
+    };
+    if response.status_code() != 200 {
+        worker::console_warn!(
+            "TaskRunner arm failed for task {} with status {}",
+            task_id,
+            response.status_code()
+        );
+    }
 }
 
 pub(crate) fn task_runner_instance_name(task_id: &str) -> String {
@@ -197,6 +261,26 @@ fn sanitize_task_runner_task_id(task_id: &str) -> String {
     } else {
         sanitized
     }
+}
+
+fn task_runner_arm_url(task_id: &str, delay_ms: i64) -> String {
+    format!(
+        "https://task-runner/arm?task_id={}&delay_ms={}",
+        sanitize_task_runner_task_id(task_id),
+        task_runner_alarm_delay_ms(delay_ms)
+    )
+}
+
+fn task_runner_env_flag(env: &Env, name: &str) -> bool {
+    env.var(name)
+        .map(|value| value.to_string())
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn task_runner_alarm_delay_ms(requested: i64) -> i64 {
@@ -242,7 +326,8 @@ mod tests {
     fn task_runner_foundation_contract_is_compiled() {
         assert!(task_runner_do_foundation_compiled());
         assert!(task_runner_alarm_contract_compiled());
-        assert!(!task_runner_submit_path_compiled());
+        assert!(task_runner_submit_path_compiled());
+        assert!(!task_runner_poll_path_compiled());
     }
 
     #[test]
@@ -265,14 +350,35 @@ mod tests {
     }
 
     #[test]
-    fn task_runner_cutover_waits_for_submit_path() {
-        assert!(!is_task_runner_cutover_ready(true, true, true, true, false));
-        assert!(is_task_runner_cutover_ready(true, true, true, true, true));
-        for false_gate in 0..5 {
-            let mut flags = [true; 5];
+    fn task_runner_arm_url_is_sanitized_and_bounded() {
+        assert_eq!(
+            task_runner_arm_url("../secret", 500),
+            "https://task-runner/arm?task_id=secret&delay_ms=1000"
+        );
+        assert_eq!(
+            task_runner_arm_url("task_abc-123", 120_000),
+            "https://task-runner/arm?task_id=task_abc-123&delay_ms=60000"
+        );
+    }
+
+    #[test]
+    fn task_runner_cutover_waits_for_poll_path_and_staging_replay() {
+        assert!(!is_task_runner_cutover_ready(
+            true, true, true, true, true, false, true
+        ));
+        assert!(!is_task_runner_cutover_ready(
+            true, true, true, true, true, true, false
+        ));
+        assert!(is_task_runner_cutover_ready(
+            true, true, true, true, true, true, true
+        ));
+        for false_gate in 0..7 {
+            let mut flags = [true; 7];
             flags[false_gate] = false;
             assert!(
-                !is_task_runner_cutover_ready(flags[0], flags[1], flags[2], flags[3], flags[4]),
+                !is_task_runner_cutover_ready(
+                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6],
+                ),
                 "expected TaskRunner cutover to wait on gate index {false_gate}"
             );
         }

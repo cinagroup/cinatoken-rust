@@ -796,15 +796,18 @@ async fn handle_parsed_task_submit_with_response(
     };
 
     match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
-        Ok(public_task_id) => match response_kind {
-            VideoSubmitResponse::LegacyTaskId => {
-                crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
+        Ok(public_task_id) => {
+            crate::task_runner::arm_task_runner_after_submit(&env, &public_task_id).await;
+            match response_kind {
+                VideoSubmitResponse::LegacyTaskId => {
+                    crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
+                }
+                VideoSubmitResponse::OpenAiVideo => crate::json_with_status(
+                    &openai_video_submit_json(&public_task_id, &model, now),
+                    200,
+                ),
             }
-            VideoSubmitResponse::OpenAiVideo => crate::json_with_status(
-                &openai_video_submit_json(&public_task_id, &model, now),
-                200,
-            ),
-        },
+        }
         Err(err) => crate::json_with_status(&serde_json::json!({"error": err.to_string()}), 500),
     }
 }
@@ -1032,6 +1035,7 @@ pub async fn handle_openai_video_remix(
 
     match relay_task_submit(&db, &ctx, &task_req, &body_bytes).await {
         Ok(public_task_id) => {
+            crate::task_runner::arm_task_runner_after_submit(&env, &public_task_id).await;
             crate::json_with_status(&openai_video_submit_json(&public_task_id, &model, now), 200)
         }
         Err(err) => task_error_response("submit_task_failed", &err.to_string(), 500),
@@ -1142,6 +1146,7 @@ pub async fn handle_suno_submit(
         data: "{}",
     };
     insert_task(&db, &new_task).await?;
+    crate::task_runner::arm_task_runner_after_submit(&env, &public_task_id).await;
 
     crate::json_with_status(&serde_json::json!({"task_id": public_task_id}), 200)
 }

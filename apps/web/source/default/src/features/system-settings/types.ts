@@ -453,6 +453,8 @@ export type PlatformCapabilities = {
   task_runner_do_foundation_compiled: boolean
   task_runner_alarm_contract_compiled: boolean
   task_runner_submit_path_compiled: boolean
+  task_runner_poll_path_compiled: boolean
+  task_runner_staging_replay_verified: boolean
   task_runner_cutover_ready: boolean
   task_runner_cutover_guards: string[]
   task_poller_timeout_sweep_enabled: boolean

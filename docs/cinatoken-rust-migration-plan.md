@@ -7284,6 +7284,54 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.124 2026-07-07 TaskRunner Submit-Path Arming Gate
+
+This increment wires the first default-off M5b submit-path handoff without
+letting the `TaskRunner` alarm poll providers or mutate D1. The cron poller and
+D1 CAS/refund batch remain the only settlement authority.
+
+Implemented:
+
+- Added `arm_task_runner_after_submit`, a best-effort Worker-native Durable
+  Object binding call that resolves one `TASK_RUNNER` instance per public task
+  id and calls `/arm` with the bounded default delay. It runs only when
+  `TASK_RUNNER_DO_ENABLED=true`; missing bindings, stub errors, or non-200 DO
+  responses log a warning and never fail the public submit response.
+- Wired the arming helper after successful `tasks` inserts for shared video
+  submit, OpenAI-compatible video submit/remix, and Suno submit. Midjourney
+  remains on its separate `midjourneys` table/poller and is not yet part of this
+  shared-task DO fast path.
+- Added `TASK_RUNNER_STAGING_REPLAY_VERIFIED=false` in dev, staging, and
+  production. `/api/platform/capabilities` now reports submit-path compiled,
+  poll-path compiled, staging-replay verified, and cutover readiness separately.
+  Cutover remains false because the alarm handler still records evidence only
+  and live staging replay is not proven.
+- Updated the admin Cloudflare Platform panel so operators see `TaskRunner`
+  submit path as compiled, while poll path and staging replay remain pending.
+
+Validation:
+
+- `cargo fmt --all --check` passed.
+- `cargo test -p cinatoken-worker --lib task_runner -- --nocapture` passed.
+- `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`
+  passed.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check:web` passed.
+- `cargo test -p cinatoken-worker --lib` passed.
+- `bun run check` passed.
+
+Remaining migration gaps:
+
+- Move `TaskRunner::alarm()` from evidence-only to the shared provider
+  poll/settle path only after the M5a staging refund replay is archived.
+- Add a live staging alarm replay: flag-on arming, alarm fire, provider poll,
+  CAS win, replay no-op, cron fallback for unarmed/stale tasks, and rollback
+  with `TASK_RUNNER_DO_ENABLED=false`.
+- Decide whether Midjourney gets its own DO fast path or stays cron-only until a
+  Queue/R2 artifact pipeline owns that subsystem.
+
 ### 22.123 2026-07-07 TaskRunner Durable Object Alarm Foundation
 
 This increment starts the optional M5b `TaskRunner` Durable Object path without
@@ -7304,8 +7352,9 @@ Implemented:
   production scopes. `TASK_RUNNER_DO_ENABLED=false` in every Worker environment.
 - Extended `/api/platform/capabilities` with TaskRunner binding, gate,
   foundation, alarm-contract, submit-path, cutover-readiness, and cutover-guard
-  signals. Cutover remains false because submit-path alarm arming is
-  intentionally not compiled yet.
+  signals. At this point cutover remained false because submit-path alarm arming
+  was intentionally not compiled yet; 22.124 wires it behind the default-off
+  gate.
 - Extended the default admin Cloudflare Platform panel with TaskRunner Durable
   Object, alarm-contract, gate, and submit-path rows so operators can see the
   default-off state before any staging replay.
@@ -7318,7 +7367,8 @@ Validation:
 
 Remaining migration gaps:
 
-- Wire submit paths only after staging proves the DO alarm path calls the same
+- Submit-path arming landed behind the default-off gate in 22.124. Poll/settle
+  remains cron-owned until staging proves the DO alarm path calls the same
   shared poll/settle code and D1 CAS prevents double settlement when cron races
   the DO alarm.
 - Add a live staging alarm replay: armed task, alarm fire, provider poll, CAS

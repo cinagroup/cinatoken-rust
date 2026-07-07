@@ -6,6 +6,19 @@ Last checked: 2026-07-07
 
 - `cargo fmt --all --check`,
   `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:web`,
+  `cargo test -p cinatoken-worker --lib`,
+  and `bun run check`: passed after wiring default-off TaskRunner submit-path
+  arming for successful shared video/remix/Suno task inserts. The new
+  `TASK_RUNNER_STAGING_REPLAY_VERIFIED=false` guard keeps cutover false while
+  `/api/platform/capabilities` and the Cloudflare Platform panel distinguish
+  submit-path compiled from the still-pending alarm poll path and live staging
+  replay evidence.
+- `cargo fmt --all --check`,
+  `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `bun run check:web`,

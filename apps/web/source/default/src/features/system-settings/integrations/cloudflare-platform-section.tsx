@@ -96,6 +96,7 @@ export function CloudflarePlatformSection() {
         capabilities.task_runner_do_available,
         capabilities.task_runner_do_foundation_compiled,
         capabilities.task_runner_alarm_contract_compiled,
+        capabilities.task_runner_submit_path_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -533,7 +534,7 @@ function buildCapabilityGroups(
         {
           label: t('TaskRunner fast path gate'),
           description: t(
-            'TASK_RUNNER_DO_ENABLED must stay off until submit-path arming and staging alarm replay are proven.'
+            'TASK_RUNNER_DO_ENABLED must stay off until poll-path wiring and staging alarm replay are proven.'
           ),
           ready: capabilities.task_runner_do_enabled,
           readyLabel: t('Enabled'),
@@ -545,12 +546,34 @@ function buildCapabilityGroups(
         {
           label: t('TaskRunner submit path'),
           description: t(
-            'Submit-path alarm arming is intentionally pending; cron remains the sweeper of record.'
+            'Successful video/Suno task inserts can arm the per-task alarm when the fast path gate is enabled.'
           ),
           ready: capabilities.task_runner_submit_path_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Pending'),
           missingVariant: 'neutral',
+        },
+        {
+          label: t('TaskRunner poll path'),
+          description: t(
+            'Alarm firing still records evidence only; provider poll and D1 settlement remain cron-owned.'
+          ),
+          ready: capabilities.task_runner_poll_path_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Pending'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('TaskRunner staging replay'),
+          description: t(
+            'Requires archived alarm-fire, provider-poll, cron-fallback, and no-double-settlement evidence before cutover.'
+          ),
+          ready: capabilities.task_runner_staging_replay_verified,
+          readyLabel: t('Verified'),
+          missingLabel: t('Required'),
+          missingVariant: capabilities.task_runner_do_enabled
+            ? 'warning'
+            : 'neutral',
         },
         {
           label: t('Timeout sweep gate'),

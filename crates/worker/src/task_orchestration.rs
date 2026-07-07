@@ -31,9 +31,12 @@ use cinatoken_tasks::{
 };
 use std::collections::HashMap;
 use wasm_bindgen::JsValue;
-use worker::{D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response};
+use worker::{
+    D1Database, Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response,
+};
 
 const VIDEO_CONTENT_DATA_URL_MAX_BYTES: usize = 25 * 1024 * 1024;
+const VIDEO_PROXY_REDIRECT_POLICY: RequestRedirect = RequestRedirect::Error;
 const TASK_ACTION_GENERATE: &str = "generate";
 const TASK_ACTION_TEXT_GENERATE: &str = "textGenerate";
 const TASK_ACTION_REMIX: &str = "remixGenerate";
@@ -2258,6 +2261,7 @@ async fn proxy_video_content_url(url: &str) -> worker::Result<Response> {
     };
     let mut init = RequestInit::new();
     init.with_method(Method::Get);
+    init.with_redirect(VIDEO_PROXY_REDIRECT_POLICY);
     let outbound = Request::new_with_init(parsed.as_str(), &init)?;
     let upstream = Fetch::Request(outbound).send().await?;
     if upstream.status_code() != 200 {
@@ -3007,6 +3011,14 @@ mod tests {
             video_content_source_url(&row).unwrap(),
             "https://provider.example/video.mp4"
         );
+    }
+
+    #[test]
+    fn video_proxy_redirect_policy_is_fail_closed() {
+        assert!(matches!(
+            VIDEO_PROXY_REDIRECT_POLICY,
+            RequestRedirect::Error
+        ));
     }
 
     #[test]

@@ -260,11 +260,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Gemini/Vertex Veo model extraction from encoded upstream operation names.
   `GET /v1/videos/:task_id/content` now serves completed,
   token-or-session-owner-scoped tasks from stored result/provider URLs or
-  bounded `data:` URLs with SSRF validation and streaming upstream response
-  passthrough. `POST /v1/videos/:video_id/remix` now resolves the owner's
-  origin task, locks the submit to the origin channel, forwards to the stored
-  upstream Sora/OpenAI video id, and derives remix billing ratios from origin
-  task data.
+  bounded `data:` URLs with SSRF validation, redirect-follow disabled, and
+  streaming upstream response passthrough. `POST /v1/videos/:video_id/remix`
+  now resolves the owner's origin task, locks the submit to the origin
+  channel, forwards to the stored upstream Sora/OpenAI video id, and derives
+  remix billing ratios from origin task data.
 - Admin CRUD P0 surface (`crates/worker/src/admin_crud.rs`): admin + self log
   list/stat/delete, root-only option list/update with sensitive-key
   filtering, and user-scoped token CRUD with key masking, ownership

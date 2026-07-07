@@ -6862,6 +6862,46 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.113 2026-07-07 Video Content Proxy Redirect SSRF Hardening
+
+This increment closes a concrete production-security gap in the async-video
+artifact path. The Worker already validates HTTP(S) video content URLs with the
+strict SSRF policy before fetching them, but the outbound fetch still used the
+runtime default redirect behavior. That meant a provider-supplied public URL
+could redirect to a different host after first-hop validation. The route now
+fails closed on redirect, matching the rest of the SSRF-validated outbound
+helpers in the Worker.
+
+Implemented:
+
+- `GET /v1/videos/:task_id/content` now sets
+  `RequestRedirect::Error` on the SSRF-validated upstream content fetch before
+  streaming the response body back to the caller.
+- Added a small `VIDEO_PROXY_REDIRECT_POLICY` constant and
+  `video_proxy_redirect_policy_is_fail_closed` unit test so future edits cannot
+  silently drift the video proxy back to redirect-follow mode.
+- Updated the SSRF documentation to reflect the current state: `crates/ssrf` is
+  no longer purely standalone; it is wired into selected Worker hot paths, with
+  video content proxy as the current token/session-owned route.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`
+  passed with 25 filtered task-orchestration tests.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check` passed.
+- `git diff --check` passed.
+
+Remaining migration gaps:
+
+- Live video-provider replay, durable artifact retention, Queue/R2 ownership,
+  and task billing replay evidence are still required before async-video G7
+  production ownership.
+- The documented Workers DNS-rebinding limitation remains: `crates/ssrf`
+  validates literal hosts but cannot synchronously resolve and pin domain
+  targets inside the Worker runtime.
+
 ### 22.112 2026-07-06 Realtime Startup Queue Drain Probe
 
 This increment closes the narrow evidence gap left by the runtime queue work:

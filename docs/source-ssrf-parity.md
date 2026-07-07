@@ -1,6 +1,6 @@
 # Source SSRF And Outbound-URL Validation Parity (G6)
 
-Date: 2026-06-25
+Date: 2026-07-07
 
 Status: canonical, source-derived parity comparison between Go
 `common/ssrf_protection.go` and Rust `crates/ssrf`. Complements the module doc
@@ -14,8 +14,9 @@ validation is a G6 security control for user-controlled URLs.
 - Go: `common/ssrf_protection.go` (`SSRFProtection`, `isPrivateIP`,
   `ValidateURL`, `ValidateURLWithFetchSetting`), `common/url_validator.go`
   (`ValidateRedirectURL`).
-- Rust: `crates/ssrf/src/lib.rs` (`SsrfPolicy`, `is_private_ip`, `validate_url`),
-  `docs/ssrf.md`.
+- Rust: `crates/ssrf/src/lib.rs` (`SsrfPolicy`, `is_private_ip`,
+  `validate_url`), `crates/worker/src/task_orchestration.rs` for the current
+  video-content proxy integration, and `docs/ssrf.md`.
 
 ## Validation Flow (Go `ValidateURL`)
 
@@ -124,19 +125,31 @@ lenient empty-URL behavior (empty → "invalid URL scheme"). Stays unwired until
 payment flow accepts user-supplied callback URLs (the Rust `stripe_pay` currently
 builds redirect URLs server-side from `FRONTEND_BASE_URL`).
 
-## Wiring Gate (crate is not yet wired in)
+## Wiring Status And Gate
 
-`crates/ssrf` is a standalone, unit-tested crate **not wired into any Worker
-route**. It must be applied before any user-controlled-URL endpoint ships:
+`crates/ssrf` is no longer purely standalone. The current token/session-owned
+Worker hot-path integration is:
+
+- `GET /v1/videos/:task_id/content` validates stored provider/task HTTP(S)
+  artifact URLs with `SsrfPolicy::strict_default()` before outbound fetch.
+  The fetch sets `RequestRedirect::Error`, so a public first-hop URL cannot
+  silently redirect to a second-hop target after validation. Bounded inline
+  `data:` URLs are handled without outbound fetch.
+
+Remaining future user-controlled-URL endpoints must still apply the same gate
+before shipping:
 
 - payment webhook **outbound** delivery,
 - custom OAuth provider callback / discovery fetch,
 - image / file download proxy,
-- Midjourney / async-task image proxy.
+- Midjourney / async-task image proxy routes that are not already covered by
+  the OpenAI video content path.
 
-Each must build an `SsrfPolicy` from the operator `FetchSetting` D1 options (same
-pattern as billing options) per request. Channel `base_url` is **intentionally
-not** SSRF-validated (admin-trusted) in both deployments.
+Each new endpoint must build an `SsrfPolicy` from the operator `FetchSetting`
+D1 options (same pattern as billing options) per request where configurable
+fetch settings are needed, and must fail closed on redirects unless every
+redirect hop is re-validated. Channel `base_url` is **intentionally not**
+SSRF-validated (admin-trusted) in both deployments.
 
 ## G6 Checklist
 
@@ -146,7 +159,8 @@ not** SSRF-validated (admin-trusted) in both deployments.
    each range.
 2. Decide and document the DNS-rebinding approach (DoH vs Container vs accept).
 3. Wire `crates/ssrf` into each user-controlled-URL endpoint as it lands; load
-   `FetchSetting` from options.
+   `FetchSetting` from options where configurable fetch policy is required,
+   and keep redirects fail-closed.
 4. Port `ValidateRedirectURL` + `TrustedRedirectDomains` for payment callbacks.
 5. Confirm scheme/port/allowlist/blocklist parity with Go fixtures, including the
    `EnableSSRFProtection=false` short-circuit.

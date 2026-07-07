@@ -1,9 +1,20 @@
 # Verification
 
-Last checked: 2026-07-06
+Last checked: 2026-07-07
 
 ## Passed
 
+- `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `git diff --check`, and `bun run check`: passed after hardening the OpenAI
+  video content proxy against SSRF redirect bypass.
+  `GET /v1/videos/:task_id/content` now builds its SSRF-validated outbound HTTP
+  request with `RequestRedirect::Error`, so provider-supplied 3xx targets are
+  not followed after first-hop validation. The focused
+  `video_proxy_redirect_policy_is_fail_closed` test anchors the policy in the
+  task-orchestration test filter. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
 - `node --check tools/smoke_realtime_upstream_replay.mjs`,
   `bun run check:realtime-session:mock-upstream-replay-contract`,
   `bun run check:realtime-session:mock-upstream-replay-plan`,

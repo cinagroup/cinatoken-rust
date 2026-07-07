@@ -88,8 +88,9 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Frontend staging deployment and browser/API contract smoke.
 - Model-list/retrieve owner metadata, billing-config visibility filtering, and
   live token smoke.
-- Video content proxy (`GET /v1/videos/:task_id/content`, dual-auth) and the
-  OpenAI-video/kling/jimeng native-shape aliases (per-adaptor conversions).
+- Video content proxy (`GET /v1/videos/:task_id/content`, dual-auth, SSRF
+  validated with redirect-follow disabled) and the OpenAI-video/kling/jimeng
+  native-shape aliases (per-adaptor conversions and live provider replay).
 - Real production Go SQLite -> D1 export/import/reconciliation.
 - Billing shadow comparison and exact tokenizer/media parity.
 - Relay weighted channel-selection staging evidence for distribution, retry,

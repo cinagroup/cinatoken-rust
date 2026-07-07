@@ -1,8 +1,8 @@
 # SSRF Protection
 
-Date: 2026-06-22
+Date: 2026-07-07
 
-Status: standalone module, not yet wired into the Worker hot path.
+Status: shared module, wired into selected Worker hot paths.
 
 The Go<->Rust parity verification (CIDR-table divergences, DNS-rebinding
 decision, and the wiring gate) is in `docs/source-ssrf-parity.md`.
@@ -67,19 +67,23 @@ Consequences callers must know before wiring this module in:
 
 ## Integration status
 
-This module ships as a standalone crate with full unit-test coverage of the Go
-parity cases. It is intentionally **not** wired into any Worker route in this
-revision because no current Worker endpoint ingests user-controlled URLs (the
-relay endpoints forward JSON to admin-configured `base_url`s, and
-download/webhook/image-proxy paths have not been ported yet).
+This module ships as a shared crate with full unit-test coverage of the Go
+parity cases. It is now wired into selected Worker routes that fetch
+externally supplied URLs:
 
-The module will be wired in when the first user-controlled-URL endpoint lands:
+- `GET /v1/videos/:task_id/content` resolves completed, owner-scoped task
+  artifact URLs from stored provider/task data, validates HTTP(S) URLs with
+  `SsrfPolicy::strict_default()`, disables redirect following with
+  `RequestRedirect::Error`, and streams successful upstream responses through
+  the Worker. Bounded `data:` URLs stay on the inline-content path and do not
+  use outbound fetch.
+- Admin/root outbound helpers such as custom OAuth discovery, WeChat
+  verification, Uptime Kuma status, ratio sync, model metadata, channel
+  upstream update, deployment provider calls, and payment/subscription
+  provider calls use their own SSRF or fixed-destination validation plus
+  redirect-fail-closed fetch initialization.
 
-- payment webhook outbound delivery,
-- custom OAuth provider callback / discovery,
-- image / file download proxy,
-- Midjourney / async-task image proxy.
-
-The integration point will read the operator-configured `FetchSetting` from
-D1 options (same pattern as billing options) and build a `SsrfPolicy` once per
-request.
+Future user-controlled outbound fetch endpoints must continue to build the
+appropriate `SsrfPolicy` from D1 options (same pattern as billing options)
+and must keep redirect handling fail-closed unless the caller re-validates
+every hop.

@@ -464,8 +464,42 @@ export type PlatformCapabilities = {
   task_poller_timeout_sweep_limit: number
 }
 
+export type TaskRunnerDurableObjectStatus = {
+  compiled: boolean
+  task_id: string | null
+  status:
+    | 'armed'
+    | 'alarm_fired'
+    | 'poll_skipped'
+    | 'poll_noop'
+    | 'poll_applied'
+    | 'poll_failed'
+    | null
+  alarm_scheduled_at_ms: number | null
+  alarm_delay_ms: number | null
+  alarm_fired_at_ms: number | null
+  alarm_fired_count: number
+  poll_attempted_at_ms: number | null
+  poll_completed_at_ms: number | null
+  poll_status: 'skipped' | 'noop' | 'applied' | 'failed' | null
+  poll_reason: string | null
+  poll_cas_won: boolean | null
+}
+
+export type TaskRunnerStatusProbe = {
+  task_id: string
+  instance: string
+  durable_object_status: TaskRunnerDurableObjectStatus
+}
+
 export type PlatformCapabilitiesResponse = {
   success: boolean
   message: string
   data: PlatformCapabilities
+}
+
+export type TaskRunnerStatusProbeResponse = {
+  success: boolean
+  message: string
+  data: TaskRunnerStatusProbe
 }

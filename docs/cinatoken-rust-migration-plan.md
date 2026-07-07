@@ -7284,6 +7284,43 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.127 2026-07-07 TaskRunner Frontend Status Probe
+
+This increment brings the TaskRunner read-only status probe into the default
+admin Cloudflare Platform panel. Operators can now enter a task id and query
+`/api/platform/task-runner/:task_id/status` from the frontend, then inspect the
+same Durable Object metadata used by the smoke replay plan: alarm schedule/fire
+timestamps, poll status, bounded poll reason, CAS ownership, stored task id,
+and deterministic DO instance.
+
+Implemented:
+
+- Added frontend API types and `getTaskRunnerStatus()` for the admin-only
+  status probe. The client encodes the task id path segment and disables
+  duplicate-request coalescing so repeated operator probes can refresh live
+  status.
+- Extended the Cloudflare Platform panel with a compact `TaskRunner status
+  probe` card. The card is gated by `task_runner_status_probe_compiled`, keeps
+  the probe read-only, sanitizes task ids to the route-safe character set, and
+  shows explicit empty/error/loading states.
+- Updated the frontend route debt baseline from 215 to 216 detected calls. The
+  new call normalizes to the existing Worker route and `missing_calls` remains
+  `0`.
+
+Validation:
+
+- `bun run check:web:routes` passed after the intentional baseline update.
+- `bun run check:web` passed.
+
+Remaining migration gaps:
+
+- This is operator visibility only. It does not arm alarms, prove live staging
+  replay, or change `TASK_RUNNER_DO_ENABLED=false` /
+  `TASK_RUNNER_STAGING_REPLAY_VERIFIED=false`.
+- Archive live staging status-probe output for flag-on arming, alarm fire,
+  provider poll, CAS win, second replay/no-op, cron fallback, and rollback
+  before using TaskRunner DO evidence for production cutover.
+
 ### 22.126 2026-07-07 TaskRunner Status Probe + Replay Plan
 
 This increment makes the default-off M5b `TaskRunner` alarm path operator

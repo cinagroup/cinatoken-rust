@@ -149,6 +149,9 @@ Pass criteria:
   and `task_runner_cutover_ready=false`.
 - `GET /api/platform/task-runner/:task_id/status` returns only metadata:
   alarm timing, poll status, bounded reason, and CAS ownership.
+- The admin Cloudflare Platform panel's `TaskRunner status probe` form can query
+  the same task id and display the returned Durable Object metadata without
+  exposing arm/delete controls.
 - The report includes first poll evidence and a second replay/no-op or cron
   fallback snapshot before `TASK_RUNNER_STAGING_REPLAY_VERIFIED` is considered.
 - Rollback evidence shows `TASK_RUNNER_DO_ENABLED=false` with cron still owning

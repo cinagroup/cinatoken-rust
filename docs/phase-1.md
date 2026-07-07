@@ -466,8 +466,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue TaskRunner M5b only after M5a staging evidence: the `TASK_RUNNER`
   Durable Object alarm foundation and video/remix/Suno submit-path arming are
   wired default-off. Alarm firing now reuses the shared provider poll and D1 CAS
-  settlement path, and operators now have an admin-only per-task status probe
-  plus `bun run check:task-runner:alarm-replay-*` contracts. Live alarm replay,
+  settlement path, and operators now have an admin-only per-task status probe,
+  a frontend probe form in the Cloudflare Platform panel, and
+  `bun run check:task-runner:alarm-replay-*` contracts. Live alarm replay,
   cron-sweeper fallback, rollback, and no-double-poll CAS proof still remain
   required before `TASK_RUNNER_DO_ENABLED` can be enabled outside a controlled
   staging replay.

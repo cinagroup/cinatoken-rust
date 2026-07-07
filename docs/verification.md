@@ -4,6 +4,12 @@ Last checked: 2026-07-07
 
 ## Passed
 
+- `bun run check:web:routes` and `bun run check:web`: passed after extending
+  the Cloudflare Platform admin panel with a read-only TaskRunner status probe
+  form for `/api/platform/task-runner/:task_id/status`. The route debt baseline
+  was intentionally updated from 215 to 216 frontend calls; `missing_calls`
+  remained `0`. This adds operator visibility only and does not replace live
+  staging replay, rollback, cron fallback, or no-double-poll CAS evidence.
 - `node --check tools/smoke_task_runner_alarm_replay.mjs`,
   `bun tools/smoke_task_runner_alarm_replay.mjs --self-test --json`,
   `bun tools/smoke_task_runner_alarm_replay.mjs --dry-run --json --url http://127.0.0.1:8787 --task-id task-smoke`,

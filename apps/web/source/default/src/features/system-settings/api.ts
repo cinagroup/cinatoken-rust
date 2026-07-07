@@ -23,6 +23,7 @@ import type {
   FetchUpstreamRatiosRequest,
   PlatformCapabilitiesResponse,
   SystemOptionsResponse,
+  TaskRunnerStatusProbeResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
   UpstreamChannelsResponse,
@@ -79,6 +80,14 @@ export async function fetchUpstreamRatios(request: FetchUpstreamRatiosRequest) {
 export async function getPlatformCapabilities() {
   const res = await api.get<PlatformCapabilitiesResponse>(
     '/api/platform/capabilities'
+  )
+  return res.data
+}
+
+export async function getTaskRunnerStatus(taskId: string) {
+  const res = await api.get<TaskRunnerStatusProbeResponse>(
+    `/api/platform/task-runner/${encodeURIComponent(taskId)}/status`,
+    { disableDuplicate: true }
   )
   return res.data
 }

@@ -16,15 +16,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
+import { type FormEvent, type ReactNode, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
-import { getPlatformCapabilities } from '../api'
+import { getPlatformCapabilities, getTaskRunnerStatus } from '../api'
 import { SettingsSection } from '../components/settings-section'
-import type { PlatformCapabilities } from '../types'
+import type { PlatformCapabilities, TaskRunnerStatusProbe } from '../types'
 
 type CapabilityRow = {
   label: string
@@ -44,6 +46,10 @@ type CapabilityGroup = {
 
 export function CloudflarePlatformSection() {
   const { t } = useTranslation()
+  const [taskRunnerTaskId, setTaskRunnerTaskId] = useState('task-smoke')
+  const [taskRunnerProbeId, setTaskRunnerProbeId] = useState<string | null>(
+    null
+  )
   const capabilitiesQuery = useQuery({
     queryKey: ['platform-capabilities'],
     queryFn: async () => {
@@ -55,8 +61,34 @@ export function CloudflarePlatformSection() {
     },
     staleTime: 60 * 1000,
   })
+  const taskRunnerStatusQuery = useQuery({
+    queryKey: ['task-runner-status', taskRunnerProbeId],
+    queryFn: async () => {
+      if (!taskRunnerProbeId) {
+        throw new Error('Task id is required')
+      }
+      const response = await getTaskRunnerStatus(taskRunnerProbeId)
+      if (!response.success) {
+        throw new Error(response.message || 'Failed to load')
+      }
+      return response.data
+    },
+    enabled: Boolean(taskRunnerProbeId),
+    staleTime: 0,
+  })
 
   const capabilities = capabilitiesQuery.data
+  const normalizedTaskRunnerTaskId = normalizeTaskRunnerTaskId(taskRunnerTaskId)
+
+  const handleTaskRunnerProbeSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!normalizedTaskRunnerTaskId) return
+    if (taskRunnerProbeId === normalizedTaskRunnerTaskId) {
+      taskRunnerStatusQuery.refetch()
+      return
+    }
+    setTaskRunnerProbeId(normalizedTaskRunnerTaskId)
+  }
 
   const foundationChecks = capabilities
     ? [
@@ -160,6 +192,19 @@ export function CloudflarePlatformSection() {
                 <CapabilityGroupCard key={group.title} group={group} />
               ))}
             </div>
+
+            <TaskRunnerStatusProbePanel
+              capabilities={capabilities}
+              error={taskRunnerStatusQuery.error}
+              isFetching={taskRunnerStatusQuery.isFetching}
+              normalizedTaskId={normalizedTaskRunnerTaskId}
+              onSubmit={handleTaskRunnerProbeSubmit}
+              onTaskIdChange={setTaskRunnerTaskId}
+              status={taskRunnerStatusQuery.data}
+              submittedTaskId={taskRunnerProbeId}
+              taskId={taskRunnerTaskId}
+              t={t}
+            />
 
             <div className='rounded-lg border p-4'>
               <p className='text-sm font-medium'>
@@ -896,6 +941,181 @@ function buildCapabilityGroups(
   ]
 }
 
+function TaskRunnerStatusProbePanel(props: {
+  capabilities: PlatformCapabilities
+  error: Error | null
+  isFetching: boolean
+  normalizedTaskId: string
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  onTaskIdChange: (value: string) => void
+  status: TaskRunnerStatusProbe | undefined
+  submittedTaskId: string | null
+  taskId: string
+  t: (key: string, options?: Record<string, unknown>) => string
+}) {
+  const {
+    capabilities,
+    error,
+    isFetching,
+    normalizedTaskId,
+    onSubmit,
+    onTaskIdChange,
+    status,
+    submittedTaskId,
+    taskId,
+    t,
+  } = props
+  const durable = status?.durable_object_status
+  const canProbe =
+    capabilities.task_runner_status_probe_compiled && Boolean(normalizedTaskId)
+  const normalizedHint =
+    normalizedTaskId && normalizedTaskId !== taskId.trim()
+      ? t('Will query sanitized id: {{taskId}}', {
+          taskId: normalizedTaskId,
+        })
+      : null
+
+  return (
+    <div className='rounded-lg border p-4'>
+      <div className='flex flex-wrap items-start justify-between gap-3'>
+        <div className='space-y-1'>
+          <p className='text-sm font-medium'>{t('TaskRunner status probe')}</p>
+          <p className='text-muted-foreground text-xs'>
+            {t(
+              'Read the per-task Durable Object alarm and poll evidence without arming or deleting alarms.'
+            )}
+          </p>
+        </div>
+        <StatusBadge
+          variant={
+            capabilities.task_runner_status_probe_compiled
+              ? 'success'
+              : 'warning'
+          }
+          copyable={false}
+          className='shrink-0'
+        >
+          {capabilities.task_runner_status_probe_compiled
+            ? t('Probe compiled')
+            : t('Probe unavailable')}
+        </StatusBadge>
+      </div>
+
+      <form className='mt-3 flex flex-col gap-2 sm:flex-row' onSubmit={onSubmit}>
+        <Input
+          aria-label={t('TaskRunner task id')}
+          autoComplete='off'
+          className='sm:max-w-sm'
+          disabled={!capabilities.task_runner_status_probe_compiled}
+          onChange={(event) => onTaskIdChange(event.target.value)}
+          placeholder={t('task-smoke')}
+          value={taskId}
+        />
+        <Button
+          type='submit'
+          variant='outline'
+          disabled={!canProbe || isFetching}
+        >
+          {isFetching ? t('Querying...') : t('Query status')}
+        </Button>
+      </form>
+      {normalizedHint ? (
+        <p className='text-muted-foreground mt-2 text-xs'>{normalizedHint}</p>
+      ) : null}
+
+      {error ? (
+        <Alert className='mt-3' variant='destructive'>
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {status && durable ? (
+        <div className='mt-4 space-y-3'>
+          <div className='flex flex-wrap gap-2'>
+            <StatusBadge
+              variant={taskRunnerStatusVariant(durable.status)}
+              copyable={false}
+            >
+              {formatProbeStatus(durable.status, t)}
+            </StatusBadge>
+            <StatusBadge
+              variant={taskRunnerPollStatusVariant(durable.poll_status)}
+              copyable={false}
+            >
+              {durable.poll_status
+                ? t('Poll {{status}}', {
+                    status: formatSnakeCase(durable.poll_status),
+                  })
+                : t('Poll not attempted')}
+            </StatusBadge>
+            <StatusBadge
+              variant={taskRunnerCasVariant(durable.poll_cas_won)}
+              copyable={false}
+            >
+              {formatCasWon(durable.poll_cas_won, t)}
+            </StatusBadge>
+          </div>
+          <dl className='grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 xl:grid-cols-4'>
+            <ProbeField label={t('Requested task')} value={status.task_id} />
+            <ProbeField label={t('DO instance')} value={status.instance} />
+            <ProbeField
+              label={t('Stored task')}
+              value={durable.task_id ?? t('No record')}
+            />
+            <ProbeField
+              label={t('Alarm delay')}
+              value={formatMilliseconds(durable.alarm_delay_ms, t)}
+            />
+            <ProbeField
+              label={t('Alarm scheduled')}
+              value={formatTimestamp(durable.alarm_scheduled_at_ms, t)}
+            />
+            <ProbeField
+              label={t('Alarm fired')}
+              value={formatTimestamp(durable.alarm_fired_at_ms, t)}
+            />
+            <ProbeField
+              label={t('Fired count')}
+              value={String(durable.alarm_fired_count ?? 0)}
+            />
+            <ProbeField
+              label={t('Poll attempted')}
+              value={formatTimestamp(durable.poll_attempted_at_ms, t)}
+            />
+            <ProbeField
+              label={t('Poll completed')}
+              value={formatTimestamp(durable.poll_completed_at_ms, t)}
+            />
+            <ProbeField
+              label={t('Poll reason')}
+              value={durable.poll_reason ?? t('No reason')}
+            />
+            <ProbeField
+              label={t('Last queried task')}
+              value={submittedTaskId ?? t('None')}
+            />
+            <ProbeField
+              label={t('Compiled')}
+              value={durable.compiled ? t('Yes') : t('No')}
+            />
+          </dl>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ProbeField({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className='min-w-0 space-y-0.5'>
+      <dt className='text-muted-foreground text-xs'>{label}</dt>
+      <dd className='truncate text-sm font-medium' title={String(value)}>
+        {value}
+      </dd>
+    </div>
+  )
+}
+
 function CapabilityGroupCard({ group }: { group: CapabilityGroup }) {
   return (
     <div className='space-y-3 rounded-lg border p-4'>
@@ -929,6 +1149,80 @@ function CapabilityGroupCard({ group }: { group: CapabilityGroup }) {
       </div>
     </div>
   )
+}
+
+function normalizeTaskRunnerTaskId(value: string) {
+  return value
+    .slice(0, 128)
+    .replace(/[^A-Za-z0-9_-]/g, '')
+}
+
+function formatProbeStatus(
+  status: TaskRunnerStatusProbe['durable_object_status']['status'],
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  return status
+    ? t('Status {{status}}', {
+        status: formatSnakeCase(status),
+      })
+    : t('No TaskRunner record')
+}
+
+function taskRunnerStatusVariant(
+  status: TaskRunnerStatusProbe['durable_object_status']['status']
+): StatusVariant {
+  if (status === 'poll_applied') return 'success'
+  if (status === 'poll_failed') return 'danger'
+  if (status === 'poll_noop' || status === 'poll_skipped') return 'warning'
+  if (status === 'alarm_fired') return 'info'
+  if (status === 'armed') return 'warning'
+  return 'neutral'
+}
+
+function taskRunnerPollStatusVariant(
+  status: TaskRunnerStatusProbe['durable_object_status']['poll_status']
+): StatusVariant {
+  if (status === 'applied') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'noop' || status === 'skipped') return 'warning'
+  return 'neutral'
+}
+
+function taskRunnerCasVariant(value: boolean | null): StatusVariant {
+  if (value === true) return 'success'
+  if (value === false) return 'warning'
+  return 'neutral'
+}
+
+function formatCasWon(
+  value: boolean | null,
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  if (value === true) return t('CAS won')
+  if (value === false) return t('CAS no-op')
+  return t('CAS not recorded')
+}
+
+function formatMilliseconds(
+  value: number | null,
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  return typeof value === 'number'
+    ? t('{{value}} ms', { value })
+    : t('Not scheduled')
+}
+
+function formatTimestamp(
+  value: number | null,
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  return typeof value === 'number'
+    ? new Date(value).toLocaleString()
+    : t('Not recorded')
+}
+
+function formatSnakeCase(value: string) {
+  return value.replaceAll('_', ' ')
 }
 
 function CapabilitySkeleton() {

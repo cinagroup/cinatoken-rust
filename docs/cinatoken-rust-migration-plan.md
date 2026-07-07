@@ -7891,6 +7891,47 @@ Remaining migration gaps:
 - Passkey cryptographic finish verification remains the main G5 auth gap after
   custom OAuth callbacks.
 
+### 22.109 2026-07-07 Realtime Response Done Usage Parser Contract
+
+This increment advances the Realtime billing path without pretending final
+Realtime settlement is done. Before touching billing behavior, the source Go
+`pkg/billingexpr/expr.md` contract was re-read: expression coefficients are
+real $/1M-token prices, `p`/`c` sub-category exclusion is driven by the
+expression's used variables, and settlement must re-run the frozen pre-consume
+snapshot with actual provider usage.
+
+Implemented:
+
+- Extended the shared OpenAI-compatible `UsageSummary` parser to accept the
+  Realtime event shape `response.done -> response.usage`.
+- Added support for Realtime's single-form token detail aliases:
+  `input_token_details` and `output_token_details`, alongside the existing
+  REST/SSE plural aliases `input_tokens_details` and `output_tokens_details`.
+- Kept this as a parser/input-contract change only. No capability gate was
+  flipped: `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` must stay false until the Durable Object
+  wires parsed usage into pre-consume reserve, refund/final settlement, and
+  audit logs.
+- Refreshed the route-audit evidence wording from 215 to 216 Worker-facing
+  frontend routes.
+
+Validation:
+
+- `cargo test -p cinatoken-relay usage_summary_from_body_extracts_realtime_response_done_usage`
+  passed.
+- `cargo test -p cinatoken-relay usage_summary_from_sse_stream_extracts_realtime_response_done_usage`
+  passed.
+
+Remaining migration gaps:
+
+- Capture Realtime upstream `response.done` usage from the live bridge without
+  storing raw payloads or protocol secrets.
+- Freeze a Realtime billing snapshot before upstream connect, reserve quota,
+  and prove refund/additional settlement against actual `response.done` usage.
+- Write Realtime audit metadata using the same `tiered_billing` / usage-source
+  conventions as the REST/SSE relay before declaring billing settlement
+  compiled.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

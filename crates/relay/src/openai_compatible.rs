@@ -591,21 +591,23 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
     let completion_tokens = first_i32_field(usage, &["completion_tokens", "output_tokens"]);
     let total_tokens = first_i32_field(usage, &["total_tokens"])
         .max(prompt_tokens.saturating_add(completion_tokens));
+    let input_token_detail_keys = [
+        "prompt_tokens_details",
+        "input_tokens_details",
+        "input_token_details",
+    ];
+    let output_token_detail_keys = [
+        "completion_tokens_details",
+        "output_tokens_details",
+        "output_token_details",
+    ];
     let cached_tokens = first_non_zero_i32(&[
-        nested_i32_field(
-            usage,
-            &["prompt_tokens_details", "input_tokens_details"],
-            &["cached_tokens"],
-        ),
+        nested_i32_field(usage, &input_token_detail_keys, &["cached_tokens"]),
         first_i32_field(usage, &["cache_read_input_tokens"]),
         first_i32_field(usage, &["prompt_cache_hit_tokens"]),
     ]);
     let cache_creation_tokens = first_non_zero_i32(&[
-        nested_i32_field(
-            usage,
-            &["prompt_tokens_details", "input_tokens_details"],
-            &["cached_creation_tokens"],
-        ),
+        nested_i32_field(usage, &input_token_detail_keys, &["cached_creation_tokens"]),
         first_i32_field(usage, &["cache_creation_input_tokens"]),
         nested_i32_field(usage, &["cache_creation"], &["ephemeral_5m_input_tokens"])
             .saturating_add(nested_i32_field(
@@ -638,32 +640,16 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         &["cache_creation"],
         &["ephemeral_1h_input_tokens"],
     ));
-    let image_input_tokens = nested_i32_field(
-        usage,
-        &["prompt_tokens_details", "input_tokens_details"],
-        &["image_tokens"],
-    );
-    let audio_input_tokens = nested_i32_field(
-        usage,
-        &["prompt_tokens_details", "input_tokens_details"],
-        &["audio_tokens"],
-    );
+    let image_input_tokens = nested_i32_field(usage, &input_token_detail_keys, &["image_tokens"]);
+    let audio_input_tokens = nested_i32_field(usage, &input_token_detail_keys, &["audio_tokens"]);
     let mut image_output_tokens = first_non_zero_i32(&[
-        nested_i32_field(
-            usage,
-            &["completion_tokens_details", "output_tokens_details"],
-            &["image_tokens"],
-        ),
+        nested_i32_field(usage, &output_token_detail_keys, &["image_tokens"]),
         nested_i32_field(usage, &["output_tokens_details"], &["image_tokens"]),
     ]);
     if image_output_tokens <= 0 && is_image_generation_usage_value(value) {
         image_output_tokens = first_i32_field(usage, &["output_tokens"]);
     }
-    let audio_output_tokens = nested_i32_field(
-        usage,
-        &["completion_tokens_details", "output_tokens_details"],
-        &["audio_tokens"],
-    );
+    let audio_output_tokens = nested_i32_field(usage, &output_token_detail_keys, &["audio_tokens"]);
     let is_anthropic_usage_semantic = usage
         .get("usage_semantic")
         .and_then(Value::as_str)
@@ -1696,6 +1682,40 @@ mod tests {
     }
 
     #[test]
+    fn usage_summary_from_body_extracts_realtime_response_done_usage() {
+        assert_eq!(
+            usage_summary_from_body(
+                r#"{
+                    "type": "response.done",
+                    "response": {
+                        "usage": {
+                            "input_tokens": 1200,
+                            "output_tokens": 350,
+                            "total_tokens": 1550,
+                            "input_token_details": {
+                                "cached_tokens": 400,
+                                "audio_tokens": 180
+                            },
+                            "output_token_details": {
+                                "audio_tokens": 90
+                            }
+                        }
+                    }
+                }"#
+            ),
+            UsageSummary {
+                prompt_tokens: 1_200,
+                completion_tokens: 350,
+                total_tokens: 1_550,
+                cached_tokens: 400,
+                audio_input_tokens: 180,
+                audio_output_tokens: 90,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
     fn usage_summary_from_sse_stream_extracts_image_generation_completed_usage() {
         let body = concat!(
             "event: image_generation.completed\n",
@@ -1738,6 +1758,29 @@ mod tests {
                 claude_cache_creation_5m_tokens: 30,
                 claude_cache_creation_1h_tokens: 20,
                 is_anthropic_usage_semantic: true,
+                ..UsageSummary::default()
+            }
+        );
+    }
+
+    #[test]
+    fn usage_summary_from_sse_stream_extracts_realtime_response_done_usage() {
+        let body = concat!(
+            "event: response.audio.delta\n",
+            "data: {\"type\":\"response.audio.delta\",\"delta\":\"abc\"}\n\n",
+            "event: response.done\n",
+            "data: {\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":1200,\"output_tokens\":350,\"total_tokens\":1550,\"input_token_details\":{\"cached_tokens\":400,\"audio_tokens\":180},\"output_token_details\":{\"audio_tokens\":90}}}}\n\n",
+        );
+
+        assert_eq!(
+            usage_summary_from_sse_stream(body),
+            UsageSummary {
+                prompt_tokens: 1_200,
+                completion_tokens: 350,
+                total_tokens: 1_550,
+                cached_tokens: 400,
+                audio_input_tokens: 180,
+                audio_output_tokens: 90,
                 ..UsageSummary::default()
             }
         );

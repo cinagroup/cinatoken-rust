@@ -89,7 +89,12 @@ For successful tiered-expression responses with usage metadata, including
 nested cached/cache-creation and image/audio token details, it rebuilds actual
 token parameters from the frozen expression's variable usage, settles final
 tiered quota against that frozen snapshot, and applies only the delta from
-pre-consumed quota:
+pre-consumed quota. The shared OpenAI-compatible usage parser also accepts
+Realtime `response.done` usage nested under `response.usage`, including the
+Realtime single-form `input_token_details` / `output_token_details` aliases;
+the Realtime Durable Object still needs to wire those parsed events into the
+same pre-consume, refund/final settlement, and audit path before production
+`/v1/realtime` billing can be marked complete:
 
 - before upstream: decrement `users.quota`, decrement `tokens.remain_quota`,
   and increment `tokens.used_quota` by the estimated quota;

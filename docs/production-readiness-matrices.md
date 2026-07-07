@@ -162,8 +162,9 @@ Cloudflare Platform readiness panel backed by the admin-only
 of Workers AI, AI Gateway, Durable Object, WFP dispatch, WFP tenant route/guard
 contracts, WFP tenant smoke readiness, realtime gate state, async task refund
 replay-contract readiness, and the default-off TaskRunner submit/alarm
-foundation, but it does not replace live WFP tenant, Realtime DO, staging
-async-task cron smoke, or live TaskRunner alarm replay evidence.
+foundation plus alarm poll-path readiness, but it does not replace live WFP
+tenant, Realtime DO, staging async-task cron smoke, or live TaskRunner alarm
+replay evidence.
 
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -330,7 +331,7 @@ Deployment env vars map to Cloudflare destinations as follows:
 | Session | `SESSION_SECRET` | Worker secret / Secrets Store | Session cookie signing (`crates/session`). |
 | Provider tunables | `COHERE_SAFETY_SETTING`, `DIFY_DEBUG` | Worker `[vars]` | Provider-specific behavior flags. |
 | OAuth endpoints | `LINUX_DO_TOKEN_ENDPOINT`, `LINUX_DO_USER_ENDPOINT` | Worker `[vars]` | Non-secret endpoints; client secret is in `options`/Secrets Store. |
-| Tasks | `UPDATE_TASK`, `TASK_QUERY_LIMIT`, `TASK_TIMEOUT_MINUTES`, `TASK_PRICE_PATCHES`, `TASK_RUNNER_DO_ENABLED`, `TASK_RUNNER_STAGING_REPLAY_VERIFIED` | Worker `[vars]` / optional DO/Workflows config | `TASK_QUERY_LIMIT=100` and `TASK_TIMEOUT_MINUTES=1440` are explicit Worker vars; scheduled poller timeout sweep, CAS-winner refund batch, local refund replay contract, and the default-off `TASK_RUNNER` DO alarm foundation plus video/remix/Suno submit-path arming are compiled, checked locally, and operator-visible. Remaining: staging timeout/provider-failure/no-duplicate-refund replay, TaskRunner alarm poll/settle path, live alarm replay, no-double-poll CAS proof, and the final DO-vs-Workflows fast-path decision. |
+| Tasks | `UPDATE_TASK`, `TASK_QUERY_LIMIT`, `TASK_TIMEOUT_MINUTES`, `TASK_PRICE_PATCHES`, `TASK_RUNNER_DO_ENABLED`, `TASK_RUNNER_STAGING_REPLAY_VERIFIED` | Worker `[vars]` / optional DO/Workflows config | `TASK_QUERY_LIMIT=100` and `TASK_TIMEOUT_MINUTES=1440` are explicit Worker vars; scheduled poller timeout sweep, CAS-winner refund batch, local refund replay contract, and the default-off `TASK_RUNNER` DO alarm foundation plus video/remix/Suno submit-path arming and alarm poll handoff are compiled, checked locally, and operator-visible. Remaining: staging timeout/provider-failure/no-duplicate-refund replay, live TaskRunner alarm replay, rollback, no-double-poll CAS proof, and the final DO-vs-Workflows fast-path decision. |
 
 Required G0 evidence still pending: real production row counts per table and a
 redacted secret-name inventory captured from the production `options` table.

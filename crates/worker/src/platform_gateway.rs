@@ -1019,7 +1019,7 @@ mod tests {
         assert!(task_runner_do_foundation_compiled());
         assert!(task_runner_alarm_contract_compiled());
         assert!(task_runner_submit_path_compiled());
-        assert!(!task_runner_poll_path_compiled());
+        assert!(task_runner_poll_path_compiled());
         let guards = task_runner_cutover_guards();
         assert!(guards.contains(&"task_runner_binding"));
         assert!(guards.contains(&"alarm_contract"));
@@ -1027,7 +1027,7 @@ mod tests {
         assert!(guards.contains(&"cron_sweeper_fallback"));
         assert!(guards.contains(&"no_double_poll_cas"));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, false, false
+            true, true, true, true, true, true, false
         ));
     }
 

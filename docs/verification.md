@@ -6,6 +6,18 @@ Last checked: 2026-07-07
 
 - `cargo fmt --all --check`,
   `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:web`,
+  `cargo test -p cinatoken-worker --lib`,
+  and `bun run check`: passed after moving the default-off TaskRunner alarm
+  from evidence-only to a gated one-shot handoff through the shared
+  `poll_one_task` provider poll and D1 CAS settlement path. Cutover remains
+  false because `TASK_RUNNER_STAGING_REPLAY_VERIFIED=false` and staging alarm
+  replay, rollback, cron fallback, and no-double-poll evidence are still
+  required.
+- `cargo fmt --all --check`,
+  `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
   `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,

@@ -7284,6 +7284,57 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.125 2026-07-07 TaskRunner Alarm Poll Handoff
+
+This increment moves the default-off M5b `TaskRunner` alarm from evidence-only
+to a gated one-shot provider poll handoff while keeping cron as the
+sweeper-of-record. It does not enable production fast-path settlement by
+itself: `TASK_RUNNER_DO_ENABLED=false` remains the default and
+`TASK_RUNNER_STAGING_REPLAY_VERIFIED=false` keeps cutover readiness false.
+
+Implemented:
+
+- Stored the Worker `Env` in the `TaskRunner` Durable Object so an alarm can
+  resolve the `DB` binding and read the same task/channel rows used by the cron
+  poller.
+- On alarm fire, persisted alarm-fired evidence before external I/O, then
+  attempted exactly one gated poll through `poll_one_task`. The shared
+  provider parser and D1 CAS/refund batch remain the only settlement logic; the
+  DO does not duplicate provider or billing code.
+- Recorded the alarm poll outcome in DO storage: attempted/completed times,
+  `skipped` / `noop` / `applied` / `failed` status, reason, and CAS ownership.
+  Gate-off, missing task/channel, terminal rows, empty upstream ids, unsupported
+  providers, and poll errors are visible through `/status`.
+- Caught poll failures inside the alarm handler and returned success after
+  recording status, relying on cron fallback instead of Cloudflare alarm retry
+  storms. This matches the Durable Object alarm best-practice boundary that
+  alarms are at-least-once and have limited automatic retries.
+- Updated `/api/platform/capabilities` and the default admin Cloudflare
+  Platform panel so `task_runner_poll_path_compiled=true` is visible while
+  staging replay and cutover readiness remain false.
+
+Validation:
+
+- `cargo fmt --all --check` passed.
+- `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`
+  passed.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check:web` passed.
+- `cargo test -p cinatoken-worker --lib` passed with 488 tests.
+- `bun run check` passed.
+
+Remaining migration gaps:
+
+- Capture M5a staging timeout/provider-failure/no-duplicate-refund replay
+  before accepting any TaskRunner evidence as cutover input.
+- Run live staging TaskRunner replay with `TASK_RUNNER_DO_ENABLED=true`:
+  submit arming, alarm fire, provider poll, CAS win, immediate replay no-op,
+  gate-off rollback, and cron fallback for unarmed/stale rows.
+- Keep Midjourney on cron until its separate table/poller has an explicit DO,
+  Queue, or R2 artifact decision.
+
 ### 22.124 2026-07-07 TaskRunner Submit-Path Arming Gate
 
 This increment wires the first default-off M5b submit-path handoff without
@@ -7326,6 +7377,8 @@ Remaining migration gaps:
 
 - Move `TaskRunner::alarm()` from evidence-only to the shared provider
   poll/settle path only after the M5a staging refund replay is archived.
+  Implemented as a default-off handoff in 22.125; staging replay remains
+  required before enabling the gate outside controlled tests.
 - Add a live staging alarm replay: flag-on arming, alarm fire, provider poll,
   CAS win, replay no-op, cron fallback for unarmed/stale tasks, and rollback
   with `TASK_RUNNER_DO_ENABLED=false`.

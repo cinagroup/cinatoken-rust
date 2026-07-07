@@ -97,6 +97,7 @@ export function CloudflarePlatformSection() {
         capabilities.task_runner_do_foundation_compiled,
         capabilities.task_runner_alarm_contract_compiled,
         capabilities.task_runner_submit_path_compiled,
+        capabilities.task_runner_poll_path_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -534,7 +535,7 @@ function buildCapabilityGroups(
         {
           label: t('TaskRunner fast path gate'),
           description: t(
-            'TASK_RUNNER_DO_ENABLED must stay off until poll-path wiring and staging alarm replay are proven.'
+            'TASK_RUNNER_DO_ENABLED must stay off until staging alarm replay and rollback evidence are proven.'
           ),
           ready: capabilities.task_runner_do_enabled,
           readyLabel: t('Enabled'),
@@ -556,7 +557,7 @@ function buildCapabilityGroups(
         {
           label: t('TaskRunner poll path'),
           description: t(
-            'Alarm firing still records evidence only; provider poll and D1 settlement remain cron-owned.'
+            'Alarm firing can reuse the shared provider poll and CAS settlement path, while cron remains the fallback authority.'
           ),
           ready: capabilities.task_runner_poll_path_compiled,
           readyLabel: t('Compiled'),

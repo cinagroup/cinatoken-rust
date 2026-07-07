@@ -48,6 +48,36 @@ const CF_API_TIMEOUT: Duration = Duration::from_secs(20);
 const RUST_TENANT_CRATE: &str = "crates/wfp-tenant";
 const RUST_TENANT_BUILD_COMMAND: &str = "bun run build:wfp-tenant";
 const RUST_TENANT_SHIM_PATH: &str = "crates/wfp-tenant/build/worker/shim.mjs";
+pub(crate) const WFP_TENANT_STATUS_PATH: &str = "/__cinatoken/tenant/status";
+pub(crate) const WFP_TENANT_AI_GATEWAY_ROUTES: &[&str] = &[
+    "/v1/chat/completions",
+    "/v1/responses",
+    "/v1/messages",
+    "/v1/embeddings",
+    "/ai/run",
+];
+pub(crate) const WFP_TENANT_SUPPORTED_ROUTES: &[&str] = &[
+    WFP_TENANT_STATUS_PATH,
+    "/v1/chat/completions",
+    "/v1/responses",
+    "/v1/messages",
+    "/v1/embeddings",
+    "/ai/run",
+];
+pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
+    "dispatcher_binding",
+    "dispatch_gate",
+    "internal_dispatch_gate",
+    "tenant_script_plan",
+    "rust_wasm_runtime",
+    "route_manifest",
+    "internal_dispatch_required",
+    "request_header_scrub",
+    "response_header_allowlist",
+    "ai_gateway_policy_headers",
+    "tenant_status_smoke",
+    "route_smoke",
+];
 
 #[derive(Debug, Deserialize)]
 struct TenantScriptRequest {
@@ -698,6 +728,66 @@ fn route_gateway_binding_values(
             route_ai_gateway_ids.ai_run.as_deref(),
         ),
     ]
+}
+
+pub(crate) fn wfp_tenant_supported_routes() -> Vec<&'static str> {
+    WFP_TENANT_SUPPORTED_ROUTES.to_vec()
+}
+
+pub(crate) fn wfp_tenant_cutover_guards() -> Vec<&'static str> {
+    WFP_TENANT_CUTOVER_GUARDS.to_vec()
+}
+
+pub(crate) fn wfp_tenant_script_plan_compiled() -> bool {
+    let script = tenant_worker_script();
+    script.contains("cloudflare-ai-gateway-rest")
+        && script.contains("body_mode: \"streamed_request_body\"")
+        && script.contains("CF_ACCOUNT_ID and CF_API_TOKEN must be bound")
+        && WFP_TENANT_AI_GATEWAY_ROUTES
+            .iter()
+            .all(|route| script.contains(route))
+        && WFP_TENANT_SUPPORTED_ROUTES
+            .iter()
+            .all(|route| script.contains(route))
+}
+
+pub(crate) fn wfp_tenant_rust_wasm_runtime_compiled() -> bool {
+    RUST_TENANT_CRATE == "crates/wfp-tenant"
+        && RUST_TENANT_BUILD_COMMAND == "bun run build:wfp-tenant"
+        && RUST_TENANT_SHIM_PATH == "crates/wfp-tenant/build/worker/shim.mjs"
+}
+
+pub(crate) fn wfp_tenant_route_manifest_compiled() -> bool {
+    let script = tenant_worker_script();
+    script.contains("const SUPPORTED_ROUTES")
+        && WFP_TENANT_SUPPORTED_ROUTES
+            .iter()
+            .all(|route| script.contains(route))
+}
+
+pub(crate) fn wfp_tenant_internal_dispatch_required_compiled() -> bool {
+    let script = tenant_worker_script();
+    script.contains("tenant_internal_dispatch_required")
+        && script.contains("function isInternalDispatch")
+        && script.contains("WFP_INTERNAL_ROUTE")
+}
+
+pub(crate) fn wfp_tenant_response_header_guard_compiled() -> bool {
+    let script = tenant_worker_script();
+    script.contains("const SAFE_RESPONSE_HEADERS")
+        && script.contains("safeResponseHeaders(upstream.headers)")
+        && script.contains("responseHeaders.set(\"x-cinatoken-wfp-tenant\"")
+        && script.contains("responseHeaders.set(\"x-cinatoken-wfp-runtime\"")
+        && !script.contains("new Headers(upstream.headers)")
+}
+
+pub(crate) fn wfp_tenant_ai_gateway_policy_compiled() -> bool {
+    let script = tenant_worker_script();
+    script.contains("const AI_GATEWAY_REQUEST_POLICIES")
+        && script.contains("appendGatewayPolicyHeaders(headers, env)")
+        && script.contains("routeGatewayId(env, pathname)")
+        && script.contains("cf-aig-metadata")
+        && script.contains("gatewayRequestPolicyStatus(env)")
 }
 
 fn tenant_worker_script() -> String {

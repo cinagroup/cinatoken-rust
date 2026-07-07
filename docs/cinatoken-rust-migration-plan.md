@@ -7284,6 +7284,63 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.119 2026-07-07 WFP Tenant Capability Guard Surface
+
+This increment turns the existing WFP tenant script and smoke contracts into
+operator-visible readiness signals. It follows the cinaVibeSDK pattern where
+the frontend reads platform capability state while the main Worker owns the
+dispatch boundary and tenant scripts remain behind internal WFP forwarding.
+It is still not live WFP cutover evidence: real `DISPATCHER` binding, uploaded
+Rust/Wasm tenant artifact, and archived staging smoke are still required.
+
+Implemented:
+
+- Added WFP tenant route and cutover guard constants for
+  `/__cinatoken/tenant/status`, OpenAI chat/responses/embeddings, Anthropic
+  Messages, and `/ai/run`.
+- Added compiled guard helpers for the tenant script plan, Rust/Wasm artifact
+  path, route manifest, internal-dispatch requirement, response-header
+  allowlist, and AI Gateway request policy contract.
+- Extended admin-only `/api/platform/capabilities` with
+  `wfp_tenant_supported_routes`, `wfp_tenant_cutover_guards`,
+  `wfp_tenant_*_compiled` fields, and `wfp_tenant_smoke_ready`.
+  Smoke readiness remains false unless the real WFP `DISPATCHER` binding and
+  both `WFP_DISPATCH_ENABLED` / `WFP_INTERNAL_DISPATCH_ENABLED` are enabled.
+- Updated the default frontend Operations -> Cloudflare Platform panel so WFP
+  dispatch shows the tenant route manifest, cutover guards, Rust/Wasm artifact
+  plan, internal dispatch requirement, response-header guard, AI Gateway policy
+  contract, and smoke readiness separately.
+- Upgraded `tools/smoke_wfp_dispatch.mjs` so live smoke preflights
+  `/api/platform/capabilities` by default and requires the WFP tenant compiled
+  guards plus `wfp_tenant_smoke_ready=true`. `--skip-capabilities` remains only
+  a diagnostic escape hatch and is not acceptable cutover evidence.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `node --check tools/smoke_wfp_dispatch.mjs` passed.
+- `bun run check:wfp-dispatch:smoke-plan` passed and now emits the
+  capabilities URL plus expected WFP tenant route/guard contract.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed with 15 filtered platform tests.
+- `cargo test -p cinatoken-worker --lib wfp_tenant -- --nocapture` passed
+  with 10 filtered WFP/platform tests.
+- `bun run check:web` passed after the frontend capability type and panel
+  update.
+
+Remaining migration gaps:
+
+- Run real staging WFP dispatch smoke with an uploaded Rust/Wasm tenant Worker,
+  a real `DISPATCHER` binding, and archived capabilities/status/header guard
+  evidence.
+- Capture unauthenticated internal-dispatch 401/403 evidence and preview/public
+  AI route rejection or disabled-route evidence.
+- Capture at least one low-risk tenant AI Gateway POST route smoke with route
+  gateway logs and response-header allowlist output before WFP tenant AI routes
+  can be considered production-owned.
+- WFP tenant AI routes still need a billing/no-billing production decision
+  before any paid traffic is routed through the tenant boundary.
+
 ### 22.118 2026-07-07 Realtime Mock Upstream Fault Injection
 
 This increment makes two previously planned Realtime DO fault paths repeatable

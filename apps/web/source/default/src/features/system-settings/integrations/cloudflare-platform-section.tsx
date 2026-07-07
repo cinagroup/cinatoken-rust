@@ -65,6 +65,12 @@ export function CloudflarePlatformSection() {
         capabilities.channel_affinity_do_available,
         capabilities.realtime_sessions_do_available,
         capabilities.wfp_dispatch_binding_available,
+        capabilities.wfp_tenant_script_plan_compiled,
+        capabilities.wfp_tenant_rust_wasm_runtime_compiled,
+        capabilities.wfp_tenant_route_manifest_compiled,
+        capabilities.wfp_tenant_internal_dispatch_required_compiled,
+        capabilities.wfp_tenant_response_header_guard_compiled,
+        capabilities.wfp_tenant_ai_gateway_policy_compiled,
         capabilities.do_websocket_hibernation_compiled,
         capabilities.realtime_session_auth_boundary_compiled,
         capabilities.realtime_session_metrics_persisted_compiled,
@@ -152,7 +158,7 @@ export function CloudflarePlatformSection() {
               <ul className='text-muted-foreground mt-2 list-disc space-y-1 ps-5 text-xs'>
                 <li>
                   {t(
-                    'WFP tenant traffic needs the DISPATCHER binding plus WFP_DISPATCH_ENABLED; preview hosts also need WFP_PREVIEW_HOST_SUFFIX.'
+                    'WFP tenant traffic needs the DISPATCHER binding plus WFP_DISPATCH_ENABLED; live internal smoke also requires WFP_INTERNAL_DISPATCH_ENABLED and the tenant contract guards to pass.'
                   )}
                 </li>
                 <li>
@@ -191,6 +197,10 @@ function buildCapabilityGroups(
     capabilities.relay_ai_gateway_cutover_guards.join(', ') || t('No guards')
   const realtimeSessionGuards =
     capabilities.realtime_session_cutover_guards.join(', ') || t('No guards')
+  const wfpTenantRoutes =
+    capabilities.wfp_tenant_supported_routes.join(', ') || t('No routes')
+  const wfpTenantGuards =
+    capabilities.wfp_tenant_cutover_guards.join(', ') || t('No guards')
 
   return [
     {
@@ -364,6 +374,86 @@ function buildCapabilityGroups(
           readyLabel: t('Configured'),
           missingLabel: t('Default names'),
           missingVariant: 'neutral',
+        },
+        {
+          label: t('Tenant route manifest'),
+          description: t('Compiled for {{count}} tenant routes: {{routes}}', {
+            count: capabilities.wfp_tenant_supported_routes.length,
+            routes: wfpTenantRoutes,
+          }),
+          ready: capabilities.wfp_tenant_route_manifest_compiled,
+          readyLabel: t('{{count}} routes', {
+            count: capabilities.wfp_tenant_supported_routes.length,
+          }),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Tenant cutover guards'),
+          description: t('Compiled guards: {{guards}}', {
+            guards: wfpTenantGuards,
+          }),
+          ready: capabilities.wfp_tenant_cutover_guards.length > 0,
+          readyLabel: t('{{count}} guards', {
+            count: capabilities.wfp_tenant_cutover_guards.length,
+          }),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Tenant script plan'),
+          description: t(
+            'Builds the WFP tenant module and upload metadata without embedding secrets in the operator response.'
+          ),
+          ready: capabilities.wfp_tenant_script_plan_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Rust/Wasm tenant artifact'),
+          description: t(
+            'Tracks the dedicated crates/wfp-tenant artifact and shim used for Rust tenant uploads.'
+          ),
+          ready: capabilities.wfp_tenant_rust_wasm_runtime_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Internal dispatch requirement'),
+          description: t(
+            'Tenant AI routes fail closed unless the main dispatch Worker adds controlled internal WFP markers.'
+          ),
+          ready: capabilities.wfp_tenant_internal_dispatch_required_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Tenant response-header guard'),
+          description: t(
+            'Allows only public upstream headers and WFP evidence headers back through the dispatch boundary.'
+          ),
+          ready: capabilities.wfp_tenant_response_header_guard_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Tenant AI Gateway policy'),
+          description: t(
+            'Supports route-specific Gateway IDs, retry/cache/log policy headers, and metadata for tenant route smokes.'
+          ),
+          ready: capabilities.wfp_tenant_ai_gateway_policy_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Tenant smoke readiness'),
+          description: t(
+            'Requires DISPATCHER, dispatch gates, route manifest, internal dispatch checks, response-header guard, and AI Gateway policy contract.'
+          ),
+          ready: capabilities.wfp_tenant_smoke_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Waiting'),
+          missingVariant: capabilities.wfp_dispatch_enabled
+            ? 'warning'
+            : 'neutral',
         },
       ],
     },

@@ -158,8 +158,9 @@ Pass criteria:
 Run this only after the staging dispatch namespace exists, the tenant Worker is
 uploaded, and `WFP_DISPATCH_ENABLED=true` plus
 `WFP_INTERNAL_DISPATCH_ENABLED=true` are enabled in staging. The default smoke
-checks the admin-authenticated internal dispatch path and tenant status route
-without sending an AI request:
+first preflights admin-only `/api/platform/capabilities`, then checks the
+admin-authenticated internal dispatch path and tenant status route without
+sending an AI request:
 
 ```powershell
 $env:WFP_SMOKE_URL = $env:STAGING_BASE_URL
@@ -178,9 +179,20 @@ If the generated JS fallback is being tested deliberately, rerun the same smoke
 with `--expect-runtime js-fallback` and record it separately from the
 Rust/Wasm artifact evidence.
 
+`--skip-capabilities` is only for diagnosing a broken staging control plane. Do
+not accept WFP smoke evidence for cutover if the capabilities preflight is
+skipped.
+
 Record:
 
 - Command output.
+- `/api/platform/capabilities` WFP fields from the smoke output, including
+  `wfp_tenant_supported_routes`, `wfp_tenant_cutover_guards`,
+  `wfp_tenant_script_plan_compiled`, `wfp_tenant_rust_wasm_runtime_compiled`,
+  `wfp_tenant_route_manifest_compiled`,
+  `wfp_tenant_internal_dispatch_required_compiled`,
+  `wfp_tenant_response_header_guard_compiled`,
+  `wfp_tenant_ai_gateway_policy_compiled`, and `wfp_tenant_smoke_ready`.
 - Admin-authenticated smoke evidence only; do not paste the raw
   `WFP_SMOKE_COOKIE` value into the report.
 - Tenant status body, including `runtime`, `forwarding`, `body_mode`, routes,
@@ -202,6 +214,10 @@ Pass criteria:
 - The same internal dispatch URL without an admin session fails with 401/403,
   while authenticated admin smoke reaches the tenant status route through
   `/api/platform/dispatch/:worker/...`.
+- The capabilities preflight reports the WFP `DISPATCHER` binding, both WFP
+  dispatch gates, the tenant route manifest, Rust/Wasm tenant artifact plan,
+  internal-dispatch requirement, response-header guard, AI Gateway policy
+  contract, and `wfp_tenant_smoke_ready=true`.
 - Default WFP dispatch smoke proves the uploaded Rust/Wasm artifact by
   requiring `runtime: "rust-wasm"` in the tenant status body and
   `x-cinatoken-wfp-runtime: rust-wasm` in response headers. Generated fallback

@@ -28,6 +28,12 @@ use crate::realtime_session::{
     realtime_upstream_fetch_upgrade_adapter_compiled, REALTIME_SESSION_CUTOVER_GUARDS,
     REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
 };
+use crate::wfp_tenant::{
+    wfp_tenant_ai_gateway_policy_compiled, wfp_tenant_cutover_guards,
+    wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_response_header_guard_compiled,
+    wfp_tenant_route_manifest_compiled, wfp_tenant_rust_wasm_runtime_compiled,
+    wfp_tenant_script_plan_compiled, wfp_tenant_supported_routes,
+};
 
 pub const WFP_DISPATCH_BINDING: &str = "DISPATCHER";
 pub const WFP_DISPATCH_ENABLED_ENV: &str = "WFP_DISPATCH_ENABLED";
@@ -97,6 +103,15 @@ struct PlatformCapabilities {
     wfp_internal_dispatch_enabled: bool,
     wfp_preview_host_suffix_configured: bool,
     wfp_worker_prefix_configured: bool,
+    wfp_tenant_supported_routes: Vec<&'static str>,
+    wfp_tenant_cutover_guards: Vec<&'static str>,
+    wfp_tenant_script_plan_compiled: bool,
+    wfp_tenant_rust_wasm_runtime_compiled: bool,
+    wfp_tenant_route_manifest_compiled: bool,
+    wfp_tenant_internal_dispatch_required_compiled: bool,
+    wfp_tenant_response_header_guard_compiled: bool,
+    wfp_tenant_ai_gateway_policy_compiled: bool,
+    wfp_tenant_smoke_ready: bool,
     realtime_session_gateway_enabled: bool,
     realtime_session_v1_enabled: bool,
     do_websocket_hibernation_compiled: bool,
@@ -141,6 +156,27 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         cloudflare_ai_gateway_token_configured,
     );
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
+    let wfp_dispatch_binding_available = env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok();
+    let wfp_dispatch_enabled = env_flag(&env, WFP_DISPATCH_ENABLED_ENV);
+    let wfp_internal_dispatch_enabled = env_flag(&env, WFP_INTERNAL_DISPATCH_ENABLED_ENV);
+    let wfp_tenant_script_plan_compiled = wfp_tenant_script_plan_compiled();
+    let wfp_tenant_rust_wasm_runtime_compiled = wfp_tenant_rust_wasm_runtime_compiled();
+    let wfp_tenant_route_manifest_compiled = wfp_tenant_route_manifest_compiled();
+    let wfp_tenant_internal_dispatch_required_compiled =
+        wfp_tenant_internal_dispatch_required_compiled();
+    let wfp_tenant_response_header_guard_compiled = wfp_tenant_response_header_guard_compiled();
+    let wfp_tenant_ai_gateway_policy_compiled = wfp_tenant_ai_gateway_policy_compiled();
+    let wfp_tenant_smoke_ready = is_wfp_tenant_smoke_ready(
+        wfp_dispatch_binding_available,
+        wfp_dispatch_enabled,
+        wfp_internal_dispatch_enabled,
+        wfp_tenant_script_plan_compiled,
+        wfp_tenant_rust_wasm_runtime_compiled,
+        wfp_tenant_route_manifest_compiled,
+        wfp_tenant_internal_dispatch_required_compiled,
+        wfp_tenant_response_header_guard_compiled,
+        wfp_tenant_ai_gateway_policy_compiled,
+    );
     let realtime_session_gateway_enabled = env_flag(&env, REALTIME_SESSION_GATEWAY_ENABLED_ENV);
     let realtime_session_v1_enabled = env_flag(&env, REALTIME_SESSION_V1_ENABLED_ENV);
     let do_websocket_hibernation_compiled = true;
@@ -223,12 +259,21 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_same_channel_fallback_compiled: true,
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
         realtime_sessions_do_available,
-        wfp_dispatch_binding_available: env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok(),
-        wfp_dispatch_enabled: env_flag(&env, WFP_DISPATCH_ENABLED_ENV),
-        wfp_internal_dispatch_enabled: env_flag(&env, WFP_INTERNAL_DISPATCH_ENABLED_ENV),
+        wfp_dispatch_binding_available,
+        wfp_dispatch_enabled,
+        wfp_internal_dispatch_enabled,
         wfp_preview_host_suffix_configured: runtime_value(&env, WFP_PREVIEW_HOST_SUFFIX_ENV)
             .is_some(),
         wfp_worker_prefix_configured: runtime_value(&env, WFP_DISPATCH_WORKER_PREFIX_ENV).is_some(),
+        wfp_tenant_supported_routes: wfp_tenant_supported_routes(),
+        wfp_tenant_cutover_guards: wfp_tenant_cutover_guards(),
+        wfp_tenant_script_plan_compiled,
+        wfp_tenant_rust_wasm_runtime_compiled,
+        wfp_tenant_route_manifest_compiled,
+        wfp_tenant_internal_dispatch_required_compiled,
+        wfp_tenant_response_header_guard_compiled,
+        wfp_tenant_ai_gateway_policy_compiled,
+        wfp_tenant_smoke_ready,
         realtime_session_gateway_enabled,
         realtime_session_v1_enabled,
         do_websocket_hibernation_compiled,
@@ -582,6 +627,29 @@ fn is_relay_ai_gateway_router_ready(
     router_enabled && account_configured && gateway_id_configured && token_configured
 }
 
+#[allow(clippy::too_many_arguments)]
+fn is_wfp_tenant_smoke_ready(
+    dispatcher_bound: bool,
+    dispatch_enabled: bool,
+    internal_dispatch_enabled: bool,
+    tenant_script_plan_compiled: bool,
+    rust_wasm_runtime_compiled: bool,
+    route_manifest_compiled: bool,
+    internal_dispatch_required_compiled: bool,
+    response_header_guard_compiled: bool,
+    ai_gateway_policy_compiled: bool,
+) -> bool {
+    dispatcher_bound
+        && dispatch_enabled
+        && internal_dispatch_enabled
+        && tenant_script_plan_compiled
+        && rust_wasm_runtime_compiled
+        && route_manifest_compiled
+        && internal_dispatch_required_compiled
+        && response_header_guard_compiled
+        && ai_gateway_policy_compiled
+}
+
 fn is_realtime_session_platform_smoke_ready(
     do_available: bool,
     platform_gate_enabled: bool,
@@ -822,6 +890,60 @@ mod tests {
     }
 
     #[test]
+    fn wfp_tenant_capability_contract_is_operator_visible() {
+        let routes = wfp_tenant_supported_routes();
+        for route in [
+            "/__cinatoken/tenant/status",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/embeddings",
+            "/ai/run",
+        ] {
+            assert!(routes.contains(&route), "missing WFP tenant route {route}");
+        }
+
+        let guards = wfp_tenant_cutover_guards();
+        for guard in [
+            "dispatcher_binding",
+            "dispatch_gate",
+            "internal_dispatch_gate",
+            "tenant_script_plan",
+            "rust_wasm_runtime",
+            "route_manifest",
+            "internal_dispatch_required",
+            "request_header_scrub",
+            "response_header_allowlist",
+            "ai_gateway_policy_headers",
+            "tenant_status_smoke",
+            "route_smoke",
+        ] {
+            assert!(guards.contains(&guard), "missing WFP tenant guard {guard}");
+        }
+
+        assert!(wfp_tenant_script_plan_compiled());
+        assert!(wfp_tenant_rust_wasm_runtime_compiled());
+        assert!(wfp_tenant_route_manifest_compiled());
+        assert!(wfp_tenant_internal_dispatch_required_compiled());
+        assert!(wfp_tenant_response_header_guard_compiled());
+        assert!(wfp_tenant_ai_gateway_policy_compiled());
+    }
+
+    #[test]
+    fn wfp_tenant_smoke_ready_requires_binding_gate_and_contracts() {
+        assert!(wfp_tenant_smoke_ready_with_flags([true; 9]));
+
+        for false_gate in 0..9 {
+            let mut flags = [true; 9];
+            flags[false_gate] = false;
+            assert!(
+                !wfp_tenant_smoke_ready_with_flags(flags),
+                "expected WFP tenant smoke readiness to wait on gate index {false_gate}"
+            );
+        }
+    }
+
+    #[test]
     fn realtime_session_cutover_guards_expose_remaining_blockers() {
         let guards = realtime_session_cutover_guards();
         assert!(guards.contains(&"platform_gateway_gate"));
@@ -885,6 +1007,13 @@ mod tests {
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
             flags[16], flags[17], flags[18], flags[19], flags[20],
+        )
+    }
+
+    fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 9]) -> bool {
+        is_wfp_tenant_smoke_ready(
+            flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
+            flags[8],
         )
     }
 }

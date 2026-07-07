@@ -410,6 +410,15 @@ export type PlatformCapabilities = {
   wfp_internal_dispatch_enabled: boolean
   wfp_preview_host_suffix_configured: boolean
   wfp_worker_prefix_configured: boolean
+  wfp_tenant_supported_routes: string[]
+  wfp_tenant_cutover_guards: string[]
+  wfp_tenant_script_plan_compiled: boolean
+  wfp_tenant_rust_wasm_runtime_compiled: boolean
+  wfp_tenant_route_manifest_compiled: boolean
+  wfp_tenant_internal_dispatch_required_compiled: boolean
+  wfp_tenant_response_header_guard_compiled: boolean
+  wfp_tenant_ai_gateway_policy_compiled: boolean
+  wfp_tenant_smoke_ready: boolean
   realtime_session_gateway_enabled: boolean
   realtime_session_v1_enabled: boolean
   do_websocket_hibernation_compiled: boolean

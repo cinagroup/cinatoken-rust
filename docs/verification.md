@@ -5,6 +5,17 @@ Last checked: 2026-07-07
 ## Passed
 
 - `cargo fmt --all`,
+  `node --check tools/smoke_wfp_dispatch.mjs`,
+  `bun run check:wfp-dispatch:smoke-plan`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib wfp_tenant -- --nocapture`,
+  and `bun run check:web`: passed after exposing WFP tenant route/guard
+  readiness through `/api/platform/capabilities` and the default frontend
+  Cloudflare Platform panel. The WFP smoke dry-run now prints the capabilities
+  URL and expected tenant route/guard contract; live smoke preflights
+  capabilities by default and requires WFP tenant smoke readiness unless
+  explicitly run with `--skip-capabilities`.
+- `cargo fmt --all`,
   `node --check tools/smoke_realtime_upstream_replay.mjs`,
   `bun run check:realtime-session:mock-upstream-replay-contract`,
   `bun run check:realtime-session:mock-upstream-replay-plan`,

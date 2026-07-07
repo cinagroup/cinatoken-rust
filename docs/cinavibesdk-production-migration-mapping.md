@@ -209,16 +209,24 @@ cinaVibeSDK pattern:
 - Tenant responses must pass through a safe response-header allowlist so auth,
   cookies, `cf-aig-*`, upstream transfer metadata, and upstream platform
   headers are not leaked.
+- `/api/platform/capabilities` exposes the WFP tenant route manifest, cutover
+  guards, tenant script plan, Rust/Wasm artifact plan, internal dispatch
+  requirement, response-header guard, AI Gateway request policy contract, and
+  `wfp_tenant_smoke_ready` so the admin frontend can distinguish compiled
+  substrate from live dispatch readiness.
 - Dispatch smoke must enforce that allowlist on both tenant status and opt-in
   AI route responses, failing on auth/cookie, `cf-aig-*`, and non-WFP
   `x-cinatoken-*` leakage while recording Cloudflare edge envelope headers
-  separately.
+  separately. Live smoke preflights the capabilities guard surface by default.
 
 Current mapped status from existing docs:
 
 - WFP dispatch code and smoke harnesses exist, but the `DISPATCHER` binding is
   still commented and paid-plan-gated.
 - `crates/wfp-tenant` is compile-ready and has local checks.
+- The Cloudflare Platform frontend panel now shows WFP tenant route/guard and
+  smoke-readiness signals from `/api/platform/capabilities`; those signals do
+  not replace archived staging smoke.
 - Production proof still needs an uploaded Rust/Wasm tenant artifact, a real
   dispatch namespace, internal-path status smoke, and at least one POST AI route
   smoke.
@@ -270,9 +278,9 @@ and fallback behavior as the direct path.
 | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/embeddings` | Main Rust relay | AI Gateway primary/fallback forwarding | `RELAY_AI_GATEWAY_ROUTER_ENABLED`, per-channel opt-in | Direct and AI Gateway canary, same-channel fallback, unchanged settlement |
 | `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, frame guard, close/error mapping, send-failure cleanup, terminal event trace, upstream replay contract, backpressure policy plus runtime FIFO queue, controlled mock startup queue/drain and early fault plans, archived staging evidence, billing settlement, live protocol replay |
 | `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe, forged internal upstream header boundary smoke |
-| Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
-| Tenant AI routes | WFP Rust tenant script plus AI Gateway | Dispatch plus AI Gateway proxy | Real `DISPATCHER`, tenant Gateway vars | Route-specific Gateway logs, request policy headers, response-header allowlist |
-| Admin platform readiness | Main Rust Worker | Capability probe | Admin session | `/api/platform/capabilities` matches bindings, gates, and smoke readiness |
+| Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Capability preflight with tenant route/guard contract, Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
+| Tenant AI routes | WFP Rust tenant script plus AI Gateway | Dispatch plus AI Gateway proxy | Real `DISPATCHER`, tenant Gateway vars | Capability preflight, route-specific Gateway logs, request policy headers, response-header allowlist |
+| Admin platform readiness | Main Rust Worker | Capability probe | Admin session | `/api/platform/capabilities` matches bindings, gates, WFP tenant route/guard contracts, and smoke readiness |
 
 ## Migration Stages
 

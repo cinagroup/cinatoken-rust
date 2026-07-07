@@ -100,6 +100,9 @@ try {
 
 async function smoke(options) {
   const plan = buildPlan(options);
+  const capabilities = options.skipCapabilities
+    ? null
+    : await fetchAndValidateCapabilities(plan.capabilitiesUrl, options);
   const statusResponse = await fetchWithTimeout(plan.statusUrl, {
     method: "GET",
     headers: smokeHeaders(options),
@@ -164,9 +167,12 @@ async function smoke(options) {
     ok: true,
     dryRun: false,
     worker: options.worker,
+    capabilitiesUrl: redactUrl(plan.capabilitiesUrl),
     statusUrl: redactUrl(plan.statusUrl),
     adminCookieConfigured: Boolean(options.adminCookie),
     expectRuntime: options.expectRuntime,
+    skipCapabilities: options.skipCapabilities,
+    capabilities,
     status: summarizeTenantStatus(statusBody),
     dispatchHeaders: dispatchHeaders(statusResponse.headers),
     responseHeaderGuard: statusHeaderGuard,
@@ -176,12 +182,14 @@ async function smoke(options) {
 
 function buildPlan(options) {
   const base = normalizeBaseUrl(required(options.url, "url"));
+  const capabilitiesUrl = new URL("/api/platform/capabilities", base).toString();
   const statusUrl = dispatchUrl(base, options.worker, statusTenantPath);
   const routeUrl = options.route ? dispatchUrl(base, options.worker, options.route) : null;
   return {
     ok: true,
     dryRun: options.dryRun,
     worker: options.worker,
+    capabilitiesUrl: redactUrl(capabilitiesUrl),
     statusUrl: redactUrl(statusUrl),
     routeUrl: routeUrl ? redactUrl(routeUrl) : null,
     route: options.route,
@@ -189,9 +197,15 @@ function buildPlan(options) {
     bodyBytes: options.route ? new TextEncoder().encode(options.bodyText).byteLength : 0,
     adminCookieConfigured: Boolean(options.adminCookie),
     expectRuntime: options.expectRuntime,
+    skipCapabilities: options.skipCapabilities,
     allowNon2xx: options.allowNon2xx,
     responseHeaderGuard: options.responseHeaderGuard,
     strictResponseHeaderAllowlist: options.strictResponseHeaderAllowlist,
+    expectedCapabilities: {
+      requiredBooleans: expectedWfpCapabilityBooleans(),
+      supportedRoutes: expectedWfpSupportedRoutes(),
+      cutoverGuards: expectedWfpCutoverGuards(),
+    },
     allowedTenantResponseHeaders: Array.from(tenantPublicResponseHeaders).sort(),
     allowedWfpEvidenceResponseHeaders: Array.from(wfpEvidenceResponseHeaders).sort(),
     forbiddenResponseHeaderNames: Array.from(forbiddenResponseHeaderNames).sort(),
@@ -199,6 +213,7 @@ function buildPlan(options) {
     timeoutMs: options.timeoutMs,
     notes: [
       "worker is the public tenant name in /api/platform/dispatch/:worker; WFP_DISPATCH_WORKER_PREFIX is applied by the main Worker.",
+      "unless --skip-capabilities is set, live smoke first requires /api/platform/capabilities to report WFP tenant smoke readiness and compiled tenant guards.",
       "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
       "the dispatch Worker strips platform/admin credentials before invoking the tenant Worker; live status smoke fails if tenant status reports sensitive inbound headers.",
       "status smoke validates the dispatch binding, internal path rewrite, controlled internal dispatch markers, expected tenant runtime, AI Gateway policy contract, tenant status contract, and x-cinatoken WFP headers.",
@@ -222,6 +237,7 @@ function parseArgs(argv) {
       "--allow-non-2xx",
       "--no-response-header-guard",
       "--strict-response-header-allowlist",
+      "--skip-capabilities",
       "--self-test-response-header-guard",
     ].includes(arg)) {
       flags.add(arg.slice(2));
@@ -259,6 +275,7 @@ async function normalizeOptions(args) {
     allowNon2xx: args.flags.has("allow-non-2xx"),
     responseHeaderGuard: !args.flags.has("no-response-header-guard"),
     strictResponseHeaderAllowlist: args.flags.has("strict-response-header-allowlist"),
+    skipCapabilities: args.flags.has("skip-capabilities"),
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
   };
@@ -299,6 +316,7 @@ function usage(exitCode, error) {
       "  --allow-non-2xx       Record POST route responses even if the AI Gateway/provider rejects the payload",
       "  --no-response-header-guard  Disable response header leakage checks",
       "  --strict-response-header-allowlist  Also reject headers outside the public tenant/WFP/CORS/edge allowlist",
+      "  --skip-capabilities  Do not preflight /api/platform/capabilities before live smoke",
       "  --self-test-response-header-guard  Run local synthetic guard tests without network",
       "  --dry-run             Resolve URLs without network",
       "  --json",
@@ -321,6 +339,113 @@ function smokeHeaders(options, extras = {}) {
     headers.cookie = options.adminCookie;
   }
   return headers;
+}
+
+async function fetchAndValidateCapabilities(capabilitiesUrl, options) {
+  const response = await fetchWithTimeout(capabilitiesUrl, {
+    method: "GET",
+    headers: smokeHeaders(options),
+    redirect: "error",
+  }, options.timeoutMs);
+  const capabilities = await readCapabilitiesEnvelope(response, "platform capabilities");
+  validateWfpCapabilities(capabilities);
+  return capabilities;
+}
+
+async function readCapabilitiesEnvelope(response, label) {
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`${label} failed: ${response.status} ${response.statusText}: ${text.slice(0, 1024)}`);
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${label} returned non-JSON response: ${error.message}: ${text.slice(0, 1024)}`);
+  }
+  if (!body || typeof body !== "object" || body.success !== true || !body.data) {
+    throw new Error(`${label} did not return a successful {success,data} envelope`);
+  }
+  return summarizeCapabilities(body.data);
+}
+
+function summarizeCapabilities(data) {
+  return {
+    wfp_dispatch_binding_available: data.wfp_dispatch_binding_available === true,
+    wfp_dispatch_enabled: data.wfp_dispatch_enabled === true,
+    wfp_internal_dispatch_enabled: data.wfp_internal_dispatch_enabled === true,
+    wfp_tenant_supported_routes: arrayOfStrings(data.wfp_tenant_supported_routes),
+    wfp_tenant_cutover_guards: arrayOfStrings(data.wfp_tenant_cutover_guards),
+    wfp_tenant_script_plan_compiled: data.wfp_tenant_script_plan_compiled === true,
+    wfp_tenant_rust_wasm_runtime_compiled:
+      data.wfp_tenant_rust_wasm_runtime_compiled === true,
+    wfp_tenant_route_manifest_compiled: data.wfp_tenant_route_manifest_compiled === true,
+    wfp_tenant_internal_dispatch_required_compiled:
+      data.wfp_tenant_internal_dispatch_required_compiled === true,
+    wfp_tenant_response_header_guard_compiled:
+      data.wfp_tenant_response_header_guard_compiled === true,
+    wfp_tenant_ai_gateway_policy_compiled:
+      data.wfp_tenant_ai_gateway_policy_compiled === true,
+    wfp_tenant_smoke_ready: data.wfp_tenant_smoke_ready === true,
+  };
+}
+
+function validateWfpCapabilities(capabilities) {
+  for (const field of expectedWfpCapabilityBooleans()) {
+    if (capabilities[field] !== true) {
+      throw new Error(`platform capabilities ${field}=${capabilities[field]} did not report true`);
+    }
+  }
+  for (const route of expectedWfpSupportedRoutes()) {
+    if (!capabilities.wfp_tenant_supported_routes.includes(route)) {
+      throw new Error(`platform capabilities missing WFP tenant route ${route}`);
+    }
+  }
+  for (const guard of expectedWfpCutoverGuards()) {
+    if (!capabilities.wfp_tenant_cutover_guards.includes(guard)) {
+      throw new Error(`platform capabilities missing WFP tenant guard ${guard}`);
+    }
+  }
+}
+
+function expectedWfpCapabilityBooleans() {
+  return [
+    "wfp_dispatch_binding_available",
+    "wfp_dispatch_enabled",
+    "wfp_internal_dispatch_enabled",
+    "wfp_tenant_script_plan_compiled",
+    "wfp_tenant_rust_wasm_runtime_compiled",
+    "wfp_tenant_route_manifest_compiled",
+    "wfp_tenant_internal_dispatch_required_compiled",
+    "wfp_tenant_response_header_guard_compiled",
+    "wfp_tenant_ai_gateway_policy_compiled",
+    "wfp_tenant_smoke_ready",
+  ];
+}
+
+function expectedWfpSupportedRoutes() {
+  return [statusTenantPath, ...Array.from(supportedRoutes).sort()];
+}
+
+function expectedWfpCutoverGuards() {
+  return [
+    "dispatcher_binding",
+    "dispatch_gate",
+    "internal_dispatch_gate",
+    "tenant_script_plan",
+    "rust_wasm_runtime",
+    "route_manifest",
+    "internal_dispatch_required",
+    "request_header_scrub",
+    "response_header_allowlist",
+    "ai_gateway_policy_headers",
+    "tenant_status_smoke",
+    "route_smoke",
+  ];
+}
+
+function arrayOfStrings(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 
 function normalizeBaseUrl(value) {
@@ -729,12 +854,18 @@ function printResult(result, options) {
     [
       result.dryRun ? "WFP dispatch smoke plan (dry-run)" : "WFP dispatch smoke result",
       `worker: ${result.worker}`,
+      ...(result.capabilitiesUrl ? [`capabilities_url: ${result.capabilitiesUrl}`] : []),
       `status_url: ${result.statusUrl}`,
       ...(result.routeUrl ? [`route_url: ${result.routeUrl}`] : []),
       ...(result.route ? [`route: ${typeof result.route === "string" ? result.route : result.route.route}`] : []),
       ...(result.bodyBytes ? [`body_bytes: ${result.bodyBytes}`] : []),
       ...(Object.hasOwn(result, "adminCookieConfigured") ? [`admin_cookie_configured: ${result.adminCookieConfigured}`] : []),
       ...(result.expectRuntime ? [`expect_runtime: ${result.expectRuntime}`] : []),
+      ...(Object.hasOwn(result, "skipCapabilities") ? [`skip_capabilities: ${result.skipCapabilities}`] : []),
+      ...(result.capabilities ? [`capabilities: ${JSON.stringify(result.capabilities)}`] : []),
+      ...(result.expectedCapabilities
+        ? [`expected_capabilities: ${JSON.stringify(result.expectedCapabilities)}`]
+        : []),
       ...(result.status ? [`tenant_status: ${JSON.stringify(result.status)}`] : []),
       ...(result.dispatchHeaders ? [`dispatch_headers: ${JSON.stringify(result.dispatchHeaders)}`] : []),
       ...(result.responseHeaderGuard

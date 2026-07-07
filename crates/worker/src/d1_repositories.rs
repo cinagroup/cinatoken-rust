@@ -4523,8 +4523,10 @@ pub async fn find_user_by_id_full(
 #[derive(Debug, Deserialize)]
 pub struct UserRoleStatus {
     pub id: i64,
+    pub username: String,
     pub role: i32,
     pub status: i32,
+    pub group: String,
     pub deleted_at: Option<i64>,
 }
 
@@ -4533,7 +4535,7 @@ pub async fn find_user_role_status(
     id: i64,
 ) -> worker::Result<Option<UserRoleStatus>> {
     let arg = D1Type::Integer(d1_i32(id));
-    db.prepare("SELECT id, role, status, deleted_at FROM users WHERE id = ?1 LIMIT 1")
+    db.prepare(r#"SELECT id, username, role, status, "group", deleted_at FROM users WHERE id = ?1 LIMIT 1"#)
         .bind_refs(&[arg])?
         .first::<UserRoleStatus>(None)
         .await

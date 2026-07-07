@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use cinatoken_auth::{
-    hash_password, is_admin, is_root, verify_password, ROLE_ROOT_USER, USER_STATUS_DISABLED,
+    hash_password, is_admin, is_root, verify_password, ROLE_ROOT_USER, USER_STATUS_ENABLED,
 };
 use cinatoken_core::ApiEnvelope;
 use cinatoken_session::{
@@ -220,7 +220,7 @@ pub async fn login(mut req: Request, env: Env) -> WorkerResult<Response> {
         // from "wrong password" in the response text.
         return Ok(envelope_error_response(401, "invalid username or password"));
     };
-    if user.status == USER_STATUS_DISABLED {
+    if user.status != USER_STATUS_ENABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
 
@@ -356,7 +356,7 @@ pub async fn login_2fa(mut req: Request, env: Env) -> WorkerResult<Response> {
             "session user no longer exists",
         ));
     };
-    if user.status == USER_STATUS_DISABLED {
+    if user.status != USER_STATUS_ENABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
     let Some(two_fa) = crate::d1_repositories::find_two_fa_by_user(&db, user_id).await? else {
@@ -442,7 +442,7 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
             "session user no longer exists",
         ));
     };
-    if user.status == USER_STATUS_DISABLED {
+    if user.status != USER_STATUS_ENABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
     let now = unix_timestamp();
@@ -545,7 +545,7 @@ pub async fn get_self(req: Request, env: Env) -> WorkerResult<Response> {
             "session user no longer exists",
         ));
     };
-    if user.status == USER_STATUS_DISABLED {
+    if user.status != USER_STATUS_ENABLED {
         return Ok(envelope_error_response(403, "user is disabled"));
     }
 
@@ -714,6 +714,30 @@ pub async fn parse_session_claims(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveSessionRecheckError {
+    Deleted,
+    Disabled,
+}
+
+fn refresh_session_claims_from_live_user(
+    mut claims: SessionClaims,
+    user: &crate::d1_repositories::UserRoleStatus,
+) -> std::result::Result<SessionClaims, LiveSessionRecheckError> {
+    if user.deleted_at.is_some() {
+        return Err(LiveSessionRecheckError::Deleted);
+    }
+    if user.status != USER_STATUS_ENABLED {
+        return Err(LiveSessionRecheckError::Disabled);
+    }
+    claims.id = user.id;
+    claims.username = user.username.clone();
+    claims.role = user.role;
+    claims.status = user.status;
+    claims.group = user.group.clone();
+    Ok(claims)
+}
+
 /// Require a logged-in user. On success returns the claims; on failure
 /// returns a 401 envelope response ready to send.
 pub async fn require_user_auth(
@@ -721,7 +745,26 @@ pub async fn require_user_auth(
     env: &Env,
 ) -> WorkerResult<std::result::Result<SessionClaims, Response>> {
     match parse_session_claims(req, env).await? {
-        Ok(Some(claims)) => Ok(Ok(claims)),
+        Ok(Some(claims)) => {
+            let db = env.d1("DB")?;
+            let Some(user) = crate::d1_repositories::find_user_role_status(&db, claims.id).await?
+            else {
+                return Ok(Err(envelope_error_response(
+                    401,
+                    "session user no longer exists",
+                )));
+            };
+            match refresh_session_claims_from_live_user(claims, &user) {
+                Ok(claims) => Ok(Ok(claims)),
+                Err(LiveSessionRecheckError::Deleted) => Ok(Err(envelope_error_response(
+                    401,
+                    "session user no longer exists",
+                ))),
+                Err(LiveSessionRecheckError::Disabled) => {
+                    Ok(Err(envelope_error_response(403, "user is disabled")))
+                }
+            }
+        }
         Ok(None) => Ok(Err(envelope_error_response(401, "not logged in"))),
         Err(response) => Ok(Err(response)),
     }
@@ -1661,6 +1704,67 @@ mod tests {
         assert_eq!(extract_session_cookie("session=; theme=dark"), None);
         assert_eq!(extract_session_cookie("theme=dark"), None);
         assert_eq!(extract_session_cookie(""), None);
+    }
+
+    fn test_session_claims() -> SessionClaims {
+        SessionClaims {
+            id: 7,
+            username: "stale-root".to_string(),
+            role: ROLE_ROOT_USER,
+            status: USER_STATUS_ENABLED,
+            group: "stale-group".to_string(),
+            exp: 2_000_000_000,
+        }
+    }
+
+    fn test_user_role_status(
+        role: i32,
+        status: i32,
+        deleted_at: Option<i64>,
+    ) -> crate::d1_repositories::UserRoleStatus {
+        crate::d1_repositories::UserRoleStatus {
+            id: 7,
+            username: "live-user".to_string(),
+            role,
+            status,
+            group: "live-group".to_string(),
+            deleted_at,
+        }
+    }
+
+    #[test]
+    fn live_session_recheck_refreshes_authoritative_user_fields() {
+        let claims = test_session_claims();
+        let live_user = test_user_role_status(1, USER_STATUS_ENABLED, None);
+
+        let refreshed = refresh_session_claims_from_live_user(claims, &live_user).unwrap();
+
+        assert_eq!(refreshed.id, 7);
+        assert_eq!(refreshed.username, "live-user");
+        assert_eq!(refreshed.role, 1);
+        assert_eq!(refreshed.status, USER_STATUS_ENABLED);
+        assert_eq!(refreshed.group, "live-group");
+        assert_eq!(refreshed.exp, 2_000_000_000);
+    }
+
+    #[test]
+    fn live_session_recheck_rejects_non_enabled_users() {
+        let result = refresh_session_claims_from_live_user(
+            test_session_claims(),
+            &test_user_role_status(1, 2, None),
+        );
+
+        assert_eq!(result.unwrap_err(), LiveSessionRecheckError::Disabled);
+    }
+
+    #[test]
+    fn live_session_recheck_rejects_soft_deleted_users() {
+        let result = refresh_session_claims_from_live_user(
+            test_session_claims(),
+            &test_user_role_status(ROLE_ROOT_USER, USER_STATUS_ENABLED, Some(1_700_000_000)),
+        );
+
+        assert_eq!(result.unwrap_err(), LiveSessionRecheckError::Deleted);
     }
 
     #[test]

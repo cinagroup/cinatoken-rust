@@ -6862,6 +6862,48 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.114 2026-07-07 Live Session Authorization Recheck
+
+This increment closes the biggest immediate session-authorization gap from the
+2026-07-07 security audit without introducing a schema migration. Previously,
+`require_user_auth`, `require_admin_auth`, and `require_root_auth` trusted the
+`role`, `status`, `username`, and `group` embedded in the signed browser
+session until the 30-day cookie expired. The signature still prevented
+forgery, but a demoted, disabled, or soft-deleted user could keep using an
+already-issued session inside the revocation-latency window.
+
+Implemented:
+
+- `require_user_auth` now treats the cookie as an identity hint, then re-loads
+  the current user state from D1 with `find_user_role_status`.
+- The live D1 lookup now returns `username`, `role`, `status`, `"group"`, and
+  `deleted_at`, so the returned `SessionClaims` are refreshed from the
+  authoritative row before downstream handlers build audit logs or apply
+  admin/root checks.
+- A missing or soft-deleted user now receives `401 "session user no longer
+  exists"`, and any non-enabled status receives `403 "user is disabled"`.
+- Login, 2FA session issuance, secure-verify, and `/api/user/self` now also
+  fail closed unless `users.status == USER_STATUS_ENABLED`.
+- Added unit coverage for stale claim refresh and disabled/soft-deleted live
+  row rejection.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib admin -- --nocapture` passed with
+  172 admin/frontend/security-adjacent tests.
+
+Remaining migration gaps:
+
+- This is a live authorization recheck, not a complete server-side session
+  revocation system. A `session_epoch`/`session_version` column embedded in
+  `SessionClaims`, bumped on password change and "log out everywhere", is still
+  needed to fully close F4.
+- Because every session-authenticated request now reads D1, staging should
+  measure admin/frontend latency and decide whether a very short, explicitly
+  invalidated edge cache is worthwhile. Do not reintroduce cookie-only
+  privilege decisions.
+
 ### 22.113 2026-07-07 Video Content Proxy Redirect SSRF Hardening
 
 This increment closes a concrete production-security gap in the async-video

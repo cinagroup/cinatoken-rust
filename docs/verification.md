@@ -5,6 +5,20 @@ Last checked: 2026-07-07
 ## Passed
 
 - `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib admin -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `git diff --check`, and `bun run check`: passed after adding live D1
+  session-authorization rechecks. `require_user_auth` now refreshes signed
+  cookie claims from the current `users` row before admin/root privilege
+  checks, rejects missing or soft-deleted session users, and fails closed unless
+  `users.status == USER_STATUS_ENABLED`. Focused admin tests covered stale
+  claim refresh plus disabled/soft-deleted live row rejection. The full Bun
+  gate covered frontend build/redaction/budget/lint, route audit
+  (215 frontend calls / 307 Worker routes / 0 missing calls), WFP dry-run
+  checks, Realtime smoke contracts, workspace tests excluding the Worker, and
+  Worker/WFP wasm32 checks. Existing warnings were limited to the known
+  `d1_repositories.rs` dead-code warnings.
+- `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `git diff --check`, and `bun run check`: passed after hardening the OpenAI

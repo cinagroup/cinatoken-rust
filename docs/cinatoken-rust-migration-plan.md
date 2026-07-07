@@ -7284,6 +7284,49 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.123 2026-07-07 TaskRunner Durable Object Alarm Foundation
+
+This increment starts the optional M5b `TaskRunner` Durable Object path without
+moving production task-settlement authority away from the cron poller and D1 CAS
+guards. The scheduled Worker poller, timeout sweep, and CAS-winner refund batch
+remain the correctness spine. `TaskRunner` is a default-off, per-task alarm
+substrate for future sub-minute settlement latency.
+
+Implemented:
+
+- Added `crates/worker/src/task_runner.rs` with one deterministic Durable
+  Object instance name per public task id (`task:<sanitized_task_id>`), bounded
+  alarm delays (`1000ms..60000ms`, default `15000ms`), `/arm`, `/status`, and
+  `/delete` control endpoints, plus an `alarm()` handler that records
+  alarm-fired evidence in DO storage without mutating D1.
+- Added the `TASK_RUNNER` Durable Object binding and `v3-task-runner`
+  `new_sqlite_classes = ["TaskRunner"]` migrations in dev, staging, and
+  production scopes. `TASK_RUNNER_DO_ENABLED=false` in every Worker environment.
+- Extended `/api/platform/capabilities` with TaskRunner binding, gate,
+  foundation, alarm-contract, submit-path, cutover-readiness, and cutover-guard
+  signals. Cutover remains false because submit-path alarm arming is
+  intentionally not compiled yet.
+- Extended the default admin Cloudflare Platform panel with TaskRunner Durable
+  Object, alarm-contract, gate, and submit-path rows so operators can see the
+  default-off state before any staging replay.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib task_runner -- --nocapture` passed.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture` passed.
+
+Remaining migration gaps:
+
+- Wire submit paths only after staging proves the DO alarm path calls the same
+  shared poll/settle code and D1 CAS prevents double settlement when cron races
+  the DO alarm.
+- Add a live staging alarm replay: armed task, alarm fire, provider poll, CAS
+  win, no-op replay, cron fallback for unarmed/stale tasks, and rollback with
+  `TASK_RUNNER_DO_ENABLED=false`.
+- Keep M5a staging refund replay and artifact retention evidence separate from
+  the optional TaskRunner fast path.
+
 ### 22.122 2026-07-07 Async Task Refund Replay Contract
 
 This increment turns the M5a timeout/refund replay requirement from prose into
@@ -7324,8 +7367,9 @@ Remaining migration gaps:
   request IDs, and `/api/platform/capabilities` output.
 - Add provider-credential replay and artifact retention evidence before
   async-video/Suno/Midjourney ownership can move beyond G7 partial status.
-- M5b `TaskRunner` Durable Object alarms remain optional and should wait until
-  this M5a staging evidence is archived.
+- M5b submit-path arming remains optional and should wait until this M5a
+  staging evidence is archived. The default-off TaskRunner Durable Object alarm
+  foundation landed in 22.123, but it does not replace live staging replay.
 
 ### 22.121 2026-07-07 Async Task Refund Batch Guard
 

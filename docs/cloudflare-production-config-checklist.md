@@ -452,13 +452,14 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 | Cron trigger | `[env.*.triggers] crons = ["* * * * *"]` (added to wrangler.toml) drives the `#[event(scheduled)]` poller. Inert with no in-flight tasks; **required** for any task to settle. |
 | `TASK_QUERY_LIMIT` | var, default `100` in Worker envs - bounded per-family provider poll window for video, Suno, and Midjourney. Keep conservative until provider replay and subrequest capacity are measured. |
 | `TASK_TIMEOUT_MINUTES` | var, default `1440` - Go-compatible timeout sweep runs before normal polling; set `0` only for emergency diagnostics because stuck rows can otherwise starve newer work. |
+| `TASK_RUNNER_DO_ENABLED` | var, default `false` - optional per-task Durable Object alarm fast path. Keep disabled until submit-path arming, staging alarm replay, cron fallback, and no-double-poll CAS evidence are archived. |
 | `GEMINI_VERSION` | var, default `v1beta` — Gemini/Veo API version. |
 | `VERTEX_REGION` | var, default `us-central1` — Vertex region for `predictLongRunning` (per-channel region edge cases TBD on staging). |
 | Channel types | Each provider is a channel `type`: Ali=17, Gemini=24, MiniMax/Hailuo=35, SunoAPI=36, VertexAi=41, VolcEngine=45, Kling=50, Jimeng=51, Vidu=52, DoubaoVideo=54, Sora=55/OpenAI=1; Midjourney=2/5. A task model with no matching enabled channel returns 503. |
 | Channel keys | Provider-specific: bearer key (sora/doubao/ali/hailuo/suno), `Token` (vidu), `mj-api-secret` (mj), `accessKey\|secretKey` (kling JWT / jimeng SigV4), or the **service-account JSON** (vertex). |
 | Pricing | Task billing models are `suno_<action>`, `mj_<action>`, or the video model name — price them or they bill 0. |
 
-| Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_refund_batch_compiled=true`, `task_poller_refund_replay_contract_compiled=true`, `task_poller_timeout_sweep_enabled=true`, and the expected query/timeout values before async task canary. Run `bun run check:task-refund-batch` locally and attach its JSON output before staging D1 replay. |
+| Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_refund_batch_compiled=true`, `task_poller_refund_replay_contract_compiled=true`, `task_poller_timeout_sweep_enabled=true`, `task_runner_do_available=true`, `task_runner_do_foundation_compiled=true`, `task_runner_alarm_contract_compiled=true`, `task_runner_submit_path_compiled=false`, `task_runner_cutover_ready=false`, and the expected query/timeout values before async task canary. Run `bun run check:task-refund-batch` locally and attach its JSON output before staging D1 replay. |
 
 ## Observability Checklist
 

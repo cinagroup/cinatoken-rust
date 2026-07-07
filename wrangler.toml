@@ -60,6 +60,7 @@ WFP_DISPATCH_NAMESPACE = ""
 WFP_TENANT_COMPATIBILITY_DATE = "2026-06-17"
 REALTIME_SESSION_GATEWAY_ENABLED = "false"
 REALTIME_SESSION_V1_ENABLED = "false"
+TASK_RUNNER_DO_ENABLED = "false"
 # Async-task cron poller: Worker keeps a conservative per-family batch window,
 # with a Go-compatible timeout sweep before normal provider polling.
 TASK_QUERY_LIMIT = "100"
@@ -121,6 +122,10 @@ class_name = "ChannelAffinity"
 name = "REALTIME_SESSIONS"
 class_name = "RealtimeSession"
 
+[[durable_objects.bindings]]
+name = "TASK_RUNNER"
+class_name = "TaskRunner"
+
 [[migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -128,6 +133,10 @@ new_sqlite_classes = ["ChannelAffinity"]
 [[migrations]]
 tag = "v2-realtime-session"
 new_sqlite_classes = ["RealtimeSession"]
+
+[[migrations]]
+tag = "v3-task-runner"
+new_sqlite_classes = ["TaskRunner"]
 
 # ---------------------------------------------------------------------------
 # Staging environment.
@@ -162,6 +171,7 @@ WFP_DISPATCH_NAMESPACE = ""
 WFP_TENANT_COMPATIBILITY_DATE = "2026-06-17"
 REALTIME_SESSION_GATEWAY_ENABLED = "false"
 REALTIME_SESSION_V1_ENABLED = "false"
+TASK_RUNNER_DO_ENABLED = "false"
 TASK_QUERY_LIMIT = "100"
 TASK_TIMEOUT_MINUTES = "1440"
 
@@ -222,6 +232,10 @@ class_name = "ChannelAffinity"
 name = "REALTIME_SESSIONS"
 class_name = "RealtimeSession"
 
+[[env.staging.durable_objects.bindings]]
+name = "TASK_RUNNER"
+class_name = "TaskRunner"
+
 [[env.staging.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -229,6 +243,10 @@ new_sqlite_classes = ["ChannelAffinity"]
 [[env.staging.migrations]]
 tag = "v2-realtime-session"
 new_sqlite_classes = ["RealtimeSession"]
+
+[[env.staging.migrations]]
+tag = "v3-task-runner"
+new_sqlite_classes = ["TaskRunner"]
 
 # ---------------------------------------------------------------------------
 # Production environment.
@@ -264,6 +282,7 @@ WFP_DISPATCH_NAMESPACE = ""
 WFP_TENANT_COMPATIBILITY_DATE = "2026-06-17"
 REALTIME_SESSION_GATEWAY_ENABLED = "false"
 REALTIME_SESSION_V1_ENABLED = "false"
+TASK_RUNNER_DO_ENABLED = "false"
 TASK_QUERY_LIMIT = "100"
 TASK_TIMEOUT_MINUTES = "1440"
 
@@ -325,6 +344,10 @@ class_name = "ChannelAffinity"
 name = "REALTIME_SESSIONS"
 class_name = "RealtimeSession"
 
+[[env.production.durable_objects.bindings]]
+name = "TASK_RUNNER"
+class_name = "TaskRunner"
+
 [[env.production.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -332,3 +355,7 @@ new_sqlite_classes = ["ChannelAffinity"]
 [[env.production.migrations]]
 tag = "v2-realtime-session"
 new_sqlite_classes = ["RealtimeSession"]
+
+[[env.production.migrations]]
+tag = "v3-task-runner"
+new_sqlite_classes = ["TaskRunner"]

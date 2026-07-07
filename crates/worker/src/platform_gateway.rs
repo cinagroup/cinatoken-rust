@@ -32,6 +32,11 @@ use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_
 use crate::task_repository::{
     task_refund_cas_batch_compiled, task_refund_replay_contract_compiled,
 };
+use crate::task_runner::{
+    is_task_runner_cutover_ready, task_runner_alarm_contract_compiled, task_runner_cutover_guards,
+    task_runner_do_foundation_compiled, task_runner_submit_path_compiled, TASK_RUNNER_BINDING,
+    TASK_RUNNER_DO_ENABLED_ENV,
+};
 use crate::wfp_tenant::{
     wfp_tenant_ai_gateway_policy_compiled, wfp_tenant_cutover_guards,
     wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_response_header_guard_compiled,
@@ -145,6 +150,13 @@ struct PlatformCapabilities {
     task_poller_timeout_sweep_compiled: bool,
     task_poller_refund_batch_compiled: bool,
     task_poller_refund_replay_contract_compiled: bool,
+    task_runner_do_available: bool,
+    task_runner_do_enabled: bool,
+    task_runner_do_foundation_compiled: bool,
+    task_runner_alarm_contract_compiled: bool,
+    task_runner_submit_path_compiled: bool,
+    task_runner_cutover_ready: bool,
+    task_runner_cutover_guards: Vec<&'static str>,
     task_poller_timeout_sweep_enabled: bool,
     task_poller_query_limit: i64,
     task_poller_timeout_minutes: i64,
@@ -260,6 +272,18 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let task_poller_timeout_sweep_compiled = task_timeout_sweep_compiled();
     let task_poller_refund_batch_compiled = task_refund_cas_batch_compiled();
     let task_poller_refund_replay_contract_compiled = task_refund_replay_contract_compiled();
+    let task_runner_do_available = env.durable_object(TASK_RUNNER_BINDING).is_ok();
+    let task_runner_do_enabled = env_flag(&env, TASK_RUNNER_DO_ENABLED_ENV);
+    let task_runner_do_foundation_compiled = task_runner_do_foundation_compiled();
+    let task_runner_alarm_contract_compiled = task_runner_alarm_contract_compiled();
+    let task_runner_submit_path_compiled = task_runner_submit_path_compiled();
+    let task_runner_cutover_ready = is_task_runner_cutover_ready(
+        task_runner_do_available,
+        task_runner_do_enabled,
+        task_runner_do_foundation_compiled,
+        task_runner_alarm_contract_compiled,
+        task_runner_submit_path_compiled,
+    );
 
     let capabilities = PlatformCapabilities {
         ai_binding_available: env.ai("AI").is_ok(),
@@ -319,6 +343,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_poller_timeout_sweep_compiled,
         task_poller_refund_batch_compiled,
         task_poller_refund_replay_contract_compiled,
+        task_runner_do_available,
+        task_runner_do_enabled,
+        task_runner_do_foundation_compiled,
+        task_runner_alarm_contract_compiled,
+        task_runner_submit_path_compiled,
+        task_runner_cutover_ready,
+        task_runner_cutover_guards: task_runner_cutover_guards(),
         task_poller_timeout_sweep_enabled: task_poller_config.timeout_minutes > 0,
         task_poller_query_limit: task_poller_config.query_limit,
         task_poller_timeout_minutes: task_poller_config.timeout_minutes,
@@ -972,6 +1003,20 @@ mod tests {
         assert!(task_timeout_sweep_compiled());
         assert!(task_refund_cas_batch_compiled());
         assert!(task_refund_replay_contract_compiled());
+    }
+
+    #[test]
+    fn task_runner_alarm_foundation_is_operator_visible_but_not_cutover_ready() {
+        assert!(task_runner_do_foundation_compiled());
+        assert!(task_runner_alarm_contract_compiled());
+        assert!(!task_runner_submit_path_compiled());
+        let guards = task_runner_cutover_guards();
+        assert!(guards.contains(&"task_runner_binding"));
+        assert!(guards.contains(&"alarm_contract"));
+        assert!(guards.contains(&"submit_path_armed"));
+        assert!(guards.contains(&"cron_sweeper_fallback"));
+        assert!(guards.contains(&"no_double_poll_cas"));
+        assert!(!is_task_runner_cutover_ready(true, true, true, true, false));
     }
 
     #[test]

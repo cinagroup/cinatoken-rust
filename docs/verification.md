@@ -4,6 +4,21 @@ Last checked: 2026-07-07
 
 ## Passed
 
+- `cargo fmt --all --check`,
+  `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:web`,
+  `cargo test -p cinatoken-worker --lib`,
+  `bun run check`,
+  `git diff --check`,
+  and a repository sensitive-token pattern scan: passed after adding the
+  default-off TaskRunner Durable
+  Object alarm foundation, `TASK_RUNNER` bindings/migrations, Worker capability
+  signals, and frontend Cloudflare Platform rows. The foundation exposes
+  deterministic per-task DO instance names, bounded alarm delays, persisted
+  alarm-fired evidence, and cutover guards while keeping submit-path arming
+  intentionally false.
 - `bun tools/smoke_task_refund_batch.mjs --self-test --json`,
   `bun run check:task-refund-batch`,
   `cargo test -p cinatoken-worker --lib task_repository -- --nocapture`,

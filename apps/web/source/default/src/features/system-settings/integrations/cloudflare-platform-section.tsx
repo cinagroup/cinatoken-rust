@@ -93,6 +93,9 @@ export function CloudflarePlatformSection() {
         capabilities.task_poller_timeout_sweep_compiled,
         capabilities.task_poller_refund_batch_compiled,
         capabilities.task_poller_refund_replay_contract_compiled,
+        capabilities.task_runner_do_available,
+        capabilities.task_runner_do_foundation_compiled,
+        capabilities.task_runner_alarm_contract_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -507,6 +510,47 @@ function buildCapabilityGroups(
           ready: capabilities.task_poller_refund_replay_contract_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
+        },
+        {
+          label: t('TaskRunner Durable Object'),
+          description: t(
+            'Binds one optional alarm-capable Durable Object per task for the future sub-minute fast path.'
+          ),
+          ready: capabilities.task_runner_do_available,
+          readyLabel: t('Bound'),
+          missingLabel: t('Missing'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('TaskRunner alarm contract'),
+          description: t(
+            'Compiles deterministic task instance routing, bounded alarm delay, and alarm-fired evidence storage.'
+          ),
+          ready: capabilities.task_runner_alarm_contract_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('TaskRunner fast path gate'),
+          description: t(
+            'TASK_RUNNER_DO_ENABLED must stay off until submit-path arming and staging alarm replay are proven.'
+          ),
+          ready: capabilities.task_runner_do_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Disabled'),
+          missingVariant: capabilities.task_runner_submit_path_compiled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('TaskRunner submit path'),
+          description: t(
+            'Submit-path alarm arming is intentionally pending; cron remains the sweeper of record.'
+          ),
+          ready: capabilities.task_runner_submit_path_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Pending'),
+          missingVariant: 'neutral',
         },
         {
           label: t('Timeout sweep gate'),

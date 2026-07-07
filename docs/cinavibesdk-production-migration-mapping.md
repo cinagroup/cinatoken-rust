@@ -450,6 +450,11 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   legacy no-refund, and stale-window unblock semantics before staging, but the
   cron still requires staging timeout/provider-failure/no-duplicate-refund
   replay before it can be treated as eviction-proof billing infrastructure.
+- Optional TaskRunner M5b follows the cinaVibeSDK DO-alarm idea without changing
+  billing authority: one deterministic `TASK_RUNNER` DO per task, bounded alarm
+  delay, and persisted alarm-fired evidence behind `TASK_RUNNER_DO_ENABLED=false`.
+  Submit-path arming, live alarm replay, cron fallback, and no-double-poll CAS
+  proof remain required before the fast path can influence settlement latency.
 - WFP tenant AI routes must either call back through an owned billing path or
   produce equivalent audit and settlement evidence before paid traffic is routed
   there.

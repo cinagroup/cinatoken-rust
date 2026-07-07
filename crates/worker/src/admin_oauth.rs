@@ -18,11 +18,10 @@ use serde_json::Value;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Response, Result as WorkerResult};
 
 use cinatoken_auth::USER_STATUS_ENABLED;
-use cinatoken_session::SessionClaims;
 
 use crate::admin::{
-    attach_session_cookie, envelope_error_response, envelope_ok_response, session_codec,
-    unix_timestamp,
+    attach_session_cookie, envelope_error_response, envelope_ok_response, session_claims_from_user,
+    session_codec, unix_timestamp,
 };
 use crate::{d1_repositories, flow_state};
 
@@ -162,14 +161,7 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
         Ok(codec) => codec,
         Err(response) => return Ok(response),
     };
-    let claims = SessionClaims {
-        id: user.id,
-        username: user.username.clone(),
-        role: user.role,
-        status: user.status,
-        group: user.group.clone(),
-        exp: 0,
-    };
+    let claims = session_claims_from_user(&user);
     let cookie_value = match codec.issue(claims, now) {
         Ok(value) => value,
         Err(err) => {
@@ -397,14 +389,7 @@ pub async fn oidc_oauth(req: Request, env: Env) -> WorkerResult<Response> {
         Ok(codec) => codec,
         Err(response) => return Ok(response),
     };
-    let claims = SessionClaims {
-        id: user.id,
-        username: user.username.clone(),
-        role: user.role,
-        status: user.status,
-        group: user.group.clone(),
-        exp: 0,
-    };
+    let claims = session_claims_from_user(&user);
     let cookie_value = match codec.issue(claims, now) {
         Ok(value) => value,
         Err(err) => {
@@ -617,14 +602,7 @@ pub async fn discord_oauth(req: Request, env: Env) -> WorkerResult<Response> {
         Ok(codec) => codec,
         Err(response) => return Ok(response),
     };
-    let claims = SessionClaims {
-        id: user.id,
-        username: user.username.clone(),
-        role: user.role,
-        status: user.status,
-        group: user.group.clone(),
-        exp: 0,
-    };
+    let claims = session_claims_from_user(&user);
     let cookie_value = match codec.issue(claims, now) {
         Ok(value) => value,
         Err(err) => {

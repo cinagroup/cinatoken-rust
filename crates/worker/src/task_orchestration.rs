@@ -2323,7 +2323,7 @@ async fn authenticate_video_content_user_id(
     db: &worker::D1Database,
 ) -> worker::Result<std::result::Result<i64, Response>> {
     let api_key = crate::relay::extract_api_key(req);
-    match crate::admin::parse_session_claims(req, env).await {
+    match crate::admin::optional_user_auth(req, env).await {
         Ok(Ok(Some(claims))) => {
             let user = crate::d1_repositories::find_user_by_id(db, claims.id).await?;
             return match active_session_video_user_id(user.as_ref()) {
@@ -2341,12 +2341,14 @@ async fn authenticate_video_content_user_id(
             };
         }
         Ok(Ok(None)) => {}
-        Ok(Err(_response)) if api_key.is_none() => {
-            return Ok(Err(video_proxy_error(
-                500,
-                "server_error",
-                "failed to parse session",
-            )?));
+        Ok(Err(response)) if api_key.is_none() => {
+            let status = response.status_code();
+            let (error_type, message) = match status {
+                401 => ("authentication_error", "invalid session user"),
+                403 => ("permission_error", "user is disabled"),
+                _ => ("server_error", "failed to parse session"),
+            };
+            return Ok(Err(video_proxy_error(status, error_type, message)?));
         }
         Ok(Err(_response)) => {}
         Err(err) => return Err(err),
@@ -2360,7 +2362,12 @@ async fn authenticate_video_content_user_id(
         )?));
     };
     match crate::d1_repositories::authenticate_token(db, &api_key).await? {
-        Some(auth) => Ok(Ok(auth.user_id)),
+        Some(auth) if auth.user_status == USER_STATUS_ENABLED => Ok(Ok(auth.user_id)),
+        Some(_) => Ok(Err(video_proxy_error(
+            403,
+            "permission_error",
+            "user is disabled",
+        )?)),
         None => Ok(Err(video_proxy_error(
             401,
             "authentication_error",

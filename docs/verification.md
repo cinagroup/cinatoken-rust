@@ -5,6 +5,28 @@ Last checked: 2026-07-07
 ## Passed
 
 - `cargo fmt --all`,
+  `cargo test -p cinatoken-session --lib -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib admin -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib admin_user -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib admin_oauth -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib relay -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `git diff --check`, and `bun run check`: passed
+  after adding browser-session revocation epochs. Rust session claims now carry
+  `iat` while accepting legacy Rust cookies without that field, D1 migration
+  `0017_user_session_epoch.sql` adds `users.session_epoch`, live session
+  rechecks reject `iat < session_epoch`, password changes reissue the current
+  browser session after bumping the epoch, and admin disable/delete/role or
+  password-reset paths revoke target users' stale cookies. Playground relay and
+  video content session paths now use live auth instead of direct cookie
+  parsing, and video content API-token fallback rejects non-enabled token
+  owners. The full Bun gate covered frontend build/redaction/budget/lint,
+  route audit (215 frontend calls / 307 Worker routes / 0 missing calls), WFP
+  dry-run checks, Realtime smoke contracts, workspace tests excluding the
+  Worker, and Worker/WFP wasm32 checks. Existing Worker warnings were limited
+  to the known `d1_repositories.rs` dead-code warnings.
+- `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib admin_oauth -- --nocapture`,
   `bun run check:web`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,

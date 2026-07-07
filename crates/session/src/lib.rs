@@ -12,7 +12,7 @@
 //! ```
 //!
 //! The payload is **signed but not encrypted**. It contains only public
-//! identity fields (`id`, `username`, `role`, `status`, `group`, `exp`) that
+//! identity fields (`id`, `username`, `role`, `status`, `group`, `iat`, `exp`) that
 //! the server already returns via `/api/user/self`; encrypting them would add
 //! complexity without security benefit. The HMAC signature prevents tampering.
 //!
@@ -60,6 +60,10 @@ pub struct SessionClaims {
     pub role: i32,
     pub status: i32,
     pub group: String,
+    /// Unix seconds when the cookie was issued. Defaults to 0 for cookies
+    /// created before this field existed.
+    #[serde(default)]
+    pub iat: i64,
     /// Unix seconds after which the cookie is no longer valid.
     pub exp: i64,
 }
@@ -110,6 +114,7 @@ impl SessionCodec {
     /// issuing time in Unix seconds; the cookie expires at
     /// `now_unix + ttl_seconds`.
     pub fn issue(&self, mut claims: SessionClaims, now_unix: i64) -> Result<String, SessionError> {
+        claims.iat = now_unix;
         claims.exp = now_unix.saturating_add(self.ttl_seconds);
         let payload_json =
             serde_json::to_string(&claims).map_err(|err| SessionError::Decode(err.to_string()))?;
@@ -201,6 +206,7 @@ mod tests {
             role,
             status: 1,
             group: "default".to_string(),
+            iat: 0,
             exp: 0,
         }
     }
@@ -217,8 +223,31 @@ mod tests {
         assert_eq!(parsed.role, 10);
         assert_eq!(parsed.username, "user-42");
         assert_eq!(parsed.group, "default");
+        assert_eq!(parsed.iat, now);
         // Expiry is now + default TTL.
         assert_eq!(parsed.exp, now + DEFAULT_TTL_SECONDS);
+    }
+
+    #[test]
+    fn parse_accepts_legacy_payload_without_iat() {
+        let codec = SessionCodec::with_default_ttl(test_secret()).unwrap();
+        let now = 1_700_000_000;
+        let payload_json = serde_json::json!({
+            "id": 42,
+            "username": "legacy",
+            "role": 1,
+            "status": 1,
+            "group": "default",
+            "exp": now + DEFAULT_TTL_SECONDS
+        })
+        .to_string();
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(codec.sign(payload_b64.as_bytes()).unwrap());
+        let cookie = format!("{payload_b64}.{sig_b64}");
+
+        let parsed = codec.parse(&cookie, now).unwrap();
+        assert_eq!(parsed.username, "legacy");
+        assert_eq!(parsed.iat, 0);
     }
 
     #[test]

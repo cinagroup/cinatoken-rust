@@ -6862,6 +6862,60 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.116 2026-07-07 Session Revocation Epoch
+
+This increment closes the browser-session all-devices revocation gap while
+preserving the Worker-native stateless cookie strategy. Rust sessions now carry
+an `iat` issue timestamp, and D1 `users.session_epoch` acts as the authoritative
+not-before timestamp for that user's browser sessions.
+
+Implemented:
+
+- Added D1 migration `0017_user_session_epoch.sql` with
+  `users.session_epoch INTEGER NOT NULL DEFAULT 0` and an index.
+- `crates/session` now includes `iat` in signed session claims. The parser
+  still accepts legacy Rust cookies without `iat`, defaulting them to `0`.
+- `require_user_auth` now rejects signed cookies whose `iat` is older than the
+  live D1 `session_epoch`, in addition to the existing live D1
+  role/status/group/deleted-user recheck.
+- Password login, 2FA login, GitHub/OIDC/Discord OAuth login, and WeChat login
+  share one session-claims helper so future session fields are not missed.
+- Self-service password change bumps `session_epoch` and immediately reissues
+  the current browser session, so other devices are revoked while the current
+  password-change flow can continue.
+- Self-delete clears the current session cookie. Admin password reset, role
+  promote/demote, disable, delete, and direct delete bump the target user's
+  `session_epoch`, revoking stale cookies before any re-enable path can reuse
+  them.
+- The remaining Worker call sites that previously read `parse_session_claims`
+  directly now go through live session auth: playground relay uses
+  `require_user_auth`, and the video content TokenOrUserAuth path uses
+  `optional_user_auth` before falling back to an API token.
+- Video content API-token fallback now also rejects tokens whose owning user is
+  not enabled, matching the live session status boundary.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-session --lib -- --nocapture` passed.
+- `cargo test -p cinatoken-worker --lib admin -- --nocapture` passed, covering
+  the new live session epoch rejection test.
+- `cargo test -p cinatoken-worker --lib admin_user -- --nocapture` passed.
+- `cargo test -p cinatoken-worker --lib admin_oauth -- --nocapture` passed.
+- `cargo test -p cinatoken-worker --lib relay -- --nocapture` passed.
+- `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`
+  passed.
+
+Remaining migration gaps:
+
+- Apply D1 migrations through `0017` in staging/production before deploying
+  code that reads `users.session_epoch`.
+- Capture staging browser smoke for: login on two browsers/devices, password
+  change revokes the older session, admin disable/delete rejects old cookies,
+  and re-enable does not resurrect a pre-disable cookie.
+- Keep custom/generic OAuth callback hardening and deployed fixed-provider
+  replay smoke as separate auth-flow blockers.
+
 ### 22.115 2026-07-07 Browser-Bound OAuth State
 
 This increment closes the fixed-provider OAuth login-CSRF/session-fixation gap
@@ -6941,7 +6995,9 @@ Remaining migration gaps:
 - This is a live authorization recheck, not a complete server-side session
   revocation system. A `session_epoch`/`session_version` column embedded in
   `SessionClaims`, bumped on password change and "log out everywhere", is still
-  needed to fully close F4.
+  needed to fully close F4. Superseded by 22.116: Rust now uses signed
+  `iat` claims plus D1 `users.session_epoch` for stale-cookie revocation; live
+  staging smoke remains required.
 - Because every session-authenticated request now reads D1, staging should
   measure admin/frontend latency and decide whether a very short, explicitly
   invalidated edge cache is worthwhile. Do not reintroduce cookie-only

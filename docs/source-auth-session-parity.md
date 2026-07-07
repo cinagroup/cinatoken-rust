@@ -27,8 +27,18 @@ Go uses `gin-contrib/sessions` cookie store: session serialized with
 
 Rust (`crates/session`) uses a **stateless HMAC-SHA256-signed** cookie
 (`base64url(payload).base64url(hmac)`), same cookie name `session`, same 30-day
-TTL, payload fields mirroring the Go session keys plus `exp`. The format is
-**deliberately not Go-compatible**.
+TTL, payload fields mirroring the Go session keys plus `iat` and `exp`. The
+format is **deliberately not Go-compatible**.
+
+2026-07-07 update: Rust session authorization now treats cookie claims as a
+signed identity hint rather than as the final authorization source. Each
+protected request reloads the live D1 user row, refreshes username/role/status
+and group from that row, rejects disabled or soft-deleted users, and rejects
+cookies whose `iat` is older than `users.session_epoch`. Migration
+`0017_user_session_epoch.sql` adds that epoch. Password changes reissue the
+current browser session after bumping the epoch; admin password reset,
+disable/delete, and role promote/demote bump the target user's epoch so old
+browser cookies do not survive account recovery or re-enable.
 
 > **Decision (already made): forced re-auth.** Go-issued cookies are not readable
 > by Rust. Cutover logs every browser session out; users sign in again. This is
@@ -53,7 +63,8 @@ TTL, payload fields mirroring the Go session keys plus `exp`. The format is
    audit row (`beginAdminAudit`/`finishAdminAudit`).
 
 Rust status: `require_user_auth/admin/root` enforce role (`is_admin`/`is_root`)
-and disabled-status from session claims, with admin audit. Gaps below.
+after live D1 role/status/group/session-epoch recheck, with admin audit. Gaps
+below.
 
 ## Relay Token Auth (`TokenAuth`)
 
@@ -135,9 +146,11 @@ implemented; operator CRUD and frontend smoke are pending. Auth-specific gaps:
 3. Implement the `sk-<key>-<channelid>` admin pin with non-admin 403.
 4. Confirm relay key-extraction precedence (WS/Anthropic/Gemini/mj) parity.
 5. Resolve password-hash parity vs forced reset.
-6. Define OAuth state / Passkey challenge storage (KV/DO) and WebAuthn runtime
+6. Apply `0017_user_session_epoch.sql` before deploying session-epoch-aware
+   Worker code, then capture staging smoke for all-devices revocation.
+7. Define OAuth state / Passkey challenge storage (KV/DO) and WebAuthn runtime
    (WASM vs Container), plus the forced re-enroll policy.
-7. Keep admin-mutation audit on every `require_admin_auth/root_auth` path
+8. Keep admin-mutation audit on every `require_admin_auth/root_auth` path
    (matches `authHelper`'s automatic audit).
 
 ## Wire-In

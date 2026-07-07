@@ -141,10 +141,11 @@ A full diff of every Go-registered route against the Rust worker closed these
 5. Capacity, cost, security, SLO, canary and rollback evidence are incomplete.
 6. Passkey WebAuthn finish verification must be implemented in a Worker-safe
    verifier or kept disabled with a signed forced-reset/re-enroll policy.
-7. Browser-session production approval still needs `session_epoch` /
-   all-devices revocation beyond the live D1 role/status/group authorization
-   recheck. OAuth production approval still needs deployed replay smoke and
-   custom callback hardening.
+7. Browser-session production approval now has local `session_epoch` /
+   all-devices revocation support, but still needs D1 migration application
+   through `0017` plus staging browser smoke for password-change and
+   admin-disable/delete replay rejection. OAuth production approval still
+   needs deployed replay smoke and custom callback hardening.
 
 ## Current Safe Statement
 

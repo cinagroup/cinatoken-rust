@@ -3113,11 +3113,16 @@ async fn authenticate_playground_session(
     db: &D1Database,
     body: Option<&Value>,
 ) -> Result<AuthenticatedToken, worker::Result<Response>> {
-    let claims = match crate::admin::parse_session_claims(req, env).await {
-        Ok(Ok(Some(claims))) => claims,
-        Ok(Ok(None)) => return Err(openai_error_response("not logged in", 401)),
-        Ok(Err(_response)) => {
-            return Err(openai_error_response("failed to parse session", 500));
+    let claims = match crate::admin::require_user_auth(req, env).await {
+        Ok(Ok(claims)) => claims,
+        Ok(Err(response)) => {
+            let status = response.status_code();
+            let message = match status {
+                401 => "not logged in",
+                403 => "user is disabled",
+                _ => "failed to parse session",
+            };
+            return Err(openai_error_response(message, status));
         }
         Err(err) => return Err(worker_error_response(err)),
     };

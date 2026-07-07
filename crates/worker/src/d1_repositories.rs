@@ -4527,6 +4527,7 @@ pub struct UserRoleStatus {
     pub role: i32,
     pub status: i32,
     pub group: String,
+    pub session_epoch: i64,
     pub deleted_at: Option<i64>,
 }
 
@@ -4535,7 +4536,7 @@ pub async fn find_user_role_status(
     id: i64,
 ) -> worker::Result<Option<UserRoleStatus>> {
     let arg = D1Type::Integer(d1_i32(id));
-    db.prepare(r#"SELECT id, username, role, status, "group", deleted_at FROM users WHERE id = ?1 LIMIT 1"#)
+    db.prepare(r#"SELECT id, username, role, status, "group", session_epoch, deleted_at FROM users WHERE id = ?1 LIMIT 1"#)
         .bind_refs(&[arg])?
         .first::<UserRoleStatus>(None)
         .await
@@ -5637,6 +5638,33 @@ pub async fn set_user_role(db: &D1Database, id: i64, role: i32) -> worker::Resul
     let args = [D1Type::Integer(role), D1Type::Integer(d1_i32(id))];
     let result = db
         .prepare("UPDATE users SET role = ?1 WHERE id = ?2")
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    let changes = result.meta()?.and_then(|m| m.changes).unwrap_or(0);
+    Ok(changes > 0)
+}
+
+pub async fn bump_user_session_epoch(
+    db: &D1Database,
+    id: i64,
+    session_epoch: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(d1_i32(session_epoch)),
+        D1Type::Integer(d1_i32(id)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE users
+            SET session_epoch = CASE
+                WHEN session_epoch > ?1 THEN session_epoch
+                ELSE ?1
+            END
+            WHERE id = ?2
+            "#,
+        )
         .bind_refs(&args)?
         .run()
         .await?;

@@ -164,10 +164,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   server-side `status` / `sync_official` filters. The enrichment reuses the
   pricing-row context and D1 batch channel lookups instead of per-row queries.
 - `crates/session` implements the stateless HMAC-signed session cookie codec
-  (base64url JSON payload + HMAC-SHA256 signature). 10 unit tests cover
-  round-trip, tamper/expiry rejection, and secret-length enforcement. Cookie
-  name is `session` and attributes are `HttpOnly; SameSite=Strict; Secure`,
-  matching the React dashboard's expectations.
+  (base64url JSON payload + HMAC-SHA256 signature). 11 unit tests cover
+  round-trip, tamper/expiry rejection, secret-length enforcement, and legacy
+  Rust cookie parsing without `iat`. Cookie name is `session` and attributes
+  are `HttpOnly; SameSite=Strict; Secure`, matching the React dashboard's
+  expectations.
 - Operational dashboard compatibility (`crates/worker/src/operations.rs`):
   `GET /api/uptime/status` reads Uptime Kuma group options and performs
   bounded outbound JSON fetches with timeout/body limits and SSRF guardrails;
@@ -234,7 +235,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `require_admin_auth` / `require_root_auth` middleware helpers for the next
   G5 batch. Session guards now re-fetch live D1 user role/status/group, and the
   fixed GitHub/Discord/OIDC OAuth callbacks require browser-bound single-use
-  state before token exchange.
+  state before token exchange. Migration `0017_user_session_epoch.sql` adds
+  `users.session_epoch`; signed Rust cookies now carry `iat`, and auth rejects
+  cookies older than the live epoch so password changes and admin
+  disable/delete/role changes revoke stale browser sessions.
 - `GET /api/status` reports `session_auth: true` when `SESSION_SECRET` is
   configured.
 - Frontend deploy pipeline: `wrangler.toml` `[assets]` block + Worker SPA

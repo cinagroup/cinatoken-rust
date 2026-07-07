@@ -6,7 +6,6 @@
 //! public HTTPS endpoint before sending the authorization token from the edge.
 
 use cinatoken_auth::USER_STATUS_DISABLED;
-use cinatoken_session::SessionClaims;
 use cinatoken_ssrf::SsrfPolicy;
 use futures_util::future::{select, Either};
 use serde::{Deserialize, Serialize};
@@ -20,7 +19,7 @@ use worker::{
 
 use crate::admin::{
     attach_session_cookie, envelope_error_response, envelope_ok_response, read_json_body,
-    require_user_auth, session_codec, unix_timestamp,
+    require_user_auth, session_claims_from_user, session_codec, unix_timestamp,
 };
 use crate::d1_repositories::{self, AdminUserRow};
 
@@ -166,14 +165,7 @@ async fn issue_login_response(
             err
         );
     }
-    let claims = SessionClaims {
-        id: user.id,
-        username: user.username.clone(),
-        role: user.role,
-        status: user.status,
-        group: user.group.clone(),
-        exp: 0,
-    };
+    let claims = session_claims_from_user(&user);
     let cookie_value = match codec.issue(claims, now) {
         Ok(value) => value,
         Err(err) => {

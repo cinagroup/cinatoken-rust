@@ -42,6 +42,20 @@ pub(crate) fn admin_audit_info(claims: &SessionClaims, req: &Request) -> AdminAu
     }
 }
 
+pub(crate) fn session_claims_from_user(
+    user: &crate::d1_repositories::AdminUserRow,
+) -> SessionClaims {
+    SessionClaims {
+        id: user.id,
+        username: user.username.clone(),
+        role: user.role,
+        status: user.status,
+        group: user.group.clone(),
+        iat: 0,
+        exp: 0,
+    }
+}
+
 use crate::set_cors_headers;
 
 const SESSION_SECRET_ENV: &str = "SESSION_SECRET";
@@ -271,14 +285,7 @@ pub async fn login(mut req: Request, env: Env) -> WorkerResult<Response> {
         );
     }
 
-    let claims = SessionClaims {
-        id: user.id,
-        username: user.username.clone(),
-        role: user.role,
-        status: user.status,
-        group: user.group.clone(),
-        exp: 0,
-    };
+    let claims = session_claims_from_user(&user);
     let cookie_value = match codec.issue(claims, now) {
         Ok(value) => value,
         Err(err) => {
@@ -379,14 +386,7 @@ pub async fn login_2fa(mut req: Request, env: Env) -> WorkerResult<Response> {
         }
     }
 
-    let claims = SessionClaims {
-        id: user.id,
-        username: user.username.clone(),
-        role: user.role,
-        status: user.status,
-        group: user.group.clone(),
-        exp: 0,
-    };
+    let claims = session_claims_from_user(&user);
     let cookie_value = match codec.issue(claims, now) {
         Ok(value) => value,
         Err(err) => {
@@ -718,6 +718,7 @@ pub async fn parse_session_claims(
 enum LiveSessionRecheckError {
     Deleted,
     Disabled,
+    Revoked,
 }
 
 fn refresh_session_claims_from_live_user(
@@ -729,6 +730,9 @@ fn refresh_session_claims_from_live_user(
     }
     if user.status != USER_STATUS_ENABLED {
         return Err(LiveSessionRecheckError::Disabled);
+    }
+    if user.session_epoch > 0 && claims.iat < user.session_epoch {
+        return Err(LiveSessionRecheckError::Revoked);
     }
     claims.id = user.id;
     claims.username = user.username.clone();
@@ -763,11 +767,23 @@ pub async fn optional_user_auth(
                 Err(LiveSessionRecheckError::Disabled) => {
                     Ok(Err(envelope_error_response(403, "user is disabled")))
                 }
+                Err(LiveSessionRecheckError::Revoked) => Ok(Err(session_rejected_response(
+                    401,
+                    "session has been revoked; sign in again",
+                ))),
             }
         }
         Ok(None) => Ok(Ok(None)),
         Err(response) => Ok(Err(response)),
     }
+}
+
+fn session_rejected_response(status: u16, message: &str) -> Response {
+    let mut response = envelope_error_response(status, message);
+    let _ = response
+        .headers_mut()
+        .append("Set-Cookie", &build_clear_cookie_value());
+    response
 }
 
 /// Require a logged-in user. On success returns the claims; on failure
@@ -1726,6 +1742,7 @@ mod tests {
             role: ROLE_ROOT_USER,
             status: USER_STATUS_ENABLED,
             group: "stale-group".to_string(),
+            iat: 1_700_000_000,
             exp: 2_000_000_000,
         }
     }
@@ -1741,6 +1758,7 @@ mod tests {
             role,
             status,
             group: "live-group".to_string(),
+            session_epoch: 0,
             deleted_at,
         }
     }
@@ -1757,6 +1775,7 @@ mod tests {
         assert_eq!(refreshed.role, 1);
         assert_eq!(refreshed.status, USER_STATUS_ENABLED);
         assert_eq!(refreshed.group, "live-group");
+        assert_eq!(refreshed.iat, 1_700_000_000);
         assert_eq!(refreshed.exp, 2_000_000_000);
     }
 
@@ -1778,6 +1797,19 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err(), LiveSessionRecheckError::Deleted);
+    }
+
+    #[test]
+    fn live_session_recheck_rejects_revoked_session_epoch() {
+        let mut live_user = test_user_role_status(1, USER_STATUS_ENABLED, None);
+        live_user.session_epoch = 1_700_000_001;
+
+        let result = refresh_session_claims_from_live_user(test_session_claims(), &live_user);
+
+        assert_eq!(result.unwrap_err(), LiveSessionRecheckError::Revoked);
+
+        live_user.session_epoch = 1_700_000_000;
+        assert!(refresh_session_claims_from_live_user(test_session_claims(), &live_user).is_ok());
     }
 
     #[test]

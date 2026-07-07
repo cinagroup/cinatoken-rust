@@ -19,12 +19,13 @@ use cinatoken_auth::{
     hash_password, is_root, outranks, verify_password, ROLE_ADMIN_USER, ROLE_COMMON_USER,
     ROLE_ROOT_USER, USER_STATUS_DISABLED, USER_STATUS_ENABLED,
 };
+use cinatoken_session::build_clear_cookie_value;
 use serde::{Deserialize, Serialize};
 use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::admin::{
-    envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
-    require_user_auth, unix_timestamp,
+    attach_session_cookie, envelope_error_response, envelope_ok_response, read_json_body,
+    require_admin_auth, require_user_auth, session_claims_from_user, session_codec, unix_timestamp,
 };
 use crate::cache_invalidation::invalidate_token_cache;
 use crate::d1_repositories;
@@ -431,7 +432,11 @@ pub async fn delete_self(req: Request, env: Env) -> WorkerResult<Response> {
     }
     let db = env.d1("DB")?;
     d1_repositories::soft_delete_user(&db, claims.id, unix_timestamp()).await?;
-    Ok(envelope_ok_response(&serde_json::Value::Null)?)
+    let mut response = envelope_ok_response(&serde_json::Value::Null)?;
+    response
+        .headers_mut()
+        .append("Set-Cookie", &build_clear_cookie_value())?;
+    Ok(response)
 }
 
 /// `GET /api/user/token`: (re)generate the caller's system access token (Go
@@ -663,7 +668,36 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
     )
     .await?;
 
-    Ok(envelope_ok_response(&serde_json::Value::Null)?)
+    let mut response = envelope_ok_response(&serde_json::Value::Null)?;
+    if update_password {
+        let session_epoch = unix_timestamp();
+        if !d1_repositories::bump_user_session_epoch(&db, claims.id, session_epoch).await? {
+            return Ok(envelope_error_response(
+                401,
+                "session user no longer exists",
+            ));
+        }
+        let codec = match session_codec(&env)? {
+            Ok(codec) => codec,
+            Err(response) => return Ok(response),
+        };
+        let mut refreshed_user = user;
+        if let Some(username) = username {
+            refreshed_user.username = username.to_string();
+        }
+        let cookie_value =
+            match codec.issue(session_claims_from_user(&refreshed_user), session_epoch) {
+                Ok(value) => value,
+                Err(err) => {
+                    return Ok(envelope_error_response(
+                        500,
+                        &format!("failed to issue session: {err}"),
+                    ));
+                }
+            };
+        attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    }
+    Ok(response)
 }
 
 /// A 32-char random access token from the same alphabet as [`random_aff_code`]
@@ -1366,6 +1400,9 @@ pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
         let _ = d1_repositories::set_user_role(&db, id, new_role).await;
         let _ = invalidate_token_cache(&env).await;
     }
+    if password_hash.is_some() || payload.role.is_some() {
+        let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
+    }
     let _ = crate::d1_repositories::insert_admin_audit_log(
         &db,
         Some(id),
@@ -1416,6 +1453,7 @@ pub async fn delete_user(
         ));
     }
     let _ = invalidate_token_cache(&env).await;
+    let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
     let _ = crate::d1_repositories::insert_admin_audit_log(
         &db,
         Some(id),
@@ -1567,6 +1605,7 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
                 return Ok(envelope_error_response(403, "cannot disable a root user"));
             }
             let _ = d1_repositories::set_user_status(&db, id, USER_STATUS_DISABLED).await;
+            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
             invalidate = true;
         }
         "enable" => {
@@ -1584,6 +1623,7 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
                 return Ok(envelope_error_response(403, "cannot delete a root user"));
             }
             let _ = d1_repositories::soft_delete_user(&db, id, unix_timestamp()).await;
+            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
             invalidate = true;
         }
         "promote" => {
@@ -1594,6 +1634,7 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
                 return Ok(envelope_error_response(400, "user is already an admin"));
             }
             let _ = d1_repositories::set_user_role(&db, id, ROLE_ADMIN_USER).await;
+            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
             invalidate = true;
         }
         "demote" => {
@@ -1610,6 +1651,7 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
                 ));
             }
             let _ = d1_repositories::set_user_role(&db, id, ROLE_COMMON_USER).await;
+            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
             invalidate = true;
         }
         "add_quota" => {

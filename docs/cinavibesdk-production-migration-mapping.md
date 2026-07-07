@@ -454,8 +454,10 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   billing authority: one deterministic `TASK_RUNNER` DO per task, bounded alarm
   delay, persisted alarm-fired evidence, and default-off video/remix/Suno
   submit-path arming behind `TASK_RUNNER_DO_ENABLED=false`. Alarm poll-path
-  wiring, live replay, cron fallback, and no-double-poll CAS proof remain
-  required before the fast path can influence settlement latency.
+  wiring and an admin-only `/api/platform/task-runner/:task_id/status` probe
+  are now compiled, and `tools/smoke_task_runner_alarm_replay.mjs` provides the
+  read-only replay plan. Live replay, cron fallback, and no-double-poll CAS
+  proof remain required before the fast path can influence settlement latency.
 - WFP tenant AI routes must either call back through an owned billing path or
   produce equivalent audit and settlement evidence before paid traffic is routed
   there.

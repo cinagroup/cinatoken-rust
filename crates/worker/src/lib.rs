@@ -124,6 +124,13 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/platform/capabilities", |req, ctx| async move {
             platform_gateway::capabilities(req, ctx.env).await
         })
+        .get_async(
+            "/api/platform/task-runner/:task_id/status",
+            |req, ctx| async move {
+                let task_id = ctx.param("task_id").cloned();
+                platform_gateway::task_runner_status(req, ctx.env, task_id).await
+            },
+        )
         .post_async(
             "/api/platform/wfp/tenant-script/plan",
             |req, ctx| async move { wfp_tenant::plan(req, ctx.env).await },
@@ -1645,6 +1652,7 @@ mod tests {
             "/api/status",
             "/api/setup",
             "/api/platform/capabilities",
+            "/api/platform/task-runner/task-smoke/status",
             "/api/platform/dispatch/tenant-a",
             "/api/platform/realtime/session-a",
             "/api/user/login",

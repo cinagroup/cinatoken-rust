@@ -33,9 +33,10 @@ use crate::task_repository::{
     task_refund_cas_batch_compiled, task_refund_replay_contract_compiled,
 };
 use crate::task_runner::{
-    is_task_runner_cutover_ready, task_runner_alarm_contract_compiled, task_runner_cutover_guards,
-    task_runner_do_foundation_compiled, task_runner_poll_path_compiled,
-    task_runner_staging_replay_verified, task_runner_submit_path_compiled, TASK_RUNNER_BINDING,
+    fetch_task_runner_status, is_task_runner_cutover_ready, task_runner_alarm_contract_compiled,
+    task_runner_cutover_guards, task_runner_do_foundation_compiled, task_runner_poll_path_compiled,
+    task_runner_staging_replay_verified, task_runner_status_probe_compiled,
+    task_runner_status_probe_task_id, task_runner_submit_path_compiled, TASK_RUNNER_BINDING,
     TASK_RUNNER_DO_ENABLED_ENV,
 };
 use crate::wfp_tenant::{
@@ -157,6 +158,7 @@ struct PlatformCapabilities {
     task_runner_alarm_contract_compiled: bool,
     task_runner_submit_path_compiled: bool,
     task_runner_poll_path_compiled: bool,
+    task_runner_status_probe_compiled: bool,
     task_runner_staging_replay_verified: bool,
     task_runner_cutover_ready: bool,
     task_runner_cutover_guards: Vec<&'static str>,
@@ -281,6 +283,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let task_runner_alarm_contract_compiled = task_runner_alarm_contract_compiled();
     let task_runner_submit_path_compiled = task_runner_submit_path_compiled();
     let task_runner_poll_path_compiled = task_runner_poll_path_compiled();
+    let task_runner_status_probe_compiled = task_runner_status_probe_compiled();
     let task_runner_staging_replay_verified = task_runner_staging_replay_verified(&env);
     let task_runner_cutover_ready = is_task_runner_cutover_ready(
         task_runner_do_available,
@@ -289,6 +292,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_alarm_contract_compiled,
         task_runner_submit_path_compiled,
         task_runner_poll_path_compiled,
+        task_runner_status_probe_compiled,
         task_runner_staging_replay_verified,
     );
 
@@ -356,6 +360,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_alarm_contract_compiled,
         task_runner_submit_path_compiled,
         task_runner_poll_path_compiled,
+        task_runner_status_probe_compiled,
         task_runner_staging_replay_verified,
         task_runner_cutover_ready,
         task_runner_cutover_guards: task_runner_cutover_guards(),
@@ -366,6 +371,40 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     };
 
     envelope_ok_response(&capabilities)
+}
+
+pub async fn task_runner_status(
+    req: Request,
+    env: Env,
+    task_id: Option<String>,
+) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let Some(task_id) = task_id
+        .as_deref()
+        .and_then(task_runner_status_probe_task_id)
+    else {
+        return gateway_error(
+            400,
+            "invalid_task_runner_task_id",
+            "TaskRunner status probe requires a valid task id",
+        );
+    };
+    let status = match fetch_task_runner_status(&env, &task_id).await {
+        Ok(status) => status,
+        Err(err) => {
+            worker::console_warn!("TaskRunner status probe unavailable: {}", err);
+            return gateway_error(
+                503,
+                "task_runner_status_unavailable",
+                "TaskRunner status probe is unavailable",
+            );
+        }
+    };
+    let mut response = envelope_ok_response(&status)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
 }
 
 /// Resolve whether this request should be handled by WFP dispatch before the
@@ -1020,14 +1059,16 @@ mod tests {
         assert!(task_runner_alarm_contract_compiled());
         assert!(task_runner_submit_path_compiled());
         assert!(task_runner_poll_path_compiled());
+        assert!(task_runner_status_probe_compiled());
         let guards = task_runner_cutover_guards();
         assert!(guards.contains(&"task_runner_binding"));
         assert!(guards.contains(&"alarm_contract"));
         assert!(guards.contains(&"submit_path_armed"));
         assert!(guards.contains(&"cron_sweeper_fallback"));
         assert!(guards.contains(&"no_double_poll_cas"));
+        assert!(guards.contains(&"status_probe"));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, false
+            true, true, true, true, true, true, true, false
         ));
     }
 

@@ -4,6 +4,23 @@ Last checked: 2026-07-07
 
 ## Passed
 
+- `node --check tools/smoke_task_runner_alarm_replay.mjs`,
+  `bun tools/smoke_task_runner_alarm_replay.mjs --self-test --json`,
+  `bun tools/smoke_task_runner_alarm_replay.mjs --dry-run --json --url http://127.0.0.1:8787 --task-id task-smoke`,
+  `cargo fmt --all --check`,
+  `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:web:routes`,
+  `bun run check:web`,
+  `cargo test -p cinatoken-worker --lib`,
+  and `bun run check`: passed after adding an admin-only read probe for
+  `/api/platform/task-runner/:task_id/status`, exposing
+  `task_runner_status_probe_compiled` in `/api/platform/capabilities`, adding
+  the Cloudflare Platform panel row, and wiring the read-only TaskRunner alarm
+  replay smoke plan into `bun run check`. This is still pre-cutover evidence:
+  live staging replay, rollback, cron fallback, and no-double-poll CAS proof
+  remain required before `TASK_RUNNER_STAGING_REPLAY_VERIFIED=true`.
 - `cargo fmt --all --check`,
   `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,

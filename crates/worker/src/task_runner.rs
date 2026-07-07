@@ -7,6 +7,7 @@
 //! correctness spine.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::Duration;
 use worker::{durable_object, Env, Request, Response, Result as WorkerResult, State};
 
@@ -21,7 +22,9 @@ pub const TASK_RUNNER_DEFAULT_ALARM_DELAY_MS: i64 = 15_000;
 pub const TASK_RUNNER_MIN_ALARM_DELAY_MS: i64 = 1_000;
 pub const TASK_RUNNER_MAX_ALARM_DELAY_MS: i64 = 60_000;
 pub const TASK_RUNNER_RECORD_KEY: &str = "task_runner_record_v1";
+pub const TASK_RUNNER_STATUS_PROBE_ROUTE: &str = "/api/platform/task-runner/:task_id/status";
 const TASK_RUNNER_INSTANCE_PREFIX: &str = "task:";
+const TASK_RUNNER_STATUS_URL: &str = "https://task-runner/status";
 
 const TASK_RUNNER_CUTOVER_GUARDS: &[&str] = &[
     "task_runner_binding",
@@ -31,6 +34,7 @@ const TASK_RUNNER_CUTOVER_GUARDS: &[&str] = &[
     "submit_path_armed",
     "cron_sweeper_fallback",
     "no_double_poll_cas",
+    "status_probe",
     "staging_alarm_replay",
 ];
 
@@ -90,6 +94,13 @@ struct TaskRunnerStatusResponse {
     poll_status: Option<TaskRunnerPollStatus>,
     poll_reason: Option<String>,
     poll_cas_won: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskRunnerStatusProbe {
+    task_id: String,
+    instance: String,
+    durable_object_status: Value,
 }
 
 #[durable_object]
@@ -365,6 +376,12 @@ pub(crate) fn task_runner_poll_path_compiled() -> bool {
         && TaskRunnerPollOutcome::applied(100).cas_won == Some(true)
 }
 
+pub(crate) fn task_runner_status_probe_compiled() -> bool {
+    task_runner_poll_path_compiled()
+        && TASK_RUNNER_STATUS_PROBE_ROUTE == "/api/platform/task-runner/:task_id/status"
+        && TASK_RUNNER_STATUS_URL == "https://task-runner/status"
+}
+
 pub(crate) fn task_runner_staging_replay_verified(env: &Env) -> bool {
     task_runner_env_flag(env, TASK_RUNNER_STAGING_REPLAY_VERIFIED_ENV)
 }
@@ -380,6 +397,7 @@ pub(crate) fn is_task_runner_cutover_ready(
     alarm_contract_compiled: bool,
     submit_path_compiled: bool,
     poll_path_compiled: bool,
+    status_probe_compiled: bool,
     staging_replay_verified: bool,
 ) -> bool {
     binding_available
@@ -388,6 +406,7 @@ pub(crate) fn is_task_runner_cutover_ready(
         && alarm_contract_compiled
         && submit_path_compiled
         && poll_path_compiled
+        && status_probe_compiled
         && staging_replay_verified
 }
 
@@ -438,6 +457,41 @@ pub(crate) async fn arm_task_runner_after_submit(env: &Env, task_id: &str) {
             response.status_code()
         );
     }
+}
+
+pub(crate) async fn fetch_task_runner_status(
+    env: &Env,
+    task_id: &str,
+) -> WorkerResult<TaskRunnerStatusProbe> {
+    let task_id = task_runner_status_probe_task_id(task_id)
+        .ok_or_else(|| worker::Error::RustError("invalid task runner task id".to_string()))?;
+    let namespace = env.durable_object(TASK_RUNNER_BINDING)?;
+    let instance = task_runner_instance_name(&task_id);
+    let object_id = namespace.id_from_name(&instance)?;
+    let stub = object_id.get_stub()?;
+    let mut response = stub.fetch_with_str(TASK_RUNNER_STATUS_URL).await?;
+    let status_code = response.status_code();
+    let text = response.text().await?;
+    if status_code != 200 {
+        return Err(worker::Error::RustError(format!(
+            "task runner status probe returned {status_code}"
+        )));
+    }
+    let durable_object_status = serde_json::from_str::<Value>(&text).map_err(|err| {
+        worker::Error::RustError(format!(
+            "task runner status probe returned invalid JSON: {err}"
+        ))
+    })?;
+    Ok(TaskRunnerStatusProbe {
+        task_id,
+        instance,
+        durable_object_status,
+    })
+}
+
+pub(crate) fn task_runner_status_probe_task_id(task_id: &str) -> Option<String> {
+    let sanitized = sanitize_task_runner_task_id(task_id);
+    (sanitized != "unknown").then_some(sanitized)
 }
 
 pub(crate) fn task_runner_instance_name(task_id: &str) -> String {
@@ -533,6 +587,7 @@ mod tests {
         assert!(task_runner_alarm_contract_compiled());
         assert!(task_runner_submit_path_compiled());
         assert!(task_runner_poll_path_compiled());
+        assert!(task_runner_status_probe_compiled());
     }
 
     #[test]
@@ -567,6 +622,23 @@ mod tests {
     }
 
     #[test]
+    fn task_runner_status_probe_contract_is_sanitized() {
+        assert_eq!(
+            task_runner_status_probe_task_id("task_abc-123").as_deref(),
+            Some("task_abc-123")
+        );
+        assert_eq!(
+            task_runner_status_probe_task_id("../secret").as_deref(),
+            Some("secret")
+        );
+        assert_eq!(task_runner_status_probe_task_id("...").as_deref(), None);
+        assert_eq!(
+            TASK_RUNNER_STATUS_PROBE_ROUTE,
+            "/api/platform/task-runner/:task_id/status"
+        );
+    }
+
+    #[test]
     fn task_runner_poll_outcomes_are_bounded_and_serializable() {
         let skipped = TaskRunnerPollOutcome::skipped(100, "gate_disabled");
         assert_eq!(skipped.status, TaskRunnerPollStatus::Skipped);
@@ -588,20 +660,20 @@ mod tests {
     #[test]
     fn task_runner_cutover_waits_for_poll_path_and_staging_replay() {
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, false, true
+            true, true, true, true, true, false, true, true
         ));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, false
+            true, true, true, true, true, true, false, true
         ));
         assert!(is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true
         ));
-        for false_gate in 0..7 {
-            let mut flags = [true; 7];
+        for false_gate in 0..8 {
+            let mut flags = [true; 8];
             flags[false_gate] = false;
             assert!(
                 !is_task_runner_cutover_ready(
-                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6],
+                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
                 ),
                 "expected TaskRunner cutover to wait on gate index {false_gate}"
             );

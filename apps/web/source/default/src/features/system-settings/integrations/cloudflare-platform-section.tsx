@@ -98,6 +98,7 @@ export function CloudflarePlatformSection() {
         capabilities.task_runner_alarm_contract_compiled,
         capabilities.task_runner_submit_path_compiled,
         capabilities.task_runner_poll_path_compiled,
+        capabilities.task_runner_status_probe_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -560,6 +561,16 @@ function buildCapabilityGroups(
             'Alarm firing can reuse the shared provider poll and CAS settlement path, while cron remains the fallback authority.'
           ),
           ready: capabilities.task_runner_poll_path_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Pending'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('TaskRunner status probe'),
+          description: t(
+            'Admin-only read probe exposes the per-task Durable Object alarm and poll evidence without arming or deleting alarms.'
+          ),
+          ready: capabilities.task_runner_status_probe_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Pending'),
           missingVariant: 'neutral',

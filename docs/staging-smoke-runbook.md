@@ -126,6 +126,34 @@ Pass criteria:
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
 
+## Phase 0b: TaskRunner Replay Probe Plan
+
+Run the read-only TaskRunner contracts before enabling any staging alarm fast
+path:
+
+```powershell
+bun run check:task-runner:alarm-replay-contract
+bun run check:task-runner:alarm-replay-plan
+```
+
+After staging has a low-risk shared task id and `TASK_RUNNER_DO_ENABLED=true`
+has been enabled only for the controlled replay, run:
+
+```powershell
+bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --json
+```
+
+Pass criteria:
+
+- `/api/platform/capabilities` reports `task_runner_status_probe_compiled=true`
+  and `task_runner_cutover_ready=false`.
+- `GET /api/platform/task-runner/:task_id/status` returns only metadata:
+  alarm timing, poll status, bounded reason, and CAS ownership.
+- The report includes first poll evidence and a second replay/no-op or cron
+  fallback snapshot before `TASK_RUNNER_STAGING_REPLAY_VERIFIED` is considered.
+- Rollback evidence shows `TASK_RUNNER_DO_ENABLED=false` with cron still owning
+  settlement.
+
 ## Phase 1: Cloudflare Binding Smoke
 
 Deploy or update staging using the configured staging command.

@@ -7284,6 +7284,69 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.126 2026-07-07 TaskRunner Status Probe + Replay Plan
+
+This increment makes the default-off M5b `TaskRunner` alarm path operator
+verifiable without adding a new write/control surface. The Worker now exposes a
+read-only admin probe for a task's Durable Object status and a Bun smoke tool
+that turns the remaining staging replay requirement into an executable plan.
+It still does **not** enable production fast-path settlement:
+`TASK_RUNNER_DO_ENABLED=false` and `TASK_RUNNER_STAGING_REPLAY_VERIFIED=false`
+remain the safe defaults, and cutover readiness remains false until staging
+archives live replay, rollback, cron fallback, and no-double-poll CAS evidence.
+
+Implemented:
+
+- Added `GET /api/platform/task-runner/:task_id/status`, protected by
+  AdminAuth, which resolves the deterministic per-task `TASK_RUNNER` Durable
+  Object and returns only metadata from its internal `/status`: alarm timing,
+  poll status, bounded reason, and CAS ownership. The route does not expose
+  `/arm` or `/delete`.
+- Added `task_runner_status_probe_compiled=true` to
+  `/api/platform/capabilities`, included `status_probe` in the TaskRunner
+  cutover guard list, and kept `task_runner_cutover_ready=false` unless the
+  binding, gate, foundation, alarm, submit, poll, status probe, and staging
+  replay evidence all exist.
+- Extended the Cloudflare Platform admin panel with a `TaskRunner status
+  probe` row so operators can see whether the read-only replay evidence path is
+  present.
+- Added `tools/smoke_task_runner_alarm_replay.mjs` plus
+  `smoke:task-runner`, `check:task-runner:alarm-replay-contract`, and
+  `check:task-runner:alarm-replay-plan`. The tool defaults to dry-run/self-test
+  behavior; live mode requires `--confirm-live` and performs only GET requests
+  to `/api/platform/capabilities` and the status probe.
+- Updated the production config checklist, staging smoke runbook, layered
+  architecture map, production readiness matrix, cinaVibeSDK mapping, phase-1
+  next steps, and this migration plan to state that the status probe is
+  evidence infrastructure, not cutover evidence by itself.
+
+Validation:
+
+- `node --check tools/smoke_task_runner_alarm_replay.mjs` passed.
+- `bun tools/smoke_task_runner_alarm_replay.mjs --self-test --json` passed.
+- `bun tools/smoke_task_runner_alarm_replay.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --task-id task-smoke` passed.
+- `cargo fmt --all --check` passed.
+- `cargo test -p cinatoken-worker --lib task_runner -- --nocapture` passed.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- `bun run check:web:routes` passed.
+- `bun run check:web` passed.
+- `cargo test -p cinatoken-worker --lib` passed with 489 tests.
+- `bun run check` passed.
+
+Remaining migration gaps:
+
+- Run the live staging TaskRunner replay using an isolated task id and archive
+  status-probe output for flag-on arming, alarm fire, provider poll, CAS win,
+  second replay/no-op, cron fallback, and rollback.
+- Keep M5a staging timeout/provider-failure/no-duplicate-refund evidence as a
+  prerequisite before treating TaskRunner alarm evidence as production cutover
+  input.
+- Keep Midjourney on cron until its separate table/poller has an explicit DO,
+  Queue, or R2 artifact decision.
+
 ### 22.125 2026-07-07 TaskRunner Alarm Poll Handoff
 
 This increment moves the default-off M5b `TaskRunner` alarm from evidence-only

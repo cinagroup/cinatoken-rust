@@ -4,6 +4,21 @@ Last checked: 2026-07-07
 
 ## Passed
 
+- `node --check tools/smoke_realtime_session.mjs`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:upstream-replay-contract`,
+  `bun run check:web`,
+  `cargo fmt --all --check`,
+  `git diff --check`, and `bun run check`: passed after wiring
+  metadata-only Realtime upstream `response.done` usage capture into
+  `RealtimeSession` DO metrics, `/api/platform/capabilities`, the Cloudflare
+  Platform frontend panel, and the Realtime smoke preflight. The new
+  `realtime_session_upstream_usage_capture_compiled` signal remains a
+  pre-settlement guard: `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` stay false until reserve/refund/final
+  audit settlement is implemented and proven.
 - `node --check tools/smoke_task_runner_alarm_replay.mjs`,
   `bun tools/smoke_task_runner_alarm_replay.mjs --self-test --json`,
   `bun tools/smoke_task_runner_alarm_replay.mjs --dry-run --json --url http://127.0.0.1:8787 --task-id task-smoke --expect-replay-evidence first_apply`,

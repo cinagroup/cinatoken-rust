@@ -7932,6 +7932,63 @@ Remaining migration gaps:
   conventions as the REST/SSE relay before declaring billing settlement
   compiled.
 
+### 22.120 2026-07-07 Realtime Response Done Usage Capture
+
+This increment turns the Realtime usage parser contract into Durable Object
+runtime evidence. It still does not enable production Realtime billing
+settlement: the DO now records metadata-only `response.done` usage snapshots,
+while quota reserve, refund/additional settlement, and billing audit rows remain
+separate gates.
+
+Implemented:
+
+- Added metadata-only `RealtimeUsageMetadata` to
+  `crates/worker/src/realtime_session.rs` and extended persisted
+  `RealtimeSessionMetrics` with `usage_event_count`, `last_usage_at_ms`, and
+  `last_usage`.
+  - Existing DO storage remains compatible because the new fields use
+    `serde(default)`.
+  - Only numeric token counters and `source_event=response.done` are stored;
+    raw upstream frames, audio/text payloads, API-key subprotocols, and probe
+    fields are not serialized into metrics.
+- The upstream WebSocket event pump now inspects text frames before forwarding
+  them to the client. If the frame is `type=response.done` and contains usage
+  tokens, it updates the DO metrics storage with the latest usage snapshot.
+  Storage write failures are logged as warnings rather than breaking the live
+  WebSocket stream.
+- Added `REALTIME_UPSTREAM_USAGE_CAPTURE_COMPILED`,
+  `realtime_upstream_usage_capture_compiled()`, and the
+  `upstream_usage_capture` cutover guard. `/api/platform/capabilities`,
+  `tools/smoke_realtime_session.mjs`, and the default Cloudflare Platform
+  frontend panel now expose and preflight
+  `realtime_session_upstream_usage_capture_compiled`.
+- Kept `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false`; usage capture is necessary
+  settlement evidence, not final settlement authority.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed with 53 filtered Realtime/platform tests.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed with 17 filtered platform tests.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed
+  with the existing dead-code warnings in `d1_repositories.rs`.
+- `bun run check:realtime-session:upstream-replay-contract`, `bun run
+  check:web`, `cargo fmt --all --check`, `git diff --check`, and `bun run
+  check` passed.
+
+Remaining migration gaps:
+
+- Freeze a Realtime billing snapshot before upstream connect, reserve quota,
+  and prove refund/additional settlement against actual `response.done` usage.
+- Write Realtime audit metadata using the same `tiered_billing` / usage-source
+  conventions as the REST/SSE relay before declaring billing settlement
+  compiled.
+- Add archived live/staging Realtime evidence proving usage capture appears in
+  status/metrics during a non-production mock or provider-backed session.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

@@ -7,7 +7,7 @@
 //! testing.
 
 use cinatoken_relay::{
-    openai_compatible::{default_base_url, upstream_v1_url},
+    openai_compatible::{default_base_url, upstream_v1_url, usage_summary_from_body, UsageSummary},
     token_fingerprint,
 };
 use futures_util::StreamExt;
@@ -20,7 +20,7 @@ use std::time::Duration;
 use url::Url;
 use worker::{
     durable_object, Delay, Env, Fetch, Method, Request, Response, Result as WorkerResult, State,
-    WebSocket, WebSocketIncomingMessage, WebSocketPair, WebsocketEvent,
+    Storage, WebSocket, WebSocketIncomingMessage, WebSocketPair, WebsocketEvent,
 };
 
 use crate::platform_gateway::env_flag;
@@ -41,6 +41,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_EVENT_TRACE_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_REPLAY_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_POLICY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_RUNTIME_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_USAGE_CAPTURE_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -61,6 +62,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_replay_contract",
     "upstream_bridge_backpressure_policy",
     "upstream_bridge_backpressure_runtime",
+    "upstream_usage_capture",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -411,6 +413,20 @@ struct RealtimeBridgeTerminalEvent {
     frame_max_bytes: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct RealtimeUsageMetadata {
+    source_event: String,
+    prompt_tokens: i32,
+    completion_tokens: i32,
+    total_tokens: i32,
+    cached_tokens: i32,
+    cache_creation_tokens: i32,
+    image_input_tokens: i32,
+    image_output_tokens: i32,
+    audio_input_tokens: i32,
+    audio_output_tokens: i32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RealtimeBridgeReplayScenario {
     name: &'static str,
@@ -451,6 +467,12 @@ struct RealtimeSessionMetrics {
     last_close_code: Option<usize>,
     last_close_reason: Option<String>,
     last_error: Option<String>,
+    #[serde(default)]
+    usage_event_count: u32,
+    #[serde(default)]
+    last_usage_at_ms: Option<f64>,
+    #[serde(default)]
+    last_usage: Option<RealtimeUsageMetadata>,
     #[serde(default)]
     last_bridge_terminal_event: Option<RealtimeBridgeTerminalEvent>,
 }
@@ -982,6 +1004,8 @@ impl RealtimeSession {
         spawn_realtime_upstream_event_pump(
             runtime.state.clone(),
             client.clone(),
+            attachment.clone(),
+            self.state.storage(),
             context,
             handoff.startup_queue_probe_delay_ms,
             handoff.mock_upstream_fault,
@@ -1076,26 +1100,40 @@ impl RealtimeSession {
         session: &str,
         now_ms: f64,
     ) -> WorkerResult<RealtimeSessionMetrics> {
-        match self
-            .state
-            .storage()
-            .get::<RealtimeSessionMetrics>(SESSION_METRICS_KEY)
-            .await
-        {
-            Ok(mut metrics) => {
-                if metrics.session != session {
-                    metrics.session = session.to_string();
-                }
-                Ok(metrics)
-            }
-            Err(_) => Ok(RealtimeSessionMetrics::new(session, now_ms)),
-        }
+        let storage = self.state.storage();
+        load_realtime_session_metrics(&storage, session, now_ms).await
     }
 
     async fn store_metrics(&self, metrics: &RealtimeSessionMetrics) -> WorkerResult<()> {
         let mut storage = self.state.storage();
-        storage.put(SESSION_METRICS_KEY, metrics).await
+        store_realtime_session_metrics(&mut storage, metrics).await
     }
+}
+
+async fn load_realtime_session_metrics(
+    storage: &Storage,
+    session: &str,
+    now_ms: f64,
+) -> WorkerResult<RealtimeSessionMetrics> {
+    match storage
+        .get::<RealtimeSessionMetrics>(SESSION_METRICS_KEY)
+        .await
+    {
+        Ok(mut metrics) => {
+            if metrics.session != session {
+                metrics.session = session.to_string();
+            }
+            Ok(metrics)
+        }
+        Err(_) => Ok(RealtimeSessionMetrics::new(session, now_ms)),
+    }
+}
+
+async fn store_realtime_session_metrics(
+    storage: &mut Storage,
+    metrics: &RealtimeSessionMetrics,
+) -> WorkerResult<()> {
+    storage.put(SESSION_METRICS_KEY, metrics).await
 }
 
 impl RealtimeSessionMetrics {
@@ -1121,6 +1159,9 @@ impl RealtimeSessionMetrics {
             last_close_code: None,
             last_close_reason: None,
             last_error: None,
+            usage_event_count: 0,
+            last_usage_at_ms: None,
+            last_usage: None,
             last_bridge_terminal_event: None,
         }
     }
@@ -1177,6 +1218,18 @@ impl RealtimeSessionMetrics {
         event: RealtimeBridgeTerminalEvent,
     ) {
         self.last_bridge_terminal_event = Some(event);
+        self.record_context(attachment, now_ms);
+    }
+
+    fn record_realtime_usage(
+        &mut self,
+        attachment: Option<&SocketAttachment>,
+        now_ms: f64,
+        usage: RealtimeUsageMetadata,
+    ) {
+        self.usage_event_count = self.usage_event_count.saturating_add(1);
+        self.last_usage_at_ms = Some(now_ms);
+        self.last_usage = Some(usage);
         self.record_context(attachment, now_ms);
     }
 
@@ -1878,6 +1931,50 @@ pub(crate) fn realtime_upstream_bridge_backpressure_runtime_compiled() -> bool {
         )
 }
 
+pub(crate) fn realtime_upstream_usage_capture_compiled() -> bool {
+    if !REALTIME_UPSTREAM_USAGE_CAPTURE_COMPILED {
+        return false;
+    }
+    let Some(usage) = realtime_usage_metadata_from_upstream_text_frame(
+        r#"{
+            "type":"response.done",
+            "response":{
+                "usage":{
+                    "input_tokens":1200,
+                    "output_tokens":350,
+                    "total_tokens":1550,
+                    "input_token_details":{
+                        "cached_tokens":400,
+                        "audio_tokens":180
+                    },
+                    "output_token_details":{
+                        "audio_tokens":90
+                    }
+                }
+            },
+            "secret_probe":"sk-realtime-upstream-secret"
+        }"#,
+    ) else {
+        return false;
+    };
+    let serialized = serde_json::to_string(&usage).unwrap_or_default();
+
+    usage.source_event == "response.done"
+        && usage.prompt_tokens == 1200
+        && usage.completion_tokens == 350
+        && usage.total_tokens == 1550
+        && usage.cached_tokens == 400
+        && usage.audio_input_tokens == 180
+        && usage.audio_output_tokens == 90
+        && realtime_usage_metadata_from_upstream_text_frame(
+            r#"{"type":"session.updated","usage":{"total_tokens":1}}"#,
+        )
+        .is_none()
+        && !serialized.contains("sk-realtime-upstream-secret")
+        && !serialized.contains("secret_probe")
+        && !serialized.contains(OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX)
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -2107,9 +2204,61 @@ async fn connect_realtime_upstream(
     })
 }
 
+async fn record_realtime_upstream_usage(
+    storage: &mut Storage,
+    attachment: &SocketAttachment,
+    now_ms: f64,
+    usage: RealtimeUsageMetadata,
+) -> WorkerResult<()> {
+    let mut metrics = load_realtime_session_metrics(storage, &attachment.session, now_ms).await?;
+    metrics.record_realtime_usage(Some(attachment), now_ms, usage);
+    store_realtime_session_metrics(storage, &metrics).await
+}
+
+fn realtime_usage_metadata_from_upstream_text_frame(text: &str) -> Option<RealtimeUsageMetadata> {
+    let value = serde_json::from_str::<Value>(text).ok()?;
+    let source_event = value.get("type").and_then(Value::as_str)?;
+    if source_event != "response.done" {
+        return None;
+    }
+    let usage = usage_summary_from_body(text);
+    RealtimeUsageMetadata::from_usage(source_event, usage)
+}
+
+impl RealtimeUsageMetadata {
+    fn from_usage(source_event: &str, usage: UsageSummary) -> Option<Self> {
+        realtime_usage_summary_has_tokens(&usage).then(|| Self {
+            source_event: source_event.to_string(),
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+            cached_tokens: usage.cached_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+            image_input_tokens: usage.image_input_tokens,
+            image_output_tokens: usage.image_output_tokens,
+            audio_input_tokens: usage.audio_input_tokens,
+            audio_output_tokens: usage.audio_output_tokens,
+        })
+    }
+}
+
+fn realtime_usage_summary_has_tokens(usage: &UsageSummary) -> bool {
+    usage.total_tokens > 0
+        || usage.prompt_tokens > 0
+        || usage.completion_tokens > 0
+        || usage.cached_tokens > 0
+        || usage.cache_creation_tokens > 0
+        || usage.image_input_tokens > 0
+        || usage.image_output_tokens > 0
+        || usage.audio_input_tokens > 0
+        || usage.audio_output_tokens > 0
+}
+
 fn spawn_realtime_upstream_event_pump(
     runtime_state: Rc<RefCell<RealtimeUpstreamBridgeState>>,
     client: WebSocket,
+    attachment: SocketAttachment,
+    mut metrics_storage: Storage,
     context: Value,
     startup_queue_probe_delay_ms: Option<u32>,
     mock_upstream_fault: Option<RealtimeMockUpstreamFault>,
@@ -2198,6 +2347,23 @@ fn spawn_realtime_upstream_event_pump(
                             let _ =
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
+                        }
+                        if let Some(usage) = realtime_usage_metadata_from_upstream_text_frame(&text)
+                        {
+                            let now_ms = js_sys::Date::now();
+                            if record_realtime_upstream_usage(
+                                &mut metrics_storage,
+                                &attachment,
+                                now_ms,
+                                usage,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                worker::console_warn!(
+                                    "RealtimeSession upstream usage metadata capture failed"
+                                );
+                            }
                         }
                         let text_bytes = text.as_bytes().len();
                         if client.send_with_str(&text).is_err() {
@@ -3313,11 +3479,28 @@ mod tests {
                 }),
             ),
         );
+        metrics.record_realtime_usage(
+            Some(&attachment),
+            7.0,
+            RealtimeUsageMetadata {
+                source_event: "response.done".to_string(),
+                prompt_tokens: 12,
+                completion_tokens: 5,
+                total_tokens: 17,
+                cached_tokens: 3,
+                cache_creation_tokens: 0,
+                image_input_tokens: 0,
+                image_output_tokens: 0,
+                audio_input_tokens: 2,
+                audio_output_tokens: 1,
+            },
+        );
 
         assert_eq!(metrics.connected_count, 1);
         assert_eq!(metrics.text_message_count, 1);
         assert_eq!(metrics.binary_message_count, 1);
         assert_eq!(metrics.closed_count, 1);
+        assert_eq!(metrics.usage_event_count, 1);
         assert_eq!(
             metrics.last_model.as_deref(),
             Some("gpt-4o-realtime-preview")
@@ -3333,9 +3516,59 @@ mod tests {
                 .map(|event| event.event.as_str()),
             Some("client_to_upstream_send_failed")
         );
+        assert_eq!(
+            metrics
+                .last_usage
+                .as_ref()
+                .map(|usage| usage.source_event.as_str()),
+            Some("response.done")
+        );
+        assert_eq!(
+            metrics.last_usage.as_ref().map(|usage| usage.total_tokens),
+            Some(17)
+        );
         let raw = serde_json::to_string(&metrics).unwrap();
         assert!(!raw.contains("secret client payload"));
         assert!(!raw.contains("openai-insecure-api-key.sk"));
+    }
+
+    #[test]
+    fn realtime_upstream_usage_capture_is_metadata_only() {
+        let raw_frame = r#"{
+            "type":"response.done",
+            "response":{
+                "usage":{
+                    "input_tokens":1200,
+                    "output_tokens":350,
+                    "total_tokens":1550,
+                    "input_token_details":{
+                        "cached_tokens":400,
+                        "audio_tokens":180
+                    },
+                    "output_token_details":{
+                        "audio_tokens":90
+                    }
+                }
+            },
+            "secret_probe":"do-not-store-this"
+        }"#;
+        let usage = realtime_usage_metadata_from_upstream_text_frame(raw_frame).unwrap();
+
+        assert_eq!(usage.source_event, "response.done");
+        assert_eq!(usage.prompt_tokens, 1200);
+        assert_eq!(usage.completion_tokens, 350);
+        assert_eq!(usage.total_tokens, 1550);
+        assert_eq!(usage.cached_tokens, 400);
+        assert_eq!(usage.audio_input_tokens, 180);
+        assert_eq!(usage.audio_output_tokens, 90);
+        assert!(realtime_usage_metadata_from_upstream_text_frame(
+            r#"{"type":"session.updated","usage":{"total_tokens":99}}"#
+        )
+        .is_none());
+
+        let serialized = serde_json::to_string(&usage).unwrap();
+        assert!(!serialized.contains("do-not-store-this"));
+        assert!(!serialized.contains("secret_probe"));
     }
 
     #[test]
@@ -4138,6 +4371,11 @@ mod tests {
     #[test]
     fn realtime_upstream_bridge_backpressure_runtime_contract_is_compiled() {
         assert!(realtime_upstream_bridge_backpressure_runtime_compiled());
+    }
+
+    #[test]
+    fn realtime_upstream_usage_capture_contract_is_compiled() {
+        assert!(realtime_upstream_usage_capture_compiled());
     }
 
     #[test]

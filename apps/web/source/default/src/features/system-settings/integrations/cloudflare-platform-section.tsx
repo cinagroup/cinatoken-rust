@@ -120,6 +120,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_replay_contract_compiled,
         capabilities.realtime_session_upstream_bridge_backpressure_policy_compiled,
         capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
+        capabilities.realtime_session_upstream_usage_capture_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -891,6 +892,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime usage capture'),
+          description: t(
+            'Captures response.done usage token metadata into DO metrics without storing raw upstream frames or secrets; final billing settlement remains separately gated.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_usage_capture_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

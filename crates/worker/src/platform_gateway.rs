@@ -25,8 +25,9 @@ use crate::realtime_session::{
     realtime_upstream_bridge_replay_contract_compiled,
     realtime_upstream_bridge_send_failure_guard_compiled,
     realtime_upstream_channel_planner_compiled, realtime_upstream_connect_handoff_compiled,
-    realtime_upstream_fetch_upgrade_adapter_compiled, REALTIME_SESSION_CUTOVER_GUARDS,
-    REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
+    realtime_upstream_fetch_upgrade_adapter_compiled, realtime_upstream_usage_capture_compiled,
+    REALTIME_SESSION_CUTOVER_GUARDS, REALTIME_SESSION_GATEWAY_ENABLED_ENV,
+    REALTIME_SESSION_V1_ENABLED_ENV,
 };
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::task_repository::{
@@ -143,6 +144,7 @@ struct PlatformCapabilities {
     realtime_session_upstream_bridge_replay_contract_compiled: bool,
     realtime_session_upstream_bridge_backpressure_policy_compiled: bool,
     realtime_session_upstream_bridge_backpressure_runtime_compiled: bool,
+    realtime_session_upstream_usage_capture_compiled: bool,
     realtime_session_platform_header_boundary_compiled: bool,
     realtime_session_upstream_bridge_compiled: bool,
     realtime_session_billing_settlement_compiled: bool,
@@ -238,6 +240,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_upstream_bridge_backpressure_policy_compiled();
     let realtime_session_upstream_bridge_backpressure_runtime_compiled =
         realtime_upstream_bridge_backpressure_runtime_compiled();
+    let realtime_session_upstream_usage_capture_compiled =
+        realtime_upstream_usage_capture_compiled();
     let realtime_session_platform_header_boundary_compiled =
         realtime_session_platform_header_boundary_compiled();
     let realtime_session_upstream_bridge_compiled = false;
@@ -269,6 +273,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_bridge_replay_contract_compiled,
         realtime_session_upstream_bridge_backpressure_policy_compiled,
         realtime_session_upstream_bridge_backpressure_runtime_compiled,
+        realtime_session_upstream_usage_capture_compiled,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
@@ -345,6 +350,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_bridge_replay_contract_compiled,
         realtime_session_upstream_bridge_backpressure_policy_compiled,
         realtime_session_upstream_bridge_backpressure_runtime_compiled,
+        realtime_session_upstream_usage_capture_compiled,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
@@ -789,6 +795,7 @@ fn is_realtime_session_v1_cutover_ready(
     upstream_bridge_replay_contract_compiled: bool,
     upstream_bridge_backpressure_policy_compiled: bool,
     upstream_bridge_backpressure_runtime_compiled: bool,
+    upstream_usage_capture_compiled: bool,
     platform_header_boundary_compiled: bool,
     upstream_bridge_compiled: bool,
     billing_settlement_compiled: bool,
@@ -811,6 +818,7 @@ fn is_realtime_session_v1_cutover_ready(
         && upstream_bridge_replay_contract_compiled
         && upstream_bridge_backpressure_policy_compiled
         && upstream_bridge_backpressure_runtime_compiled
+        && upstream_usage_capture_compiled
         && platform_header_boundary_compiled
         && upstream_bridge_compiled
         && billing_settlement_compiled
@@ -1088,6 +1096,7 @@ mod tests {
         assert!(guards.contains(&"upstream_bridge_replay_contract"));
         assert!(guards.contains(&"upstream_bridge_backpressure_policy"));
         assert!(guards.contains(&"upstream_bridge_backpressure_runtime"));
+        assert!(guards.contains(&"upstream_usage_capture"));
         assert!(guards.contains(&"platform_upstream_header_boundary"));
         assert!(guards.contains(&"hibernation_attachment_restore"));
         assert!(guards.contains(&"metadata_only_control_frames"));
@@ -1119,10 +1128,10 @@ mod tests {
 
     #[test]
     fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
-        assert!(realtime_v1_ready_with_flags([true; 21]));
+        assert!(realtime_v1_ready_with_flags([true; 22]));
 
-        for false_gate in 0..21 {
-            let mut flags = [true; 21];
+        for false_gate in 0..22 {
+            let mut flags = [true; 22];
             flags[false_gate] = false;
             assert!(
                 !realtime_v1_ready_with_flags(flags),
@@ -1131,11 +1140,11 @@ mod tests {
         }
     }
 
-    fn realtime_v1_ready_with_flags(flags: [bool; 21]) -> bool {
+    fn realtime_v1_ready_with_flags(flags: [bool; 22]) -> bool {
         is_realtime_session_v1_cutover_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
-            flags[16], flags[17], flags[18], flags[19], flags[20],
+            flags[16], flags[17], flags[18], flags[19], flags[20], flags[21],
         )
     }
 

@@ -7284,6 +7284,48 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.128 2026-07-07 TaskRunner Replay Evidence Classifier
+
+This increment makes the TaskRunner M5b status probe easier to use as staging
+evidence without adding a new write/control surface. The Durable Object status
+now derives a `replay_evidence` label from the existing alarm/poll/CAS metadata
+so operators and smoke tools can distinguish the required replay states:
+`first_apply`, `second_replay_noop`, `gate_disabled_fallback`, and
+`cron_already_settled`.
+
+Implemented:
+
+- Added a Rust-side `TaskRunnerReplayEvidence` classifier to the internal
+  `/status` response. It is derived from persisted DO record fields only; it
+  does not arm alarms, delete alarms, call providers, or mutate D1.
+- Extended `tools/smoke_task_runner_alarm_replay.mjs` with
+  `--expect-replay-evidence` / `TASK_RUNNER_SMOKE_EXPECT_REPLAY_EVIDENCE` so
+  live staging can require `first_apply`, rerun for `second_replay_noop`, and
+  then prove rollback/fallback with `gate_disabled_fallback` or
+  `cron_already_settled`.
+- Updated the Cloudflare Platform panel to show the replay evidence badge and
+  field next to poll/CAS status, keeping the admin UI read-only.
+
+Validation:
+
+- `node --check tools/smoke_task_runner_alarm_replay.mjs` passed.
+- `bun tools/smoke_task_runner_alarm_replay.mjs --self-test --json` passed,
+  including the replay-evidence rejection case.
+- `bun tools/smoke_task_runner_alarm_replay.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --task-id task-smoke --expect-replay-evidence
+  first_apply` passed.
+- `cargo fmt --all --check`, `cargo test -p cinatoken-worker --lib
+  task_runner -- --nocapture`, and `bun run check:web` passed.
+
+Remaining migration gaps:
+
+- This is still pre-cutover evidence infrastructure. Live staging must still
+  archive first-apply, second-replay/no-op, rollback/gate-disabled or
+  cron-already-settled snapshots with matching task row and quota/refund
+  evidence before `TASK_RUNNER_STAGING_REPLAY_VERIFIED=true`.
+- M5a timeout/provider-failure/no-duplicate-refund staging replay remains a
+  prerequisite before treating TaskRunner DO replay as production cutover input.
+
 ### 22.127 2026-07-07 TaskRunner Frontend Status Probe
 
 This increment brings the TaskRunner read-only status probe into the default

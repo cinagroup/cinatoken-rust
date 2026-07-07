@@ -475,6 +475,17 @@ export type TaskRunnerDurableObjectStatus = {
     | 'poll_applied'
     | 'poll_failed'
     | null
+  replay_evidence:
+    | 'no_record'
+    | 'armed_pending'
+    | 'alarm_fired_pending_poll'
+    | 'first_apply'
+    | 'second_replay_noop'
+    | 'gate_disabled_fallback'
+    | 'cron_already_settled'
+    | 'poll_skipped'
+    | 'poll_failed'
+    | 'unknown'
   alarm_scheduled_at_ms: number | null
   alarm_delay_ms: number | null
   alarm_fired_at_ms: number | null

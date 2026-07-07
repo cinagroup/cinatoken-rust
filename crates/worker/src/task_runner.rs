@@ -80,11 +80,27 @@ enum TaskRunnerPollStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TaskRunnerReplayEvidence {
+    NoRecord,
+    ArmedPending,
+    AlarmFiredPendingPoll,
+    FirstApply,
+    SecondReplayNoop,
+    GateDisabledFallback,
+    CronAlreadySettled,
+    PollSkipped,
+    PollFailed,
+    Unknown,
+}
+
 #[derive(Debug, Serialize)]
 struct TaskRunnerStatusResponse {
     compiled: bool,
     task_id: Option<String>,
     status: Option<TaskRunnerStatus>,
+    replay_evidence: TaskRunnerReplayEvidence,
     alarm_scheduled_at_ms: Option<i64>,
     alarm_delay_ms: Option<i64>,
     alarm_fired_at_ms: Option<i64>,
@@ -121,10 +137,12 @@ impl DurableObject for TaskRunner {
             "/status" => {
                 let record = self.load_record().await;
                 let alarm_scheduled_at_ms = self.state.storage().get_alarm().await?;
+                let replay_evidence = task_runner_replay_evidence(record.as_ref());
                 let response = TaskRunnerStatusResponse {
                     compiled: task_runner_alarm_contract_compiled(),
                     task_id: record.as_ref().map(|record| record.task_id.clone()),
                     status: record.as_ref().map(|record| record.status),
+                    replay_evidence,
                     alarm_scheduled_at_ms,
                     alarm_delay_ms: record.as_ref().map(|record| record.alarm_delay_ms),
                     alarm_fired_at_ms: record.as_ref().and_then(|record| record.alarm_fired_at_ms),
@@ -545,6 +563,48 @@ fn task_runner_alarm_delay_ms(requested: i64) -> i64 {
     }
 }
 
+fn task_runner_replay_evidence(record: Option<&TaskRunnerRecord>) -> TaskRunnerReplayEvidence {
+    let Some(record) = record else {
+        return TaskRunnerReplayEvidence::NoRecord;
+    };
+    match (
+        record.status,
+        record.poll_status,
+        record.poll_cas_won,
+        record.poll_reason.as_deref(),
+    ) {
+        (TaskRunnerStatus::Armed, None, None, _) => TaskRunnerReplayEvidence::ArmedPending,
+        (TaskRunnerStatus::AlarmFired, None, None, _) => {
+            TaskRunnerReplayEvidence::AlarmFiredPendingPoll
+        }
+        (TaskRunnerStatus::PollApplied, Some(TaskRunnerPollStatus::Applied), Some(true), _) => {
+            TaskRunnerReplayEvidence::FirstApply
+        }
+        (TaskRunnerStatus::PollNoop, Some(TaskRunnerPollStatus::Noop), Some(false), _) => {
+            TaskRunnerReplayEvidence::SecondReplayNoop
+        }
+        (
+            TaskRunnerStatus::PollSkipped,
+            Some(TaskRunnerPollStatus::Skipped),
+            _,
+            Some("gate_disabled"),
+        ) => TaskRunnerReplayEvidence::GateDisabledFallback,
+        (
+            TaskRunnerStatus::PollSkipped,
+            Some(TaskRunnerPollStatus::Skipped),
+            _,
+            Some("task_already_terminal"),
+        ) => TaskRunnerReplayEvidence::CronAlreadySettled,
+        (TaskRunnerStatus::PollSkipped, Some(TaskRunnerPollStatus::Skipped), _, _) => {
+            TaskRunnerReplayEvidence::PollSkipped
+        }
+        (TaskRunnerStatus::PollFailed, Some(TaskRunnerPollStatus::Failed), _, _) => {
+            TaskRunnerReplayEvidence::PollFailed
+        }
+        _ => TaskRunnerReplayEvidence::Unknown,
+    }
+}
+
 fn task_id_query_value(url: &url::Url) -> WorkerResult<String> {
     for (key, value) in url.query_pairs() {
         if key == "task_id" {
@@ -655,6 +715,69 @@ mod tests {
         let failed = TaskRunnerPollOutcome::failed(100, &"x".repeat(300));
         assert_eq!(failed.status, TaskRunnerPollStatus::Failed);
         assert_eq!(failed.reason.len(), 256);
+    }
+
+    #[test]
+    fn task_runner_replay_evidence_classifies_cutover_proof_states() {
+        assert_eq!(
+            task_runner_replay_evidence(None),
+            TaskRunnerReplayEvidence::NoRecord
+        );
+        assert_eq!(
+            serde_json::to_value(TaskRunnerReplayEvidence::SecondReplayNoop).unwrap(),
+            serde_json::json!("second_replay_noop")
+        );
+
+        let mut record = TaskRunnerRecord {
+            task_id: "task_abc".to_string(),
+            armed_at_ms: 100,
+            alarm_delay_ms: TASK_RUNNER_DEFAULT_ALARM_DELAY_MS,
+            alarm_fired_at_ms: None,
+            alarm_fired_count: 0,
+            poll_attempted_at_ms: None,
+            poll_completed_at_ms: None,
+            poll_status: None,
+            poll_reason: None,
+            poll_cas_won: None,
+            status: TaskRunnerStatus::Armed,
+        };
+        assert_eq!(
+            task_runner_replay_evidence(Some(&record)),
+            TaskRunnerReplayEvidence::ArmedPending
+        );
+
+        record.status = TaskRunnerStatus::PollApplied;
+        record.poll_status = Some(TaskRunnerPollStatus::Applied);
+        record.poll_reason = Some("cas_applied".to_string());
+        record.poll_cas_won = Some(true);
+        assert_eq!(
+            task_runner_replay_evidence(Some(&record)),
+            TaskRunnerReplayEvidence::FirstApply
+        );
+
+        record.status = TaskRunnerStatus::PollNoop;
+        record.poll_status = Some(TaskRunnerPollStatus::Noop);
+        record.poll_reason = Some("cas_noop".to_string());
+        record.poll_cas_won = Some(false);
+        assert_eq!(
+            task_runner_replay_evidence(Some(&record)),
+            TaskRunnerReplayEvidence::SecondReplayNoop
+        );
+
+        record.status = TaskRunnerStatus::PollSkipped;
+        record.poll_status = Some(TaskRunnerPollStatus::Skipped);
+        record.poll_reason = Some("gate_disabled".to_string());
+        record.poll_cas_won = None;
+        assert_eq!(
+            task_runner_replay_evidence(Some(&record)),
+            TaskRunnerReplayEvidence::GateDisabledFallback
+        );
+
+        record.poll_reason = Some("task_already_terminal".to_string());
+        assert_eq!(
+            task_runner_replay_evidence(Some(&record)),
+            TaskRunnerReplayEvidence::CronAlreadySettled
+        );
     }
 
     #[test]

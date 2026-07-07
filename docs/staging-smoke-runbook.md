@@ -143,6 +143,15 @@ has been enabled only for the controlled replay, run:
 bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --json
 ```
 
+For archived proof, rerun the same command with the expected replay state as
+the scenario advances:
+
+```powershell
+bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --expect-replay-evidence first_apply --json
+bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --expect-replay-evidence second_replay_noop --json
+bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-disabled --expect-replay-evidence gate_disabled_fallback --json
+```
+
 Pass criteria:
 
 - `/api/platform/capabilities` reports `task_runner_status_probe_compiled=true`
@@ -152,6 +161,8 @@ Pass criteria:
 - The admin Cloudflare Platform panel's `TaskRunner status probe` form can query
   the same task id and display the returned Durable Object metadata without
   exposing arm/delete controls.
+- The status JSON and frontend badge show the expected `replay_evidence` for
+  first apply, second replay/no-op, and rollback/fallback snapshots.
 - The report includes first poll evidence and a second replay/no-op or cron
   fallback snapshot before `TASK_RUNNER_STAGING_REPLAY_VERIFIED` is considered.
 - Rollback evidence shows `TASK_RUNNER_DO_ENABLED=false` with cron still owning

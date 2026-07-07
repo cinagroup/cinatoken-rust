@@ -1054,6 +1054,14 @@ function TaskRunnerStatusProbePanel(props: {
             >
               {formatCasWon(durable.poll_cas_won, t)}
             </StatusBadge>
+            <StatusBadge
+              variant={taskRunnerReplayEvidenceVariant(
+                durable.replay_evidence
+              )}
+              copyable={false}
+            >
+              {formatReplayEvidence(durable.replay_evidence, t)}
+            </StatusBadge>
           </div>
           <dl className='grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 xl:grid-cols-4'>
             <ProbeField label={t('Requested task')} value={status.task_id} />
@@ -1089,6 +1097,10 @@ function TaskRunnerStatusProbePanel(props: {
             <ProbeField
               label={t('Poll reason')}
               value={durable.poll_reason ?? t('No reason')}
+            />
+            <ProbeField
+              label={t('Replay evidence')}
+              value={formatReplayEvidence(durable.replay_evidence, t)}
             />
             <ProbeField
               label={t('Last queried task')}
@@ -1194,6 +1206,25 @@ function taskRunnerCasVariant(value: boolean | null): StatusVariant {
   return 'neutral'
 }
 
+function taskRunnerReplayEvidenceVariant(
+  evidence: TaskRunnerStatusProbe['durable_object_status']['replay_evidence']
+): StatusVariant {
+  if (evidence === 'first_apply' || evidence === 'second_replay_noop') {
+    return 'success'
+  }
+  if (
+    evidence === 'gate_disabled_fallback' ||
+    evidence === 'cron_already_settled' ||
+    evidence === 'armed_pending' ||
+    evidence === 'alarm_fired_pending_poll' ||
+    evidence === 'poll_skipped'
+  ) {
+    return 'warning'
+  }
+  if (evidence === 'poll_failed') return 'danger'
+  return 'neutral'
+}
+
 function formatCasWon(
   value: boolean | null,
   t: (key: string, options?: Record<string, unknown>) => string
@@ -1201,6 +1232,15 @@ function formatCasWon(
   if (value === true) return t('CAS won')
   if (value === false) return t('CAS no-op')
   return t('CAS not recorded')
+}
+
+function formatReplayEvidence(
+  evidence: TaskRunnerStatusProbe['durable_object_status']['replay_evidence'],
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  return t('Evidence {{evidence}}', {
+    evidence: formatSnakeCase(evidence),
+  })
 }
 
 function formatMilliseconds(

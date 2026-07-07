@@ -452,7 +452,7 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 | Cron trigger | `[env.*.triggers] crons = ["* * * * *"]` (added to wrangler.toml) drives the `#[event(scheduled)]` poller. Inert with no in-flight tasks; **required** for any task to settle. |
 | `TASK_QUERY_LIMIT` | var, default `100` in Worker envs - bounded per-family provider poll window for video, Suno, and Midjourney. Keep conservative until provider replay and subrequest capacity are measured. |
 | `TASK_TIMEOUT_MINUTES` | var, default `1440` - Go-compatible timeout sweep runs before normal polling; set `0` only for emergency diagnostics because stuck rows can otherwise starve newer work. |
-| `TASK_RUNNER_DO_ENABLED` | var, default `false` - optional per-task Durable Object alarm fast path. Keep disabled until staging alarm replay, rollback, cron fallback, and no-double-poll CAS evidence are archived. |
+| `TASK_RUNNER_DO_ENABLED` | var, default `false` - optional per-task Durable Object alarm fast path. Keep disabled until staging alarm replay, replay-evidence classifier output, rollback, cron fallback, and no-double-poll CAS evidence are archived. |
 | `TASK_RUNNER_STAGING_REPLAY_VERIFIED` | var, default `false` - operator cutover guard. Set true only after archived staging evidence proves flag-on arming, alarm fire, provider poll, CAS win/replay no-op, cron fallback, and rollback. |
 | `GEMINI_VERSION` | var, default `v1beta` — Gemini/Veo API version. |
 | `VERTEX_REGION` | var, default `us-central1` — Vertex region for `predictLongRunning` (per-channel region edge cases TBD on staging). |

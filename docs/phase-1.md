@@ -468,10 +468,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   wired default-off. Alarm firing now reuses the shared provider poll and D1 CAS
   settlement path, and operators now have an admin-only per-task status probe,
   a frontend probe form in the Cloudflare Platform panel, and
-  `bun run check:task-runner:alarm-replay-*` contracts. Live alarm replay,
-  cron-sweeper fallback, rollback, and no-double-poll CAS proof still remain
-  required before `TASK_RUNNER_DO_ENABLED` can be enabled outside a controlled
-  staging replay.
+  `bun run check:task-runner:alarm-replay-*` contracts with derived replay
+  evidence labels for first apply, second replay/no-op, and fallback states.
+  Live alarm replay, cron-sweeper fallback, rollback, and no-double-poll CAS
+  proof still remain required before `TASK_RUNNER_DO_ENABLED` can be enabled
+  outside a controlled staging replay.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

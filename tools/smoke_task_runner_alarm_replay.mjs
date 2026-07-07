@@ -12,6 +12,18 @@ const statusValues = new Set([
   "poll_failed",
 ]);
 const pollStatusValues = new Set(["none", "skipped", "noop", "applied", "failed"]);
+const replayEvidenceValues = new Set([
+  "no_record",
+  "armed_pending",
+  "alarm_fired_pending_poll",
+  "first_apply",
+  "second_replay_noop",
+  "gate_disabled_fallback",
+  "cron_already_settled",
+  "poll_skipped",
+  "poll_failed",
+  "unknown",
+]);
 
 try {
   const args = parseArgs(process.argv.slice(2));
@@ -152,6 +164,11 @@ function normalizeOptions(args) {
     value("expect-cas-won", "TASK_RUNNER_SMOKE_EXPECT_CAS_WON"),
     "expect-cas-won",
   );
+  const expectReplayEvidence = normalizeExpectation(
+    value("expect-replay-evidence", "TASK_RUNNER_SMOKE_EXPECT_REPLAY_EVIDENCE"),
+    replayEvidenceValues,
+    "expect-replay-evidence",
+  );
   const dryRun = args.flags.has("dry-run");
   if (!dryRun && !args.flags.has("confirm-live")) {
     throw new Error("live TaskRunner status smoke requires --confirm-live");
@@ -167,6 +184,7 @@ function normalizeOptions(args) {
     expectStatus,
     expectPollStatus,
     expectCasWon,
+    expectReplayEvidence,
     expectGateEnabled: args.flags.has("expect-gate-enabled"),
     expectGateDisabled: args.flags.has("expect-gate-disabled"),
     allowCutoverReady: args.flags.has("allow-cutover-ready"),
@@ -194,6 +212,7 @@ function usage(exitCode) {
       "  --expect-status <none|armed|alarm_fired|poll_skipped|poll_noop|poll_applied|poll_failed>",
       "  --expect-poll-status <none|skipped|noop|applied|failed>",
       "  --expect-cas-won <true|false>",
+      "  --expect-replay-evidence <no_record|armed_pending|alarm_fired_pending_poll|first_apply|second_replay_noop|gate_disabled_fallback|cron_already_settled|poll_skipped|poll_failed|unknown>",
       "  --expect-gate-enabled / --expect-gate-disabled",
       "  --allow-cutover-ready",
       "  --allow-staging-replay-verified",
@@ -308,6 +327,7 @@ function summarizeStatus(data) {
     compiled: durable.compiled === true,
     durable_task_id: stringOrNull(durable.task_id),
     status: stringOrNull(durable.status),
+    replay_evidence: stringOrNull(durable.replay_evidence),
     alarm_scheduled_at_ms: numberOrNull(durable.alarm_scheduled_at_ms),
     alarm_delay_ms: numberOrNull(durable.alarm_delay_ms),
     alarm_fired_at_ms: numberOrNull(durable.alarm_fired_at_ms),
@@ -345,6 +365,11 @@ function validateStatus(status, options) {
   }
   if (options.expectCasWon !== null && status.poll_cas_won !== options.expectCasWon) {
     throw new Error(`TaskRunner poll_cas_won ${status.poll_cas_won} did not match expected ${options.expectCasWon}`);
+  }
+  if (options.expectReplayEvidence && status.replay_evidence !== options.expectReplayEvidence) {
+    throw new Error(
+      `TaskRunner replay_evidence ${status.replay_evidence} did not match expected ${options.expectReplayEvidence}`,
+    );
   }
 }
 
@@ -399,6 +424,7 @@ function statusExpectations(options) {
     status: options.expectStatus || "not checked",
     pollStatus: options.expectPollStatus || "not checked",
     pollCasWon: options.expectCasWon === null ? "not checked" : options.expectCasWon,
+    replayEvidence: options.expectReplayEvidence || "not checked",
   };
 }
 
@@ -411,6 +437,7 @@ function runSelfTest() {
     expectStatus: "poll_applied",
     expectPollStatus: "applied",
     expectCasWon: true,
+    expectReplayEvidence: "first_apply",
     expectGateEnabled: false,
     expectGateDisabled: true,
     allowCutoverReady: false,
@@ -446,6 +473,7 @@ function runSelfTest() {
         compiled: true,
         task_id: "task_smoke",
         status: "poll_applied",
+        replay_evidence: "first_apply",
         alarm_fired_count: 1,
         poll_status: "applied",
         poll_reason: "cas_applied",
@@ -480,11 +508,34 @@ function runSelfTest() {
           summarizeStatus({
             task_id: "task_smoke",
             instance: "task:task_smoke",
-            durable_object_status: { compiled: true, status: "poll_failed", poll_status: "failed" },
+            durable_object_status: {
+              compiled: true,
+              status: "poll_failed",
+              replay_evidence: "poll_failed",
+              poll_status: "failed",
+            },
           }),
           options,
         ),
       "did not match expected",
+    ),
+    expectFailure(
+      () =>
+        validateStatus(
+          summarizeStatus({
+            task_id: "task_smoke",
+            instance: "task:task_smoke",
+            durable_object_status: {
+              compiled: true,
+              status: "poll_applied",
+              replay_evidence: "second_replay_noop",
+              poll_status: "applied",
+              poll_cas_won: true,
+            },
+          }),
+          options,
+        ),
+      "replay_evidence",
     ),
   ];
   return {

@@ -4,6 +4,16 @@ Last checked: 2026-07-07
 
 ## Passed
 
+- `node --check tools/smoke_task_runner_alarm_replay.mjs`,
+  `bun tools/smoke_task_runner_alarm_replay.mjs --self-test --json`,
+  `bun tools/smoke_task_runner_alarm_replay.mjs --dry-run --json --url http://127.0.0.1:8787 --task-id task-smoke --expect-replay-evidence first_apply`,
+  `cargo fmt --all --check`,
+  `cargo test -p cinatoken-worker --lib task_runner -- --nocapture`,
+  and `bun run check:web`: passed after adding the derived TaskRunner
+  `replay_evidence` label to the read-only DO status probe, smoke expectations,
+  and Cloudflare Platform panel. This classifies first apply, second replay
+  no-op, gate-disabled fallback, and cron-already-settled evidence but still
+  does not replace live staging replay or rollback evidence.
 - `bun run check:web:routes` and `bun run check:web`: passed after extending
   the Cloudflare Platform admin panel with a read-only TaskRunner status probe
   form for `/api/platform/task-runner/:task_id/status`. The route debt baseline

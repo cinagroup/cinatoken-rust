@@ -7284,6 +7284,51 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.121 2026-07-07 Async Task Refund Batch Guard
+
+This increment closes the first M5a refund-in-CAS repair gap left by the timeout
+sweep work. The Worker cron path now has a shared CAS-winner refund batch for
+timeout failures, ordinary video provider failures, and Suno batch-poll
+failures. It still does not claim full async-task production ownership: staging
+replay, artifact retention, and provider-specific billing evidence remain
+separate G7 gates.
+
+Implemented:
+
+- Added a task refund marker/done guard to the D1 task repository. Refundable
+  terminal transitions now set a one-time marker in the same guarded task CAS
+  statement, credit user/token quota only while that marker is present and not
+  done, then mark the refund done in the same D1 batch.
+- Routed `apply_task_timeout`, `apply_poll_result`, and `apply_suno_poll_result`
+  through the shared batch helper when the transition owns a non-zero refund.
+  Zero-quota and non-refund transitions keep the existing lean CAS update.
+- Normalized Suno batch items with a non-empty failure reason to `FAILURE` even
+  when the upstream status field is empty, preventing repeat cron scans from
+  observing a non-terminal failed row.
+- Removed the now-unused standalone token-refund helper to avoid increasing
+  Worker warning debt.
+- Extended `/api/platform/capabilities` and the default frontend Cloudflare
+  Platform panel with `task_poller_refund_batch_compiled` so operators can see
+  that timeout/provider-failure refunds are guarded by the CAS-winner marker.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib task_repository -- --nocapture` passed
+  with refund-marker capability tests and the Suno fail-reason terminal-status
+  guard.
+
+Remaining migration gaps:
+
+- Capture staging cron evidence with timed-out video/Suno rows, provider failure
+  rows, token/user quota refunds, no duplicate refund on replay, legacy no-refund
+  behavior, and newer rows continuing to poll after stale rows are cleared.
+- Continue M5b only after M5a evidence: optional `TaskRunner` Durable Object
+  alarms, cron-as-sweeper fallback, and no-double-poll proof.
+- Provider replay, artifact retention, and task billing reconciliation remain
+  required before async video/Suno/Midjourney can be considered fully
+  production-owned by Rust.
+
 ### 22.120 2026-07-07 Async Task Timeout Sweep Capability
 
 This increment advances the M5a task-system correctness lane from the
@@ -7326,8 +7371,8 @@ Validation:
 
 Remaining migration gaps:
 
-- Batch timeout refunds into the same D1 batch as the CAS update or introduce a
-  recovery record before claiming eviction-proof refund semantics.
+- Batch timeout/provider-failure refunds into the same D1 batch as the CAS
+  update before claiming eviction-proof refund semantics. Completed in 22.121.
 - Capture staging cron evidence with timed-out video/Suno rows, token/user quota
   refunds, and newer rows continuing to poll after stale rows are cleared.
 - Continue M5b only after M5a evidence: optional `TaskRunner` Durable Object

@@ -457,9 +457,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   video artifact retrieval/retention into Queue/R2 before full production
   ownership.
 - Capture async-task timeout-sweep staging evidence: seed stale video/Suno task
-  rows, prove the Worker cron fails them through CAS, refunds non-legacy
-  user/token quota, skips legacy imported-row refunds, and continues polling
-  newer tasks after the stale window is cleared.
+  rows and provider-failure rows, prove the Worker cron fails them through CAS,
+  applies the CAS-winner refund batch once, skips legacy imported-row refunds,
+  and continues polling newer tasks after the stale window is cleared.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

@@ -7387,27 +7387,6 @@ async fn count_search_redemptions_by_name(db: &D1Database, like: &str) -> worker
     Ok(row.map(|row| row.count).unwrap_or(0))
 }
 
-/// Refund a failed async task's reserve to the token (Go `taskAdjustTokenQuota`
-/// / `IncreaseTokenQuota(-delta)`): credit `remain_quota` and uncount
-/// `used_quota`. No-op for a zero quota or an unknown token (`token_id == 0`,
-/// e.g. legacy rows without a persisted token id). The user-funding half of
-/// `RefundTaskQuota` is handled separately by [`increase_user_quota`].
-pub async fn refund_task_token_quota(
-    db: &D1Database,
-    token_id: i64,
-    quota: i64,
-    accessed_time: i64,
-) -> worker::Result<()> {
-    let quota = quota_i32(quota)?;
-    if quota == 0 || token_id == 0 {
-        return Ok(());
-    }
-    credit_token_quota_usage_statement(db, token_id, quota, accessed_time)?
-        .run()
-        .await?;
-    Ok(())
-}
-
 /// Atomically subtract from a user's quota: `UPDATE users SET quota = quota - ?`.
 pub async fn decrease_user_quota(db: &D1Database, id: i64, delta: i64) -> worker::Result<bool> {
     let args = [D1Type::Integer(d1_i32(delta)), D1Type::Integer(d1_i32(id))];

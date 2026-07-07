@@ -4,6 +4,18 @@ Last checked: 2026-07-07
 
 ## Passed
 
+- `cargo fmt --all --check`,
+  `cargo test -p cinatoken-worker --lib task_repository -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:web`,
+  `bun run check`,
+  and `cargo test -p cinatoken-worker --lib`: passed after moving timeout,
+  video-provider, and Suno failure refunds behind a CAS-winner D1 batch marker.
+  `/api/platform/capabilities` and the default Cloudflare Platform panel now
+  expose `task_poller_refund_batch_compiled`; the Suno batch path also treats a
+  non-empty fail reason as terminal `FAILURE` so replay cannot keep observing a
+  refunded non-terminal row.
 - `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib task_repository -- --nocapture`,
   `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,

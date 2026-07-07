@@ -22,6 +22,8 @@ use worker::{D1Database, D1Type};
 
 pub(crate) const LEGACY_TASK_TIMEOUT_CUTOFF_UNIX: i64 = 1_740_182_400;
 const LEGACY_TASK_TIMEOUT_REASON: &str = "任务超时（旧系统遗留任务，不进行退款，请联系管理员）";
+const TASK_REFUND_MARKER_PATH: &str = "$.task_refund_marker";
+const TASK_REFUND_DONE_AT_PATH: &str = "$.task_refund_done_at";
 
 /// Generate a public task id — `"task_"` + 32 CSPRNG characters, the Worker
 /// (wasm) half of Go `GenerateTaskID`. Bytes come from `getrandom` (Web Crypto)
@@ -290,6 +292,279 @@ pub async fn update_task_status_cas(
     Ok(changes == 1)
 }
 
+fn update_task_status_cas_with_refund_marker_statement(
+    db: &D1Database,
+    id: i64,
+    from: TaskStatus,
+    to: TaskStatus,
+    fail_reason: &str,
+    progress: &str,
+    result_url: &str,
+    result_data: Option<&str>,
+    finish_time: i64,
+    updated_at: i64,
+    refund_marker: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let should_update_data = if result_data.is_some() { 1 } else { 0 };
+    let result_data = result_data.unwrap_or("");
+    let args = [
+        D1Type::Text(to.as_str()),
+        D1Type::Text(fail_reason),
+        D1Type::Text(progress),
+        D1Type::Text(result_url),
+        D1Type::Text(result_data),
+        D1Type::Integer(should_update_data),
+        D1Type::Integer(d1_i32(finish_time)),
+        D1Type::Integer(d1_i32(updated_at)),
+        D1Type::Integer(d1_i32(id)),
+        D1Type::Text(from.as_str()),
+        D1Type::Text(refund_marker),
+    ];
+    db.prepare(
+        r#"
+        UPDATE tasks
+        SET status = ?1, fail_reason = ?2, progress = ?3,
+            private_data = json_set(
+                CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                '$.result_url',
+                ?4,
+                '$.task_refund_marker',
+                ?11,
+                '$.task_refund_done_at',
+                NULL
+            ),
+            data = CASE WHEN ?6 = 1 THEN ?5 ELSE data END,
+            finish_time = ?7, updated_at = ?8
+        WHERE id = ?9 AND status = ?10
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn credit_user_task_refund_statement(
+    db: &D1Database,
+    task_id: i64,
+    user_id: i64,
+    quota: i32,
+    refund_marker: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(task_id)),
+        D1Type::Text(refund_marker),
+    ];
+    db.prepare(
+        r#"
+        UPDATE users
+        SET quota = quota + ?1
+        WHERE id = ?2
+          AND EXISTS (
+              SELECT 1 FROM tasks
+              WHERE id = ?3
+                AND json_extract(
+                    CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                    '$.task_refund_marker'
+                ) = ?4
+                AND json_extract(
+                    CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                    '$.task_refund_done_at'
+                ) IS NULL
+          )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn credit_token_task_refund_statement(
+    db: &D1Database,
+    task_id: i64,
+    token_id: i64,
+    quota: i32,
+    accessed_time: i64,
+    refund_marker: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(accessed_time)),
+        D1Type::Integer(d1_i32(token_id)),
+        D1Type::Integer(d1_i32(task_id)),
+        D1Type::Text(refund_marker),
+    ];
+    db.prepare(
+        r#"
+        UPDATE tokens
+        SET remain_quota = remain_quota + ?1,
+            used_quota = MAX(used_quota - ?1, 0),
+            accessed_time = ?2
+        WHERE id = ?3
+          AND EXISTS (
+              SELECT 1 FROM tasks
+              WHERE id = ?4
+                AND json_extract(
+                    CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                    '$.task_refund_marker'
+                ) = ?5
+                AND json_extract(
+                    CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                    '$.task_refund_done_at'
+                ) IS NULL
+          )
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn mark_task_refund_done_statement(
+    db: &D1Database,
+    task_id: i64,
+    refund_marker: &str,
+    done_at: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [
+        D1Type::Integer(d1_i32(done_at)),
+        D1Type::Integer(d1_i32(task_id)),
+        D1Type::Text(refund_marker),
+    ];
+    db.prepare(
+        r#"
+        UPDATE tasks
+        SET private_data = json_set(
+            CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+            '$.task_refund_done_at',
+            ?1
+        )
+        WHERE id = ?2
+          AND json_extract(
+              CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+              '$.task_refund_marker'
+          ) = ?3
+          AND json_extract(
+              CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+              '$.task_refund_done_at'
+          ) IS NULL
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn task_refund_marker(
+    task_id: i64,
+    from: TaskStatus,
+    to: TaskStatus,
+    kind: &str,
+    now: i64,
+) -> String {
+    format!(
+        "task-refund:{kind}:{task_id}:{}:{}:{now}",
+        from.as_str(),
+        to.as_str()
+    )
+}
+
+fn task_refund_quota_i32(quota: i64) -> worker::Result<i32> {
+    if quota < 0 {
+        return Err(worker::Error::RustError(
+            "task refund quota must be non-negative".to_string(),
+        ));
+    }
+    i32::try_from(quota).map_err(|_| {
+        worker::Error::RustError(format!(
+            "task refund quota {quota} exceeds D1 integer binding range"
+        ))
+    })
+}
+
+fn task_batch_changed(results: &[worker::D1Result], index: usize) -> worker::Result<bool> {
+    let Some(result) = results.get(index) else {
+        return Err(worker::Error::RustError(format!(
+            "missing D1 batch result at index {index}"
+        )));
+    };
+    let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    Ok(changes == 1)
+}
+
+async fn update_task_status_cas_and_refund_batch(
+    db: &D1Database,
+    task: &TaskRow,
+    from: TaskStatus,
+    to: TaskStatus,
+    fail_reason: &str,
+    progress: &str,
+    result_url: &str,
+    result_data: Option<&str>,
+    finish_time: i64,
+    updated_at: i64,
+    refund_kind: &str,
+) -> worker::Result<bool> {
+    let quota = task_refund_quota_i32(task.quota)?;
+    if quota == 0 {
+        return update_task_status_cas(
+            db,
+            task.id,
+            from,
+            to,
+            fail_reason,
+            progress,
+            result_url,
+            result_data,
+            finish_time,
+            updated_at,
+        )
+        .await;
+    }
+
+    let refund_marker = task_refund_marker(task.id, from, to, refund_kind, updated_at);
+    let mut statements = vec![
+        update_task_status_cas_with_refund_marker_statement(
+            db,
+            task.id,
+            from,
+            to,
+            fail_reason,
+            progress,
+            result_url,
+            result_data,
+            finish_time,
+            updated_at,
+            &refund_marker,
+        )?,
+        credit_user_task_refund_statement(db, task.id, task.user_id, quota, &refund_marker)?,
+    ];
+    if task.token_id > 0 {
+        statements.push(credit_token_task_refund_statement(
+            db,
+            task.id,
+            task.token_id,
+            quota,
+            updated_at,
+            &refund_marker,
+        )?);
+    }
+    let done_statement_index = statements.len();
+    statements.push(mark_task_refund_done_statement(
+        db,
+        task.id,
+        &refund_marker,
+        updated_at,
+    )?);
+
+    let results = db.batch(statements).await?;
+    let won = task_batch_changed(&results, 0)?;
+    if won && !task_batch_changed(&results, done_statement_index)? {
+        return Err(worker::Error::RustError(
+            "task refund batch won CAS but did not mark refund done".to_string(),
+        ));
+    }
+    Ok(won)
+}
+
+pub(crate) fn task_refund_cas_batch_compiled() -> bool {
+    TASK_REFUND_MARKER_PATH == "$.task_refund_marker"
+        && TASK_REFUND_DONE_AT_PATH == "$.task_refund_done_at"
+}
+
 /// A full task row for the client-facing fetch endpoints (Go `dto.TaskDto`
 /// source fields). Distinct from the poller's lean [`TaskRow`].
 #[derive(Debug, serde::Deserialize)]
@@ -480,6 +755,20 @@ pub(crate) fn is_legacy_timeout_task(submit_time: i64) -> bool {
     submit_time > 0 && submit_time < LEGACY_TASK_TIMEOUT_CUTOFF_UNIX
 }
 
+fn suno_poll_target_status(
+    from: TaskStatus,
+    item_status: &str,
+    item_fail_reason: &str,
+) -> TaskStatus {
+    if !item_fail_reason.is_empty() {
+        TaskStatus::Failure
+    } else if item_status.is_empty() {
+        from
+    } else {
+        TaskStatus::from_status_str(item_status)
+    }
+}
+
 /// Mark a timed-out task as failed through the same CAS guard used by the
 /// poller. Non-legacy rows receive the same user+token reserve refund as Go
 /// `sweepTimedOutTasks`; legacy imported rows intentionally skip refund.
@@ -492,6 +781,22 @@ pub async fn apply_task_timeout(
     let from = task.status();
     let legacy = is_legacy_timeout_task(task.submit_time);
     let reason = task_timeout_reason(timeout_minutes, legacy);
+    if !legacy && task.quota != 0 {
+        return update_task_status_cas_and_refund_batch(
+            db,
+            task,
+            from,
+            TaskStatus::Failure,
+            &reason,
+            "100%",
+            "",
+            None,
+            now,
+            now,
+            "timeout",
+        )
+        .await;
+    }
     let won = update_task_status_cas(
         db,
         task.id,
@@ -505,11 +810,6 @@ pub async fn apply_task_timeout(
         now,
     )
     .await?;
-
-    if won && !legacy && task.quota != 0 {
-        crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
-        crate::d1_repositories::refund_task_token_quota(db, task.token_id, task.quota, now).await?;
-    }
     Ok(won)
 }
 
@@ -533,6 +833,22 @@ pub async fn apply_poll_result(
     now: i64,
 ) -> worker::Result<bool> {
     let from = task.status();
+    if matches!(settlement_for(from, info.status), TaskSettlement::Refund) && task.quota != 0 {
+        return update_task_status_cas_and_refund_batch(
+            db,
+            task,
+            from,
+            info.status,
+            &info.reason,
+            &info.progress,
+            &info.url,
+            result_data,
+            finish_time,
+            now,
+            "poll",
+        )
+        .await;
+    }
     let won = update_task_status_cas(
         db,
         task.id,
@@ -546,12 +862,6 @@ pub async fn apply_poll_result(
         now,
     )
     .await?;
-    if won && matches!(settlement_for(from, info.status), TaskSettlement::Refund) {
-        // Go RefundTaskQuota refunds BOTH the user funding and the reserving
-        // token; the reserve debited both, so the refund must credit both.
-        crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
-        crate::d1_repositories::refund_task_token_quota(db, task.token_id, task.quota, now).await?;
-    }
     Ok(won)
 }
 
@@ -573,11 +883,7 @@ pub async fn apply_suno_poll_result(
     now: i64,
 ) -> worker::Result<bool> {
     let from = task.status();
-    let to = if item_status.is_empty() {
-        from
-    } else {
-        TaskStatus::from_status_str(item_status)
-    };
+    let to = suno_poll_target_status(from, item_status, item_fail_reason);
     let is_failure = !item_fail_reason.is_empty() || to == TaskStatus::Failure;
     let progress = if is_failure || to == TaskStatus::Success {
         "100%"
@@ -589,6 +895,23 @@ pub async fn apply_suno_poll_result(
     } else {
         0
     };
+
+    if is_failure && !from.is_terminal() && task.quota != 0 {
+        return update_task_status_cas_and_refund_batch(
+            db,
+            task,
+            from,
+            to,
+            item_fail_reason,
+            progress,
+            "",
+            None,
+            finish_time,
+            now,
+            "suno",
+        )
+        .await;
+    }
 
     let won = update_task_status_cas(
         db,
@@ -603,11 +926,6 @@ pub async fn apply_suno_poll_result(
         now,
     )
     .await?;
-    if won && is_failure && !from.is_terminal() {
-        // Refund both user funding and the reserving token (Go RefundTaskQuota).
-        crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
-        crate::d1_repositories::refund_task_token_quota(db, task.token_id, task.quota, now).await?;
-    }
     Ok(won)
 }
 
@@ -629,5 +947,38 @@ mod tests {
         assert!(is_legacy_timeout_task(LEGACY_TASK_TIMEOUT_CUTOFF_UNIX - 1));
         assert!(!is_legacy_timeout_task(LEGACY_TASK_TIMEOUT_CUTOFF_UNIX));
         assert!(!is_legacy_timeout_task(0));
+    }
+
+    #[test]
+    fn task_refund_batch_markers_are_namespaced_and_compiled() {
+        assert!(task_refund_cas_batch_compiled());
+        assert_eq!(TASK_REFUND_MARKER_PATH, "$.task_refund_marker");
+        assert_eq!(TASK_REFUND_DONE_AT_PATH, "$.task_refund_done_at");
+        assert_eq!(
+            task_refund_marker(
+                42,
+                TaskStatus::Submitted,
+                TaskStatus::Failure,
+                "timeout",
+                1_783_408_664
+            ),
+            "task-refund:timeout:42:SUBMITTED:FAILURE:1783408664"
+        );
+    }
+
+    #[test]
+    fn suno_fail_reason_forces_terminal_failure_status() {
+        assert_eq!(
+            suno_poll_target_status(TaskStatus::InProgress, "", "upstream failed"),
+            TaskStatus::Failure
+        );
+        assert_eq!(
+            suno_poll_target_status(TaskStatus::InProgress, "", ""),
+            TaskStatus::InProgress
+        );
+        assert_eq!(
+            suno_poll_target_status(TaskStatus::InProgress, "SUCCESS", ""),
+            TaskStatus::Success
+        );
     }
 }

@@ -91,6 +91,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
+        capabilities.task_poller_refund_batch_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -180,7 +181,7 @@ export function CloudflarePlatformSection() {
                 </li>
                 <li>
                   {t(
-                    'Async task cron readiness now includes the Go-compatible timeout sweep before normal provider polling; keep provider replay and settlement evidence separate.'
+                    'Async task cron readiness now includes the Go-compatible timeout sweep and CAS-winner refund batch; keep provider replay and settlement evidence separate.'
                   )}
                 </li>
               </ul>
@@ -485,6 +486,15 @@ function buildCapabilityGroups(
             'Runs before normal polling so old stuck tasks cannot starve the bounded provider poll window.'
           ),
           ready: capabilities.task_poller_timeout_sweep_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Refund batch'),
+          description: t(
+            'Guards timeout/provider-failure refunds behind the same CAS winner marker before marking the refund complete.'
+          ),
+          ready: capabilities.task_poller_refund_batch_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

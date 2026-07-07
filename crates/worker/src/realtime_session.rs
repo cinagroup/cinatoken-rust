@@ -177,6 +177,13 @@ enum RealtimeUpstreamAuthMode {
     AzureApiKey,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RealtimeMockUpstreamFault {
+    EventStreamFailed,
+    AcceptFailed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RealtimeUpstreamBridgePlan {
     provider: RealtimeUpstreamProvider,
@@ -205,6 +212,8 @@ pub(crate) struct RealtimeSelectedUpstreamPlan {
     header_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     startup_queue_probe_delay_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mock_upstream_fault: Option<RealtimeMockUpstreamFault>,
 }
 
 pub(crate) struct RealtimeSelectedUpstream {
@@ -235,6 +244,7 @@ pub(crate) struct RealtimeSelectedUpstreamInput<'a> {
     pub api_version: Option<&'a str>,
     pub client_requested_subprotocol: bool,
     pub startup_queue_probe_delay_ms: Option<u32>,
+    pub mock_upstream_fault: Option<RealtimeMockUpstreamFault>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +269,8 @@ struct RealtimeUpstreamBridgeConnectHandoff {
     headers: Vec<RealtimeUpstreamConnectHeader>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     startup_queue_probe_delay_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mock_upstream_fault: Option<RealtimeMockUpstreamFault>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -972,6 +984,7 @@ impl RealtimeSession {
             client.clone(),
             context,
             handoff.startup_queue_probe_delay_ms,
+            handoff.mock_upstream_fault,
         );
         self.upstream_bridges.insert(bridge_key, runtime);
         Ok(())
@@ -1419,6 +1432,7 @@ pub(crate) fn realtime_upstream_channel_planner_compiled() -> bool {
         api_version: None,
         client_requested_subprotocol: true,
         startup_queue_probe_delay_ms: None,
+        mock_upstream_fault: None,
     }) else {
         return false;
     };
@@ -1506,6 +1520,7 @@ pub(crate) fn realtime_upstream_connect_handoff_compiled() -> bool {
         api_version: None,
         client_requested_subprotocol: true,
         startup_queue_probe_delay_ms: None,
+        mock_upstream_fault: None,
     }) else {
         return false;
     };
@@ -1552,6 +1567,7 @@ pub(crate) fn realtime_upstream_fetch_upgrade_adapter_compiled() -> bool {
         api_version: None,
         client_requested_subprotocol: false,
         startup_queue_probe_delay_ms: None,
+        mock_upstream_fault: None,
     }) else {
         return false;
     };
@@ -1899,6 +1915,7 @@ pub(crate) fn realtime_selected_upstream(
             .map(str::to_string)
             .collect(),
         startup_queue_probe_delay_ms: input.startup_queue_probe_delay_ms,
+        mock_upstream_fault: input.mock_upstream_fault,
     };
     let connect_handoff = RealtimeUpstreamBridgeConnectHandoff {
         url: plan.upstream_url.clone(),
@@ -1912,6 +1929,7 @@ pub(crate) fn realtime_selected_upstream(
             })
             .collect(),
         startup_queue_probe_delay_ms: input.startup_queue_probe_delay_ms,
+        mock_upstream_fault: input.mock_upstream_fault,
     };
     Ok(RealtimeSelectedUpstream {
         plan,
@@ -2094,9 +2112,18 @@ fn spawn_realtime_upstream_event_pump(
     client: WebSocket,
     context: Value,
     startup_queue_probe_delay_ms: Option<u32>,
+    mock_upstream_fault: Option<RealtimeMockUpstreamFault>,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
         let upstream = runtime_state.borrow().upstream.clone();
+        if mock_upstream_fault == Some(RealtimeMockUpstreamFault::EventStreamFailed) {
+            let cause = RealtimeBridgeCloseCause::UpstreamEventStreamFailed;
+            let action = realtime_bridge_close_action(cause);
+            close_realtime_upstream_runtime(&runtime_state, action);
+            send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
+            let _ = client.close(Some(action.client_code), Some(action.client_reason));
+            return;
+        }
         let mut events = match upstream.events() {
             Ok(events) => events,
             Err(_) => {
@@ -2113,6 +2140,14 @@ fn spawn_realtime_upstream_event_pump(
             if runtime_state.borrow().closed {
                 return;
             }
+        }
+        if mock_upstream_fault == Some(RealtimeMockUpstreamFault::AcceptFailed) {
+            let cause = RealtimeBridgeCloseCause::UpstreamAcceptFailed;
+            let action = realtime_bridge_close_action(cause);
+            close_realtime_upstream_runtime(&runtime_state, action);
+            send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
+            let _ = client.close(Some(action.client_code), Some(action.client_reason));
+            return;
         }
         if upstream.accept().is_err() {
             let cause = RealtimeBridgeCloseCause::UpstreamAcceptFailed;
@@ -3900,6 +3935,7 @@ mod tests {
             api_version: None,
             client_requested_subprotocol: true,
             startup_queue_probe_delay_ms: None,
+            mock_upstream_fault: None,
         })
         .unwrap();
         let header = realtime_upstream_plan_header_value(&plan).unwrap();
@@ -3928,6 +3964,7 @@ mod tests {
             api_version: None,
             client_requested_subprotocol: true,
             startup_queue_probe_delay_ms: None,
+            mock_upstream_fault: None,
         })
         .unwrap();
         let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
@@ -3966,6 +4003,7 @@ mod tests {
             api_version: None,
             client_requested_subprotocol: true,
             startup_queue_probe_delay_ms: Some(250),
+            mock_upstream_fault: None,
         })
         .unwrap();
         let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
@@ -3977,6 +4015,43 @@ mod tests {
 
         assert_eq!(decoded_plan.startup_queue_probe_delay_ms, Some(250));
         assert_eq!(decoded_handoff.startup_queue_probe_delay_ms, Some(250));
+        assert!(!plan_header.contains(secret));
+        assert!(connect_header.contains(secret));
+    }
+
+    #[test]
+    fn realtime_mock_upstream_fault_round_trips_without_secret_in_plan() {
+        let secret = "sk-live-secret";
+        let selected = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 42,
+            channel_type: 1,
+            channel_name: "primary-openai",
+            channel_base_url: Some("https://api.openai.com"),
+            request_model: "gpt-4o-realtime-preview",
+            upstream_model: "gpt-4o-realtime-preview",
+            upstream_api_key: secret,
+            api_version: None,
+            client_requested_subprotocol: true,
+            startup_queue_probe_delay_ms: None,
+            mock_upstream_fault: Some(RealtimeMockUpstreamFault::AcceptFailed),
+        })
+        .unwrap();
+        let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
+        let connect_header =
+            realtime_upstream_connect_header_value(&selected.connect_handoff).unwrap();
+        let decoded_plan = realtime_upstream_plan_from_header_value(&plan_header).unwrap();
+        let decoded_handoff =
+            realtime_upstream_connect_handoff_from_header_value(&connect_header).unwrap();
+
+        assert_eq!(
+            decoded_plan.mock_upstream_fault,
+            Some(RealtimeMockUpstreamFault::AcceptFailed)
+        );
+        assert_eq!(
+            decoded_handoff.mock_upstream_fault,
+            Some(RealtimeMockUpstreamFault::AcceptFailed)
+        );
         assert!(!plan_header.contains(secret));
         assert!(connect_header.contains(secret));
     }
@@ -3996,6 +4071,7 @@ mod tests {
             api_version: None,
             client_requested_subprotocol: false,
             startup_queue_probe_delay_ms: None,
+            mock_upstream_fault: None,
         })
         .unwrap();
         let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
@@ -4079,6 +4155,7 @@ mod tests {
             api_version: Some("2025-04-01-preview"),
             client_requested_subprotocol: true,
             startup_queue_probe_delay_ms: None,
+            mock_upstream_fault: None,
         })
         .unwrap();
         let fetch_plan = realtime_upstream_fetch_request_plan(&selected.connect_handoff).unwrap();
@@ -4110,6 +4187,7 @@ mod tests {
             api_version: None,
             client_requested_subprotocol: true,
             startup_queue_probe_delay_ms: None,
+            mock_upstream_fault: None,
         })
         .unwrap();
         let attachment = SocketAttachment {

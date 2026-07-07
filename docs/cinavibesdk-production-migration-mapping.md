@@ -168,11 +168,16 @@ Current mapped status from existing docs:
   upstream replay harness now records active/empty-queue runtime status before
   sending ordinary live probe frames and has a `startup-queue-drain` scenario
   that uses explicit mock-channel `queue_probe_delay_ms` metadata to observe
-  one queued frame before delayed upstream accept drains it to the mock.
+  one queued frame before delayed upstream accept drains it to the mock. It also
+  has review-only mock fault plans for `event_stream_failed` and
+  `accept_failed`, triggered only by explicit mock-channel
+  `realtime_mock_upstream.fault` metadata and expected to close before any
+  client probe is forwarded.
 - Production-grade bridge hardening and realtime billing settlement are still
   blockers. `realtime_session_v1_cutover_ready` must remain false until live
-  queue/drain artifacts are archived from local/staging, live close/error
-  replay, live mock/real upstream replay artifacts, and settlement are proven.
+  queue/drain/fault artifacts are archived from local/staging, live close/error
+  replay including upstream abort/error and upstream-to-client send failure,
+  live mock/real upstream replay artifacts, and settlement are proven.
 
 Production rule:
 
@@ -263,7 +268,7 @@ and fallback behavior as the direct path.
 | Route or traffic family | Production owner | cinaVibeSDK pattern used | Main gates | Required evidence |
 | --- | --- | --- | --- | --- |
 | `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/embeddings` | Main Rust relay | AI Gateway primary/fallback forwarding | `RELAY_AI_GATEWAY_ROUTER_ENABLED`, per-channel opt-in | Direct and AI Gateway canary, same-channel fallback, unchanged settlement |
-| `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, frame guard, close/error mapping, send-failure cleanup, terminal event trace, upstream replay contract, backpressure policy plus runtime FIFO queue, controlled mock startup queue/drain probe, archived staging evidence, billing settlement, live protocol replay |
+| `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, frame guard, close/error mapping, send-failure cleanup, terminal event trace, upstream replay contract, backpressure policy plus runtime FIFO queue, controlled mock startup queue/drain and early fault plans, archived staging evidence, billing settlement, live protocol replay |
 | `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe, forged internal upstream header boundary smoke |
 | Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
 | Tenant AI routes | WFP Rust tenant script plus AI Gateway | Dispatch plus AI Gateway proxy | Real `DISPATCHER`, tenant Gateway vars | Route-specific Gateway logs, request policy headers, response-header allowlist |

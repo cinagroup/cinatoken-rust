@@ -379,20 +379,23 @@ payload/token redaction before any live upstream replay artifact is accepted:
 bun run check:realtime-session:upstream-replay-contract
 ```
 
-Then run the local mock upstream replay harness self-test and dry-run plan. The
-self-test validates the harness expectations for externally inducible live
+Then run the local mock upstream replay harness self-test and dry-run plans.
+The self-test validates the harness expectations for externally inducible live
 paths (`upstream-normal-close`, `upstream-frame-limit`, and
-`startup-queue-drain`) and records the
-fault paths that still need Worker-side fault injection. The dry-run prints the
-redacted `/v1/realtime` plan plus the channel `base_url` that must point at the
-mock upstream. The harness also sends a WebSocket `status` control frame before
-ordinary replay probes and requires one active upstream bridge with zero queued
-upstream frames/bytes. For `startup-queue-drain`, it sends the probe first and
-requires one queued upstream frame before the delayed accept path drains it:
+`startup-queue-drain`) plus Worker-side mock-fault paths
+(`upstream-event-stream-failed` and `upstream-accept-failed`). The dry-runs
+print the redacted `/v1/realtime` plan plus the channel `base_url` that must
+point at the mock upstream. The harness sends a WebSocket `status` control
+frame before ordinary replay probes and requires one active upstream bridge
+with zero queued upstream frames/bytes. For `startup-queue-drain`, it sends the
+probe first and requires one queued upstream frame before the delayed accept
+path drains it. For early mock faults, it expects the Worker to emit the
+terminal bridge event and close before any client probe is forwarded:
 
 ```powershell
 bun run check:realtime-session:mock-upstream-replay-contract
 bun run check:realtime-session:mock-upstream-replay-plan
+bun run check:realtime-session:mock-upstream-fault-plans
 ```
 
 The dry-run plan now includes a review-only `localD1Seed` block with SQL for a
@@ -402,7 +405,10 @@ smoke tool never writes D1 by itself. After applying the SQL, use the emitted
 `localD1Seed.smokeApiKey` as the live replay `--api-key`. The
 `startup-queue-drain` dry-run intentionally writes
 `channels.other_info.realtime_mock_upstream.queue_probe_delay_ms` for the
-dedicated mock channel; do not copy that metadata onto production channels.
+dedicated mock channel. The mock-fault dry-runs intentionally write
+`channels.other_info.realtime_mock_upstream.fault` as `event_stream_failed` or
+`accept_failed`. Do not copy any `realtime_mock_upstream` fault/delay metadata
+onto production channels.
 
 Also run the local platform header-boundary validator self-test. It proves the
 smoke verifier rejects forged upstream handoff markers, upstream plans, active

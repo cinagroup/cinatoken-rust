@@ -60,6 +60,32 @@ const scenarios = new Map(
         upstreamCloseCode: 1000,
       },
     },
+    {
+      name: "upstream-event-stream-failed",
+      mockFault: "event_stream_failed",
+      skipRuntimeStatus: true,
+      skipProbe: true,
+      expectForwardedClientFrame: false,
+      expectedEvent: {
+        event: "upstream_event_stream_failed",
+        direction: "upstream_to_client",
+        clientCode: 1011,
+        clientReason: "upstream_bridge_event_stream_failed",
+      },
+    },
+    {
+      name: "upstream-accept-failed",
+      mockFault: "accept_failed",
+      skipRuntimeStatus: true,
+      skipProbe: true,
+      expectForwardedClientFrame: false,
+      expectedEvent: {
+        event: "upstream_accept_failed",
+        direction: "upstream_to_client",
+        clientCode: 1011,
+        clientReason: "upstream_bridge_accept_failed",
+      },
+    },
   ].map((scenario) => [scenario.name, scenario]),
 );
 
@@ -67,14 +93,6 @@ const plannedFaultScenarios = [
   {
     name: "upstream-error",
     reason: "requires an upstream socket abort/error injection that does not become a normal close",
-  },
-  {
-    name: "upstream-event-stream-failed",
-    reason: "requires Worker-side upstream event stream fault injection",
-  },
-  {
-    name: "upstream-accept-failed",
-    reason: "requires Worker-side upstream accept fault injection",
   },
   {
     name: "upstream-to-client-send-failure",
@@ -198,7 +216,7 @@ function usage(exitCode, error) {
       "Usage: bun tools/smoke_realtime_upstream_replay.mjs --url <worker-origin> --api-key <staging-token> [options]",
       "",
       "Options:",
-      "  --scenario <name>       upstream-normal-close, upstream-frame-limit, or startup-queue-drain",
+      "  --scenario <name>       upstream-normal-close, upstream-frame-limit, startup-queue-drain, upstream-event-stream-failed, or upstream-accept-failed",
       "  --model <model>         or REALTIME_UPSTREAM_REPLAY_MODEL",
       "  --api-key <token>       or REALTIME_UPSTREAM_REPLAY_API_KEY",
       "  --probe <text>          or REALTIME_UPSTREAM_REPLAY_PROBE",
@@ -260,7 +278,11 @@ function buildPlan(options) {
       ],
     },
     localD1Seed: buildLocalD1SeedPlan(options, expectedChannelBaseUrl),
-    runtimeStatusProbePhase: options.scenario.queueProbe ? "after_probe_before_drain" : "before_probe",
+    runtimeStatusProbePhase: options.scenario.skipRuntimeStatus
+      ? "skipped_early_mock_fault"
+      : options.scenario.queueProbe
+        ? "after_probe_before_drain"
+        : "before_probe",
     expectedRuntimeStatus: expectedRuntimeStatusForScenario(options.scenario, options.probe),
     expectedBridgeEvent: options.scenario.expectedEvent,
     probeBytes: byteLength(options.probe),
@@ -271,8 +293,12 @@ function buildPlan(options) {
       "Cloudflare staging cannot reach 127.0.0.1 directly; use a public mock endpoint or tunnel for remote staging.",
       options.scenario.queueProbe
         ? "Live replay sends the probe before the status control frame and expects one queued upstream frame before the delayed upstream accept drains it."
+        : options.scenario.skipRuntimeStatus
+          ? "Live replay expects the Worker-side mock fault to close before any client probe is forwarded."
         : "Live replay sends a WebSocket status control frame before the probe and requires one active upstream bridge with an empty pending queue.",
-      "The live smoke fails unless the mock receives the forwarded client frame and the Worker emits a metadata-only realtime_session_bridge_event.",
+      options.scenario.expectForwardedClientFrame === false
+        ? "The live smoke fails unless the mock receives the upstream WebSocket connection and the Worker emits a metadata-only realtime_session_bridge_event."
+        : "The live smoke fails unless the mock receives the forwarded client frame and the Worker emits a metadata-only realtime_session_bridge_event.",
     ],
   };
 }
@@ -290,12 +316,16 @@ async function runLiveReplay(options, plan) {
   try {
     const ws = await openWebSocket(plan.workerRealtimeUrl, plan.protocols, options.timeoutMs);
     const outcomePromise = waitForBridgeEventAndClose(ws, options.timeoutMs);
-    let statusFrame;
-    if (options.scenario.queueProbe) {
+    let statusFrame = null;
+    if (options.scenario.skipRuntimeStatus) {
+      // The Worker-side mock fault happens immediately after upstream connect.
+    } else if (options.scenario.queueProbe) {
       ws.send(options.probe);
       statusFrame = await requestRuntimeStatus(ws, options);
     } else {
       statusFrame = await requestRuntimeStatus(ws, options);
+    }
+    if (!options.scenario.skipProbe && !options.scenario.queueProbe) {
       ws.send(options.probe);
     }
     const outcome = await outcomePromise;
@@ -539,11 +569,19 @@ function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null) 
   if (!options.externalMock && stats.connections < 1) {
     throw new Error("mock upstream did not receive a WebSocket connection");
   }
-  if (!options.externalMock && stats.receivedFrames.length < 1) {
+  if (
+    !options.externalMock &&
+    options.scenario.expectForwardedClientFrame !== false &&
+    stats.receivedFrames.length < 1
+  ) {
     throw new Error("mock upstream did not receive the forwarded client frame");
   }
   const firstFrame = stats.receivedFrames[0];
-  if (!options.externalMock && firstFrame.bytes !== byteLength(options.probe)) {
+  if (
+    !options.externalMock &&
+    options.scenario.expectForwardedClientFrame !== false &&
+    firstFrame.bytes !== byteLength(options.probe)
+  ) {
     throw new Error(`forwarded client frame bytes=${firstFrame.bytes}, expected ${byteLength(options.probe)}`);
   }
   if (outcome.bridgeEvent.context?.upstream_connect_handoff !== true) {
@@ -553,6 +591,7 @@ function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null) 
 }
 
 function expectedRuntimeStatusForScenario(scenario, probe) {
+  if (scenario.skipRuntimeStatus) return null;
   return scenario.queueProbe
     ? {
         active_upstream_bridges: 1,
@@ -568,10 +607,11 @@ function expectedRuntimeStatusForScenario(scenario, probe) {
 
 function validateRuntimeStatusFrame(frame, options) {
   const scenarioName = options.scenario.name;
+  const expected = expectedRuntimeStatusForScenario(options.scenario, options.probe);
+  if (!expected) return;
   if (!frame || typeof frame !== "object") {
     throw new Error(`missing runtime status frame for ${scenarioName}`);
   }
-  const expected = expectedRuntimeStatusForScenario(options.scenario, options.probe);
   for (const [field, expectedValue] of Object.entries(expected)) {
     if (frame[field] !== expectedValue) {
       throw new Error(`runtime status ${field}=${frame[field]}, expected ${expectedValue}`);
@@ -730,6 +770,7 @@ function syntheticStats(probe) {
 
 function syntheticRuntimeStatusFrame(scenario, probe) {
   const expected = expectedRuntimeStatusForScenario(scenario, probe);
+  if (!expected) return null;
   return {
     type: "realtime_session_status",
     ...expected,
@@ -753,9 +794,17 @@ function buildLocalD1SeedPlan(options, expectedChannelBaseUrl) {
   const channelName = `realtime-mock-upstream-${channelId}`;
   const mockChannelKey = `mock-upstream-key-${channelId}`;
   const affCode = `rtmock${userId}`;
-  const otherInfo = options.scenario.queueProbe
-    ? { realtime_mock_upstream: { queue_probe_delay_ms: options.scenario.queueProbeDelayMs } }
-    : { realtime_mock_upstream: true };
+  const otherInfo =
+    options.scenario.queueProbe || options.scenario.mockFault
+      ? {
+          realtime_mock_upstream: {
+            ...(options.scenario.queueProbe
+              ? { queue_probe_delay_ms: options.scenario.queueProbeDelayMs }
+              : {}),
+            ...(options.scenario.mockFault ? { fault: options.scenario.mockFault } : {}),
+          },
+        }
+      : { realtime_mock_upstream: true };
   const statements = [
     `INSERT INTO users (id, username, password, display_name, role, status, email, quota, used_quota, request_count, "group", aff_code, created_at, deleted_at)
 VALUES (${userId}, ${sqlString(username)}, 'disabled-local-smoke-user', 'Realtime Mock Smoke', 1, 1, '', 100000000, 0, 0, ${sqlString(group)}, ${sqlString(affCode)}, ${now}, NULL)
@@ -822,6 +871,11 @@ VALUES (${sqlString(group)}, ${sqlString(model)}, ${channelId}, 1, 1000, 1000);`
             `This scenario intentionally delays upstream accept/drain by ${options.scenario.queueProbeDelayMs}ms and must stay isolated from production traffic.`,
           ]
         : []),
+      ...(options.scenario.mockFault
+        ? [
+            `This scenario injects Worker-side mock fault ${options.scenario.mockFault} and must stay isolated from production traffic.`,
+          ]
+        : []),
     ],
     statements,
   };
@@ -847,6 +901,13 @@ function validateSeedPlan(plan, scenario) {
     }
   } else if (sql.includes("queue_probe_delay_ms")) {
     throw new Error(`self-test ${scenarioName} seed plan unexpectedly includes queue probe delay metadata`);
+  }
+  if (scenario.mockFault) {
+    if (!sql.includes(`"fault":"${scenario.mockFault}"`)) {
+      throw new Error(`self-test ${scenarioName} seed plan missing mock fault metadata`);
+    }
+  } else if (sql.includes('"fault":')) {
+    throw new Error(`self-test ${scenarioName} seed plan unexpectedly includes mock fault metadata`);
   }
 }
 
@@ -888,6 +949,7 @@ function summarizeBridgeEvent(frame) {
 }
 
 function summarizeRuntimeStatus(frame) {
+  if (!frame) return null;
   return {
     activeUpstreamBridges: frame.active_upstream_bridges,
     queuedUpstreamFrames: frame.queued_upstream_frames,

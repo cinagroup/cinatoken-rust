@@ -2345,6 +2345,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
                 startup_queue_probe_delay_ms: realtime_mock_queue_probe_delay_ms(
                     &channel.other_info,
                 ),
+                mock_upstream_fault: realtime_mock_upstream_fault(&channel.other_info),
             },
         )
         .map_err(|err| {
@@ -2369,6 +2370,20 @@ fn realtime_mock_queue_probe_delay_ms(other_info: &str) -> Option<u32> {
         return None;
     }
     Some(delay as u32)
+}
+
+fn realtime_mock_upstream_fault(
+    other_info: &str,
+) -> Option<crate::realtime_session::RealtimeMockUpstreamFault> {
+    let value: Value = serde_json::from_str(other_info.trim()).ok()?;
+    let mock = value.get("realtime_mock_upstream")?.as_object()?;
+    match mock.get("fault")?.as_str()? {
+        "event_stream_failed" => {
+            Some(crate::realtime_session::RealtimeMockUpstreamFault::EventStreamFailed)
+        }
+        "accept_failed" => Some(crate::realtime_session::RealtimeMockUpstreamFault::AcceptFailed),
+        _ => None,
+    }
 }
 
 fn relay_token_rate_limit_key(auth: &AuthenticatedToken) -> String {
@@ -6110,6 +6125,35 @@ mod tests {
                 r#"{"realtime_mock_upstream":{"queue_probe_delay_ms":1000}}"#
             ),
             Some(1000)
+        );
+    }
+
+    #[test]
+    fn realtime_mock_upstream_fault_requires_explicit_allowed_value() {
+        assert_eq!(realtime_mock_upstream_fault("{}"), None);
+        assert_eq!(
+            realtime_mock_upstream_fault(r#"{"realtime_mock_upstream":true}"#),
+            None
+        );
+        assert_eq!(
+            realtime_mock_upstream_fault(
+                r#"{"realtime_mock_upstream":{"fault":"event_stream_failed"}}"#
+            ),
+            Some(crate::realtime_session::RealtimeMockUpstreamFault::EventStreamFailed)
+        );
+        assert_eq!(
+            realtime_mock_upstream_fault(r#"{"realtime_mock_upstream":{"fault":"accept_failed"}}"#),
+            Some(crate::realtime_session::RealtimeMockUpstreamFault::AcceptFailed)
+        );
+        assert_eq!(
+            realtime_mock_upstream_fault(
+                r#"{"realtime_mock_upstream":{"fault":"upstream_error"}}"#
+            ),
+            None
+        );
+        assert_eq!(
+            realtime_mock_upstream_fault(r#"{"realtime_mock_upstream":{"fault":1}}"#),
+            None
         );
     }
 

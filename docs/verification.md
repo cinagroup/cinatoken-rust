@@ -5,6 +5,20 @@ Last checked: 2026-07-07
 ## Passed
 
 - `cargo fmt --all`,
+  `node --check tools/smoke_realtime_upstream_replay.mjs`,
+  `bun run check:realtime-session:mock-upstream-replay-contract`,
+  `bun run check:realtime-session:mock-upstream-replay-plan`,
+  `bun run check:realtime-session:mock-upstream-fault-plans`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  and `cargo test -p cinatoken-worker --lib relay -- --nocapture`: passed
+  after adding Realtime mock upstream fault injection for
+  `upstream-event-stream-failed` and `upstream-accept-failed`. These paths are
+  triggered only by explicit
+  `channels.other_info.realtime_mock_upstream.fault` metadata on a dedicated
+  local/staging mock channel, emit metadata-only terminal bridge events, skip
+  client probe forwarding by design, and remain separate from production
+  cutover evidence until live artifacts are archived.
+- `cargo fmt --all`,
   `cargo test -p cinatoken-session --lib -- --nocapture`,
   `cargo test -p cinatoken-worker --lib admin -- --nocapture`,
   `cargo test -p cinatoken-worker --lib admin_user -- --nocapture`,

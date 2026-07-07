@@ -7284,6 +7284,63 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.118 2026-07-07 Realtime Mock Upstream Fault Injection
+
+This increment makes two previously planned Realtime DO fault paths repeatable
+through the existing local/staging mock-upstream replay harness. It is still not
+production cutover evidence: the new knobs are isolated to explicit mock-channel
+metadata and must not be copied to production channels.
+
+Implemented:
+
+- Added `RealtimeMockUpstreamFault` to the Realtime selected-upstream plan and
+  request-scoped connect handoff. The value is metadata-only and round-trips in
+  the redacted plan without exposing upstream API keys.
+- `channels.other_info.realtime_mock_upstream.fault` now accepts only two
+  explicit values:
+  - `event_stream_failed`, which drives the DO's
+    `upstream_event_stream_failed` terminal event path before any client probe
+    is forwarded;
+  - `accept_failed`, which drives the `upstream_accept_failed` terminal event
+    path before accepting the upstream socket.
+- The parser still requires `realtime_mock_upstream` to be an object. Legacy
+  boolean mock markers, invalid strings, numeric values, and ordinary channel
+  metadata cannot enable fault injection.
+- `tools/smoke_realtime_upstream_replay.mjs` now includes
+  `upstream-event-stream-failed` and `upstream-accept-failed` scenarios. Their
+  dry-runs emit review-only D1 seed SQL with isolated mock-channel fault
+  metadata, skip runtime-status/probe forwarding by design, and require a
+  metadata-only `realtime_session_bridge_event` plus safe `1011` client close.
+- Added `check:realtime-session:mock-upstream-fault-plans` to the default
+  `bun run check` chain so both fault seed plans stay executable.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `node --check tools/smoke_realtime_upstream_replay.mjs` passed.
+- `bun run check:realtime-session:mock-upstream-replay-contract` passed and now
+  lists five live-capable scenarios, with `upstream-error` and
+  `upstream-to-client-send-failure` still planned.
+- `bun run check:realtime-session:mock-upstream-replay-plan` passed.
+- `bun run check:realtime-session:mock-upstream-fault-plans` passed and emitted
+  fault-specific review-only D1 seed plans.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed with 51 filtered Realtime/platform tests.
+- `cargo test -p cinatoken-worker --lib relay -- --nocapture` passed with 117
+  filtered relay/platform tests.
+
+Remaining migration gaps:
+
+- Run and archive live local/staging evidence for the two new mock-fault
+  scenarios after a dedicated D1 channel points at the mock upstream.
+- Add safe replay coverage for upstream socket abort/error and
+  upstream-to-client send failure; those are still listed as planned by the
+  harness.
+- Add Realtime usage accumulation, pre-consume/refund/final settlement, and
+  audit logs before `realtime_session_upstream_bridge_compiled`,
+  `realtime_session_billing_settlement_compiled`, or
+  `realtime_session_v1_cutover_ready` can become true.
+
 ### 22.117 2026-07-07 Custom OAuth Callback Login/Bind
 
 This increment closes the default frontend's generic custom OAuth callback

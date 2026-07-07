@@ -1296,15 +1296,37 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
-    match task_orchestration::poll_unfinished_tasks(&db, &gemini_version, now, 100).await {
+    let poller_config = task_orchestration::task_poller_config_from_env(&env);
+    match task_orchestration::sweep_timed_out_tasks(
+        &db,
+        now,
+        poller_config.timeout_minutes,
+        poller_config.timeout_sweep_limit,
+    )
+    .await
+    {
+        Ok(settled) => worker::console_log!("task poller: timed out {settled} task(s)"),
+        Err(err) => worker::console_error!("task poller: timeout sweep failed: {err}"),
+    }
+    match task_orchestration::poll_unfinished_tasks(
+        &db,
+        &gemini_version,
+        now,
+        poller_config.query_limit,
+    )
+    .await
+    {
         Ok(settled) => worker::console_log!("task poller: settled {settled} video task(s)"),
         Err(err) => worker::console_error!("task poller: video batch failed: {err}"),
     }
-    match task_orchestration::poll_unfinished_suno_tasks(&db, now, 100).await {
+    match task_orchestration::poll_unfinished_suno_tasks(&db, now, poller_config.query_limit).await
+    {
         Ok(settled) => worker::console_log!("task poller: settled {settled} suno task(s)"),
         Err(err) => worker::console_error!("task poller: suno batch failed: {err}"),
     }
-    match task_orchestration::poll_unfinished_midjourney_tasks(&db, now, 100).await {
+    match task_orchestration::poll_unfinished_midjourney_tasks(&db, now, poller_config.query_limit)
+        .await
+    {
         Ok(settled) => worker::console_log!("task poller: settled {settled} mj task(s)"),
         Err(err) => worker::console_error!("task poller: mj batch failed: {err}"),
     }

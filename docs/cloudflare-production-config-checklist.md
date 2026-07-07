@@ -450,11 +450,15 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 | --- | --- |
 | Migrations | Apply through **`0007_midjourneys.sql`** (the mj subsystem's own table); the `tasks` table is in `0001`. |
 | Cron trigger | `[env.*.triggers] crons = ["* * * * *"]` (added to wrangler.toml) drives the `#[event(scheduled)]` poller. Inert with no in-flight tasks; **required** for any task to settle. |
+| `TASK_QUERY_LIMIT` | var, default `100` in Worker envs - bounded per-family provider poll window for video, Suno, and Midjourney. Keep conservative until provider replay and subrequest capacity are measured. |
+| `TASK_TIMEOUT_MINUTES` | var, default `1440` - Go-compatible timeout sweep runs before normal polling; set `0` only for emergency diagnostics because stuck rows can otherwise starve newer work. |
 | `GEMINI_VERSION` | var, default `v1beta` — Gemini/Veo API version. |
 | `VERTEX_REGION` | var, default `us-central1` — Vertex region for `predictLongRunning` (per-channel region edge cases TBD on staging). |
 | Channel types | Each provider is a channel `type`: Ali=17, Gemini=24, MiniMax/Hailuo=35, SunoAPI=36, VertexAi=41, VolcEngine=45, Kling=50, Jimeng=51, Vidu=52, DoubaoVideo=54, Sora=55/OpenAI=1; Midjourney=2/5. A task model with no matching enabled channel returns 503. |
 | Channel keys | Provider-specific: bearer key (sora/doubao/ali/hailuo/suno), `Token` (vidu), `mj-api-secret` (mj), `accessKey\|secretKey` (kling JWT / jimeng SigV4), or the **service-account JSON** (vertex). |
 | Pricing | Task billing models are `suno_<action>`, `mj_<action>`, or the video model name — price them or they bill 0. |
+
+| Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_timeout_sweep_enabled=true`, and the expected query/timeout values before async task canary. |
 
 ## Observability Checklist
 

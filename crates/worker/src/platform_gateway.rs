@@ -28,6 +28,7 @@ use crate::realtime_session::{
     realtime_upstream_fetch_upgrade_adapter_compiled, REALTIME_SESSION_CUTOVER_GUARDS,
     REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
 };
+use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::wfp_tenant::{
     wfp_tenant_ai_gateway_policy_compiled, wfp_tenant_cutover_guards,
     wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_response_header_guard_compiled,
@@ -137,6 +138,12 @@ struct PlatformCapabilities {
     realtime_session_billing_settlement_compiled: bool,
     realtime_session_platform_smoke_ready: bool,
     realtime_session_v1_cutover_ready: bool,
+    task_poller_scheduled_handler_compiled: bool,
+    task_poller_timeout_sweep_compiled: bool,
+    task_poller_timeout_sweep_enabled: bool,
+    task_poller_query_limit: i64,
+    task_poller_timeout_minutes: i64,
+    task_poller_timeout_sweep_limit: i64,
 }
 
 /// Admin-only capability probe for the production migration cockpit.
@@ -244,6 +251,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
     );
+    let task_poller_config = task_poller_config_from_env(&env);
+    let task_poller_timeout_sweep_compiled = task_timeout_sweep_compiled();
 
     let capabilities = PlatformCapabilities {
         ai_binding_available: env.ai("AI").is_ok(),
@@ -299,6 +308,12 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_compiled,
         realtime_session_platform_smoke_ready,
         realtime_session_v1_cutover_ready,
+        task_poller_scheduled_handler_compiled: true,
+        task_poller_timeout_sweep_compiled,
+        task_poller_timeout_sweep_enabled: task_poller_config.timeout_minutes > 0,
+        task_poller_query_limit: task_poller_config.query_limit,
+        task_poller_timeout_minutes: task_poller_config.timeout_minutes,
+        task_poller_timeout_sweep_limit: task_poller_config.timeout_sweep_limit,
     };
 
     envelope_ok_response(&capabilities)
@@ -941,6 +956,11 @@ mod tests {
                 "expected WFP tenant smoke readiness to wait on gate index {false_gate}"
             );
         }
+    }
+
+    #[test]
+    fn task_poller_timeout_sweep_is_operator_visible() {
+        assert!(task_timeout_sweep_compiled());
     }
 
     #[test]

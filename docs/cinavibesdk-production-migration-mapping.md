@@ -443,6 +443,10 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
 - Realtime production ownership requires usage accumulation, refund behavior,
   final settlement, and audit rows before `REALTIME_SESSION_V1_ENABLED` can be
   used outside a canary.
+- Async video/Suno/Midjourney production ownership now has a Worker cron
+  timeout sweep before normal provider polling, but still requires staging
+  timeout/refund replay and refund-in-CAS repair evidence before the cron can be
+  treated as eviction-proof billing infrastructure.
 - WFP tenant AI routes must either call back through an owned billing path or
   produce equivalent audit and settlement evidence before paid traffic is routed
   there.

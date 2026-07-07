@@ -93,7 +93,7 @@ maturity levels are used:
 | M8 WFP dispatch | B | **Gated substrate (capability guarded)** | `dispatch_target_for_request` + `dispatch_request` via `dynamic_dispatcher().get().fetch_request`, credential/marker **header stripping**, worker-name sanitization, preview-host + internal-path routing, admin-auth gate, tenant-script SDK crate, tenant route/guard capability surface, tenant response-header allowlist, AI Gateway policy contract, and dispatch smoke response-header/capability guard | Uncomment `[[dispatch_namespaces]]` binding (needs paid WFP plan); end-to-end tenant smoke with uploaded Rust/Wasm artifact and archived capability preflight | `crates/worker/src/platform_gateway.rs`: dispatch + header strip + capability readiness; `crates/worker/src/wfp_tenant.rs`: tenant script plan/route/guard helpers; `crates/wfp-tenant/src/lib.rs`: tenant runtime/allowlist; `tools/smoke_wfp_dispatch.mjs`: dispatch, capability preflight, and response-header guard; binding commented `wrangler.toml:67,162,262`; gates `WFP_DISPATCH_ENABLED`/`WFP_INTERNAL_DISPATCH_ENABLED` |
 | M6 RealtimeSession | A | **Gated substrate (event trace compiled)** | `#[durable_object]` with WS **hibernation** (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`), per-socket `SocketAttachment`, lifecycle metrics persisted to DO storage, upstream URL/handshake planner, `/v1/realtime` D1/cache channel selection with secret-redacted plan summaries in socket attachments, request-scoped upstream connect specs, gateway-to-DO secret handoff with no raw key persistence, Worker-native upstream fetch-upgrade adapter, an in-memory upstream bridge registry that forwards client frames while active and reports `upstream_bridge_not_active` after hibernation/restart, 1 MiB text/binary frame guards with 1009 close handling, deterministic bridge close/error code mapping, fail-closed cleanup when either bridge direction cannot enqueue a frame, a bounded backpressure policy plus transient FIFO client-to-upstream queue before upstream accept, metadata-only overflow events, WebSocket and HTTP status counters for active upstream bridges plus queued frames/bytes, sanitized terminal event trace metadata for close/error/frame-limit/send-failure paths, smoke-level bridge/upstream replay contract self-tests, and a mock upstream replay harness with review-only D1 seed SQL, active/empty-queue runtime-status proof, controlled startup queue/drain, and early `event_stream_failed`/`accept_failed` fault plans before live probes | Production-grade bridge hardening: archived local/staging queue/drain/fault evidence, remaining upstream abort/error and upstream-to-client send-failure replay, **usage accumulation + Go-formula settle** (none yet), protocol parity | `crates/worker/src/realtime_session.rs`: DO + planners/handoff/fetch-upgrade adapter/transient lifecycle/frame guard/close mapping/send-failure/backpressure guard/runtime queue/event trace/startup queue probe/mock fault handoff; `tools/smoke_realtime_session.mjs`: platform/frame-limit/replay-contract smoke; `tools/smoke_realtime_upstream_replay.mjs`: mock upstream replay + D1 seed plan/runtime-status/fault proof; `crates/worker/src/relay.rs`: Realtime channel selection helper; binding **active** `wrangler.toml:117,216,317`; gates `REALTIME_SESSION_V1_ENABLED`/`REALTIME_SESSION_GATEWAY_ENABLED` |
 | M4 QuotaCoordinator | — | **Pending** | — | Build the shadow-first per-token DO (§4 M4) | no `crates/coordinator` yet |
-| M5 Task correctness / TaskRunner | — | **Pending** | — | M5a correctness fixes (starvation sweep, MJ units bug, refund-in-CAS), then optional DO | cron poller live at `crates/worker/src/lib.rs:1255` |
+| M5 Task correctness / TaskRunner | — | **Partial (timeout sweep wired)** | Scheduled Worker poller now runs a Go-compatible timeout sweep before provider polling, uses per-task CAS for timeout failure, preserves the legacy imported-task no-refund cutoff, hardens malformed `private_data` during task CAS updates, and exposes task-poller config/readiness in `/api/platform/capabilities` plus the admin frontend | Finish refund-in-CAS/repair evidence, staging timeout/refund replay, then optional `TaskRunner` DO | `crates/worker/src/task_repository.rs`: timed-out query/CAS timeout apply; `crates/worker/src/task_orchestration.rs`: config + sweep before provider poll; `crates/worker/src/lib.rs`: scheduled handler; `platform_gateway.rs` + frontend Cloudflare Platform panel: capability surface |
 
 **Two refinements the landed code makes over this doc's original design:**
 
@@ -290,11 +290,13 @@ by clearing the flag, no redeploy required.
 - **Rollback:** each stage is a separate flag; revert to the prior stage instantly.
 
 ### M5 — Task-system correctness, then optional `TaskRunner` DO (1 wk + 1 wk)
-- **M5a (do first, no DO):** Port Go's `sweepTimedOutTasks` for video/suno
-  (fixes the `ORDER BY id LIMIT 100` starvation once >100 stuck tasks exist);
-  fix the dead Midjourney timeout guard (seconds-vs-ms units bug,
-  `task_orchestration.rs:1478` vs `mj_repository.rs:64-67`); **batch the refund
-  into the CAS `db.batch`** to close the crash window at `task_repository.rs:448-467`.
+- **M5a (do first, no DO):** Go's `sweepTimedOutTasks` shape is now wired into
+  the scheduled Worker poller before normal video/Suno/Midjourney polling. The
+  Rust path uses per-task CAS, preserves the legacy imported-task no-refund
+  cutoff, and exposes task-poller config/readiness in `/api/platform/capabilities`.
+  Remaining M5a work: capture staging timeout/refund replay and **batch the
+  refund into the CAS `db.batch`** (or add equivalent repair evidence) to close
+  the crash window at `task_repository.rs:448-467`.
 - **M5b (optional fast path):** Arm a per-task `TaskRunner` DO alarm at submit
   (`0.5.0` `storage().set_alarm`, `durable.rs:442`) for sub-60s settle latency
   and per-task backoff; the **cron becomes sweeper-of-last-resort**
@@ -517,8 +519,8 @@ precedent (`RealtimeSession` already follows this). No new cargo feature is requ
 | QuotaCoordinator changes flat-billing semantics | High | Scope to tiered-expr traffic; flat stays post-paid |
 | Shadow migration double-charges during cutover | High | 3-stage flags, DO error → D1 fallback, 30-day zero-diff gate before write-cutover |
 | Realtime eviction silently drops the upstream session | High | Documented caveat (§5.3); reconnect = fresh upstream; Container escalation available |
-| Refund-after-CAS crash loses a refund (pre-existing) | Med | M5a batches refund into the CAS `db.batch` |
-| Task starvation via unported timeout sweep (pre-existing) | Med | M5a ports `sweepTimedOutTasks` + fixes the MJ units bug |
+| Refund-after-CAS crash loses a refund (pre-existing) | Med | Remaining M5a work batches refund into the CAS `db.batch` or adds repair evidence |
+| Task starvation via old stuck tasks at the bounded poll window | Low/Med | Timeout sweep now runs before normal Worker cron polling; staging replay still required |
 | WFP paid-plan assumption | Med | `dispatcher_available()` gate; whole plan works single-tenant |
 | DO-macro `&mut self`→`'static` reentrancy across `await` | Med | Design DO fields for reentrancy; single-threaded wasm limits, doesn't erase, the hazard |
 | Dispatcher/AI-Gateway no-args in `0.5.0` | Low | js_sys reflection where per-tenant/3-arg options are needed (existing pattern) |
@@ -547,4 +549,5 @@ and WFP (M8) are the long-pole, correctly last.
 request builder in the relay loop; M6/M8 have landed as gated substrate (DO
 hibernation, dispatch layer) but are **not yet on a hot path**. The highest-leverage
 next increment is staging proof for M7 (real Gateway logs + unchanged billing), followed
-by the M6 upstream bridge + settlement. M4/M5 remain pending and unblocked.
+by the M6 upstream bridge + settlement. M4 and the remaining M5 refund-batch /
+TaskRunner evidence remain unblocked.

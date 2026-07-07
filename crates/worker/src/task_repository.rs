@@ -20,6 +20,9 @@ use cinatoken_tasks::{build_task_id, settlement_for, TaskInfo, TaskSettlement, T
 use serde::Deserialize;
 use worker::{D1Database, D1Type};
 
+pub(crate) const LEGACY_TASK_TIMEOUT_CUTOFF_UNIX: i64 = 1_740_182_400;
+const LEGACY_TASK_TIMEOUT_REASON: &str = "任务超时（旧系统遗留任务，不进行退款，请联系管理员）";
+
 /// Generate a public task id — `"task_"` + 32 CSPRNG characters, the Worker
 /// (wasm) half of Go `GenerateTaskID`. Bytes come from `getrandom` (Web Crypto)
 /// and are rejection-sampled to a uniform `[0, 62)` (rejecting the biased tail
@@ -93,6 +96,7 @@ pub struct TaskRow {
     pub fail_reason: String,
     pub progress: String,
     pub finish_time: i64,
+    pub submit_time: i64,
 }
 
 impl TaskRow {
@@ -156,7 +160,8 @@ pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Resul
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
                COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
-               quota, action, status, fail_reason, progress, finish_time
+               quota, action, status, fail_reason, progress, finish_time,
+               submit_time
         FROM tasks
         WHERE status NOT IN ('SUCCESS', 'FAILURE')
           AND upstream_task_id != ''
@@ -165,6 +170,39 @@ pub async fn find_unfinished_tasks(db: &D1Database, limit: i64) -> worker::Resul
         "#,
     )
     .bind_refs(&arg)?
+    .all()
+    .await?
+    .results::<TaskRow>()
+}
+
+/// Load unfinished tasks that have exceeded the configured async-task timeout
+/// window (Go `GetTimedOutUnfinishedTasks`). This runs before the normal poller
+/// so a backlog of permanently stuck tasks cannot hide newer rows behind the
+/// bounded poll window.
+pub async fn find_timed_out_unfinished_tasks(
+    db: &D1Database,
+    cutoff_unix: i64,
+    limit: i64,
+) -> worker::Result<Vec<TaskRow>> {
+    let args = [
+        D1Type::Integer(d1_i32(cutoff_unix)),
+        D1Type::Integer(d1_i32(limit)),
+    ];
+    db.prepare(
+        r#"
+        SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
+               COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
+               quota, action, status, fail_reason, progress, finish_time,
+               submit_time
+        FROM tasks
+        WHERE progress != '100%'
+          AND status NOT IN ('SUCCESS', 'FAILURE')
+          AND submit_time < ?1
+        ORDER BY submit_time ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind_refs(&args)?
     .all()
     .await?
     .results::<TaskRow>()
@@ -180,7 +218,8 @@ pub async fn find_task_by_task_id(
         r#"
         SELECT id, task_id, upstream_task_id, platform, user_id, channel_id,
                COALESCE(json_extract(private_data, '$.token_id'), 0) AS token_id,
-               quota, action, status, fail_reason, progress, finish_time
+               quota, action, status, fail_reason, progress, finish_time,
+               submit_time
         FROM tasks
         WHERE task_id = ?1
         LIMIT 1
@@ -234,7 +273,11 @@ pub async fn update_task_status_cas(
             r#"
             UPDATE tasks
             SET status = ?1, fail_reason = ?2, progress = ?3,
-                private_data = json_set(private_data, '$.result_url', ?4),
+                private_data = json_set(
+                    CASE WHEN json_valid(private_data) THEN private_data ELSE '{}' END,
+                    '$.result_url',
+                    ?4
+                ),
                 data = CASE WHEN ?6 = 1 THEN ?5 ELSE data END,
                 finish_time = ?7, updated_at = ?8
             WHERE id = ?9 AND status = ?10
@@ -425,6 +468,51 @@ fn task_where_clause<'a>(filter: &'a TaskListFilter, args: &mut Vec<D1Type<'a>>)
 // `cinatoken_tasks::is_settlement_transition` (host-tested there, since this
 // wasm-only crate cannot run host unit tests).
 
+pub(crate) fn task_timeout_reason(timeout_minutes: i64, legacy: bool) -> String {
+    if legacy {
+        LEGACY_TASK_TIMEOUT_REASON.to_string()
+    } else {
+        format!("任务超时（{timeout_minutes}分钟）")
+    }
+}
+
+pub(crate) fn is_legacy_timeout_task(submit_time: i64) -> bool {
+    submit_time > 0 && submit_time < LEGACY_TASK_TIMEOUT_CUTOFF_UNIX
+}
+
+/// Mark a timed-out task as failed through the same CAS guard used by the
+/// poller. Non-legacy rows receive the same user+token reserve refund as Go
+/// `sweepTimedOutTasks`; legacy imported rows intentionally skip refund.
+pub async fn apply_task_timeout(
+    db: &D1Database,
+    task: &TaskRow,
+    timeout_minutes: i64,
+    now: i64,
+) -> worker::Result<bool> {
+    let from = task.status();
+    let legacy = is_legacy_timeout_task(task.submit_time);
+    let reason = task_timeout_reason(timeout_minutes, legacy);
+    let won = update_task_status_cas(
+        db,
+        task.id,
+        from,
+        TaskStatus::Failure,
+        &reason,
+        "100%",
+        "",
+        None,
+        now,
+        now,
+    )
+    .await?;
+
+    if won && !legacy && task.quota != 0 {
+        crate::d1_repositories::increase_user_quota(db, task.user_id, task.quota).await?;
+        crate::d1_repositories::refund_task_token_quota(db, task.token_id, task.quota, now).await?;
+    }
+    Ok(won)
+}
+
 /// Apply a parsed upstream poll result to a stored task: CAS its status from the
 /// current value to the parsed one and, on a winning settlement transition,
 /// refund the reserved quota for a terminal failure (Go `RefundTaskQuota`) or
@@ -521,4 +609,25 @@ pub async fn apply_suno_poll_result(
         crate::d1_repositories::refund_task_token_quota(db, task.token_id, task.quota, now).await?;
     }
     Ok(won)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_reason_matches_go_legacy_and_current_rows() {
+        assert_eq!(task_timeout_reason(1_440, false), "任务超时（1440分钟）");
+        assert_eq!(
+            task_timeout_reason(1_440, true),
+            "任务超时（旧系统遗留任务，不进行退款，请联系管理员）"
+        );
+    }
+
+    #[test]
+    fn legacy_timeout_cutoff_matches_go_constant() {
+        assert!(is_legacy_timeout_task(LEGACY_TASK_TIMEOUT_CUTOFF_UNIX - 1));
+        assert!(!is_legacy_timeout_task(LEGACY_TASK_TIMEOUT_CUTOFF_UNIX));
+        assert!(!is_legacy_timeout_task(0));
+    }
 }

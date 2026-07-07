@@ -89,6 +89,8 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_backpressure_policy_compiled,
         capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
+        capabilities.task_poller_scheduled_handler_compiled,
+        capabilities.task_poller_timeout_sweep_compiled,
       ]
     : []
   const readyCount = foundationChecks.filter(Boolean).length
@@ -174,6 +176,11 @@ export function CloudflarePlatformSection() {
                 <li>
                   {t(
                     'Main relay AI Gateway routing stays default-off until route compatibility, provider-prefix policy, fallback behavior, and settlement evidence are captured.'
+                  )}
+                </li>
+                <li>
+                  {t(
+                    'Async task cron readiness now includes the Go-compatible timeout sweep before normal provider polling; keep provider replay and settlement evidence separate.'
                   )}
                 </li>
               </ul>
@@ -454,6 +461,73 @@ function buildCapabilityGroups(
           missingVariant: capabilities.wfp_dispatch_enabled
             ? 'warning'
             : 'neutral',
+        },
+      ],
+    },
+    {
+      title: t('Async task poller'),
+      description: t(
+        'Cloudflare cron readiness for video, Suno, and Midjourney task settlement.'
+      ),
+      rows: [
+        {
+          label: t('Scheduled handler'),
+          description: t(
+            'Compiles the Worker scheduled event used by the cron-triggered task poller.'
+          ),
+          ready: capabilities.task_poller_scheduled_handler_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Timeout sweep'),
+          description: t(
+            'Runs before normal polling so old stuck tasks cannot starve the bounded provider poll window.'
+          ),
+          ready: capabilities.task_poller_timeout_sweep_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Timeout sweep gate'),
+          description: t(
+            'TASK_TIMEOUT_MINUTES={{minutes}}; zero disables timeout cleanup.',
+            {
+              minutes: capabilities.task_poller_timeout_minutes,
+            }
+          ),
+          ready: capabilities.task_poller_timeout_sweep_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Disabled'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Provider poll window'),
+          description: t(
+            'TASK_QUERY_LIMIT={{limit}} tasks per family per cron tick.',
+            {
+              limit: capabilities.task_poller_query_limit,
+            }
+          ),
+          ready: capabilities.task_poller_query_limit > 0,
+          readyLabel: t('{{limit}} tasks', {
+            limit: capabilities.task_poller_query_limit,
+          }),
+          missingLabel: t('Invalid'),
+        },
+        {
+          label: t('Timeout sweep window'),
+          description: t(
+            'Cleans at most {{limit}} oldest timed-out tasks before video/Suno/Midjourney polling.',
+            {
+              limit: capabilities.task_poller_timeout_sweep_limit,
+            }
+          ),
+          ready: capabilities.task_poller_timeout_sweep_limit > 0,
+          readyLabel: t('{{limit}} tasks', {
+            limit: capabilities.task_poller_timeout_sweep_limit,
+          }),
+          missingLabel: t('Invalid'),
         },
       ],
     },

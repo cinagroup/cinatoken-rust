@@ -5,6 +5,15 @@ Last checked: 2026-07-07
 ## Passed
 
 - `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib task_repository -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  and `bun run check`: passed after adding the async-task timeout sweep before
+  normal Worker cron polling. The sweep uses per-task CAS, preserves the Go
+  legacy no-refund cutoff, hardens malformed `private_data` updates, exposes
+  task-poller config through `/api/platform/capabilities`, and shows the new
+  signals in the default frontend Cloudflare Platform panel.
+- `cargo fmt --all`,
   `node --check tools/smoke_wfp_dispatch.mjs`,
   `bun run check:wfp-dispatch:smoke-plan`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,

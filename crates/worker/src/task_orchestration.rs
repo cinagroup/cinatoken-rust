@@ -10,7 +10,8 @@
 
 use crate::d1_repositories::{refund_reserved_relay_quota, reserve_relay_quota};
 use crate::task_repository::{
-    apply_poll_result, find_unfinished_tasks, generate_task_id, insert_task, NewTask, TaskRow,
+    apply_poll_result, apply_task_timeout, find_timed_out_unfinished_tasks, find_unfinished_tasks,
+    generate_task_id, insert_task, NewTask, TaskRow,
 };
 use base64::{
     engine::general_purpose::{
@@ -40,6 +41,61 @@ const VIDEO_PROXY_REDIRECT_POLICY: RequestRedirect = RequestRedirect::Error;
 const TASK_ACTION_GENERATE: &str = "generate";
 const TASK_ACTION_TEXT_GENERATE: &str = "textGenerate";
 const TASK_ACTION_REMIX: &str = "remixGenerate";
+pub(crate) const TASK_QUERY_LIMIT_ENV: &str = "TASK_QUERY_LIMIT";
+pub(crate) const TASK_TIMEOUT_MINUTES_ENV: &str = "TASK_TIMEOUT_MINUTES";
+pub(crate) const DEFAULT_TASK_QUERY_LIMIT: i64 = 100;
+pub(crate) const DEFAULT_TASK_TIMEOUT_MINUTES: i64 = 1_440;
+pub(crate) const TASK_TIMEOUT_SWEEP_LIMIT: i64 = 100;
+const MAX_TASK_QUERY_LIMIT: i64 = 1_000;
+const MAX_TASK_TIMEOUT_MINUTES: i64 = 30 * 24 * 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TaskPollerConfig {
+    pub query_limit: i64,
+    pub timeout_minutes: i64,
+    pub timeout_sweep_limit: i64,
+}
+
+pub(crate) fn task_poller_config_from_env(env: &Env) -> TaskPollerConfig {
+    TaskPollerConfig {
+        query_limit: parse_task_i64_env(
+            env.var(TASK_QUERY_LIMIT_ENV)
+                .ok()
+                .map(|value| value.to_string()),
+            DEFAULT_TASK_QUERY_LIMIT,
+            1,
+            MAX_TASK_QUERY_LIMIT,
+        ),
+        timeout_minutes: parse_task_i64_env(
+            env.var(TASK_TIMEOUT_MINUTES_ENV)
+                .ok()
+                .map(|value| value.to_string()),
+            DEFAULT_TASK_TIMEOUT_MINUTES,
+            0,
+            MAX_TASK_TIMEOUT_MINUTES,
+        ),
+        timeout_sweep_limit: TASK_TIMEOUT_SWEEP_LIMIT,
+    }
+}
+
+pub(crate) fn task_timeout_sweep_compiled() -> bool {
+    TASK_TIMEOUT_SWEEP_LIMIT > 0 && DEFAULT_TASK_TIMEOUT_MINUTES > 0 && DEFAULT_TASK_QUERY_LIMIT > 0
+}
+
+pub(crate) fn parse_task_i64_env(
+    value: Option<String>,
+    default_value: i64,
+    min_value: i64,
+    max_value: i64,
+) -> i64 {
+    let Some(value) = value else {
+        return default_value;
+    };
+    match value.trim().parse::<i64>() {
+        Ok(parsed) if parsed >= min_value => parsed.min(max_value),
+        _ => default_value,
+    }
+}
 
 /// Build the submit request body for a provider by dispatching to its ported
 /// body transform (the submit half of Go `BuildRequestBody`). The JSON-payload
@@ -1321,6 +1377,26 @@ pub async fn poll_one_task(
 /// poll failure on one task is skipped rather than aborting the batch (mirroring
 /// the per-task error handling in Go's pollers). Returns the number of tasks
 /// whose terminal settlement this run won.
+pub async fn sweep_timed_out_tasks(
+    db: &D1Database,
+    now: i64,
+    timeout_minutes: i64,
+    limit: i64,
+) -> worker::Result<u32> {
+    if timeout_minutes <= 0 {
+        return Ok(0);
+    }
+    let cutoff = now.saturating_sub(timeout_minutes.saturating_mul(60));
+    let tasks = find_timed_out_unfinished_tasks(db, cutoff, limit).await?;
+    let mut settled = 0u32;
+    for task in &tasks {
+        if let Ok(true) = apply_task_timeout(db, task, timeout_minutes, now).await {
+            settled += 1;
+        }
+    }
+    Ok(settled)
+}
+
 pub async fn poll_unfinished_tasks(
     db: &D1Database,
     gemini_version: &str,
@@ -2672,6 +2748,38 @@ mod tests {
             created_at: 100,
             last_login_at: 100,
         }
+    }
+
+    #[test]
+    fn task_poller_env_parser_defaults_clamps_and_accepts_zero_timeout() {
+        assert_eq!(parse_task_i64_env(None, 100, 1, 1_000), 100);
+        assert_eq!(
+            parse_task_i64_env(Some(" 250 ".to_string()), 100, 1, 1_000),
+            250
+        );
+        assert_eq!(
+            parse_task_i64_env(Some("0".to_string()), 100, 1, 1_000),
+            100
+        );
+        assert_eq!(
+            parse_task_i64_env(Some("2000".to_string()), 100, 1, 1_000),
+            1_000
+        );
+        assert_eq!(
+            parse_task_i64_env(Some("0".to_string()), 1_440, 0, 43_200),
+            0
+        );
+        assert_eq!(
+            parse_task_i64_env(Some("nope".to_string()), 1_440, 0, 43_200),
+            1_440
+        );
+    }
+
+    #[test]
+    fn task_timeout_sweep_capability_is_compiled() {
+        assert!(task_timeout_sweep_compiled());
+        assert_eq!(TASK_TIMEOUT_SWEEP_LIMIT, 100);
+        assert_eq!(DEFAULT_TASK_TIMEOUT_MINUTES, 1_440);
     }
 
     #[test]

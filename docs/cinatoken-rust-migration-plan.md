@@ -7284,6 +7284,58 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.120 2026-07-07 Async Task Timeout Sweep Capability
+
+This increment advances the M5a task-system correctness lane from the
+cinaVibeSDK-aligned production migration plan. It ports the Go
+`sweepTimedOutTasks` idea into the Worker scheduled poller so old stuck
+video/Suno task rows cannot sit forever at the front of a bounded cron window
+and hide newer work. It is still not full async-task production ownership:
+provider replay, artifact retention, and final task billing evidence remain
+separate G7 requirements.
+
+Implemented:
+
+- Added `find_timed_out_unfinished_tasks` and `apply_task_timeout` to the D1
+  task repository. Timeout cleanup uses the same per-row CAS guard as normal
+  polling and refunds both user quota and the reserving token for non-legacy
+  rows.
+- Preserved Go's legacy imported-task cutoff constant (`1740182400`) and legacy
+  no-refund reason so old imported tasks are failed visibly without accidental
+  quota mutation.
+- Hardened task status CAS updates to tolerate malformed or empty
+  `private_data` by falling back to `{}` before `json_set`.
+- Added Worker poller config for `TASK_QUERY_LIMIT` and
+  `TASK_TIMEOUT_MINUTES`; `wrangler.toml` now sets `TASK_QUERY_LIMIT=100` and
+  `TASK_TIMEOUT_MINUTES=1440` in development, staging, and production vars.
+- Updated the scheduled Worker event to run timeout sweep before the normal
+  video, Suno, and Midjourney provider pollers.
+- Extended `/api/platform/capabilities` and the default frontend Cloudflare
+  Platform panel with task-poller scheduled-handler, timeout-sweep, query-limit,
+  timeout-minutes, and sweep-window signals.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib task_repository -- --nocapture`
+  passed with timeout reason and legacy cutoff tests.
+- `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`
+  passed with task-poller env parsing and timeout-sweep capability tests.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed with the task-poller capability signal included.
+
+Remaining migration gaps:
+
+- Batch timeout refunds into the same D1 batch as the CAS update or introduce a
+  recovery record before claiming eviction-proof refund semantics.
+- Capture staging cron evidence with timed-out video/Suno rows, token/user quota
+  refunds, and newer rows continuing to poll after stale rows are cleared.
+- Continue M5b only after M5a evidence: optional `TaskRunner` Durable Object
+  alarms, cron-as-sweeper fallback, and no-double-poll proof.
+- Provider replay, artifact retention, and task billing reconciliation remain
+  required before async video/Suno/Midjourney can be considered fully
+  production-owned by Rust.
+
 ### 22.119 2026-07-07 WFP Tenant Capability Guard Surface
 
 This increment turns the existing WFP tenant script and smoke contracts into

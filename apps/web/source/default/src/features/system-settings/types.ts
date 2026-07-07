@@ -444,6 +444,12 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_compiled: boolean
   realtime_session_platform_smoke_ready: boolean
   realtime_session_v1_cutover_ready: boolean
+  task_poller_scheduled_handler_compiled: boolean
+  task_poller_timeout_sweep_compiled: boolean
+  task_poller_timeout_sweep_enabled: boolean
+  task_poller_query_limit: number
+  task_poller_timeout_minutes: number
+  task_poller_timeout_sweep_limit: number
 }
 
 export type PlatformCapabilitiesResponse = {

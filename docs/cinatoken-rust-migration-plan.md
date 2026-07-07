@@ -7284,6 +7284,66 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.117 2026-07-07 Custom OAuth Callback Login/Bind
+
+This increment closes the default frontend's generic custom OAuth callback
+route ownership gap while keeping production status conservative until real
+provider replay evidence exists.
+
+Implemented:
+
+- `GET /api/oauth/:provider` is now a generic custom OAuth route after the
+  fixed GitHub/OIDC/Discord/WeChat routes. It accepts enabled custom providers
+  by slug or numeric id so the default frontend's login path (`slug`) and
+  profile binding path (`id`) both work.
+- Browser-bound single-use OAuth state is reused from the fixed OAuth flow.
+  Backend-initiated bind redirects store the exact frontend callback URI in the
+  state payload so token exchange uses the same `redirect_uri` sent to the
+  provider.
+- Token exchange supports Go-compatible custom provider auth styles:
+  client credentials in form params by default/auto-detect and Basic Auth when
+  configured. Token responses may be JSON or form-encoded.
+- Token and userinfo outbound requests are bounded Worker fetches with strict
+  SSRF URL validation, redirect-follow disabled, 20s timeout, explicit
+  `Accept: application/json`, and no secret material in responses.
+- Userinfo extraction uses configured provider fields for user id, username,
+  display name, and email; nested dot paths and numeric IDs are supported.
+- Custom access policy is enforced during userinfo handling with the same
+  operator-facing condition family as the Go provider (`eq`, `ne`, comparisons,
+  `in`, `contains`, existence checks, nested groups, and custom denial message
+  placeholders).
+- Login flow finds an existing D1 `user_oauth_bindings` owner or creates a new
+  common user plus binding; bind flow updates/creates the current user's
+  binding and rejects provider-user-id conflicts. Successful login returns the
+  default frontend user JSON and session cookie; successful bind returns
+  `message: "bind"` and clears the OAuth state cookie.
+- Added unit coverage for authorization URL construction, token response
+  parsing, userinfo field extraction, access policy allow/deny rendering,
+  browser-origin restoration for separated frontend/API deployments, and OAuth
+  state payload parsing.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib admin_custom_oauth -- --nocapture`
+  passed with 11 filtered tests.
+- `cargo test -p cinatoken-worker --lib admin_oauth -- --nocapture` passed
+  with 5 filtered tests.
+- `cargo test -p cinatoken-worker --lib admin_user -- --nocapture` passed
+  with 24 filtered tests.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+
+Remaining migration gaps:
+
+- Capture real-provider staging replay for custom OAuth login and bind using
+  both slug and numeric-id paths.
+- Capture replay rejection, bind-conflict, access-policy allow/deny,
+  separated frontend/API redirect-origin, and client-secret redaction evidence.
+- Decide whether custom OAuth registration should reproduce the Go affiliate
+  and sidebar post-creation side effects before production ownership, or keep
+  the current conservative common-user/session path with explicit sign-off.
+- Passkey cryptographic finish verification remains the main G5 auth gap after
+  custom OAuth callbacks.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

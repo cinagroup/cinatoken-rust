@@ -191,8 +191,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   default frontend paths. Migration 0010 adds `custom_oauth_providers` and
   `user_oauth_bindings`, the migration CLI can import both tables, responses
   never include `client_secret`, discovery is SSRF/timeout/body-limit guarded,
-  and `/api/status` exposes enabled provider metadata for the login page.
-  Custom OAuth login/bind callbacks remain a later auth-flow batch.
+  and `/api/status` exposes enabled provider metadata for the login page. The
+  generic `GET /api/oauth/:provider` callback now supports enabled custom
+  providers by slug or numeric id, including backend-initiated bind redirects,
+  browser-bound single-use OAuth state, token exchange with params/basic auth
+  styles, bounded SSRF-guarded token/userinfo fetches, configured userinfo
+  field extraction, access-policy enforcement, D1 binding conflict checks, JSON
+  login/bind responses for the default frontend, and secret-safe bind audit.
+  Remaining evidence is real-provider staging replay plus redirect-origin and
+  access-policy smoke, not route ownership.
 - Async usage-log read compatibility (`crates/worker/src/admin_task_logs.rs`):
   `GET /api/mj`, `GET /api/mj/self`, `GET /api/task`, and
   `GET /api/task/self` list D1 Midjourney/unified task rows with Go-compatible

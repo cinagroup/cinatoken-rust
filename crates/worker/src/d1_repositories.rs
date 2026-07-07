@@ -2507,6 +2507,38 @@ pub async fn find_custom_oauth_provider_by_id(
         .await
 }
 
+pub async fn find_enabled_custom_oauth_provider_by_slug_or_id(
+    db: &D1Database,
+    provider: &str,
+) -> worker::Result<Option<CustomOAuthProviderRow>> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Ok(None);
+    }
+    let sql_by_id = format!(
+        "SELECT {CUSTOM_OAUTH_PROVIDER_COLUMNS} FROM custom_oauth_providers WHERE id = ?1 AND enabled = 1 LIMIT 1"
+    );
+    if let Ok(id) = provider.parse::<i64>() {
+        if id > 0 && id <= i32::MAX as i64 {
+            let row = db
+                .prepare(&sql_by_id)
+                .bind_refs(&[D1Type::Integer(d1_i32(id))])?
+                .first::<CustomOAuthProviderRow>(None)
+                .await?;
+            if row.is_some() {
+                return Ok(row);
+            }
+        }
+    }
+    let sql_by_slug = format!(
+        "SELECT {CUSTOM_OAUTH_PROVIDER_COLUMNS} FROM custom_oauth_providers WHERE slug = ?1 AND enabled = 1 LIMIT 1"
+    );
+    db.prepare(&sql_by_slug)
+        .bind_refs(&[D1Type::Text(provider)])?
+        .first::<CustomOAuthProviderRow>(None)
+        .await
+}
+
 pub async fn custom_oauth_slug_taken(
     db: &D1Database,
     slug: &str,
@@ -2686,6 +2718,201 @@ pub async fn list_user_oauth_bindings(
         .all()
         .await?
         .results::<UserOAuthBindingJoinedRow>()?)
+}
+
+pub async fn find_user_by_custom_oauth_binding(
+    db: &D1Database,
+    provider_id: i64,
+    provider_user_id: &str,
+) -> worker::Result<Option<AdminUserRow>> {
+    if provider_id <= 0 || provider_user_id.trim().is_empty() {
+        return Ok(None);
+    }
+    db.prepare(
+        r#"
+        SELECT
+          u.id, u.username, u.display_name, u.role, u.status, u.email,
+          u.github_id, u.discord_id, u.oidc_id, u.wechat_id, u.telegram_id,
+          u.linux_do_id, u.password, u.quota, u.used_quota,
+          u.request_count, u."group", u.aff_count, u.aff_quota,
+          u.aff_history AS aff_history_quota, u.created_at, u.last_login_at
+        FROM user_oauth_bindings b
+        JOIN users u ON u.id = b.user_id
+        WHERE b.provider_id = ?1
+          AND b.provider_user_id = ?2
+          AND u.deleted_at IS NULL
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&[
+        D1Type::Integer(d1_i32(provider_id)),
+        D1Type::Text(provider_user_id),
+    ])?
+    .first::<AdminUserRow>(None)
+    .await
+}
+
+pub async fn create_custom_oauth_user_with_binding(
+    db: &D1Database,
+    username: &str,
+    display_name: &str,
+    email: &str,
+    aff_code: &str,
+    provider_id: i64,
+    provider_user_id: &str,
+    now: i64,
+) -> worker::Result<i64> {
+    let user_args = [
+        D1Type::Text(username),
+        D1Type::Text(display_name),
+        D1Type::Text(email),
+        D1Type::Text(aff_code),
+        D1Type::Integer(d1_i32(now)),
+    ];
+    let user_stmt = db
+        .prepare(
+            r#"
+            INSERT INTO users (
+              username, password, display_name, email, role, status,
+              quota, "group", aff_code, created_at, last_login_at
+            )
+            VALUES (?1, '', ?2, ?3, 1, 1, 0, 'default', ?4, ?5, ?5)
+            "#,
+        )
+        .bind_refs(&user_args)?;
+
+    let binding_args = [
+        D1Type::Text(username),
+        D1Type::Integer(d1_i32(provider_id)),
+        D1Type::Text(provider_user_id),
+        D1Type::Integer(d1_i32(now)),
+    ];
+    let binding_stmt = db
+        .prepare(
+            r#"
+            INSERT INTO user_oauth_bindings (
+              user_id, provider_id, provider_user_id, created_at
+            )
+            SELECT id, ?2, ?3, ?4
+              FROM users
+             WHERE username = ?1
+             ORDER BY id DESC
+             LIMIT 1
+            "#,
+        )
+        .bind_refs(&binding_args)?;
+
+    let results = db.batch(vec![user_stmt, binding_stmt]).await?;
+    require_batch_change(
+        &results,
+        0,
+        "custom OAuth user insert did not create a user",
+    )?;
+    require_batch_change(
+        &results,
+        1,
+        "custom OAuth binding insert did not create a binding",
+    )?;
+
+    #[derive(Deserialize)]
+    struct Id {
+        id: i64,
+    }
+    let row = db
+        .prepare("SELECT id FROM users WHERE username = ?1 ORDER BY id DESC LIMIT 1")
+        .bind_refs(&[D1Type::Text(username)])?
+        .first::<Id>(None)
+        .await?;
+    Ok(row.map(|r| r.id).ok_or_else(|| {
+        worker::Error::RustError("custom OAuth user insert not found after batch create".into())
+    })?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomOAuthBindingUpsert {
+    Inserted,
+    Updated,
+    Unchanged,
+    Conflict,
+}
+
+pub async fn upsert_user_oauth_binding(
+    db: &D1Database,
+    user_id: i64,
+    provider_id: i64,
+    provider_user_id: &str,
+    now: i64,
+) -> worker::Result<CustomOAuthBindingUpsert> {
+    #[derive(Deserialize)]
+    struct BindingOwner {
+        user_id: i64,
+    }
+    let provider_user_id = provider_user_id.trim();
+    if user_id <= 0 || provider_id <= 0 || provider_user_id.is_empty() {
+        return Err(worker::Error::RustError(
+            "invalid custom OAuth binding input".to_string(),
+        ));
+    }
+    let owner = db
+        .prepare(
+            "SELECT user_id FROM user_oauth_bindings WHERE provider_id = ?1 AND provider_user_id = ?2 LIMIT 1",
+        )
+        .bind_refs(&[
+            D1Type::Integer(d1_i32(provider_id)),
+            D1Type::Text(provider_user_id),
+        ])?
+        .first::<BindingOwner>(None)
+        .await?;
+    if let Some(owner) = owner {
+        if owner.user_id == user_id {
+            return Ok(CustomOAuthBindingUpsert::Unchanged);
+        }
+        return Ok(CustomOAuthBindingUpsert::Conflict);
+    }
+
+    #[derive(Deserialize)]
+    struct ExistingBinding {
+        provider_user_id: String,
+    }
+    let existing = db
+        .prepare(
+            "SELECT provider_user_id FROM user_oauth_bindings WHERE user_id = ?1 AND provider_id = ?2 LIMIT 1",
+        )
+        .bind_refs(&[
+            D1Type::Integer(d1_i32(user_id)),
+            D1Type::Integer(d1_i32(provider_id)),
+        ])?
+        .first::<ExistingBinding>(None)
+        .await?;
+    if let Some(existing) = existing {
+        if existing.provider_user_id == provider_user_id {
+            return Ok(CustomOAuthBindingUpsert::Unchanged);
+        }
+        db.prepare(
+            "UPDATE user_oauth_bindings SET provider_user_id = ?3 WHERE user_id = ?1 AND provider_id = ?2",
+        )
+        .bind_refs(&[
+            D1Type::Integer(d1_i32(user_id)),
+            D1Type::Integer(d1_i32(provider_id)),
+            D1Type::Text(provider_user_id),
+        ])?
+        .run()
+        .await?;
+        return Ok(CustomOAuthBindingUpsert::Updated);
+    }
+
+    db.prepare(
+        "INSERT INTO user_oauth_bindings (user_id, provider_id, provider_user_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind_refs(&[
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Integer(d1_i32(provider_id)),
+        D1Type::Text(provider_user_id),
+        D1Type::Integer(d1_i32(now)),
+    ])?
+    .run()
+    .await?;
+    Ok(CustomOAuthBindingUpsert::Inserted)
 }
 
 pub async fn delete_user_oauth_binding(

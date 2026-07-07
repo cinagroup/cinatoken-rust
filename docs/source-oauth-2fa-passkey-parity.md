@@ -59,16 +59,24 @@ login/register/bind; gated on `DISCORD_CLIENT_ID/SECRET/REDIRECT_URI`).
 **Remaining:** WeChat (custom QR flow) and `TrustedRedirectDomains` validation
 for the final redirect.
 
-**2026-07-07 update:** fixed GitHub, OIDC, and Discord callbacks now restore the
-Go session-bound CSRF property in the stateless Rust session model. `GET
-/api/oauth/state` returns a Go-compatible bare state string in the envelope
-`data`, stores a CSPRNG browser binding in `flow_state::OAuthState`, and sets a
-short-lived HttpOnly `cinatoken_oauth_state` cookie scoped to `/api/oauth`.
-Callbacks require both the query `state` and the same-browser cookie binding
-before consuming the KV state with `flow_state::take`. OAuth bind branches now
-use live optional session auth before mutating account links. Remaining OAuth
-work: custom/generic callback routing, staging replay smoke, and final redirect
-domain validation.
+**2026-07-07 update:** fixed GitHub, OIDC, Discord, and custom/generic OAuth
+callbacks now restore the Go session-bound CSRF property in the stateless Rust
+session model. `GET /api/oauth/state` returns a Go-compatible bare state string
+in the envelope `data`, stores a CSPRNG browser binding in
+`flow_state::OAuthState`, and sets a short-lived HttpOnly
+`cinatoken_oauth_state` cookie scoped to `/api/oauth`. Callbacks require both
+the query `state` and the same-browser cookie binding before consuming the KV
+state with `flow_state::take`. The custom callback route
+`GET /api/oauth/:provider` accepts enabled custom providers by slug or numeric
+id, preserves backend-initiated bind redirect URIs in the state payload, fetches
+tokens/userinfo with bounded SSRF-guarded Worker requests and redirect-follow
+disabled, supports client-secret-in-params and Basic Auth styles, extracts
+configured userinfo fields, enforces the configured access policy, writes
+`user_oauth_bindings`, and returns the default frontend's JSON login/bind
+contract. OAuth bind branches now use live optional session auth before
+mutating account links. Remaining OAuth work: staging replay smoke for fixed
+and custom providers, real access-policy deny/allow evidence, and final
+redirect-domain policy evidence for any separated frontend/API deployment.
 
 ## 2FA (TOTP)
 

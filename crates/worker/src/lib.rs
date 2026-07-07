@@ -241,6 +241,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .post_async("/api/oauth/wechat/bind", |req, ctx| async move {
             admin_wechat::bind_wechat(req, ctx.env).await
         })
+        .get_async("/api/oauth/:provider", |req, ctx| async move {
+            let provider = ctx.param("provider").cloned();
+            admin_custom_oauth::oauth_callback(req, ctx.env, provider.as_ref()).await
+        })
         .post_async(
             "/api/custom-oauth-provider/discovery",
             |req, ctx| async move { admin_custom_oauth::discover(req, ctx.env).await },

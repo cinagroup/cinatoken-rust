@@ -41,28 +41,36 @@ struct GitHubUser {
 /// redirect. The frontend echoes it as the `state` query parameter to the
 /// provider; the callback consumes it (`take`).
 pub async fn oauth_state(_req: Request, env: Env) -> WorkerResult<Response> {
-    let Some(state) = crate::admin_2fa::new_pending_token() else {
-        return Ok(envelope_error_response(
-            500,
-            "failed to generate oauth state",
-        ));
-    };
-    let Some(browser_binding) = crate::admin_2fa::new_pending_token() else {
-        return Ok(envelope_error_response(
-            500,
-            "failed to generate oauth browser binding",
-        ));
-    };
-    flow_state::put(
-        &env,
-        flow_state::FlowKind::OAuthState,
-        &state,
-        &browser_binding,
-    )
-    .await?;
+    let (state, browser_binding) = new_oauth_state(&env).await?;
     let mut response = envelope_ok_response(&state)?;
     attach_oauth_state_cookie(&mut response, &browser_binding)?;
     Ok(response)
+}
+
+pub(crate) async fn new_oauth_state(env: &Env) -> WorkerResult<(String, String)> {
+    new_oauth_state_with_payload(env, None).await
+}
+
+pub(crate) async fn new_oauth_state_with_payload(
+    env: &Env,
+    payload: Option<&str>,
+) -> WorkerResult<(String, String)> {
+    let Some(state) = crate::admin_2fa::new_pending_token() else {
+        return Err(worker::Error::RustError(
+            "failed to generate oauth state".to_string(),
+        ));
+    };
+    let Some(browser_binding) = crate::admin_2fa::new_pending_token() else {
+        return Err(worker::Error::RustError(
+            "failed to generate oauth browser binding".to_string(),
+        ));
+    };
+    let stored_value = match payload.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(payload) => format!("{browser_binding}\n{payload}"),
+        None => browser_binding.clone(),
+    };
+    flow_state::put(env, flow_state::FlowKind::OAuthState, &state, &stored_value).await?;
+    Ok((state, browser_binding))
 }
 
 /// `GET /api/oauth/github?code&state`: GitHub OAuth callback. Validates the
@@ -183,7 +191,7 @@ pub async fn github_oauth(req: Request, env: Env) -> WorkerResult<Response> {
 }
 
 /// The post-OAuth redirect target: `FRONTEND_BASE_URL`, or `/` when unset.
-fn frontend_location(env: &Env) -> String {
+pub(crate) fn frontend_location(env: &Env) -> String {
     env.var("FRONTEND_BASE_URL")
         .map(|value| value.to_string())
         .ok()
@@ -191,10 +199,20 @@ fn frontend_location(env: &Env) -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
-async fn validate_oauth_state(
+pub(crate) async fn validate_oauth_state(
     req: &Request,
     env: &Env,
 ) -> WorkerResult<std::result::Result<(), Response>> {
+    match validate_oauth_state_with_payload(req, env).await? {
+        Ok(_) => Ok(Ok(())),
+        Err(response) => Ok(Err(response)),
+    }
+}
+
+pub(crate) async fn validate_oauth_state_with_payload(
+    req: &Request,
+    env: &Env,
+) -> WorkerResult<std::result::Result<Option<String>, Response>> {
     let state = query_param(req, "state").unwrap_or_default();
     if state.is_empty() {
         return Ok(Err(envelope_error_response(
@@ -209,20 +227,32 @@ async fn validate_oauth_state(
         )));
     };
     let stored_binding = flow_state::get(env, flow_state::FlowKind::OAuthState, &state).await?;
-    if !oauth_state_binding_matches(stored_binding.as_deref(), Some(&browser_binding)) {
+    let (stored_binding, _payload) = split_oauth_state_payload(stored_binding.as_deref());
+    if !oauth_state_binding_matches(stored_binding, Some(&browser_binding)) {
         return Ok(Err(envelope_error_response(
             403,
             "invalid or expired oauth state",
         )));
     }
     let taken_binding = flow_state::take(env, flow_state::FlowKind::OAuthState, &state).await?;
-    if !oauth_state_binding_matches(taken_binding.as_deref(), Some(&browser_binding)) {
+    let (taken_binding, payload) = split_oauth_state_payload(taken_binding.as_deref());
+    if !oauth_state_binding_matches(taken_binding, Some(&browser_binding)) {
         return Ok(Err(envelope_error_response(
             403,
             "invalid or expired oauth state",
         )));
     }
-    Ok(Ok(()))
+    Ok(Ok(payload.map(str::to_string)))
+}
+
+fn split_oauth_state_payload(stored: Option<&str>) -> (Option<&str>, Option<&str>) {
+    let Some(stored) = stored else {
+        return (None, None);
+    };
+    match stored.split_once('\n') {
+        Some((binding, payload)) => (Some(binding), Some(payload)),
+        None => (Some(stored), None),
+    }
 }
 
 fn oauth_state_binding_matches(stored: Option<&str>, cookie: Option<&str>) -> bool {
@@ -263,13 +293,16 @@ fn build_clear_oauth_state_cookie_value() -> String {
     )
 }
 
-fn attach_oauth_state_cookie(response: &mut Response, binding: &str) -> WorkerResult<()> {
+pub(crate) fn attach_oauth_state_cookie(
+    response: &mut Response,
+    binding: &str,
+) -> WorkerResult<()> {
     response
         .headers_mut()
         .append("Set-Cookie", &build_oauth_state_cookie_value(binding))
 }
 
-fn attach_clear_oauth_state_cookie(response: &mut Response) -> WorkerResult<()> {
+pub(crate) fn attach_clear_oauth_state_cookie(response: &mut Response) -> WorkerResult<()> {
     response
         .headers_mut()
         .append("Set-Cookie", &build_clear_oauth_state_cookie_value())
@@ -711,7 +744,7 @@ async fn fetch_discord_user(
 }
 
 /// Percent-encode a value for an `application/x-www-form-urlencoded` body.
-fn form_encode(value: &str) -> String {
+pub(crate) fn form_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {
@@ -820,7 +853,7 @@ async fn fetch_github_user(
     }))
 }
 
-fn query_param(req: &Request, key: &str) -> Option<String> {
+pub(crate) fn query_param(req: &Request, key: &str) -> Option<String> {
     let url = req.url().ok()?;
     url.query_pairs()
         .find(|(name, _)| name == key)
@@ -879,5 +912,18 @@ mod tests {
         assert!(!oauth_state_binding_matches(Some("same"), None));
         assert!(!oauth_state_binding_matches(None, Some("same")));
         assert!(!oauth_state_binding_matches(Some(""), Some("")));
+    }
+
+    #[test]
+    fn oauth_state_payload_preserves_browser_binding_prefix() {
+        assert_eq!(
+            split_oauth_state_payload(Some("binding\nhttps://app.example/oauth/7")),
+            (Some("binding"), Some("https://app.example/oauth/7"))
+        );
+        assert_eq!(
+            split_oauth_state_payload(Some("binding-only")),
+            (Some("binding-only"), None)
+        );
+        assert_eq!(split_oauth_state_payload(None), (None, None));
     }
 }

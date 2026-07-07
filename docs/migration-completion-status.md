@@ -121,8 +121,10 @@ A full diff of every Go-registered route against the Rust worker closed these
   wallet/subscription checkout and callback routes used by the default frontend
   are Worker-owned. Remaining payment work is staging replay/reconciliation
   evidence rather than an absent default-frontend provider route.
-- Custom OAuth management, custom OAuth callbacks, and several
-  provider-specific OAuth flows.
+- Custom OAuth management and generic login/bind callbacks are Worker-owned;
+  remaining OAuth work is real-provider staging replay, access-policy smoke,
+  replay/bind-conflict evidence, Passkey finish, and several provider-specific
+  OAuth production proofs.
 - Long-tail provider/channel operations and performance/ratio-sync need more
   staging evidence.
 - io.net deployment management routes used by the default frontend are
@@ -145,7 +147,8 @@ A full diff of every Go-registered route against the Rust worker closed these
    all-devices revocation support, but still needs D1 migration application
    through `0017` plus staging browser smoke for password-change and
    admin-disable/delete replay rejection. OAuth production approval still
-   needs deployed replay smoke and custom callback hardening.
+   needs deployed replay smoke, custom-provider access-policy evidence, and
+   separated frontend/API redirect-origin proof where applicable.
 
 ## Current Safe Statement
 

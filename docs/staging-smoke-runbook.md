@@ -204,6 +204,19 @@ first preflights admin-only `/api/platform/capabilities`, then checks the
 admin-authenticated internal dispatch path and tenant status route without
 sending an AI request:
 
+Before uploading a Rust/Wasm tenant Worker, build it and archive the redacted
+artifact manifest from the deploy dry-run. The manifest records the artifact
+directory, main module, module count, total bytes, per-module SHA-256 hashes,
+content types, and whether a Wasm module is present. Keep this JSON beside the
+later upload and dispatch smoke output; do not paste Cloudflare tokens or admin
+cookies into the evidence bundle.
+
+```powershell
+New-Item -ItemType Directory -Force .wrangler/evidence | Out-Null
+bun run build:wfp-tenant
+bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID > .wrangler/evidence/wfp-tenant-artifact-manifest.json
+```
+
 ```powershell
 $env:WFP_SMOKE_URL = $env:STAGING_BASE_URL
 $env:WFP_SMOKE_COOKIE = "session=<redacted admin session cookie>"
@@ -228,6 +241,10 @@ skipped.
 Record:
 
 - Command output.
+- The redacted WFP tenant artifact manifest from
+  `tools/deploy_wfp_tenant_artifact.mjs --dry-run --json`, including
+  `artifactManifest.runtime`, `mainModulePresent`, `wasmModulePresent`,
+  `moduleCount`, `totalBytes`, and every module `sha256`.
 - `/api/platform/capabilities` WFP fields from the smoke output, including
   `wfp_tenant_supported_routes`, `wfp_tenant_cutover_guards`,
   `wfp_tenant_script_plan_compiled`, `wfp_tenant_rust_wasm_runtime_compiled`,
@@ -260,6 +277,10 @@ Pass criteria:
   dispatch gates, the tenant route manifest, Rust/Wasm tenant artifact plan,
   internal-dispatch requirement, response-header guard, AI Gateway policy
   contract, and `wfp_tenant_smoke_ready=true`.
+- The archived artifact manifest reports `runtime: "rust-wasm"`,
+  `mainModulePresent=true`, `wasmModulePresent=true`, and stable SHA-256 values
+  for the uploaded module set. If the uploaded artifact differs, the manifest
+  must be regenerated and re-archived before smoke evidence is accepted.
 - Default WFP dispatch smoke proves the uploaded Rust/Wasm artifact by
   requiring `runtime: "rust-wasm"` in the tenant status body and
   `x-cinatoken-wfp-runtime: rust-wasm` in response headers. Generated fallback

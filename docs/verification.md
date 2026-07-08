@@ -2326,6 +2326,16 @@ baseline above.
   `C:\Users\cina\.hermes\git\usr\bin\link.exe` instead of Visual Studio Build
   Tools. Live dispatch upload still requires a working `worker-build`
   environment plus staging Cloudflare credentials and namespace.
+  2026-07-08 update: the deploy dry-run now emits `artifactManifest` with
+  `runtime: "rust-wasm"`, build command, artifact directory, main module,
+  scan status, module count, total bytes, main/Wasm module presence, content
+  types, and per-module SHA-256 hashes. `bun run
+  check:wfp-tenant:artifact-manifest` validates that manifest contract without
+  network or Cloudflare credentials, and staging evidence must archive the
+  redacted manifest before accepting WFP dispatch smoke. `git diff --check`
+  and `bun run check` passed with the new manifest self-test wired into the
+  default gate; the only warnings remain the existing
+  `d1_repositories.rs` dead-code warnings.
 
 - **WFP tenant AI Gateway request policy controls - locally verified
   (2026-07-05).** The Rust/Wasm tenant runtime and generated JS fallback now

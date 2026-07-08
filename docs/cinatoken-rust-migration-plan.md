@@ -6862,6 +6862,62 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.132 2026-07-08 WFP Rust/Wasm Artifact Manifest Identity
+
+This increment tightens the Workers for Platforms Rust tenant deployment
+evidence without requiring a live Cloudflare upload. The WFP tenant deploy tool
+now emits a redacted artifact manifest whenever it scans
+`crates/wfp-tenant/build/worker`, so staging can prove exactly which Rust/Wasm
+module set was uploaded before accepting internal dispatch smoke.
+
+Implemented:
+
+- Extended `tools/deploy_wfp_tenant_artifact.mjs` artifact scanning with
+  per-module SHA-256 hashes.
+- Added an `artifactManifest` block to dry-run and live deploy results.
+  - The manifest records `runtime: "rust-wasm"`, build command, artifact
+    directory, main module, scan status, module count, total bytes,
+    `mainModulePresent`, `wasmModulePresent`, content types, and module hashes.
+  - `--manifest-only` remains available for default CI/deploy-plan checks; it
+    explicitly reports `scanned=false` rather than pretending to prove an
+    uploaded artifact.
+- Added `--self-test-artifact-manifest` and
+  `check:wfp-tenant:artifact-manifest`, then wired the self-test into
+  `bun run check`.
+- Updated WFP staging smoke, production readiness, verification, and
+  cinaVibeSDK mapping docs so accepted WFP evidence requires the archived
+  artifact manifest before `runtime: "rust-wasm"` dispatch smoke.
+
+Validation:
+
+- `node --check tools/deploy_wfp_tenant_artifact.mjs` passed.
+- `bun run check:wfp-tenant:artifact-manifest` passed and emitted a synthetic
+  manifest with `runtime: "rust-wasm"`, `mainModulePresent=true`,
+  `wasmModulePresent=true`, two module hashes, and total byte count.
+- `bun run check:wfp-tenant:deploy-plan` passed; manifest-only mode reports
+  `scanned=false` semantics through zero modules and an explicit warning rather
+  than pretending to prove an uploaded artifact.
+- A local dry-run against an ignored synthetic artifact directory passed and
+  emitted `artifactManifest` with two modules, `mainModulePresent=true`,
+  `wasmModulePresent=true`, content types, SHA-256 hashes, redacted
+  `CF_API_TOKEN` metadata, and no warnings.
+- `git diff --check` passed.
+- `bun run check` passed, covering frontend build/audits, route audit, task
+  replay checks, WFP artifact manifest/deploy/dispatch checks, Realtime smoke
+  plans, relay AI Gateway dry-run, WFP tenant Worker-script tests, Rust
+  workspace tests, Worker wasm32 check, and WFP tenant wasm32 check. The full
+  check still emits only the existing `d1_repositories.rs` dead-code warnings.
+
+Remaining migration gaps:
+
+- Produce a real `worker-build` artifact on a workstation or CI runner with the
+  correct native toolchain, archive the resulting manifest, upload it to a real
+  WFP dispatch namespace, and run the admin-authenticated status and POST route
+  smoke against that uploaded Rust/Wasm tenant.
+- Keep generated JS fallback evidence separate; fallback smoke must continue to
+  use `--expect-runtime js-fallback` and cannot satisfy Rust/Wasm tenant
+  cutover proof.
+
 ### 22.116 2026-07-07 Session Revocation Epoch
 
 This increment closes the browser-session all-devices revocation gap while

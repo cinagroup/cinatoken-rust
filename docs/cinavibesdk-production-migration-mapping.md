@@ -228,8 +228,8 @@ Current mapped status from existing docs:
   smoke-readiness signals from `/api/platform/capabilities`; those signals do
   not replace archived staging smoke.
 - Production proof still needs an uploaded Rust/Wasm tenant artifact, a real
-  dispatch namespace, internal-path status smoke, and at least one POST AI route
-  smoke.
+  dispatch namespace, an archived artifact manifest with per-module SHA-256
+  hashes, internal-path status smoke, and at least one POST AI route smoke.
 
 Production rule:
 
@@ -373,6 +373,10 @@ Required evidence:
 
 - Real `DISPATCHER` binding and dispatch namespace.
 - Uploaded `cinatoken-wfp-tenant` Rust/Wasm artifact.
+- Redacted artifact manifest from
+  `tools/deploy_wfp_tenant_artifact.mjs --dry-run --json`, proving
+  `runtime: "rust-wasm"`, main module presence, Wasm module presence, module
+  byte counts, content types, and per-module SHA-256 values.
 - Internal dispatch status smoke shows `runtime: "rust-wasm"`,
   `x-cinatoken-wfp-runtime: rust-wasm`, empty inbound sensitive headers,
   controlled route markers, and matching worker identity.

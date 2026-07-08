@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,12 +95,16 @@ const aiGatewayPolicyBindings = [
   },
 ];
 
-const args = parseArgs(process.argv.slice(2));
-const options = normalizeOptions(args);
-
 try {
-  const result = await main(options);
-  printResult(result, options);
+  const args = parseArgs(process.argv.slice(2));
+  if (args.flags.has("self-test-artifact-manifest")) {
+    const result = runArtifactManifestSelfTest();
+    printSelfTestResult(result, args.flags.has("json"));
+  } else {
+    const options = normalizeOptions(args);
+    const result = await main(options);
+    printResult(result, options);
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -163,11 +167,13 @@ async function main(options) {
       artifactDir: relativePath(options.artifactDir),
       mainModule: options.mainModule,
       moduleCount: modules.length,
+      artifactManifest: artifactManifest(options, modules),
       routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
       aiGatewayPolicyConfigured: configuredAiGatewayPolicy(aiGatewayPolicy),
       modules: modules.map((module) => ({
         name: module.name,
         bytes: module.bytes.length,
+        sha256: module.sha256,
         contentType: module.contentType,
       })),
       metadata: redactMetadata(metadata),
@@ -206,11 +212,13 @@ async function main(options) {
     artifactDir: relativePath(options.artifactDir),
     mainModule: options.mainModule,
     moduleCount: modules.length,
+    artifactManifest: artifactManifest(options, modules),
     routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
     aiGatewayPolicyConfigured: configuredAiGatewayPolicy(aiGatewayPolicy),
     modules: modules.map((module) => ({
       name: module.name,
       bytes: module.bytes.length,
+      sha256: module.sha256,
       contentType: module.contentType,
     })),
     metadata: redactMetadata(metadata),
@@ -230,7 +238,12 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") {
       usage(0);
     }
-    if (arg === "--dry-run" || arg === "--json" || arg === "--manifest-only") {
+    if (
+      arg === "--dry-run" ||
+      arg === "--json" ||
+      arg === "--manifest-only" ||
+      arg === "--self-test-artifact-manifest"
+    ) {
       flags.add(arg.slice(2));
       continue;
     }
@@ -325,6 +338,7 @@ function usage(exitCode, error) {
       "  --main-module <path>        default shim.mjs",
       "  --dry-run                   print redacted upload plan without PUT",
       "  --manifest-only             skip artifact directory scan; dry-run style only",
+      "  --self-test-artifact-manifest  validate local artifact manifest hashing without network",
       "  --json",
       "  --no-attach-gateway-token   omit CF_API_TOKEN binding from tenant metadata",
     ].join("\n"),
@@ -346,9 +360,11 @@ async function collectArtifactModules(artifactDir, mainModule) {
   const modules = await Promise.all(
     files.map(async (file) => {
       const rel = path.relative(artifactDir, file).replaceAll(path.sep, "/");
+      const bytes = await readFile(file);
       return {
         name: rel,
-        bytes: await readFile(file),
+        bytes,
+        sha256: sha256Hex(bytes),
         contentType: contentTypeFor(file),
       };
     }),
@@ -533,6 +549,74 @@ function artifactWarnings(options, modules, apiToken, tenantApiToken) {
   return warnings;
 }
 
+function artifactManifest(options, modules) {
+  const totalBytes = modules.reduce((sum, module) => sum + module.bytes.length, 0);
+  return {
+    runtime: "rust-wasm",
+    buildCommand: "bun run build:wfp-tenant",
+    artifactDir: relativePath(options.artifactDir),
+    mainModule: options.mainModule,
+    scanned: !options.manifestOnly,
+    moduleCount: modules.length,
+    totalBytes,
+    mainModulePresent: modules.some((module) => module.name === options.mainModule),
+    wasmModulePresent: modules.some((module) => module.name.endsWith(".wasm")),
+    modules: modules.map((module) => ({
+      name: module.name,
+      bytes: module.bytes.length,
+      sha256: module.sha256,
+      contentType: module.contentType,
+    })),
+  };
+}
+
+function runArtifactManifestSelfTest() {
+  const encode = (value) => new TextEncoder().encode(value);
+  const options = {
+    artifactDir: defaultArtifactDir,
+    mainModule: defaultMainModule,
+    manifestOnly: false,
+  };
+  const modules = [
+    {
+      name: "index_bg.wasm",
+      bytes: encode("wasm-bytes"),
+      sha256: sha256Hex(encode("wasm-bytes")),
+      contentType: "application/wasm",
+    },
+    {
+      name: defaultMainModule,
+      bytes: encode("export default {};"),
+      sha256: sha256Hex(encode("export default {};")),
+      contentType: "application/javascript+module",
+    },
+  ];
+  const manifest = artifactManifest(options, modules);
+  if (manifest.runtime !== "rust-wasm") {
+    throw new Error("artifact manifest did not report rust-wasm runtime");
+  }
+  if (!manifest.mainModulePresent || !manifest.wasmModulePresent) {
+    throw new Error("artifact manifest did not detect main and Wasm modules");
+  }
+  if (manifest.moduleCount !== 2 || manifest.totalBytes <= 0) {
+    throw new Error("artifact manifest module summary is not complete");
+  }
+  for (const module of manifest.modules) {
+    if (!/^[a-f0-9]{64}$/.test(module.sha256)) {
+      throw new Error(`artifact manifest module ${module.name} has invalid sha256`);
+    }
+  }
+  return {
+    ok: true,
+    artifactManifestSelfTest: true,
+    artifactManifest: manifest,
+  };
+}
+
+function sha256Hex(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 function contentTypeFor(file) {
   switch (path.extname(file).toLowerCase()) {
     case ".mjs":
@@ -657,6 +741,13 @@ function printResult(result, options) {
       `artifact_dir: ${result.artifactDir}`,
       `main_module: ${result.mainModule}`,
       `modules: ${result.moduleCount}`,
+      ...(result.artifactManifest
+        ? [
+            `artifact_manifest_total_bytes: ${result.artifactManifest.totalBytes}`,
+            `artifact_manifest_main_module_present: ${result.artifactManifest.mainModulePresent}`,
+            `artifact_manifest_wasm_module_present: ${result.artifactManifest.wasmModulePresent}`,
+          ]
+        : []),
       ...(result.status ? [`status: ${result.status}`, `ok: ${result.ok}`] : []),
       ...(result.warnings.length
         ? ["warnings:", ...result.warnings.map((warning) => `  - ${warning}`)]
@@ -667,4 +758,22 @@ function printResult(result, options) {
     console.log("cloudflare_response_preview:");
     console.log(result.cloudflareResponsePreview);
   }
+}
+
+function printSelfTestResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(
+    [
+      "WFP tenant artifact manifest self-test",
+      `ok: ${result.ok}`,
+      `runtime: ${result.artifactManifest.runtime}`,
+      `modules: ${result.artifactManifest.moduleCount}`,
+      `total_bytes: ${result.artifactManifest.totalBytes}`,
+      `main_module_present: ${result.artifactManifest.mainModulePresent}`,
+      `wasm_module_present: ${result.artifactManifest.wasmModulePresent}`,
+    ].join("\n"),
+  );
 }

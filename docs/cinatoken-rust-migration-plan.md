@@ -8592,20 +8592,34 @@ Implemented:
   added the new check to the default `bun run check` chain.
 - Updated the staging runbook and Phase 1 notes so operators can distinguish
   local SQLite/D1-shape proof from required staging D1 evidence.
+- Follow-up: the tool now also emits `--staging-plan` output for six isolated
+  staging scenarios. The generated Wrangler SQL is intentionally limited to
+  setup, verification, duplicate-marker pre-check, and cleanup artifacts; the
+  batch apply proof must come from the deployed Worker binding path because
+  `wrangler d1 execute` multi-statement SQL is not equivalent to
+  `D1Database.batch()` prepared-statement `changes()` boundaries.
 
 Validation:
 
 - `node --check tools/smoke_realtime_settlement_batch.mjs` passed.
 - `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json` passed
-  with all six replay checks.
+  with all six replay checks plus local validation of the staging-plan
+  setup/verify/cleanup SQL artifacts and redaction constraints.
+- `bun tools/smoke_realtime_settlement_batch.mjs --staging-plan --database
+  cinatoken-rust-staging --wrangler-env staging --json` passed and emitted
+  reviewed setup/verify/cleanup artifacts plus Worker-binding apply evidence
+  requirements.
 - `bun run check` passed, including the new settlement-batch contract plus the
   existing frontend, smoke-plan, workspace test, and wasm gates.
 
 Remaining migration gaps:
 
-- Run the same settlement scenarios against an isolated staging D1 and archive
-  row snapshots for replay marker, user/token/channel quota, and audit log
-  changes.
+- Run the same settlement scenarios through the deployed Worker binding path
+  against an isolated staging D1 and archive row snapshots for replay marker,
+  user/token/channel quota, and audit log changes.
+- Add a Worker-binding staging apply probe or equivalent live `/v1/realtime`
+  replay coverage for guarded-update and audit-row failure cases; do not use
+  standalone `wrangler d1 execute` SQL as batch-rollback proof.
 - Add live `/v1/realtime` smoke evidence that `response.done` usage drives the
   batch without exposing raw billing expressions, request probes, headers,
   payloads, bearer tokens, or upstream credentials.

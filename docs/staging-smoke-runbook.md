@@ -485,12 +485,29 @@ bun run check:realtime-session:mock-upstream-fault-plans
 
 Before promoting Realtime settlement beyond default-off code paths, run the
 local D1-shape settlement batch replay. It does not write Cloudflare D1; it
-proves the SQL-level contract for applied, duplicate, guarded-update rollback,
-audit-failure rollback, refund, and tokenless settlement paths:
+proves the Worker batch contract locally for applied, duplicate,
+guarded-update rollback, audit-failure rollback, refund, and tokenless
+settlement paths:
 
 ```powershell
 bun run check:realtime-session:settlement-batch-contract
 ```
+
+Then generate the isolated staging evidence plan:
+
+```powershell
+bun run check:realtime-session:settlement-staging-plan
+```
+
+The staging plan emits setup, verification, duplicate-marker pre-check, and
+cleanup SQL artifacts plus the required Worker-binding apply evidence for six
+settlement scenarios. Do not use a multi-statement `wrangler d1 execute` file
+as substitute proof for the D1 batch apply step: Cloudflare Worker
+`D1Database.batch()` executes prepared statements with per-statement
+`changes()` boundaries, while standalone Wrangler SQL is only appropriate here
+for setup, row snapshots, and cleanup. The batch apply proof must come from the
+deployed Worker path, such as a controlled `/v1/realtime` mock-usage replay or
+a staging-only Worker binding smoke probe.
 
 The dry-run plan now includes a review-only `localD1Seed` block with SQL for a
 dedicated smoke user, token, OpenAI-compatible channel, and ability row. Review
@@ -677,9 +694,10 @@ Pass criteria:
   writer has archived evidence that the D1 batch applies the replay marker,
   guarded quota settlement, and audit row together; duplicate replays skip
   without a second audit row; guarded-update and audit failures roll back; the
-  local SQLite/D1-shape replay passes; the same cases are archived against an
-  isolated staging D1; and `audit_plan_missing`, `write_failed`, and
-  `replay_duplicate` status metadata remains redacted.
+  local SQLite/D1-shape replay passes; the staging plan's setup/verify/cleanup
+  artifacts are reviewed; the same cases are archived against an isolated
+  staging D1 through the Worker binding path; and `audit_plan_missing`,
+  `write_failed`, and `replay_duplicate` status metadata remains redacted.
 - If the DO is hibernated/restarted and the outbound upstream socket is no
   longer active, client frames return `upstream_bridge_not_active` rather than
   implying that the upstream session was resumed.

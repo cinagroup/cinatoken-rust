@@ -107,7 +107,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   check:realtime-session:settlement-batch-contract` now replays the SQL shape
   locally against SQLite for applied, duplicate, guarded-update failure,
   audit-failure rollback, refund, and tokenless paths. This is still a
-  foundation, not final production settlement:
+  foundation, not final production settlement. The companion
+  `check:realtime-session:settlement-staging-plan` command now emits reviewed
+  staging setup/verify/cleanup artifacts and explicitly requires Worker-binding
+  apply evidence instead of standalone Wrangler SQL:
   `realtime_session_billing_settlement_compiled` remains false until the batch
   is proven with controlled staging D1 applied, duplicate, failure, rollback,
   and no-double-charge evidence.
@@ -503,9 +506,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   outside a controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker,
   audit-log, and D1 batch/CAS foundation to production-safe settlement: archive
-  staging proof for disabled, applied, duplicate, guarded-update failure,
-  audit-row failure, rollback, redaction, and no-double-charge paths before flipping
-  `realtime_session_billing_settlement_compiled` or
+  Worker-binding staging proof for disabled, applied, duplicate,
+  guarded-update failure, audit-row failure, rollback, redaction, and
+  no-double-charge paths before flipping `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready`.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.

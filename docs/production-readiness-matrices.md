@@ -177,8 +177,10 @@ default-off settlement foundations guarded by
 `realtime_session_v1_cutover_ready` true until quota mutation, replay marker,
 audit row, D1 batch rollback/idempotency proof, and staging replay evidence are
 archived. The local `check:realtime-session:settlement-batch-contract` replay
-now covers the SQL shape before staging, but it is not production evidence by
-itself.
+now covers the SQL shape before staging, and
+`check:realtime-session:settlement-staging-plan` emits setup/verify/cleanup
+artifacts plus Worker-binding apply requirements, but neither is production
+evidence by itself.
 
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |

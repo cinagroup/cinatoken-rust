@@ -3,11 +3,16 @@
 import { Database } from "bun:sqlite";
 
 const defaultNow = 1_800_100_000;
+const defaultStagingDatabase = "<STAGING_D1_DATABASE_NAME>";
+const defaultArtifactDir = "artifacts/realtime-settlement-batch";
 
 function parseArgs(argv) {
+  const values = new Map();
   const flags = new Set();
-  const flagNames = new Set(["self-test", "json"]);
-  for (const arg of argv) {
+  const flagNames = new Set(["self-test", "json", "staging-plan"]);
+  const valueNames = new Set(["database", "wrangler-env", "artifact-dir"]);
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       usage(0);
     }
@@ -16,11 +21,20 @@ function parseArgs(argv) {
     }
     const key = arg.slice(2);
     if (!flagNames.has(key)) {
-      usage(2, `Unknown option: ${arg}`);
+      if (!valueNames.has(key)) {
+        usage(2, `Unknown option: ${arg}`);
+      }
+      const value = argv[i + 1];
+      if (!value || value.startsWith("--")) {
+        usage(2, `${arg} requires a value`);
+      }
+      values.set(key, value);
+      i += 1;
+      continue;
     }
     flags.add(key);
   }
-  return { flags };
+  return { values, flags };
 }
 
 function usage(exitCode, message = "") {
@@ -30,9 +44,11 @@ function usage(exitCode, message = "") {
   console.error(
     [
       "Usage: bun tools/smoke_realtime_settlement_batch.mjs [--self-test] [--json]",
+      "       bun tools/smoke_realtime_settlement_batch.mjs --staging-plan [--database <d1-name>] [--wrangler-env <env>] [--artifact-dir <dir>] [--json]",
       "",
       "Runs a local SQLite replay of the Realtime settlement D1 batch guard.",
-      "It never writes Cloudflare D1; use the JSON output as pre-staging evidence.",
+      "It never writes Cloudflare D1 by itself; use the JSON output as pre-staging evidence.",
+      "The staging plan prints reviewed SQL artifacts and Wrangler commands, but never accepts or prints an API token.",
     ].join("\n"),
   );
   process.exit(exitCode);
@@ -46,6 +62,7 @@ function runSelfTest() {
     runCheck("audit_failure_rolls_back", auditFailureRollsBack),
     runCheck("refund_delta_batch_applies_once", refundDeltaBatchAppliesOnce),
     runCheck("tokenless_batch_applies_once", tokenlessBatchAppliesOnce),
+    runCheck("staging_plan_sql_artifacts_replay_locally", stagingPlanSqlArtifactsReplayLocally),
   ];
   const failed = checks.filter((check) => check.status !== "PASS");
   return {
@@ -382,6 +399,678 @@ function tokenlessBatchAppliesOnce() {
   });
 }
 
+function normalizeStagingPlanOptions(args) {
+  const value = (name, envName) => args.values.get(name) || process.env[envName];
+  const database = validatePlanValue(
+    value("database", "REALTIME_SETTLEMENT_STAGING_D1_DATABASE") || defaultStagingDatabase,
+    "database",
+  );
+  const wranglerEnv = validateOptionalPlanValue(
+    value("wrangler-env", "REALTIME_SETTLEMENT_STAGING_WRANGLER_ENV") || "",
+    "wrangler-env",
+  );
+  const artifactDir = validateArtifactDir(
+    value("artifact-dir", "REALTIME_SETTLEMENT_STAGING_ARTIFACT_DIR") || defaultArtifactDir,
+  );
+  return {
+    database,
+    wranglerEnv,
+    artifactDir,
+  };
+}
+
+function buildStagingPlan(options) {
+  const scenarios = stagingScenarioDefinitions().map((scenario) =>
+    buildStagingScenarioPlan(scenario, options),
+  );
+  return {
+    tool: "smoke_realtime_settlement_batch",
+    mode: "staging-plan",
+    status: "PASS",
+    dryRun: true,
+    database: options.database,
+    wranglerEnvironment: options.wranglerEnv || null,
+    artifactDir: options.artifactDir,
+    safety: {
+      writesD1: false,
+      requiresOperatorReview: true,
+      requiresIsolatedStagingD1: true,
+      apiTokenHandling:
+        "Use a rotated CLOUDFLARE_API_TOKEN from the shell environment or Wrangler login; never paste tokens into this plan, source, or command history.",
+      sourceContract:
+        "Mirrors the Worker D1 batch shape: replay marker insert, guarded quota statements, changes()!=1 duplicate-key assertions, and audit row insert.",
+      cloudflareReference:
+        "Cloudflare D1 batch statements are executed sequentially as a transaction and roll back the sequence when a statement fails.",
+    },
+    requiredBeforeRun: [
+      "Confirm the target database is an isolated staging D1, not production.",
+      "Apply migrations through migrations/d1/0018_realtime_settlement_replays.sql.",
+      "Write each sqlArtifacts[].sql body to its sqlArtifacts[].path exactly, then review it before running.",
+      "Use Wrangler SQL artifacts only for setup, verification, and cleanup; do not treat multi-statement SQL files as D1Database.batch evidence.",
+      "Apply the settlement through the deployed Worker binding path, then archive Wrangler stdout/stderr, Worker smoke output, D1 row snapshots, capabilities output, and the matching git commit SHA.",
+    ],
+    scenarios,
+    liveWorkerEvidenceAfterSqlRehearsal: {
+      purpose:
+        "After setup SQL is reviewed/applied, run the actual Worker Realtime path with a mock upstream usage frame while REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED is enabled only in staging.",
+      commands: [
+        "bun tools/smoke_realtime_upstream_replay.mjs --scenario response-done-usage --url <STAGING_WORKER_ORIGIN> --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --confirm-live --json",
+        "bun tools/smoke_realtime_session.mjs --mode v1 --url <STAGING_WORKER_ORIGIN> --model gpt-4o-realtime-preview --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --confirm-live --json",
+      ],
+      archive: [
+        "capabilities JSON with realtime_session_billing_settlement_batch_compiled=true and realtime_session_billing_settlement_compiled=false before final proof",
+        "Realtime runtime status showing metadata-only billing settlement write state",
+        "D1 snapshots for realtime_settlement_replays, users, tokens, channels, and logs after the live usage path",
+        "A second replay/no-op probe proving no double settlement",
+      ],
+    },
+    archiveChecklist: [
+      "For success cases, verify exactly one replay row and one audit log row.",
+      "For duplicate replay, verify the Worker binding path reports replay_duplicate and no second audit row is added.",
+      "For guarded-update failure, archive Worker binding error metadata plus unchanged user/token/channel rows and zero replay/log rows.",
+      "For audit failure, archive Worker binding error metadata plus unchanged quota rows and zero replay/log rows.",
+      "For cleanup, archive that all smoke user/token/channel/replay/log rows are removed from staging.",
+    ],
+  };
+}
+
+function stagingScenarioDefinitions() {
+  return [
+    stagingScenario({
+      name: "additional-quota-applied",
+      purpose: "Additional final quota debits user/token quota and records final usage once.",
+      baseId: 920101,
+      fixture: {
+        userQuota: 900,
+        userUsedQuota: 0,
+        tokenRemainQuota: 400,
+        tokenUsedQuota: 100,
+        channelUsedQuota: 0,
+      },
+      preConsumedQuota: 100,
+      finalQuota: 150,
+      expectedSnapshot: {
+        userQuota: 850,
+        userUsedQuota: 150,
+        userRequestCount: 1,
+        tokenRemainQuota: 350,
+        tokenUsedQuota: 150,
+        tokenAccessedTime: defaultNow,
+        channelUsedQuota: 150,
+        replayRows: 1,
+        logRows: 1,
+      },
+    }),
+    stagingScenario({
+      name: "duplicate-replay-noop",
+      purpose: "An already-applied replay marker is detected before a second settlement batch.",
+      baseId: 920102,
+      fixture: {
+        userQuota: 900,
+        userUsedQuota: 0,
+        tokenRemainQuota: 400,
+        tokenUsedQuota: 100,
+        channelUsedQuota: 0,
+      },
+      preConsumedQuota: 100,
+      finalQuota: 150,
+      duplicatePrecheck: true,
+      expectedSnapshot: {
+        userQuota: 850,
+        userUsedQuota: 150,
+        userRequestCount: 1,
+        tokenRemainQuota: 350,
+        tokenUsedQuota: 150,
+        tokenAccessedTime: defaultNow,
+        channelUsedQuota: 150,
+        replayRows: 1,
+        logRows: 1,
+      },
+    }),
+    stagingScenario({
+      name: "guarded-update-rollback",
+      purpose: "A guarded quota update that changes zero rows aborts the batch and rolls back the replay marker.",
+      baseId: 920103,
+      fixture: {
+        userQuota: 105,
+        userUsedQuota: 0,
+        tokenRemainQuota: 400,
+        tokenUsedQuota: 100,
+        channelUsedQuota: 0,
+      },
+      preConsumedQuota: 100,
+      finalQuota: 250,
+      expectedApplyFailure: true,
+      expectedSnapshot: {
+        userQuota: 105,
+        userUsedQuota: 0,
+        userRequestCount: 0,
+        tokenRemainQuota: 400,
+        tokenUsedQuota: 100,
+        tokenAccessedTime: 0,
+        channelUsedQuota: 0,
+        replayRows: 0,
+        logRows: 0,
+      },
+    }),
+    stagingScenario({
+      name: "audit-failure-rollback",
+      purpose: "A late audit-row failure aborts the batch and rolls back quota mutations plus the replay marker.",
+      baseId: 920104,
+      fixture: {
+        userQuota: 900,
+        userUsedQuota: 0,
+        tokenRemainQuota: 400,
+        tokenUsedQuota: 100,
+        channelUsedQuota: 0,
+      },
+      preConsumedQuota: 100,
+      finalQuota: 150,
+      expectedApplyFailure: true,
+      forceAuditFailure: true,
+      expectedSnapshot: {
+        userQuota: 900,
+        userUsedQuota: 0,
+        userRequestCount: 0,
+        tokenRemainQuota: 400,
+        tokenUsedQuota: 100,
+        tokenAccessedTime: 0,
+        channelUsedQuota: 0,
+        replayRows: 0,
+        logRows: 0,
+      },
+    }),
+    stagingScenario({
+      name: "refund-delta-applied",
+      purpose: "A final quota lower than pre-consumed quota refunds user/token quota and records final usage once.",
+      baseId: 920105,
+      fixture: {
+        userQuota: 800,
+        userUsedQuota: 0,
+        tokenRemainQuota: 300,
+        tokenUsedQuota: 200,
+        channelUsedQuota: 0,
+      },
+      preConsumedQuota: 200,
+      finalQuota: 120,
+      expectedSnapshot: {
+        userQuota: 880,
+        userUsedQuota: 120,
+        userRequestCount: 1,
+        tokenRemainQuota: 380,
+        tokenUsedQuota: 120,
+        tokenAccessedTime: defaultNow,
+        channelUsedQuota: 120,
+        replayRows: 1,
+        logRows: 1,
+      },
+    }),
+    stagingScenario({
+      name: "tokenless-applied",
+      purpose: "A tokenless settlement updates user/channel quota and audit log without touching tokens.",
+      baseId: 920106,
+      tokenId: 0,
+      fixture: {
+        userQuota: 900,
+        userUsedQuota: 0,
+        tokenRemainQuota: 0,
+        tokenUsedQuota: 0,
+        channelUsedQuota: 0,
+      },
+      preConsumedQuota: 100,
+      finalQuota: 130,
+      expectedSnapshot: {
+        userQuota: 870,
+        userUsedQuota: 130,
+        userRequestCount: 1,
+        tokenRemainQuota: null,
+        tokenUsedQuota: null,
+        tokenAccessedTime: null,
+        channelUsedQuota: 130,
+        replayRows: 1,
+        logRows: 1,
+      },
+    }),
+  ];
+}
+
+function stagingScenario(input) {
+  const userId = input.baseId;
+  const tokenId = input.tokenId ?? input.baseId + 10_000;
+  const channelId = input.baseId + 20_000;
+  const replayKey = `rtsettle-${input.name}`;
+  const session = `rtsettle-${input.name}`;
+  const requestId = `req-rtsettle-${input.name}`;
+  const record = settlementRecord({
+    replayKey,
+    session,
+    userId,
+    tokenId,
+    channelId,
+    preConsumedQuota: input.preConsumedQuota,
+    finalQuota: input.finalQuota,
+  });
+  const username = `rtsettle_${input.name.replaceAll("-", "_")}`;
+  return {
+    ...input,
+    ids: { userId, tokenId, channelId },
+    username,
+    affCode: `rt${input.baseId}`,
+    tokenKey: tokenId > 0 ? `rtsettle-smoke-key-${input.name}` : "",
+    channelName: `rtsettle smoke ${input.name}`,
+    requestId,
+    record,
+    audit: auditLog(record, {
+      username,
+      tokenName: tokenId > 0 ? `rtsettle smoke token ${input.name}` : "",
+      requestId,
+      ip: "198.51.100.42",
+    }),
+  };
+}
+
+function buildStagingScenarioPlan(scenario, options) {
+  const prefix = `${options.artifactDir}/${scenario.name}`;
+  const sqlArtifacts = [
+    sqlArtifact("setup", `${prefix}.setup.sql`, "success", buildStagingSetupSql(scenario), options),
+  ];
+  if (scenario.duplicatePrecheck) {
+    sqlArtifacts.push(
+      sqlArtifact(
+        "duplicate-precheck",
+        `${prefix}.duplicate-precheck.sql`,
+        "success",
+        buildStagingDuplicatePrecheckSql(scenario),
+        options,
+      ),
+    );
+  }
+  sqlArtifacts.push(
+    sqlArtifact("verify", `${prefix}.verify.sql`, "success", buildStagingVerifySql(scenario), options),
+    sqlArtifact("cleanup", `${prefix}.cleanup.sql`, "success", buildStagingCleanupSql(scenario), options),
+  );
+  return {
+    name: scenario.name,
+    purpose: scenario.purpose,
+    expectedApplyFailure: scenario.expectedApplyFailure === true,
+    duplicatePrecheck: scenario.duplicatePrecheck === true,
+    applyEvidence: {
+      requiredPath: "worker_binding",
+      notes: [
+        "The reference SQL below mirrors the statement order for review, but staging proof must come from Worker D1Database.batch semantics.",
+        "Do not run the reference SQL as a substitute for Worker binding evidence; wrangler d1 execute does not provide the same prepared-statement changes() boundary.",
+      ],
+      referenceBatchSql: buildStagingApplySql(scenario),
+    },
+    ids: scenario.ids,
+    replayKey: scenario.record.replayKey,
+    session: scenario.record.session,
+    requestId: scenario.requestId,
+    modelName: scenario.record.modelName,
+    preConsumedQuota: scenario.record.preConsumedQuota,
+    finalQuota: scenario.record.finalQuota,
+    expectedSnapshot: scenario.expectedSnapshot,
+    sqlArtifacts,
+  };
+}
+
+function sqlArtifact(role, path, expectExit, sql, options) {
+  return {
+    role,
+    path,
+    expectExit,
+    command: wranglerD1ExecuteCommand(options, path),
+    sql,
+  };
+}
+
+function wranglerD1ExecuteCommand(options, path) {
+  const parts = ["bunx", "wrangler", "d1", "execute", psQuote(options.database)];
+  if (options.wranglerEnv) {
+    parts.push("--env", psQuote(options.wranglerEnv));
+  }
+  parts.push("--remote", "--file", psQuote(path));
+  return parts.join(" ");
+}
+
+function buildStagingSetupSql(scenario) {
+  const { userId, tokenId, channelId } = scenario.ids;
+  const statements = [
+    `-- Realtime settlement staging setup: ${scenario.name}`,
+    buildStagingCleanupSql(scenario),
+    `INSERT INTO users (id, username, password, display_name, role, status, email, quota, used_quota, request_count, "group", aff_code, created_at, deleted_at)
+VALUES (${userId}, ${sqlString(scenario.username)}, 'disabled-staging-smoke-user', 'Realtime Settlement Smoke', 1, 1, '', ${scenario.fixture.userQuota}, ${scenario.fixture.userUsedQuota}, 0, 'default', ${sqlString(scenario.affCode)}, ${defaultNow}, NULL);`,
+  ];
+  if (tokenId > 0) {
+    statements.push(
+      `INSERT INTO tokens (id, user_id, "key", status, name, created_time, accessed_time, expired_time, remain_quota, unlimited_quota, model_limits_enabled, model_limits, allow_ips, used_quota, "group", cross_group_retry, deleted_at)
+VALUES (${tokenId}, ${userId}, ${sqlString(scenario.tokenKey)}, 1, ${sqlString(scenario.audit.tokenName)}, ${defaultNow}, 0, -1, ${scenario.fixture.tokenRemainQuota}, 0, 0, '', '', ${scenario.fixture.tokenUsedQuota}, 'default', 0, NULL);`,
+    );
+  }
+  statements.push(
+    `INSERT INTO channels (id, type, "key", status, name, weight, created_time, base_url, other, balance, models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban, other_info, channel_info, settings)
+VALUES (${channelId}, 1, ${sqlString(`rtsettle-channel-key-${scenario.name}`)}, 1, ${sqlString(scenario.channelName)}, 1000, ${defaultNow}, 'https://example.invalid', '', 0, ${sqlString(scenario.record.modelName)}, 'default', ${scenario.fixture.channelUsedQuota}, NULL, '', 1000, 0, '{}', '{}', '');`,
+  );
+  return statements.join("\n\n");
+}
+
+function buildStagingApplySql(scenario) {
+  const statements = [
+    `-- Realtime settlement staging apply: ${scenario.name}`,
+    "-- Expected result: " + (scenario.expectedApplyFailure ? "non-zero exit with full rollback" : "success"),
+    "BEGIN TRANSACTION;",
+    insertReplaySql(scenario.record),
+  ];
+  for (const sql of guardedSettlementStatements(scenario)) {
+    statements.push(sql);
+    statements.push(assertPreviousStatementSql(scenario.record.replayKey));
+  }
+  if (scenario.forceAuditFailure) {
+    statements.push("INSERT INTO missing_realtime_audit_table (id) VALUES (1);");
+  } else {
+    statements.push(insertAuditSqlForScenario(scenario));
+    statements.push(assertPreviousStatementSql(scenario.record.replayKey));
+  }
+  statements.push("COMMIT;");
+  return statements.join("\n\n");
+}
+
+function guardedSettlementStatements(scenario) {
+  const record = scenario.record;
+  const delta = record.finalQuota - record.preConsumedQuota;
+  const statements = [];
+  if (record.tokenId <= 0) {
+    if (delta > 0) {
+      statements.push(`UPDATE users SET quota = quota - ${delta} WHERE id = ${record.userId} AND quota >= ${delta};`);
+    } else if (delta < 0) {
+      const refund = Math.abs(delta);
+      statements.push(`UPDATE users SET quota = quota + ${refund} WHERE id = ${record.userId};`);
+    }
+    statements.push(
+      `UPDATE users SET used_quota = used_quota + ${record.finalQuota}, request_count = request_count + 1 WHERE id = ${record.userId};`,
+      `UPDATE channels SET used_quota = used_quota + ${record.finalQuota} WHERE id = ${record.channelId};`,
+    );
+    return statements;
+  }
+  if (delta > 0) {
+    statements.push(
+      `UPDATE users SET quota = quota - ${delta} WHERE id = ${record.userId} AND quota >= ${delta};`,
+      `UPDATE tokens SET remain_quota = remain_quota - ${delta}, used_quota = used_quota + ${delta}, accessed_time = ${record.appliedAt} WHERE id = ${record.tokenId} AND (unlimited_quota != 0 OR remain_quota >= ${delta});`,
+    );
+  } else if (delta < 0) {
+    const refund = Math.abs(delta);
+    statements.push(
+      `UPDATE users SET quota = quota + ${refund} WHERE id = ${record.userId};`,
+      `UPDATE tokens SET remain_quota = remain_quota + ${refund}, used_quota = MAX(used_quota - ${refund}, 0), accessed_time = ${record.appliedAt} WHERE id = ${record.tokenId};`,
+    );
+  } else {
+    statements.push(`UPDATE tokens SET accessed_time = ${record.appliedAt} WHERE id = ${record.tokenId};`);
+  }
+  statements.push(
+    `UPDATE users SET used_quota = used_quota + ${record.finalQuota}, request_count = request_count + 1 WHERE id = ${record.userId};`,
+    `UPDATE channels SET used_quota = used_quota + ${record.finalQuota} WHERE id = ${record.channelId};`,
+  );
+  return statements;
+}
+
+function buildStagingDuplicatePrecheckSql(scenario) {
+  return [
+    `-- Realtime settlement duplicate replay pre-check: ${scenario.name}`,
+    "-- Expected: applied_replay_count = 1, so the Worker must skip a second settlement batch.",
+    `SELECT COUNT(1) AS applied_replay_count
+FROM realtime_settlement_replays
+WHERE replay_key = ${sqlString(scenario.record.replayKey)}
+  AND status = 'applied';`,
+  ].join("\n\n");
+}
+
+function buildStagingVerifySql(scenario) {
+  const { userId, tokenId, channelId } = scenario.ids;
+  const lines = [
+    `-- Realtime settlement staging verification: ${scenario.name}`,
+    `-- Expected snapshot: ${JSON.stringify(scenario.expectedSnapshot)}`,
+    `SELECT 'users' AS source, id, quota, used_quota, request_count FROM users WHERE id = ${userId};`,
+  ];
+  if (tokenId > 0) {
+    lines.push(
+      `SELECT 'tokens' AS source, id, remain_quota, used_quota, accessed_time FROM tokens WHERE id = ${tokenId};`,
+    );
+  } else {
+    lines.push("SELECT 'tokens' AS source, 0 AS id, NULL AS remain_quota, NULL AS used_quota, NULL AS accessed_time;");
+  }
+  lines.push(
+    `SELECT 'channels' AS source, id, used_quota FROM channels WHERE id = ${channelId};`,
+    `SELECT 'replays' AS source, COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ${sqlString(scenario.record.replayKey)};`,
+    `SELECT 'logs' AS source, COUNT(1) AS count FROM logs WHERE request_id = ${sqlString(scenario.requestId)};`,
+  );
+  return lines.join("\n\n");
+}
+
+function buildStagingCleanupSql(scenario) {
+  const { userId, tokenId, channelId } = scenario.ids;
+  const statements = [
+    `DELETE FROM logs WHERE request_id = ${sqlString(scenario.requestId)} OR user_id = ${userId};`,
+    `DELETE FROM realtime_settlement_replays WHERE replay_key = ${sqlString(scenario.record.replayKey)};`,
+  ];
+  if (tokenId > 0) {
+    statements.push(`DELETE FROM tokens WHERE id = ${tokenId} OR "key" = ${sqlString(scenario.tokenKey)};`);
+  }
+  statements.push(
+    `DELETE FROM channels WHERE id = ${channelId};`,
+    `DELETE FROM users WHERE id = ${userId} OR username = ${sqlString(scenario.username)} OR aff_code = ${sqlString(scenario.affCode)};`,
+  );
+  return statements.join("\n");
+}
+
+function insertReplaySql(record) {
+  return `INSERT INTO realtime_settlement_replays (
+  replay_key, session, user_id, token_id, channel_id, model_name,
+  pre_consumed_quota, final_quota, status, created_at, applied_at, error
+) VALUES (${sqlString(record.replayKey)}, ${sqlString(record.session)}, ${record.userId}, ${record.tokenId}, ${record.channelId}, ${sqlString(record.modelName)}, ${record.preConsumedQuota}, ${record.finalQuota}, 'applied', ${record.createdAt}, ${record.appliedAt}, '');`;
+}
+
+function assertPreviousStatementSql(replayKey) {
+  return `INSERT INTO realtime_settlement_replays (replay_key)
+SELECT ${sqlString(replayKey)}
+WHERE changes() != 1;`;
+}
+
+function insertAuditSqlForScenario(scenario) {
+  const audit = scenario.audit;
+  const record = scenario.record;
+  return `INSERT INTO logs (
+  user_id, created_at, type, content, username, token_name, model_name,
+  quota, prompt_tokens, completion_tokens, use_time, is_stream, channel_id,
+  token_id, "group", ip, request_id, upstream_request_id, other
+) VALUES (${audit.userId}, ${record.appliedAt}, 2, ${sqlString(`Rust realtime settled /v1/realtime; tiered quota ${record.finalQuota}`)}, ${sqlString(audit.username)}, ${sqlString(audit.tokenName)}, ${sqlString(audit.model)}, ${audit.quota}, ${audit.promptTokens}, ${audit.completionTokens}, ${audit.useTimeSeconds}, ${audit.isStream ? 1 : 0}, ${audit.channelId}, ${audit.tokenId}, ${sqlString(audit.group)}, ${sqlString(audit.ip)}, ${sqlString(audit.requestId)}, ${sqlString(audit.upstreamRequestId)}, ${sqlString(audit.other)});`;
+}
+
+function stagingPlanSqlArtifactsReplayLocally() {
+  const options = {
+    database: "cinatoken-rust-staging",
+    wranglerEnv: "staging",
+    artifactDir: defaultArtifactDir,
+  };
+  const plan = buildStagingPlan(options);
+  assert(plan.scenarios.length === 6, "staging plan should cover all six settlement scenarios");
+  const serialized = JSON.stringify(plan);
+  assert(!serialized.includes("cfut_"), "staging plan must not contain Cloudflare API tokens");
+  assert(!serialized.includes("CLOUDFLARE_API_TOKEN="), "staging plan must not print API token assignments");
+  const summaries = [];
+  for (const scenario of plan.scenarios) {
+    summaries.push(runStagingScenarioPlanLocally(scenario));
+  }
+  return {
+    scenarios: summaries.length,
+    expectedFailures: summaries.filter((item) => item.expectedApplyFailure).length,
+    commandsRedacted: true,
+    summaries,
+  };
+}
+
+function runStagingScenarioPlanLocally(scenario) {
+  return withStagingPlanDatabase((db) => {
+    for (const artifact of scenario.sqlArtifacts) {
+      if (artifact.role === "cleanup") {
+        continue;
+      }
+      db.exec(artifact.sql);
+    }
+    assertStagingSetupRows(db, scenario);
+    assert(
+      scenario.applyEvidence.referenceBatchSql.includes("BEGIN TRANSACTION;") &&
+        scenario.applyEvidence.referenceBatchSql.includes("changes() != 1"),
+      `${scenario.name} reference batch SQL should expose transaction and changes() guard shape`,
+    );
+    const cleanup = scenario.sqlArtifacts.find((artifact) => artifact.role === "cleanup");
+    db.exec(cleanup.sql);
+    assertStagingCleanup(db, scenario);
+    return {
+      name: scenario.name,
+      expectedApplyFailure: scenario.expectedApplyFailure,
+      setupArtifacts: scenario.sqlArtifacts.filter((artifact) => artifact.role !== "cleanup").length,
+      hasReferenceBatchSql: true,
+    };
+  });
+}
+
+function withStagingPlanDatabase(fn) {
+  const db = new Database(":memory:");
+  try {
+    createStagingPlanSchema(db);
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+function createStagingPlanSchema(db) {
+  db.exec(`
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password TEXT NOT NULL,
+      display_name TEXT NOT NULL DEFAULT '',
+      role INTEGER NOT NULL DEFAULT 1,
+      status INTEGER NOT NULL DEFAULT 1,
+      email TEXT NOT NULL DEFAULT '',
+      quota INTEGER NOT NULL DEFAULT 0,
+      used_quota INTEGER NOT NULL DEFAULT 0,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      "group" TEXT NOT NULL DEFAULT 'default',
+      aff_code TEXT NOT NULL DEFAULT '' UNIQUE,
+      created_at INTEGER NOT NULL DEFAULT 0,
+      deleted_at INTEGER
+    );
+    CREATE TABLE tokens (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      "key" TEXT NOT NULL UNIQUE,
+      status INTEGER NOT NULL DEFAULT 1,
+      name TEXT NOT NULL DEFAULT '',
+      created_time INTEGER NOT NULL DEFAULT 0,
+      accessed_time INTEGER NOT NULL DEFAULT 0,
+      expired_time INTEGER NOT NULL DEFAULT -1,
+      remain_quota INTEGER NOT NULL DEFAULT 0,
+      unlimited_quota INTEGER NOT NULL DEFAULT 0,
+      model_limits_enabled INTEGER NOT NULL DEFAULT 0,
+      model_limits TEXT NOT NULL DEFAULT '',
+      allow_ips TEXT NOT NULL DEFAULT '',
+      used_quota INTEGER NOT NULL DEFAULT 0,
+      "group" TEXT NOT NULL DEFAULT '',
+      cross_group_retry INTEGER NOT NULL DEFAULT 0,
+      deleted_at INTEGER
+    );
+    CREATE TABLE channels (
+      id INTEGER PRIMARY KEY,
+      type INTEGER NOT NULL DEFAULT 0,
+      "key" TEXT NOT NULL,
+      status INTEGER NOT NULL DEFAULT 1,
+      name TEXT NOT NULL DEFAULT '',
+      weight INTEGER NOT NULL DEFAULT 0,
+      created_time INTEGER NOT NULL DEFAULT 0,
+      base_url TEXT NOT NULL DEFAULT '',
+      other TEXT NOT NULL DEFAULT '',
+      balance REAL NOT NULL DEFAULT 0,
+      models TEXT NOT NULL DEFAULT '',
+      "group" TEXT NOT NULL DEFAULT 'default',
+      used_quota INTEGER NOT NULL DEFAULT 0,
+      model_mapping TEXT,
+      status_code_mapping TEXT NOT NULL DEFAULT '',
+      priority INTEGER NOT NULL DEFAULT 0,
+      auto_ban INTEGER NOT NULL DEFAULT 1,
+      other_info TEXT NOT NULL DEFAULT '',
+      channel_info TEXT NOT NULL DEFAULT '{}',
+      settings TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE logs (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT 0,
+      type INTEGER NOT NULL DEFAULT 0,
+      content TEXT NOT NULL DEFAULT '',
+      username TEXT NOT NULL DEFAULT '',
+      token_name TEXT NOT NULL DEFAULT '',
+      model_name TEXT NOT NULL DEFAULT '',
+      quota INTEGER NOT NULL DEFAULT 0,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      use_time INTEGER NOT NULL DEFAULT 0,
+      is_stream INTEGER NOT NULL DEFAULT 0,
+      channel_id INTEGER NOT NULL DEFAULT 0,
+      token_id INTEGER NOT NULL DEFAULT 0,
+      "group" TEXT NOT NULL DEFAULT '',
+      ip TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL DEFAULT '',
+      upstream_request_id TEXT NOT NULL DEFAULT '',
+      other TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE realtime_settlement_replays (
+      replay_key TEXT PRIMARY KEY,
+      session TEXT NOT NULL DEFAULT '',
+      user_id INTEGER NOT NULL DEFAULT 0,
+      token_id INTEGER NOT NULL DEFAULT 0,
+      channel_id INTEGER NOT NULL DEFAULT 0,
+      model_name TEXT NOT NULL DEFAULT '',
+      pre_consumed_quota INTEGER NOT NULL DEFAULT 0,
+      final_quota INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'applied',
+      created_at INTEGER NOT NULL DEFAULT 0,
+      applied_at INTEGER NOT NULL DEFAULT 0,
+      error TEXT NOT NULL DEFAULT ''
+    );
+  `);
+}
+
+function assertStagingSetupRows(db, scenario) {
+  const users = db.prepare("SELECT COUNT(1) AS count FROM users WHERE id = ?1").get(scenario.ids.userId);
+  const channels = db.prepare("SELECT COUNT(1) AS count FROM channels WHERE id = ?1").get(scenario.ids.channelId);
+  const replays = db.prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1").get(scenario.replayKey);
+  const logs = db.prepare("SELECT COUNT(1) AS count FROM logs WHERE request_id = ?1").get(scenario.requestId);
+  assert(Number(users.count) === 1, `${scenario.name} setup should insert one user`);
+  assert(Number(channels.count) === 1, `${scenario.name} setup should insert one channel`);
+  assert(Number(replays.count) === 0, `${scenario.name} setup should not insert replay rows`);
+  assert(Number(logs.count) === 0, `${scenario.name} setup should not insert log rows`);
+  if (scenario.ids.tokenId > 0) {
+    const tokens = db.prepare("SELECT COUNT(1) AS count FROM tokens WHERE id = ?1").get(scenario.ids.tokenId);
+    assert(Number(tokens.count) === 1, `${scenario.name} setup should insert one token`);
+  }
+}
+
+function assertStagingCleanup(db, scenario) {
+  const counts = [
+    db.prepare("SELECT COUNT(1) AS count FROM users WHERE id = ?1").get(scenario.ids.userId),
+    db.prepare("SELECT COUNT(1) AS count FROM channels WHERE id = ?1").get(scenario.ids.channelId),
+    db.prepare("SELECT COUNT(1) AS count FROM logs WHERE request_id = ?1").get(scenario.requestId),
+    db.prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1").get(scenario.replayKey),
+  ];
+  if (scenario.ids.tokenId > 0) {
+    counts.push(db.prepare("SELECT COUNT(1) AS count FROM tokens WHERE id = ?1").get(scenario.ids.tokenId));
+  }
+  const remaining = counts.reduce((sum, row) => sum + Number(row.count), 0);
+  assert(remaining === 0, `${scenario.name} cleanup should remove all smoke rows`);
+}
+
 function runRealtimeSettlementBatch(db, record, audit, options = {}) {
   validateAuditMatches(record, audit);
   if (replayApplied(db, record.replayKey)) {
@@ -644,6 +1333,41 @@ function settlementSnapshot(db, record) {
   };
 }
 
+function validatePlanValue(value, name) {
+  const text = String(value || "").trim();
+  if (!text) {
+    throw new Error(`${name} is required`);
+  }
+  if (/[\u0000-\u001f\u007f]/.test(text)) {
+    throw new Error(`${name} must not contain control characters`);
+  }
+  if (text.includes("cfut_")) {
+    throw new Error(`${name} must not contain Cloudflare API tokens`);
+  }
+  return text;
+}
+
+function validateOptionalPlanValue(value, name) {
+  const text = String(value || "").trim();
+  return text ? validatePlanValue(text, name) : "";
+}
+
+function validateArtifactDir(value) {
+  const text = validatePlanValue(value, "artifact-dir").replaceAll("\\", "/").replace(/\/+$/, "");
+  if (text.includes("..")) {
+    throw new Error("artifact-dir must not contain parent-directory segments");
+  }
+  return text;
+}
+
+function sqlString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function psQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -653,6 +1377,29 @@ function assert(condition, message) {
 function printResult(result, asJson) {
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (result.mode === "staging-plan") {
+    console.log(
+      [
+        "Realtime settlement staging plan",
+        `database: ${result.database}`,
+        `wrangler_environment: ${result.wranglerEnvironment ?? "(default)"}`,
+        `artifact_dir: ${result.artifactDir}`,
+        "required_before_run:",
+        ...result.requiredBeforeRun.map((item) => `- ${item}`),
+        "scenarios:",
+        ...result.scenarios.flatMap((scenario) => [
+          `- ${scenario.name}: ${scenario.purpose}`,
+          ...scenario.sqlArtifacts.map(
+            (artifact) =>
+              `  ${artifact.role} (${artifact.expectExit}): ${artifact.path}\n    ${artifact.command}`,
+          ),
+        ]),
+        "archive_checklist:",
+        ...result.archiveChecklist.map((item) => `- ${item}`),
+      ].join("\n"),
+    );
     return;
   }
   console.log(`${result.tool}: ${result.status}`);
@@ -666,7 +1413,9 @@ function printResult(result, asJson) {
 
 try {
   const args = parseArgs(process.argv.slice(2));
-  const result = runSelfTest();
+  const result = args.flags.has("staging-plan")
+    ? buildStagingPlan(normalizeStagingPlanOptions(args))
+    : runSelfTest();
   printResult(result, args.flags.has("json"));
   if (result.status !== "PASS") {
     process.exit(1);

@@ -10,9 +10,18 @@ Last checked: 2026-07-08
   mirrors the D1 batch SQL shape against Bun SQLite and proves
   additional-quota apply, duplicate replay no-op, guarded-update rollback,
   audit-failure rollback, refund-delta apply, and tokenless settlement apply.
-  It is pre-staging evidence only; `realtime_session_billing_settlement_compiled`
-  and `realtime_session_v1_cutover_ready` remain false until the same cases are
-  archived against isolated staging D1 plus live no-double-charge evidence.
+  The same self-test now also validates the generated staging-plan
+  setup/verify/cleanup SQL artifacts and redaction constraints. It is
+  pre-staging evidence only; `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` remain false until the same cases are
+  archived against isolated staging D1 through the Worker binding path plus
+  live no-double-charge evidence.
+- `bun tools/smoke_realtime_settlement_batch.mjs --staging-plan --database
+  cinatoken-rust-staging --wrangler-env staging --json`: passed and emitted
+  reviewed setup, verification, duplicate-marker pre-check, and cleanup
+  artifacts plus explicit Worker-binding apply requirements. The plan
+  intentionally warns that standalone `wrangler d1 execute` SQL is not
+  equivalent to `D1Database.batch()` apply evidence.
 - `bun run check`: passed after wiring the settlement-batch contract into the
   default gate; the only warnings were the existing unused Worker repository
   helpers `complete_topup` and `list_user_topups`.

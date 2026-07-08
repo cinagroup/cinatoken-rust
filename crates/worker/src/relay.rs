@@ -84,6 +84,8 @@ const IMAGE_JSON_RESPONSE_LIMIT_BYTES: usize = 24 * 1024 * 1024;
 const RERANK_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const GEMINI_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const REALTIME_MOCK_QUEUE_PROBE_MAX_DELAY_MS: u64 = 1_000;
+const REALTIME_BILLING_REQUEST_MAX_HEADERS: usize = 16;
+const REALTIME_BILLING_REQUEST_MAX_HEADER_VALUE_CHARS: usize = 256;
 const ESTIMATED_IMAGE_INPUT_TOKENS: i64 = 520;
 const ESTIMATED_AUDIO_INPUT_TOKENS: i64 = 256;
 const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
@@ -2331,15 +2333,22 @@ pub(crate) async fn plan_realtime_upstream_channel(
         };
         let upstream_model = mapped_model_name(model, channel.model_mapping.as_deref())
             .unwrap_or_else(|| model.to_string());
-        let billing_snapshot =
-            realtime_billing_presettlement_snapshot(db, model, &selected_group, req)
-                .await
-                .map_err(|err| {
-                    openai_error_response(
-                        format!("realtime billing pre-settlement snapshot failed: {err}"),
-                        500,
-                    )
-                })?;
+        let billing_presettlement = realtime_billing_presettlement(db, model, &selected_group, req)
+            .await
+            .map_err(|err| {
+                openai_error_response(
+                    format!("realtime billing pre-settlement snapshot failed: {err}"),
+                    500,
+                )
+            })?;
+        let (billing_snapshot, billing_settlement) = billing_presettlement
+            .map(|billing| {
+                (
+                    Some(billing.snapshot_metadata),
+                    Some(billing.settlement_handoff),
+                )
+            })
+            .unwrap_or((None, None));
         return crate::realtime_session::realtime_selected_upstream(
             crate::realtime_session::RealtimeSelectedUpstreamInput {
                 selected_group: &selected_group,
@@ -2353,6 +2362,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
                 api_version: None,
                 client_requested_subprotocol,
                 billing_snapshot,
+                billing_settlement,
                 startup_queue_probe_delay_ms: realtime_mock_queue_probe_delay_ms(
                     &channel.other_info,
                 ),
@@ -2370,17 +2380,22 @@ pub(crate) async fn plan_realtime_upstream_channel(
     ))
 }
 
-async fn realtime_billing_presettlement_snapshot(
+struct RealtimeBillingPresettlement {
+    snapshot_metadata: crate::realtime_session::RealtimeBillingSnapshotMetadata,
+    settlement_handoff: crate::realtime_session::RealtimeBillingSettlementHandoff,
+}
+
+async fn realtime_billing_presettlement(
     db: &D1Database,
     model: &str,
     group: &str,
     req: &Request,
-) -> worker::Result<Option<crate::realtime_session::RealtimeBillingSnapshotMetadata>> {
+) -> worker::Result<Option<RealtimeBillingPresettlement>> {
     let request_body = json!({
         "model": model,
         "endpoint": "realtime"
     });
-    let request = billing_request_input(req, &request_body);
+    let request = realtime_billing_request_input(req, &request_body);
     let Some(preflight) =
         prepare_tiered_billing_preflight(db, model, group, &request_body, &request, false, 0)
             .await?
@@ -2388,11 +2403,16 @@ async fn realtime_billing_presettlement_snapshot(
         return Ok(None);
     };
 
-    Ok(Some(
+    let snapshot_metadata =
         crate::realtime_session::RealtimeBillingSnapshotMetadata::from_tiered_snapshot(
             &preflight.snapshot,
-        ),
-    ))
+        );
+    let settlement_handoff =
+        crate::realtime_session::RealtimeBillingSettlementHandoff::new(preflight.snapshot, request);
+    Ok(Some(RealtimeBillingPresettlement {
+        snapshot_metadata,
+        settlement_handoff,
+    }))
 }
 
 fn realtime_mock_queue_probe_delay_ms(other_info: &str) -> Option<u32> {
@@ -6024,6 +6044,63 @@ fn billing_request_input(req: &Request, body: &Value) -> RequestInput {
     }
 }
 
+fn realtime_billing_request_input(req: &Request, body: &Value) -> RequestInput {
+    RequestInput {
+        headers: safe_realtime_billing_headers(req),
+        body: Some(body.clone()),
+    }
+}
+
+fn safe_realtime_billing_headers(req: &Request) -> HashMap<String, String> {
+    safe_realtime_billing_headers_from_entries(req.headers().entries())
+}
+
+fn safe_realtime_billing_headers_from_entries(
+    entries: impl IntoIterator<Item = (String, String)>,
+) -> HashMap<String, String> {
+    let mut headers = HashMap::new();
+    for (name, value) in entries {
+        if headers.len() >= REALTIME_BILLING_REQUEST_MAX_HEADERS {
+            break;
+        }
+        let name = name.trim().to_ascii_lowercase();
+        if name.is_empty() || is_sensitive_billing_probe_header(&name) {
+            continue;
+        }
+        let value = truncate_realtime_billing_header_value(&value);
+        if !value.is_empty() {
+            headers.insert(name, value);
+        }
+    }
+    headers
+}
+
+fn is_sensitive_billing_probe_header(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization"
+            | "cookie"
+            | "proxy-authorization"
+            | "set-cookie"
+            | "x-api-key"
+            | "api-key"
+            | "x-goog-api-key"
+            | "cf-access-token"
+            | "cf-authorization"
+    ) || name.contains("token")
+        || name.contains("secret")
+        || name.contains("credential")
+        || name.ends_with("-key")
+}
+
+fn truncate_realtime_billing_header_value(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .take(REALTIME_BILLING_REQUEST_MAX_HEADER_VALUE_CHARS)
+        .collect()
+}
+
 pub(crate) fn client_ip(req: &Request) -> Option<String> {
     req.headers()
         .get("cf-connecting-ip")
@@ -6101,6 +6178,37 @@ fn quota_mutation_error_status(err: &worker::Error) -> u16 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn realtime_billing_request_headers_strip_sensitive_values() {
+        let headers = safe_realtime_billing_headers_from_entries([
+            (
+                "Authorization".to_string(),
+                "Bearer relay-secret".to_string(),
+            ),
+            ("Cookie".to_string(), "session=secret".to_string()),
+            ("X-API-Key".to_string(), "key-secret".to_string()),
+            ("X-Request-Tier".to_string(), "fast".to_string()),
+            (
+                "X-Long-Probe".to_string(),
+                "x".repeat(REALTIME_BILLING_REQUEST_MAX_HEADER_VALUE_CHARS + 8),
+            ),
+        ]);
+
+        assert_eq!(
+            headers.get("x-request-tier").map(String::as_str),
+            Some("fast")
+        );
+        assert_eq!(
+            headers
+                .get("x-long-probe")
+                .map(|value| value.chars().count()),
+            Some(REALTIME_BILLING_REQUEST_MAX_HEADER_VALUE_CHARS)
+        );
+        assert!(!headers.contains_key("authorization"));
+        assert!(!headers.contains_key("cookie"));
+        assert!(!headers.contains_key("x-api-key"));
+    }
 
     #[test]
     fn affinity_cached_token_rate_mode_matches_relay_families() {

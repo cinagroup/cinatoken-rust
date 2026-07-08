@@ -6,19 +6,24 @@ Last checked: 2026-07-08
 
 - `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib relay::tests::realtime_billing_request_headers_strip_sensitive_values -- --nocapture`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
   `node --check tools/smoke_realtime_session.mjs`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `bun run check:realtime-session:upstream-replay-contract`,
   `bun run check:web`, `cargo fmt --all --check`, `git diff --check`, and
-  `bun run check`: passed after adding the Realtime billing settlement preview
-  contract. `/v1/realtime` now has a compiled, redacted helper that combines a
-  frozen tiered pre-settlement snapshot, captured `response.done` usage, and
-  request input to compute final/refund/additional quota metadata without
-  applying quota yet. `/api/platform/capabilities`, the Cloudflare Platform
-  panel, and the Realtime smoke preflight expose
-  `realtime_session_billing_settlement_preview_compiled`, and the v1 guard set
-  includes `billing_settlement_preview`. This remains pre-settlement evidence:
+  `bun run check`: passed after wiring the Realtime billing settlement preview
+  into the internal gateway-to-DO handoff and DO usage metrics. `/v1/realtime`
+  now carries the full frozen tiered snapshot plus a bounded, sensitive-header
+  filtered request probe only in the private connect handoff; captured
+  `response.done` usage records redacted
+  `billing_settlement_preview_count`,
+  `last_billing_settlement_preview_at_ms`, and
+  `last_billing_settlement_preview` metrics without applying quota yet.
+  `/api/platform/capabilities`, the Cloudflare Platform panel, and the
+  Realtime smoke preflight expose
+  `realtime_session_billing_settlement_handoff_compiled`, and the v1 guard set
+  includes `billing_settlement_handoff`. This remains pre-settlement evidence:
   `realtime_session_billing_settlement_compiled` and
   `realtime_session_v1_cutover_ready` stay false until D1 reserve/refund/final
   audit settlement is implemented and proven. The full check still emits only

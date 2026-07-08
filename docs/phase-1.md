@@ -87,6 +87,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   reconciliation.
 - Worker-side tiered billing metadata now marks whether a frozen expression
   carried a request-rule multiplier without logging the full rule body.
+- Realtime billing now freezes a redacted pre-settlement snapshot, carries the
+  full snapshot plus a bounded sensitive-header-filtered request probe only in
+  the internal DO connect handoff, and records redacted settlement-preview
+  metrics from `response.done` usage without mutating quota.
 - Successful Worker-side tiered-expression audit logs now include Go-compatible
   top-level usage-log display fields: `billing_mode`, base-expression
   `expr_b64`, and `matched_tier`.

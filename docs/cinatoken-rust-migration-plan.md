@@ -8170,6 +8170,79 @@ Remaining migration gaps:
   `last_billing_snapshot`, `last_usage`, and the settlement preview/final
   settlement evidence remain redacted.
 
+### 22.131 2026-07-08 Realtime Billing Settlement Handoff Metrics
+
+This increment wires the Realtime settlement-preview contract into the live
+Durable Object usage-capture path without turning on quota mutation. `/v1/realtime`
+now carries the full tiered snapshot and a bounded, sanitized request probe only
+inside the private gateway-to-DO connect handoff; when the upstream bridge
+captures `response.done` usage, the DO computes and stores redacted settlement
+preview metrics. Public plans, socket attachments, status frames, and persisted
+metrics still do not contain the raw billing expression, request-rule body,
+request probe values, upstream API keys, bearer tokens, or raw WebSocket frames.
+
+Implemented:
+
+- Added `RealtimeBillingSettlementHandoff` as a request-scoped internal handoff
+  value containing the frozen `TieredBillingSnapshot` plus the request probe
+  needed to re-run request-aware billing expressions.
+- Updated `/v1/realtime` channel planning to produce both the existing redacted
+  `RealtimeBillingSnapshotMetadata` and the internal settlement handoff from the
+  same preflight snapshot.
+  - The Realtime request probe now filters sensitive headers before they can be
+    serialized into the private handoff: Authorization, cookies, API-key style
+    headers, token/secret/credential names, and key-suffixed headers are
+    removed.
+  - Non-sensitive billing-probe headers remain available to `header()` rules,
+    but header count and value length are bounded to keep the handoff within
+    Worker header limits.
+- Updated the upstream event pump so captured `response.done` usage invokes the
+  settlement preview helper with the request-scoped handoff.
+  - `RealtimeSessionMetrics` now records
+    `billing_settlement_preview_count`,
+    `last_billing_settlement_preview_at_ms`, and
+    `last_billing_settlement_preview`.
+  - Stored preview metadata includes only redacted quota/tier evidence:
+    final/refund/additional quota, actual token counts, expression hash/version,
+    request-rule presence, matched tier, and crossed-tier status.
+- Added
+  `realtime_session_billing_settlement_handoff_compiled=true` to
+  `/api/platform/capabilities`, the Cloudflare Platform frontend panel, and the
+  Realtime smoke capabilities preflight.
+- Added `billing_settlement_handoff` to the Realtime cutover guards and v1
+  readiness matrix while keeping
+  `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false`.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed, including the new handoff compiled guard and DO metrics preview
+  redaction self-check.
+- `cargo test -p cinatoken-worker --lib relay::tests::realtime_billing_request_headers_strip_sensitive_values -- --nocapture`
+  passed, proving Realtime billing handoff probes strip sensitive headers while
+  preserving bounded non-sensitive probe headers.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:upstream-replay-contract`,
+  `bun run check:web`, `cargo fmt --all --check`, `git diff --check`, and
+  `bun run check` passed; the full check still emits only the existing
+  `d1_repositories.rs` dead-code warnings.
+
+Remaining migration gaps:
+
+- Apply actual D1 reserve/refund/additional/final settlement from Realtime
+  usage events using the same `tiered_billing`, fallback, pending, and
+  usage-source conventions as REST/SSE relay settlement.
+- Write final Realtime audit/log metadata and archive staging smoke evidence
+  proving `last_billing_snapshot`, `last_usage`, and
+  `last_billing_settlement_preview` stay redacted under local mock and live
+  non-production upstream replay.
+- Decide whether long billing expressions should continue riding in the private
+  connect handoff or move to a DO-local lookup/handle before enabling
+  production `/v1/realtime` billing.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

@@ -15,7 +15,8 @@ use worker::{Env, Headers, Request, RequestInit, Response, Result as WorkerResul
 
 use crate::admin::{envelope_ok_response, require_admin_auth};
 use crate::realtime_session::{
-    realtime_billing_presettlement_snapshot_compiled, realtime_billing_settlement_preview_compiled,
+    realtime_billing_presettlement_snapshot_compiled, realtime_billing_settlement_handoff_compiled,
+    realtime_billing_settlement_preview_compiled,
     realtime_session_platform_header_boundary_compiled,
     realtime_upstream_bridge_backpressure_policy_compiled,
     realtime_upstream_bridge_backpressure_runtime_compiled,
@@ -148,6 +149,7 @@ struct PlatformCapabilities {
     realtime_session_upstream_usage_capture_compiled: bool,
     realtime_session_billing_presettlement_snapshot_compiled: bool,
     realtime_session_billing_settlement_preview_compiled: bool,
+    realtime_session_billing_settlement_handoff_compiled: bool,
     realtime_session_platform_header_boundary_compiled: bool,
     realtime_session_upstream_bridge_compiled: bool,
     realtime_session_billing_settlement_compiled: bool,
@@ -249,6 +251,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_billing_presettlement_snapshot_compiled();
     let realtime_session_billing_settlement_preview_compiled =
         realtime_billing_settlement_preview_compiled();
+    let realtime_session_billing_settlement_handoff_compiled =
+        realtime_billing_settlement_handoff_compiled();
     let realtime_session_platform_header_boundary_compiled =
         realtime_session_platform_header_boundary_compiled();
     let realtime_session_upstream_bridge_compiled = false;
@@ -283,6 +287,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_usage_capture_compiled,
         realtime_session_billing_presettlement_snapshot_compiled,
         realtime_session_billing_settlement_preview_compiled,
+        realtime_session_billing_settlement_handoff_compiled,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
@@ -362,6 +367,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_usage_capture_compiled,
         realtime_session_billing_presettlement_snapshot_compiled,
         realtime_session_billing_settlement_preview_compiled,
+        realtime_session_billing_settlement_handoff_compiled,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
@@ -809,6 +815,7 @@ fn is_realtime_session_v1_cutover_ready(
     upstream_usage_capture_compiled: bool,
     billing_presettlement_snapshot_compiled: bool,
     billing_settlement_preview_compiled: bool,
+    billing_settlement_handoff_compiled: bool,
     platform_header_boundary_compiled: bool,
     upstream_bridge_compiled: bool,
     billing_settlement_compiled: bool,
@@ -834,6 +841,7 @@ fn is_realtime_session_v1_cutover_ready(
         && upstream_usage_capture_compiled
         && billing_presettlement_snapshot_compiled
         && billing_settlement_preview_compiled
+        && billing_settlement_handoff_compiled
         && platform_header_boundary_compiled
         && upstream_bridge_compiled
         && billing_settlement_compiled
@@ -1114,6 +1122,7 @@ mod tests {
         assert!(guards.contains(&"upstream_usage_capture"));
         assert!(guards.contains(&"billing_presettlement_snapshot"));
         assert!(guards.contains(&"billing_settlement_preview"));
+        assert!(guards.contains(&"billing_settlement_handoff"));
         assert!(guards.contains(&"platform_upstream_header_boundary"));
         assert!(guards.contains(&"hibernation_attachment_restore"));
         assert!(guards.contains(&"metadata_only_control_frames"));
@@ -1145,10 +1154,10 @@ mod tests {
 
     #[test]
     fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
-        assert!(realtime_v1_ready_with_flags([true; 24]));
+        assert!(realtime_v1_ready_with_flags([true; 25]));
 
-        for false_gate in 0..24 {
-            let mut flags = [true; 24];
+        for false_gate in 0..25 {
+            let mut flags = [true; 25];
             flags[false_gate] = false;
             assert!(
                 !realtime_v1_ready_with_flags(flags),
@@ -1157,11 +1166,12 @@ mod tests {
         }
     }
 
-    fn realtime_v1_ready_with_flags(flags: [bool; 24]) -> bool {
+    fn realtime_v1_ready_with_flags(flags: [bool; 25]) -> bool {
         is_realtime_session_v1_cutover_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
             flags[16], flags[17], flags[18], flags[19], flags[20], flags[21], flags[22], flags[23],
+            flags[24],
         )
     }
 

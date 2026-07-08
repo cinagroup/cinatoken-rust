@@ -580,6 +580,7 @@ Record:
   `realtime_session_upstream_usage_capture_compiled`,
   `realtime_session_billing_presettlement_snapshot_compiled`,
   `realtime_session_billing_settlement_preview_compiled`,
+  `realtime_session_billing_settlement_handoff_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -607,7 +608,8 @@ Pass criteria:
   compiled, including the text/binary frame guard and bridge close/error
   mapping plus the upstream send-failure guard, terminal event trace, and
   upstream replay contract, usage capture, billing pre-settlement snapshot,
-  billing settlement preview, and platform upstream-header boundary;
+  billing settlement preview, billing settlement handoff, and platform
+  upstream-header boundary;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -627,12 +629,13 @@ Pass criteria:
   `last_billing_snapshot` with expression hash/version, estimated quota, and
   request-rule presence, but no raw billing expression, request-rule body,
   request parameters, headers, raw payloads, or upstream credentials.
-- The current settlement-preview contract is exposed through capabilities and
-  local tests before live D1 mutation is wired. Once a live preview/final
-  settlement status artifact exists, it must show only expression hash/version,
-  usage source, final/refund/additional quota numbers, and matched-tier
-  metadata; it must not include the raw billing expression, request-rule body,
-  request parameters, headers, raw payloads, or upstream credentials.
+- The current settlement-preview handoff is exposed through capabilities,
+  local tests, and DO metrics before live D1 mutation is wired. Once a live
+  preview/final settlement status artifact exists, it must show only expression
+  hash/version, usage source, final/refund/additional quota numbers, and
+  matched-tier metadata; it must not include the raw billing expression,
+  request-rule body, request probe values, raw headers, raw payloads, or
+  upstream credentials.
 - If the DO is hibernated/restarted and the outbound upstream socket is no
   longer active, client frames return `upstream_bridge_not_active` rather than
   implying that the upstream session was resumed.
@@ -689,6 +692,13 @@ Pass criteria:
   codes/reasons, optional upstream close code, and optional frame byte counts,
   but never include raw frame payloads, bearer tokens, or Realtime protocol API
   keys.
+- Realtime billing preview evidence is metadata-only: once a tiered-expression
+  mock/live replay emits `response.done`, persisted metrics may include
+  `last_billing_settlement_preview` with final/refund/additional quota, actual
+  token counts, expression hash/version, request-rule presence, matched tier,
+  and crossed-tier status, but never raw billing expressions, request-rule
+  bodies, request probe values, raw headers, payloads, bearer tokens, or
+  upstream credentials.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge

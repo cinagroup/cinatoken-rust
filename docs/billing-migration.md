@@ -92,11 +92,12 @@ tiered quota against that frozen snapshot, and applies only the delta from
 pre-consumed quota. The shared OpenAI-compatible usage parser also accepts
 Realtime `response.done` usage nested under `response.usage`, including the
 Realtime single-form `input_token_details` / `output_token_details` aliases;
-the Realtime Durable Object now has a redacted settlement-preview contract that
-recomputes final/refund/additional quota metadata from a frozen tiered snapshot
-and captured `response.done` usage without mutating quota, but it still needs
-to wire those parsed events into the same pre-consume, refund/final settlement,
-and audit path before production `/v1/realtime` billing can be marked complete:
+the Realtime Durable Object now receives a request-scoped settlement handoff
+containing the frozen tiered snapshot plus a bounded, sensitive-header filtered
+request probe, then records redacted settlement-preview metrics from captured
+`response.done` usage without mutating quota. It still needs to wire those
+parsed events into the same pre-consume, refund/final settlement, and audit path
+before production `/v1/realtime` billing can be marked complete:
 
 - before upstream: decrement `users.quota`, decrement `tokens.remain_quota`,
   and increment `tokens.used_quota` by the estimated quota;

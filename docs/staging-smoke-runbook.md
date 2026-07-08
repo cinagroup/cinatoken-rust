@@ -606,6 +606,7 @@ Record:
   `realtime_session_billing_settlement_writer_compiled`,
   `realtime_session_billing_settlement_replay_marker_compiled`,
   `realtime_session_billing_settlement_audit_log_compiled`,
+  `realtime_session_billing_settlement_batch_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -635,7 +636,8 @@ Pass criteria:
   upstream replay contract, usage capture, billing pre-settlement snapshot,
   billing settlement preview, billing settlement handoff, billing settlement
   mutation plan, default-off billing settlement writer, durable replay marker,
-  Go-compatible audit-log foundation, and platform upstream-header boundary;
+  Go-compatible audit-log foundation, guarded D1 settlement batch foundation,
+  and platform upstream-header boundary;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -662,6 +664,12 @@ Pass criteria:
   matched-tier metadata; it must not include the raw billing expression,
   request-rule body, request probe values, raw headers, raw payloads, or
   upstream credentials.
+- Before `realtime_session_billing_settlement_compiled=true`, the default-off
+  writer has archived evidence that the D1 batch applies the replay marker,
+  guarded quota settlement, and audit row together; duplicate replays skip
+  without a second audit row; guarded-update and audit failures roll back; and
+  `audit_plan_missing`, `write_failed`, and `replay_duplicate` status metadata
+  remains redacted.
 - If the DO is hibernated/restarted and the outbound upstream socket is no
   longer active, client frames return `upstream_bridge_not_active` rather than
   implying that the upstream session was resumed.

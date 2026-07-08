@@ -11,6 +11,24 @@ Last checked: 2026-07-08
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
   `cargo fmt --all --check`, `git diff --check`, and `bun run check`:
+  passed after adding the Realtime settlement D1 batch foundation. The
+  default-off writer now applies the replay marker, guarded quota settlement,
+  and Go-compatible audit row through one D1 batch with assertion guards for
+  zero-row guarded updates. `/api/platform/capabilities`, the smoke preflight,
+  and the Cloudflare Platform panel expose
+  `realtime_session_billing_settlement_batch_compiled`, while
+  `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` remain false until applied, duplicate,
+  failure, rollback, redaction, and no-double-charge staging evidence is
+  archived. The full check still emits only the existing topup dead-code
+  warnings in `d1_repositories.rs`.
+- `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
+  `cargo fmt --all --check`, `git diff --check`, and `bun run check`:
   passed after adding the Realtime settlement audit-log foundation. The
   default-off Realtime writer can now carry a private audit plan into the DO,
   write Go-compatible `logs` rows through `LOG_QUEUE`/D1 fallback after an

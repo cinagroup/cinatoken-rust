@@ -445,8 +445,8 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
 - AI Gateway forwarding keeps the existing relay billing engine authoritative.
 - Direct fallback after Gateway failure must not double-settle usage.
 - Realtime production ownership requires usage accumulation, refund behavior,
-  final settlement, durable replay markers, Go-compatible audit rows, and
-  single-transaction or equivalent CAS proof before
+  final settlement, durable replay markers, Go-compatible audit rows, guarded
+  D1 batch/CAS proof, and staging no-double-charge evidence before
   `REALTIME_SESSION_V1_ENABLED` can be used outside a canary.
 - Async video/Suno/Midjourney production ownership now has a Worker cron
   timeout sweep before normal provider polling and a CAS-winner refund batch for
@@ -500,8 +500,9 @@ As of the docs reviewed on 2026-07-06:
   lifecycle/frame guard/close mapping/send-failure cleanup plus terminal event
   trace metadata plus smoke-level bridge replay, ordered upstream replay, and
   platform header-boundary contract self-tests. It now has a controlled mock
-  startup queue/drain probe, but still lacks archived staging queue/drain
-  artifacts, full live fault replay, and billing settlement required for
+  startup queue/drain probe plus default-off replay/audit/batch settlement
+  foundations, but still lacks archived staging queue/drain and D1 rollback
+  artifacts, full live fault replay, and billing settlement proof required for
   production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
   response-header smoke guard, but still needs a real paid-plan `DISPATCHER`

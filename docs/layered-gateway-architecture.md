@@ -95,6 +95,12 @@ maturity levels are used:
 | M4 QuotaCoordinator | — | **Pending** | — | Build the shadow-first per-token DO (§4 M4) | no `crates/coordinator` yet |
 | M5 Task correctness / TaskRunner | — | **Partial (timeout sweep + refund replay + TaskRunner alarm probe compiled)** | Scheduled Worker poller now runs a Go-compatible timeout sweep before provider polling, uses per-task CAS for timeout failure, preserves the legacy imported-task no-refund cutoff, hardens malformed `private_data` during task CAS updates, batches timeout/video/Suno failure refunds behind a CAS-winner marker, normalizes Suno fail-reason rows to terminal failure, locally replays no-duplicate-refund/legacy/stale-window semantics with `bun run check:task-refund-batch`, wires the default-off `TASK_RUNNER` DO alarm foundation plus submit-path arming for video/remix/Suno shared task rows, lets alarm fire reuse the shared `poll_one_task` provider poll + D1 CAS settlement path, and exposes an admin-only per-task status probe with frontend UI, replay-evidence classifier, and smoke replay plan | Finish staging timeout/refund replay, provider failure replay, live TaskRunner alarm replay using the status probe, rollback, cron fallback, and no-double-poll evidence before enabling the DO fast path | `crates/worker/src/task_repository.rs`: timed-out query/CAS timeout apply/refund marker batch; `crates/worker/src/task_orchestration.rs`: config + sweep before provider poll + default-off TaskRunner arming; `crates/worker/src/task_runner.rs`: alarm foundation, submit handoff, gated poll handoff, status probe helper, and replay evidence classifier; `crates/worker/src/lib.rs`: scheduled handler, platform status route, and DO module; `tools/smoke_task_refund_batch.mjs`: local replay contract; `tools/smoke_task_runner_alarm_replay.mjs`: TaskRunner read-only replay probe; `platform_gateway.rs` + frontend Cloudflare Platform panel: capability and status probe surface |
 
+**M6 settlement update (2026-07-08):** the default-off Realtime writer now also
+has a guarded D1 batch foundation for replay marker, quota mutation, and audit
+row creation, exposed as `realtime_session_billing_settlement_batch_compiled`.
+Production cutover still requires archived D1 rollback/idempotency evidence and
+live no-double-charge proof.
+
 **Two refinements the landed code makes over this doc's original design:**
 
 1. **The AiGateway key-URL coupling is *stricter* than cinaVibeSDK.** vibesdk honors a
@@ -358,9 +364,9 @@ by clearing the flag, no redeploy required.
   queue/drain/fault proof and full live protocol replay evidence), usage
   accumulation, pre-settlement billing snapshot, settlement-preview quota
   calculation, settlement mutation planning, the default-off D1 writer, replay
-  marker, and audit-log foundation are compiled; single-transaction or
-  equivalent CAS settlement idempotency, final staging replay proof, and the
-  Go-formula settlement below remain incomplete.
+  marker, audit-log foundation, and guarded D1 settlement batch foundation are
+  compiled; final staging replay proof, D1 rollback/idempotency evidence, and
+  the Go-formula settlement below remain incomplete.
 - **Planner landed:** OpenAI-compatible `/v1/realtime?model=...`, Azure
   `/openai/realtime?deployment=...&api-version=...`, and secret-redacted
   Realtime handshake summaries are compiled and exposed as a separate

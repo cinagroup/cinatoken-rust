@@ -16,7 +16,7 @@ use cinatoken_relay::{
     openai_compatible::{default_base_url, upstream_v1_url, usage_summary_from_body, UsageSummary},
     token_fingerprint,
 };
-use cinatoken_storage::{AuditLogEvent, RelayAuditLog};
+use cinatoken_storage::RelayAuditLog;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -56,6 +56,7 @@ pub const REALTIME_BILLING_SETTLEMENT_MUTATION_PLAN_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_WRITER_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_REPLAY_MARKER_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_AUDIT_LOG_COMPILED: bool = true;
+pub const REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
     "REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED";
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
@@ -86,6 +87,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_settlement_writer",
     "billing_settlement_replay_marker",
     "billing_settlement_audit_log",
+    "billing_settlement_batch",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -2826,6 +2828,92 @@ pub(crate) fn realtime_billing_settlement_audit_log_compiled() -> bool {
         && !metadata_raw.contains(audit_plan.request_id.as_deref().unwrap_or_default())
 }
 
+pub(crate) fn realtime_billing_settlement_batch_compiled() -> bool {
+    if !REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED {
+        return false;
+    }
+    let preview = RealtimeBillingSettlementPreviewMetadata {
+        billing_mode: "tiered_expr".to_string(),
+        model_name: "gpt-4o-realtime-preview".to_string(),
+        expr_hash: "exprhash123".to_string(),
+        expr_version: 1,
+        request_rule_present: true,
+        usage_source_event: "response.done".to_string(),
+        actual_prompt_tokens: 1000,
+        actual_completion_tokens: 600,
+        actual_total_tokens: 1600,
+        pre_consumed_quota: 2400,
+        final_quota: 8300,
+        refund_quota: 0,
+        additional_quota: 5900,
+        matched_tier: "detail".to_string(),
+        crossed_tier: false,
+        mutation_plan_present: true,
+        mutation_token_scoped: true,
+        mutation_channel_scoped: true,
+    };
+    let plan = RealtimeBillingSettlementMutationPlan::new(101, 202, 303, "default", 2400);
+    let mut metadata = realtime_billing_settlement_write_metadata(
+        &preview,
+        Some(&plan),
+        Some("rtsettle-batch-smoke"),
+        true,
+        true,
+        true,
+        true,
+        None,
+        None,
+    );
+    metadata.audit_plan_present = true;
+    metadata.audit_attempted = true;
+    metadata.audit_recorded = true;
+    let duplicate = realtime_billing_settlement_write_metadata(
+        &preview,
+        Some(&plan),
+        Some("rtsettle-batch-smoke"),
+        true,
+        true,
+        false,
+        false,
+        Some("replay_duplicate"),
+        None,
+    );
+    let missing_audit = realtime_billing_settlement_write_metadata(
+        &preview,
+        Some(&plan),
+        Some("rtsettle-batch-smoke"),
+        false,
+        true,
+        false,
+        false,
+        Some("audit_plan_missing"),
+        None,
+    );
+    let raw = serde_json::to_string(&(metadata.clone(), duplicate.clone(), missing_audit.clone()))
+        .unwrap_or_default();
+
+    metadata.applied
+        && metadata.replay_recorded
+        && metadata.audit_plan_present
+        && metadata.audit_attempted
+        && metadata.audit_recorded
+        && duplicate.skipped_reason.as_deref() == Some("replay_duplicate")
+        && duplicate.replay_recorded
+        && !duplicate.write_attempted
+        && missing_audit.skipped_reason.as_deref() == Some("audit_plan_missing")
+        && !missing_audit.applied
+        && !missing_audit.replay_recorded
+        && !raw.contains("\"user_id\"")
+        && !raw.contains("\"token_id\"")
+        && !raw.contains("\"channel_id\"")
+        && !raw.contains("\"selected_group\"")
+        && !raw.contains("101")
+        && !raw.contains("202")
+        && !raw.contains("303")
+        && !raw.contains("service_tier")
+        && !raw.contains("param(")
+}
+
 fn realtime_billing_settlement_preview(
     snapshot: &TieredBillingSnapshot,
     usage: &RealtimeUsageMetadata,
@@ -2972,11 +3060,7 @@ fn realtime_billing_settlement_write_metadata(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RealtimeBillingSettlementWriteOutcome {
-    Applied {
-        replay_recorded: bool,
-        replay_record_error: Option<String>,
-        applied_at: i64,
-    },
+    Applied,
     DuplicateReplay,
 }
 
@@ -3003,80 +3087,20 @@ fn realtime_billing_settlement_replay_key(
 
 async fn apply_realtime_billing_settlement_write(
     env: &Env,
-    session: &str,
-    preview: &RealtimeBillingSettlementPreviewMetadata,
-    plan: &RealtimeBillingSettlementMutationPlan,
-    replay_key: &str,
-) -> Result<RealtimeBillingSettlementWriteOutcome, String> {
-    let db = env
-        .d1("DB")
-        .map_err(|err| format!("failed to load DB binding for realtime settlement: {err}"))?;
-    if crate::d1_repositories::realtime_settlement_replay_applied(&db, replay_key)
-        .await
-        .map_err(|err| format!("failed to read realtime settlement replay marker: {err}"))?
-    {
-        return Ok(RealtimeBillingSettlementWriteOutcome::DuplicateReplay);
-    }
-    let now = crate::admin::unix_timestamp();
-    crate::d1_repositories::settle_reserved_relay_quota_usage(
-        &db,
-        plan.user_id,
-        plan.token_id,
-        plan.channel_id,
-        plan.pre_consumed_quota,
-        preview.final_quota,
-        now,
-    )
-    .await
-    .map_err(|err| format!("failed to apply realtime settlement: {err}"))?;
-
-    let replay_record_error = crate::d1_repositories::record_realtime_settlement_replay_applied(
-        &db,
-        crate::d1_repositories::RealtimeSettlementReplayRecord {
-            replay_key,
-            session,
-            user_id: plan.user_id,
-            token_id: plan.token_id,
-            channel_id: plan.channel_id,
-            model_name: &preview.model_name,
-            pre_consumed_quota: plan.pre_consumed_quota,
-            final_quota: preview.final_quota,
-            created_at: now,
-            applied_at: now,
-        },
-    )
-    .await
-    .err()
-    .map(|err| format!("failed to record realtime settlement replay marker: {err}"));
-    Ok(RealtimeBillingSettlementWriteOutcome::Applied {
-        replay_recorded: replay_record_error.is_none(),
-        replay_record_error,
-        applied_at: now,
-    })
-}
-
-async fn record_realtime_billing_settlement_audit(
-    env: &Env,
     attachment: &SocketAttachment,
     preview: &RealtimeBillingSettlementPreviewMetadata,
     snapshot: &TieredBillingSnapshot,
     plan: &RealtimeBillingSettlementMutationPlan,
     audit_plan: &RealtimeBillingSettlementAuditPlan,
     replay_key: &str,
-    replay_recorded: bool,
-    created_at: i64,
-) -> Result<(), String> {
+) -> Result<RealtimeBillingSettlementWriteOutcome, String> {
     let db = env
         .d1("DB")
-        .map_err(|err| format!("failed to load DB binding for realtime audit: {err}"))?;
-    let other_json = realtime_billing_settlement_audit_other(
-        attachment,
-        preview,
-        snapshot,
-        replay_key,
-        replay_recorded,
-    )
-    .to_string();
+        .map_err(|err| format!("failed to load DB binding for realtime settlement: {err}"))?;
+    let now = crate::admin::unix_timestamp();
+    let other_json =
+        realtime_billing_settlement_audit_other(attachment, preview, snapshot, replay_key, true)
+            .to_string();
     let empty = "";
     let audit_log = RelayAuditLog {
         user_id: plan.user_id,
@@ -3089,7 +3113,7 @@ async fn record_realtime_billing_settlement_audit(
         prompt_tokens: clamp_i64_to_i32(preview.actual_prompt_tokens),
         completion_tokens: clamp_i64_to_i32(preview.actual_completion_tokens),
         quota: preview.final_quota,
-        use_time_seconds: created_at.saturating_sub(audit_plan.started_at),
+        use_time_seconds: now.saturating_sub(audit_plan.started_at),
         is_stream: true,
         ip: audit_plan.client_ip.as_deref().unwrap_or(empty),
         request_id: audit_plan.request_id.as_deref().unwrap_or(empty),
@@ -3100,26 +3124,34 @@ async fn record_realtime_billing_settlement_audit(
         "Rust realtime settled {}; tiered quota {}",
         audit_plan.endpoint_path, preview.final_quota
     );
-    let event = AuditLogEvent::from_relay_audit(created_at, &content, &audit_log, 2);
-    match env.queue("LOG_QUEUE") {
-        Ok(queue) => match queue.send(&event).await {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                worker::console_warn!(
-                    "LOG_QUEUE send failed for realtime audit, falling back to synchronous D1 insert: {err}"
-                );
-                crate::d1_repositories::insert_relay_audit_log(
-                    &db, created_at, &content, &audit_log,
-                )
-                .await
-                .map_err(|err| format!("failed to insert realtime audit log: {err}"))
-            }
+    match crate::d1_repositories::apply_realtime_settlement_batch(
+        &db,
+        crate::d1_repositories::RealtimeSettlementReplayRecord {
+            replay_key,
+            session: &attachment.session,
+            user_id: plan.user_id,
+            token_id: plan.token_id,
+            channel_id: plan.channel_id,
+            model_name: &preview.model_name,
+            pre_consumed_quota: plan.pre_consumed_quota,
+            final_quota: preview.final_quota,
+            created_at: now,
+            applied_at: now,
         },
-        Err(_) => {
-            crate::d1_repositories::insert_relay_audit_log(&db, created_at, &content, &audit_log)
-                .await
-                .map_err(|err| format!("failed to insert realtime audit log: {err}"))
+        &content,
+        &audit_log,
+    )
+    .await
+    {
+        Ok(crate::d1_repositories::RealtimeSettlementBatchOutcome::Applied) => {
+            Ok(RealtimeBillingSettlementWriteOutcome::Applied)
         }
+        Ok(crate::d1_repositories::RealtimeSettlementBatchOutcome::DuplicateReplay) => {
+            Ok(RealtimeBillingSettlementWriteOutcome::DuplicateReplay)
+        }
+        Err(err) => Err(format!(
+            "failed to apply realtime settlement batch with replay marker and audit log: {err}"
+        )),
     }
 }
 
@@ -3499,62 +3531,45 @@ async fn record_realtime_upstream_usage(
                 Some("already_applied"),
                 None,
             )
+        } else if billing_snapshot.is_none() || audit_plan.is_none() {
+            realtime_billing_settlement_write_metadata(
+                preview,
+                mutation_plan.as_ref(),
+                replay_key_hash,
+                false,
+                true,
+                false,
+                false,
+                Some("audit_plan_missing"),
+                None,
+            )
         } else if let Some(plan) = mutation_plan.as_ref() {
             let replay_key = replay_key.as_deref().unwrap_or_default();
             match apply_realtime_billing_settlement_write(
                 env,
-                &attachment.session,
+                attachment,
                 preview,
+                billing_snapshot.as_ref().expect("checked above"),
                 plan,
+                audit_plan.as_ref().expect("checked above"),
                 replay_key,
             )
             .await
             {
-                Ok(RealtimeBillingSettlementWriteOutcome::Applied {
-                    replay_recorded,
-                    replay_record_error,
-                    applied_at,
-                }) => {
+                Ok(RealtimeBillingSettlementWriteOutcome::Applied) => {
                     let mut metadata = realtime_billing_settlement_write_metadata(
                         preview,
                         Some(plan),
                         replay_key_hash,
-                        replay_recorded,
+                        true,
                         true,
                         true,
                         true,
                         None,
-                        replay_record_error.as_deref(),
+                        None,
                     );
-                    if let (Some(snapshot), Some(audit_plan)) =
-                        (billing_snapshot.as_ref(), audit_plan.as_ref())
-                    {
-                        metadata.audit_attempted = true;
-                        match record_realtime_billing_settlement_audit(
-                            env,
-                            attachment,
-                            preview,
-                            snapshot,
-                            plan,
-                            audit_plan,
-                            replay_key,
-                            replay_recorded,
-                            applied_at,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                metadata.audit_recorded = true;
-                            }
-                            Err(err) => {
-                                worker::console_warn!(
-                                    "RealtimeSession settlement audit write failed: {}",
-                                    err
-                                );
-                                metadata.audit_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
-                            }
-                        }
-                    }
+                    metadata.audit_attempted = true;
+                    metadata.audit_recorded = true;
                     metadata
                 }
                 Ok(RealtimeBillingSettlementWriteOutcome::DuplicateReplay) => {
@@ -3570,17 +3585,22 @@ async fn record_realtime_upstream_usage(
                         None,
                     )
                 }
-                Err(err) => realtime_billing_settlement_write_metadata(
-                    preview,
-                    Some(plan),
-                    replay_key_hash,
-                    false,
-                    true,
-                    true,
-                    false,
-                    Some("write_failed"),
-                    Some(&err),
-                ),
+                Err(err) => {
+                    let mut metadata = realtime_billing_settlement_write_metadata(
+                        preview,
+                        Some(plan),
+                        replay_key_hash,
+                        false,
+                        true,
+                        true,
+                        false,
+                        Some("write_failed"),
+                        Some(&err),
+                    );
+                    metadata.audit_attempted = true;
+                    metadata.audit_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
+                    metadata
+                }
             }
         } else {
             realtime_billing_settlement_write_metadata(
@@ -5874,6 +5894,11 @@ mod tests {
     #[test]
     fn realtime_billing_settlement_audit_log_contract_is_compiled() {
         assert!(realtime_billing_settlement_audit_log_compiled());
+    }
+
+    #[test]
+    fn realtime_billing_settlement_batch_contract_is_compiled() {
+        assert!(realtime_billing_settlement_batch_compiled());
     }
 
     #[test]

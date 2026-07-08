@@ -8506,14 +8506,68 @@ Validation:
 
 Remaining migration gaps:
 
-- Prove quota mutation, replay marker, and audit row creation as one
-  idempotent D1 transaction or equivalent CAS replay flow.
+- Prove the newly added quota mutation, replay marker, and audit row D1 batch
+  with controlled local/staging applied, duplicate, guarded-update failure,
+  audit-row failure, rollback, redaction, and no-double-charge evidence.
 - Archive controlled local/staging proof for disabled, applied,
   replay-duplicate, marker-write-failed, audit-write-failed, D1 failure,
   redaction, rollback, and no-double-charge paths.
 - Keep `realtime_session_billing_settlement_compiled=false` and
   `realtime_session_v1_cutover_ready=false` until the above evidence, upstream
   bridge replay, hibernation/restore, and rollback proof are complete.
+
+### 22.136 2026-07-08 Realtime Settlement D1 Batch Foundation
+
+This increment tightens the default-off Realtime settlement writer from
+separate quota, replay-marker, and audit-log steps into a D1 batch foundation.
+It still does not mark production Realtime settlement complete: the batch must
+be proven in local/staging with applied, duplicate, failure, rollback,
+redaction, and no-double-charge artifacts before paid `/v1/realtime` traffic can
+depend on it.
+
+Implemented:
+
+- Added `apply_realtime_settlement_batch` in the Worker-side D1 repository. It
+  inserts the replay marker, applies the guarded quota settlement statements,
+  and inserts the Go-compatible audit log in one D1 `batch()`.
+- Added per-statement assertion guards for the quota and audit statements. A
+  guarded `UPDATE` that changes zero rows is converted into a SQL error by a
+  replay-key assertion statement, so D1 can roll back the batch instead of
+  silently accepting a partial settlement.
+- Preserved duplicate replay handling: an existing replay marker returns
+  `DuplicateReplay`, and the Realtime DO skips a second settlement/audit write
+  while recording redacted replay metadata.
+- Rewired the default-off Realtime writer to require the private billing
+  snapshot, mutation plan, and audit plan before writing. Missing audit/snapshot
+  prerequisites record redacted `audit_plan_missing` status instead of mutating
+  D1.
+- Added `REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED`,
+  `realtime_session_billing_settlement_batch_compiled`, and the
+  `billing_settlement_batch` cutover guard.
+- Updated `/api/platform/capabilities`, the Realtime smoke preflight, the
+  Cloudflare Platform frontend panel, staging smoke runbook, production
+  readiness docs, and this plan to expose batch readiness separately from the
+  replay marker, audit-log foundation, and final settlement gates.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed, including the batch redaction/self-check.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed, including the new cutover guard and readiness gate.
+- `node --check tools/smoke_realtime_session.mjs` passed.
+
+Remaining migration gaps:
+
+- Add local/staging evidence that the batch rolls back on guarded quota update
+  failure and audit-row failure, and that duplicate replay attempts do not
+  double-settle or double-audit.
+- Archive evidence for writer-disabled, applied, duplicate, failed-write,
+  redaction, rollback, hibernation/restore, and no-double-charge paths.
+- Keep `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false` until batch proof, upstream bridge
+  replay, live fault replay, and rollback proof are complete.
 
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 

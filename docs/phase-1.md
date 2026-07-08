@@ -100,10 +100,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   metadata, base-expression `expr_b64`, matched tier, replay-key hash, and
   audit attempt/record/error status in DO metrics; the request-rule body,
   request probe values, raw headers, raw payloads, bearer tokens, and Realtime
-  protocol API keys remain excluded. This is still a foundation, not final
-  production settlement: `realtime_session_billing_settlement_compiled` remains
-  false until quota mutation, replay marker, and audit row recording are proven
-  as one idempotent transaction or equivalent CAS flow with staging evidence.
+  protocol API keys remain excluded. The writer now has a D1 batch/CAS
+  foundation that applies the replay marker, guarded quota settlement, and
+  audit row together, with assertion statements turning guarded-update
+  mismatches into a rollback. This is still a foundation, not final production
+  settlement: `realtime_session_billing_settlement_compiled` remains false
+  until the batch is proven with controlled local/staging applied, duplicate,
+  failure, rollback, and no-double-charge evidence.
 - The Realtime mock upstream replay harness now makes the
   `response-done-usage` scenario seed an isolated tiered billing expression in
   review-only D1 SQL, then requires live/status metrics to contain both the
@@ -494,11 +497,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Live alarm replay, cron-sweeper fallback, rollback, and no-double-poll CAS
   proof still remain required before `TASK_RUNNER_DO_ENABLED` can be enabled
   outside a controlled staging replay.
-- Continue Realtime billing from the default-off D1 writer plus replay-marker
-  and audit-log foundation to production-safe settlement: tighten durable
-  idempotency into a single D1 transaction or equivalent CAS proof, and archive
-  local/staging proof for disabled, applied, duplicate, marker-write-failed,
-  audit-write-failed, and failed-write paths before flipping
+- Continue Realtime billing from the default-off D1 writer plus replay-marker,
+  audit-log, and D1 batch/CAS foundation to production-safe settlement: archive
+  local/staging proof for disabled, applied, duplicate, guarded-update failure,
+  audit-row failure, rollback, redaction, and no-double-charge paths before flipping
   `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready`.
 - Continue defining explicit response buffering limits as each broader

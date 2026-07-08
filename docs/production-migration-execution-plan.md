@@ -576,10 +576,11 @@ Required tasks:
    Hibernation accepts and socket attachments. The remaining decision is the
    `/v1/realtime` protocol bridge boundary: pure DO bridge first, or a
    Cloudflare Container fallback for provider-specific native WebSocket edge
-   cases. Realtime billing also remains default-off until the D1 replay marker
-   and Go-compatible audit-row foundation is tightened into a single
-   transaction or equivalent CAS proof that covers quota mutation, replay
-   marker creation, final audit rows, and audit-write failure handling.
+   cases. Realtime billing also remains default-off: the D1 replay marker,
+   guarded quota mutation, and Go-compatible audit row now have a batch/CAS
+   foundation, but production still needs local/staging proof for applied,
+   duplicate, guarded-update failure, audit failure, rollback, and
+   no-double-charge paths.
 8. Use the root-only WFP tenant script control plane to generate and deploy
    staging tenant Workers before enabling dispatch traffic:
    `/api/platform/wfp/tenant-script/plan` must produce redacted metadata and a

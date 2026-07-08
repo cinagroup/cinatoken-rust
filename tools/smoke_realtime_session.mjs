@@ -457,6 +457,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_billing_settlement_replay_marker_compiled === true,
     realtime_session_billing_settlement_audit_log_compiled:
       data.realtime_session_billing_settlement_audit_log_compiled === true,
+    realtime_session_billing_settlement_batch_compiled:
+      data.realtime_session_billing_settlement_batch_compiled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
     realtime_session_upstream_bridge_compiled:
@@ -496,6 +498,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_billing_settlement_writer_compiled", true],
     ["realtime_session_billing_settlement_replay_marker_compiled", true],
     ["realtime_session_billing_settlement_audit_log_compiled", true],
+    ["realtime_session_billing_settlement_batch_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
@@ -524,6 +527,7 @@ function validateCapabilities(capabilities, options) {
     "billing_settlement_writer",
     "billing_settlement_replay_marker",
     "billing_settlement_audit_log",
+    "billing_settlement_batch",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",

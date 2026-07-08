@@ -47,6 +47,12 @@ pub struct RealtimeSettlementReplayRecord<'a> {
     pub applied_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeSettlementBatchOutcome {
+    Applied,
+    DuplicateReplay,
+}
+
 #[derive(Debug, Deserialize)]
 struct RealtimeSettlementReplayCountRow {
     count: i64,
@@ -401,6 +407,18 @@ pub async fn insert_relay_audit_log(
     content: &str,
     audit_log: &RelayAuditLog<'_>,
 ) -> worker::Result<()> {
+    insert_relay_audit_log_statement(db, created_at, content, audit_log)?
+        .run()
+        .await?;
+    Ok(())
+}
+
+fn insert_relay_audit_log_statement(
+    db: &D1Database,
+    created_at: i64,
+    content: &str,
+    audit_log: &RelayAuditLog<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
     let log_args = [
         D1Type::Integer(d1_i32(audit_log.user_id)),
         D1Type::Integer(d1_i32(created_at)),
@@ -433,10 +451,7 @@ pub async fn insert_relay_audit_log(
         )
         "#,
     )
-    .bind_refs(&log_args)?
-    .run()
-    .await?;
-    Ok(())
+    .bind_refs(&log_args)
 }
 
 pub async fn apply_relay_quota_usage(
@@ -689,10 +704,164 @@ pub async fn realtime_settlement_replay_applied(
     Ok(row.map(|row| row.count > 0).unwrap_or(false))
 }
 
-pub async fn record_realtime_settlement_replay_applied(
+pub async fn apply_realtime_settlement_batch(
     db: &D1Database,
     record: RealtimeSettlementReplayRecord<'_>,
-) -> worker::Result<()> {
+    audit_content: &str,
+    audit_log: &RelayAuditLog<'_>,
+) -> worker::Result<RealtimeSettlementBatchOutcome> {
+    let replay_key = non_empty_realtime_replay_key(record.replay_key)?;
+    let pre_consumed_quota = quota_i32(record.pre_consumed_quota)?;
+    let final_quota = quota_i32(record.final_quota)?;
+    if audit_log.user_id != record.user_id
+        || audit_log.token_id != record.token_id
+        || audit_log.channel_id != record.channel_id
+        || audit_log.quota != record.final_quota
+        || audit_log.model != record.model_name
+    {
+        return Err(worker::Error::RustError(
+            "realtime settlement audit log does not match replay record".to_string(),
+        ));
+    }
+    if realtime_settlement_replay_applied(db, replay_key).await? {
+        return Ok(RealtimeSettlementBatchOutcome::DuplicateReplay);
+    }
+
+    let mut statements = vec![insert_realtime_settlement_replay_statement(db, record)?];
+    let mut checked_statement_indices = vec![(0usize, "realtime settlement replay marker failed")];
+    let delta = final_quota.saturating_sub(pre_consumed_quota);
+
+    if record.token_id <= 0 {
+        if delta > 0 {
+            push_realtime_settlement_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                reserve_user_quota_statement(db, record.user_id, delta)?,
+                replay_key,
+                "user quota settlement failed",
+            )?;
+        } else if delta < 0 {
+            push_realtime_settlement_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                credit_user_quota_statement(db, record.user_id, delta.saturating_abs())?,
+                replay_key,
+                "user quota refund failed",
+            )?;
+        }
+        push_realtime_settlement_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            increment_user_used_quota_and_request_count_statement(db, record.user_id, final_quota)?,
+            replay_key,
+            "user quota usage settlement failed",
+        )?;
+        push_realtime_settlement_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            increment_channel_used_quota_statement(db, record.channel_id, final_quota)?,
+            replay_key,
+            "relay channel quota settlement failed",
+        )?;
+    } else {
+        if delta > 0 {
+            push_realtime_settlement_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                reserve_user_quota_statement(db, record.user_id, delta)?,
+                replay_key,
+                "user quota settlement failed",
+            )?;
+            push_realtime_settlement_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                debit_token_quota_usage_statement(db, record.token_id, delta, record.applied_at)?,
+                replay_key,
+                "token quota settlement failed",
+            )?;
+        } else if delta < 0 {
+            let refund = delta.saturating_abs();
+            push_realtime_settlement_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                credit_user_quota_statement(db, record.user_id, refund)?,
+                replay_key,
+                "user quota refund failed",
+            )?;
+            push_realtime_settlement_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                credit_token_quota_usage_statement(db, record.token_id, refund, record.applied_at)?,
+                replay_key,
+                "token quota refund failed",
+            )?;
+        } else {
+            push_realtime_settlement_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                touch_token_statement(db, record.token_id, record.applied_at)?,
+                replay_key,
+                "token touch settlement failed",
+            )?;
+        }
+        push_realtime_settlement_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            increment_user_used_quota_and_request_count_statement(db, record.user_id, final_quota)?,
+            replay_key,
+            "user quota usage settlement failed",
+        )?;
+        push_realtime_settlement_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            increment_channel_used_quota_statement(db, record.channel_id, final_quota)?,
+            replay_key,
+            "relay channel quota settlement failed",
+        )?;
+    }
+
+    push_realtime_settlement_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked_statement_indices,
+        insert_relay_audit_log_statement(db, record.applied_at, audit_content, audit_log)?,
+        replay_key,
+        "realtime settlement audit log failed",
+    )?;
+
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            if realtime_settlement_replay_applied(db, replay_key)
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(RealtimeSettlementBatchOutcome::DuplicateReplay);
+            }
+            return Err(err);
+        }
+    };
+    for (index, message) in checked_statement_indices {
+        require_batch_change(&results, index, message)?;
+    }
+    Ok(RealtimeSettlementBatchOutcome::Applied)
+}
+
+fn insert_realtime_settlement_replay_statement(
+    db: &D1Database,
+    record: RealtimeSettlementReplayRecord<'_>,
+) -> worker::Result<worker::D1PreparedStatement> {
     let replay_key = non_empty_realtime_replay_key(record.replay_key)?;
     let session = record.session.trim();
     let model_name = record.model_name.trim();
@@ -712,7 +881,7 @@ pub async fn record_realtime_settlement_replay_applied(
     ];
     db.prepare(
         r#"
-        INSERT OR IGNORE INTO realtime_settlement_replays (
+        INSERT INTO realtime_settlement_replays (
           replay_key,
           session,
           user_id,
@@ -728,10 +897,40 @@ pub async fn record_realtime_settlement_replay_applied(
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'applied', ?9, ?10, '')
         "#,
     )
-    .bind_refs(&args)?
-    .run()
-    .await?;
+    .bind_refs(&args)
+}
+
+fn push_realtime_settlement_guarded_statement(
+    db: &D1Database,
+    statements: &mut Vec<worker::D1PreparedStatement>,
+    checked_statement_indices: &mut Vec<(usize, &'static str)>,
+    statement: worker::D1PreparedStatement,
+    replay_key: &str,
+    message: &'static str,
+) -> worker::Result<()> {
+    let index = statements.len();
+    statements.push(statement);
+    checked_statement_indices.push((index, message));
+    statements.push(assert_realtime_settlement_previous_statement_statement(
+        db, replay_key,
+    )?);
     Ok(())
+}
+
+fn assert_realtime_settlement_previous_statement_statement(
+    db: &D1Database,
+    replay_key: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let replay_key = non_empty_realtime_replay_key(replay_key)?;
+    let args = [D1Type::Text(replay_key)];
+    db.prepare(
+        r#"
+        INSERT INTO realtime_settlement_replays (replay_key)
+        SELECT ?1
+        WHERE changes() != 1
+        "#,
+    )
+    .bind_refs(&args)
 }
 
 async fn debit_user_quota_usage_and_request_count(

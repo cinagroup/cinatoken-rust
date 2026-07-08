@@ -128,6 +128,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_settlement_writer_compiled,
         capabilities.realtime_session_billing_settlement_replay_marker_compiled,
         capabilities.realtime_session_billing_settlement_audit_log_compiled,
+        capabilities.realtime_session_billing_settlement_batch_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -977,6 +978,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_billing_settlement_audit_log_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime billing settlement batch'),
+          description: t(
+            'Applies the replay marker, guarded quota settlement, and Go-compatible audit log in one D1 batch when the default-off writer is enabled.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_batch_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

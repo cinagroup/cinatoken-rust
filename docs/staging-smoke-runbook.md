@@ -604,6 +604,7 @@ Record:
   `realtime_session_billing_settlement_handoff_compiled`,
   `realtime_session_billing_settlement_mutation_plan_compiled`,
   `realtime_session_billing_settlement_writer_compiled`,
+  `realtime_session_billing_settlement_replay_marker_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -632,8 +633,8 @@ Pass criteria:
   mapping plus the upstream send-failure guard, terminal event trace, and
   upstream replay contract, usage capture, billing pre-settlement snapshot,
   billing settlement preview, billing settlement handoff, billing settlement
-  mutation plan, default-off billing settlement writer, and platform
-  upstream-header boundary;
+  mutation plan, default-off billing settlement writer, durable replay marker,
+  and platform upstream-header boundary;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -726,10 +727,14 @@ Pass criteria:
 - Realtime billing writer evidence is also metadata-only: if a controlled
   staging run explicitly enables `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED`,
   persisted metrics may include `last_billing_settlement_write` with
-  enabled/attempted/applied/skip/error status and quota deltas, but never
-  `user_id`, `token_id`, `channel_id`, selected group, raw billing
-  expressions, request-rule bodies, request probe values, raw headers,
-  payloads, bearer tokens, or upstream credentials.
+  enabled/attempted/applied/skip/error status, quota deltas, replay-key hash,
+  and replay-marker recorded state, but never `user_id`, `token_id`,
+  `channel_id`, selected group, raw billing expressions, request-rule bodies,
+  request probe values, raw headers, payloads, bearer tokens, or upstream
+  credentials. Duplicate replay evidence must show `replay_duplicate` without
+  a second quota mutation. Marker-write-failed evidence must remain a blocker
+  for production until the final settlement path is proven with a single D1
+  transaction or equivalent CAS replay proof.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge

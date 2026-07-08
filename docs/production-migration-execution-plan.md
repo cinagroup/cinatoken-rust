@@ -576,7 +576,9 @@ Required tasks:
    Hibernation accepts and socket attachments. The remaining decision is the
    `/v1/realtime` protocol bridge boundary: pure DO bridge first, or a
    Cloudflare Container fallback for provider-specific native WebSocket edge
-   cases.
+   cases. Realtime billing also remains default-off until the D1 replay marker
+   foundation is tightened into a single transaction or equivalent CAS proof
+   that covers quota mutation, replay marker creation, and final audit rows.
 8. Use the root-only WFP tenant script control plane to generate and deploy
    staging tenant Workers before enabling dispatch traffic:
    `/api/platform/wfp/tenant-script/plan` must produce redacted metadata and a

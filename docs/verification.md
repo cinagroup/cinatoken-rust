@@ -9,6 +9,23 @@ Last checked: 2026-07-08
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
   `node --check tools/smoke_realtime_session.mjs`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
+  `cargo fmt --all --check`, `git diff --check`, and `bun run check`:
+  passed after adding the Realtime settlement replay-marker foundation. The
+  Worker now has D1 migration `0018_realtime_settlement_replays.sql`,
+  repository helpers for applied marker lookup/recording, a duplicate replay
+  skip path, and redacted DO metrics exposing only `replay_key_hash` plus
+  `replay_recorded` state. This remains pre-production-settlement evidence:
+  `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` stay false until quota mutation, replay
+  marker creation, and final audit rows are proven through a single D1
+  transaction or equivalent CAS flow. The full check still emits only the
+  existing `d1_repositories.rs` dead-code warnings.
+- `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `bun run check:realtime-session:v1-smoke-plan`,
   `bun run check:web`, `cargo fmt --all --check`, `git diff --check`, and
   `bun run check`: passed after adding the default-off Realtime billing D1

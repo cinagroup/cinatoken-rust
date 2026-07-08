@@ -33,6 +33,25 @@ struct QuotaStateRow {
     user_quota: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealtimeSettlementReplayRecord<'a> {
+    pub replay_key: &'a str,
+    pub session: &'a str,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub channel_id: i64,
+    pub model_name: &'a str,
+    pub pre_consumed_quota: i64,
+    pub final_quota: i64,
+    pub created_at: i64,
+    pub applied_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RealtimeSettlementReplayCountRow {
+    count: i64,
+}
+
 pub async fn authenticate_token(
     db: &D1Database,
     api_key: &str,
@@ -649,6 +668,72 @@ pub async fn settle_reserved_relay_quota_usage(
     require_batch_change(&results, offset + 1, "relay channel no longer exists")
 }
 
+pub async fn realtime_settlement_replay_applied(
+    db: &D1Database,
+    replay_key: &str,
+) -> worker::Result<bool> {
+    let replay_key = non_empty_realtime_replay_key(replay_key)?;
+    let args = [D1Type::Text(replay_key)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM realtime_settlement_replays
+            WHERE replay_key = ?1
+              AND status = 'applied'
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<RealtimeSettlementReplayCountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count > 0).unwrap_or(false))
+}
+
+pub async fn record_realtime_settlement_replay_applied(
+    db: &D1Database,
+    record: RealtimeSettlementReplayRecord<'_>,
+) -> worker::Result<()> {
+    let replay_key = non_empty_realtime_replay_key(record.replay_key)?;
+    let session = record.session.trim();
+    let model_name = record.model_name.trim();
+    let pre_consumed_quota = quota_i32(record.pre_consumed_quota)?;
+    let final_quota = quota_i32(record.final_quota)?;
+    let args = [
+        D1Type::Text(replay_key),
+        D1Type::Text(session),
+        D1Type::Integer(d1_i32(record.user_id)),
+        D1Type::Integer(d1_i32(record.token_id)),
+        D1Type::Integer(d1_i32(record.channel_id)),
+        D1Type::Text(model_name),
+        D1Type::Integer(pre_consumed_quota),
+        D1Type::Integer(final_quota),
+        D1Type::Integer(d1_i32(record.created_at)),
+        D1Type::Integer(d1_i32(record.applied_at)),
+    ];
+    db.prepare(
+        r#"
+        INSERT OR IGNORE INTO realtime_settlement_replays (
+          replay_key,
+          session,
+          user_id,
+          token_id,
+          channel_id,
+          model_name,
+          pre_consumed_quota,
+          final_quota,
+          status,
+          created_at,
+          applied_at,
+          error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'applied', ?9, ?10, '')
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
 async fn debit_user_quota_usage_and_request_count(
     db: &D1Database,
     user_id: i64,
@@ -888,6 +973,16 @@ fn quota_i32(quota: i64) -> worker::Result<i32> {
     i32::try_from(quota).map_err(|_| {
         worker::Error::RustError(format!("quota {quota} exceeds D1 integer binding range"))
     })
+}
+
+fn non_empty_realtime_replay_key(replay_key: &str) -> worker::Result<&str> {
+    let replay_key = replay_key.trim();
+    if replay_key.is_empty() {
+        return Err(worker::Error::RustError(
+            "realtime settlement replay key is required".to_string(),
+        ));
+    }
+    Ok(replay_key)
 }
 
 pub async fn tiered_billing_expr_for_model(

@@ -126,6 +126,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_settlement_handoff_compiled,
         capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
         capabilities.realtime_session_billing_settlement_writer_compiled,
+        capabilities.realtime_session_billing_settlement_replay_marker_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -955,6 +956,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_billing_settlement_writer_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime billing replay marker'),
+          description: t(
+            'Records a durable D1 marker for applied Realtime settlement keys and skips duplicate replay attempts without exposing private user, token, or channel identifiers in DO metrics.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_replay_marker_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

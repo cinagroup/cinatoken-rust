@@ -8413,6 +8413,49 @@ Remaining migration gaps:
   isolated staging smoke.
 - Archive local/staging proof for writer-disabled, write-applied,
   duplicate-skip, D1 failure, redaction, and rollback paths.
+
+### 22.134 2026-07-08 Realtime Settlement Replay Marker Foundation
+
+This increment moves the default-off Realtime writer closer to production
+evidence by adding a durable replay marker surface. It still does not declare
+Realtime settlement complete: the marker prevents a second settlement only
+after the applied marker exists, while the final production path still needs a
+single D1 transaction or equivalent CAS proof that covers quota mutation,
+marker creation, and audit-log creation together.
+
+Implemented:
+
+- Added D1 migration `0018_realtime_settlement_replays.sql` with a
+  `realtime_settlement_replays` table keyed by a derived non-secret replay key.
+- Added D1 repository helpers to check an applied replay marker and record an
+  applied marker after a successful settlement write.
+- Extended `RealtimeSession` writer metadata with `replay_key_hash` and
+  `replay_recorded` while preserving the existing redaction contract:
+  persisted DO metrics still do not include `user_id`, `token_id`,
+  `channel_id`, `selected_group`, raw billing expressions, request-rule
+  bodies, request probes, raw payloads, bearer tokens, or upstream credentials.
+- Updated the default-off writer path to skip `replay_duplicate` when an
+  applied marker already exists. If quota settlement succeeds but marker
+  recording fails, the DO records the write as applied with a truncated marker
+  error so the condition remains visible and blocks production promotion.
+- Added `REALTIME_BILLING_SETTLEMENT_REPLAY_MARKER_COMPILED`,
+  `realtime_session_billing_settlement_replay_marker_compiled`, and the
+  `billing_settlement_replay_marker` cutover guard.
+- Updated `/api/platform/capabilities`, the Realtime smoke preflight, and the
+  Cloudflare Platform frontend panel to expose replay-marker readiness as a
+  separate row from the lower-level D1 writer.
+
+Remaining migration gaps:
+
+- Collapse the Realtime quota mutation, replay marker, and final audit row into
+  a single D1 transaction or equivalent replay-safe CAS flow.
+- Add final Realtime audit/log rows using the REST/SSE `tiered_billing` and
+  usage-source conventions.
+- Archive controlled local/staging proof for disabled, applied,
+  replay-duplicate, marker-write-failed, D1 failure, redaction, rollback, and
+  no-double-charge paths before flipping
+  `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready`.
 - Keep `/v1/realtime` production-disabled until upstream bridge replay,
   hibernation/restore evidence, audit settlement, and rollback proof are
   complete.

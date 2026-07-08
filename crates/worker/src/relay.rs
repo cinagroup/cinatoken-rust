@@ -2333,14 +2333,15 @@ pub(crate) async fn plan_realtime_upstream_channel(
         };
         let upstream_model = mapped_model_name(model, channel.model_mapping.as_deref())
             .unwrap_or_else(|| model.to_string());
-        let billing_presettlement = realtime_billing_presettlement(db, model, &selected_group, req)
-            .await
-            .map_err(|err| {
-                openai_error_response(
-                    format!("realtime billing pre-settlement snapshot failed: {err}"),
-                    500,
-                )
-            })?;
+        let billing_presettlement =
+            realtime_billing_presettlement(db, auth, channel.id, model, &selected_group, req)
+                .await
+                .map_err(|err| {
+                    openai_error_response(
+                        format!("realtime billing pre-settlement snapshot failed: {err}"),
+                        500,
+                    )
+                })?;
         let (billing_snapshot, billing_settlement) = billing_presettlement
             .map(|billing| {
                 (
@@ -2387,6 +2388,8 @@ struct RealtimeBillingPresettlement {
 
 async fn realtime_billing_presettlement(
     db: &D1Database,
+    auth: &AuthenticatedToken,
+    channel_id: i64,
     model: &str,
     group: &str,
     req: &Request,
@@ -2408,7 +2411,16 @@ async fn realtime_billing_presettlement(
             &preflight.snapshot,
         );
     let settlement_handoff =
-        crate::realtime_session::RealtimeBillingSettlementHandoff::new(preflight.snapshot, request);
+        crate::realtime_session::RealtimeBillingSettlementHandoff::new(preflight.snapshot, request)
+            .with_mutation_plan(
+                crate::realtime_session::RealtimeBillingSettlementMutationPlan::new(
+                    auth.user_id,
+                    auth.token_id,
+                    channel_id,
+                    group,
+                    preflight.pre_consumed_quota,
+                ),
+            );
     Ok(Some(RealtimeBillingPresettlement {
         snapshot_metadata,
         settlement_handoff,

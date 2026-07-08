@@ -4,6 +4,24 @@ Last checked: 2026-07-08
 
 ## Passed
 
+- `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:v1-smoke-plan`,
+  `bun run check:web`, `cargo fmt --all --check`, `git diff --check`, and
+  `bun run check`: passed after adding the Realtime billing settlement
+  mutation-plan foundation. `/v1/realtime` now carries private user, token,
+  channel, selected group, and pre-consumed quota identifiers inside the
+  internal settlement handoff for the future D1 write, while persisted metrics,
+  socket attachments, smoke summaries, `/api/platform/capabilities`, and the
+  frontend Cloudflare Platform panel expose only redacted preview metadata and
+  boolean readiness. This still remains pre-settlement evidence:
+  `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` stay false until D1 reserve/refund/final
+  audit settlement is implemented and proven. The full check still emits only
+  the existing `d1_repositories.rs` dead-code warnings.
 - `node --check tools/smoke_realtime_upstream_replay.mjs`,
   `bun run check:realtime-session:mock-upstream-replay-contract`,
   `bun run check:realtime-session:mock-upstream-usage-plan`,

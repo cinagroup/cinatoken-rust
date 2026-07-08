@@ -8299,6 +8299,63 @@ Remaining migration gaps:
   connect handoff or move to a DO-local lookup/handle before enabling
   production `/v1/realtime` billing.
 
+### 22.132 2026-07-08 Realtime Billing Settlement Mutation Plan
+
+This increment prepares the final Realtime D1 settlement mutation without
+turning on quota writes. The previous handoff already gave the Durable Object a
+frozen billing snapshot, a bounded request probe, and enough usage data to
+produce a redacted settlement preview. The missing bridge to production
+settlement was the write scope: which user, token, channel, group, and
+pre-consumed quota the eventual D1 mutation must use.
+
+Implemented:
+
+- Added `RealtimeBillingSettlementMutationPlan` to the private
+  `RealtimeBillingSettlementHandoff`.
+  - It carries `user_id`, `token_id`, `channel_id`, selected group, and
+    pre-consumed quota for the future reserve/refund/additional/final D1 write.
+  - It is created during `/v1/realtime` channel planning from the authenticated
+    relay token, selected channel, selected group, and frozen preflight quota.
+  - It is not exposed through socket attachments, status frames, persisted
+    metrics, smoke summaries, or frontend capability copy.
+- Extended redacted settlement-preview metadata with only boolean readiness:
+  `mutation_plan_present`, `mutation_token_scoped`, and
+  `mutation_channel_scoped`.
+- Added
+  `realtime_session_billing_settlement_mutation_plan_compiled=true` to
+  `/api/platform/capabilities`, the Cloudflare Platform frontend panel, and the
+  Realtime smoke capabilities preflight.
+- Added `billing_settlement_mutation_plan` to the Realtime cutover guards and
+  v1 readiness matrix while keeping
+  `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false`.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed, including the mutation-plan compiled guard and redaction self-check.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed, proving the new guard is visible and still required for v1 cutover.
+- `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
+  `cargo fmt --all --check`, `git diff --check`, and `bun run check` passed;
+  the full check still emits only the existing `d1_repositories.rs` dead-code
+  warnings.
+
+Remaining migration gaps:
+
+- Apply actual D1 reserve/refund/additional/final settlement from the private
+  mutation plan using the same frozen `tiered_billing`, fallback, pending, and
+  usage-source conventions as REST/SSE relay settlement.
+- Write final Realtime audit/log metadata and archive staging smoke evidence
+  proving `last_billing_snapshot`, `last_usage`,
+  `last_billing_settlement_preview`, and mutation-plan readiness stay redacted
+  under local mock and live non-production upstream replay.
+- Keep `/v1/realtime` production-disabled until actual billing settlement,
+  protocol replay, hibernation/restore evidence, and live rollback proof are
+  complete.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

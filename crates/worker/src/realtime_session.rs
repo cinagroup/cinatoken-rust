@@ -49,6 +49,7 @@ pub const REALTIME_UPSTREAM_USAGE_CAPTURE_COMPILED: bool = true;
 pub const REALTIME_BILLING_PRESETTLEMENT_SNAPSHOT_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_PREVIEW_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_HANDOFF_COMPILED: bool = true;
+pub const REALTIME_BILLING_SETTLEMENT_MUTATION_PLAN_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -73,6 +74,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_presettlement_snapshot",
     "billing_settlement_preview",
     "billing_settlement_handoff",
+    "billing_settlement_mutation_plan",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -475,12 +477,26 @@ pub(crate) struct RealtimeBillingSettlementPreviewMetadata {
     additional_quota: i64,
     matched_tier: String,
     crossed_tier: bool,
+    mutation_plan_present: bool,
+    mutation_token_scoped: bool,
+    mutation_channel_scoped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RealtimeBillingSettlementHandoff {
     snapshot: TieredBillingSnapshot,
     request: RequestInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mutation_plan: Option<RealtimeBillingSettlementMutationPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RealtimeBillingSettlementMutationPlan {
+    user_id: i64,
+    token_id: i64,
+    channel_id: i64,
+    selected_group: String,
+    pre_consumed_quota: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1305,15 +1321,17 @@ impl RealtimeSessionMetrics {
         billing_settlement: Option<&RealtimeBillingSettlementHandoff>,
     ) {
         let preview = billing_settlement.and_then(|handoff| {
-            realtime_billing_settlement_preview(&handoff.snapshot, &usage, handoff.request.clone())
-                .map_err(|err| {
-                    worker::console_warn!(
-                        "RealtimeSession billing settlement preview failed: {}",
-                        err
-                    );
-                    err
-                })
-                .ok()
+            realtime_billing_settlement_preview(
+                &handoff.snapshot,
+                &usage,
+                handoff.request.clone(),
+                handoff.mutation_plan(),
+            )
+            .map_err(|err| {
+                worker::console_warn!("RealtimeSession billing settlement preview failed: {}", err);
+                err
+            })
+            .ok()
         });
         self.usage_event_count = self.usage_event_count.saturating_add(1);
         self.last_usage_at_ms = Some(now_ms);
@@ -2171,7 +2189,7 @@ pub(crate) fn realtime_billing_settlement_preview_compiled() -> bool {
         audio_output_tokens: 50,
         ..RealtimeUsageMetadata::default()
     };
-    let Ok(preview) = realtime_billing_settlement_preview(&snapshot, &usage, request) else {
+    let Ok(preview) = realtime_billing_settlement_preview(&snapshot, &usage, request, None) else {
         return false;
     };
     let serialized = serde_json::to_string(&preview).unwrap_or_default();
@@ -2189,6 +2207,9 @@ pub(crate) fn realtime_billing_settlement_preview_compiled() -> bool {
         && preview.additional_quota == 5900
         && preview.matched_tier == "detail"
         && !preview.crossed_tier
+        && !preview.mutation_plan_present
+        && !preview.mutation_token_scoped
+        && !preview.mutation_channel_scoped
         && !serialized.contains(&snapshot.expr_string)
         && !serialized.contains("service_tier")
         && !serialized.contains("fast")
@@ -2287,6 +2308,7 @@ pub(crate) fn realtime_billing_settlement_handoff_compiled() -> bool {
                 preview.final_quota == 8300
                     && preview.additional_quota == 5900
                     && preview.usage_source_event == "response.done"
+                    && !preview.mutation_plan_present
             })
             .unwrap_or(false)
         && !plan_header.contains(&snapshot.expr_string)
@@ -2301,10 +2323,123 @@ pub(crate) fn realtime_billing_settlement_handoff_compiled() -> bool {
         && !metrics_raw.contains("param(")
 }
 
+pub(crate) fn realtime_billing_settlement_mutation_plan_compiled() -> bool {
+    if !REALTIME_BILLING_SETTLEMENT_MUTATION_PLAN_COMPILED {
+        return false;
+    }
+    let request = RequestInput::from_json_body(json!({
+        "model": "gpt-4o-realtime-preview",
+        "service_tier": "fast"
+    }));
+    let Ok(snapshot) = cinatoken_billing::estimate_tiered_billing_snapshot_with_request(
+        "gpt-4o-realtime-preview",
+        r#"tier("detail", p * 2 + c * 10 + cr * 0.5 + img * 3 + ao * 20)|||(param("service_tier") == "fast" ? 2 : 1)"#,
+        cinatoken_billing::TokenParams {
+            p: 1200.0,
+            c: 0.0,
+            ..cinatoken_billing::TokenParams::default()
+        },
+        1.0,
+        request.clone(),
+    ) else {
+        return false;
+    };
+    let metadata = RealtimeBillingSnapshotMetadata::from_tiered_snapshot(&snapshot);
+    let handoff = RealtimeBillingSettlementHandoff::new(snapshot.clone(), request)
+        .with_mutation_plan(RealtimeBillingSettlementMutationPlan::new(
+            101,
+            202,
+            303,
+            "default",
+            snapshot.estimated_quota_after_group.0,
+        ));
+    let Ok(selected) = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
+        selected_group: "default",
+        channel_id: 303,
+        channel_type: 1,
+        channel_name: "openai-primary",
+        channel_base_url: Some("https://api.openai.com"),
+        request_model: "gpt-4o-realtime-preview",
+        upstream_model: "gpt-4o-realtime-preview",
+        upstream_api_key: "handoff-mutation-smoke-key",
+        api_version: None,
+        client_requested_subprotocol: true,
+        billing_snapshot: Some(metadata),
+        billing_settlement: Some(handoff),
+        startup_queue_probe_delay_ms: None,
+        mock_upstream_fault: None,
+    }) else {
+        return false;
+    };
+    let Ok(connect_header) = realtime_upstream_connect_header_value(&selected.connect_handoff)
+    else {
+        return false;
+    };
+    let Some(decoded) = realtime_upstream_connect_handoff_from_header_value(&connect_header) else {
+        return false;
+    };
+    let usage = RealtimeUsageMetadata {
+        source_event: "response.done".to_string(),
+        prompt_tokens: 1000,
+        completion_tokens: 600,
+        total_tokens: 1600,
+        cached_tokens: 200,
+        image_input_tokens: 100,
+        audio_output_tokens: 50,
+        ..RealtimeUsageMetadata::default()
+    };
+    let mut metrics = RealtimeSessionMetrics::new("handoff-mutation-smoke", 1.0);
+    let attachment = SocketAttachment {
+        session: "handoff-mutation-smoke".to_string(),
+        connected_at_ms: 1.0,
+        protocol: None,
+        entrypoint: "v1".to_string(),
+        model: Some("gpt-4o-realtime-preview".to_string()),
+        token_source: Some("header".to_string()),
+        token_fingerprint: Some("fp".to_string()),
+        auth_state: "authenticated".to_string(),
+        upstream: Some(selected.plan),
+        upstream_connect_handoff: true,
+    };
+    metrics.record_realtime_usage(
+        Some(&attachment),
+        2.0,
+        usage,
+        decoded.billing_settlement.as_ref(),
+    );
+    let Some(decoded_handoff) = decoded.billing_settlement.as_ref() else {
+        return false;
+    };
+    let Some(preview) = metrics.last_billing_settlement_preview.as_ref() else {
+        return false;
+    };
+    let metrics_raw = serde_json::to_string(&metrics).unwrap_or_default();
+    let attachment_raw = serde_json::to_string(&attachment).unwrap_or_default();
+
+    decoded_handoff.mutation_plan().is_some()
+        && preview.mutation_plan_present
+        && preview.mutation_token_scoped
+        && preview.mutation_channel_scoped
+        && preview.pre_consumed_quota == snapshot.estimated_quota_after_group.0
+        && !metrics_raw.contains("\"user_id\"")
+        && !metrics_raw.contains("\"token_id\"")
+        && !metrics_raw.contains("\"channel_id\"")
+        && !metrics_raw.contains("\"selected_group\"")
+        && !attachment_raw.contains("\"user_id\"")
+        && !attachment_raw.contains("\"token_id\"")
+        && !attachment_raw.contains("\"channel_id\"")
+        && !attachment_raw.contains("\"selected_group\"")
+        && !metrics_raw.contains(&snapshot.expr_string)
+        && !metrics_raw.contains("service_tier")
+        && !metrics_raw.contains("fast")
+        && !metrics_raw.contains("param(")
+}
+
 fn realtime_billing_settlement_preview(
     snapshot: &TieredBillingSnapshot,
     usage: &RealtimeUsageMetadata,
     request: RequestInput,
+    mutation_plan: Option<&RealtimeBillingSettlementMutationPlan>,
 ) -> Result<RealtimeBillingSettlementPreviewMetadata, String> {
     let tiered_usage = usage.to_tiered_token_usage();
     let params = build_tiered_token_params(
@@ -2315,13 +2450,58 @@ fn realtime_billing_settlement_preview(
     let result = compute_tiered_quota_with_request(snapshot, params, request)
         .map_err(|err| format!("failed to compute realtime tiered billing preview: {err}"))?;
     Ok(RealtimeBillingSettlementPreviewMetadata::from_settlement(
-        snapshot, usage, &result,
+        snapshot,
+        usage,
+        &result,
+        mutation_plan,
     ))
 }
 
 impl RealtimeBillingSettlementHandoff {
     pub(crate) fn new(snapshot: TieredBillingSnapshot, request: RequestInput) -> Self {
-        Self { snapshot, request }
+        Self {
+            snapshot,
+            request,
+            mutation_plan: None,
+        }
+    }
+
+    pub(crate) fn with_mutation_plan(
+        mut self,
+        plan: RealtimeBillingSettlementMutationPlan,
+    ) -> Self {
+        self.mutation_plan = Some(plan);
+        self
+    }
+
+    fn mutation_plan(&self) -> Option<&RealtimeBillingSettlementMutationPlan> {
+        self.mutation_plan.as_ref()
+    }
+}
+
+impl RealtimeBillingSettlementMutationPlan {
+    pub(crate) fn new(
+        user_id: i64,
+        token_id: i64,
+        channel_id: i64,
+        selected_group: &str,
+        pre_consumed_quota: i64,
+    ) -> Self {
+        Self {
+            user_id,
+            token_id,
+            channel_id,
+            selected_group: selected_group.to_string(),
+            pre_consumed_quota: pre_consumed_quota.max(0),
+        }
+    }
+
+    fn token_scoped(&self) -> bool {
+        self.token_id > 0
+    }
+
+    fn channel_scoped(&self) -> bool {
+        self.channel_id > 0
     }
 }
 
@@ -2633,6 +2813,7 @@ impl RealtimeBillingSettlementPreviewMetadata {
         snapshot: &TieredBillingSnapshot,
         usage: &RealtimeUsageMetadata,
         result: &TieredBillingResult,
+        mutation_plan: Option<&RealtimeBillingSettlementMutationPlan>,
     ) -> Self {
         Self {
             billing_mode: snapshot.billing_mode.clone(),
@@ -2650,6 +2831,13 @@ impl RealtimeBillingSettlementPreviewMetadata {
             additional_quota: result.settlement.additional_quota.0,
             matched_tier: result.matched_tier.clone(),
             crossed_tier: result.crossed_tier,
+            mutation_plan_present: mutation_plan.is_some(),
+            mutation_token_scoped: mutation_plan
+                .map(RealtimeBillingSettlementMutationPlan::token_scoped)
+                .unwrap_or(false),
+            mutation_channel_scoped: mutation_plan
+                .map(RealtimeBillingSettlementMutationPlan::channel_scoped)
+                .unwrap_or(false),
         }
     }
 }
@@ -4846,7 +5034,8 @@ mod tests {
             ..RealtimeUsageMetadata::default()
         };
 
-        let preview = realtime_billing_settlement_preview(&snapshot, &usage, request).unwrap();
+        let preview =
+            realtime_billing_settlement_preview(&snapshot, &usage, request, None).unwrap();
         let raw = serde_json::to_string(&preview).unwrap();
 
         assert_eq!(preview.pre_consumed_quota, 2400);

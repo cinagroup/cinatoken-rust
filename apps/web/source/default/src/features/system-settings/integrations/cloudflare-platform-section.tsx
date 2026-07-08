@@ -124,6 +124,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_presettlement_snapshot_compiled,
         capabilities.realtime_session_billing_settlement_preview_compiled,
         capabilities.realtime_session_billing_settlement_handoff_compiled,
+        capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -933,6 +934,16 @@ function buildCapabilityGroups(
             'Keeps the full tiered snapshot and request probe in the internal connect handoff so the Durable Object can compute redacted settlement preview metrics without persisting raw billing rules.'
           ),
           ready: capabilities.realtime_session_billing_settlement_handoff_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime billing mutation plan'),
+          description: t(
+            'Carries private user, token, channel, and pre-consumed quota identifiers in the internal settlement handoff while exposing only redacted readiness metadata to operators.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

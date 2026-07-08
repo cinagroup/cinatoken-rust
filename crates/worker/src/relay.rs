@@ -2420,6 +2420,16 @@ async fn realtime_billing_presettlement(
                     group,
                     preflight.pre_consumed_quota,
                 ),
+            )
+            .with_audit_plan(
+                crate::realtime_session::RealtimeBillingSettlementAuditPlan::new(
+                    &auth.username,
+                    &auth.token_name,
+                    client_ip(req),
+                    request_id(req),
+                    unix_timestamp(),
+                    "realtime",
+                ),
             );
     Ok(Some(RealtimeBillingPresettlement {
         snapshot_metadata,

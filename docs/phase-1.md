@@ -95,10 +95,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   only when `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED=true`. Persisted DO
   metrics expose redacted write status, quota deltas, and a derived replay-key
   hash. A new D1 `realtime_settlement_replays` marker table can skip duplicate
-  replay attempts after an applied marker is recorded. This is still a
-  foundation, not final production settlement: `realtime_session_billing_settlement_compiled`
-  remains false until final audit rows, single-transaction replay proof, and
-  staging evidence land.
+  replay attempts after an applied marker is recorded. Applied settlements can
+  now also produce Go-compatible `logs` audit rows with redacted tiered billing
+  metadata, base-expression `expr_b64`, matched tier, replay-key hash, and
+  audit attempt/record/error status in DO metrics; the request-rule body,
+  request probe values, raw headers, raw payloads, bearer tokens, and Realtime
+  protocol API keys remain excluded. This is still a foundation, not final
+  production settlement: `realtime_session_billing_settlement_compiled` remains
+  false until quota mutation, replay marker, and audit row recording are proven
+  as one idempotent transaction or equivalent CAS flow with staging evidence.
 - The Realtime mock upstream replay harness now makes the
   `response-done-usage` scenario seed an isolated tiered billing expression in
   review-only D1 SQL, then requires live/status metrics to contain both the
@@ -490,10 +495,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   proof still remain required before `TASK_RUNNER_DO_ENABLED` can be enabled
   outside a controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker
-  foundation to production-safe settlement: tighten durable idempotency into a
-  single D1 transaction or equivalent CAS proof, add final Realtime audit rows,
-  and archive local/staging proof for disabled, applied, duplicate,
-  marker-write-failed, and failed-write paths before flipping
+  and audit-log foundation to production-safe settlement: tighten durable
+  idempotency into a single D1 transaction or equivalent CAS proof, and archive
+  local/staging proof for disabled, applied, duplicate, marker-write-failed,
+  audit-write-failed, and failed-write paths before flipping
   `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready`.
 - Continue defining explicit response buffering limits as each broader

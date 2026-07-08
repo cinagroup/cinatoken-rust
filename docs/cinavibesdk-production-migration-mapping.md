@@ -445,8 +445,9 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
 - AI Gateway forwarding keeps the existing relay billing engine authoritative.
 - Direct fallback after Gateway failure must not double-settle usage.
 - Realtime production ownership requires usage accumulation, refund behavior,
-  final settlement, and audit rows before `REALTIME_SESSION_V1_ENABLED` can be
-  used outside a canary.
+  final settlement, durable replay markers, Go-compatible audit rows, and
+  single-transaction or equivalent CAS proof before
+  `REALTIME_SESSION_V1_ENABLED` can be used outside a canary.
 - Async video/Suno/Midjourney production ownership now has a Worker cron
   timeout sweep before normal provider polling and a CAS-winner refund batch for
   timeout/video/Suno failure refunds. The local

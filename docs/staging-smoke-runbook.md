@@ -605,6 +605,7 @@ Record:
   `realtime_session_billing_settlement_mutation_plan_compiled`,
   `realtime_session_billing_settlement_writer_compiled`,
   `realtime_session_billing_settlement_replay_marker_compiled`,
+  `realtime_session_billing_settlement_audit_log_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -634,7 +635,7 @@ Pass criteria:
   upstream replay contract, usage capture, billing pre-settlement snapshot,
   billing settlement preview, billing settlement handoff, billing settlement
   mutation plan, default-off billing settlement writer, durable replay marker,
-  and platform upstream-header boundary;
+  Go-compatible audit-log foundation, and platform upstream-header boundary;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -728,13 +729,22 @@ Pass criteria:
   staging run explicitly enables `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED`,
   persisted metrics may include `last_billing_settlement_write` with
   enabled/attempted/applied/skip/error status, quota deltas, replay-key hash,
-  and replay-marker recorded state, but never `user_id`, `token_id`,
-  `channel_id`, selected group, raw billing expressions, request-rule bodies,
-  request probe values, raw headers, payloads, bearer tokens, or upstream
-  credentials. Duplicate replay evidence must show `replay_duplicate` without
-  a second quota mutation. Marker-write-failed evidence must remain a blocker
-  for production until the final settlement path is proven with a single D1
-  transaction or equivalent CAS replay proof.
+  replay-marker recorded state, `audit_plan_present`, `audit_attempted`,
+  `audit_recorded`, and truncated `audit_error`, but never `user_id`,
+  `token_id`, `channel_id`, selected group, username, token name, client IP,
+  request ID, raw billing expressions, request-rule bodies, request probe
+  values, raw headers, payloads, bearer tokens, or upstream credentials.
+  Duplicate replay evidence must show `replay_duplicate` without a second quota
+  mutation or second audit row.
+- Realtime billing audit-row evidence must use Go-compatible `logs` type 2
+  rows with redacted `other` metadata: base-expression `expr_b64`,
+  `billing_mode`, `matched_tier`, `tiered_billing`, and `realtime_billing`
+  replay state are allowed; request-rule bodies, request probe values, raw
+  headers, raw payloads, bearer tokens, upstream payloads, Realtime protocol API
+  keys, and upstream credentials are not allowed. Marker-write-failed or
+  audit-write-failed evidence remains a blocker for production until the final
+  settlement path is proven with a single D1 transaction or equivalent CAS
+  replay proof.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge

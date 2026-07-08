@@ -11,6 +11,23 @@ Last checked: 2026-07-08
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
   `cargo fmt --all --check`, `git diff --check`, and `bun run check`:
+  passed after adding the Realtime settlement audit-log foundation. The
+  default-off Realtime writer can now carry a private audit plan into the DO,
+  write Go-compatible `logs` rows through `LOG_QUEUE`/D1 fallback after an
+  applied settlement, and expose only redacted
+  `audit_plan_present`/`audit_attempted`/`audit_recorded`/`audit_error`
+  metadata. `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` remain false until quota mutation,
+  replay marker creation, and audit row creation are proven through a single
+  D1 transaction or equivalent CAS flow with staging evidence. The full check
+  still emits only the existing `d1_repositories.rs` dead-code warnings.
+- `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
+  `cargo fmt --all --check`, `git diff --check`, and `bun run check`:
   passed after adding the Realtime settlement replay-marker foundation. The
   Worker now has D1 migration `0018_realtime_settlement_replays.sql`,
   repository helpers for applied marker lookup/recording, a duplicate replay

@@ -8,12 +8,15 @@
 
 use cinatoken_billing::{
     build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
-    RequestInput, TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, UsageSemantic,
+    split_billing_expr_request_rule, RequestInput, TieredBillingResult, TieredBillingSnapshot,
+    TieredTokenUsage, UsageSemantic,
 };
 use cinatoken_relay::{
+    clamp_i64_to_i32,
     openai_compatible::{default_base_url, upstream_v1_url, usage_summary_from_body, UsageSummary},
     token_fingerprint,
 };
+use cinatoken_storage::{AuditLogEvent, RelayAuditLog};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,6 +55,7 @@ pub const REALTIME_BILLING_SETTLEMENT_HANDOFF_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_MUTATION_PLAN_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_WRITER_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_REPLAY_MARKER_COMPILED: bool = true;
+pub const REALTIME_BILLING_SETTLEMENT_AUDIT_LOG_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
     "REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED";
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
@@ -81,6 +85,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_settlement_mutation_plan",
     "billing_settlement_writer",
     "billing_settlement_replay_marker",
+    "billing_settlement_audit_log",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -504,6 +509,14 @@ struct RealtimeBillingSettlementWriteMetadata {
     replay_key_hash: Option<String>,
     #[serde(default)]
     replay_recorded: bool,
+    #[serde(default)]
+    audit_plan_present: bool,
+    #[serde(default)]
+    audit_attempted: bool,
+    #[serde(default)]
+    audit_recorded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audit_error: Option<String>,
     mutation_plan_present: bool,
     mutation_token_scoped: bool,
     mutation_channel_scoped: bool,
@@ -515,6 +528,8 @@ pub(crate) struct RealtimeBillingSettlementHandoff {
     request: RequestInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mutation_plan: Option<RealtimeBillingSettlementMutationPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audit_plan: Option<RealtimeBillingSettlementAuditPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +539,16 @@ pub(crate) struct RealtimeBillingSettlementMutationPlan {
     channel_id: i64,
     selected_group: String,
     pre_consumed_quota: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RealtimeBillingSettlementAuditPlan {
+    username: String,
+    token_name: String,
+    client_ip: Option<String>,
+    request_id: Option<String>,
+    started_at: i64,
+    endpoint_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2671,6 +2696,136 @@ pub(crate) fn realtime_billing_settlement_replay_marker_compiled() -> bool {
         && !raw.contains("param(")
 }
 
+pub(crate) fn realtime_billing_settlement_audit_log_compiled() -> bool {
+    if !REALTIME_BILLING_SETTLEMENT_AUDIT_LOG_COMPILED {
+        return false;
+    }
+    let expr = r#"tier("detail", p * 2 + c * 10 + cr * 0.5 + img * 3 + ao * 20)|||(param("service_tier") == "fast" ? 2 : 1)"#;
+    let request = RequestInput::from_json_body(json!({
+        "model": "gpt-4o-realtime-preview",
+        "service_tier": "fast",
+        "secret_probe": "do-not-persist"
+    }));
+    let Ok(snapshot) = cinatoken_billing::estimate_tiered_billing_snapshot_with_request(
+        "gpt-4o-realtime-preview",
+        expr,
+        cinatoken_billing::TokenParams {
+            p: 1200.0,
+            c: 0.0,
+            ..cinatoken_billing::TokenParams::default()
+        },
+        1.0,
+        request.clone(),
+    ) else {
+        return false;
+    };
+    let plan = RealtimeBillingSettlementMutationPlan::new(
+        101,
+        202,
+        303,
+        "default",
+        snapshot.estimated_quota_after_group.0,
+    );
+    let audit_plan = RealtimeBillingSettlementAuditPlan::new(
+        "alice@example.test",
+        "prod-token",
+        Some("203.0.113.10".to_string()),
+        Some("req-realtime-audit".to_string()),
+        10,
+        "realtime",
+    );
+    let usage = RealtimeUsageMetadata {
+        source_event: "response.done".to_string(),
+        prompt_tokens: 1000,
+        completion_tokens: 600,
+        total_tokens: 1600,
+        cached_tokens: 200,
+        image_input_tokens: 100,
+        audio_output_tokens: 50,
+        ..RealtimeUsageMetadata::default()
+    };
+    let Ok(preview) = realtime_billing_settlement_preview(&snapshot, &usage, request, Some(&plan))
+    else {
+        return false;
+    };
+    let attachment = SocketAttachment {
+        session: "rt-audit-log-smoke".to_string(),
+        connected_at_ms: 1.0,
+        protocol: None,
+        entrypoint: "openai_realtime_v1".to_string(),
+        model: Some("gpt-4o-realtime-preview".to_string()),
+        token_source: Some("authorization".to_string()),
+        token_fingerprint: Some("fp-token".to_string()),
+        auth_state: "gateway_checked".to_string(),
+        upstream: None,
+        upstream_connect_handoff: true,
+    };
+    let replay_key = realtime_billing_settlement_replay_key(&attachment, &preview, &plan);
+    let other = realtime_billing_settlement_audit_other(
+        &attachment,
+        &preview,
+        &snapshot,
+        &replay_key,
+        true,
+    );
+    let mut metadata = realtime_billing_settlement_write_metadata(
+        &preview,
+        Some(&plan),
+        Some(&replay_key),
+        true,
+        true,
+        true,
+        true,
+        None,
+        None,
+    );
+    metadata.audit_plan_present = true;
+    metadata.audit_attempted = true;
+    metadata.audit_recorded = true;
+    let expr_parts = split_billing_expr_request_rule(expr);
+    let expected_expr_b64 = base64_standard_encode(&expr_parts.billing_expr);
+    let other_raw = other.to_string();
+    let metadata_raw = serde_json::to_string(&metadata).unwrap_or_default();
+
+    other.get("billing_mode").and_then(Value::as_str) == Some("tiered_expr")
+        && other.get("expr_b64").and_then(Value::as_str) == Some(expected_expr_b64.as_str())
+        && other.get("matched_tier").and_then(Value::as_str) == Some("detail")
+        && other
+            .get("tiered_billing")
+            .and_then(|value| value.get("settlement"))
+            .and_then(|value| value.get("final_quota"))
+            .and_then(Value::as_i64)
+            == Some(8300)
+        && other
+            .get("realtime_billing")
+            .and_then(|value| value.get("replay_key_hash"))
+            .and_then(Value::as_str)
+            == Some(replay_key.as_str())
+        && other
+            .get("realtime_billing")
+            .and_then(|value| value.get("replay_recorded"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        && !other_raw.contains(expr)
+        && !other_raw.contains("service_tier")
+        && !other_raw.contains("fast")
+        && !other_raw.contains("secret_probe")
+        && !other_raw.contains("param(")
+        && !other_raw.contains("alice@example.test")
+        && !other_raw.contains("prod-token")
+        && !other_raw.contains("203.0.113.10")
+        && !other_raw.contains("req-realtime-audit")
+        && !metadata_raw.contains(&snapshot.expr_string)
+        && !metadata_raw.contains("service_tier")
+        && !metadata_raw.contains("fast")
+        && !metadata_raw.contains("secret_probe")
+        && !metadata_raw.contains("param(")
+        && !metadata_raw.contains(&audit_plan.username)
+        && !metadata_raw.contains(&audit_plan.token_name)
+        && !metadata_raw.contains(audit_plan.client_ip.as_deref().unwrap_or_default())
+        && !metadata_raw.contains(audit_plan.request_id.as_deref().unwrap_or_default())
+}
+
 fn realtime_billing_settlement_preview(
     snapshot: &TieredBillingSnapshot,
     usage: &RealtimeUsageMetadata,
@@ -2699,6 +2854,7 @@ impl RealtimeBillingSettlementHandoff {
             snapshot,
             request,
             mutation_plan: None,
+            audit_plan: None,
         }
     }
 
@@ -2710,8 +2866,17 @@ impl RealtimeBillingSettlementHandoff {
         self
     }
 
+    pub(crate) fn with_audit_plan(mut self, plan: RealtimeBillingSettlementAuditPlan) -> Self {
+        self.audit_plan = Some(plan);
+        self
+    }
+
     fn mutation_plan(&self) -> Option<&RealtimeBillingSettlementMutationPlan> {
         self.mutation_plan.as_ref()
+    }
+
+    fn audit_plan(&self) -> Option<&RealtimeBillingSettlementAuditPlan> {
+        self.audit_plan.as_ref()
     }
 }
 
@@ -2738,6 +2903,26 @@ impl RealtimeBillingSettlementMutationPlan {
 
     fn channel_scoped(&self) -> bool {
         self.channel_id > 0
+    }
+}
+
+impl RealtimeBillingSettlementAuditPlan {
+    pub(crate) fn new(
+        username: &str,
+        token_name: &str,
+        client_ip: Option<String>,
+        request_id: Option<String>,
+        started_at: i64,
+        endpoint_path: &str,
+    ) -> Self {
+        Self {
+            username: username.to_string(),
+            token_name: token_name.to_string(),
+            client_ip,
+            request_id,
+            started_at,
+            endpoint_path: endpoint_path.to_string(),
+        }
     }
 }
 
@@ -2771,6 +2956,10 @@ fn realtime_billing_settlement_write_metadata(
             .saturating_sub(preview.pre_consumed_quota),
         replay_key_hash: replay_key_hash.map(str::to_string),
         replay_recorded,
+        audit_plan_present: false,
+        audit_attempted: false,
+        audit_recorded: false,
+        audit_error: None,
         mutation_plan_present: mutation_plan.is_some(),
         mutation_token_scoped: mutation_plan
             .map(RealtimeBillingSettlementMutationPlan::token_scoped)
@@ -2786,6 +2975,7 @@ enum RealtimeBillingSettlementWriteOutcome {
     Applied {
         replay_recorded: bool,
         replay_record_error: Option<String>,
+        applied_at: i64,
     },
     DuplicateReplay,
 }
@@ -2861,7 +3051,154 @@ async fn apply_realtime_billing_settlement_write(
     Ok(RealtimeBillingSettlementWriteOutcome::Applied {
         replay_recorded: replay_record_error.is_none(),
         replay_record_error,
+        applied_at: now,
     })
+}
+
+async fn record_realtime_billing_settlement_audit(
+    env: &Env,
+    attachment: &SocketAttachment,
+    preview: &RealtimeBillingSettlementPreviewMetadata,
+    snapshot: &TieredBillingSnapshot,
+    plan: &RealtimeBillingSettlementMutationPlan,
+    audit_plan: &RealtimeBillingSettlementAuditPlan,
+    replay_key: &str,
+    replay_recorded: bool,
+    created_at: i64,
+) -> Result<(), String> {
+    let db = env
+        .d1("DB")
+        .map_err(|err| format!("failed to load DB binding for realtime audit: {err}"))?;
+    let other_json = realtime_billing_settlement_audit_other(
+        attachment,
+        preview,
+        snapshot,
+        replay_key,
+        replay_recorded,
+    )
+    .to_string();
+    let empty = "";
+    let audit_log = RelayAuditLog {
+        user_id: plan.user_id,
+        username: &audit_plan.username,
+        token_id: plan.token_id,
+        token_name: &audit_plan.token_name,
+        channel_id: plan.channel_id,
+        model: &preview.model_name,
+        group: &plan.selected_group,
+        prompt_tokens: clamp_i64_to_i32(preview.actual_prompt_tokens),
+        completion_tokens: clamp_i64_to_i32(preview.actual_completion_tokens),
+        quota: preview.final_quota,
+        use_time_seconds: created_at.saturating_sub(audit_plan.started_at),
+        is_stream: true,
+        ip: audit_plan.client_ip.as_deref().unwrap_or(empty),
+        request_id: audit_plan.request_id.as_deref().unwrap_or(empty),
+        upstream_request_id: empty,
+        other: &other_json,
+    };
+    let content = format!(
+        "Rust realtime settled {}; tiered quota {}",
+        audit_plan.endpoint_path, preview.final_quota
+    );
+    let event = AuditLogEvent::from_relay_audit(created_at, &content, &audit_log, 2);
+    match env.queue("LOG_QUEUE") {
+        Ok(queue) => match queue.send(&event).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                worker::console_warn!(
+                    "LOG_QUEUE send failed for realtime audit, falling back to synchronous D1 insert: {err}"
+                );
+                crate::d1_repositories::insert_relay_audit_log(
+                    &db, created_at, &content, &audit_log,
+                )
+                .await
+                .map_err(|err| format!("failed to insert realtime audit log: {err}"))
+            }
+        },
+        Err(_) => {
+            crate::d1_repositories::insert_relay_audit_log(&db, created_at, &content, &audit_log)
+                .await
+                .map_err(|err| format!("failed to insert realtime audit log: {err}"))
+        }
+    }
+}
+
+fn realtime_billing_settlement_audit_other(
+    attachment: &SocketAttachment,
+    preview: &RealtimeBillingSettlementPreviewMetadata,
+    snapshot: &TieredBillingSnapshot,
+    replay_key: &str,
+    replay_recorded: bool,
+) -> Value {
+    let expr_parts = split_billing_expr_request_rule(&snapshot.expr_string);
+    json!({
+        "billing_pending": false,
+        "relay_runtime": "cloudflare_worker_rust",
+        "endpoint": "realtime",
+        "upstream_status": 101,
+        "total_tokens": preview.actual_total_tokens,
+        "usage_source": "upstream",
+        "billing_mode": snapshot.billing_mode,
+        "expr_b64": base64_standard_encode(&expr_parts.billing_expr),
+        "matched_tier": preview.matched_tier,
+        "tiered_billing": {
+            "billing_mode": snapshot.billing_mode,
+            "shadow_only": false,
+            "applied": true,
+            "expr_hash": snapshot.expr_hash,
+            "expr_version": snapshot.expr_version,
+            "has_request_rule": snapshot.request_rule_expr.is_some(),
+            "group_ratio": snapshot.group_ratio,
+            "pre_consumed_quota": preview.pre_consumed_quota,
+            "estimated_prompt_tokens": snapshot.estimated_prompt_tokens,
+            "estimated_completion_tokens": snapshot.estimated_completion_tokens,
+            "estimated_expression_cost": snapshot.estimated_expression_cost,
+            "estimated_quota_before_group": snapshot.estimated_quota_before_group,
+            "estimated_quota_after_group": snapshot.estimated_quota_after_group.0,
+            "estimated_tier": snapshot.estimated_tier,
+            "matched_tier": preview.matched_tier,
+            "crossed_tier": preview.crossed_tier,
+            "quota_after_group": preview.final_quota,
+            "settlement": {
+                "final_quota": preview.final_quota,
+                "refund_quota": preview.refund_quota,
+                "additional_quota": preview.additional_quota,
+            }
+        },
+        "realtime_billing": {
+            "session": attachment.session,
+            "usage_source_event": preview.usage_source_event,
+            "replay_key_hash": replay_key,
+            "replay_recorded": replay_recorded,
+        }
+    })
+}
+
+fn base64_standard_encode(input: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let bytes = input.as_bytes();
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or_default() as u32;
+        let b2 = chunk.get(2).copied().unwrap_or_default() as u32;
+        let bits = (b0 << 16) | (b1 << 8) | b2;
+
+        encoded.push(TABLE[((bits >> 18) & 0x3f) as usize] as char);
+        encoded.push(TABLE[((bits >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(TABLE[((bits >> 6) & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(bits & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 pub(crate) fn realtime_selected_upstream(
@@ -3105,6 +3442,11 @@ async fn record_realtime_upstream_usage(
 ) -> WorkerResult<()> {
     let mut metrics = load_realtime_session_metrics(storage, &attachment.session, now_ms).await?;
     let settlement_write_already_applied = metrics.has_applied_billing_settlement_write();
+    let billing_snapshot = billing_settlement.map(|handoff| handoff.snapshot.clone());
+    let audit_plan = billing_settlement
+        .and_then(RealtimeBillingSettlementHandoff::audit_plan)
+        .cloned();
+    let audit_plan_present = audit_plan.is_some();
     let mutation_plan = billing_settlement
         .and_then(RealtimeBillingSettlementHandoff::mutation_plan)
         .cloned();
@@ -3121,7 +3463,7 @@ async fn record_realtime_upstream_usage(
             .as_ref()
             .map(|metadata| metadata.replay_recorded)
             .unwrap_or(false);
-        let write = if !write_enabled {
+        let mut write = if !write_enabled {
             realtime_billing_settlement_write_metadata(
                 preview,
                 mutation_plan.as_ref(),
@@ -3171,17 +3513,50 @@ async fn record_realtime_upstream_usage(
                 Ok(RealtimeBillingSettlementWriteOutcome::Applied {
                     replay_recorded,
                     replay_record_error,
-                }) => realtime_billing_settlement_write_metadata(
-                    preview,
-                    Some(plan),
-                    replay_key_hash,
-                    replay_recorded,
-                    true,
-                    true,
-                    true,
-                    None,
-                    replay_record_error.as_deref(),
-                ),
+                    applied_at,
+                }) => {
+                    let mut metadata = realtime_billing_settlement_write_metadata(
+                        preview,
+                        Some(plan),
+                        replay_key_hash,
+                        replay_recorded,
+                        true,
+                        true,
+                        true,
+                        None,
+                        replay_record_error.as_deref(),
+                    );
+                    if let (Some(snapshot), Some(audit_plan)) =
+                        (billing_snapshot.as_ref(), audit_plan.as_ref())
+                    {
+                        metadata.audit_attempted = true;
+                        match record_realtime_billing_settlement_audit(
+                            env,
+                            attachment,
+                            preview,
+                            snapshot,
+                            plan,
+                            audit_plan,
+                            replay_key,
+                            replay_recorded,
+                            applied_at,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                metadata.audit_recorded = true;
+                            }
+                            Err(err) => {
+                                worker::console_warn!(
+                                    "RealtimeSession settlement audit write failed: {}",
+                                    err
+                                );
+                                metadata.audit_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
+                            }
+                        }
+                    }
+                    metadata
+                }
                 Ok(RealtimeBillingSettlementWriteOutcome::DuplicateReplay) => {
                     realtime_billing_settlement_write_metadata(
                         preview,
@@ -3220,6 +3595,7 @@ async fn record_realtime_upstream_usage(
                 None,
             )
         };
+        write.audit_plan_present = audit_plan_present;
         metrics.record_billing_settlement_write(Some(attachment), now_ms, write);
     }
     store_realtime_session_metrics(storage, &metrics).await
@@ -5493,6 +5869,11 @@ mod tests {
     #[test]
     fn realtime_billing_settlement_replay_marker_contract_is_compiled() {
         assert!(realtime_billing_settlement_replay_marker_compiled());
+    }
+
+    #[test]
+    fn realtime_billing_settlement_audit_log_contract_is_compiled() {
+        assert!(realtime_billing_settlement_audit_log_compiled());
     }
 
     #[test]

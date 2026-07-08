@@ -127,6 +127,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
         capabilities.realtime_session_billing_settlement_writer_compiled,
         capabilities.realtime_session_billing_settlement_replay_marker_compiled,
+        capabilities.realtime_session_billing_settlement_audit_log_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -966,6 +967,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_billing_settlement_replay_marker_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime billing audit log'),
+          description: t(
+            'Can write Go-compatible logs rows for applied Realtime settlement with redacted tiered billing metadata when the settlement writer is explicitly enabled.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_audit_log_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

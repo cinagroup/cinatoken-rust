@@ -8460,6 +8460,61 @@ Remaining migration gaps:
   hibernation/restore evidence, audit settlement, and rollback proof are
   complete.
 
+### 22.135 2026-07-08 Realtime Settlement Audit Log Foundation
+
+This increment adds the Go-compatible audit/log side of the default-off
+Realtime settlement writer. It still does not complete production settlement:
+quota mutation, replay-marker creation, and audit-row recording must still be
+proven as one idempotent D1 transaction or equivalent CAS flow before paid
+Realtime traffic can rely on the Rust path.
+
+Implemented:
+
+- Extended the internal `RealtimeBillingSettlementHandoff` with a private
+  audit plan carrying username, token name, client IP, request ID, start time,
+  and endpoint path from the authenticated `/v1/realtime` gateway into the
+  Durable Object. This plan remains internal to the connect handoff and is not
+  stored in socket attachments.
+- Added a default-off audit writer that records Go-compatible `logs` type 2
+  rows after a Realtime settlement write is applied. It uses the existing
+  `RelayAuditLog`/`AuditLogEvent` shape, sends through `LOG_QUEUE` when
+  available, and falls back to the Worker-side D1 repository insert.
+- Added redacted `other` metadata for Realtime audit rows: base-expression
+  `expr_b64`, `billing_mode`, `matched_tier`, `tiered_billing` settlement
+  metadata, and `realtime_billing` replay state are retained; request-rule
+  bodies, request probe values, raw headers, raw payloads, bearer tokens,
+  upstream payloads, and Realtime protocol API keys are excluded.
+- Extended persisted DO write metadata with `audit_plan_present`,
+  `audit_attempted`, `audit_recorded`, and truncated `audit_error`, without
+  exposing private user/token/channel IDs, usernames, token names, client IPs,
+  or request IDs.
+- Kept duplicate replay paths from writing a second audit row; only the
+  applied settlement branch attempts the audit write.
+- Added `REALTIME_BILLING_SETTLEMENT_AUDIT_LOG_COMPILED`,
+  `realtime_session_billing_settlement_audit_log_compiled`, and the
+  `billing_settlement_audit_log` cutover guard.
+- Updated `/api/platform/capabilities`, the Realtime smoke preflight, the
+  Cloudflare Platform frontend panel, the staging smoke runbook, and the
+  production execution plan to expose the audit-log foundation separately from
+  the replay marker and final settlement gates.
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed, including the audit-log redaction self-check.
+
+Remaining migration gaps:
+
+- Prove quota mutation, replay marker, and audit row creation as one
+  idempotent D1 transaction or equivalent CAS replay flow.
+- Archive controlled local/staging proof for disabled, applied,
+  replay-duplicate, marker-write-failed, audit-write-failed, D1 failure,
+  redaction, rollback, and no-double-charge paths.
+- Keep `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false` until the above evidence, upstream
+  bridge replay, hibernation/restore, and rollback proof are complete.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

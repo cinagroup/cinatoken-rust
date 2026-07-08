@@ -483,6 +483,15 @@ bun run check:realtime-session:mock-upstream-usage-plan
 bun run check:realtime-session:mock-upstream-fault-plans
 ```
 
+Before promoting Realtime settlement beyond default-off code paths, run the
+local D1-shape settlement batch replay. It does not write Cloudflare D1; it
+proves the SQL-level contract for applied, duplicate, guarded-update rollback,
+audit-failure rollback, refund, and tokenless settlement paths:
+
+```powershell
+bun run check:realtime-session:settlement-batch-contract
+```
+
 The dry-run plan now includes a review-only `localD1Seed` block with SQL for a
 dedicated smoke user, token, OpenAI-compatible channel, and ability row. Review
 the SQL before applying it to a local or isolated staging D1 database; the
@@ -667,9 +676,10 @@ Pass criteria:
 - Before `realtime_session_billing_settlement_compiled=true`, the default-off
   writer has archived evidence that the D1 batch applies the replay marker,
   guarded quota settlement, and audit row together; duplicate replays skip
-  without a second audit row; guarded-update and audit failures roll back; and
-  `audit_plan_missing`, `write_failed`, and `replay_duplicate` status metadata
-  remains redacted.
+  without a second audit row; guarded-update and audit failures roll back; the
+  local SQLite/D1-shape replay passes; the same cases are archived against an
+  isolated staging D1; and `audit_plan_missing`, `write_failed`, and
+  `replay_duplicate` status metadata remains redacted.
 - If the DO is hibernated/restarted and the outbound upstream socket is no
   longer active, client frames return `upstream_bridge_not_active` rather than
   implying that the upstream session was resumed.

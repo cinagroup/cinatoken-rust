@@ -8557,17 +8557,61 @@ Validation:
 - `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
   passed, including the new cutover guard and readiness gate.
 - `node --check tools/smoke_realtime_session.mjs` passed.
+- `bun run check:realtime-session:settlement-batch-contract` passed after the
+  follow-up local SQLite/D1-shape replay contract landed.
 
 Remaining migration gaps:
 
-- Add local/staging evidence that the batch rolls back on guarded quota update
+- Add staging D1 evidence that the batch rolls back on guarded quota update
   failure and audit-row failure, and that duplicate replay attempts do not
   double-settle or double-audit.
-- Archive evidence for writer-disabled, applied, duplicate, failed-write,
+- Archive staging evidence for writer-disabled, applied, duplicate, failed-write,
   redaction, rollback, hibernation/restore, and no-double-charge paths.
 - Keep `realtime_session_billing_settlement_compiled=false` and
   `realtime_session_v1_cutover_ready=false` until batch proof, upstream bridge
   replay, live fault replay, and rollback proof are complete.
+
+### 22.137 2026-07-08 Realtime Settlement Batch Replay Contract
+
+This increment adds local, repeatable evidence for the Realtime settlement D1
+batch before touching a live or staging D1 database. It does not replace
+staging proof; it gives the migration a deterministic pre-staging contract for
+the SQL shape that the Worker uses.
+
+Implemented:
+
+- Added `tools/smoke_realtime_settlement_batch.mjs`, a Bun SQLite self-test
+  that mirrors the Worker settlement batch shape: replay marker insert,
+  guarded quota mutation statements, assertion statements using
+  `changes() != 1`, and Go-compatible audit row insertion.
+- Covered additional-quota settlement, duplicate replay no-op, guarded-update
+  rollback, audit-insert rollback, refund-delta settlement, and tokenless
+  settlement.
+- Wired `smoke:realtime-settlement-batch` and
+  `check:realtime-session:settlement-batch-contract` into `package.json`, and
+  added the new check to the default `bun run check` chain.
+- Updated the staging runbook and Phase 1 notes so operators can distinguish
+  local SQLite/D1-shape proof from required staging D1 evidence.
+
+Validation:
+
+- `node --check tools/smoke_realtime_settlement_batch.mjs` passed.
+- `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json` passed
+  with all six replay checks.
+- `bun run check` passed, including the new settlement-batch contract plus the
+  existing frontend, smoke-plan, workspace test, and wasm gates.
+
+Remaining migration gaps:
+
+- Run the same settlement scenarios against an isolated staging D1 and archive
+  row snapshots for replay marker, user/token/channel quota, and audit log
+  changes.
+- Add live `/v1/realtime` smoke evidence that `response.done` usage drives the
+  batch without exposing raw billing expressions, request probes, headers,
+  payloads, bearer tokens, or upstream credentials.
+- Keep final Realtime settlement and v1 cutover readiness false until staging
+  rollback, no-double-charge, hibernation/restore, and live upstream fault
+  evidence are complete.
 
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 

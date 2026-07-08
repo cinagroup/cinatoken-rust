@@ -103,10 +103,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   protocol API keys remain excluded. The writer now has a D1 batch/CAS
   foundation that applies the replay marker, guarded quota settlement, and
   audit row together, with assertion statements turning guarded-update
-  mismatches into a rollback. This is still a foundation, not final production
-  settlement: `realtime_session_billing_settlement_compiled` remains false
-  until the batch is proven with controlled local/staging applied, duplicate,
-  failure, rollback, and no-double-charge evidence.
+  mismatches into a rollback. `bun run
+  check:realtime-session:settlement-batch-contract` now replays the SQL shape
+  locally against SQLite for applied, duplicate, guarded-update failure,
+  audit-failure rollback, refund, and tokenless paths. This is still a
+  foundation, not final production settlement:
+  `realtime_session_billing_settlement_compiled` remains false until the batch
+  is proven with controlled staging D1 applied, duplicate, failure, rollback,
+  and no-double-charge evidence.
 - The Realtime mock upstream replay harness now makes the
   `response-done-usage` scenario seed an isolated tiered billing expression in
   review-only D1 SQL, then requires live/status metrics to contain both the
@@ -499,7 +503,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   outside a controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker,
   audit-log, and D1 batch/CAS foundation to production-safe settlement: archive
-  local/staging proof for disabled, applied, duplicate, guarded-update failure,
+  staging proof for disabled, applied, duplicate, guarded-update failure,
   audit-row failure, rollback, redaction, and no-double-charge paths before flipping
   `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready`.

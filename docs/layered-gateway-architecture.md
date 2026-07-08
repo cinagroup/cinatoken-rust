@@ -98,8 +98,9 @@ maturity levels are used:
 **M6 settlement update (2026-07-08):** the default-off Realtime writer now also
 has a guarded D1 batch foundation for replay marker, quota mutation, and audit
 row creation, exposed as `realtime_session_billing_settlement_batch_compiled`.
-Production cutover still requires archived D1 rollback/idempotency evidence and
-live no-double-charge proof.
+The local settlement-batch replay contract covers the SQL shape before staging.
+Production cutover still requires archived staging D1 rollback/idempotency
+evidence and live no-double-charge proof.
 
 **Two refinements the landed code makes over this doc's original design:**
 
@@ -365,8 +366,9 @@ by clearing the flag, no redeploy required.
   accumulation, pre-settlement billing snapshot, settlement-preview quota
   calculation, settlement mutation planning, the default-off D1 writer, replay
   marker, audit-log foundation, and guarded D1 settlement batch foundation are
-  compiled; final staging replay proof, D1 rollback/idempotency evidence, and
-  the Go-formula settlement below remain incomplete.
+  compiled; local SQL-shape replay exists, but final staging replay proof, D1
+  rollback/idempotency evidence, and the Go-formula settlement below remain
+  incomplete.
 - **Planner landed:** OpenAI-compatible `/v1/realtime?model=...`, Azure
   `/openai/realtime?deployment=...&api-version=...`, and secret-redacted
   Realtime handshake summaries are compiled and exposed as a separate

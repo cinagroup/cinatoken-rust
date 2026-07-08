@@ -501,9 +501,9 @@ As of the docs reviewed on 2026-07-06:
   trace metadata plus smoke-level bridge replay, ordered upstream replay, and
   platform header-boundary contract self-tests. It now has a controlled mock
   startup queue/drain probe plus default-off replay/audit/batch settlement
-  foundations, but still lacks archived staging queue/drain and D1 rollback
-  artifacts, full live fault replay, and billing settlement proof required for
-  production `/v1/realtime`.
+  foundations and a local SQL-shape settlement-batch replay, but still lacks
+  archived staging queue/drain and D1 rollback artifacts, full live fault
+  replay, and billing settlement proof required for production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
   response-header smoke guard, but still needs a real paid-plan `DISPATCHER`
   binding, uploaded tenant artifact, and live internal dispatch smoke.

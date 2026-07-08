@@ -4,6 +4,18 @@ Last checked: 2026-07-08
 
 ## Passed
 
+- `node --check tools/smoke_realtime_settlement_batch.mjs` and
+  `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json`: passed
+  after adding the local Realtime settlement batch replay contract. The tool
+  mirrors the D1 batch SQL shape against Bun SQLite and proves
+  additional-quota apply, duplicate replay no-op, guarded-update rollback,
+  audit-failure rollback, refund-delta apply, and tokenless settlement apply.
+  It is pre-staging evidence only; `realtime_session_billing_settlement_compiled`
+  and `realtime_session_v1_cutover_ready` remain false until the same cases are
+  archived against isolated staging D1 plus live no-double-charge evidence.
+- `bun run check`: passed after wiring the settlement-batch contract into the
+  default gate; the only warnings were the existing unused Worker repository
+  helpers `complete_topup` and `list_user_topups`.
 - `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,

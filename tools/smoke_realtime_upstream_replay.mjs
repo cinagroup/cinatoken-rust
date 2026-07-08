@@ -14,6 +14,10 @@ const openaiCompatibleChannelType = 1;
 const maxRealtimeBridgeTextFrameBytes = 1_048_576;
 const upstreamReplayProbePrefix = "cinatoken-upstream-live-frame-limit:";
 const usageReplayCloseProbe = "cinatoken realtime usage replay close";
+const billingModeOptionKey = "billing_setting.billing_mode";
+const billingExprOptionKey = "billing_setting.billing_expr";
+const realtimeBillingExpression =
+  'tier("mock_realtime", p * 2 + c * 8 + ai * 3 + ao * 12)';
 const expectedResponseDoneUsage = {
   source_event: "response.done",
   prompt_tokens: 1200,
@@ -94,6 +98,7 @@ const scenarios = new Map(
       closeReason: "mock_upstream_response_done_usage",
       closeAfterSecondClientFrame: true,
       expectUsageCapture: true,
+      expectBillingSettlementPreview: true,
       expectedUsage: expectedResponseDoneUsage,
       expectedEvent: {
         event: "upstream_closed",
@@ -324,6 +329,7 @@ function buildPlan(options) {
     runtimeStatusProbePhase: runtimeStatusProbePhaseForScenario(options.scenario),
     expectedRuntimeStatus: expectedRuntimeStatusForScenario(options.scenario, options.probe),
     expectedUsageCapture: expectedUsageCaptureForScenario(options.scenario),
+    expectedBillingSettlementPreview: expectedBillingSettlementForScenario(options.scenario, options.model),
     expectedBridgeEvent: options.scenario.expectedEvent,
     probeBytes: byteLength(options.probe),
     timeoutMs: options.timeoutMs,
@@ -387,6 +393,7 @@ async function runLiveReplay(options, plan) {
       expectedBridgeEvent: options.scenario.expectedEvent,
       observedRuntimeStatus: summarizeRuntimeStatus(statusFrame),
       observedUsageCapture: summarizeUsageCapture(statusFrame?.metrics, usageFrame),
+      observedBillingSettlementPreview: summarizeBillingSettlementPreview(statusFrame?.metrics),
       observedBridgeEvent: summarizeBridgeEvent(outcome.bridgeEvent),
       clientClose: outcome.close,
       forwardedClientFrames: stats.receivedFrames,
@@ -627,6 +634,7 @@ function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null, 
   if (options.scenario.expectUsageCapture) {
     validateUsageFrame(usageFrame, options.scenario.expectedUsage, "forwarded upstream usage frame");
     validateUsageMetrics(statusFrame?.metrics, options.scenario.expectedUsage, "runtime status metrics");
+    validateBillingMetrics(statusFrame?.metrics, options);
   }
   validateBridgeEvent(outcome.bridgeEvent, options.scenario.expectedEvent, options.scenario.name);
   if (outcome.close.code !== options.scenario.expectedEvent.clientCode) {
@@ -738,6 +746,7 @@ function validateRuntimeStatusFrame(frame, options) {
   }
   if (options.scenario.expectUsageCapture) {
     validateUsageMetrics(frame.metrics, options.scenario.expectedUsage, "runtime status metrics");
+    validateBillingMetrics(frame.metrics, options);
   }
 }
 
@@ -791,6 +800,121 @@ function validateUsageMetrics(metrics, expected, label) {
   }
 }
 
+function expectedBillingSettlementForScenario(scenario, model) {
+  if (!scenario.expectBillingSettlementPreview) return null;
+  return {
+    billingMode: "tiered_expr",
+    modelName: model,
+    expressionSeededByLocalD1Plan: true,
+    usageSourceEvent: scenario.expectedUsage.source_event,
+  };
+}
+
+function validateBillingMetrics(metrics, options) {
+  if (!options.scenario.expectBillingSettlementPreview) return;
+  const label = "runtime status billing metrics";
+  if (!metrics || typeof metrics !== "object") {
+    throw new Error(`${label} missing metrics object`);
+  }
+  if (!Number.isInteger(metrics.billing_snapshot_count) || metrics.billing_snapshot_count < 1) {
+    throw new Error(`${label} billing_snapshot_count=${metrics.billing_snapshot_count}, expected >= 1`);
+  }
+  if (typeof metrics.last_billing_snapshot_at_ms !== "number") {
+    throw new Error(`${label} missing numeric last_billing_snapshot_at_ms`);
+  }
+  const snapshot = metrics.last_billing_snapshot;
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new Error(`${label} missing last_billing_snapshot`);
+  }
+  if (snapshot.billing_mode !== "tiered_expr") {
+    throw new Error(`${label} billing_mode=${snapshot.billing_mode}, expected tiered_expr`);
+  }
+  if (snapshot.model_name !== options.model) {
+    throw new Error(`${label} model_name=${snapshot.model_name}, expected ${options.model}`);
+  }
+  if (typeof snapshot.expr_hash !== "string" || snapshot.expr_hash.length < 8) {
+    throw new Error(`${label} missing redacted expression hash`);
+  }
+  if (!Number.isInteger(snapshot.expr_version) || snapshot.expr_version < 1) {
+    throw new Error(`${label} expr_version=${snapshot.expr_version}, expected positive integer`);
+  }
+  if (snapshot.request_rule_present !== false) {
+    throw new Error(`${label} request_rule_present=${snapshot.request_rule_present}, expected false`);
+  }
+  for (const field of [
+    "group_ratio",
+    "quota_per_unit",
+    "estimated_prompt_tokens",
+    "estimated_completion_tokens",
+    "estimated_quota_after_group",
+  ]) {
+    if (typeof snapshot[field] !== "number") {
+      throw new Error(`${label} snapshot.${field}=${snapshot[field]}, expected number`);
+    }
+  }
+  if (typeof snapshot.estimated_tier !== "string" || snapshot.estimated_tier.length === 0) {
+    throw new Error(`${label} missing estimated_tier`);
+  }
+
+  if (
+    !Number.isInteger(metrics.billing_settlement_preview_count) ||
+    metrics.billing_settlement_preview_count < 1
+  ) {
+    throw new Error(
+      `${label} billing_settlement_preview_count=${metrics.billing_settlement_preview_count}, expected >= 1`,
+    );
+  }
+  if (typeof metrics.last_billing_settlement_preview_at_ms !== "number") {
+    throw new Error(`${label} missing numeric last_billing_settlement_preview_at_ms`);
+  }
+  const preview = metrics.last_billing_settlement_preview;
+  if (!preview || typeof preview !== "object") {
+    throw new Error(`${label} missing last_billing_settlement_preview`);
+  }
+  if (preview.billing_mode !== snapshot.billing_mode) {
+    throw new Error(`${label} preview billing_mode=${preview.billing_mode}, expected ${snapshot.billing_mode}`);
+  }
+  if (preview.model_name !== snapshot.model_name) {
+    throw new Error(`${label} preview model_name=${preview.model_name}, expected ${snapshot.model_name}`);
+  }
+  if (preview.expr_hash !== snapshot.expr_hash || preview.expr_version !== snapshot.expr_version) {
+    throw new Error(`${label} preview did not use the frozen snapshot expression identity`);
+  }
+  if (preview.request_rule_present !== snapshot.request_rule_present) {
+    throw new Error(`${label} preview request_rule_present did not match snapshot`);
+  }
+  const expectedUsage = options.scenario.expectedUsage;
+  const usageChecks = [
+    ["usage_source_event", expectedUsage.source_event],
+    ["actual_prompt_tokens", expectedUsage.prompt_tokens],
+    ["actual_completion_tokens", expectedUsage.completion_tokens],
+    ["actual_total_tokens", expectedUsage.total_tokens],
+  ];
+  for (const [field, expected] of usageChecks) {
+    if (preview[field] !== expected) {
+      throw new Error(`${label} preview.${field}=${preview[field]}, expected ${expected}`);
+    }
+  }
+  for (const field of ["pre_consumed_quota", "final_quota", "refund_quota", "additional_quota"]) {
+    if (!Number.isInteger(preview[field]) || preview[field] < 0) {
+      throw new Error(`${label} preview.${field}=${preview[field]}, expected non-negative integer`);
+    }
+  }
+  const expectedFinal =
+    preview.pre_consumed_quota - preview.refund_quota + preview.additional_quota;
+  if (preview.final_quota !== expectedFinal) {
+    throw new Error(
+      `${label} quota delta mismatch final=${preview.final_quota}, expected ${expectedFinal}`,
+    );
+  }
+  if (typeof preview.matched_tier !== "string" || preview.matched_tier.length === 0) {
+    throw new Error(`${label} missing matched_tier`);
+  }
+  if (typeof preview.crossed_tier !== "boolean") {
+    throw new Error(`${label} crossed_tier=${preview.crossed_tier}, expected boolean`);
+  }
+}
+
 function dottedValue(value, path) {
   return path.split(".").reduce((current, part) => current?.[part], value);
 }
@@ -830,6 +954,8 @@ function validateNoRawLeaks(value, options) {
     options.probe,
     upstreamReplayProbePrefix,
     "openai-insecure-api-key.",
+    realtimeBillingExpression,
+    "p * 2 + c * 8 + ai * 3 + ao * 12",
   ]) {
     if (secret && serialized.includes(secret)) {
       throw new Error("live replay result leaked raw probe or API-key material");
@@ -878,6 +1004,7 @@ function runSelfTest() {
       clientClose: scenario.expectedEvent.clientCode,
       runtimeStatus: summarizeRuntimeStatus(statusFrame),
       usageCapture: summarizeUsageCapture(statusFrame?.metrics, usageFrame),
+      billingSettlementPreview: summarizeBillingSettlementPreview(statusFrame?.metrics),
     });
   }
   expectFailure(
@@ -899,6 +1026,14 @@ function runSelfTest() {
         "missing usage count",
       ),
     "usage_event_count",
+  );
+  expectFailure(
+    () =>
+      validateNoRawLeaks(
+        { metrics: { last_billing_snapshot: { expr: realtimeBillingExpression } } },
+        { apiKey: "secret", probe: defaultProbe },
+      ),
+    "leaked raw probe",
   );
   return {
     ok: true,
@@ -964,6 +1099,7 @@ function syntheticStats(probe, scenario) {
 function syntheticRuntimeStatusFrame(scenario, probe) {
   const expected = expectedRuntimeStatusForScenario(scenario, probe);
   if (!expected) return null;
+  const billingMetrics = syntheticBillingMetrics(scenario);
   const usageMetrics = scenario.expectUsageCapture
     ? {
         usage_event_count: 1,
@@ -982,7 +1118,59 @@ function syntheticRuntimeStatusFrame(scenario, probe) {
       connected_count: 1,
       text_message_count: 1,
       updated_at_ms: 1_788_192_000_000,
+      ...billingMetrics,
       ...usageMetrics,
+    },
+  };
+}
+
+function syntheticBillingMetrics(scenario) {
+  if (!scenario.expectBillingSettlementPreview) {
+    return {
+      billing_snapshot_count: 0,
+      last_billing_snapshot_at_ms: null,
+      last_billing_snapshot: null,
+      billing_settlement_preview_count: 0,
+      last_billing_settlement_preview_at_ms: null,
+      last_billing_settlement_preview: null,
+    };
+  }
+  const snapshot = {
+    billing_mode: "tiered_expr",
+    model_name: defaultModel,
+    expr_hash: "synthetic-billing-expr-hash",
+    expr_version: 1,
+    request_rule_present: false,
+    group_ratio: 1,
+    quota_per_unit: 1,
+    estimated_prompt_tokens: 0,
+    estimated_completion_tokens: 0,
+    estimated_quota_after_group: 0,
+    estimated_tier: "mock_realtime",
+  };
+  const finalQuota = 6_820;
+  return {
+    billing_snapshot_count: 1,
+    last_billing_snapshot_at_ms: 1_788_192_000_000,
+    last_billing_snapshot: snapshot,
+    billing_settlement_preview_count: 1,
+    last_billing_settlement_preview_at_ms: 1_788_192_000_001,
+    last_billing_settlement_preview: {
+      billing_mode: snapshot.billing_mode,
+      model_name: snapshot.model_name,
+      expr_hash: snapshot.expr_hash,
+      expr_version: snapshot.expr_version,
+      request_rule_present: snapshot.request_rule_present,
+      usage_source_event: scenario.expectedUsage.source_event,
+      actual_prompt_tokens: scenario.expectedUsage.prompt_tokens,
+      actual_completion_tokens: scenario.expectedUsage.completion_tokens,
+      actual_total_tokens: scenario.expectedUsage.total_tokens,
+      pre_consumed_quota: 0,
+      final_quota: finalQuota,
+      refund_quota: 0,
+      additional_quota: finalQuota,
+      matched_tier: snapshot.estimated_tier,
+      crossed_tier: false,
     },
   };
 }
@@ -1055,6 +1243,16 @@ ON CONFLICT(id) DO UPDATE SET
     `INSERT INTO abilities (group_name, model, channel_id, enabled, priority, weight)
 VALUES (${sqlString(group)}, ${sqlString(model)}, ${channelId}, 1, 1000, 1000);`,
   ];
+  if (options.scenario.expectBillingSettlementPreview) {
+    statements.push(
+      `INSERT INTO options ("key", value)
+VALUES (${sqlString(billingModeOptionKey)}, ${sqlString(JSON.stringify({ [model]: "tiered_expr" }))})
+ON CONFLICT("key") DO UPDATE SET value = excluded.value;`,
+      `INSERT INTO options ("key", value)
+VALUES (${sqlString(billingExprOptionKey)}, ${sqlString(JSON.stringify({ [model]: realtimeBillingExpression }))})
+ON CONFLICT("key") DO UPDATE SET value = excluded.value;`,
+    );
+  }
   return {
     reviewOnly: true,
     appliesTo: "local wrangler dev or isolated staging D1 only",
@@ -1075,6 +1273,12 @@ VALUES (${sqlString(group)}, ${sqlString(model)}, ${channelId}, 1, 1000, 1000);`
       "Do not pass production token keys; the seed token key is intentionally printed for live smoke use.",
       "If a row id or unique username/key is already used, change the seed ids/token key before applying.",
       "For live replay, pass the seed smokeApiKey as --api-key after applying the SQL.",
+      ...(options.scenario.expectBillingSettlementPreview
+        ? [
+            "This scenario upserts global billing options for the smoke model; use only isolated local/staging D1 and restore existing options afterward if needed.",
+            "The seeded tiered expression has no request-rule body, so runtime metrics must expose only a hash/version and settlement preview fields.",
+          ]
+        : []),
       ...(options.scenario.queueProbe
         ? [
             `This scenario intentionally delays upstream accept/drain by ${options.scenario.queueProbeDelayMs}ms and must stay isolated from production traffic.`,
@@ -1092,7 +1296,7 @@ VALUES (${sqlString(group)}, ${sqlString(model)}, ${channelId}, 1, 1000, 1000);`
 
 function validateSeedPlan(plan, scenario) {
   const scenarioName = scenario.name;
-  if (!plan || !Array.isArray(plan.statements) || plan.statements.length !== 5) {
+  if (!plan || !Array.isArray(plan.statements) || plan.statements.length < 5) {
     throw new Error(`self-test ${scenarioName} generated an invalid D1 seed plan`);
   }
   const sql = plan.statements.join("\n");
@@ -1117,6 +1321,15 @@ function validateSeedPlan(plan, scenario) {
     }
   } else if (sql.includes('"fault":')) {
     throw new Error(`self-test ${scenarioName} seed plan unexpectedly includes mock fault metadata`);
+  }
+  if (scenario.expectBillingSettlementPreview) {
+    for (const expected of [billingModeOptionKey, billingExprOptionKey, "tiered_expr", "mock_realtime"]) {
+      if (!sql.includes(expected)) {
+        throw new Error(`self-test ${scenarioName} seed plan missing billing seed ${expected}`);
+      }
+    }
+  } else if (sql.includes(billingModeOptionKey) || sql.includes(billingExprOptionKey)) {
+    throw new Error(`self-test ${scenarioName} seed plan unexpectedly includes billing options`);
   }
 }
 
@@ -1165,6 +1378,8 @@ function summarizeRuntimeStatus(frame) {
     queuedUpstreamBytes: frame.queued_upstream_bytes,
     usageEventCount: frame.metrics?.usage_event_count ?? null,
     lastUsage: summarizeUsageMetadata(frame.metrics?.last_usage),
+    billingSnapshotCount: frame.metrics?.billing_snapshot_count ?? null,
+    billingSettlementPreviewCount: frame.metrics?.billing_settlement_preview_count ?? null,
   };
 }
 
@@ -1174,6 +1389,39 @@ function summarizeUsageCapture(metrics, usageFrame) {
     forwardedFrameType: usageFrame?.type ?? null,
     usageEventCount: metrics?.usage_event_count ?? null,
     lastUsage: summarizeUsageMetadata(metrics?.last_usage),
+  };
+}
+
+function summarizeBillingSettlementPreview(metrics) {
+  const snapshot = metrics?.last_billing_snapshot;
+  const preview = metrics?.last_billing_settlement_preview;
+  if (!snapshot && !preview) return null;
+  return {
+    snapshot: snapshot
+      ? {
+          billingMode: snapshot.billing_mode,
+          modelName: snapshot.model_name,
+          exprHash: snapshot.expr_hash,
+          exprVersion: snapshot.expr_version,
+          requestRulePresent: snapshot.request_rule_present,
+          estimatedQuotaAfterGroup: snapshot.estimated_quota_after_group,
+          estimatedTier: snapshot.estimated_tier,
+        }
+      : null,
+    preview: preview
+      ? {
+          usageSourceEvent: preview.usage_source_event,
+          actualPromptTokens: preview.actual_prompt_tokens,
+          actualCompletionTokens: preview.actual_completion_tokens,
+          actualTotalTokens: preview.actual_total_tokens,
+          preConsumedQuota: preview.pre_consumed_quota,
+          finalQuota: preview.final_quota,
+          refundQuota: preview.refund_quota,
+          additionalQuota: preview.additional_quota,
+          matchedTier: preview.matched_tier,
+          crossedTier: preview.crossed_tier,
+        }
+      : null,
   };
 }
 
@@ -1397,6 +1645,13 @@ function printResult(result, json) {
       `observed_bridge_event: ${JSON.stringify(result.observedBridgeEvent)}`,
       ...(result.observedUsageCapture
         ? [`observed_usage_capture: ${JSON.stringify(result.observedUsageCapture)}`]
+        : []),
+      ...(result.observedBillingSettlementPreview
+        ? [
+            `observed_billing_settlement_preview: ${JSON.stringify(
+              result.observedBillingSettlementPreview,
+            )}`,
+          ]
         : []),
       `client_close: ${JSON.stringify(result.clientClose)}`,
       `forwarded_client_frames: ${JSON.stringify(result.forwardedClientFrames)}`,

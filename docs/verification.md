@@ -4,6 +4,22 @@ Last checked: 2026-07-08
 
 ## Passed
 
+- `node --check tools/smoke_realtime_upstream_replay.mjs`,
+  `bun run check:realtime-session:mock-upstream-replay-contract`,
+  `bun run check:realtime-session:mock-upstream-usage-plan`,
+  `git diff --check`, and `bun run check`: passed after strengthening the
+  Realtime mock upstream `response-done-usage` scenario into a billing-preview
+  evidence gate. The review-only D1 seed SQL now upserts an isolated
+  `billing_setting.billing_mode`/`billing_setting.billing_expr` pair for the
+  smoke model, and live/status validation requires redacted
+  `last_billing_snapshot` plus `last_billing_settlement_preview` metrics whose
+  actual usage fields and reserve/refund/additional quota relationship are
+  self-consistent. The tool also fails if the raw expression body appears in
+  live replay output. This remains pre-settlement evidence:
+  `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` stay false until D1 reserve/refund/final
+  audit settlement is implemented and proven. The full check still emits only
+  the existing `d1_repositories.rs` dead-code warnings.
 - `cargo fmt --all`,
   `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
   `cargo test -p cinatoken-worker --lib relay::tests::realtime_billing_request_headers_strip_sensitive_values -- --nocapture`,

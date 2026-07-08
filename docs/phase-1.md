@@ -91,6 +91,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   full snapshot plus a bounded sensitive-header-filtered request probe only in
   the internal DO connect handoff, and records redacted settlement-preview
   metrics from `response.done` usage without mutating quota.
+- The Realtime mock upstream replay harness now makes the
+  `response-done-usage` scenario seed an isolated tiered billing expression in
+  review-only D1 SQL, then requires live/status metrics to contain both the
+  redacted billing snapshot and settlement preview before normal mock close.
 - Successful Worker-side tiered-expression audit logs now include Go-compatible
   top-level usage-log display fields: `billing_mode`, base-expression
   `expr_b64`, and `matched_tier`.

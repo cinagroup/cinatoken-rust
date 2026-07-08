@@ -497,6 +497,7 @@ Then generate the isolated staging evidence plan:
 
 ```powershell
 bun run check:realtime-session:settlement-staging-plan
+bun run check:realtime-session:settlement-binding-smoke-plan
 ```
 
 The staging plan emits setup, verification, duplicate-marker pre-check, and
@@ -508,6 +509,25 @@ as substitute proof for the D1 batch apply step: Cloudflare Worker
 for setup, row snapshots, and cleanup. The batch apply proof must come from the
 deployed Worker path, such as a controlled `/v1/realtime` mock-usage replay or
 a staging-only Worker binding smoke probe.
+
+The Worker-binding smoke route is `POST
+/api/platform/realtime/settlement-batch/smoke`. It is admin-only, rejects
+`ENVIRONMENT=production`, and remains unavailable until
+`REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true` is set in staging. The route
+accepts only fixed scenario names (`additional-quota-applied`,
+`duplicate-replay-noop`, `guarded-update-rollback`, `audit-failure-rollback`,
+`refund-delta-applied`, `tokenless-applied`) and always runs the production
+`apply_realtime_settlement_batch` path through the Worker D1 binding. Live smoke
+requires an admin cookie and an explicit confirmation:
+
+```powershell
+bun tools/smoke_realtime_settlement_batch.mjs --binding-smoke --url "$env:STAGING_BASE_URL" --cookie "$env:REALTIME_SETTLEMENT_SMOKE_COOKIE" --confirm-live --json
+```
+
+Use `--retain` only when the evidence bundle needs direct post-run Wrangler row
+snapshots before cleanup. Otherwise the route cleans its isolated smoke user,
+token, channel, replay, log rows, and the temporary audit-failure trigger after
+each scenario.
 
 The dry-run plan now includes a review-only `localD1Seed` block with SQL for a
 dedicated smoke user, token, OpenAI-compatible channel, and ability row. Review

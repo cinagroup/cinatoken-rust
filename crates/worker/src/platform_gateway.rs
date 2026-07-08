@@ -8,12 +8,18 @@
 use cinatoken_providers::ai_gateway::{
     MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS, MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS,
 };
-use serde::Serialize;
+use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
+use cinatoken_storage::RelayAuditLog;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use wasm_bindgen::JsValue;
-use worker::{Env, Headers, Request, RequestInit, Response, Result as WorkerResult};
+use worker::{
+    D1Database, D1Type, Env, Headers, Request, RequestInit, Response, Result as WorkerResult,
+};
 
-use crate::admin::{envelope_ok_response, require_admin_auth};
+use crate::admin::{
+    envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
+};
 use crate::realtime_session::{
     realtime_billing_presettlement_snapshot_compiled,
     realtime_billing_settlement_audit_log_compiled, realtime_billing_settlement_batch_compiled,
@@ -60,6 +66,8 @@ pub const WFP_INTERNAL_DISPATCH_ENABLED_ENV: &str = "WFP_INTERNAL_DISPATCH_ENABL
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
+pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
+    "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
 pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
 const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
@@ -160,6 +168,9 @@ struct PlatformCapabilities {
     realtime_session_billing_settlement_replay_marker_compiled: bool,
     realtime_session_billing_settlement_audit_log_compiled: bool,
     realtime_session_billing_settlement_batch_compiled: bool,
+    realtime_session_billing_settlement_staging_smoke_compiled: bool,
+    realtime_session_billing_settlement_staging_smoke_enabled: bool,
+    realtime_session_billing_settlement_staging_smoke_ready: bool,
     realtime_session_platform_header_boundary_compiled: bool,
     realtime_session_upstream_bridge_compiled: bool,
     realtime_session_billing_settlement_compiled: bool,
@@ -273,6 +284,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_billing_settlement_audit_log_compiled();
     let realtime_session_billing_settlement_batch_compiled =
         realtime_billing_settlement_batch_compiled();
+    let realtime_session_billing_settlement_staging_smoke_compiled =
+        realtime_settlement_staging_smoke_compiled();
+    let realtime_session_billing_settlement_staging_smoke_enabled =
+        env_flag(&env, REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV);
+    let realtime_session_billing_settlement_staging_smoke_ready =
+        realtime_session_billing_settlement_batch_compiled
+            && realtime_session_billing_settlement_staging_smoke_compiled
+            && realtime_session_billing_settlement_staging_smoke_enabled;
     let realtime_session_platform_header_boundary_compiled =
         realtime_session_platform_header_boundary_compiled();
     let realtime_session_upstream_bridge_compiled = false;
@@ -398,6 +417,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_replay_marker_compiled,
         realtime_session_billing_settlement_audit_log_compiled,
         realtime_session_billing_settlement_batch_compiled,
+        realtime_session_billing_settlement_staging_smoke_compiled,
+        realtime_session_billing_settlement_staging_smoke_enabled,
+        realtime_session_billing_settlement_staging_smoke_ready,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
@@ -458,6 +480,777 @@ pub async fn task_runner_status(
     let mut response = envelope_ok_response(&status)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
+}
+
+#[derive(Debug, Deserialize)]
+struct RealtimeSettlementSmokeRequest {
+    scenario: String,
+    confirm_live: bool,
+    cleanup: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RealtimeSettlementSmokeScenario {
+    AdditionalQuotaApplied,
+    DuplicateReplayNoop,
+    GuardedUpdateRollback,
+    AuditFailureRollback,
+    RefundDeltaApplied,
+    TokenlessApplied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RealtimeSettlementSmokeFixture {
+    scenario: RealtimeSettlementSmokeScenario,
+    user_id: i64,
+    token_id: i64,
+    channel_id: i64,
+    user_quota: i64,
+    user_used_quota: i64,
+    token_remain_quota: i64,
+    token_used_quota: i64,
+    channel_used_quota: i64,
+    pre_consumed_quota: i64,
+    final_quota: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RealtimeSettlementSmokeSnapshot {
+    user_quota: i64,
+    user_used_quota: i64,
+    user_request_count: i64,
+    token_remain_quota: Option<i64>,
+    token_used_quota: Option<i64>,
+    token_accessed_time: Option<i64>,
+    channel_used_quota: i64,
+    replay_rows: i64,
+    log_rows: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RealtimeSettlementSmokeReport {
+    scenario: &'static str,
+    status: &'static str,
+    binding_path: &'static str,
+    confirmation: &'static str,
+    cleanup_requested: bool,
+    cleanup_performed: bool,
+    first_outcome: String,
+    second_outcome: Option<String>,
+    error: Option<String>,
+    setup_snapshot: RealtimeSettlementSmokeSnapshot,
+    final_snapshot: RealtimeSettlementSmokeSnapshot,
+    expected_snapshot: RealtimeSettlementSmokeSnapshot,
+    expected_outcomes: Vec<&'static str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserSmokeSnapshotRow {
+    quota: i64,
+    used_quota: i64,
+    request_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenSmokeSnapshotRow {
+    remain_quota: i64,
+    used_quota: i64,
+    accessed_time: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelSmokeSnapshotRow {
+    used_quota: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SmokeCountRow {
+    count: i64,
+}
+
+/// Admin-only staging smoke that exercises the actual D1 binding batch used by
+/// Realtime settlement. The route is default-off, rejects production, and only
+/// accepts fixed scenario names so it cannot become a general SQL console.
+pub async fn realtime_settlement_batch_smoke(mut req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    if runtime_value(&env, "ENVIRONMENT")
+        .map(|value| matches!(value.as_str(), "production" | "prod"))
+        .unwrap_or(false)
+    {
+        return Ok(envelope_error_response(
+            403,
+            "Realtime settlement binding smoke is not available in production",
+        ));
+    }
+    if !env_flag(&env, REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV) {
+        return Ok(envelope_error_response(
+            403,
+            "Realtime settlement binding smoke is disabled",
+        ));
+    }
+
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let input: RealtimeSettlementSmokeRequest = match serde_json::from_value(body) {
+        Ok(input) => input,
+        Err(err) => {
+            return Ok(envelope_error_response(
+                400,
+                &format!("invalid realtime settlement smoke request: {err}"),
+            ));
+        }
+    };
+    if !input.confirm_live {
+        return Ok(envelope_error_response(
+            400,
+            "Realtime settlement binding smoke requires confirm_live=true",
+        ));
+    }
+    let scenario = match realtime_settlement_smoke_scenario(&input.scenario) {
+        Some(scenario) => scenario,
+        None => {
+            return Ok(envelope_error_response(
+                400,
+                "unknown realtime settlement smoke scenario",
+            ));
+        }
+    };
+
+    let db = env.d1("DB")?;
+    let cleanup_requested = input.cleanup.unwrap_or(true);
+    let report = run_realtime_settlement_smoke(&db, scenario, cleanup_requested).await?;
+    let mut response = envelope_ok_response(&report)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
+}
+
+fn realtime_settlement_staging_smoke_compiled() -> bool {
+    realtime_settlement_smoke_scenarios().len() == 6
+        && realtime_settlement_smoke_scenario("additional-quota-applied").is_some()
+        && realtime_settlement_smoke_scenario("duplicate-replay-noop").is_some()
+        && realtime_settlement_smoke_scenario("guarded-update-rollback").is_some()
+        && realtime_settlement_smoke_scenario("audit-failure-rollback").is_some()
+        && realtime_settlement_smoke_scenario("refund-delta-applied").is_some()
+        && realtime_settlement_smoke_scenario("tokenless-applied").is_some()
+}
+
+fn realtime_settlement_smoke_scenarios() -> [RealtimeSettlementSmokeScenario; 6] {
+    [
+        RealtimeSettlementSmokeScenario::AdditionalQuotaApplied,
+        RealtimeSettlementSmokeScenario::DuplicateReplayNoop,
+        RealtimeSettlementSmokeScenario::GuardedUpdateRollback,
+        RealtimeSettlementSmokeScenario::AuditFailureRollback,
+        RealtimeSettlementSmokeScenario::RefundDeltaApplied,
+        RealtimeSettlementSmokeScenario::TokenlessApplied,
+    ]
+}
+
+fn realtime_settlement_smoke_scenario(value: &str) -> Option<RealtimeSettlementSmokeScenario> {
+    match value.trim() {
+        "additional-quota-applied" => Some(RealtimeSettlementSmokeScenario::AdditionalQuotaApplied),
+        "duplicate-replay-noop" => Some(RealtimeSettlementSmokeScenario::DuplicateReplayNoop),
+        "guarded-update-rollback" => Some(RealtimeSettlementSmokeScenario::GuardedUpdateRollback),
+        "audit-failure-rollback" => Some(RealtimeSettlementSmokeScenario::AuditFailureRollback),
+        "refund-delta-applied" => Some(RealtimeSettlementSmokeScenario::RefundDeltaApplied),
+        "tokenless-applied" => Some(RealtimeSettlementSmokeScenario::TokenlessApplied),
+        _ => None,
+    }
+}
+
+impl RealtimeSettlementSmokeScenario {
+    fn name(self) -> &'static str {
+        match self {
+            Self::AdditionalQuotaApplied => "additional-quota-applied",
+            Self::DuplicateReplayNoop => "duplicate-replay-noop",
+            Self::GuardedUpdateRollback => "guarded-update-rollback",
+            Self::AuditFailureRollback => "audit-failure-rollback",
+            Self::RefundDeltaApplied => "refund-delta-applied",
+            Self::TokenlessApplied => "tokenless-applied",
+        }
+    }
+
+    fn fixture(self) -> RealtimeSettlementSmokeFixture {
+        match self {
+            Self::AdditionalQuotaApplied => {
+                RealtimeSettlementSmokeFixture::new(self, 920101, 900, 0, 400, 100, 0, 100, 150)
+            }
+            Self::DuplicateReplayNoop => {
+                RealtimeSettlementSmokeFixture::new(self, 920102, 900, 0, 400, 100, 0, 100, 150)
+            }
+            Self::GuardedUpdateRollback => {
+                RealtimeSettlementSmokeFixture::new(self, 920103, 105, 0, 400, 100, 0, 100, 250)
+            }
+            Self::AuditFailureRollback => {
+                RealtimeSettlementSmokeFixture::new(self, 920104, 900, 0, 400, 100, 0, 100, 150)
+            }
+            Self::RefundDeltaApplied => {
+                RealtimeSettlementSmokeFixture::new(self, 920105, 800, 0, 300, 200, 0, 200, 120)
+            }
+            Self::TokenlessApplied => {
+                RealtimeSettlementSmokeFixture::new_tokenless(self, 920106, 900, 0, 0, 100, 130)
+            }
+        }
+    }
+}
+
+impl RealtimeSettlementSmokeFixture {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        scenario: RealtimeSettlementSmokeScenario,
+        base_id: i64,
+        user_quota: i64,
+        user_used_quota: i64,
+        token_remain_quota: i64,
+        token_used_quota: i64,
+        channel_used_quota: i64,
+        pre_consumed_quota: i64,
+        final_quota: i64,
+    ) -> Self {
+        Self {
+            scenario,
+            user_id: base_id,
+            token_id: base_id + 10_000,
+            channel_id: base_id + 20_000,
+            user_quota,
+            user_used_quota,
+            token_remain_quota,
+            token_used_quota,
+            channel_used_quota,
+            pre_consumed_quota,
+            final_quota,
+        }
+    }
+
+    fn new_tokenless(
+        scenario: RealtimeSettlementSmokeScenario,
+        base_id: i64,
+        user_quota: i64,
+        user_used_quota: i64,
+        channel_used_quota: i64,
+        pre_consumed_quota: i64,
+        final_quota: i64,
+    ) -> Self {
+        Self {
+            scenario,
+            user_id: base_id,
+            token_id: 0,
+            channel_id: base_id + 20_000,
+            user_quota,
+            user_used_quota,
+            token_remain_quota: 0,
+            token_used_quota: 0,
+            channel_used_quota,
+            pre_consumed_quota,
+            final_quota,
+        }
+    }
+
+    fn replay_key(self) -> String {
+        format!("rtsettle-{}", self.scenario.name())
+    }
+
+    fn session(self) -> String {
+        format!("rtsettle-{}", self.scenario.name())
+    }
+
+    fn username(self) -> String {
+        format!("rtsettle_{}", self.scenario.name().replace('-', "_"))
+    }
+
+    fn aff_code(self) -> String {
+        format!("rt{}", self.user_id)
+    }
+
+    fn token_key(self) -> String {
+        format!("rtsettle-smoke-key-{}", self.scenario.name())
+    }
+
+    fn token_name(self) -> String {
+        if self.token_id > 0 {
+            format!("rtsettle smoke token {}", self.scenario.name())
+        } else {
+            String::new()
+        }
+    }
+
+    fn channel_name(self) -> String {
+        format!("rtsettle smoke {}", self.scenario.name())
+    }
+
+    fn request_id(self) -> String {
+        format!("req-rtsettle-{}", self.scenario.name())
+    }
+
+    fn expected_outcomes(self) -> Vec<&'static str> {
+        match self.scenario {
+            RealtimeSettlementSmokeScenario::DuplicateReplayNoop => {
+                vec!["Applied", "DuplicateReplay"]
+            }
+            RealtimeSettlementSmokeScenario::GuardedUpdateRollback
+            | RealtimeSettlementSmokeScenario::AuditFailureRollback => vec!["Error"],
+            _ => vec!["Applied"],
+        }
+    }
+
+    fn expected_snapshot(self, applied_at: i64) -> RealtimeSettlementSmokeSnapshot {
+        match self.scenario {
+            RealtimeSettlementSmokeScenario::AdditionalQuotaApplied
+            | RealtimeSettlementSmokeScenario::DuplicateReplayNoop => {
+                RealtimeSettlementSmokeSnapshot {
+                    user_quota: 850,
+                    user_used_quota: 150,
+                    user_request_count: 1,
+                    token_remain_quota: Some(350),
+                    token_used_quota: Some(150),
+                    token_accessed_time: Some(applied_at),
+                    channel_used_quota: 150,
+                    replay_rows: 1,
+                    log_rows: 1,
+                }
+            }
+            RealtimeSettlementSmokeScenario::GuardedUpdateRollback => {
+                self.initial_snapshot_with_rows(0, 0)
+            }
+            RealtimeSettlementSmokeScenario::AuditFailureRollback => {
+                self.initial_snapshot_with_rows(0, 0)
+            }
+            RealtimeSettlementSmokeScenario::RefundDeltaApplied => {
+                RealtimeSettlementSmokeSnapshot {
+                    user_quota: 880,
+                    user_used_quota: 120,
+                    user_request_count: 1,
+                    token_remain_quota: Some(380),
+                    token_used_quota: Some(120),
+                    token_accessed_time: Some(applied_at),
+                    channel_used_quota: 120,
+                    replay_rows: 1,
+                    log_rows: 1,
+                }
+            }
+            RealtimeSettlementSmokeScenario::TokenlessApplied => RealtimeSettlementSmokeSnapshot {
+                user_quota: 870,
+                user_used_quota: 130,
+                user_request_count: 1,
+                token_remain_quota: None,
+                token_used_quota: None,
+                token_accessed_time: None,
+                channel_used_quota: 130,
+                replay_rows: 1,
+                log_rows: 1,
+            },
+        }
+    }
+
+    fn initial_snapshot_with_rows(
+        self,
+        replay_rows: i64,
+        log_rows: i64,
+    ) -> RealtimeSettlementSmokeSnapshot {
+        RealtimeSettlementSmokeSnapshot {
+            user_quota: self.user_quota,
+            user_used_quota: self.user_used_quota,
+            user_request_count: 0,
+            token_remain_quota: (self.token_id > 0).then_some(self.token_remain_quota),
+            token_used_quota: (self.token_id > 0).then_some(self.token_used_quota),
+            token_accessed_time: (self.token_id > 0).then_some(0),
+            channel_used_quota: self.channel_used_quota,
+            replay_rows,
+            log_rows,
+        }
+    }
+}
+
+async fn run_realtime_settlement_smoke(
+    db: &D1Database,
+    scenario: RealtimeSettlementSmokeScenario,
+    cleanup_requested: bool,
+) -> WorkerResult<RealtimeSettlementSmokeReport> {
+    let fixture = scenario.fixture();
+    cleanup_realtime_settlement_smoke_fixture(db, fixture).await?;
+    seed_realtime_settlement_smoke_fixture(db, fixture).await?;
+    let setup_snapshot = realtime_settlement_smoke_snapshot(db, fixture).await?;
+
+    let applied_at = crate::admin::unix_timestamp();
+    let (first_outcome, second_outcome, error) =
+        apply_realtime_settlement_smoke_fixture(db, fixture, applied_at).await?;
+    let final_snapshot = realtime_settlement_smoke_snapshot(db, fixture).await?;
+    let expected_snapshot = fixture.expected_snapshot(applied_at);
+    let expected_outcomes = fixture.expected_outcomes();
+    let observed_outcomes = if let Some(second) = second_outcome.as_deref() {
+        vec![first_outcome.as_str(), second]
+    } else {
+        vec![first_outcome.as_str()]
+    };
+    let status = if final_snapshot == expected_snapshot
+        && observed_outcomes == expected_outcomes
+        && setup_snapshot == fixture.initial_snapshot_with_rows(0, 0)
+    {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+
+    if cleanup_requested {
+        cleanup_realtime_settlement_smoke_fixture(db, fixture).await?;
+    }
+
+    Ok(RealtimeSettlementSmokeReport {
+        scenario: scenario.name(),
+        status,
+        binding_path: "worker_binding",
+        confirmation: "D1Database.batch via apply_realtime_settlement_batch",
+        cleanup_requested,
+        cleanup_performed: cleanup_requested,
+        first_outcome,
+        second_outcome,
+        error,
+        setup_snapshot,
+        final_snapshot,
+        expected_snapshot,
+        expected_outcomes,
+    })
+}
+
+async fn apply_realtime_settlement_smoke_fixture(
+    db: &D1Database,
+    fixture: RealtimeSettlementSmokeFixture,
+    applied_at: i64,
+) -> WorkerResult<(String, Option<String>, Option<String>)> {
+    if fixture.scenario == RealtimeSettlementSmokeScenario::AuditFailureRollback {
+        install_realtime_settlement_smoke_audit_failure_trigger(db).await?;
+    }
+    let first = apply_realtime_settlement_smoke_once(db, fixture, applied_at).await;
+    if fixture.scenario == RealtimeSettlementSmokeScenario::AuditFailureRollback {
+        drop_realtime_settlement_smoke_audit_failure_trigger(db).await?;
+    }
+
+    match fixture.scenario {
+        RealtimeSettlementSmokeScenario::DuplicateReplayNoop => {
+            let first = settlement_smoke_outcome(first);
+            let second = settlement_smoke_outcome(
+                apply_realtime_settlement_smoke_once(db, fixture, applied_at).await,
+            );
+            let error = first.1.or(second.1);
+            Ok((first.0, Some(second.0), error))
+        }
+        _ => {
+            let first = settlement_smoke_outcome(first);
+            Ok((first.0, None, first.1))
+        }
+    }
+}
+
+fn settlement_smoke_outcome(
+    result: WorkerResult<crate::d1_repositories::RealtimeSettlementBatchOutcome>,
+) -> (String, Option<String>) {
+    match result {
+        Ok(crate::d1_repositories::RealtimeSettlementBatchOutcome::Applied) => {
+            ("Applied".to_string(), None)
+        }
+        Ok(crate::d1_repositories::RealtimeSettlementBatchOutcome::DuplicateReplay) => {
+            ("DuplicateReplay".to_string(), None)
+        }
+        Err(err) => ("Error".to_string(), Some(err.to_string())),
+    }
+}
+
+async fn apply_realtime_settlement_smoke_once(
+    db: &D1Database,
+    fixture: RealtimeSettlementSmokeFixture,
+    applied_at: i64,
+) -> WorkerResult<crate::d1_repositories::RealtimeSettlementBatchOutcome> {
+    let replay_key = fixture.replay_key();
+    let session = fixture.session();
+    let username = fixture.username();
+    let token_name = fixture.token_name();
+    let request_id = fixture.request_id();
+    let model = "gpt-4o-realtime-preview";
+    let group = "default";
+    let ip = "198.51.100.42";
+    let upstream_request_id = "";
+    let audit_other = json!({
+        "tiered_billing": {
+            "final_quota": fixture.final_quota,
+            "pre_consumed_quota": fixture.pre_consumed_quota
+        },
+        "realtime_billing": {
+            "binding_smoke": true,
+            "scenario": fixture.scenario.name(),
+            "replay_recorded": true
+        }
+    })
+    .to_string();
+    let audit_log = RelayAuditLog {
+        user_id: fixture.user_id,
+        username: &username,
+        token_id: fixture.token_id,
+        token_name: &token_name,
+        channel_id: fixture.channel_id,
+        model,
+        group,
+        prompt_tokens: 1000,
+        completion_tokens: 600,
+        quota: fixture.final_quota,
+        use_time_seconds: 3,
+        is_stream: true,
+        ip,
+        request_id: &request_id,
+        upstream_request_id,
+        other: &audit_other,
+    };
+    let content = format!(
+        "Rust realtime settlement binding smoke {}; tiered quota {}",
+        fixture.scenario.name(),
+        fixture.final_quota
+    );
+    crate::d1_repositories::apply_realtime_settlement_batch(
+        db,
+        crate::d1_repositories::RealtimeSettlementReplayRecord {
+            replay_key: &replay_key,
+            session: &session,
+            user_id: fixture.user_id,
+            token_id: fixture.token_id,
+            channel_id: fixture.channel_id,
+            model_name: model,
+            pre_consumed_quota: fixture.pre_consumed_quota,
+            final_quota: fixture.final_quota,
+            created_at: applied_at,
+            applied_at,
+        },
+        &content,
+        &audit_log,
+    )
+    .await
+}
+
+async fn seed_realtime_settlement_smoke_fixture(
+    db: &D1Database,
+    fixture: RealtimeSettlementSmokeFixture,
+) -> WorkerResult<()> {
+    let username = fixture.username();
+    let aff_code = fixture.aff_code();
+    let password = "smoke-disabled";
+    let group = "default";
+    let user_args = [
+        D1Type::Integer(d1_i32(fixture.user_id)),
+        D1Type::Text(username.as_str()),
+        D1Type::Text(password),
+        D1Type::Integer(d1_i32(fixture.user_quota)),
+        D1Type::Integer(d1_i32(fixture.user_used_quota)),
+        D1Type::Text(group),
+        D1Type::Text(aff_code.as_str()),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO users (
+          id, username, password, role, status, quota, used_quota,
+          request_count, "group", aff_code, created_at
+        ) VALUES (?1, ?2, ?3, 1, 1, ?4, ?5, 0, ?6, ?7, 0)
+        "#,
+    )
+    .bind_refs(&user_args)?
+    .run()
+    .await?;
+
+    if fixture.token_id > 0 {
+        let token_key = fixture.token_key();
+        let token_name = fixture.token_name();
+        let token_args = [
+            D1Type::Integer(d1_i32(fixture.token_id)),
+            D1Type::Integer(d1_i32(fixture.user_id)),
+            D1Type::Text(token_key.as_str()),
+            D1Type::Text(token_name.as_str()),
+            D1Type::Integer(d1_i32(fixture.token_remain_quota)),
+            D1Type::Integer(d1_i32(fixture.token_used_quota)),
+            D1Type::Text(group),
+        ];
+        db.prepare(
+            r#"
+            INSERT INTO tokens (
+              id, user_id, "key", status, name, created_time, accessed_time,
+              expired_time, remain_quota, unlimited_quota, used_quota, "group"
+            ) VALUES (?1, ?2, ?3, 1, ?4, 0, 0, -1, ?5, 0, ?6, ?7)
+            "#,
+        )
+        .bind_refs(&token_args)?
+        .run()
+        .await?;
+    }
+
+    let channel_key = "smoke-channel-key";
+    let channel_name = fixture.channel_name();
+    let model = "gpt-4o-realtime-preview";
+    let channel_args = [
+        D1Type::Integer(d1_i32(fixture.channel_id)),
+        D1Type::Text(channel_key),
+        D1Type::Text(channel_name.as_str()),
+        D1Type::Text(model),
+        D1Type::Text(group),
+        D1Type::Integer(d1_i32(fixture.channel_used_quota)),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO channels (
+          id, type, "key", status, name, created_time, models, "group", used_quota
+        ) VALUES (?1, 1, ?2, 1, ?3, 0, ?4, ?5, ?6)
+        "#,
+    )
+    .bind_refs(&channel_args)?
+    .run()
+    .await?;
+
+    Ok(())
+}
+
+async fn cleanup_realtime_settlement_smoke_fixture(
+    db: &D1Database,
+    fixture: RealtimeSettlementSmokeFixture,
+) -> WorkerResult<()> {
+    let replay_key = fixture.replay_key();
+    let request_id = fixture.request_id();
+    let log_args = [
+        D1Type::Text(request_id.as_str()),
+        D1Type::Integer(d1_i32(fixture.user_id)),
+        D1Type::Integer(d1_i32(fixture.channel_id)),
+    ];
+    db.prepare(
+        r#"
+        DELETE FROM logs
+        WHERE request_id = ?1
+           OR user_id = ?2
+           OR channel_id = ?3
+        "#,
+    )
+    .bind_refs(&log_args)?
+    .run()
+    .await?;
+
+    let replay_args = [D1Type::Text(replay_key.as_str())];
+    db.prepare("DELETE FROM realtime_settlement_replays WHERE replay_key = ?1")
+        .bind_refs(&replay_args)?
+        .run()
+        .await?;
+
+    if fixture.token_id > 0 {
+        let token_args = [D1Type::Integer(d1_i32(fixture.token_id))];
+        db.prepare("DELETE FROM tokens WHERE id = ?1")
+            .bind_refs(&token_args)?
+            .run()
+            .await?;
+    }
+
+    let channel_args = [D1Type::Integer(d1_i32(fixture.channel_id))];
+    db.prepare("DELETE FROM channels WHERE id = ?1")
+        .bind_refs(&channel_args)?
+        .run()
+        .await?;
+
+    let user_args = [D1Type::Integer(d1_i32(fixture.user_id))];
+    db.prepare("DELETE FROM users WHERE id = ?1")
+        .bind_refs(&user_args)?
+        .run()
+        .await?;
+
+    drop_realtime_settlement_smoke_audit_failure_trigger(db).await?;
+    Ok(())
+}
+
+async fn realtime_settlement_smoke_snapshot(
+    db: &D1Database,
+    fixture: RealtimeSettlementSmokeFixture,
+) -> WorkerResult<RealtimeSettlementSmokeSnapshot> {
+    let user_args = [D1Type::Integer(d1_i32(fixture.user_id))];
+    let user = db
+        .prepare("SELECT quota, used_quota, request_count FROM users WHERE id = ?1")
+        .bind_refs(&user_args)?
+        .first::<UserSmokeSnapshotRow>(None)
+        .await?
+        .ok_or_else(|| worker::Error::RustError("smoke user row missing".to_string()))?;
+
+    let token = if fixture.token_id > 0 {
+        let token_args = [D1Type::Integer(d1_i32(fixture.token_id))];
+        Some(
+            db.prepare("SELECT remain_quota, used_quota, accessed_time FROM tokens WHERE id = ?1")
+                .bind_refs(&token_args)?
+                .first::<TokenSmokeSnapshotRow>(None)
+                .await?
+                .ok_or_else(|| worker::Error::RustError("smoke token row missing".to_string()))?,
+        )
+    } else {
+        None
+    };
+
+    let channel_args = [D1Type::Integer(d1_i32(fixture.channel_id))];
+    let channel = db
+        .prepare("SELECT used_quota FROM channels WHERE id = ?1")
+        .bind_refs(&channel_args)?
+        .first::<ChannelSmokeSnapshotRow>(None)
+        .await?
+        .ok_or_else(|| worker::Error::RustError("smoke channel row missing".to_string()))?;
+
+    let replay_key = fixture.replay_key();
+    let replay_args = [D1Type::Text(replay_key.as_str())];
+    let replay_rows = db
+        .prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1")
+        .bind_refs(&replay_args)?
+        .first::<SmokeCountRow>(None)
+        .await?
+        .map(|row| row.count)
+        .unwrap_or(0);
+
+    let request_id = fixture.request_id();
+    let log_args = [D1Type::Text(request_id.as_str())];
+    let log_rows = db
+        .prepare("SELECT COUNT(1) AS count FROM logs WHERE request_id = ?1")
+        .bind_refs(&log_args)?
+        .first::<SmokeCountRow>(None)
+        .await?
+        .map(|row| row.count)
+        .unwrap_or(0);
+
+    Ok(RealtimeSettlementSmokeSnapshot {
+        user_quota: user.quota,
+        user_used_quota: user.used_quota,
+        user_request_count: user.request_count,
+        token_remain_quota: token.as_ref().map(|row| row.remain_quota),
+        token_used_quota: token.as_ref().map(|row| row.used_quota),
+        token_accessed_time: token.as_ref().map(|row| row.accessed_time),
+        channel_used_quota: channel.used_quota,
+        replay_rows,
+        log_rows,
+    })
+}
+
+async fn install_realtime_settlement_smoke_audit_failure_trigger(
+    db: &D1Database,
+) -> WorkerResult<()> {
+    db.prepare(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS ct_rt_settlement_smoke_abort_log
+        BEFORE INSERT ON logs
+        WHEN NEW.request_id = 'req-rtsettle-audit-failure-rollback'
+        BEGIN
+          SELECT RAISE(ABORT, 'cinatoken realtime settlement smoke audit failure');
+        END
+        "#,
+    )
+    .run()
+    .await?;
+    Ok(())
+}
+
+async fn drop_realtime_settlement_smoke_audit_failure_trigger(db: &D1Database) -> WorkerResult<()> {
+    db.prepare("DROP TRIGGER IF EXISTS ct_rt_settlement_smoke_abort_log")
+        .run()
+        .await?;
+    Ok(())
 }
 
 /// Resolve whether this request should be handled by WFP dispatch before the
@@ -1173,6 +1966,38 @@ mod tests {
         assert!(guards.contains(&"metadata_only_control_frames"));
         assert!(guards.contains(&"upstream_bridge"));
         assert!(guards.contains(&"billing_settlement"));
+    }
+
+    #[test]
+    fn realtime_settlement_staging_smoke_contract_is_operator_visible() {
+        assert!(realtime_settlement_staging_smoke_compiled());
+        let scenarios = realtime_settlement_smoke_scenarios()
+            .into_iter()
+            .map(RealtimeSettlementSmokeScenario::name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scenarios,
+            vec![
+                "additional-quota-applied",
+                "duplicate-replay-noop",
+                "guarded-update-rollback",
+                "audit-failure-rollback",
+                "refund-delta-applied",
+                "tokenless-applied",
+            ]
+        );
+
+        let duplicate = RealtimeSettlementSmokeScenario::DuplicateReplayNoop.fixture();
+        assert_eq!(
+            duplicate.expected_outcomes(),
+            vec!["Applied", "DuplicateReplay"]
+        );
+        let tokenless = RealtimeSettlementSmokeScenario::TokenlessApplied.fixture();
+        let expected = tokenless.expected_snapshot(1_800_100_000);
+        assert_eq!(expected.token_remain_quota, None);
+        assert_eq!(expected.user_quota, 870);
+        assert_eq!(expected.replay_rows, 1);
+        assert_eq!(expected.log_rows, 1);
     }
 
     #[test]

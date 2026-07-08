@@ -502,9 +502,11 @@ As of the docs reviewed on 2026-07-06:
   platform header-boundary contract self-tests. It now has a controlled mock
   startup queue/drain probe plus default-off replay/audit/batch settlement
   foundations, a local SQL-shape settlement-batch replay, and a staging
-  setup/verify/cleanup evidence plan, but still lacks archived Worker-binding
-  staging queue/drain and D1 rollback artifacts, full live fault replay, and
-  billing settlement proof required for production `/v1/realtime`.
+  setup/verify/cleanup evidence plan plus a default-off Worker-binding
+  settlement smoke route for the six fixed apply/duplicate/rollback scenarios,
+  but still lacks archived live staging binding-smoke output, staging
+  queue/drain and D1 rollback artifacts, full live fault replay, and billing
+  settlement proof required for production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
   response-header smoke guard, but still needs a real paid-plan `DISPATCHER`
   binding, uploaded tenant artifact, and live internal dispatch smoke.

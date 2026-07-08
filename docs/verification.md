@@ -22,6 +22,19 @@ Last checked: 2026-07-08
   artifacts plus explicit Worker-binding apply requirements. The plan
   intentionally warns that standalone `wrangler d1 execute` SQL is not
   equivalent to `D1Database.batch()` apply evidence.
+- `bun tools/smoke_realtime_settlement_batch.mjs --binding-smoke-plan --json
+  --url http://127.0.0.1:8787 --scenario all` and `bun run
+  check:realtime-session:settlement-binding-smoke-plan`: passed after adding
+  the default-off, admin-only Worker-binding smoke route plan. The dry-run
+  covers all six fixed settlement scenarios and prints only request bodies and
+  redacted readiness requirements; live mode still requires staging
+  `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true`, an admin cookie, and
+  `--confirm-live`.
+- `cargo test -p cinatoken-worker --lib platform_gateway`: passed after adding
+  `/api/platform/realtime/settlement-batch/smoke` and the
+  `realtime_session_billing_settlement_staging_smoke_*` capability fields.
+  The test locks the six fixed scenario names and keeps the staging smoke
+  readiness separate from final Realtime v1 cutover readiness.
 - `bun run check`: passed after wiring the settlement-batch contract into the
   default gate; the only warnings were the existing unused Worker repository
   helpers `complete_topup` and `list_user_topups`.

@@ -114,6 +114,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `realtime_session_billing_settlement_compiled` remains false until the batch
   is proven with controlled staging D1 applied, duplicate, failure, rollback,
   and no-double-charge evidence.
+- A default-off Worker-binding smoke route now exists at
+  `POST /api/platform/realtime/settlement-batch/smoke`, gated by
+  `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED`. `bun run
+  check:realtime-session:settlement-binding-smoke-plan` dry-runs the six fixed
+  scenarios; live staging still requires an admin cookie, `--confirm-live`, and
+  archived D1/capability evidence before any cutover flag can move.
 - The Realtime mock upstream replay harness now makes the
   `response-done-usage` scenario seed an isolated tiered billing expression in
   review-only D1 SQL, then requires live/status metrics to contain both the

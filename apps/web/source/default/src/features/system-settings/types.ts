@@ -448,6 +448,9 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_replay_marker_compiled: boolean
   realtime_session_billing_settlement_audit_log_compiled: boolean
   realtime_session_billing_settlement_batch_compiled: boolean
+  realtime_session_billing_settlement_staging_smoke_compiled: boolean
+  realtime_session_billing_settlement_staging_smoke_enabled: boolean
+  realtime_session_billing_settlement_staging_smoke_ready: boolean
   realtime_session_platform_header_boundary_compiled: boolean
   realtime_session_upstream_bridge_compiled: boolean
   realtime_session_billing_settlement_compiled: boolean

@@ -5,12 +5,22 @@ import { Database } from "bun:sqlite";
 const defaultNow = 1_800_100_000;
 const defaultStagingDatabase = "<STAGING_D1_DATABASE_NAME>";
 const defaultArtifactDir = "artifacts/realtime-settlement-batch";
+const defaultBindingSmokeUrl = "http://127.0.0.1:8787";
+const bindingSmokePath = "/api/platform/realtime/settlement-batch/smoke";
 
 function parseArgs(argv) {
   const values = new Map();
   const flags = new Set();
-  const flagNames = new Set(["self-test", "json", "staging-plan"]);
-  const valueNames = new Set(["database", "wrangler-env", "artifact-dir"]);
+  const flagNames = new Set([
+    "self-test",
+    "json",
+    "staging-plan",
+    "binding-smoke-plan",
+    "binding-smoke",
+    "confirm-live",
+    "retain",
+  ]);
+  const valueNames = new Set(["database", "wrangler-env", "artifact-dir", "url", "scenario", "cookie"]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
@@ -45,10 +55,13 @@ function usage(exitCode, message = "") {
     [
       "Usage: bun tools/smoke_realtime_settlement_batch.mjs [--self-test] [--json]",
       "       bun tools/smoke_realtime_settlement_batch.mjs --staging-plan [--database <d1-name>] [--wrangler-env <env>] [--artifact-dir <dir>] [--json]",
+      "       bun tools/smoke_realtime_settlement_batch.mjs --binding-smoke-plan [--url <worker-origin>] [--scenario <name|all>] [--json]",
+      "       bun tools/smoke_realtime_settlement_batch.mjs --binding-smoke --url <worker-origin> --cookie <admin-cookie> --confirm-live [--scenario <name|all>] [--retain] [--json]",
       "",
       "Runs a local SQLite replay of the Realtime settlement D1 batch guard.",
       "It never writes Cloudflare D1 by itself; use the JSON output as pre-staging evidence.",
       "The staging plan prints reviewed SQL artifacts and Wrangler commands, but never accepts or prints an API token.",
+      "The binding smoke plan is dry-run only; live binding smoke requires an admin Cookie and confirm-live.",
     ].join("\n"),
   );
   process.exit(exitCode);
@@ -471,6 +484,139 @@ function buildStagingPlan(options) {
       "For audit failure, archive Worker binding error metadata plus unchanged quota rows and zero replay/log rows.",
       "For cleanup, archive that all smoke user/token/channel/replay/log rows are removed from staging.",
     ],
+  };
+}
+
+function normalizeBindingSmokeOptions(args) {
+  const value = (name, envName) => args.values.get(name) || process.env[envName];
+  const url = validatePlanValue(
+    value("url", "REALTIME_SETTLEMENT_SMOKE_URL") || process.env.STAGING_BASE_URL || defaultBindingSmokeUrl,
+    "url",
+  ).replace(/\/+$/, "");
+  const scenario = validatePlanValue(value("scenario", "REALTIME_SETTLEMENT_SMOKE_SCENARIO") || "all", "scenario");
+  const cookie = optionalHeaderValue(value("cookie", "REALTIME_SETTLEMENT_SMOKE_COOKIE"), "cookie");
+  const scenarios = selectedBindingSmokeScenarios(scenario);
+  return {
+    url,
+    scenario,
+    scenarios,
+    cookie,
+    confirmLive: args.flags.has("confirm-live"),
+    cleanup: !args.flags.has("retain"),
+  };
+}
+
+function selectedBindingSmokeScenarios(value) {
+  const scenarios = stagingScenarioDefinitions();
+  if (value === "all") {
+    return scenarios;
+  }
+  const selected = scenarios.find((scenario) => scenario.name === value);
+  if (!selected) {
+    throw new Error(`unknown binding smoke scenario: ${value}`);
+  }
+  return [selected];
+}
+
+function buildBindingSmokePlan(options) {
+  return {
+    tool: "smoke_realtime_settlement_batch",
+    mode: "binding-smoke-plan",
+    status: "PASS",
+    dryRun: true,
+    url: options.url,
+    endpoint: bindingSmokePath,
+    scenario: options.scenario,
+    cleanup: options.cleanup,
+    adminCookieConfigured: Boolean(options.cookie),
+    requiredBeforeRun: [
+      "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
+      "Keep ENVIRONMENT=staging; the Worker route rejects production.",
+      "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
+      "Run against an isolated staging D1 database with migrations through 0018 applied.",
+      "Archive /api/platform/capabilities before and after the smoke run.",
+    ],
+    requests: options.scenarios.map((scenario) => ({
+      scenario: scenario.name,
+      method: "POST",
+      url: `${options.url}${bindingSmokePath}`,
+      body: {
+        scenario: scenario.name,
+        confirm_live: true,
+        cleanup: options.cleanup,
+      },
+      expectedStatus: "PASS",
+      expectedOutcomes: scenario.name === "duplicate-replay-noop"
+        ? ["Applied", "DuplicateReplay"]
+        : scenario.expectedApplyFailure
+          ? ["Error"]
+          : ["Applied"],
+      expectedSnapshot: scenario.expectedSnapshot,
+      bindingPath: "worker_binding",
+    })),
+    safety: {
+      writesD1: true,
+      acceptsArbitrarySql: false,
+      acceptsApiToken: false,
+      secretOutput: "Cookie values are never printed; use environment variables or a local shell variable.",
+    },
+  };
+}
+
+async function runBindingSmoke(options) {
+  if (!options.confirmLive) {
+    throw new Error("live binding smoke requires --confirm-live");
+  }
+  if (!options.cookie) {
+    throw new Error("live binding smoke requires --cookie or REALTIME_SETTLEMENT_SMOKE_COOKIE");
+  }
+
+  const results = [];
+  for (const scenario of options.scenarios) {
+    const response = await fetch(`${options.url}${bindingSmokePath}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: options.cookie,
+      },
+      body: JSON.stringify({
+        scenario: scenario.name,
+        confirm_live: true,
+        cleanup: options.cleanup,
+      }),
+    });
+    const text = await response.text();
+    let body;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { parse_error: "response body was not JSON", preview: text.slice(0, 500) };
+    }
+    const data = body?.data ?? body;
+    const status = response.ok && body?.success !== false && data?.status === "PASS" ? "PASS" : "FAIL";
+    results.push({
+      scenario: scenario.name,
+      httpStatus: response.status,
+      status,
+      report: data,
+    });
+  }
+  const failed = results.filter((result) => result.status !== "PASS");
+  return {
+    tool: "smoke_realtime_settlement_batch",
+    mode: "binding-smoke",
+    status: failed.length === 0 ? "PASS" : "FAIL",
+    dryRun: false,
+    url: options.url,
+    endpoint: bindingSmokePath,
+    cleanup: options.cleanup,
+    adminCookieConfigured: true,
+    results,
+    summary: {
+      scenarios: results.length,
+      passed: results.length - failed.length,
+      failed: failed.length,
+    },
   };
 }
 
@@ -1352,6 +1498,20 @@ function validateOptionalPlanValue(value, name) {
   return text ? validatePlanValue(text, name) : "";
 }
 
+function optionalHeaderValue(value, name) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (/[\u0000-\u001f\u007f]/.test(text)) {
+    throw new Error(`${name} must not contain control characters`);
+  }
+  if (text.includes("cfut_")) {
+    throw new Error(`${name} must not contain Cloudflare API tokens`);
+  }
+  return text;
+}
+
 function validateArtifactDir(value) {
   const text = validatePlanValue(value, "artifact-dir").replaceAll("\\", "/").replace(/\/+$/, "");
   if (text.includes("..")) {
@@ -1402,6 +1562,36 @@ function printResult(result, asJson) {
     );
     return;
   }
+  if (result.mode === "binding-smoke-plan") {
+    console.log(
+      [
+        "Realtime settlement Worker-binding smoke plan",
+        `url: ${result.url}`,
+        `endpoint: ${result.endpoint}`,
+        `scenario: ${result.scenario}`,
+        `cleanup: ${result.cleanup}`,
+        `admin_cookie_configured: ${result.adminCookieConfigured}`,
+        "required_before_run:",
+        ...result.requiredBeforeRun.map((item) => `- ${item}`),
+        "requests:",
+        ...result.requests.map(
+          (request) =>
+            `- ${request.scenario}: ${request.method} ${request.url} expected ${request.expectedStatus}`,
+        ),
+      ].join("\n"),
+    );
+    return;
+  }
+  if (result.mode === "binding-smoke") {
+    console.log(`Realtime settlement Worker-binding smoke: ${result.status}`);
+    console.log(`url: ${result.url}`);
+    console.log(`cleanup: ${result.cleanup}`);
+    console.log(`admin_cookie_configured: ${result.adminCookieConfigured}`);
+    for (const item of result.results) {
+      console.log(`- ${item.scenario}: ${item.status} (http ${item.httpStatus})`);
+    }
+    return;
+  }
   console.log(`${result.tool}: ${result.status}`);
   for (const check of result.checks) {
     console.log(`- ${check.name}: ${check.status}`);
@@ -1411,15 +1601,23 @@ function printResult(result, asJson) {
   }
 }
 
-try {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const result = args.flags.has("staging-plan")
-    ? buildStagingPlan(normalizeStagingPlanOptions(args))
-    : runSelfTest();
+  const result = args.flags.has("binding-smoke")
+    ? await runBindingSmoke(normalizeBindingSmokeOptions(args))
+    : args.flags.has("binding-smoke-plan")
+      ? buildBindingSmokePlan(normalizeBindingSmokeOptions(args))
+      : args.flags.has("staging-plan")
+        ? buildStagingPlan(normalizeStagingPlanOptions(args))
+        : runSelfTest();
   printResult(result, args.flags.has("json"));
   if (result.status !== "PASS") {
     process.exit(1);
   }
+}
+
+try {
+  await main();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

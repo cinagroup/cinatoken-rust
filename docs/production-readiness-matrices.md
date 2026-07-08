@@ -182,6 +182,14 @@ now covers the SQL shape before staging, and
 artifacts plus Worker-binding apply requirements, but neither is production
 evidence by itself.
 
+The next evidence step is now executable but still default-off:
+`POST /api/platform/realtime/settlement-batch/smoke` runs only for admins in
+non-production when `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true`.
+`check:realtime-session:settlement-binding-smoke-plan` records the six fixed
+Worker-binding scenarios without touching D1; live `--binding-smoke
+--confirm-live` output plus capabilities before/after must be archived before
+the settlement readiness cells can move beyond foundation status.
+
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
 | Public status and setup: `/api/status`, `/api/setup`, static content endpoints | `api-router.go`, `web-router.go`, `web/default` | Substantial: Go-compatible status/setup envelopes, public content handlers, and SPA routing implemented; deployed frontend contract smoke pending | JSON/read-only/static assets | G1/G5 | Deploy current frontend/status fixes and capture anonymous/setup/hard-refresh smoke. |

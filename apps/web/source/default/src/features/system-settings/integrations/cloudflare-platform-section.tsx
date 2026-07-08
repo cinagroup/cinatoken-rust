@@ -129,6 +129,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_settlement_replay_marker_compiled,
         capabilities.realtime_session_billing_settlement_audit_log_compiled,
         capabilities.realtime_session_billing_settlement_batch_compiled,
+        capabilities.realtime_session_billing_settlement_staging_smoke_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -990,6 +991,41 @@ function buildCapabilityGroups(
             capabilities.realtime_session_billing_settlement_batch_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime settlement binding smoke'),
+          description: t(
+            'Exposes the default-off, admin-only staging probe that runs the fixed settlement scenarios through the deployed Worker D1 binding path.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_staging_smoke_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime settlement smoke gate'),
+          description: t(
+            'Requires REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true in staging before the binding smoke route can write isolated smoke rows.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_staging_smoke_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Disabled'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Realtime settlement smoke readiness'),
+          description: t(
+            'Ready only when the settlement batch, fixed smoke route, and staging gate are all present for archived Worker-binding evidence.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_staging_smoke_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant:
+            capabilities.realtime_session_billing_settlement_staging_smoke_enabled
+              ? 'warning'
+              : 'neutral',
         },
         {
           label: t('Platform header boundary'),

@@ -132,6 +132,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             },
         )
         .post_async(
+            "/api/platform/realtime/settlement-batch/smoke",
+            |req, ctx| async move {
+                platform_gateway::realtime_settlement_batch_smoke(req, ctx.env).await
+            },
+        )
+        .post_async(
             "/api/platform/wfp/tenant-script/plan",
             |req, ctx| async move { wfp_tenant::plan(req, ctx.env).await },
         )

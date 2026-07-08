@@ -104,6 +104,15 @@ requiring the apply proof to come from the Worker binding path. Production
 cutover still requires archived staging D1 rollback/idempotency evidence and
 live no-double-charge proof.
 
+**M6 binding-smoke update (2026-07-08):** the Worker now exposes a
+default-off, admin-only staging route at
+`/api/platform/realtime/settlement-batch/smoke`. It runs the six fixed
+settlement scenarios through the same D1 binding batch function and reports
+setup/final/expected snapshots. The Cloudflare Platform panel surfaces
+compiled/enabled/ready smoke fields, but `realtime_session_billing_settlement`
+and v1 cutover remain blocked until the live smoke and no-double-charge bundle
+are archived.
+
 **Two refinements the landed code makes over this doc's original design:**
 
 1. **The AiGateway key-URL coupling is *stricter* than cinaVibeSDK.** vibesdk honors a

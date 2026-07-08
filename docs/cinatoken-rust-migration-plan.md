@@ -8571,6 +8571,64 @@ Remaining migration gaps:
   `realtime_session_v1_cutover_ready=false` until batch proof, upstream bridge
   replay, live fault replay, and rollback proof are complete.
 
+### 22.138 2026-07-08 Realtime Settlement Worker-Binding Smoke Route
+
+This increment turns the previous staging-plan requirement into an executable,
+default-off Worker path. It still does not mark production Realtime settlement
+complete; it provides the missing staging mechanism for proving that the
+deployed Worker D1 binding, not standalone Wrangler SQL, applies or rolls back
+the settlement batch.
+
+Implemented:
+
+- Added admin-only `POST /api/platform/realtime/settlement-batch/smoke`. The
+  route rejects production, requires
+  `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true`, requires
+  `confirm_live=true`, and accepts only the six fixed settlement scenarios:
+  additional quota, duplicate replay, guarded-update rollback, audit-failure
+  rollback, refund delta, and tokenless apply.
+- The route seeds isolated smoke rows, calls the production
+  `apply_realtime_settlement_batch` repository function through the Worker D1
+  binding, returns setup/final/expected snapshots, and cleans up by default.
+  The audit-failure scenario uses a temporary request-id-scoped D1 trigger so
+  the late audit-row failure is also a real D1 rollback proof.
+- Added `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=false` to all Wrangler
+  environments and new capability fields:
+  `realtime_session_billing_settlement_staging_smoke_compiled`,
+  `realtime_session_billing_settlement_staging_smoke_enabled`, and
+  `realtime_session_billing_settlement_staging_smoke_ready`.
+- Extended the admin Cloudflare Platform frontend panel and TypeScript
+  capability contract so operators can see the compiled route, staging gate,
+  and binding-smoke readiness without treating them as final v1 cutover.
+- Extended `tools/smoke_realtime_settlement_batch.mjs` with
+  `--binding-smoke-plan` dry-run output and guarded live
+  `--binding-smoke --confirm-live` execution. The default `bun run check` now
+  includes `check:realtime-session:settlement-binding-smoke-plan`.
+
+Validation:
+
+- `node --check tools/smoke_realtime_settlement_batch.mjs` passed.
+- `bun tools/smoke_realtime_settlement_batch.mjs --binding-smoke-plan --json
+  --url http://127.0.0.1:8787 --scenario all` passed.
+- `bun run check:realtime-session:settlement-binding-smoke-plan` passed.
+- `bun run check:realtime-session:settlement-batch-contract` passed.
+- `cargo fmt --all --check` passed.
+- `cargo test -p cinatoken-worker --lib platform_gateway` passed, including the
+  six-scenario smoke contract.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed with
+  only the existing `complete_topup` / `list_user_topups` dead-code warnings.
+
+Remaining migration gaps:
+
+- Deploy staging with `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true` only for
+  the controlled smoke window, run the live binding smoke with an admin cookie,
+  and archive the JSON output plus `/api/platform/capabilities` before/after.
+- For `--retain` runs, capture Wrangler row snapshots and then run cleanup.
+- Keep `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false` until live `/v1/realtime` usage,
+  hibernation/restore, rollback, duplicate replay, and no-double-charge
+  evidence are all archived.
+
 ### 22.137 2026-07-08 Realtime Settlement Batch Replay Contract
 
 This increment adds local, repeatable evidence for the Realtime settlement D1

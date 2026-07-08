@@ -13,6 +13,33 @@ const defaultSeedTokenKey = "sk-cinatoken-realtime-mock-local";
 const openaiCompatibleChannelType = 1;
 const maxRealtimeBridgeTextFrameBytes = 1_048_576;
 const upstreamReplayProbePrefix = "cinatoken-upstream-live-frame-limit:";
+const usageReplayCloseProbe = "cinatoken realtime usage replay close";
+const expectedResponseDoneUsage = {
+  source_event: "response.done",
+  prompt_tokens: 1200,
+  completion_tokens: 350,
+  total_tokens: 1550,
+  cached_tokens: 400,
+  audio_input_tokens: 180,
+  audio_output_tokens: 90,
+};
+const responseDoneUsageFrame = JSON.stringify({
+  type: "response.done",
+  response: {
+    usage: {
+      input_tokens: expectedResponseDoneUsage.prompt_tokens,
+      output_tokens: expectedResponseDoneUsage.completion_tokens,
+      total_tokens: expectedResponseDoneUsage.total_tokens,
+      input_token_details: {
+        cached_tokens: expectedResponseDoneUsage.cached_tokens,
+        audio_tokens: expectedResponseDoneUsage.audio_input_tokens,
+      },
+      output_token_details: {
+        audio_tokens: expectedResponseDoneUsage.audio_output_tokens,
+      },
+    },
+  },
+});
 
 const scenarios = new Map(
   [
@@ -52,6 +79,22 @@ const scenarios = new Map(
       closeReason: "mock_upstream_startup_queue_drain",
       queueProbe: true,
       queueProbeDelayMs: 500,
+      expectedEvent: {
+        event: "upstream_closed",
+        direction: "upstream_to_client",
+        clientCode: 1000,
+        clientReason: "upstream_bridge_closed",
+        upstreamCloseCode: 1000,
+      },
+    },
+    {
+      name: "response-done-usage",
+      mockAction: "send_response_done_usage_after_first_client_frame",
+      closeCode: 1000,
+      closeReason: "mock_upstream_response_done_usage",
+      closeAfterSecondClientFrame: true,
+      expectUsageCapture: true,
+      expectedUsage: expectedResponseDoneUsage,
       expectedEvent: {
         event: "upstream_closed",
         direction: "upstream_to_client",
@@ -216,7 +259,7 @@ function usage(exitCode, error) {
       "Usage: bun tools/smoke_realtime_upstream_replay.mjs --url <worker-origin> --api-key <staging-token> [options]",
       "",
       "Options:",
-      "  --scenario <name>       upstream-normal-close, upstream-frame-limit, startup-queue-drain, upstream-event-stream-failed, or upstream-accept-failed",
+      "  --scenario <name>       upstream-normal-close, upstream-frame-limit, startup-queue-drain, response-done-usage, upstream-event-stream-failed, or upstream-accept-failed",
       "  --model <model>         or REALTIME_UPSTREAM_REPLAY_MODEL",
       "  --api-key <token>       or REALTIME_UPSTREAM_REPLAY_API_KEY",
       "  --probe <text>          or REALTIME_UPSTREAM_REPLAY_PROBE",
@@ -278,12 +321,9 @@ function buildPlan(options) {
       ],
     },
     localD1Seed: buildLocalD1SeedPlan(options, expectedChannelBaseUrl),
-    runtimeStatusProbePhase: options.scenario.skipRuntimeStatus
-      ? "skipped_early_mock_fault"
-      : options.scenario.queueProbe
-        ? "after_probe_before_drain"
-        : "before_probe",
+    runtimeStatusProbePhase: runtimeStatusProbePhaseForScenario(options.scenario),
     expectedRuntimeStatus: expectedRuntimeStatusForScenario(options.scenario, options.probe),
+    expectedUsageCapture: expectedUsageCaptureForScenario(options.scenario),
     expectedBridgeEvent: options.scenario.expectedEvent,
     probeBytes: byteLength(options.probe),
     timeoutMs: options.timeoutMs,
@@ -291,11 +331,7 @@ function buildPlan(options) {
     notes: [
       "Local mock replay is intended for wrangler dev or another Worker runtime that can reach the mock URL.",
       "Cloudflare staging cannot reach 127.0.0.1 directly; use a public mock endpoint or tunnel for remote staging.",
-      options.scenario.queueProbe
-        ? "Live replay sends the probe before the status control frame and expects one queued upstream frame before the delayed upstream accept drains it."
-        : options.scenario.skipRuntimeStatus
-          ? "Live replay expects the Worker-side mock fault to close before any client probe is forwarded."
-        : "Live replay sends a WebSocket status control frame before the probe and requires one active upstream bridge with an empty pending queue.",
+      scenarioReplayNote(options.scenario),
       options.scenario.expectForwardedClientFrame === false
         ? "The live smoke fails unless the mock receives the upstream WebSocket connection and the Worker emits a metadata-only realtime_session_bridge_event."
         : "The live smoke fails unless the mock receives the forwarded client frame and the Worker emits a metadata-only realtime_session_bridge_event.",
@@ -317,19 +353,31 @@ async function runLiveReplay(options, plan) {
     const ws = await openWebSocket(plan.workerRealtimeUrl, plan.protocols, options.timeoutMs);
     const outcomePromise = waitForBridgeEventAndClose(ws, options.timeoutMs);
     let statusFrame = null;
+    let usageFrame = null;
     if (options.scenario.skipRuntimeStatus) {
       // The Worker-side mock fault happens immediately after upstream connect.
     } else if (options.scenario.queueProbe) {
       ws.send(options.probe);
       statusFrame = await requestRuntimeStatus(ws, options);
+    } else if (options.scenario.expectUsageCapture) {
+      ws.send(options.probe);
+      usageFrame = await waitForJsonMessage(
+        ws,
+        (message) => message.type === "response.done",
+        options.timeoutMs,
+        "response.done usage frame",
+      );
+      validateUsageFrame(usageFrame, options.scenario.expectedUsage, "forwarded upstream usage frame");
+      statusFrame = await requestRuntimeStatus(ws, options);
+      ws.send(usageReplayCloseProbe);
     } else {
       statusFrame = await requestRuntimeStatus(ws, options);
     }
-    if (!options.scenario.skipProbe && !options.scenario.queueProbe) {
+    if (!options.scenario.skipProbe && !options.scenario.queueProbe && !options.scenario.expectUsageCapture) {
       ws.send(options.probe);
     }
     const outcome = await outcomePromise;
-    validateLiveReplayOutcome(outcome, stats, options, statusFrame);
+    validateLiveReplayOutcome(outcome, stats, options, statusFrame, usageFrame);
     return {
       ok: true,
       dryRun: false,
@@ -338,6 +386,7 @@ async function runLiveReplay(options, plan) {
       mock: sanitizeMockSummary(plan.mock, stats),
       expectedBridgeEvent: options.scenario.expectedEvent,
       observedRuntimeStatus: summarizeRuntimeStatus(statusFrame),
+      observedUsageCapture: summarizeUsageCapture(statusFrame?.metrics, usageFrame),
       observedBridgeEvent: summarizeBridgeEvent(outcome.bridgeEvent),
       clientClose: outcome.close,
       forwardedClientFrames: stats.receivedFrames,
@@ -381,7 +430,7 @@ function startMockServer(options, stats) {
       if (url.pathname !== options.mockPath) {
         return new Response("not found", { status: 404 });
       }
-      if (server.upgrade(req, { data: { actionTaken: false } })) {
+      if (server.upgrade(req, { data: { actionTaken: false, clientFrameCount: 0 } })) {
         return;
       }
       return new Response("expected websocket upgrade", { status: 426 });
@@ -391,10 +440,19 @@ function startMockServer(options, stats) {
         stats.connections += 1;
       },
       message(ws, message) {
+        ws.data.clientFrameCount = (ws.data.clientFrameCount || 0) + 1;
+        const clientFrameCount = ws.data.clientFrameCount;
         stats.receivedFrames.push(summarizeFrame(message));
-        if (ws.data.actionTaken) return;
-        ws.data.actionTaken = true;
-        runMockAction(ws, options.scenario, stats);
+        if (
+          options.scenario.mockAction !== "send_response_done_usage_after_first_client_frame" &&
+          ws.data.actionTaken
+        ) {
+          return;
+        }
+        if (options.scenario.mockAction !== "send_response_done_usage_after_first_client_frame") {
+          ws.data.actionTaken = true;
+        }
+        runMockAction(ws, options.scenario, stats, clientFrameCount);
       },
       close(_ws, code, reason) {
         stats.closeEvents.push({
@@ -409,7 +467,7 @@ function startMockServer(options, stats) {
   });
 }
 
-function runMockAction(ws, scenario, stats) {
+function runMockAction(ws, scenario, stats, clientFrameCount) {
   if (scenario.mockAction === "close_after_first_client_frame") {
     queueMicrotask(() => {
       ws.close(scenario.closeCode, scenario.closeReason);
@@ -420,6 +478,17 @@ function runMockAction(ws, scenario, stats) {
     const text = makeSizedText(scenario.upstreamFrameBytes);
     stats.sentFrames.push({ kind: "text", bytes: byteLength(text) });
     ws.send(text);
+    return;
+  }
+  if (scenario.mockAction === "send_response_done_usage_after_first_client_frame") {
+    if (clientFrameCount === 1) {
+      stats.sentFrames.push(summarizeFrame(responseDoneUsageFrame));
+      ws.send(responseDoneUsageFrame);
+    } else if (scenario.closeAfterSecondClientFrame && clientFrameCount === 2) {
+      queueMicrotask(() => {
+        ws.close(scenario.closeCode, scenario.closeReason);
+      });
+    }
     return;
   }
   throw new Error(`unsupported mock action: ${scenario.mockAction}`);
@@ -551,9 +620,13 @@ function waitForBridgeEventAndClose(ws, timeoutMs) {
   });
 }
 
-function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null) {
+function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null, usageFrame = null) {
   if (statusFrame) {
     validateRuntimeStatusFrame(statusFrame, options);
+  }
+  if (options.scenario.expectUsageCapture) {
+    validateUsageFrame(usageFrame, options.scenario.expectedUsage, "forwarded upstream usage frame");
+    validateUsageMetrics(statusFrame?.metrics, options.scenario.expectedUsage, "runtime status metrics");
   }
   validateBridgeEvent(outcome.bridgeEvent, options.scenario.expectedEvent, options.scenario.name);
   if (outcome.close.code !== options.scenario.expectedEvent.clientCode) {
@@ -584,10 +657,56 @@ function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null) 
   ) {
     throw new Error(`forwarded client frame bytes=${firstFrame.bytes}, expected ${byteLength(options.probe)}`);
   }
+  if (!options.externalMock && options.scenario.expectUsageCapture) {
+    if (stats.sentFrames.length < 1) {
+      throw new Error("mock upstream did not send the response.done usage frame");
+    }
+    if (stats.receivedFrames.length < 2) {
+      throw new Error("mock upstream did not receive the usage replay close marker");
+    }
+  }
   if (outcome.bridgeEvent.context?.upstream_connect_handoff !== true) {
     throw new Error("bridge event context did not prove upstream_connect_handoff=true");
   }
-  validateNoRawLeaks({ outcome, statusFrame }, options);
+  validateNoRawLeaks({ outcome, statusFrame, usageFrame }, options);
+}
+
+function runtimeStatusProbePhaseForScenario(scenario) {
+  if (scenario.skipRuntimeStatus) return "skipped_early_mock_fault";
+  if (scenario.queueProbe) return "after_probe_before_drain";
+  if (scenario.expectUsageCapture) return "after_response_done_usage_before_close";
+  return "before_probe";
+}
+
+function expectedUsageCaptureForScenario(scenario) {
+  if (!scenario.expectUsageCapture) return null;
+  return {
+    upstreamFrame: {
+      type: "response.done",
+      responseUsage: {
+        inputTokens: scenario.expectedUsage.prompt_tokens,
+        outputTokens: scenario.expectedUsage.completion_tokens,
+        totalTokens: scenario.expectedUsage.total_tokens,
+        cachedTokens: scenario.expectedUsage.cached_tokens,
+        audioInputTokens: scenario.expectedUsage.audio_input_tokens,
+        audioOutputTokens: scenario.expectedUsage.audio_output_tokens,
+      },
+    },
+    runtimeMetrics: summarizeUsageMetadata(scenario.expectedUsage),
+  };
+}
+
+function scenarioReplayNote(scenario) {
+  if (scenario.queueProbe) {
+    return "Live replay sends the probe before the status control frame and expects one queued upstream frame before the delayed upstream accept drains it.";
+  }
+  if (scenario.expectUsageCapture) {
+    return "Live replay forwards a mock response.done usage frame, then requires status metrics to show one metadata-only usage capture before normal mock close.";
+  }
+  if (scenario.skipRuntimeStatus) {
+    return "Live replay expects the Worker-side mock fault to close before any client probe is forwarded.";
+  }
+  return "Live replay sends a WebSocket status control frame before the probe and requires one active upstream bridge with an empty pending queue.";
 }
 
 function expectedRuntimeStatusForScenario(scenario, probe) {
@@ -617,6 +736,63 @@ function validateRuntimeStatusFrame(frame, options) {
       throw new Error(`runtime status ${field}=${frame[field]}, expected ${expectedValue}`);
     }
   }
+  if (options.scenario.expectUsageCapture) {
+    validateUsageMetrics(frame.metrics, options.scenario.expectedUsage, "runtime status metrics");
+  }
+}
+
+function validateUsageFrame(frame, expected, label) {
+  if (!expected) return;
+  if (!frame || typeof frame !== "object") {
+    throw new Error(`${label} missing usage frame`);
+  }
+  if (frame.type !== expected.source_event) {
+    throw new Error(`${label} type=${frame.type}, expected ${expected.source_event}`);
+  }
+  const usage = frame.response?.usage;
+  if (!usage || typeof usage !== "object") {
+    throw new Error(`${label} missing response.usage`);
+  }
+  const checks = [
+    ["input_tokens", expected.prompt_tokens],
+    ["output_tokens", expected.completion_tokens],
+    ["total_tokens", expected.total_tokens],
+    ["input_token_details.cached_tokens", expected.cached_tokens],
+    ["input_token_details.audio_tokens", expected.audio_input_tokens],
+    ["output_token_details.audio_tokens", expected.audio_output_tokens],
+  ];
+  for (const [field, expectedValue] of checks) {
+    const actual = dottedValue(usage, field);
+    if (actual !== expectedValue) {
+      throw new Error(`${label} ${field}=${actual}, expected ${expectedValue}`);
+    }
+  }
+}
+
+function validateUsageMetrics(metrics, expected, label) {
+  if (!expected) return;
+  if (!metrics || typeof metrics !== "object") {
+    throw new Error(`${label} missing metrics object`);
+  }
+  if (!Number.isInteger(metrics.usage_event_count) || metrics.usage_event_count < 1) {
+    throw new Error(`${label} usage_event_count=${metrics.usage_event_count}, expected >= 1`);
+  }
+  if (typeof metrics.last_usage_at_ms !== "number") {
+    throw new Error(`${label} missing numeric last_usage_at_ms`);
+  }
+  const usage = metrics.last_usage;
+  if (!usage || typeof usage !== "object") {
+    throw new Error(`${label} missing last_usage`);
+  }
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    if (usage[field] !== expectedValue) {
+      throw new Error(`${label} last_usage.${field}=${usage[field]}, expected ${expectedValue}`);
+    }
+  }
+}
+
+function dottedValue(value, path) {
+  return path.split(".").reduce((current, part) => current?.[part], value);
 }
 
 function validateBridgeEvent(frame, expected, scenarioName) {
@@ -693,13 +869,15 @@ function runSelfTest() {
     validateSeedPlan(plan.localD1Seed, scenario);
     const outcome = syntheticOutcome(scenario);
     const statusFrame = syntheticRuntimeStatusFrame(scenario, options.probe);
-    validateLiveReplayOutcome(outcome, syntheticStats(options.probe), options, statusFrame);
+    const usageFrame = syntheticUsageFrame(scenario);
+    validateLiveReplayOutcome(outcome, syntheticStats(options.probe, scenario), options, statusFrame, usageFrame);
     cases.push({
       name: scenario.name,
       ok: true,
       event: scenario.expectedEvent.event,
       clientClose: scenario.expectedEvent.clientCode,
       runtimeStatus: summarizeRuntimeStatus(statusFrame),
+      usageCapture: summarizeUsageCapture(statusFrame?.metrics, usageFrame),
     });
   }
   expectFailure(
@@ -712,6 +890,15 @@ function runSelfTest() {
   expectFailure(
     () => validateNoRawLeaks({ leaked: defaultProbe }, { apiKey: "secret", probe: defaultProbe }),
     "leaked raw probe",
+  );
+  expectFailure(
+    () =>
+      validateUsageMetrics(
+        { usage_event_count: 0, last_usage_at_ms: 1, last_usage: expectedResponseDoneUsage },
+        expectedResponseDoneUsage,
+        "missing usage count",
+      ),
+    "usage_event_count",
   );
   return {
     ok: true,
@@ -758,11 +945,17 @@ function syntheticOutcome(scenario) {
   };
 }
 
-function syntheticStats(probe) {
+function syntheticStats(probe, scenario) {
+  const receivedFrames = [{ kind: "text", bytes: byteLength(probe) }];
+  const sentFrames = [];
+  if (scenario.expectUsageCapture) {
+    receivedFrames.push({ kind: "text", bytes: byteLength(usageReplayCloseProbe) });
+    sentFrames.push(summarizeFrame(responseDoneUsageFrame));
+  }
   return {
     connections: 1,
-    receivedFrames: [{ kind: "text", bytes: byteLength(probe) }],
-    sentFrames: [],
+    receivedFrames,
+    sentFrames,
     closeEvents: [],
     errors: [],
   };
@@ -771,6 +964,17 @@ function syntheticStats(probe) {
 function syntheticRuntimeStatusFrame(scenario, probe) {
   const expected = expectedRuntimeStatusForScenario(scenario, probe);
   if (!expected) return null;
+  const usageMetrics = scenario.expectUsageCapture
+    ? {
+        usage_event_count: 1,
+        last_usage_at_ms: 1_788_192_000_001,
+        last_usage: scenario.expectedUsage,
+      }
+    : {
+        usage_event_count: 0,
+        last_usage_at_ms: null,
+        last_usage: null,
+      };
   return {
     type: "realtime_session_status",
     ...expected,
@@ -778,8 +982,13 @@ function syntheticRuntimeStatusFrame(scenario, probe) {
       connected_count: 1,
       text_message_count: 1,
       updated_at_ms: 1_788_192_000_000,
+      ...usageMetrics,
     },
   };
+}
+
+function syntheticUsageFrame(scenario) {
+  return scenario.expectUsageCapture ? JSON.parse(responseDoneUsageFrame) : null;
 }
 
 function buildLocalD1SeedPlan(options, expectedChannelBaseUrl) {
@@ -954,6 +1163,30 @@ function summarizeRuntimeStatus(frame) {
     activeUpstreamBridges: frame.active_upstream_bridges,
     queuedUpstreamFrames: frame.queued_upstream_frames,
     queuedUpstreamBytes: frame.queued_upstream_bytes,
+    usageEventCount: frame.metrics?.usage_event_count ?? null,
+    lastUsage: summarizeUsageMetadata(frame.metrics?.last_usage),
+  };
+}
+
+function summarizeUsageCapture(metrics, usageFrame) {
+  if (!metrics?.last_usage && !usageFrame) return null;
+  return {
+    forwardedFrameType: usageFrame?.type ?? null,
+    usageEventCount: metrics?.usage_event_count ?? null,
+    lastUsage: summarizeUsageMetadata(metrics?.last_usage),
+  };
+}
+
+function summarizeUsageMetadata(usage) {
+  if (!usage) return null;
+  return {
+    sourceEvent: usage.source_event,
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+    cachedTokens: usage.cached_tokens,
+    audioInputTokens: usage.audio_input_tokens,
+    audioOutputTokens: usage.audio_output_tokens,
   };
 }
 
@@ -1162,6 +1395,9 @@ function printResult(result, json) {
       `scenario: ${result.scenario}`,
       `worker_realtime_url: ${result.workerRealtimeUrl}`,
       `observed_bridge_event: ${JSON.stringify(result.observedBridgeEvent)}`,
+      ...(result.observedUsageCapture
+        ? [`observed_usage_capture: ${JSON.stringify(result.observedUsageCapture)}`]
+        : []),
       `client_close: ${JSON.stringify(result.clientClose)}`,
       `forwarded_client_frames: ${JSON.stringify(result.forwardedClientFrames)}`,
     ].join("\n"),

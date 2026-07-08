@@ -7989,6 +7989,61 @@ Remaining migration gaps:
 - Add archived live/staging Realtime evidence proving usage capture appears in
   status/metrics during a non-production mock or provider-backed session.
 
+### 22.121 2026-07-08 Realtime Mock Usage Replay Plan
+
+This increment converts the metadata-only `response.done` usage capture into a
+repeatable mock-upstream replay plan. It still does not perform Realtime
+billing settlement; the proof target is narrower and explicit: a
+non-production mock/live run can forward a Realtime `response.done` frame and
+then observe the captured numeric usage summary through Durable Object status
+metrics before the upstream closes normally.
+
+Implemented:
+
+- Added a `response-done-usage` scenario to
+  `tools/smoke_realtime_upstream_replay.mjs`.
+  - The local mock upstream sends a Realtime-shaped `response.done` frame after
+    the first forwarded client frame.
+  - The harness waits for that forwarded upstream frame, sends a WebSocket
+    `status` control frame, and requires `metrics.usage_event_count >= 1`,
+    numeric `last_usage_at_ms`, and a `last_usage` snapshot with
+    `source_event=response.done`, input/output/total tokens, cached tokens,
+    and audio input/output tokens.
+  - A second non-sensitive client frame triggers normal mock upstream close,
+    preserving the existing `upstream_closed` bridge-event and client-close
+    assertions.
+- Extended the harness self-test so the usage scenario validates the forwarded
+  usage frame shape, status metrics, no raw probe/API-key leaks, and the
+  generated review-only D1 seed plan.
+- Extended the dry-run plan with
+  `runtimeStatusProbePhase=after_response_done_usage_before_close` and an
+  `expectedUsageCapture` block operators can archive before running live.
+- Added `check:realtime-session:mock-upstream-usage-plan` and wired it into
+  `bun run check`, so the usage replay dry-run cannot silently regress.
+
+Validation:
+
+- `node --check tools/smoke_realtime_upstream_replay.mjs` passed.
+- `bun tools/smoke_realtime_upstream_replay.mjs --self-test --json` passed and
+  included the `response-done-usage` scenario with `usageEventCount: 1`.
+- `bun tools/smoke_realtime_upstream_replay.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --api-key dry-run-token --scenario
+  response-done-usage` passed and emitted the expected usage-capture plan.
+- `bun run check:realtime-session:mock-upstream-usage-plan`, `git diff
+  --check`, and `bun run check` passed; the full check still emits only the
+  existing `d1_repositories.rs` dead-code warnings.
+
+Remaining migration gaps:
+
+- Run and archive a local `wrangler dev` or isolated staging live
+  `response-done-usage` replay after the dedicated D1 channel points at the
+  reachable mock upstream.
+- Freeze a Realtime billing snapshot before upstream connect, reserve quota,
+  and prove refund/additional settlement against actual `response.done` usage.
+- Write Realtime audit metadata using the same `tiered_billing` / usage-source
+  conventions as the REST/SSE relay before declaring billing settlement
+  compiled.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

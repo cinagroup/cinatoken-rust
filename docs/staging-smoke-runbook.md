@@ -440,19 +440,25 @@ bun run check:realtime-session:upstream-replay-contract
 Then run the local mock upstream replay harness self-test and dry-run plans.
 The self-test validates the harness expectations for externally inducible live
 paths (`upstream-normal-close`, `upstream-frame-limit`, and
-`startup-queue-drain`) plus Worker-side mock-fault paths
+`startup-queue-drain`), the metadata-only usage capture path
+(`response-done-usage`), plus Worker-side mock-fault paths
 (`upstream-event-stream-failed` and `upstream-accept-failed`). The dry-runs
 print the redacted `/v1/realtime` plan plus the channel `base_url` that must
 point at the mock upstream. The harness sends a WebSocket `status` control
 frame before ordinary replay probes and requires one active upstream bridge
 with zero queued upstream frames/bytes. For `startup-queue-drain`, it sends the
 probe first and requires one queued upstream frame before the delayed accept
-path drains it. For early mock faults, it expects the Worker to emit the
-terminal bridge event and close before any client probe is forwarded:
+path drains it. For `response-done-usage`, it sends a client probe, waits for
+the mock upstream to forward a `response.done` usage frame, then requires
+status metrics to include `usage_event_count >= 1` and a metadata-only
+`last_usage` token summary before normal upstream close. For early mock faults,
+it expects the Worker to emit the terminal bridge event and close before any
+client probe is forwarded:
 
 ```powershell
 bun run check:realtime-session:mock-upstream-replay-contract
 bun run check:realtime-session:mock-upstream-replay-plan
+bun run check:realtime-session:mock-upstream-usage-plan
 bun run check:realtime-session:mock-upstream-fault-plans
 ```
 
@@ -526,6 +532,7 @@ $env:REALTIME_UPSTREAM_REPLAY_API_KEY = "sk-cinatoken-realtime-mock-local"
 bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-normal-close --confirm-live --json
 bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario upstream-frame-limit --confirm-live --json
 bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario startup-queue-drain --confirm-live --json
+bun tools/smoke_realtime_upstream_replay.mjs --url $env:REALTIME_UPSTREAM_REPLAY_URL --api-key $env:REALTIME_UPSTREAM_REPLAY_API_KEY --scenario response-done-usage --confirm-live --json
 ```
 
 Record:
@@ -542,11 +549,12 @@ Record:
 - Mock upstream replay harness self-test and dry-run output, including the
   redacted worker WebSocket URL, mock upstream URL, required channel
   `base_url`, review-only `localD1Seed` SQL, queue-probe metadata for
-  `startup-queue-drain`, live scenarios covered, and planned
-  fault-injection-only scenarios.
+  `startup-queue-drain`, the `response-done-usage` `expectedUsageCapture`
+  block, live scenarios covered, and planned fault-injection-only scenarios.
 - Live mock upstream replay output when available, including mock connection
   count, forwarded client frame byte metadata, upstream frame byte metadata,
-  observed WebSocket runtime status, observed
+  observed WebSocket runtime status, observed usage capture metrics for
+  `response-done-usage`, observed
   `realtime_session_bridge_event`, and client close event.
 - Platform header-boundary self-test output, including the clean case plus
   rejected forged handoff marker, forged upstream plan, active bridge status,

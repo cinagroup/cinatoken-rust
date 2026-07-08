@@ -1,9 +1,24 @@
 # Verification
 
-Last checked: 2026-07-07
+Last checked: 2026-07-08
 
 ## Passed
 
+- `node --check tools/smoke_realtime_upstream_replay.mjs`,
+  `bun tools/smoke_realtime_upstream_replay.mjs --self-test --json`,
+  `bun tools/smoke_realtime_upstream_replay.mjs --dry-run --json --url
+  http://127.0.0.1:8787 --api-key dry-run-token --scenario
+  response-done-usage`, `bun run
+  check:realtime-session:mock-upstream-usage-plan`, `git diff --check`, and
+  `bun run check`: passed after adding the Realtime mock upstream
+  `response.done` usage replay plan. The harness now proves, in self-test,
+  dry-run, and full-check form, that a non-production mock/live replay can
+  forward a Realtime-shaped usage frame, then require status metrics to include
+  `usage_event_count >= 1` and a metadata-only `last_usage` snapshot before
+  normal mock close. This is still pre-settlement evidence:
+  `realtime_session_billing_settlement_compiled` remains false until
+  reserve/refund/final audit settlement is implemented and proven. The full
+  check still emits only the existing `d1_repositories.rs` dead-code warnings.
 - `node --check tools/smoke_realtime_session.mjs`,
   `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
   `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,

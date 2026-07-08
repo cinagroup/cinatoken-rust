@@ -2247,6 +2247,7 @@ pub(crate) async fn enforce_relay_rate_limits(
 pub(crate) async fn plan_realtime_upstream_channel(
     db: &D1Database,
     env: &Env,
+    req: &Request,
     auth: &AuthenticatedToken,
     model: &str,
     client_requested_subprotocol: bool,
@@ -2330,6 +2331,15 @@ pub(crate) async fn plan_realtime_upstream_channel(
         };
         let upstream_model = mapped_model_name(model, channel.model_mapping.as_deref())
             .unwrap_or_else(|| model.to_string());
+        let billing_snapshot =
+            realtime_billing_presettlement_snapshot(db, model, &selected_group, req)
+                .await
+                .map_err(|err| {
+                    openai_error_response(
+                        format!("realtime billing pre-settlement snapshot failed: {err}"),
+                        500,
+                    )
+                })?;
         return crate::realtime_session::realtime_selected_upstream(
             crate::realtime_session::RealtimeSelectedUpstreamInput {
                 selected_group: &selected_group,
@@ -2342,6 +2352,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
                 upstream_api_key: &upstream_key,
                 api_version: None,
                 client_requested_subprotocol,
+                billing_snapshot,
                 startup_queue_probe_delay_ms: realtime_mock_queue_probe_delay_ms(
                     &channel.other_info,
                 ),
@@ -2356,6 +2367,31 @@ pub(crate) async fn plan_realtime_upstream_channel(
     Err(openai_error_response(
         "no usable realtime upstream channel is available",
         503,
+    ))
+}
+
+async fn realtime_billing_presettlement_snapshot(
+    db: &D1Database,
+    model: &str,
+    group: &str,
+    req: &Request,
+) -> worker::Result<Option<crate::realtime_session::RealtimeBillingSnapshotMetadata>> {
+    let request_body = json!({
+        "model": model,
+        "endpoint": "realtime"
+    });
+    let request = billing_request_input(req, &request_body);
+    let Some(preflight) =
+        prepare_tiered_billing_preflight(db, model, group, &request_body, &request, false, 0)
+            .await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        crate::realtime_session::RealtimeBillingSnapshotMetadata::from_tiered_snapshot(
+            &preflight.snapshot,
+        ),
     ))
 }
 

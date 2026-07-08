@@ -121,6 +121,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_backpressure_policy_compiled,
         capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
         capabilities.realtime_session_upstream_usage_capture_compiled,
+        capabilities.realtime_session_billing_presettlement_snapshot_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -902,6 +903,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_upstream_usage_capture_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime billing pre-settlement snapshot'),
+          description: t(
+            'Freezes redacted tiered billing expression metadata and estimated quota for Realtime handoff without charging or storing request-only billing rules.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_presettlement_snapshot_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

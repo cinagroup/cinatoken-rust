@@ -443,6 +443,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_upstream_bridge_backpressure_runtime_compiled === true,
     realtime_session_upstream_usage_capture_compiled:
       data.realtime_session_upstream_usage_capture_compiled === true,
+    realtime_session_billing_presettlement_snapshot_compiled:
+      data.realtime_session_billing_presettlement_snapshot_compiled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
     realtime_session_upstream_bridge_compiled:
@@ -475,6 +477,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_upstream_bridge_backpressure_policy_compiled", true],
     ["realtime_session_upstream_bridge_backpressure_runtime_compiled", true],
     ["realtime_session_upstream_usage_capture_compiled", true],
+    ["realtime_session_billing_presettlement_snapshot_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
@@ -496,6 +499,7 @@ function validateCapabilities(capabilities, options) {
     "upstream_bridge_backpressure_policy",
     "upstream_bridge_backpressure_runtime",
     "upstream_usage_capture",
+    "billing_presettlement_snapshot",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",

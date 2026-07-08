@@ -440,6 +440,7 @@ export type PlatformCapabilities = {
   realtime_session_upstream_bridge_backpressure_policy_compiled: boolean
   realtime_session_upstream_bridge_backpressure_runtime_compiled: boolean
   realtime_session_upstream_usage_capture_compiled: boolean
+  realtime_session_billing_presettlement_snapshot_compiled: boolean
   realtime_session_platform_header_boundary_compiled: boolean
   realtime_session_upstream_bridge_compiled: boolean
   realtime_session_billing_settlement_compiled: boolean

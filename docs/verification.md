@@ -4,6 +4,25 @@ Last checked: 2026-07-08
 
 ## Passed
 
+- `node --check tools/smoke_realtime_session.mjs`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:upstream-replay-contract`,
+  `bun run check:web`,
+  `cargo fmt --all --check`,
+  `git diff --check`, and `bun run check`: passed after adding the
+  Realtime billing pre-settlement snapshot. `/v1/realtime` now freezes a
+  redacted tiered billing snapshot before upstream handoff, captures it in
+  DO connect metrics, exposes
+  `realtime_session_billing_presettlement_snapshot_compiled` through
+  `/api/platform/capabilities`, the Cloudflare Platform panel, and smoke
+  preflight, and adds `billing_presettlement_snapshot` to the v1 cutover
+  guard set. This is still pre-settlement evidence:
+  `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` remain false until reserve/refund/final
+  audit settlement is implemented and proven. The full check still emits only
+  the existing `d1_repositories.rs` dead-code warnings.
 - `node --check tools/smoke_realtime_upstream_replay.mjs`,
   `bun tools/smoke_realtime_upstream_replay.mjs --self-test --json`,
   `bun tools/smoke_realtime_upstream_replay.mjs --dry-run --json --url

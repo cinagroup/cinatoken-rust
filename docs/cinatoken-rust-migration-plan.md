@@ -8044,6 +8044,68 @@ Remaining migration gaps:
   conventions as the REST/SSE relay before declaring billing settlement
   compiled.
 
+### 22.129 2026-07-08 Realtime Billing Pre-settlement Snapshot
+
+This increment moves Realtime one step closer to production billing without
+turning on charging. `/v1/realtime` now builds a redacted tiered-billing
+pre-settlement snapshot before the upstream connect handoff, stores that
+metadata in the Realtime upstream plan and DO metrics, and exposes a separate
+capability guard. It intentionally does not reserve quota, refund quota, apply
+additional final quota, or write final audit rows yet.
+
+Implemented:
+
+- Added `RealtimeBillingSnapshotMetadata` as a redacted projection of
+  `TieredBillingSnapshot`.
+  - It keeps `billing_mode`, `model_name`, `expr_hash`, `expr_version`,
+    request-rule presence, group/quota ratios, estimated token counts,
+    estimated quota, and estimated tier.
+  - It does not store the raw billing expression string, request-rule body,
+    request parameters, headers, upstream API keys, or raw WebSocket frames.
+- Wired `/v1/realtime` channel planning through the existing tiered billing
+  preflight path.
+  - The snapshot uses the selected group, requested model, request metadata,
+    and D1-configured tiered expression before creating the redacted upstream
+    handoff.
+  - Non-tiered/disabled billing still returns no snapshot rather than inventing
+    synthetic billing state.
+- Captured the redacted snapshot in `RealtimeSession` connect metrics.
+  - `billing_snapshot_count`, `last_billing_snapshot_at_ms`, and
+    `last_billing_snapshot` give status probes and smoke output enough
+    evidence to prove pre-settlement state was frozen.
+  - The existing usage-capture metrics remain the actual-usage input for the
+    later final settlement step.
+- Added
+  `realtime_session_billing_presettlement_snapshot_compiled=true` to
+  `/api/platform/capabilities`, the Cloudflare Platform frontend panel, and
+  the Realtime smoke capabilities preflight.
+- Added `billing_presettlement_snapshot` to the Realtime cutover guards and to
+  the v1 readiness matrix while keeping
+  `realtime_session_billing_settlement_compiled=false`.
+
+Validation:
+
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed, including the new compiled guard and redaction/metrics capture test.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed, including the expanded Realtime v1 cutover guard matrix.
+- `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:upstream-replay-contract`,
+  `bun run check:web`, `cargo fmt --all --check`, `git diff --check`, and
+  `bun run check` passed; the full check still emits only the existing
+  `d1_repositories.rs` dead-code warnings.
+
+Remaining migration gaps:
+
+- Add actual reserve/refund/final settlement against captured
+  `response.done` usage and the frozen tiered expression snapshot.
+- Write Realtime settlement/audit metadata using the same `tiered_billing` and
+  usage-source conventions as REST/SSE relay settlement.
+- Run and archive local/staging Realtime smoke evidence proving
+  `last_billing_snapshot` and `last_usage` are both visible before enabling any
+  production `/v1/realtime` traffic.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

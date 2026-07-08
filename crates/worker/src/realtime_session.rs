@@ -6,6 +6,7 @@
 //! attachments for resume metadata, and a tiny control protocol for smoke
 //! testing.
 
+use cinatoken_billing::TieredBillingSnapshot;
 use cinatoken_relay::{
     openai_compatible::{default_base_url, upstream_v1_url, usage_summary_from_body, UsageSummary},
     token_fingerprint,
@@ -42,6 +43,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_REPLAY_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_POLICY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_RUNTIME_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_USAGE_CAPTURE_COMPILED: bool = true;
+pub const REALTIME_BILLING_PRESETTLEMENT_SNAPSHOT_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -63,6 +65,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_backpressure_policy",
     "upstream_bridge_backpressure_runtime",
     "upstream_usage_capture",
+    "billing_presettlement_snapshot",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -198,7 +201,7 @@ struct RealtimeUpstreamBridgePlan {
     header_names: Vec<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RealtimeSelectedUpstreamPlan {
     selected_group: String,
     channel_id: i64,
@@ -212,6 +215,8 @@ pub(crate) struct RealtimeSelectedUpstreamPlan {
     auth_mode: RealtimeUpstreamAuthMode,
     protocol_redacted: Vec<String>,
     header_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_snapshot: Option<RealtimeBillingSnapshotMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     startup_queue_probe_delay_ms: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,7 +238,7 @@ struct RealtimeUpstreamBridgeInput<'a> {
     client_requested_subprotocol: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct RealtimeSelectedUpstreamInput<'a> {
     pub selected_group: &'a str,
     pub channel_id: i64,
@@ -245,6 +250,7 @@ pub(crate) struct RealtimeSelectedUpstreamInput<'a> {
     pub upstream_api_key: &'a str,
     pub api_version: Option<&'a str>,
     pub client_requested_subprotocol: bool,
+    pub billing_snapshot: Option<RealtimeBillingSnapshotMetadata>,
     pub startup_queue_probe_delay_ms: Option<u32>,
     pub mock_upstream_fault: Option<RealtimeMockUpstreamFault>,
 }
@@ -427,6 +433,21 @@ struct RealtimeUsageMetadata {
     audio_output_tokens: i32,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub(crate) struct RealtimeBillingSnapshotMetadata {
+    billing_mode: String,
+    model_name: String,
+    expr_hash: String,
+    expr_version: u32,
+    request_rule_present: bool,
+    group_ratio: f64,
+    quota_per_unit: f64,
+    estimated_prompt_tokens: i64,
+    estimated_completion_tokens: i64,
+    estimated_quota_after_group: i64,
+    estimated_tier: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RealtimeBridgeReplayScenario {
     name: &'static str,
@@ -473,6 +494,12 @@ struct RealtimeSessionMetrics {
     last_usage_at_ms: Option<f64>,
     #[serde(default)]
     last_usage: Option<RealtimeUsageMetadata>,
+    #[serde(default)]
+    billing_snapshot_count: u32,
+    #[serde(default)]
+    last_billing_snapshot_at_ms: Option<f64>,
+    #[serde(default)]
+    last_billing_snapshot: Option<RealtimeBillingSnapshotMetadata>,
     #[serde(default)]
     last_bridge_terminal_event: Option<RealtimeBridgeTerminalEvent>,
 }
@@ -1162,6 +1189,9 @@ impl RealtimeSessionMetrics {
             usage_event_count: 0,
             last_usage_at_ms: None,
             last_usage: None,
+            billing_snapshot_count: 0,
+            last_billing_snapshot_at_ms: None,
+            last_billing_snapshot: None,
             last_bridge_terminal_event: None,
         }
     }
@@ -1170,6 +1200,7 @@ impl RealtimeSessionMetrics {
         self.connected_count = self.connected_count.saturating_add(1);
         self.last_connected_at_ms = Some(now_ms);
         self.record_context(Some(attachment), now_ms);
+        self.record_billing_snapshot(Some(attachment), now_ms);
     }
 
     fn record_message(
@@ -1230,6 +1261,19 @@ impl RealtimeSessionMetrics {
         self.usage_event_count = self.usage_event_count.saturating_add(1);
         self.last_usage_at_ms = Some(now_ms);
         self.last_usage = Some(usage);
+        self.record_context(attachment, now_ms);
+    }
+
+    fn record_billing_snapshot(&mut self, attachment: Option<&SocketAttachment>, now_ms: f64) {
+        let Some(snapshot) = attachment
+            .and_then(|attachment| attachment.upstream.as_ref())
+            .and_then(|upstream| upstream.billing_snapshot.clone())
+        else {
+            return;
+        };
+        self.billing_snapshot_count = self.billing_snapshot_count.saturating_add(1);
+        self.last_billing_snapshot_at_ms = Some(now_ms);
+        self.last_billing_snapshot = Some(snapshot);
         self.record_context(attachment, now_ms);
     }
 
@@ -1372,6 +1416,7 @@ async fn handle_openai_realtime_gateway(req: Request, env: Env) -> WorkerResult<
     let upstream_plan = match crate::relay::plan_realtime_upstream_channel(
         &db,
         &env,
+        &req,
         &auth,
         &model,
         client_requested_realtime_subprotocol(&req),
@@ -1484,6 +1529,7 @@ pub(crate) fn realtime_upstream_channel_planner_compiled() -> bool {
         upstream_api_key: "planner-smoke-key",
         api_version: None,
         client_requested_subprotocol: true,
+        billing_snapshot: None,
         startup_queue_probe_delay_ms: None,
         mock_upstream_fault: None,
     }) else {
@@ -1572,6 +1618,7 @@ pub(crate) fn realtime_upstream_connect_handoff_compiled() -> bool {
         upstream_api_key: secret,
         api_version: None,
         client_requested_subprotocol: true,
+        billing_snapshot: None,
         startup_queue_probe_delay_ms: None,
         mock_upstream_fault: None,
     }) else {
@@ -1619,6 +1666,7 @@ pub(crate) fn realtime_upstream_fetch_upgrade_adapter_compiled() -> bool {
         upstream_api_key: secret,
         api_version: None,
         client_requested_subprotocol: false,
+        billing_snapshot: None,
         startup_queue_probe_delay_ms: None,
         mock_upstream_fault: None,
     }) else {
@@ -1975,6 +2023,47 @@ pub(crate) fn realtime_upstream_usage_capture_compiled() -> bool {
         && !serialized.contains(OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX)
 }
 
+pub(crate) fn realtime_billing_presettlement_snapshot_compiled() -> bool {
+    if !REALTIME_BILLING_PRESETTLEMENT_SNAPSHOT_COMPILED {
+        return false;
+    }
+    let request = cinatoken_billing::RequestInput::from_json_body(json!({
+        "model": "gpt-4o-realtime-preview",
+        "service_tier": "fast"
+    }));
+    let Ok(snapshot) = cinatoken_billing::estimate_tiered_billing_snapshot_with_request(
+        "gpt-4o-realtime-preview",
+        r#"tier("base", p * 2 + c * 8 + ai * 3 + ao * 12)|||(param("service_tier") == "fast" ? 2 : 1)"#,
+        cinatoken_billing::TokenParams {
+            p: 1200.0,
+            c: 0.0,
+            ai: 180.0,
+            ao: 0.0,
+            ..cinatoken_billing::TokenParams::default()
+        },
+        1.25,
+        request,
+    ) else {
+        return false;
+    };
+    let metadata = RealtimeBillingSnapshotMetadata::from_tiered_snapshot(&snapshot);
+    let serialized = serde_json::to_string(&metadata).unwrap_or_default();
+
+    metadata.billing_mode == "tiered_expr"
+        && metadata.model_name == "gpt-4o-realtime-preview"
+        && metadata.expr_hash == snapshot.expr_hash
+        && metadata.expr_version == snapshot.expr_version
+        && metadata.request_rule_present
+        && metadata.estimated_prompt_tokens == snapshot.estimated_prompt_tokens
+        && metadata.estimated_completion_tokens == snapshot.estimated_completion_tokens
+        && metadata.estimated_quota_after_group == snapshot.estimated_quota_after_group.0
+        && metadata.estimated_tier == snapshot.estimated_tier
+        && !serialized.contains(&snapshot.expr_string)
+        && !serialized.contains("service_tier")
+        && !serialized.contains("fast")
+        && !serialized.contains("param(")
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -2011,6 +2100,7 @@ pub(crate) fn realtime_selected_upstream(
             .into_iter()
             .map(str::to_string)
             .collect(),
+        billing_snapshot: input.billing_snapshot,
         startup_queue_probe_delay_ms: input.startup_queue_probe_delay_ms,
         mock_upstream_fault: input.mock_upstream_fault,
     };
@@ -2239,6 +2329,24 @@ impl RealtimeUsageMetadata {
             audio_input_tokens: usage.audio_input_tokens,
             audio_output_tokens: usage.audio_output_tokens,
         })
+    }
+}
+
+impl RealtimeBillingSnapshotMetadata {
+    pub(crate) fn from_tiered_snapshot(snapshot: &TieredBillingSnapshot) -> Self {
+        Self {
+            billing_mode: snapshot.billing_mode.clone(),
+            model_name: snapshot.model_name.clone(),
+            expr_hash: snapshot.expr_hash.clone(),
+            expr_version: snapshot.expr_version,
+            request_rule_present: snapshot.request_rule_expr.is_some(),
+            group_ratio: snapshot.group_ratio,
+            quota_per_unit: snapshot.quota_per_unit,
+            estimated_prompt_tokens: snapshot.estimated_prompt_tokens,
+            estimated_completion_tokens: snapshot.estimated_completion_tokens,
+            estimated_quota_after_group: snapshot.estimated_quota_after_group.0,
+            estimated_tier: snapshot.estimated_tier.clone(),
+        }
     }
 }
 
@@ -4167,6 +4275,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            billing_snapshot: None,
             startup_queue_probe_delay_ms: None,
             mock_upstream_fault: None,
         })
@@ -4196,6 +4305,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            billing_snapshot: None,
             startup_queue_probe_delay_ms: None,
             mock_upstream_fault: None,
         })
@@ -4235,6 +4345,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            billing_snapshot: None,
             startup_queue_probe_delay_ms: Some(250),
             mock_upstream_fault: None,
         })
@@ -4266,6 +4377,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            billing_snapshot: None,
             startup_queue_probe_delay_ms: None,
             mock_upstream_fault: Some(RealtimeMockUpstreamFault::AcceptFailed),
         })
@@ -4303,6 +4415,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: false,
+            billing_snapshot: None,
             startup_queue_probe_delay_ms: None,
             mock_upstream_fault: None,
         })
@@ -4379,6 +4492,11 @@ mod tests {
     }
 
     #[test]
+    fn realtime_billing_presettlement_snapshot_contract_is_compiled() {
+        assert!(realtime_billing_presettlement_snapshot_compiled());
+    }
+
+    #[test]
     fn realtime_azure_handoff_fetch_plan_carries_api_key_header() {
         let secret = "azure-secret";
         let selected = realtime_selected_upstream(RealtimeSelectedUpstreamInput {
@@ -4392,6 +4510,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: Some("2025-04-01-preview"),
             client_requested_subprotocol: true,
+            billing_snapshot: None,
             startup_queue_probe_delay_ms: None,
             mock_upstream_fault: None,
         })
@@ -4424,6 +4543,7 @@ mod tests {
             upstream_api_key: secret,
             api_version: None,
             client_requested_subprotocol: true,
+            billing_snapshot: None,
             startup_queue_probe_delay_ms: None,
             mock_upstream_fault: None,
         })
@@ -4450,6 +4570,68 @@ mod tests {
         assert!(!metrics_raw.contains(secret));
         assert!(!metrics_raw.contains("Bearer sk-"));
         assert!(attachment_raw.contains("\"upstream_connect_handoff\":true"));
+    }
+
+    #[test]
+    fn realtime_billing_snapshot_is_redacted_and_captured_in_metrics() {
+        let billing_snapshot = RealtimeBillingSnapshotMetadata {
+            billing_mode: "tiered_expr".to_string(),
+            model_name: "gpt-4o-realtime-preview".to_string(),
+            expr_hash: "exprhash123".to_string(),
+            expr_version: 1,
+            request_rule_present: true,
+            group_ratio: 1.25,
+            quota_per_unit: 500_000.0,
+            estimated_prompt_tokens: 1200,
+            estimated_completion_tokens: 0,
+            estimated_quota_after_group: 4200,
+            estimated_tier: "fast-tier".to_string(),
+        };
+        let upstream = realtime_selected_upstream_plan(RealtimeSelectedUpstreamInput {
+            selected_group: "vip",
+            channel_id: 42,
+            channel_type: 1,
+            channel_name: "primary-openai",
+            channel_base_url: Some("https://api.openai.com"),
+            request_model: "gpt-4o-realtime-preview",
+            upstream_model: "gpt-4o-realtime-preview",
+            upstream_api_key: "sk-live-secret",
+            api_version: None,
+            client_requested_subprotocol: true,
+            billing_snapshot: Some(billing_snapshot),
+            startup_queue_probe_delay_ms: None,
+            mock_upstream_fault: None,
+        })
+        .unwrap();
+        let attachment = SocketAttachment {
+            session: "rt-session".to_string(),
+            connected_at_ms: 10.0,
+            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            entrypoint: "openai_realtime_v1".to_string(),
+            model: Some("gpt-4o-realtime-preview".to_string()),
+            token_source: Some("authorization".to_string()),
+            token_fingerprint: Some("fp-token".to_string()),
+            auth_state: "gateway_checked".to_string(),
+            upstream: Some(upstream),
+            upstream_connect_handoff: true,
+        };
+        let mut metrics = RealtimeSessionMetrics::new("rt-session", 1.0);
+        metrics.record_connect(&attachment, 2.0);
+
+        let metrics_snapshot = metrics.last_billing_snapshot.as_ref().unwrap();
+        let attachment_raw = serde_json::to_string(&attachment).unwrap();
+        let metrics_raw = serde_json::to_string(&metrics).unwrap();
+        assert_eq!(metrics.billing_snapshot_count, 1);
+        assert_eq!(metrics.last_billing_snapshot_at_ms, Some(2.0));
+        assert_eq!(metrics_snapshot.expr_hash, "exprhash123");
+        assert!(attachment_raw.contains("\"billing_snapshot\""));
+        assert!(metrics_raw.contains("\"last_billing_snapshot\""));
+        assert!(!attachment_raw.contains("sk-live-secret"));
+        assert!(!metrics_raw.contains("sk-live-secret"));
+        assert!(!attachment_raw.contains("param("));
+        assert!(!metrics_raw.contains("param("));
+        assert!(!attachment_raw.contains("service_tier"));
+        assert!(!metrics_raw.contains("service_tier"));
     }
 
     #[test]

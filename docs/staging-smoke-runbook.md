@@ -602,6 +602,8 @@ Record:
   `realtime_session_billing_presettlement_snapshot_compiled`,
   `realtime_session_billing_settlement_preview_compiled`,
   `realtime_session_billing_settlement_handoff_compiled`,
+  `realtime_session_billing_settlement_mutation_plan_compiled`,
+  `realtime_session_billing_settlement_writer_compiled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -629,7 +631,8 @@ Pass criteria:
   compiled, including the text/binary frame guard and bridge close/error
   mapping plus the upstream send-failure guard, terminal event trace, and
   upstream replay contract, usage capture, billing pre-settlement snapshot,
-  billing settlement preview, billing settlement handoff, and platform
+  billing settlement preview, billing settlement handoff, billing settlement
+  mutation plan, default-off billing settlement writer, and platform
   upstream-header boundary;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
@@ -720,6 +723,13 @@ Pass criteria:
   and crossed-tier status, but never raw billing expressions, request-rule
   bodies, request probe values, raw headers, payloads, bearer tokens, or
   upstream credentials.
+- Realtime billing writer evidence is also metadata-only: if a controlled
+  staging run explicitly enables `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED`,
+  persisted metrics may include `last_billing_settlement_write` with
+  enabled/attempted/applied/skip/error status and quota deltas, but never
+  `user_id`, `token_id`, `channel_id`, selected group, raw billing
+  expressions, request-rule bodies, request probe values, raw headers,
+  payloads, bearer tokens, or upstream credentials.
 - The platform HTTP status path shows restored socket attachments and the same
   persisted metrics surface.
 - `realtime_session_v1_cutover_ready` remains false until the production bridge

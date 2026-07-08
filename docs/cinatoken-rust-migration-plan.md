@@ -8356,6 +8356,67 @@ Remaining migration gaps:
   protocol replay, hibernation/restore evidence, and live rollback proof are
   complete.
 
+### 22.133 2026-07-08 Realtime Billing Settlement Writer Foundation
+
+This increment adds the first actual Realtime settlement write path while
+keeping it explicitly default-off. The prior mutation plan answered which
+user/token/channel/pre-consumed quota a settlement must touch. The new writer
+uses that private plan plus the redacted settlement preview to call the same D1
+reserve/refund/final helper used by REST/SSE relay settlement, but only when
+`REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED=true`.
+
+Implemented:
+
+- Added `REALTIME_BILLING_SETTLEMENT_WRITER_COMPILED=true` and a separate
+  `realtime_session_billing_settlement_writer_compiled` capability.
+- Injected `Env` into `RealtimeSession` so the upstream event pump can resolve
+  the Worker `DB` binding at settlement time instead of carrying a raw database
+  handle in persisted DO state.
+- Added redacted DO metrics for the writer:
+  `billing_settlement_write_count`,
+  `billing_settlement_applied_count`,
+  `last_billing_settlement_write_at_ms`, and
+  `last_billing_settlement_write`.
+  - Persisted metadata records only enablement, attempt/applied state, skip
+    reason, truncated error text, pre/final/refund/additional/delta quota, and
+    token/channel scoped booleans.
+  - It does not persist `user_id`, `token_id`, `channel_id`, `selected_group`,
+    raw billing expressions, request-rule bodies, raw request params, upstream
+    payloads, or API keys.
+- Added disabled, missing-plan, already-applied, failed-write, and applied
+  status handling around `settle_reserved_relay_quota_usage`.
+  - A successful applied write increments `billing_settlement_applied_count` so
+    later usage events in the same DO session skip duplicate D1 settlement.
+  - This is an early DO-metrics duplicate guard, not final production
+    idempotency; a durable replay key/audit row is still required before
+    enabling the writer outside controlled staging.
+- Added `billing_settlement_writer` to the Realtime cutover guards while
+  keeping `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false`.
+- Updated `/api/platform/capabilities`, the Realtime smoke capability preflight,
+  and the Cloudflare Platform frontend panel to expose the writer foundation as
+  a distinct readiness row.
+
+Validation:
+
+- `node --check tools/smoke_realtime_session.mjs` passed.
+- `cargo fmt --all` passed.
+- `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`
+  passed, including the writer redaction self-check.
+- `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`
+  passed, proving the new guard is visible and still required for v1 cutover.
+
+Remaining migration gaps:
+
+- Add durable settlement idempotency/replay keys and final Realtime audit/log
+  rows before enabling `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` outside an
+  isolated staging smoke.
+- Archive local/staging proof for writer-disabled, write-applied,
+  duplicate-skip, D1 failure, redaction, and rollback paths.
+- Keep `/v1/realtime` production-disabled until upstream bridge replay,
+  hibernation/restore evidence, audit settlement, and rollback proof are
+  complete.
+
 ### 22.108 2026-07-06 Realtime Mock Replay D1 Seed Plan
 
 This increment makes the mock upstream replay harness closer to a repeatable

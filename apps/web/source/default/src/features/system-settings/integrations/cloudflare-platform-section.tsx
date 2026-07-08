@@ -125,6 +125,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_settlement_preview_compiled,
         capabilities.realtime_session_billing_settlement_handoff_compiled,
         capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
+        capabilities.realtime_session_billing_settlement_writer_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -944,6 +945,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime billing D1 writer'),
+          description: t(
+            'Can apply the private settlement mutation plan through the existing D1 reserve/refund/final helper when explicitly enabled; production settlement remains gated until replay evidence is archived.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_writer_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

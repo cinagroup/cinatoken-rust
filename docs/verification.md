@@ -11,6 +11,23 @@ Last checked: 2026-07-08
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `bun run check:realtime-session:v1-smoke-plan`,
   `bun run check:web`, `cargo fmt --all --check`, `git diff --check`, and
+  `bun run check`: passed after adding the default-off Realtime billing D1
+  writer foundation. The Durable Object can now apply the private settlement
+  mutation plan through the existing D1 reserve/refund/final helper only when
+  `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED=true`; persisted metrics expose
+  only redacted write status, quota deltas, skip reasons, and truncated errors.
+  This remains pre-production-settlement evidence:
+  `realtime_session_billing_settlement_compiled` and
+  `realtime_session_v1_cutover_ready` stay false until audit rows,
+  idempotent replay proof, and staging evidence are archived. The full check
+  still emits only the existing `d1_repositories.rs` dead-code warnings.
+- `cargo fmt --all`,
+  `cargo test -p cinatoken-worker --lib realtime_session -- --nocapture`,
+  `cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture`,
+  `node --check tools/smoke_realtime_session.mjs`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:realtime-session:v1-smoke-plan`,
+  `bun run check:web`, `cargo fmt --all --check`, `git diff --check`, and
   `bun run check`: passed after adding the Realtime billing settlement
   mutation-plan foundation. `/v1/realtime` now carries private user, token,
   channel, selected group, and pre-consumed quota identifiers inside the

@@ -90,9 +90,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Realtime billing now freezes a redacted pre-settlement snapshot, carries the
   full snapshot plus a bounded sensitive-header-filtered request probe only in
   the internal DO connect handoff, attaches a private settlement mutation plan
-  with user/token/channel/pre-consumed-quota scope for the future D1 write, and
-  records redacted settlement-preview metrics from `response.done` usage
-  without mutating quota.
+  with user/token/channel/pre-consumed-quota scope, and includes a default-off
+  D1 writer foundation that can apply the existing reserve/refund/final helper
+  only when `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED=true`. Persisted DO
+  metrics expose redacted write status and quota deltas, while
+  `realtime_session_billing_settlement_compiled` remains false until audit
+  rows, idempotent replay proof, and staging evidence land.
 - The Realtime mock upstream replay harness now makes the
   `response-done-usage` scenario seed an isolated tiered billing expression in
   review-only D1 SQL, then requires live/status metrics to contain both the
@@ -483,14 +486,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Live alarm replay, cron-sweeper fallback, rollback, and no-double-poll CAS
   proof still remain required before `TASK_RUNNER_DO_ENABLED` can be enabled
   outside a controlled staging replay.
-- Continue Realtime billing from redacted preview to actual D1 settlement: the
-  internal handoff now carries a private mutation plan scoped to user, token,
-  channel, selected group, and pre-consumed quota, while `/api/platform/
-  capabilities`, the frontend Cloudflare Platform panel, and smoke preflight
-  expose only boolean readiness. The next implementation step is applying
-  reserve/refund/additional/final mutations and audit rows from that plan
-  without flipping `realtime_session_billing_settlement_compiled` or
-  `realtime_session_v1_cutover_ready` until local/staging evidence is archived.
+- Continue Realtime billing from the default-off D1 writer foundation to
+  production-safe settlement: add durable idempotency/replay keys, final
+  Realtime audit rows, and local/staging proof for disabled, applied,
+  duplicate, and failed-write paths before flipping
+  `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready`.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

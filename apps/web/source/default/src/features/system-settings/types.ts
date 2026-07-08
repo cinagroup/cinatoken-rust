@@ -444,6 +444,7 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_preview_compiled: boolean
   realtime_session_billing_settlement_handoff_compiled: boolean
   realtime_session_billing_settlement_mutation_plan_compiled: boolean
+  realtime_session_billing_settlement_writer_compiled: boolean
   realtime_session_platform_header_boundary_compiled: boolean
   realtime_session_upstream_bridge_compiled: boolean
   realtime_session_billing_settlement_compiled: boolean

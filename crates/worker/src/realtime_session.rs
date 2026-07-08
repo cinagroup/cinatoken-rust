@@ -50,6 +50,9 @@ pub const REALTIME_BILLING_PRESETTLEMENT_SNAPSHOT_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_PREVIEW_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_HANDOFF_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_MUTATION_PLAN_COMPILED: bool = true;
+pub const REALTIME_BILLING_SETTLEMENT_WRITER_COMPILED: bool = true;
+pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
+    "REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED";
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -75,6 +78,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_settlement_preview",
     "billing_settlement_handoff",
     "billing_settlement_mutation_plan",
+    "billing_settlement_writer",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -482,6 +486,23 @@ pub(crate) struct RealtimeBillingSettlementPreviewMetadata {
     mutation_channel_scoped: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct RealtimeBillingSettlementWriteMetadata {
+    write_enabled: bool,
+    write_attempted: bool,
+    applied: bool,
+    skipped_reason: Option<String>,
+    error: Option<String>,
+    pre_consumed_quota: i64,
+    final_quota: i64,
+    refund_quota: i64,
+    additional_quota: i64,
+    delta_quota: i64,
+    mutation_plan_present: bool,
+    mutation_token_scoped: bool,
+    mutation_channel_scoped: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RealtimeBillingSettlementHandoff {
     snapshot: TieredBillingSnapshot,
@@ -558,20 +579,30 @@ struct RealtimeSessionMetrics {
     #[serde(default)]
     last_billing_settlement_preview: Option<RealtimeBillingSettlementPreviewMetadata>,
     #[serde(default)]
+    billing_settlement_write_count: u32,
+    #[serde(default)]
+    billing_settlement_applied_count: u32,
+    #[serde(default)]
+    last_billing_settlement_write_at_ms: Option<f64>,
+    #[serde(default)]
+    last_billing_settlement_write: Option<RealtimeBillingSettlementWriteMetadata>,
+    #[serde(default)]
     last_bridge_terminal_event: Option<RealtimeBridgeTerminalEvent>,
 }
 
 #[durable_object]
 pub struct RealtimeSession {
     state: State,
+    env: Env,
     upstream_bridges: HashMap<String, RealtimeUpstreamBridgeRuntime>,
 }
 
 #[durable_object]
 impl DurableObject for RealtimeSession {
-    fn new(state: State, _env: Env) -> Self {
+    fn new(state: State, env: Env) -> Self {
         Self {
             state,
+            env,
             upstream_bridges: HashMap::new(),
         }
     }
@@ -1089,6 +1120,7 @@ impl RealtimeSession {
             runtime.state.clone(),
             client.clone(),
             attachment.clone(),
+            self.env.clone(),
             self.state.storage(),
             context,
             handoff.startup_queue_probe_delay_ms,
@@ -1253,6 +1285,10 @@ impl RealtimeSessionMetrics {
             billing_settlement_preview_count: 0,
             last_billing_settlement_preview_at_ms: None,
             last_billing_settlement_preview: None,
+            billing_settlement_write_count: 0,
+            billing_settlement_applied_count: 0,
+            last_billing_settlement_write_at_ms: None,
+            last_billing_settlement_write: None,
             last_bridge_terminal_event: None,
         }
     }
@@ -1319,7 +1355,7 @@ impl RealtimeSessionMetrics {
         now_ms: f64,
         usage: RealtimeUsageMetadata,
         billing_settlement: Option<&RealtimeBillingSettlementHandoff>,
-    ) {
+    ) -> Option<RealtimeBillingSettlementPreviewMetadata> {
         let preview = billing_settlement.and_then(|handoff| {
             realtime_billing_settlement_preview(
                 &handoff.snapshot,
@@ -1337,9 +1373,10 @@ impl RealtimeSessionMetrics {
         self.last_usage_at_ms = Some(now_ms);
         self.last_usage = Some(usage);
         self.record_context(attachment, now_ms);
-        if let Some(preview) = preview {
-            self.record_billing_settlement_preview(attachment, now_ms, preview);
+        if let Some(preview) = preview.as_ref() {
+            self.record_billing_settlement_preview(attachment, now_ms, preview.clone());
         }
+        preview
     }
 
     fn record_billing_snapshot(&mut self, attachment: Option<&SocketAttachment>, now_ms: f64) {
@@ -1365,6 +1402,31 @@ impl RealtimeSessionMetrics {
             self.billing_settlement_preview_count.saturating_add(1);
         self.last_billing_settlement_preview_at_ms = Some(now_ms);
         self.last_billing_settlement_preview = Some(preview);
+        self.record_context(attachment, now_ms);
+    }
+
+    fn has_applied_billing_settlement_write(&self) -> bool {
+        self.billing_settlement_applied_count > 0
+            || self
+                .last_billing_settlement_write
+                .as_ref()
+                .map(|metadata| metadata.applied)
+                .unwrap_or(false)
+    }
+
+    fn record_billing_settlement_write(
+        &mut self,
+        attachment: Option<&SocketAttachment>,
+        now_ms: f64,
+        metadata: RealtimeBillingSettlementWriteMetadata,
+    ) {
+        self.billing_settlement_write_count = self.billing_settlement_write_count.saturating_add(1);
+        if metadata.applied {
+            self.billing_settlement_applied_count =
+                self.billing_settlement_applied_count.saturating_add(1);
+        }
+        self.last_billing_settlement_write_at_ms = Some(now_ms);
+        self.last_billing_settlement_write = Some(metadata);
         self.record_context(attachment, now_ms);
     }
 
@@ -2435,6 +2497,102 @@ pub(crate) fn realtime_billing_settlement_mutation_plan_compiled() -> bool {
         && !metrics_raw.contains("param(")
 }
 
+pub(crate) fn realtime_billing_settlement_writer_compiled() -> bool {
+    if !REALTIME_BILLING_SETTLEMENT_WRITER_COMPILED {
+        return false;
+    }
+    let request = RequestInput::from_json_body(json!({
+        "model": "gpt-4o-realtime-preview",
+        "service_tier": "fast"
+    }));
+    let Ok(snapshot) = cinatoken_billing::estimate_tiered_billing_snapshot_with_request(
+        "gpt-4o-realtime-preview",
+        r#"tier("detail", p * 2 + c * 10 + cr * 0.5 + img * 3 + ao * 20)|||(param("service_tier") == "fast" ? 2 : 1)"#,
+        cinatoken_billing::TokenParams {
+            p: 1200.0,
+            c: 0.0,
+            ..cinatoken_billing::TokenParams::default()
+        },
+        1.0,
+        request.clone(),
+    ) else {
+        return false;
+    };
+    let handoff = RealtimeBillingSettlementHandoff::new(snapshot.clone(), request.clone())
+        .with_mutation_plan(RealtimeBillingSettlementMutationPlan::new(
+            101,
+            202,
+            303,
+            "default",
+            snapshot.estimated_quota_after_group.0,
+        ));
+    let usage = RealtimeUsageMetadata {
+        source_event: "response.done".to_string(),
+        prompt_tokens: 1000,
+        completion_tokens: 600,
+        total_tokens: 1600,
+        cached_tokens: 200,
+        image_input_tokens: 100,
+        audio_output_tokens: 50,
+        ..RealtimeUsageMetadata::default()
+    };
+    let Ok(preview) =
+        realtime_billing_settlement_preview(&snapshot, &usage, request, handoff.mutation_plan())
+    else {
+        return false;
+    };
+    let disabled = realtime_billing_settlement_write_metadata(
+        &preview,
+        handoff.mutation_plan(),
+        false,
+        false,
+        false,
+        Some("write_disabled"),
+        None,
+    );
+    let applied = realtime_billing_settlement_write_metadata(
+        &preview,
+        handoff.mutation_plan(),
+        true,
+        true,
+        true,
+        None,
+        None,
+    );
+    let mut metrics = RealtimeSessionMetrics::new("settlement-writer-smoke", 1.0);
+    metrics.record_billing_settlement_write(None, 2.0, disabled.clone());
+    metrics.record_billing_settlement_write(None, 3.0, applied.clone());
+    let raw =
+        serde_json::to_string(&(disabled.clone(), applied.clone(), metrics)).unwrap_or_default();
+
+    !disabled.write_enabled
+        && !disabled.write_attempted
+        && !disabled.applied
+        && disabled.skipped_reason.as_deref() == Some("write_disabled")
+        && applied.write_enabled
+        && applied.write_attempted
+        && applied.applied
+        && applied.mutation_plan_present
+        && applied.mutation_token_scoped
+        && applied.mutation_channel_scoped
+        && applied.pre_consumed_quota == snapshot.estimated_quota_after_group.0
+        && applied.final_quota == 8300
+        && applied.additional_quota == 5900
+        && applied.refund_quota == 0
+        && applied.delta_quota == 5900
+        && !raw.contains("\"user_id\"")
+        && !raw.contains("\"token_id\"")
+        && !raw.contains("\"channel_id\"")
+        && !raw.contains("\"selected_group\"")
+        && !raw.contains("101")
+        && !raw.contains("202")
+        && !raw.contains("303")
+        && !raw.contains(&snapshot.expr_string)
+        && !raw.contains("service_tier")
+        && !raw.contains("fast")
+        && !raw.contains("param(")
+}
+
 fn realtime_billing_settlement_preview(
     snapshot: &TieredBillingSnapshot,
     usage: &RealtimeUsageMetadata,
@@ -2503,6 +2661,63 @@ impl RealtimeBillingSettlementMutationPlan {
     fn channel_scoped(&self) -> bool {
         self.channel_id > 0
     }
+}
+
+fn realtime_billing_settlement_write_enabled(env: &Env) -> bool {
+    env_flag(env, REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV)
+}
+
+fn realtime_billing_settlement_write_metadata(
+    preview: &RealtimeBillingSettlementPreviewMetadata,
+    mutation_plan: Option<&RealtimeBillingSettlementMutationPlan>,
+    write_enabled: bool,
+    write_attempted: bool,
+    applied: bool,
+    skipped_reason: Option<&str>,
+    error: Option<&str>,
+) -> RealtimeBillingSettlementWriteMetadata {
+    RealtimeBillingSettlementWriteMetadata {
+        write_enabled,
+        write_attempted,
+        applied,
+        skipped_reason: skipped_reason.map(str::to_string),
+        error: error.and_then(|value| truncate_text(value, MAX_STORED_TEXT_CHARS)),
+        pre_consumed_quota: preview.pre_consumed_quota,
+        final_quota: preview.final_quota,
+        refund_quota: preview.refund_quota,
+        additional_quota: preview.additional_quota,
+        delta_quota: preview
+            .final_quota
+            .saturating_sub(preview.pre_consumed_quota),
+        mutation_plan_present: mutation_plan.is_some(),
+        mutation_token_scoped: mutation_plan
+            .map(RealtimeBillingSettlementMutationPlan::token_scoped)
+            .unwrap_or(false),
+        mutation_channel_scoped: mutation_plan
+            .map(RealtimeBillingSettlementMutationPlan::channel_scoped)
+            .unwrap_or(false),
+    }
+}
+
+async fn apply_realtime_billing_settlement_write(
+    env: &Env,
+    preview: &RealtimeBillingSettlementPreviewMetadata,
+    plan: &RealtimeBillingSettlementMutationPlan,
+) -> Result<(), String> {
+    let db = env
+        .d1("DB")
+        .map_err(|err| format!("failed to load DB binding for realtime settlement: {err}"))?;
+    crate::d1_repositories::settle_reserved_relay_quota_usage(
+        &db,
+        plan.user_id,
+        plan.token_id,
+        plan.channel_id,
+        plan.pre_consumed_quota,
+        preview.final_quota,
+        crate::admin::unix_timestamp(),
+    )
+    .await
+    .map_err(|err| format!("failed to apply realtime settlement: {err}"))
 }
 
 pub(crate) fn realtime_selected_upstream(
@@ -2738,13 +2953,85 @@ async fn connect_realtime_upstream(
 
 async fn record_realtime_upstream_usage(
     storage: &mut Storage,
+    env: &Env,
     attachment: &SocketAttachment,
     now_ms: f64,
     usage: RealtimeUsageMetadata,
     billing_settlement: Option<&RealtimeBillingSettlementHandoff>,
 ) -> WorkerResult<()> {
     let mut metrics = load_realtime_session_metrics(storage, &attachment.session, now_ms).await?;
-    metrics.record_realtime_usage(Some(attachment), now_ms, usage, billing_settlement);
+    let settlement_write_already_applied = metrics.has_applied_billing_settlement_write();
+    let mutation_plan = billing_settlement
+        .and_then(RealtimeBillingSettlementHandoff::mutation_plan)
+        .cloned();
+    let preview =
+        metrics.record_realtime_usage(Some(attachment), now_ms, usage, billing_settlement);
+    if let Some(preview) = preview.as_ref() {
+        let write_enabled = realtime_billing_settlement_write_enabled(env);
+        let write = if !write_enabled {
+            realtime_billing_settlement_write_metadata(
+                preview,
+                mutation_plan.as_ref(),
+                false,
+                false,
+                false,
+                Some("write_disabled"),
+                None,
+            )
+        } else if mutation_plan.is_none() {
+            realtime_billing_settlement_write_metadata(
+                preview,
+                None,
+                true,
+                false,
+                false,
+                Some("mutation_plan_missing"),
+                None,
+            )
+        } else if settlement_write_already_applied {
+            realtime_billing_settlement_write_metadata(
+                preview,
+                mutation_plan.as_ref(),
+                true,
+                false,
+                false,
+                Some("already_applied"),
+                None,
+            )
+        } else if let Some(plan) = mutation_plan.as_ref() {
+            match apply_realtime_billing_settlement_write(env, preview, plan).await {
+                Ok(()) => realtime_billing_settlement_write_metadata(
+                    preview,
+                    Some(plan),
+                    true,
+                    true,
+                    true,
+                    None,
+                    None,
+                ),
+                Err(err) => realtime_billing_settlement_write_metadata(
+                    preview,
+                    Some(plan),
+                    true,
+                    true,
+                    false,
+                    Some("write_failed"),
+                    Some(&err),
+                ),
+            }
+        } else {
+            realtime_billing_settlement_write_metadata(
+                preview,
+                None,
+                true,
+                false,
+                false,
+                Some("mutation_plan_missing"),
+                None,
+            )
+        };
+        metrics.record_billing_settlement_write(Some(attachment), now_ms, write);
+    }
     store_realtime_session_metrics(storage, &metrics).await
 }
 
@@ -2858,6 +3145,7 @@ fn spawn_realtime_upstream_event_pump(
     runtime_state: Rc<RefCell<RealtimeUpstreamBridgeState>>,
     client: WebSocket,
     attachment: SocketAttachment,
+    env: Env,
     mut metrics_storage: Storage,
     context: Value,
     startup_queue_probe_delay_ms: Option<u32>,
@@ -2954,6 +3242,7 @@ fn spawn_realtime_upstream_event_pump(
                             let now_ms = js_sys::Date::now();
                             if record_realtime_upstream_usage(
                                 &mut metrics_storage,
+                                &env,
                                 &attachment,
                                 now_ms,
                                 usage,
@@ -5004,6 +5293,11 @@ mod tests {
     #[test]
     fn realtime_billing_settlement_handoff_contract_is_compiled() {
         assert!(realtime_billing_settlement_handoff_compiled());
+    }
+
+    #[test]
+    fn realtime_billing_settlement_writer_contract_is_compiled() {
+        assert!(realtime_billing_settlement_writer_compiled());
     }
 
     #[test]

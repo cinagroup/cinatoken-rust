@@ -451,6 +451,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_billing_settlement_handoff_compiled === true,
     realtime_session_billing_settlement_mutation_plan_compiled:
       data.realtime_session_billing_settlement_mutation_plan_compiled === true,
+    realtime_session_billing_settlement_writer_compiled:
+      data.realtime_session_billing_settlement_writer_compiled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
     realtime_session_upstream_bridge_compiled:
@@ -487,6 +489,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_billing_settlement_preview_compiled", true],
     ["realtime_session_billing_settlement_handoff_compiled", true],
     ["realtime_session_billing_settlement_mutation_plan_compiled", true],
+    ["realtime_session_billing_settlement_writer_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
@@ -512,6 +515,7 @@ function validateCapabilities(capabilities, options) {
     "billing_settlement_preview",
     "billing_settlement_handoff",
     "billing_settlement_mutation_plan",
+    "billing_settlement_writer",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",

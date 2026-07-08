@@ -122,6 +122,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
         capabilities.realtime_session_upstream_usage_capture_compiled,
         capabilities.realtime_session_billing_presettlement_snapshot_compiled,
+        capabilities.realtime_session_billing_settlement_preview_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
         capabilities.task_poller_timeout_sweep_compiled,
@@ -913,6 +914,15 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_billing_presettlement_snapshot_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime billing settlement preview'),
+          description: t(
+            'Computes redacted final/refund/additional quota metadata from a frozen tiered snapshot and response.done usage without applying quota yet.'
+          ),
+          ready: capabilities.realtime_session_billing_settlement_preview_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

@@ -6,7 +6,10 @@
 //! attachments for resume metadata, and a tiny control protocol for smoke
 //! testing.
 
-use cinatoken_billing::TieredBillingSnapshot;
+use cinatoken_billing::{
+    build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
+    RequestInput, TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, UsageSemantic,
+};
 use cinatoken_relay::{
     openai_compatible::{default_base_url, upstream_v1_url, usage_summary_from_body, UsageSummary},
     token_fingerprint,
@@ -44,6 +47,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_POLICY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_BACKPRESSURE_RUNTIME_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_USAGE_CAPTURE_COMPILED: bool = true;
 pub const REALTIME_BILLING_PRESETTLEMENT_SNAPSHOT_COMPILED: bool = true;
+pub const REALTIME_BILLING_SETTLEMENT_PREVIEW_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -66,6 +70,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "upstream_bridge_backpressure_runtime",
     "upstream_usage_capture",
     "billing_presettlement_snapshot",
+    "billing_settlement_preview",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -446,6 +451,25 @@ pub(crate) struct RealtimeBillingSnapshotMetadata {
     estimated_completion_tokens: i64,
     estimated_quota_after_group: i64,
     estimated_tier: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub(crate) struct RealtimeBillingSettlementPreviewMetadata {
+    billing_mode: String,
+    model_name: String,
+    expr_hash: String,
+    expr_version: u32,
+    request_rule_present: bool,
+    usage_source_event: String,
+    actual_prompt_tokens: i64,
+    actual_completion_tokens: i64,
+    actual_total_tokens: i64,
+    pre_consumed_quota: i64,
+    final_quota: i64,
+    refund_quota: i64,
+    additional_quota: i64,
+    matched_tier: String,
+    crossed_tier: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2064,6 +2088,79 @@ pub(crate) fn realtime_billing_presettlement_snapshot_compiled() -> bool {
         && !serialized.contains("param(")
 }
 
+pub(crate) fn realtime_billing_settlement_preview_compiled() -> bool {
+    if !REALTIME_BILLING_SETTLEMENT_PREVIEW_COMPILED {
+        return false;
+    }
+    let request = RequestInput::from_json_body(json!({
+        "model": "gpt-4o-realtime-preview",
+        "service_tier": "fast"
+    }));
+    let Ok(snapshot) = cinatoken_billing::estimate_tiered_billing_snapshot_with_request(
+        "gpt-4o-realtime-preview",
+        r#"tier("detail", p * 2 + c * 10 + cr * 0.5 + img * 3 + ao * 20)|||(param("service_tier") == "fast" ? 2 : 1)"#,
+        cinatoken_billing::TokenParams {
+            p: 1200.0,
+            c: 0.0,
+            ..cinatoken_billing::TokenParams::default()
+        },
+        1.0,
+        request.clone(),
+    ) else {
+        return false;
+    };
+    let usage = RealtimeUsageMetadata {
+        source_event: "response.done".to_string(),
+        prompt_tokens: 1000,
+        completion_tokens: 600,
+        total_tokens: 1600,
+        cached_tokens: 200,
+        image_input_tokens: 100,
+        audio_output_tokens: 50,
+        ..RealtimeUsageMetadata::default()
+    };
+    let Ok(preview) = realtime_billing_settlement_preview(&snapshot, &usage, request) else {
+        return false;
+    };
+    let serialized = serde_json::to_string(&preview).unwrap_or_default();
+
+    preview.billing_mode == "tiered_expr"
+        && preview.expr_hash == snapshot.expr_hash
+        && preview.request_rule_present
+        && preview.usage_source_event == "response.done"
+        && preview.actual_prompt_tokens == 1000
+        && preview.actual_completion_tokens == 600
+        && preview.actual_total_tokens == 1600
+        && preview.pre_consumed_quota == 2400
+        && preview.final_quota == 8300
+        && preview.refund_quota == 0
+        && preview.additional_quota == 5900
+        && preview.matched_tier == "detail"
+        && !preview.crossed_tier
+        && !serialized.contains(&snapshot.expr_string)
+        && !serialized.contains("service_tier")
+        && !serialized.contains("fast")
+        && !serialized.contains("param(")
+}
+
+fn realtime_billing_settlement_preview(
+    snapshot: &TieredBillingSnapshot,
+    usage: &RealtimeUsageMetadata,
+    request: RequestInput,
+) -> Result<RealtimeBillingSettlementPreviewMetadata, String> {
+    let tiered_usage = usage.to_tiered_token_usage();
+    let params = build_tiered_token_params(
+        tiered_usage,
+        false,
+        detect_billing_expr_variables(&snapshot.expr_string),
+    );
+    let result = compute_tiered_quota_with_request(snapshot, params, request)
+        .map_err(|err| format!("failed to compute realtime tiered billing preview: {err}"))?;
+    Ok(RealtimeBillingSettlementPreviewMetadata::from_settlement(
+        snapshot, usage, &result,
+    ))
+}
+
 pub(crate) fn realtime_selected_upstream(
     input: RealtimeSelectedUpstreamInput<'_>,
 ) -> Result<RealtimeSelectedUpstream, String> {
@@ -2330,6 +2427,21 @@ impl RealtimeUsageMetadata {
             audio_output_tokens: usage.audio_output_tokens,
         })
     }
+
+    fn to_tiered_token_usage(&self) -> TieredTokenUsage {
+        TieredTokenUsage {
+            prompt_tokens: i64::from(self.prompt_tokens.max(0)),
+            completion_tokens: i64::from(self.completion_tokens.max(0)),
+            cached_tokens: i64::from(self.cached_tokens.max(0)),
+            cache_creation_tokens: i64::from(self.cache_creation_tokens.max(0)),
+            image_input_tokens: i64::from(self.image_input_tokens.max(0)),
+            image_output_tokens: i64::from(self.image_output_tokens.max(0)),
+            audio_input_tokens: i64::from(self.audio_input_tokens.max(0)),
+            audio_output_tokens: i64::from(self.audio_output_tokens.max(0)),
+            usage_semantic: UsageSemantic::OpenAi,
+            ..TieredTokenUsage::default()
+        }
+    }
 }
 
 impl RealtimeBillingSnapshotMetadata {
@@ -2346,6 +2458,32 @@ impl RealtimeBillingSnapshotMetadata {
             estimated_completion_tokens: snapshot.estimated_completion_tokens,
             estimated_quota_after_group: snapshot.estimated_quota_after_group.0,
             estimated_tier: snapshot.estimated_tier.clone(),
+        }
+    }
+}
+
+impl RealtimeBillingSettlementPreviewMetadata {
+    fn from_settlement(
+        snapshot: &TieredBillingSnapshot,
+        usage: &RealtimeUsageMetadata,
+        result: &TieredBillingResult,
+    ) -> Self {
+        Self {
+            billing_mode: snapshot.billing_mode.clone(),
+            model_name: snapshot.model_name.clone(),
+            expr_hash: snapshot.expr_hash.clone(),
+            expr_version: snapshot.expr_version,
+            request_rule_present: snapshot.request_rule_expr.is_some(),
+            usage_source_event: usage.source_event.clone(),
+            actual_prompt_tokens: i64::from(usage.prompt_tokens.max(0)),
+            actual_completion_tokens: i64::from(usage.completion_tokens.max(0)),
+            actual_total_tokens: i64::from(usage.total_tokens.max(0)),
+            pre_consumed_quota: snapshot.estimated_quota_after_group.0.max(0),
+            final_quota: result.settlement.final_quota.0,
+            refund_quota: result.settlement.refund_quota.0,
+            additional_quota: result.settlement.additional_quota.0,
+            matched_tier: result.matched_tier.clone(),
+            crossed_tier: result.crossed_tier,
         }
     }
 }
@@ -4494,6 +4632,55 @@ mod tests {
     #[test]
     fn realtime_billing_presettlement_snapshot_contract_is_compiled() {
         assert!(realtime_billing_presettlement_snapshot_compiled());
+    }
+
+    #[test]
+    fn realtime_billing_settlement_preview_contract_is_compiled() {
+        assert!(realtime_billing_settlement_preview_compiled());
+    }
+
+    #[test]
+    fn realtime_billing_settlement_preview_is_redacted_and_uses_actual_usage() {
+        let request = RequestInput::from_json_body(json!({
+            "service_tier": "fast"
+        }));
+        let snapshot = cinatoken_billing::estimate_tiered_billing_snapshot_with_request(
+            "gpt-4o-realtime-preview",
+            r#"tier("detail", p * 2 + c * 10 + cr * 0.5 + img * 3 + ao * 20)|||(param("service_tier") == "fast" ? 2 : 1)"#,
+            cinatoken_billing::TokenParams {
+                p: 1200.0,
+                c: 0.0,
+                ..cinatoken_billing::TokenParams::default()
+            },
+            1.0,
+            request.clone(),
+        )
+        .unwrap();
+        let usage = RealtimeUsageMetadata {
+            source_event: "response.done".to_string(),
+            prompt_tokens: 1000,
+            completion_tokens: 600,
+            total_tokens: 1600,
+            cached_tokens: 200,
+            image_input_tokens: 100,
+            audio_output_tokens: 50,
+            ..RealtimeUsageMetadata::default()
+        };
+
+        let preview = realtime_billing_settlement_preview(&snapshot, &usage, request).unwrap();
+        let raw = serde_json::to_string(&preview).unwrap();
+
+        assert_eq!(preview.pre_consumed_quota, 2400);
+        assert_eq!(preview.final_quota, 8300);
+        assert_eq!(preview.additional_quota, 5900);
+        assert_eq!(preview.refund_quota, 0);
+        assert_eq!(preview.matched_tier, "detail");
+        assert!(!preview.crossed_tier);
+        assert_eq!(preview.usage_source_event, "response.done");
+        assert!(!raw.contains(&snapshot.expr_string));
+        assert!(!raw.contains("service_tier"));
+        assert!(!raw.contains("fast"));
+        assert!(!raw.contains("param("));
     }
 
     #[test]

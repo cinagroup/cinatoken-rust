@@ -286,3 +286,30 @@ Log redaction result:
 Go/no-go decision:
 Approvers:
 ```
+
+## Realtime Per-Response Matrix
+
+The billing unit is a client `response.create`, not the WebSocket session.
+Each row below must be exercised against migration 0019 and reconciled with the
+source Go reserve/settle/refund lifecycle.
+
+| Case | Required result |
+| --- | --- |
+| First response | Freeze request-aware snapshot, reserve before forwarding, settle actual usage once. |
+| Two responses on one socket | Bind distinct `response.created` identities, complete them out of order, and retain two correct settlements, request counts, and audit rows. |
+| Server/Semantic VAD | Automatic response creation and idle response timeouts are disabled; VAD events remain usable and the client sends explicit `response.create`. |
+| Duplicate client event | Same hashed identity is rejected; no second reserve or upstream forward. |
+| Duplicate upstream terminal event | Existing terminal response identity is detected before any fallback binding; the next reservation remains untouched. |
+| Insufficient user/token quota | Entire D1 reservation batch rolls back and event is not forwarded. |
+| Tier increase/decrease | Final delta is applied against that response's own reserved quota. |
+| Missing usage | Reservation transitions to refunded once; no used/channel quota or consume log. |
+| Forward/connect/disconnect failure | Every unconsumed reservation is refunded once. |
+| D1 settlement failure | Reservation remains reserved and a private retry record is persisted. |
+| Two failed settlements | Both records survive; one alarm processes earliest due work without overwrite; exhausted work refunds its reservation idempotently. |
+| Alarm replay after eviction | D1/DO state recovers idempotently and neither response is charged twice. |
+
+Evidence must include reservation state, response binding, replay state,
+user/token/channel deltas, request count, audit count, retry count, and
+redaction checks. Raw request JSON and frozen expressions stay out of the
+report, and terminal reservation rows must show private recovery fields
+cleared.

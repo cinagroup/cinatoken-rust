@@ -75,6 +75,10 @@ function runSelfTest() {
     runCheck("audit_failure_rolls_back", auditFailureRollsBack),
     runCheck("refund_delta_batch_applies_once", refundDeltaBatchAppliesOnce),
     runCheck("tokenless_batch_applies_once", tokenlessBatchAppliesOnce),
+    runCheck("response_reservation_settles_once", responseReservationSettlesOnce),
+    runCheck("response_reservation_guard_rolls_back", responseReservationGuardRollsBack),
+    runCheck("response_reservation_refund_is_idempotent", responseReservationRefundIsIdempotent),
+    runCheck("parallel_responses_settle_by_response_identity", parallelResponsesSettleByResponseIdentity),
     runCheck("staging_plan_sql_artifacts_replay_locally", stagingPlanSqlArtifactsReplayLocally),
   ];
   const failed = checks.filter((check) => check.status !== "PASS");
@@ -172,6 +176,40 @@ function createSchema(db) {
       applied_at INTEGER NOT NULL DEFAULT 0,
       error TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE realtime_billing_reservations (
+      reservation_key TEXT PRIMARY KEY,
+      session TEXT NOT NULL,
+      client_event_id_hash TEXT NOT NULL DEFAULT '',
+      reservation_sequence INTEGER NOT NULL DEFAULT 0,
+      user_id INTEGER NOT NULL,
+      token_id INTEGER NOT NULL DEFAULT 0,
+      channel_id INTEGER NOT NULL,
+      selected_group TEXT NOT NULL DEFAULT '',
+      model_name TEXT NOT NULL,
+      pre_consumed_quota INTEGER NOT NULL DEFAULT 0,
+      snapshot_json TEXT NOT NULL,
+      request_json TEXT NOT NULL,
+      username TEXT NOT NULL DEFAULT '',
+      token_name TEXT NOT NULL DEFAULT '',
+      client_ip TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL DEFAULT '',
+      started_at INTEGER NOT NULL DEFAULT 0,
+      endpoint_path TEXT NOT NULL DEFAULT 'realtime',
+      status TEXT NOT NULL DEFAULT 'reserved',
+      upstream_response_id_hash TEXT NOT NULL DEFAULT '',
+      replay_key TEXT NOT NULL DEFAULT '',
+      final_quota INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      settled_at INTEGER NOT NULL DEFAULT 0,
+      refunded_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE UNIQUE INDEX idx_realtime_billing_reservations_replay_key
+      ON realtime_billing_reservations(replay_key)
+      WHERE replay_key <> '';
+    CREATE UNIQUE INDEX idx_realtime_billing_reservations_response
+      ON realtime_billing_reservations(session, upstream_response_id_hash)
+      WHERE upstream_response_id_hash <> '';
   `);
 }
 
@@ -412,6 +450,143 @@ function tokenlessBatchAppliesOnce() {
   });
 }
 
+function responseReservationSettlesOnce() {
+  return withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 500,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const record = settlementRecord({
+      reservationKey: "rtreserve-response-1",
+      replayKey: "rtsettle-response-1",
+      preConsumedQuota: 100,
+      finalQuota: 150,
+    });
+    const reserve = reserveRealtimeResponse(db, record);
+    const first = runRealtimeSettlementBatch(db, record, auditLog(record));
+    const second = runRealtimeSettlementBatch(db, record, auditLog(record));
+    const snapshot = settlementSnapshot(db, record);
+    const reservation = db
+      .prepare("SELECT status, final_quota, replay_key, request_json FROM realtime_billing_reservations WHERE reservation_key = ?1")
+      .get(record.reservationKey);
+
+    assert(reserve.outcome === "Applied", "response reservation should apply");
+    assert(first.outcome === "Applied", "reserved response settlement should apply");
+    assert(second.outcome === "DuplicateReplay", "reserved response replay should be a no-op");
+    assert(snapshot.userQuota === 850, "reservation plus settlement delta should debit final user quota");
+    assert(snapshot.tokenRemainQuota === 350, "reservation plus settlement delta should debit final token quota");
+    assert(snapshot.userUsedQuota === 150, "settlement should record final used quota once");
+    assert(snapshot.channelUsedQuota === 150, "settlement should record final channel quota once");
+    assert(reservation.status === "settled", "reservation should transition to settled");
+    assert(Number(reservation.final_quota) === 150, "reservation should persist final quota");
+    assert(reservation.replay_key === record.replayKey, "reservation should persist replay identity");
+    assert(reservation.request_json === "{}", "terminal settlement should clear private request input");
+    return { reserve: reserve.outcome, first: first.outcome, second: second.outcome, status: reservation.status };
+  });
+}
+
+function responseReservationGuardRollsBack() {
+  return withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 50,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const record = settlementRecord({
+      reservationKey: "rtreserve-insufficient-token",
+      preConsumedQuota: 100,
+    });
+    const result = reserveRealtimeResponse(db, record);
+    const snapshot = settlementSnapshot(db, record);
+    const reservationRows = db.prepare("SELECT COUNT(1) AS count FROM realtime_billing_reservations").get();
+    assert(result.outcome === "Error", "insufficient token quota should reject reservation");
+    assert(snapshot.userQuota === 1_000, "failed token guard must roll back user debit");
+    assert(snapshot.tokenRemainQuota === 50, "failed token guard must leave token quota unchanged");
+    assert(Number(reservationRows.count) === 0, "failed reservation must roll back its marker");
+    return { outcome: result.outcome, userQuota: snapshot.userQuota, reservationRows: Number(reservationRows.count) };
+  });
+}
+
+function responseReservationRefundIsIdempotent() {
+  return withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 500,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const record = settlementRecord({ reservationKey: "rtreserve-refund", preConsumedQuota: 100 });
+    const reserve = reserveRealtimeResponse(db, record);
+    const first = refundRealtimeResponse(db, record);
+    const second = refundRealtimeResponse(db, record);
+    const snapshot = settlementSnapshot(db, record);
+    const reservation = db
+      .prepare("SELECT request_json FROM realtime_billing_reservations WHERE reservation_key = ?1")
+      .get(record.reservationKey);
+    assert(reserve.outcome === "Applied", "refund fixture reservation should apply");
+    assert(first.outcome === "Applied", "first reservation refund should apply");
+    assert(second.outcome === "AlreadyFinalized", "second reservation refund should not credit twice");
+    assert(snapshot.userQuota === 1_000, "refund should restore user quota exactly once");
+    assert(snapshot.tokenRemainQuota === 500, "refund should restore token quota exactly once");
+    assert(reservation.request_json === "{}", "terminal refund should clear private request input");
+    return { reserve: reserve.outcome, first: first.outcome, second: second.outcome };
+  });
+}
+
+function parallelResponsesSettleByResponseIdentity() {
+  return withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 2_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 1_000,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const first = settlementRecord({
+      reservationKey: "rtreserve-parallel-1",
+      replayKey: "rtsettle-parallel-1",
+      responseIdHash: "response-hash-1",
+      reservationSequence: 1,
+      preConsumedQuota: 100,
+      finalQuota: 120,
+    });
+    const second = settlementRecord({
+      reservationKey: "rtreserve-parallel-2",
+      replayKey: "rtsettle-parallel-2",
+      responseIdHash: "response-hash-2",
+      reservationSequence: 2,
+      preConsumedQuota: 100,
+      finalQuota: 130,
+    });
+    assert(reserveRealtimeResponse(db, first).outcome === "Applied", "first parallel reserve");
+    assert(reserveRealtimeResponse(db, second).outcome === "Applied", "second parallel reserve");
+    assert(bindRealtimeResponse(db, first.session, first.responseIdHash).outcome === "Applied", "bind first response");
+    assert(bindRealtimeResponse(db, first.session, first.responseIdHash).outcome === "Duplicate", "duplicate first response binding");
+    assert(bindRealtimeResponse(db, second.session, second.responseIdHash).outcome === "Applied", "bind second response");
+
+    const secondResult = runRealtimeSettlementBatch(db, second, auditLog(second, { requestId: "req-parallel-2" }));
+    const firstResult = runRealtimeSettlementBatch(db, first, auditLog(first, { requestId: "req-parallel-1" }));
+    const rows = db
+      .query("SELECT reservation_key, upstream_response_id_hash, final_quota, status FROM realtime_billing_reservations ORDER BY reservation_sequence")
+      .all();
+    const snapshot = settlementSnapshot(db, first);
+    assert(secondResult.outcome === "Applied" && firstResult.outcome === "Applied", "out-of-order done events should settle");
+    assert(rows[0].reservation_key === first.reservationKey && Number(rows[0].final_quota) === 120, "first response identity should keep first quota");
+    assert(rows[1].reservation_key === second.reservationKey && Number(rows[1].final_quota) === 130, "second response identity should keep second quota");
+    assert(rows[0].upstream_response_id_hash === first.responseIdHash, "first response hash should remain bound to first reservation");
+    assert(rows[1].upstream_response_id_hash === second.responseIdHash, "duplicate binding must not consume the second reservation");
+    assert(snapshot.userUsedQuota === 250, "parallel responses should record both final quotas");
+    assert(snapshot.channelUsedQuota === 250, "parallel responses should charge channel by both finals");
+    return { secondDone: secondResult.outcome, firstDone: firstResult.outcome, finalQuotas: rows.map((row) => Number(row.final_quota)) };
+  });
+}
+
 function normalizeStagingPlanOptions(args) {
   const value = (name, envName) => args.values.get(name) || process.env[envName];
   const database = validatePlanValue(
@@ -451,13 +626,13 @@ function buildStagingPlan(options) {
       apiTokenHandling:
         "Use a rotated CLOUDFLARE_API_TOKEN from the shell environment or Wrangler login; never paste tokens into this plan, source, or command history.",
       sourceContract:
-        "Mirrors the Worker D1 batch shape: replay marker insert, guarded quota statements, changes()!=1 duplicate-key assertions, and audit row insert.",
+        "Mirrors the Worker D1 state machine: response reservation, reserved-to-settled/refunded CAS, replay marker, guarded quota statements, changes()!=1 duplicate-key assertions, and audit row insert.",
       cloudflareReference:
         "Cloudflare D1 batch statements are executed sequentially as a transaction and roll back the sequence when a statement fails.",
     },
     requiredBeforeRun: [
       "Confirm the target database is an isolated staging D1, not production.",
-      "Apply migrations through migrations/d1/0018_realtime_settlement_replays.sql.",
+      "Apply migrations through migrations/d1/0019_realtime_billing_reservations.sql.",
       "Write each sqlArtifacts[].sql body to its sqlArtifacts[].path exactly, then review it before running.",
       "Use Wrangler SQL artifacts only for setup, verification, and cleanup; do not treat multi-statement SQL files as D1Database.batch evidence.",
       "Apply the settlement through the deployed Worker binding path, then archive Wrangler stdout/stderr, Worker smoke output, D1 row snapshots, capabilities output, and the matching git commit SHA.",
@@ -533,7 +708,7 @@ function buildBindingSmokePlan(options) {
       "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
       "Keep ENVIRONMENT=staging; the Worker route rejects production.",
       "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
-      "Run against an isolated staging D1 database with migrations through 0018 applied.",
+      "Run against an isolated staging D1 database with migrations through 0019 applied.",
       "Archive /api/platform/capabilities before and after the smoke run.",
     ],
     requests: options.scenarios.map((scenario) => ({
@@ -1217,6 +1392,143 @@ function assertStagingCleanup(db, scenario) {
   assert(remaining === 0, `${scenario.name} cleanup should remove all smoke rows`);
 }
 
+function reserveRealtimeResponse(db, record) {
+  const guardedChanges = [];
+  try {
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO realtime_billing_reservations (
+          reservation_key, session, client_event_id_hash, reservation_sequence,
+          user_id, token_id, channel_id, selected_group, model_name,
+          pre_consumed_quota, snapshot_json, request_json, status, created_at, updated_at
+        ) VALUES (?1, ?2, 'client-event-hash', ?3, ?4, ?5, ?6, 'default', ?7, ?8, '{"expr":"private"}', '{"prompt":"private"}', 'reserved', ?9, ?9)`,
+      ).run(
+        record.reservationKey,
+        record.session,
+        record.reservationSequence,
+        record.userId,
+        record.tokenId,
+        record.channelId,
+        record.modelName,
+        record.preConsumedQuota,
+        record.createdAt,
+      );
+      if (record.preConsumedQuota > 0) {
+        guardedChanges.push(
+          runReservationGuarded(
+            db,
+            reserveUserSql,
+            [record.preConsumedQuota, record.userId],
+            record.reservationKey,
+          ),
+        );
+        if (record.tokenId > 0) {
+          guardedChanges.push(
+            runReservationGuarded(
+              db,
+              debitTokenSql,
+              [record.preConsumedQuota, record.createdAt, record.tokenId],
+              record.reservationKey,
+            ),
+          );
+        }
+      }
+    })();
+  } catch (error) {
+    const duplicate = db
+      .prepare("SELECT COUNT(1) AS count FROM realtime_billing_reservations WHERE reservation_key = ?1")
+      .get(record.reservationKey);
+    return {
+      outcome: Number(duplicate.count) > 0 ? "Duplicate" : "Error",
+      error: error instanceof Error ? error.message : String(error),
+      guardedStatements: guardedChanges.length,
+    };
+  }
+  return { outcome: "Applied", guardedStatements: guardedChanges.length };
+}
+
+function bindRealtimeResponse(db, session, responseIdHash) {
+  const existing = db
+    .prepare(
+      `SELECT reservation_key
+       FROM realtime_billing_reservations
+       WHERE session = ?1 AND upstream_response_id_hash = ?2`,
+    )
+    .get(session, responseIdHash);
+  if (existing) {
+    return { outcome: "Duplicate", reservationKey: existing.reservation_key };
+  }
+  const result = db
+    .prepare(
+      `UPDATE realtime_billing_reservations
+       SET upstream_response_id_hash = ?2, updated_at = ?3
+       WHERE reservation_key = (
+         SELECT reservation_key
+         FROM realtime_billing_reservations
+         WHERE session = ?1
+           AND status = 'reserved'
+           AND upstream_response_id_hash = ''
+         ORDER BY reservation_sequence ASC, reservation_key ASC
+         LIMIT 1
+       )
+         AND status = 'reserved'
+         AND upstream_response_id_hash = ''`,
+    )
+    .run(session, responseIdHash, defaultNow);
+  return {
+    outcome: result.changes === 1 ? "Applied" : "NotFound",
+    reservationKey: result.changes === 1
+      ? db
+          .prepare(
+            `SELECT reservation_key
+             FROM realtime_billing_reservations
+             WHERE session = ?1 AND upstream_response_id_hash = ?2`,
+          )
+          .get(session, responseIdHash).reservation_key
+      : null,
+  };
+}
+
+function refundRealtimeResponse(db, record) {
+  const reservation = db
+    .prepare("SELECT status, pre_consumed_quota, user_id, token_id FROM realtime_billing_reservations WHERE reservation_key = ?1")
+    .get(record.reservationKey);
+  if (!reservation) {
+    return { outcome: "NotFound" };
+  }
+  if (reservation.status !== "reserved") {
+    return { outcome: "AlreadyFinalized" };
+  }
+  try {
+    db.transaction(() => {
+      runReservationGuarded(
+        db,
+        `UPDATE realtime_billing_reservations
+         SET status = 'refunded', snapshot_json = '{}', request_json = '{}',
+             updated_at = ?2, refunded_at = ?2
+         WHERE reservation_key = ?1 AND status = 'reserved'`,
+        [record.reservationKey, record.appliedAt],
+        record.reservationKey,
+      );
+      const quota = Number(reservation.pre_consumed_quota);
+      if (quota > 0) {
+        runReservationGuarded(db, creditUserSql, [quota, Number(reservation.user_id)], record.reservationKey);
+        if (Number(reservation.token_id) > 0) {
+          runReservationGuarded(
+            db,
+            creditTokenSql,
+            [quota, record.appliedAt, Number(reservation.token_id)],
+            record.reservationKey,
+          );
+        }
+      }
+    })();
+  } catch (error) {
+    return { outcome: "Error", error: error instanceof Error ? error.message : String(error) };
+  }
+  return { outcome: "Applied" };
+}
+
 function runRealtimeSettlementBatch(db, record, audit, options = {}) {
   validateAuditMatches(record, audit);
   if (replayApplied(db, record.replayKey)) {
@@ -1226,6 +1538,28 @@ function runRealtimeSettlementBatch(db, record, audit, options = {}) {
   try {
     db.transaction(() => {
       insertReplay(db, record);
+      if (record.reservationKey) {
+        guardedChanges.push(
+          runReservationGuarded(
+            db,
+            `UPDATE realtime_billing_reservations
+             SET status = 'settled', upstream_response_id_hash = ?2,
+                 replay_key = ?3, final_quota = ?4, snapshot_json = '{}', request_json = '{}',
+                 updated_at = ?5, settled_at = ?5
+             WHERE reservation_key = ?1
+               AND status = 'reserved'
+               AND (upstream_response_id_hash = '' OR upstream_response_id_hash = ?2)`,
+            [
+              record.reservationKey,
+              record.responseIdHash,
+              record.replayKey,
+              record.finalQuota,
+              record.appliedAt,
+            ],
+            record.reservationKey,
+          ),
+        );
+      }
       const delta = record.finalQuota - record.preConsumedQuota;
       if (record.tokenId <= 0) {
         if (delta > 0) {
@@ -1341,6 +1675,18 @@ function runGuarded(db, sql, params, replayKey) {
   return changes;
 }
 
+function runReservationGuarded(db, sql, params, reservationKey) {
+  const changes = db.prepare(sql).run(...params).changes;
+  db.prepare(
+    `INSERT INTO realtime_billing_reservations (
+       reservation_key, session, user_id, channel_id, model_name, snapshot_json, request_json
+     )
+     SELECT ?1, '', 0, 0, '', '{}', '{}'
+     WHERE changes() != 1`,
+  ).run(reservationKey);
+  return changes;
+}
+
 function insertReplay(db, record) {
   db.prepare(
     `
@@ -1381,7 +1727,10 @@ function seedSettlementFixture(db, fixture) {
 
 function settlementRecord(overrides = {}) {
   return {
+    reservationKey: overrides.reservationKey ?? null,
     replayKey: overrides.replayKey ?? "rtsettle-smoke",
+    responseIdHash: overrides.responseIdHash ?? "response-hash",
+    reservationSequence: overrides.reservationSequence ?? 1,
     session: overrides.session ?? "session-smoke",
     userId: overrides.userId ?? 1,
     tokenId: overrides.tokenId ?? 10,

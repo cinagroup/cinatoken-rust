@@ -30,6 +30,7 @@ REQUIRED_TABLES = [
     "subscription_pre_consume_records",
     "passkey_credentials",
     "realtime_settlement_replays",
+    "realtime_billing_reservations",
 ]
 
 REQUIRED_COLUMNS = {
@@ -67,6 +68,34 @@ REQUIRED_COLUMNS = {
         "applied_at",
         "error",
     },
+    "realtime_billing_reservations": {
+        "reservation_key",
+        "session",
+        "client_event_id_hash",
+        "reservation_sequence",
+        "user_id",
+        "token_id",
+        "channel_id",
+        "selected_group",
+        "model_name",
+        "pre_consumed_quota",
+        "snapshot_json",
+        "request_json",
+        "username",
+        "token_name",
+        "client_ip",
+        "request_id",
+        "started_at",
+        "endpoint_path",
+        "status",
+        "upstream_response_id_hash",
+        "replay_key",
+        "final_quota",
+        "created_at",
+        "updated_at",
+        "settled_at",
+        "refunded_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -82,6 +111,12 @@ REQUIRED_INDEXES = {
     "realtime_settlement_replays": {
         "idx_realtime_settlement_replays_user": False,
         "idx_realtime_settlement_replays_status": False,
+    },
+    "realtime_billing_reservations": {
+        "idx_realtime_billing_reservations_session_status": False,
+        "idx_realtime_billing_reservations_user_status": False,
+        "idx_realtime_billing_reservations_replay_key": True,
+        "idx_realtime_billing_reservations_response": True,
     },
 }
 

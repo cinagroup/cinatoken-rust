@@ -40,8 +40,8 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 18 migrations, 25 required tables, 29
-  incremental key columns, and 9 key indexes.
+- `bun run verify:sqlite` reports 19 migrations, 26 required tables, 55
+  incremental key columns, and 13 key indexes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes.
@@ -136,9 +136,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0018 are
-  contiguous; the local SQLite verifier finds all 25 required tables, 29
-  incremental key columns, and 9 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0019 are
+  contiguous; the local SQLite verifier finds all 26 required tables, 55
+  incremental key columns, and 13 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -192,7 +192,7 @@ Deploy or update staging using the configured staging command.
 Before any remote command, confirm the operator has revoked/rotated every
 exposed token and authenticated Wrangler with a replacement credential. Record
 the account identity and token scope/owner/rotation time, never the token value.
-If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local 18/18
+If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local 19/19
 or localhost smoke output cannot be promoted into this phase.
 
 Record:

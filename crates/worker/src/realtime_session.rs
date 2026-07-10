@@ -8,9 +8,11 @@
 
 use cinatoken_billing::{
     build_tiered_token_params, compute_tiered_quota_with_request, detect_billing_expr_variables,
-    split_billing_expr_request_rule, RequestInput, TieredBillingResult, TieredBillingSnapshot,
-    TieredTokenUsage, UsageSemantic,
+    expr_hash_string, split_billing_expr_request_rule, RequestInput, TieredBillingResult,
+    TieredBillingSnapshot, TieredTokenUsage, UsageSemantic,
 };
+#[cfg(test)]
+use cinatoken_billing::{estimate_tiered_billing_snapshot_with_request, TokenParams};
 use cinatoken_relay::{
     clamp_i64_to_i32,
     openai_compatible::{default_base_url, upstream_v1_url, usage_summary_from_body, UsageSummary},
@@ -90,6 +92,9 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_settlement_audit_log",
     "billing_settlement_batch",
     "billing_settlement_retry",
+    "billing_response_reservation",
+    "billing_response_correlation",
+    "billing_explicit_response_mode",
     "billing_settlement_write_gate",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
@@ -111,10 +116,12 @@ const OPENAI_REALTIME_BETA_HEADER_VALUE: &str = "realtime=v1";
 const CHANNEL_TYPE_AZURE: i32 = 3;
 const AZURE_DEFAULT_API_VERSION: &str = "2025-04-01-preview";
 const SESSION_METRICS_KEY: &str = "session_metrics_v1";
-const BILLING_SETTLEMENT_RETRY_KEY: &str = "billing_settlement_retry_v1";
+const BILLING_SETTLEMENT_RETRY_KEY: &str = "billing_settlement_retries_v2";
+const BILLING_RESERVATION_SEQUENCE_KEY: &str = "billing_reservation_sequence_v1";
 const BILLING_SETTLEMENT_RETRY_INITIAL_DELAY_MS: u64 = 1_000;
 const BILLING_SETTLEMENT_RETRY_MAX_DELAY_MS: u64 = 30_000;
 const BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS: u8 = 7;
+const BILLING_SETTLEMENT_RETRY_MAX_RECORDS: usize = 64;
 const MAX_STORED_TEXT_CHARS: usize = 160;
 const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
@@ -337,6 +344,7 @@ struct RealtimeUpstreamBridgeState {
     upstream_ready: bool,
     closed: bool,
     pending: RealtimeBridgePendingQueue,
+    billing_settlement: Option<RealtimeBillingSettlementHandoff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -455,6 +463,7 @@ struct RealtimeBridgeTerminalEvent {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct RealtimeUsageMetadata {
     source_event: String,
+    response_identity_hash: String,
     prompt_tokens: i32,
     completion_tokens: i32,
     total_tokens: i32,
@@ -544,6 +553,7 @@ struct RealtimeBillingSettlementWriteMetadata {
 
 #[derive(Debug, Clone, Serialize)]
 struct RealtimeBillingSettlementRetryStatus {
+    record_count: usize,
     pending: bool,
     paused: bool,
     exhausted: bool,
@@ -560,6 +570,8 @@ struct RealtimeBillingSettlementRetryRecord {
     snapshot: TieredBillingSnapshot,
     mutation_plan: RealtimeBillingSettlementMutationPlan,
     audit_plan: RealtimeBillingSettlementAuditPlan,
+    reservation_key: String,
+    upstream_response_id_hash: String,
     replay_key: String,
     attempts: u8,
     max_attempts: u8,
@@ -569,6 +581,11 @@ struct RealtimeBillingSettlementRetryRecord {
     paused: bool,
     exhausted: bool,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RealtimeBillingSettlementRetryQueue {
+    records: Vec<RealtimeBillingSettlementRetryRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -822,10 +839,49 @@ impl DurableObject for RealtimeSession {
                     }
                     return Ok(());
                 }
+                let message = match self
+                    .enforce_realtime_explicit_response_mode(attachment.as_ref(), message)
+                {
+                    Ok(message) => message,
+                    Err(err) => {
+                        metrics.record_error(attachment.as_ref(), js_sys::Date::now(), &err);
+                        self.store_metrics(&metrics).await?;
+                        ws.send(&json!({
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": "billing_explicit_response_required",
+                                "message": "Realtime billing requires explicit response.create events"
+                            }
+                        }))?;
+                        return Ok(());
+                    }
+                };
+                let reservation_key = match self
+                    .reserve_realtime_response(attachment.as_ref(), &message)
+                    .await
+                {
+                    Ok(reservation_key) => reservation_key,
+                    Err(err) => {
+                        metrics.record_error(attachment.as_ref(), js_sys::Date::now(), &err);
+                        self.store_metrics(&metrics).await?;
+                        ws.send(&json!({
+                            "type": "error",
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": "billing_reservation_failed",
+                                "message": "Unable to reserve quota for response.create"
+                            }
+                        }))?;
+                        return Ok(());
+                    }
+                };
                 match self.forward_text_to_upstream(attachment.as_ref(), message) {
                     Ok(RealtimeBridgeForwardResult::Sent)
                     | Ok(RealtimeBridgeForwardResult::Queued) => {}
                     Ok(RealtimeBridgeForwardResult::NotActive) => {
+                        self.refund_realtime_response_best_effort(reservation_key.as_deref())
+                            .await;
                         ws.send(&json!({
                             "type": "realtime_session_control",
                             "status": realtime_client_message_bridge_status(
@@ -838,6 +894,8 @@ impl DurableObject for RealtimeSession {
                         }))?;
                     }
                     Ok(RealtimeBridgeForwardResult::Overflow(overflow)) => {
+                        self.refund_realtime_response_best_effort(reservation_key.as_deref())
+                            .await;
                         let now_ms = js_sys::Date::now();
                         let close_action = realtime_bridge_close_action(
                             RealtimeBridgeCloseCause::BackpressureOverflow,
@@ -882,6 +940,8 @@ impl DurableObject for RealtimeSession {
                         );
                     }
                     Err(_) => {
+                        self.refund_realtime_response_best_effort(reservation_key.as_deref())
+                            .await;
                         let now_ms = js_sys::Date::now();
                         let close_action = realtime_bridge_close_action(
                             RealtimeBridgeCloseCause::ClientToUpstreamSendFailed,
@@ -1090,6 +1150,8 @@ impl DurableObject for RealtimeSession {
         if let Some(attachment) = attachment.as_ref() {
             self.close_upstream_bridge_for(attachment, action);
         }
+        self.refund_realtime_session_reservations_best_effort(&session)
+            .await;
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_close(attachment.as_ref(), now_ms, code, &reason);
         if !realtime_bridge_generated_close_reason(&reason) {
@@ -1123,6 +1185,8 @@ impl DurableObject for RealtimeSession {
         if let Some(attachment) = attachment.as_ref() {
             self.close_upstream_bridge_for(attachment, action);
         }
+        self.refund_realtime_session_reservations_best_effort(&session)
+            .await;
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_error(attachment.as_ref(), now_ms, &error.to_string());
         metrics.record_bridge_terminal_event(
@@ -1141,31 +1205,31 @@ impl DurableObject for RealtimeSession {
 
     async fn alarm(&mut self) -> WorkerResult<Response> {
         let mut storage = self.state.storage();
-        let Some(mut retry) = load_realtime_billing_settlement_retry(&storage).await else {
+        let Some(mut queue) = load_realtime_billing_settlement_retry(&storage).await else {
             return Response::ok("realtime settlement retry skipped: no record");
         };
         let now_ms = js_sys::Date::now();
-        retry.updated_at_ms = now_ms;
-        retry.next_retry_at_ms = None;
 
         if !realtime_billing_settlement_write_enabled(&self.env) {
-            retry.paused = true;
-            retry.last_error = Some("write_disabled".to_string());
-            storage
-                .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
-                .await?;
-            record_realtime_billing_settlement_retry_metrics(
-                &mut storage,
-                &retry,
-                now_ms,
-                false,
-                false,
-                Some("retry_paused"),
-            )
-            .await?;
+            for retry in &mut queue.records {
+                if !retry.exhausted {
+                    retry.paused = true;
+                    retry.updated_at_ms = now_ms;
+                    retry.next_retry_at_ms = None;
+                    retry.last_error = Some("write_disabled".to_string());
+                }
+            }
+            store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
             return Response::ok("realtime settlement retry paused: write disabled");
         }
 
+        let Some(index) = queue.next_due_index(now_ms) else {
+            store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
+            return Response::ok("realtime settlement retry skipped: no due record");
+        };
+        let mut retry = queue.records.remove(index);
+        retry.updated_at_ms = now_ms;
+        retry.next_retry_at_ms = None;
         retry.paused = false;
         retry.attempts = retry.attempts.saturating_add(1);
         match apply_realtime_billing_settlement_write(
@@ -1175,6 +1239,8 @@ impl DurableObject for RealtimeSession {
             &retry.snapshot,
             &retry.mutation_plan,
             &retry.audit_plan,
+            &retry.reservation_key,
+            &retry.upstream_response_id_hash,
             &retry.replay_key,
         )
         .await
@@ -1195,43 +1261,64 @@ impl DurableObject for RealtimeSession {
                     },
                 )
                 .await?;
-                storage.delete(BILLING_SETTLEMENT_RETRY_KEY).await?;
-                storage.delete_alarm().await?;
+                store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
                 Response::ok("realtime settlement retry applied")
             }
             Err(err) => {
                 retry.last_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
                 retry.exhausted = retry.attempts >= retry.max_attempts;
+                let mut exhausted_refunded = false;
                 if retry.exhausted {
                     retry.next_retry_at_ms = None;
-                    storage
-                        .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
-                        .await?;
-                    storage.delete_alarm().await?;
+                    if let Ok(db) = self.env.d1("DB") {
+                        match crate::d1_repositories::refund_realtime_billing_reservation(
+                            &db,
+                            &retry.reservation_key,
+                            crate::admin::unix_timestamp(),
+                        )
+                        .await
+                        {
+                            Ok(
+                                crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
+                                | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
+                                | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound,
+                            ) => exhausted_refunded = true,
+                            Err(refund_err) => {
+                                retry.last_error = truncate_text(
+                                    &format!(
+                                        "{err}; exhausted reservation refund failed: {refund_err}"
+                                    ),
+                                    MAX_STORED_TEXT_CHARS,
+                                );
+                            }
+                        }
+                    }
                 } else {
                     let delay_ms = realtime_billing_settlement_retry_delay_ms(retry.attempts);
-                    persist_realtime_billing_settlement_retry(
-                        &mut storage,
-                        &mut retry,
-                        now_ms,
-                        delay_ms,
-                    )
-                    .await?;
+                    retry.next_retry_at_ms = Some(now_ms + delay_ms as f64);
                 }
+                if !exhausted_refunded {
+                    queue.records.push(retry.clone());
+                }
+                store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
                 record_realtime_billing_settlement_retry_metrics(
                     &mut storage,
                     &retry,
                     now_ms,
                     true,
                     false,
-                    Some(if retry.exhausted {
+                    Some(if exhausted_refunded {
+                        "retry_exhausted_refunded"
+                    } else if retry.exhausted {
                         "retry_exhausted"
                     } else {
                         "retry_scheduled"
                     }),
                 )
                 .await?;
-                Response::ok(if retry.exhausted {
+                Response::ok(if exhausted_refunded {
+                    "realtime settlement retry exhausted and reservation refunded"
+                } else if retry.exhausted {
                     "realtime settlement retry exhausted"
                 } else {
                     "realtime settlement retry scheduled"
@@ -1302,6 +1389,7 @@ impl RealtimeSession {
                 upstream_ready: false,
                 closed: false,
                 pending: RealtimeBridgePendingQueue::default(),
+                billing_settlement: handoff.billing_settlement.clone(),
             })),
         };
         spawn_realtime_upstream_event_pump(
@@ -1317,6 +1405,232 @@ impl RealtimeSession {
         );
         self.upstream_bridges.insert(bridge_key, runtime);
         Ok(())
+    }
+
+    async fn reserve_realtime_response(
+        &self,
+        attachment: Option<&SocketAttachment>,
+        message: &str,
+    ) -> Result<Option<String>, String> {
+        let Some(event) = realtime_response_create_event(message)? else {
+            return Ok(None);
+        };
+        let attachment = attachment.ok_or_else(|| {
+            "response.create cannot be billed without a realtime socket attachment".to_string()
+        })?;
+        let bridge_key = realtime_upstream_bridge_key(attachment);
+        let handoff = self
+            .upstream_bridges
+            .get(&bridge_key)
+            .and_then(|runtime| runtime.state.borrow().billing_settlement.clone());
+        let Some(handoff) = handoff else {
+            return if realtime_billing_settlement_write_enabled(&self.env) {
+                Err("response.create has no billable Realtime reservation plan".to_string())
+            } else {
+                Ok(None)
+            };
+        };
+        if !realtime_billing_settlement_write_enabled(&self.env) {
+            return Err("realtime billing reservation writes are disabled".to_string());
+        }
+        let mutation_plan = handoff
+            .mutation_plan()
+            .cloned()
+            .ok_or_else(|| "realtime billing mutation plan is missing".to_string())?;
+        let audit_plan = handoff
+            .audit_plan()
+            .cloned()
+            .ok_or_else(|| "realtime billing audit plan is missing".to_string())?;
+
+        let mut storage = self.state.storage();
+        let sequence = storage
+            .get::<i64>(BILLING_RESERVATION_SEQUENCE_KEY)
+            .await
+            .unwrap_or(0)
+            .saturating_add(1);
+        storage
+            .put(BILLING_RESERVATION_SEQUENCE_KEY, sequence)
+            .await
+            .map_err(|err| format!("failed to persist realtime reservation sequence: {err}"))?;
+
+        let request = realtime_response_create_request(&event, &handoff);
+        let snapshot =
+            crate::relay::realtime_billing_response_snapshot(&handoff.snapshot, request.clone())?;
+        let pre_consumed_quota = snapshot.estimated_quota_after_group.0;
+        let client_event_id_hash = event
+            .get("event_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(realtime_billing_identity_hash)
+            .unwrap_or_else(|| {
+                realtime_billing_identity_hash(&format!(
+                    "{}|sequence|{sequence}",
+                    attachment.session
+                ))
+            });
+        let reservation_key = format!(
+            "rtreserve-{}",
+            realtime_billing_identity_hash(&format!(
+                "{}|{}|{}|{}",
+                attachment.session, client_event_id_hash, snapshot.model_name, snapshot.expr_hash
+            ))
+        );
+        let snapshot_json = serde_json::to_string(&snapshot)
+            .map_err(|err| format!("failed to serialize realtime billing snapshot: {err}"))?;
+        let request_json = serde_json::to_string(&request)
+            .map_err(|err| format!("failed to serialize realtime billing request: {err}"))?;
+        let db = self
+            .env
+            .d1("DB")
+            .map_err(|err| format!("failed to load DB binding for realtime reservation: {err}"))?;
+        let created_at = crate::admin::unix_timestamp();
+        let endpoint_path = audit_plan.endpoint_path.as_str();
+        let empty = "";
+        let outcome = crate::d1_repositories::reserve_realtime_billing_quota(
+            &db,
+            crate::d1_repositories::RealtimeBillingReservationRecord {
+                reservation_key: &reservation_key,
+                session: &attachment.session,
+                client_event_id_hash: &client_event_id_hash,
+                reservation_sequence: sequence,
+                user_id: mutation_plan.user_id,
+                token_id: mutation_plan.token_id,
+                channel_id: mutation_plan.channel_id,
+                selected_group: &mutation_plan.selected_group,
+                model_name: &snapshot.model_name,
+                pre_consumed_quota,
+                snapshot_json: &snapshot_json,
+                request_json: &request_json,
+                username: &audit_plan.username,
+                token_name: &audit_plan.token_name,
+                client_ip: audit_plan.client_ip.as_deref().unwrap_or(empty),
+                request_id: audit_plan.request_id.as_deref().unwrap_or(empty),
+                started_at: audit_plan.started_at,
+                endpoint_path,
+                created_at,
+            },
+        )
+        .await
+        .map_err(|err| format!("failed to reserve realtime response quota: {err}"))?;
+        if outcome == crate::d1_repositories::RealtimeBillingReservationWriteOutcome::Duplicate {
+            return Err("duplicate response.create event_id was already reserved".to_string());
+        }
+
+        let now_ms = js_sys::Date::now();
+        match load_realtime_session_metrics(&storage, &attachment.session, now_ms).await {
+            Ok(mut metrics) => {
+                metrics.record_billing_snapshot_metadata(
+                    Some(attachment),
+                    now_ms,
+                    RealtimeBillingSnapshotMetadata::from_tiered_snapshot(&snapshot),
+                );
+                if let Err(err) = store_realtime_session_metrics(&mut storage, &metrics).await {
+                    worker::console_warn!(
+                        "RealtimeSession could not persist reservation metrics: {}",
+                        err
+                    );
+                }
+            }
+            Err(err) => worker::console_warn!(
+                "RealtimeSession could not load reservation metrics: {}",
+                err
+            ),
+        }
+        Ok(Some(reservation_key))
+    }
+
+    fn enforce_realtime_explicit_response_mode(
+        &self,
+        attachment: Option<&SocketAttachment>,
+        message: String,
+    ) -> Result<String, String> {
+        if !realtime_billing_settlement_write_enabled(&self.env) {
+            return Ok(message);
+        }
+        let billing_active = attachment
+            .and_then(|attachment| {
+                self.upstream_bridges
+                    .get(&realtime_upstream_bridge_key(attachment))
+            })
+            .is_some_and(|runtime| runtime.state.borrow().billing_settlement.is_some());
+        if !billing_active {
+            return Ok(message);
+        }
+        realtime_enforce_explicit_response_mode(&message)
+    }
+
+    async fn refund_realtime_response_best_effort(&self, reservation_key: Option<&str>) {
+        let Some(reservation_key) = reservation_key else {
+            return;
+        };
+        let Ok(db) = self.env.d1("DB") else {
+            worker::console_warn!(
+                "RealtimeSession could not load DB while refunding reservation {}",
+                reservation_key
+            );
+            return;
+        };
+        if let Err(err) = crate::d1_repositories::refund_realtime_billing_reservation(
+            &db,
+            reservation_key,
+            crate::admin::unix_timestamp(),
+        )
+        .await
+        {
+            worker::console_warn!(
+                "RealtimeSession failed to refund reservation {}: {}",
+                reservation_key,
+                err
+            );
+        }
+    }
+
+    async fn refund_realtime_session_reservations_best_effort(&self, session: &str) {
+        let Ok(db) = self.env.d1("DB") else {
+            worker::console_warn!("RealtimeSession could not load DB during session refund");
+            return;
+        };
+        let retry_reservations = load_realtime_billing_settlement_retry(&self.state.storage())
+            .await
+            .map(|queue| {
+                queue
+                    .records
+                    .into_iter()
+                    .map(|record| record.reservation_key)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let reservations =
+            match crate::d1_repositories::reserved_realtime_billing_for_session(&db, session).await
+            {
+                Ok(reservations) => reservations,
+                Err(err) => {
+                    worker::console_warn!(
+                        "RealtimeSession failed to list session reservations for refund: {}",
+                        err
+                    );
+                    return;
+                }
+            };
+        let now = crate::admin::unix_timestamp();
+        for reservation in reservations {
+            if retry_reservations.contains(&reservation.reservation_key) {
+                continue;
+            }
+            if let Err(err) = crate::d1_repositories::refund_realtime_billing_reservation(
+                &db,
+                &reservation.reservation_key,
+                now,
+            )
+            .await
+            {
+                worker::console_warn!(
+                    "RealtimeSession failed to refund terminal reservation {}: {}",
+                    reservation.reservation_key,
+                    err
+                );
+            }
+        }
     }
 
     fn forward_text_to_upstream(
@@ -1420,7 +1734,7 @@ impl RealtimeSession {
         let storage = self.state.storage();
         load_realtime_billing_settlement_retry(&storage)
             .await
-            .map(|record| record.status())
+            .and_then(|queue| queue.status())
     }
 
     async fn resume_billing_settlement_retry_if_enabled(&self) -> WorkerResult<()> {
@@ -1428,16 +1742,20 @@ impl RealtimeSession {
             return Ok(());
         }
         let mut storage = self.state.storage();
-        let Some(mut retry) = load_realtime_billing_settlement_retry(&storage).await else {
+        let Some(mut queue) = load_realtime_billing_settlement_retry(&storage).await else {
             return Ok(());
         };
-        if retry.exhausted || retry.next_retry_at_ms.is_some() {
-            return Ok(());
-        }
-        retry.paused = false;
         let now_ms = js_sys::Date::now();
-        let delay_ms = realtime_billing_settlement_retry_delay_ms(retry.attempts);
-        persist_realtime_billing_settlement_retry(&mut storage, &mut retry, now_ms, delay_ms).await
+        for retry in &mut queue.records {
+            if retry.exhausted || retry.next_retry_at_ms.is_some() {
+                continue;
+            }
+            retry.paused = false;
+            retry.updated_at_ms = now_ms;
+            retry.next_retry_at_ms =
+                Some(now_ms + realtime_billing_settlement_retry_delay_ms(retry.attempts) as f64);
+        }
+        store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await
     }
 }
 
@@ -1469,11 +1787,12 @@ async fn store_realtime_session_metrics(
 
 async fn load_realtime_billing_settlement_retry(
     storage: &Storage,
-) -> Option<RealtimeBillingSettlementRetryRecord> {
+) -> Option<RealtimeBillingSettlementRetryQueue> {
     storage
-        .get::<RealtimeBillingSettlementRetryRecord>(BILLING_SETTLEMENT_RETRY_KEY)
+        .get::<RealtimeBillingSettlementRetryQueue>(BILLING_SETTLEMENT_RETRY_KEY)
         .await
         .ok()
+        .filter(|queue| !queue.records.is_empty())
 }
 
 async fn persist_realtime_billing_settlement_retry(
@@ -1484,26 +1803,58 @@ async fn persist_realtime_billing_settlement_retry(
 ) -> WorkerResult<()> {
     retry.updated_at_ms = now_ms;
     retry.next_retry_at_ms = Some(now_ms + delay_ms as f64);
-    storage
-        .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
-        .await?;
-    if let Err(err) = storage.set_alarm(Duration::from_millis(delay_ms)).await {
-        retry.next_retry_at_ms = None;
-        retry.last_error = truncate_text(
-            &format!("failed to arm settlement retry alarm: {err}"),
-            MAX_STORED_TEXT_CHARS,
-        );
-        storage
-            .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
-            .await?;
-        return Err(err);
+    let mut queue = load_realtime_billing_settlement_retry(storage)
+        .await
+        .unwrap_or_default();
+    if let Some(existing) = queue
+        .records
+        .iter_mut()
+        .find(|existing| existing.replay_key == retry.replay_key)
+    {
+        *existing = retry.clone();
+    } else {
+        if queue.records.len() >= BILLING_SETTLEMENT_RETRY_MAX_RECORDS {
+            return Err(worker::Error::RustError(format!(
+                "realtime settlement retry queue reached {} records",
+                BILLING_SETTLEMENT_RETRY_MAX_RECORDS
+            )));
+        }
+        queue.records.push(retry.clone());
     }
-    Ok(())
+    store_realtime_billing_settlement_retry_queue(storage, &queue, now_ms).await
 }
 
-async fn clear_realtime_billing_settlement_retry(storage: &mut Storage) -> WorkerResult<()> {
-    storage.delete(BILLING_SETTLEMENT_RETRY_KEY).await?;
-    storage.delete_alarm().await
+async fn clear_realtime_billing_settlement_retry(
+    storage: &mut Storage,
+    replay_key: &str,
+    now_ms: f64,
+) -> WorkerResult<()> {
+    let Some(mut queue) = load_realtime_billing_settlement_retry(storage).await else {
+        return Ok(());
+    };
+    queue
+        .records
+        .retain(|record| record.replay_key != replay_key);
+    store_realtime_billing_settlement_retry_queue(storage, &queue, now_ms).await
+}
+
+async fn store_realtime_billing_settlement_retry_queue(
+    storage: &mut Storage,
+    queue: &RealtimeBillingSettlementRetryQueue,
+    now_ms: f64,
+) -> WorkerResult<()> {
+    if queue.records.is_empty() {
+        storage.delete(BILLING_SETTLEMENT_RETRY_KEY).await?;
+        return storage.delete_alarm().await;
+    }
+    storage
+        .put(BILLING_SETTLEMENT_RETRY_KEY, queue.clone())
+        .await?;
+    let Some(next_at_ms) = queue.next_retry_at_ms() else {
+        return storage.delete_alarm().await;
+    };
+    let delay_ms = (next_at_ms - now_ms).max(1.0) as u64;
+    storage.set_alarm(Duration::from_millis(delay_ms)).await
 }
 
 fn realtime_billing_settlement_retry_delay_ms(attempts: u8) -> u64 {
@@ -1552,6 +1903,8 @@ impl RealtimeBillingSettlementRetryRecord {
         attachment: &SocketAttachment,
         preview: &RealtimeBillingSettlementPreviewMetadata,
         handoff: &RealtimeBillingSettlementHandoff,
+        reservation_key: &str,
+        upstream_response_id_hash: &str,
         replay_key: &str,
         now_ms: f64,
         error: &str,
@@ -1562,6 +1915,8 @@ impl RealtimeBillingSettlementRetryRecord {
             snapshot: handoff.snapshot.clone(),
             mutation_plan: handoff.mutation_plan()?.clone(),
             audit_plan: handoff.audit_plan()?.clone(),
+            reservation_key: reservation_key.to_string(),
+            upstream_response_id_hash: upstream_response_id_hash.to_string(),
             replay_key: replay_key.to_string(),
             attempts: 1,
             max_attempts: BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS,
@@ -1576,6 +1931,7 @@ impl RealtimeBillingSettlementRetryRecord {
 
     fn status(&self) -> RealtimeBillingSettlementRetryStatus {
         RealtimeBillingSettlementRetryStatus {
+            record_count: 1,
             pending: !self.paused && !self.exhausted && self.next_retry_at_ms.is_some(),
             paused: self.paused,
             exhausted: self.exhausted,
@@ -1584,6 +1940,63 @@ impl RealtimeBillingSettlementRetryRecord {
             next_retry_at_ms: self.next_retry_at_ms,
             last_error: self.last_error.clone(),
         }
+    }
+}
+
+impl RealtimeBillingSettlementRetryQueue {
+    fn next_retry_at_ms(&self) -> Option<f64> {
+        self.records
+            .iter()
+            .filter(|record| !record.paused && !record.exhausted)
+            .filter_map(|record| record.next_retry_at_ms)
+            .min_by(|left, right| left.total_cmp(right))
+    }
+
+    fn next_due_index(&self, now_ms: f64) -> Option<usize> {
+        self.records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| !record.paused && !record.exhausted)
+            .filter_map(|(index, record)| {
+                record
+                    .next_retry_at_ms
+                    .filter(|next_at_ms| *next_at_ms <= now_ms)
+                    .map(|next_at_ms| (index, next_at_ms))
+            })
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(index, _)| index)
+    }
+
+    fn status(&self) -> Option<RealtimeBillingSettlementRetryStatus> {
+        let representative = self.records.iter().min_by(|left, right| {
+            match (left.next_retry_at_ms, right.next_retry_at_ms) {
+                (Some(left), Some(right)) => left.total_cmp(&right),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => left.created_at_ms.total_cmp(&right.created_at_ms),
+            }
+        })?;
+        Some(RealtimeBillingSettlementRetryStatus {
+            record_count: self.records.len(),
+            pending: self.records.iter().any(|record| {
+                !record.paused && !record.exhausted && record.next_retry_at_ms.is_some()
+            }),
+            paused: self
+                .records
+                .iter()
+                .filter(|record| !record.exhausted)
+                .all(|record| record.paused),
+            exhausted: self.records.iter().all(|record| record.exhausted),
+            attempts: self
+                .records
+                .iter()
+                .map(|record| record.attempts)
+                .max()
+                .unwrap_or(0),
+            max_attempts: representative.max_attempts,
+            next_retry_at_ms: self.next_retry_at_ms(),
+            last_error: representative.last_error.clone(),
+        })
     }
 }
 
@@ -1730,6 +2143,15 @@ impl RealtimeSessionMetrics {
         else {
             return;
         };
+        self.record_billing_snapshot_metadata(attachment, now_ms, snapshot);
+    }
+
+    fn record_billing_snapshot_metadata(
+        &mut self,
+        attachment: Option<&SocketAttachment>,
+        now_ms: f64,
+        snapshot: RealtimeBillingSnapshotMetadata,
+    ) {
         self.billing_snapshot_count = self.billing_snapshot_count.saturating_add(1);
         self.last_billing_snapshot_at_ms = Some(now_ms);
         self.last_billing_snapshot = Some(snapshot);
@@ -1747,15 +2169,6 @@ impl RealtimeSessionMetrics {
         self.last_billing_settlement_preview_at_ms = Some(now_ms);
         self.last_billing_settlement_preview = Some(preview);
         self.record_context(attachment, now_ms);
-    }
-
-    fn has_applied_billing_settlement_write(&self) -> bool {
-        self.billing_settlement_applied_count > 0
-            || self
-                .last_billing_settlement_write
-                .as_ref()
-                .map(|metadata| metadata.applied)
-                .unwrap_or(false)
     }
 
     fn record_billing_settlement_write(
@@ -2496,6 +2909,7 @@ pub(crate) fn realtime_upstream_usage_capture_compiled() -> bool {
         r#"{
             "type":"response.done",
             "response":{
+                "id":"resp_realtime_123",
                 "usage":{
                     "input_tokens":1200,
                     "output_tokens":350,
@@ -2989,7 +3403,13 @@ pub(crate) fn realtime_billing_settlement_replay_marker_compiled() -> bool {
         upstream: None,
         upstream_connect_handoff: true,
     };
-    let replay_key = realtime_billing_settlement_replay_key(&attachment, &preview, &plan);
+    let replay_key = realtime_billing_settlement_replay_key(
+        &attachment,
+        &preview,
+        &plan,
+        "rtreserve-smoke",
+        "response-smoke",
+    );
     let duplicate = realtime_billing_settlement_write_metadata(
         &preview,
         Some(&plan),
@@ -3003,7 +3423,7 @@ pub(crate) fn realtime_billing_settlement_replay_marker_compiled() -> bool {
     );
     let raw = serde_json::to_string(&(replay_key.clone(), duplicate.clone())).unwrap_or_default();
     replay_key.starts_with("rtsettle-")
-        && replay_key.len() == "rtsettle-".len() + 16
+        && replay_key.len() == "rtsettle-".len() + 64
         && duplicate.replay_key_hash.as_deref() == Some(replay_key.as_str())
         && duplicate.replay_recorded
         && duplicate.skipped_reason.as_deref() == Some("replay_duplicate")
@@ -3082,7 +3502,13 @@ pub(crate) fn realtime_billing_settlement_audit_log_compiled() -> bool {
         upstream: None,
         upstream_connect_handoff: true,
     };
-    let replay_key = realtime_billing_settlement_replay_key(&attachment, &preview, &plan);
+    let replay_key = realtime_billing_settlement_replay_key(
+        &attachment,
+        &preview,
+        &plan,
+        "rtreserve-audit-smoke",
+        "response-audit-smoke",
+    );
     let other = realtime_billing_settlement_audit_other(
         &attachment,
         &preview,
@@ -3237,6 +3663,8 @@ pub(crate) fn realtime_billing_settlement_batch_compiled() -> bool {
 pub(crate) fn realtime_billing_settlement_retry_compiled() -> bool {
     REALTIME_BILLING_SETTLEMENT_RETRY_COMPILED
         && BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS > 1
+        && BILLING_SETTLEMENT_RETRY_MAX_RECORDS > 1
+        && BILLING_SETTLEMENT_RETRY_KEY.ends_with("_v2")
         && realtime_billing_settlement_retry_delay_ms(1) == 1_000
         && realtime_billing_settlement_retry_delay_ms(2) == 2_000
         && realtime_billing_settlement_retry_delay_ms(6) == 30_000
@@ -3402,10 +3830,14 @@ fn realtime_billing_settlement_replay_key(
     attachment: &SocketAttachment,
     preview: &RealtimeBillingSettlementPreviewMetadata,
     plan: &RealtimeBillingSettlementMutationPlan,
+    reservation_key: &str,
+    upstream_response_id_hash: &str,
 ) -> String {
     let seed = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         attachment.session.trim(),
+        reservation_key.trim(),
+        upstream_response_id_hash.trim(),
         preview.model_name.trim(),
         preview.expr_hash.trim(),
         preview.expr_version,
@@ -3416,7 +3848,7 @@ fn realtime_billing_settlement_replay_key(
         plan.token_scoped(),
         plan.channel_scoped()
     );
-    format!("rtsettle-{}", stable_hash_hex(&seed))
+    format!("rtsettle-{}", realtime_billing_identity_hash(&seed))
 }
 
 async fn apply_realtime_billing_settlement_write(
@@ -3426,6 +3858,8 @@ async fn apply_realtime_billing_settlement_write(
     snapshot: &TieredBillingSnapshot,
     plan: &RealtimeBillingSettlementMutationPlan,
     audit_plan: &RealtimeBillingSettlementAuditPlan,
+    reservation_key: &str,
+    upstream_response_id_hash: &str,
     replay_key: &str,
 ) -> Result<RealtimeBillingSettlementWriteOutcome, String> {
     let db = env
@@ -3458,8 +3892,10 @@ async fn apply_realtime_billing_settlement_write(
         "Rust realtime settled {}; tiered quota {}",
         audit_plan.endpoint_path, preview.final_quota
     );
-    match crate::d1_repositories::apply_realtime_settlement_batch(
+    match crate::d1_repositories::apply_realtime_reserved_settlement_batch(
         &db,
+        reservation_key,
+        upstream_response_id_hash,
         crate::d1_repositories::RealtimeSettlementReplayRecord {
             replay_key,
             session: &attachment.session,
@@ -3807,28 +4243,125 @@ async fn record_realtime_upstream_usage(
     billing_settlement: Option<&RealtimeBillingSettlementHandoff>,
 ) -> WorkerResult<()> {
     let mut metrics = load_realtime_session_metrics(storage, &attachment.session, now_ms).await?;
-    let settlement_write_already_applied = metrics.has_applied_billing_settlement_write();
-    let billing_snapshot = billing_settlement.map(|handoff| handoff.snapshot.clone());
-    let audit_plan = billing_settlement
+    let write_enabled = realtime_billing_settlement_write_enabled(env);
+    let response_identity_hash = usage.response_identity_hash.clone();
+    let db = env.d1("DB")?;
+    if crate::d1_repositories::realtime_response_settlement_applied(
+        &db,
+        &attachment.session,
+        &response_identity_hash,
+    )
+    .await?
+    {
+        metrics.record_realtime_usage(Some(attachment), now_ms, usage, None);
+        return store_realtime_session_metrics(storage, &metrics).await;
+    }
+    let retry_queue = load_realtime_billing_settlement_retry(storage)
+        .await
+        .unwrap_or_default();
+    if retry_queue
+        .records
+        .iter()
+        .any(|record| record.upstream_response_id_hash == response_identity_hash)
+    {
+        metrics.record_realtime_usage(Some(attachment), now_ms, usage, None);
+        return store_realtime_session_metrics(storage, &metrics).await;
+    }
+    let reservation = if write_enabled {
+        let mut reservation = crate::d1_repositories::realtime_billing_reservation_for_response(
+            &db,
+            &attachment.session,
+            &response_identity_hash,
+        )
+        .await?;
+        if reservation.is_none() {
+            match crate::d1_repositories::bind_realtime_response_to_reservation(
+                &db,
+                &attachment.session,
+                &response_identity_hash,
+                crate::admin::unix_timestamp(),
+            )
+            .await?
+            {
+                crate::d1_repositories::RealtimeBillingResponseBindOutcome::Applied
+                | crate::d1_repositories::RealtimeBillingResponseBindOutcome::Duplicate => {
+                    reservation =
+                        crate::d1_repositories::realtime_billing_reservation_for_response(
+                            &db,
+                            &attachment.session,
+                            &response_identity_hash,
+                        )
+                        .await?;
+                }
+                crate::d1_repositories::RealtimeBillingResponseBindOutcome::NotFound => {}
+            }
+        }
+        reservation.filter(|reservation| reservation.status == "reserved")
+    } else {
+        None
+    };
+    if !realtime_usage_metadata_has_tokens(&usage) {
+        if let Some(reservation) = reservation.as_ref() {
+            crate::d1_repositories::refund_realtime_billing_reservation_for_response(
+                &db,
+                &reservation.reservation_key,
+                &response_identity_hash,
+                crate::admin::unix_timestamp(),
+            )
+            .await?;
+        }
+        metrics.record_realtime_usage(Some(attachment), now_ms, usage, None);
+        return store_realtime_session_metrics(storage, &metrics).await;
+    }
+    if write_enabled && reservation.is_none() {
+        metrics.record_realtime_usage(Some(attachment), now_ms, usage, None);
+        metrics.record_billing_settlement_write(
+            Some(attachment),
+            now_ms,
+            RealtimeBillingSettlementWriteMetadata {
+                write_enabled: true,
+                skipped_reason: Some("reservation_missing".to_string()),
+                error: Some("response.done has no unclaimed billing reservation".to_string()),
+                ..RealtimeBillingSettlementWriteMetadata::default()
+            },
+        );
+        return store_realtime_session_metrics(storage, &metrics).await;
+    }
+    let reserved_handoff = reservation
+        .as_ref()
+        .map(realtime_billing_handoff_from_reservation)
+        .transpose()
+        .map_err(worker::Error::RustError)?;
+    let effective_handoff = if write_enabled {
+        reserved_handoff.as_ref()
+    } else {
+        reserved_handoff.as_ref().or(billing_settlement)
+    };
+    let billing_snapshot = effective_handoff.map(|handoff| handoff.snapshot.clone());
+    let audit_plan = effective_handoff
         .and_then(RealtimeBillingSettlementHandoff::audit_plan)
         .cloned();
     let audit_plan_present = audit_plan.is_some();
-    let mutation_plan = billing_settlement
+    let mutation_plan = effective_handoff
         .and_then(RealtimeBillingSettlementHandoff::mutation_plan)
         .cloned();
-    let preview =
-        metrics.record_realtime_usage(Some(attachment), now_ms, usage, billing_settlement);
+    let preview = metrics.record_realtime_usage(Some(attachment), now_ms, usage, effective_handoff);
     if let Some(preview) = preview.as_ref() {
-        let write_enabled = realtime_billing_settlement_write_enabled(env);
-        let replay_key = mutation_plan
+        let reservation_key = reservation
             .as_ref()
-            .map(|plan| realtime_billing_settlement_replay_key(attachment, preview, plan));
+            .map(|reservation| reservation.reservation_key.as_str());
+        let replay_key = mutation_plan.as_ref().and_then(|plan| {
+            reservation_key.map(|reservation_key| {
+                realtime_billing_settlement_replay_key(
+                    attachment,
+                    preview,
+                    plan,
+                    reservation_key,
+                    &response_identity_hash,
+                )
+            })
+        });
         let replay_key_hash = replay_key.as_deref();
-        let previously_recorded_replay = metrics
-            .last_billing_settlement_write
-            .as_ref()
-            .map(|metadata| metadata.replay_recorded)
-            .unwrap_or(false);
         let mut write = if !write_enabled {
             realtime_billing_settlement_write_metadata(
                 preview,
@@ -3841,6 +4374,18 @@ async fn record_realtime_upstream_usage(
                 Some("write_disabled"),
                 None,
             )
+        } else if reservation.is_none() {
+            realtime_billing_settlement_write_metadata(
+                preview,
+                mutation_plan.as_ref(),
+                None,
+                false,
+                true,
+                false,
+                false,
+                Some("reservation_missing"),
+                None,
+            )
         } else if mutation_plan.is_none() {
             realtime_billing_settlement_write_metadata(
                 preview,
@@ -3851,18 +4396,6 @@ async fn record_realtime_upstream_usage(
                 false,
                 false,
                 Some("mutation_plan_missing"),
-                None,
-            )
-        } else if settlement_write_already_applied {
-            realtime_billing_settlement_write_metadata(
-                preview,
-                mutation_plan.as_ref(),
-                replay_key_hash,
-                previously_recorded_replay,
-                true,
-                false,
-                false,
-                Some("already_applied"),
                 None,
             )
         } else if billing_snapshot.is_none() || audit_plan.is_none() {
@@ -3886,12 +4419,16 @@ async fn record_realtime_upstream_usage(
                 billing_snapshot.as_ref().expect("checked above"),
                 plan,
                 audit_plan.as_ref().expect("checked above"),
+                reservation_key.expect("checked above"),
+                &response_identity_hash,
                 replay_key,
             )
             .await
             {
                 Ok(RealtimeBillingSettlementWriteOutcome::Applied) => {
-                    if let Err(err) = clear_realtime_billing_settlement_retry(storage).await {
+                    if let Err(err) =
+                        clear_realtime_billing_settlement_retry(storage, replay_key, now_ms).await
+                    {
                         worker::console_warn!(
                             "RealtimeSession settlement retry cleanup failed after apply: {}",
                             err
@@ -3913,7 +4450,9 @@ async fn record_realtime_upstream_usage(
                     metadata
                 }
                 Ok(RealtimeBillingSettlementWriteOutcome::DuplicateReplay) => {
-                    if let Err(err) = clear_realtime_billing_settlement_retry(storage).await {
+                    if let Err(err) =
+                        clear_realtime_billing_settlement_retry(storage, replay_key, now_ms).await
+                    {
                         worker::console_warn!(
                             "RealtimeSession settlement retry cleanup failed after duplicate: {}",
                             err
@@ -3948,9 +4487,16 @@ async fn record_realtime_upstream_usage(
                     );
                     metadata.audit_attempted = true;
                     metadata.audit_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
-                    if let Some(mut retry) = billing_settlement.and_then(|handoff| {
+                    if let Some(mut retry) = effective_handoff.and_then(|handoff| {
                         RealtimeBillingSettlementRetryRecord::new(
-                            attachment, preview, handoff, replay_key, now_ms, &err,
+                            attachment,
+                            preview,
+                            handoff,
+                            reservation_key.expect("checked above"),
+                            &response_identity_hash,
+                            replay_key,
+                            now_ms,
+                            &err,
                         )
                     }) {
                         let retry_delay_ms =
@@ -3998,20 +4544,143 @@ async fn record_realtime_upstream_usage(
     store_realtime_session_metrics(storage, &metrics).await
 }
 
+fn realtime_billing_handoff_from_reservation(
+    reservation: &crate::d1_repositories::RealtimeBillingReservation,
+) -> Result<RealtimeBillingSettlementHandoff, String> {
+    let snapshot = serde_json::from_str::<TieredBillingSnapshot>(&reservation.snapshot_json)
+        .map_err(|err| format!("failed to deserialize realtime billing snapshot: {err}"))?;
+    let request = serde_json::from_str::<RequestInput>(&reservation.request_json)
+        .map_err(|err| format!("failed to deserialize realtime billing request: {err}"))?;
+    Ok(RealtimeBillingSettlementHandoff::new(snapshot, request)
+        .with_mutation_plan(RealtimeBillingSettlementMutationPlan::new(
+            reservation.user_id,
+            reservation.token_id,
+            reservation.channel_id,
+            &reservation.selected_group,
+            reservation.pre_consumed_quota,
+        ))
+        .with_audit_plan(RealtimeBillingSettlementAuditPlan::new(
+            &reservation.username,
+            &reservation.token_name,
+            (!reservation.client_ip.is_empty()).then(|| reservation.client_ip.clone()),
+            (!reservation.request_id.is_empty()).then(|| reservation.request_id.clone()),
+            reservation.started_at,
+            &reservation.endpoint_path,
+        )))
+}
+
+fn realtime_response_create_event(text: &str) -> Result<Option<Value>, String> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Ok(None);
+    };
+    if value.get("type").and_then(Value::as_str) != Some("response.create") {
+        return Ok(None);
+    }
+    if !value.is_object() {
+        return Err("response.create event must be a JSON object".to_string());
+    }
+    Ok(Some(value))
+}
+
+fn realtime_enforce_explicit_response_mode(text: &str) -> Result<String, String> {
+    let Ok(mut value) = serde_json::from_str::<Value>(text) else {
+        return Ok(text.to_string());
+    };
+    if value.get("type").and_then(Value::as_str) != Some("session.update") {
+        return Ok(text.to_string());
+    }
+    let Some(session) = value.get_mut("session").and_then(Value::as_object_mut) else {
+        return Err("session.update must include a session object".to_string());
+    };
+    let Some(turn_detection) = session.get_mut("turn_detection") else {
+        return Ok(text.to_string());
+    };
+    if turn_detection.is_null() {
+        return Ok(text.to_string());
+    }
+    let Some(turn_detection) = turn_detection.as_object_mut() else {
+        return Err("session.update turn_detection must be an object or null".to_string());
+    };
+    turn_detection.insert("create_response".to_string(), Value::Bool(false));
+    turn_detection.remove("idle_timeout_ms");
+    serde_json::to_string(&value)
+        .map_err(|err| format!("failed to enforce explicit Realtime responses: {err}"))
+}
+
+fn realtime_explicit_response_bootstrap_event() -> String {
+    json!({
+        "type": "session.update",
+        "event_id": "cinatoken-explicit-response-mode",
+        "session": {
+            "turn_detection": null
+        }
+    })
+    .to_string()
+}
+
+fn realtime_response_create_request(
+    event: &Value,
+    handoff: &RealtimeBillingSettlementHandoff,
+) -> RequestInput {
+    let mut body = event.get("response").cloned().unwrap_or_else(|| json!({}));
+    if !body.is_object() {
+        body = json!({ "response": body });
+    }
+    if let Some(object) = body.as_object_mut() {
+        object
+            .entry("model".to_string())
+            .or_insert_with(|| Value::String(handoff.snapshot.model_name.clone()));
+        object.insert(
+            "endpoint".to_string(),
+            Value::String("realtime".to_string()),
+        );
+        object.insert(
+            "realtime_event_type".to_string(),
+            Value::String("response.create".to_string()),
+        );
+        if let Some(event_id) = event.get("event_id").cloned() {
+            object.insert("event_id".to_string(), event_id);
+        }
+    }
+    RequestInput::from_json_body(body).with_headers(handoff.request.headers.clone())
+}
+
+fn realtime_response_created_identity_hash(text: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(text).ok()?;
+    (value.get("type").and_then(Value::as_str) == Some("response.created"))
+        .then(|| {
+            value
+                .pointer("/response/id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(realtime_billing_identity_hash)
+        })
+        .flatten()
+}
+
 fn realtime_usage_metadata_from_upstream_text_frame(text: &str) -> Option<RealtimeUsageMetadata> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let source_event = value.get("type").and_then(Value::as_str)?;
     if source_event != "response.done" {
         return None;
     }
+    let response_identity = value
+        .pointer("/response/id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())?;
     let usage = usage_summary_from_body(text);
-    RealtimeUsageMetadata::from_usage(source_event, usage)
+    RealtimeUsageMetadata::from_usage(source_event, response_identity, usage)
 }
 
 impl RealtimeUsageMetadata {
-    fn from_usage(source_event: &str, usage: UsageSummary) -> Option<Self> {
-        realtime_usage_summary_has_tokens(&usage).then(|| Self {
+    fn from_usage(
+        source_event: &str,
+        response_identity: &str,
+        usage: UsageSummary,
+    ) -> Option<Self> {
+        Some(Self {
             source_event: source_event.to_string(),
+            response_identity_hash: realtime_billing_identity_hash(response_identity),
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
@@ -4092,7 +4761,7 @@ impl RealtimeBillingSettlementPreviewMetadata {
     }
 }
 
-fn realtime_usage_summary_has_tokens(usage: &UsageSummary) -> bool {
+fn realtime_usage_metadata_has_tokens(usage: &RealtimeUsageMetadata) -> bool {
     usage.total_tokens > 0
         || usage.prompt_tokens > 0
         || usage.completion_tokens > 0
@@ -4158,6 +4827,27 @@ fn spawn_realtime_upstream_event_pump(
             let _ = client.close(Some(action.client_code), Some(action.client_reason));
             return;
         }
+        if billing_settlement.is_some() && realtime_billing_settlement_write_enabled(&env) {
+            let bootstrap = realtime_explicit_response_bootstrap_event();
+            if upstream.send_with_str(&bootstrap).is_err() {
+                let cause = RealtimeBridgeCloseCause::ClientToUpstreamSendFailed;
+                let action = realtime_bridge_close_action(cause);
+                close_realtime_upstream_runtime(&runtime_state, action);
+                send_realtime_bridge_terminal_event(
+                    &client,
+                    &context,
+                    cause,
+                    action,
+                    Some(RealtimeBridgeFrameMetadata {
+                        kind: RealtimeBridgeFrameKind::Text,
+                        bytes: bootstrap.len(),
+                        max_bytes: None,
+                    }),
+                );
+                let _ = client.close(Some(action.client_code), Some(action.client_reason));
+                return;
+            }
+        }
         let drain_failure = {
             let mut state = runtime_state.borrow_mut();
             if state.closed {
@@ -4199,6 +4889,51 @@ fn spawn_realtime_upstream_event_pump(
                             let _ =
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
+                        }
+                        if billing_settlement.is_some()
+                            && realtime_billing_settlement_write_enabled(&env)
+                        {
+                            if let Some(response_identity_hash) =
+                                realtime_response_created_identity_hash(&text)
+                            {
+                                let binding = match env.d1("DB") {
+                                    Ok(db) => crate::d1_repositories::bind_realtime_response_to_reservation(
+                                        &db,
+                                        &attachment.session,
+                                        &response_identity_hash,
+                                        crate::admin::unix_timestamp(),
+                                    )
+                                    .await,
+                                    Err(err) => Err(err),
+                                };
+                                if !matches!(
+                                    binding,
+                                    Ok(
+                                        crate::d1_repositories::RealtimeBillingResponseBindOutcome::Applied
+                                            | crate::d1_repositories::RealtimeBillingResponseBindOutcome::Duplicate
+                                    )
+                                ) {
+                                    worker::console_warn!(
+                                        "RealtimeSession could not bind response.created to a reservation"
+                                    );
+                                    let _ = client.send(&json!({
+                                        "type": "error",
+                                        "error": {
+                                            "type": "server_error",
+                                            "code": "billing_reservation_missing",
+                                            "message": "Upstream response has no billing reservation"
+                                        }
+                                    }));
+                                    let cause = RealtimeBridgeCloseCause::UpstreamEventStreamFailed;
+                                    let action = realtime_bridge_close_action(cause);
+                                    close_realtime_upstream_runtime(&runtime_state, action);
+                                    let _ = client.close(
+                                        Some(action.client_code),
+                                        Some(action.client_reason),
+                                    );
+                                    break;
+                                }
+                            }
                         }
                         if let Some(usage) = realtime_usage_metadata_from_upstream_text_frame(&text)
                         {
@@ -5065,6 +5800,10 @@ fn stable_hash_hex(value: &str) -> String {
     format!("{hash:016x}")
 }
 
+fn realtime_billing_identity_hash(value: &str) -> String {
+    expr_hash_string(value)
+}
+
 fn realtime_entrypoint(path: &str) -> &'static str {
     if path == REALTIME_OPENAI_PATH {
         "openai_realtime_v1"
@@ -5358,6 +6097,7 @@ mod tests {
             7.0,
             RealtimeUsageMetadata {
                 source_event: "response.done".to_string(),
+                response_identity_hash: "response-metrics".to_string(),
                 prompt_tokens: 12,
                 completion_tokens: 5,
                 total_tokens: 17,
@@ -5408,10 +6148,120 @@ mod tests {
     }
 
     #[test]
+    fn realtime_response_create_freezes_request_aware_billing_input() {
+        let expr = r#"param("service_tier") == "fast" ? tier("fast", p * 4 + c * 20) : tier("normal", p * 2 + c * 10)"#;
+        let template_request = RequestInput::from_json_body(json!({
+            "model": "gpt-4o-realtime-preview",
+            "endpoint": "realtime"
+        }))
+        .with_headers([("x-billing-region".to_string(), "sg".to_string())]);
+        let snapshot = estimate_tiered_billing_snapshot_with_request(
+            "gpt-4o-realtime-preview",
+            expr,
+            TokenParams {
+                p: 1_000.0,
+                c: 500.0,
+                len: 1_000.0,
+                ..TokenParams::default()
+            },
+            1.0,
+            template_request.clone(),
+        )
+        .expect("template snapshot");
+        let handoff = RealtimeBillingSettlementHandoff::new(snapshot, template_request);
+        let event = realtime_response_create_event(
+            r#"{"type":"response.create","event_id":"evt_123","response":{"service_tier":"fast","instructions":"private"}}"#,
+        )
+        .expect("valid event")
+        .expect("response.create");
+        let request = realtime_response_create_request(&event, &handoff);
+        let body = request.body.as_ref().expect("request body");
+
+        assert_eq!(
+            body.get("model").and_then(Value::as_str),
+            Some("gpt-4o-realtime-preview")
+        );
+        assert_eq!(
+            body.get("endpoint").and_then(Value::as_str),
+            Some("realtime")
+        );
+        assert_eq!(
+            body.get("service_tier").and_then(Value::as_str),
+            Some("fast")
+        );
+        assert_eq!(
+            body.get("event_id").and_then(Value::as_str),
+            Some("evt_123")
+        );
+        assert_eq!(
+            request.headers.get("x-billing-region").map(String::as_str),
+            Some("sg")
+        );
+
+        let response_snapshot = estimate_tiered_billing_snapshot_with_request(
+            handoff.snapshot.model_name.clone(),
+            handoff.snapshot.expr_string.clone(),
+            TokenParams {
+                p: 1_000.0,
+                c: 500.0,
+                len: 1_000.0,
+                ..TokenParams::default()
+            },
+            handoff.snapshot.group_ratio,
+            request,
+        )
+        .expect("response snapshot");
+        assert_eq!(response_snapshot.estimated_tier, "fast");
+        assert!(
+            realtime_response_create_event(r#"{"type":"session.update"}"#)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn realtime_billing_requires_explicit_responses_with_vad_preserved() {
+        let updated = realtime_enforce_explicit_response_mode(
+            r#"{"type":"session.update","event_id":"evt-vad","session":{"turn_detection":{"type":"server_vad","threshold":0.7,"create_response":true,"idle_timeout_ms":10000}}}"#,
+        )
+        .expect("session update");
+        let value = serde_json::from_str::<Value>(&updated).expect("updated JSON");
+        let turn_detection = value
+            .pointer("/session/turn_detection")
+            .and_then(Value::as_object)
+            .expect("turn detection");
+        assert_eq!(
+            turn_detection.get("type").and_then(Value::as_str),
+            Some("server_vad")
+        );
+        assert_eq!(
+            turn_detection
+                .get("create_response")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(!turn_detection.contains_key("idle_timeout_ms"));
+        assert_eq!(
+            realtime_enforce_explicit_response_mode(
+                r#"{"type":"response.create","event_id":"evt-response"}"#
+            )
+            .unwrap(),
+            r#"{"type":"response.create","event_id":"evt-response"}"#
+        );
+
+        let bootstrap = realtime_explicit_response_bootstrap_event();
+        let bootstrap = serde_json::from_str::<Value>(&bootstrap).expect("bootstrap JSON");
+        assert!(bootstrap
+            .pointer("/session/turn_detection")
+            .is_some_and(Value::is_null));
+    }
+
+    #[test]
     fn realtime_upstream_usage_capture_is_metadata_only() {
         let raw_frame = r#"{
             "type":"response.done",
             "response":{
+                "id":"resp_realtime_123",
                 "usage":{
                     "input_tokens":1200,
                     "output_tokens":350,
@@ -5430,6 +6280,10 @@ mod tests {
         let usage = realtime_usage_metadata_from_upstream_text_frame(raw_frame).unwrap();
 
         assert_eq!(usage.source_event, "response.done");
+        assert_eq!(
+            usage.response_identity_hash,
+            realtime_billing_identity_hash("resp_realtime_123")
+        );
         assert_eq!(usage.prompt_tokens, 1200);
         assert_eq!(usage.completion_tokens, 350);
         assert_eq!(usage.total_tokens, 1550);
@@ -5440,10 +6294,42 @@ mod tests {
             r#"{"type":"session.updated","usage":{"total_tokens":99}}"#
         )
         .is_none());
+        let empty_usage = realtime_usage_metadata_from_upstream_text_frame(
+            r#"{"type":"response.done","response":{"id":"resp_empty","usage":null}}"#,
+        )
+        .expect("response.done without usage still releases its reservation");
+        assert!(!realtime_usage_metadata_has_tokens(&empty_usage));
 
         let serialized = serde_json::to_string(&usage).unwrap();
         assert!(!serialized.contains("do-not-store-this"));
         assert!(!serialized.contains("secret_probe"));
+        assert!(!serialized.contains("resp_realtime_123"));
+    }
+
+    #[test]
+    fn realtime_response_created_identity_matches_done_identity() {
+        let created = realtime_response_created_identity_hash(
+            r#"{"type":"response.created","response":{"id":"resp_parallel_2"}}"#,
+        )
+        .expect("response.created identity");
+        let done = realtime_usage_metadata_from_upstream_text_frame(
+            r#"{"type":"response.done","response":{"id":"resp_parallel_2","usage":null}}"#,
+        )
+        .expect("response.done identity");
+
+        assert_eq!(created, done.response_identity_hash);
+        assert!(realtime_response_created_identity_hash(
+            r#"{"type":"response.created","response":{}}"#
+        )
+        .is_none());
+        assert!(realtime_response_created_identity_hash(
+            r#"{"type":"response.done","response":{"id":"resp_parallel_2"}}"#
+        )
+        .is_none());
+        assert!(realtime_usage_metadata_from_upstream_text_frame(
+            r#"{"type":"response.done","event_id":"evt_without_response_id","response":{"usage":{"total_tokens":1}}}"#
+        )
+        .is_none());
     }
 
     #[test]
@@ -6308,6 +7194,7 @@ mod tests {
         assert_eq!(realtime_billing_settlement_retry_delay_ms(20), 30_000);
 
         let status = RealtimeBillingSettlementRetryStatus {
+            record_count: 2,
             pending: true,
             paused: false,
             exhausted: false,
@@ -6323,6 +7210,79 @@ mod tests {
         assert!(!raw.contains("channel_id"));
         assert!(!raw.contains("selected_group"));
         assert!(!raw.contains("upstream_api_key"));
+    }
+
+    #[test]
+    fn realtime_billing_retry_queue_keeps_multiple_due_records() {
+        let snapshot = estimate_tiered_billing_snapshot_with_request(
+            "gpt-4o-realtime-preview",
+            r#"tier("default", p * 2 + c * 10)"#,
+            TokenParams {
+                p: 100.0,
+                c: 50.0,
+                len: 100.0,
+                ..TokenParams::default()
+            },
+            1.0,
+            RequestInput::default(),
+        )
+        .expect("snapshot");
+        let handoff =
+            RealtimeBillingSettlementHandoff::new(snapshot.clone(), RequestInput::default())
+                .with_mutation_plan(RealtimeBillingSettlementMutationPlan::new(
+                    101,
+                    202,
+                    303,
+                    "default",
+                    snapshot.estimated_quota_after_group.0,
+                ))
+                .with_audit_plan(RealtimeBillingSettlementAuditPlan::new(
+                    "user", "token", None, None, 1, "realtime",
+                ));
+        let attachment = SocketAttachment {
+            session: "retry-queue-session".to_string(),
+            connected_at_ms: 1.0,
+            protocol: None,
+            entrypoint: "openai_realtime_v1".to_string(),
+            model: Some("gpt-4o-realtime-preview".to_string()),
+            token_source: Some("authorization".to_string()),
+            token_fingerprint: Some("fp".to_string()),
+            auth_state: "gateway_checked".to_string(),
+            upstream: None,
+            upstream_connect_handoff: true,
+        };
+        let preview = RealtimeBillingSettlementPreviewMetadata {
+            model_name: "gpt-4o-realtime-preview".to_string(),
+            pre_consumed_quota: snapshot.estimated_quota_after_group.0,
+            final_quota: snapshot.estimated_quota_after_group.0,
+            ..RealtimeBillingSettlementPreviewMetadata::default()
+        };
+        let mut first = RealtimeBillingSettlementRetryRecord::new(
+            &attachment,
+            &preview,
+            &handoff,
+            "reservation-1",
+            "response-1",
+            "replay-1",
+            100.0,
+            "temporary failure",
+        )
+        .expect("retry record");
+        first.next_retry_at_ms = Some(2_000.0);
+        let mut second = first.clone();
+        second.reservation_key = "reservation-2".to_string();
+        second.upstream_response_id_hash = "response-2".to_string();
+        second.replay_key = "replay-2".to_string();
+        second.next_retry_at_ms = Some(1_000.0);
+        let queue = RealtimeBillingSettlementRetryQueue {
+            records: vec![first, second],
+        };
+
+        let status = queue.status().expect("queue status");
+        assert_eq!(status.record_count, 2);
+        assert_eq!(status.next_retry_at_ms, Some(1_000.0));
+        assert_eq!(queue.next_due_index(1_500.0), Some(1));
+        assert_eq!(queue.next_due_index(500.0), None);
     }
 
     #[test]

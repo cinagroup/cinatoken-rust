@@ -33,6 +33,77 @@ struct QuotaStateRow {
     user_quota: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RealtimeBillingReservationRecord<'a> {
+    pub reservation_key: &'a str,
+    pub session: &'a str,
+    pub client_event_id_hash: &'a str,
+    pub reservation_sequence: i64,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub channel_id: i64,
+    pub selected_group: &'a str,
+    pub model_name: &'a str,
+    pub pre_consumed_quota: i64,
+    pub snapshot_json: &'a str,
+    pub request_json: &'a str,
+    pub username: &'a str,
+    pub token_name: &'a str,
+    pub client_ip: &'a str,
+    pub request_id: &'a str,
+    pub started_at: i64,
+    pub endpoint_path: &'a str,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RealtimeBillingReservation {
+    pub reservation_key: String,
+    pub session: String,
+    pub client_event_id_hash: String,
+    pub reservation_sequence: i64,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub channel_id: i64,
+    pub selected_group: String,
+    pub model_name: String,
+    pub pre_consumed_quota: i64,
+    pub snapshot_json: String,
+    pub request_json: String,
+    pub username: String,
+    pub token_name: String,
+    pub client_ip: String,
+    pub request_id: String,
+    pub started_at: i64,
+    pub endpoint_path: String,
+    pub status: String,
+    pub upstream_response_id_hash: String,
+    pub replay_key: String,
+    pub final_quota: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeBillingReservationWriteOutcome {
+    Applied,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeBillingReservationRefundOutcome {
+    Applied,
+    AlreadyFinalized,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeBillingResponseBindOutcome {
+    Applied,
+    Duplicate,
+    NotFound,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RealtimeSettlementReplayRecord<'a> {
     pub replay_key: &'a str,
@@ -683,6 +754,421 @@ pub async fn settle_reserved_relay_quota_usage(
     require_batch_change(&results, offset + 1, "relay channel no longer exists")
 }
 
+pub async fn reserve_realtime_billing_quota(
+    db: &D1Database,
+    record: RealtimeBillingReservationRecord<'_>,
+) -> worker::Result<RealtimeBillingReservationWriteOutcome> {
+    let reservation_key = non_empty_realtime_reservation_key(record.reservation_key)?;
+    let session = non_empty_realtime_reservation_field(record.session, "session")?;
+    let model_name = non_empty_realtime_reservation_field(record.model_name, "model name")?;
+    let snapshot_json =
+        non_empty_realtime_reservation_field(record.snapshot_json, "snapshot JSON")?;
+    let request_json = non_empty_realtime_reservation_field(record.request_json, "request JSON")?;
+    if record.reservation_sequence <= 0 || record.user_id <= 0 || record.channel_id <= 0 {
+        return Err(worker::Error::RustError(
+            "realtime billing reservation identity is invalid".to_string(),
+        ));
+    }
+    if record.token_id < 0 {
+        return Err(worker::Error::RustError(
+            "realtime billing reservation token id is invalid".to_string(),
+        ));
+    }
+    let quota = quota_i32(record.pre_consumed_quota)?;
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Text(session),
+        D1Type::Text(record.client_event_id_hash.trim()),
+        D1Type::Integer(d1_i32(record.reservation_sequence)),
+        D1Type::Integer(d1_i32(record.user_id)),
+        D1Type::Integer(d1_i32(record.token_id)),
+        D1Type::Integer(d1_i32(record.channel_id)),
+        D1Type::Text(record.selected_group.trim()),
+        D1Type::Text(model_name),
+        D1Type::Integer(quota),
+        D1Type::Text(snapshot_json),
+        D1Type::Text(request_json),
+        D1Type::Text(record.username.trim()),
+        D1Type::Text(record.token_name.trim()),
+        D1Type::Text(record.client_ip.trim()),
+        D1Type::Text(record.request_id.trim()),
+        D1Type::Integer(d1_i32(record.started_at)),
+        D1Type::Text(record.endpoint_path.trim()),
+        D1Type::Integer(d1_i32(record.created_at)),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO realtime_billing_reservations (
+              reservation_key, session, client_event_id_hash, reservation_sequence,
+              user_id, token_id, channel_id, selected_group, model_name,
+              pre_consumed_quota, snapshot_json, request_json,
+              username, token_name, client_ip, request_id, started_at,
+              endpoint_path, status, created_at, updated_at
+            ) VALUES (
+              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+              ?12, ?13, ?14, ?15, ?16, ?17, ?18, 'reserved', ?19, ?19
+            )
+            "#,
+        )
+        .bind_refs(&args)?;
+
+    let mut statements = vec![insert];
+    let mut checked_statement_indices = vec![(0usize, "realtime reservation marker failed")];
+    if quota > 0 {
+        push_realtime_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            reserve_user_quota_statement(db, record.user_id, quota)?,
+            reservation_key,
+            "user quota is not enough",
+        )?;
+        if record.token_id > 0 {
+            push_realtime_reservation_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                debit_token_quota_usage_statement(db, record.token_id, quota, record.created_at)?,
+                reservation_key,
+                "token quota is not enough",
+            )?;
+        }
+    } else if record.token_id > 0 {
+        push_realtime_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            touch_token_statement(db, record.token_id, record.created_at)?,
+            reservation_key,
+            "token no longer exists",
+        )?;
+    }
+
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            if realtime_billing_reservation(db, reservation_key)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                return Ok(RealtimeBillingReservationWriteOutcome::Duplicate);
+            }
+            return Err(err);
+        }
+    };
+    for (index, message) in checked_statement_indices {
+        require_batch_change(&results, index, message)?;
+    }
+    Ok(RealtimeBillingReservationWriteOutcome::Applied)
+}
+
+pub async fn reserved_realtime_billing_for_session(
+    db: &D1Database,
+    session: &str,
+) -> worker::Result<Vec<RealtimeBillingReservation>> {
+    let session = non_empty_realtime_reservation_field(session, "session")?;
+    let args = [D1Type::Text(session)];
+    db.prepare(
+        r#"
+        SELECT
+          reservation_key, session, client_event_id_hash, reservation_sequence,
+          user_id, token_id, channel_id, selected_group, model_name,
+          pre_consumed_quota, snapshot_json, request_json,
+          username, token_name, client_ip, request_id, started_at,
+          endpoint_path, status, upstream_response_id_hash, replay_key,
+          final_quota, created_at, updated_at
+        FROM realtime_billing_reservations
+        WHERE session = ?1 AND status = 'reserved'
+        ORDER BY reservation_sequence ASC, reservation_key ASC
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RealtimeBillingReservation>()
+}
+
+pub async fn realtime_billing_reservation_for_response(
+    db: &D1Database,
+    session: &str,
+    upstream_response_id_hash: &str,
+) -> worker::Result<Option<RealtimeBillingReservation>> {
+    let session = non_empty_realtime_reservation_field(session, "session")?;
+    let upstream_response_id_hash = non_empty_realtime_reservation_field(
+        upstream_response_id_hash,
+        "upstream response identity hash",
+    )?;
+    let args = [
+        D1Type::Text(session),
+        D1Type::Text(upstream_response_id_hash),
+    ];
+    db.prepare(
+        r#"
+        SELECT
+          reservation_key, session, client_event_id_hash, reservation_sequence,
+          user_id, token_id, channel_id, selected_group, model_name,
+          pre_consumed_quota, snapshot_json, request_json,
+          username, token_name, client_ip, request_id, started_at,
+          endpoint_path, status, upstream_response_id_hash, replay_key,
+          final_quota, created_at, updated_at
+        FROM realtime_billing_reservations
+        WHERE session = ?1 AND upstream_response_id_hash = ?2
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RealtimeBillingReservation>(None)
+    .await
+}
+
+pub async fn bind_realtime_response_to_reservation(
+    db: &D1Database,
+    session: &str,
+    upstream_response_id_hash: &str,
+    updated_at: i64,
+) -> worker::Result<RealtimeBillingResponseBindOutcome> {
+    let session = non_empty_realtime_reservation_field(session, "session")?;
+    let upstream_response_id_hash = non_empty_realtime_reservation_field(
+        upstream_response_id_hash,
+        "upstream response identity hash",
+    )?;
+    if realtime_billing_reservation_for_response(db, session, upstream_response_id_hash)
+        .await?
+        .is_some()
+    {
+        return Ok(RealtimeBillingResponseBindOutcome::Duplicate);
+    }
+    let args = [
+        D1Type::Text(session),
+        D1Type::Text(upstream_response_id_hash),
+        D1Type::Integer(d1_i32(updated_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE realtime_billing_reservations
+            SET upstream_response_id_hash = ?2, updated_at = ?3
+            WHERE reservation_key = (
+              SELECT reservation_key
+              FROM realtime_billing_reservations
+              WHERE session = ?1
+                AND status = 'reserved'
+                AND upstream_response_id_hash = ''
+              ORDER BY reservation_sequence ASC, reservation_key ASC
+              LIMIT 1
+            )
+              AND status = 'reserved'
+              AND upstream_response_id_hash = ''
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    match result {
+        Ok(result) => {
+            let changes = result.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+            if changes == 1 {
+                Ok(RealtimeBillingResponseBindOutcome::Applied)
+            } else {
+                Ok(RealtimeBillingResponseBindOutcome::NotFound)
+            }
+        }
+        Err(err) => {
+            if realtime_billing_reservation_for_response(db, session, upstream_response_id_hash)
+                .await?
+                .is_some()
+            {
+                Ok(RealtimeBillingResponseBindOutcome::Duplicate)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+pub async fn realtime_response_settlement_applied(
+    db: &D1Database,
+    session: &str,
+    upstream_response_id_hash: &str,
+) -> worker::Result<bool> {
+    let session = non_empty_realtime_reservation_field(session, "session")?;
+    let upstream_response_id_hash = non_empty_realtime_reservation_field(
+        upstream_response_id_hash,
+        "upstream response identity hash",
+    )?;
+    let args = [
+        D1Type::Text(session),
+        D1Type::Text(upstream_response_id_hash),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS count
+            FROM realtime_billing_reservations
+            WHERE session = ?1
+              AND upstream_response_id_hash = ?2
+              AND status IN ('settled', 'refunded')
+            "#,
+        )
+        .bind_refs(&args)?
+        .first::<RealtimeSettlementReplayCountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count > 0).unwrap_or(false))
+}
+
+pub async fn refund_realtime_billing_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+    refunded_at: i64,
+) -> worker::Result<RealtimeBillingReservationRefundOutcome> {
+    refund_realtime_billing_reservation_inner(db, reservation_key, "", refunded_at).await
+}
+
+pub async fn refund_realtime_billing_reservation_for_response(
+    db: &D1Database,
+    reservation_key: &str,
+    upstream_response_id_hash: &str,
+    refunded_at: i64,
+) -> worker::Result<RealtimeBillingReservationRefundOutcome> {
+    let upstream_response_id_hash = non_empty_realtime_reservation_field(
+        upstream_response_id_hash,
+        "upstream response identity hash",
+    )?;
+    refund_realtime_billing_reservation_inner(
+        db,
+        reservation_key,
+        upstream_response_id_hash,
+        refunded_at,
+    )
+    .await
+}
+
+async fn refund_realtime_billing_reservation_inner(
+    db: &D1Database,
+    reservation_key: &str,
+    upstream_response_id_hash: &str,
+    refunded_at: i64,
+) -> worker::Result<RealtimeBillingReservationRefundOutcome> {
+    let reservation_key = non_empty_realtime_reservation_key(reservation_key)?;
+    let Some(record) = realtime_billing_reservation(db, reservation_key).await? else {
+        return Ok(RealtimeBillingReservationRefundOutcome::NotFound);
+    };
+    if record.status != "reserved" {
+        return Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized);
+    }
+    let quota = quota_i32(record.pre_consumed_quota)?;
+    let status_args = [
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(refunded_at)),
+        D1Type::Text(upstream_response_id_hash),
+    ];
+    let status_update = db
+        .prepare(
+            r#"
+            UPDATE realtime_billing_reservations
+            SET status = 'refunded',
+                upstream_response_id_hash = CASE
+                  WHEN ?3 = '' THEN upstream_response_id_hash
+                  ELSE ?3
+                END,
+                snapshot_json = '{}',
+                request_json = '{}',
+                username = '',
+                token_name = '',
+                client_ip = '',
+                request_id = '',
+                updated_at = ?2,
+                refunded_at = ?2
+            WHERE reservation_key = ?1 AND status = 'reserved'
+            "#,
+        )
+        .bind_refs(&status_args)?;
+    let mut statements = Vec::new();
+    let mut checked_statement_indices = Vec::new();
+    push_realtime_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked_statement_indices,
+        status_update,
+        reservation_key,
+        "realtime reservation is no longer refundable",
+    )?;
+    if quota > 0 {
+        push_realtime_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            credit_user_quota_statement(db, record.user_id, quota)?,
+            reservation_key,
+            "user no longer exists",
+        )?;
+        if record.token_id > 0 {
+            push_realtime_reservation_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                credit_token_quota_usage_statement(db, record.token_id, quota, refunded_at)?,
+                reservation_key,
+                "token no longer exists",
+            )?;
+        }
+    } else if record.token_id > 0 {
+        push_realtime_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            touch_token_statement(db, record.token_id, refunded_at)?,
+            reservation_key,
+            "token no longer exists",
+        )?;
+    }
+
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            return match realtime_billing_reservation(db, reservation_key).await? {
+                None => Ok(RealtimeBillingReservationRefundOutcome::NotFound),
+                Some(current) if current.status != "reserved" => {
+                    Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized)
+                }
+                Some(_) => Err(err),
+            };
+        }
+    };
+    for (index, message) in checked_statement_indices {
+        require_batch_change(&results, index, message)?;
+    }
+    Ok(RealtimeBillingReservationRefundOutcome::Applied)
+}
+
+async fn realtime_billing_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RealtimeBillingReservation>> {
+    let reservation_key = non_empty_realtime_reservation_key(reservation_key)?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT
+          reservation_key, session, client_event_id_hash, reservation_sequence,
+          user_id, token_id, channel_id, selected_group, model_name,
+          pre_consumed_quota, snapshot_json, request_json,
+          username, token_name, client_ip, request_id, started_at,
+          endpoint_path, status, upstream_response_id_hash, replay_key,
+          final_quota, created_at, updated_at
+        FROM realtime_billing_reservations
+        WHERE reservation_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RealtimeBillingReservation>(None)
+    .await
+}
+
 pub async fn realtime_settlement_replay_applied(
     db: &D1Database,
     replay_key: &str,
@@ -704,8 +1190,59 @@ pub async fn realtime_settlement_replay_applied(
     Ok(row.map(|row| row.count > 0).unwrap_or(false))
 }
 
-pub async fn apply_realtime_settlement_batch(
+pub async fn apply_realtime_reserved_settlement_batch(
     db: &D1Database,
+    reservation_key: &str,
+    upstream_response_id_hash: &str,
+    record: RealtimeSettlementReplayRecord<'_>,
+    audit_content: &str,
+    audit_log: &RelayAuditLog<'_>,
+) -> worker::Result<RealtimeSettlementBatchOutcome> {
+    let reservation_key = non_empty_realtime_reservation_key(reservation_key)?;
+    let upstream_response_id_hash = non_empty_realtime_reservation_field(
+        upstream_response_id_hash,
+        "upstream response identity hash",
+    )?;
+    let Some(reservation) = realtime_billing_reservation(db, reservation_key).await? else {
+        return Err(worker::Error::RustError(
+            "realtime billing reservation does not exist".to_string(),
+        ));
+    };
+    if reservation.status == "settled" && reservation.replay_key == record.replay_key {
+        return Ok(RealtimeSettlementBatchOutcome::DuplicateReplay);
+    }
+    if reservation.status != "reserved" {
+        return Err(worker::Error::RustError(format!(
+            "realtime billing reservation is already {}",
+            reservation.status
+        )));
+    }
+    if reservation.session != record.session
+        || reservation.user_id != record.user_id
+        || reservation.token_id != record.token_id
+        || reservation.channel_id != record.channel_id
+        || reservation.model_name != record.model_name
+        || reservation.pre_consumed_quota != record.pre_consumed_quota
+        || (!reservation.upstream_response_id_hash.is_empty()
+            && reservation.upstream_response_id_hash != upstream_response_id_hash)
+    {
+        return Err(worker::Error::RustError(
+            "realtime settlement does not match its reservation".to_string(),
+        ));
+    }
+    apply_realtime_settlement_batch_inner(
+        db,
+        (reservation_key, upstream_response_id_hash),
+        record,
+        audit_content,
+        audit_log,
+    )
+    .await
+}
+
+async fn apply_realtime_settlement_batch_inner(
+    db: &D1Database,
+    reservation: (&str, &str),
     record: RealtimeSettlementReplayRecord<'_>,
     audit_content: &str,
     audit_log: &RelayAuditLog<'_>,
@@ -729,6 +1266,46 @@ pub async fn apply_realtime_settlement_batch(
 
     let mut statements = vec![insert_realtime_settlement_replay_statement(db, record)?];
     let mut checked_statement_indices = vec![(0usize, "realtime settlement replay marker failed")];
+    {
+        let (reservation_key, upstream_response_id_hash) = reservation;
+        let reservation_args = [
+            D1Type::Text(reservation_key),
+            D1Type::Text(upstream_response_id_hash),
+            D1Type::Text(replay_key),
+            D1Type::Integer(final_quota),
+            D1Type::Integer(d1_i32(record.applied_at)),
+        ];
+        let reservation_update = db
+            .prepare(
+                r#"
+                UPDATE realtime_billing_reservations
+                SET status = 'settled',
+                    upstream_response_id_hash = ?2,
+                    replay_key = ?3,
+                    final_quota = ?4,
+                    snapshot_json = '{}',
+                    request_json = '{}',
+                    username = '',
+                    token_name = '',
+                    client_ip = '',
+                    request_id = '',
+                    updated_at = ?5,
+                    settled_at = ?5
+                WHERE reservation_key = ?1
+                  AND status = 'reserved'
+                  AND (upstream_response_id_hash = '' OR upstream_response_id_hash = ?2)
+                "#,
+            )
+            .bind_refs(&reservation_args)?;
+        push_realtime_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            reservation_update,
+            reservation_key,
+            "realtime reservation settlement state transition failed",
+        )?;
+    }
     let delta = final_quota.saturating_sub(pre_consumed_quota);
 
     if record.token_id <= 0 {
@@ -849,6 +1426,16 @@ pub async fn apply_realtime_settlement_batch(
             {
                 return Ok(RealtimeSettlementBatchOutcome::DuplicateReplay);
             }
+            if realtime_billing_reservation(db, reservation.0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|current| {
+                    current.status == "settled" && current.replay_key == replay_key
+                })
+            {
+                return Ok(RealtimeSettlementBatchOutcome::DuplicateReplay);
+            }
             return Err(err);
         }
     };
@@ -927,6 +1514,43 @@ fn assert_realtime_settlement_previous_statement_statement(
         r#"
         INSERT INTO realtime_settlement_replays (replay_key)
         SELECT ?1
+        WHERE changes() != 1
+        "#,
+    )
+    .bind_refs(&args)
+}
+
+fn push_realtime_reservation_guarded_statement(
+    db: &D1Database,
+    statements: &mut Vec<worker::D1PreparedStatement>,
+    checked_statement_indices: &mut Vec<(usize, &'static str)>,
+    statement: worker::D1PreparedStatement,
+    reservation_key: &str,
+    message: &'static str,
+) -> worker::Result<()> {
+    let index = statements.len();
+    statements.push(statement);
+    checked_statement_indices.push((index, message));
+    statements.push(assert_realtime_reservation_previous_statement_statement(
+        db,
+        reservation_key,
+    )?);
+    Ok(())
+}
+
+fn assert_realtime_reservation_previous_statement_statement(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let reservation_key = non_empty_realtime_reservation_key(reservation_key)?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        INSERT INTO realtime_billing_reservations (
+          reservation_key, session, user_id, channel_id, model_name,
+          snapshot_json, request_json
+        )
+        SELECT ?1, '', 0, 0, '', '{}', '{}'
         WHERE changes() != 1
         "#,
     )
@@ -1182,6 +1806,23 @@ fn non_empty_realtime_replay_key(replay_key: &str) -> worker::Result<&str> {
         ));
     }
     Ok(replay_key)
+}
+
+fn non_empty_realtime_reservation_key(reservation_key: &str) -> worker::Result<&str> {
+    non_empty_realtime_reservation_field(reservation_key, "reservation key")
+}
+
+fn non_empty_realtime_reservation_field<'a>(
+    value: &'a str,
+    field: &str,
+) -> worker::Result<&'a str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(worker::Error::RustError(format!(
+            "realtime billing {field} is required"
+        )));
+    }
+    Ok(value)
 }
 
 pub async fn tiered_billing_expr_for_model(
@@ -8449,6 +9090,24 @@ pub async fn ranking_quota_buckets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn realtime_billing_reservation_migration_has_atomic_state_indexes() {
+        let migration =
+            include_str!("../../../migrations/d1/0019_realtime_billing_reservations.sql");
+        assert!(migration.contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations"));
+        assert!(migration.contains("CHECK (status IN ('reserved', 'settled', 'refunded'))"));
+        assert!(migration.contains("reservation_sequence"));
+        assert!(migration.contains("idx_realtime_billing_reservations_session_status"));
+        assert!(migration.contains(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_realtime_billing_reservations_replay_key"
+        ));
+        assert!(migration.contains(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_realtime_billing_reservations_response"
+        ));
+        assert!(migration
+            .contains("ON realtime_billing_reservations(session, upstream_response_id_hash)"));
+    }
 
     #[test]
     fn token_keys_by_ids_query_is_user_scoped_and_parameterized() {

@@ -956,9 +956,9 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
-          label: t('Realtime billing pre-settlement snapshot'),
+          label: t('Realtime per-response reservation'),
           description: t(
-            'Freezes redacted tiered billing expression metadata and estimated quota for Realtime handoff without charging or storing request-only billing rules.'
+            'Requires explicit response.create events, disables automatic VAD responses, freezes request-aware billing input, and atomically reserves estimated quota before upstream inference.'
           ),
           ready:
             capabilities.realtime_session_billing_presettlement_snapshot_compiled,
@@ -986,7 +986,7 @@ function buildCapabilityGroups(
         {
           label: t('Realtime billing mutation plan'),
           description: t(
-            'Carries private user, token, channel, and pre-consumed quota identifiers in the internal settlement handoff while exposing only redacted readiness metadata to operators.'
+            'Carries private user, token, channel, and per-response reserved quota identifiers while exposing only redacted readiness metadata to operators.'
           ),
           ready:
             capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
@@ -996,7 +996,7 @@ function buildCapabilityGroups(
         {
           label: t('Realtime billing D1 writer'),
           description: t(
-            'Can apply the private settlement mutation plan through the existing D1 reserve/refund/final helper when explicitly enabled; production settlement remains gated until replay evidence is archived.'
+            'Applies reserved-to-settled or reserved-to-refunded CAS transitions so retries and duplicate response.done events cannot charge or credit quota twice.'
           ),
           ready:
             capabilities.realtime_session_billing_settlement_writer_compiled,
@@ -1026,7 +1026,7 @@ function buildCapabilityGroups(
         {
           label: t('Realtime billing settlement batch'),
           description: t(
-            'Applies the replay marker, guarded quota settlement, and Go-compatible audit log in one D1 batch when the default-off writer is enabled.'
+            'Binds response.created identities in sequence order, then settles each response.done against its exact reservation with CAS, replay marker, guarded quota mutations, and a Go-compatible audit row.'
           ),
           ready:
             capabilities.realtime_session_billing_settlement_batch_compiled,
@@ -1036,7 +1036,7 @@ function buildCapabilityGroups(
         {
           label: t('Realtime settlement retry'),
           description: t(
-            'Persists failed D1 settlement privately in the session Durable Object and retries with bounded alarm backoff without exposing billing handoff data.'
+            'Persists up to 64 independent failed settlements in the session Durable Object and schedules the earliest due item through one bounded-backoff alarm without overwriting another response.'
           ),
           ready:
             capabilities.realtime_session_billing_settlement_retry_compiled,

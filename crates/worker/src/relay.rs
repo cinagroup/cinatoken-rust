@@ -2437,6 +2437,31 @@ async fn realtime_billing_presettlement(
     }))
 }
 
+pub(crate) fn realtime_billing_response_snapshot(
+    template: &TieredBillingSnapshot,
+    request: RequestInput,
+) -> Result<TieredBillingSnapshot, String> {
+    let request_body = request
+        .body
+        .as_ref()
+        .ok_or_else(|| "realtime response billing request body is missing".to_string())?;
+    let params = token_params_from_request(
+        &template.model_name,
+        request_body,
+        detect_billing_expr_variables(&template.expr_string),
+        false,
+        0,
+    );
+    estimate_tiered_billing_snapshot_with_request(
+        template.model_name.clone(),
+        template.expr_string.clone(),
+        params,
+        template.group_ratio,
+        request,
+    )
+    .map_err(|err| format!("failed to freeze realtime response billing snapshot: {err}"))
+}
+
 fn realtime_mock_queue_probe_delay_ms(other_info: &str) -> Option<u32> {
     let value: Value = serde_json::from_str(other_info.trim()).ok()?;
     let mock = value.get("realtime_mock_upstream")?.as_object()?;
@@ -6230,6 +6255,32 @@ mod tests {
         assert!(!headers.contains_key("authorization"));
         assert!(!headers.contains_key("cookie"));
         assert!(!headers.contains_key("x-api-key"));
+    }
+
+    #[test]
+    fn realtime_response_snapshot_estimates_each_response_create_body() {
+        let template = estimate_tiered_billing_snapshot_with_request(
+            "gpt-4o-realtime-preview",
+            r#"tier("base", p * 2 + c * 10)|||(param("service_tier") == "fast" ? 2 : 1)"#,
+            TokenParams::default(),
+            1.0,
+            RequestInput::default(),
+        )
+        .expect("template snapshot");
+        let request = RequestInput::from_json_body(json!({
+            "model": "gpt-4o-realtime-preview",
+            "endpoint": "realtime",
+            "service_tier": "fast",
+            "instructions": "Answer briefly but include the important operational details.",
+            "max_output_tokens": 256
+        }));
+        let snapshot =
+            realtime_billing_response_snapshot(&template, request).expect("response snapshot");
+
+        assert!(snapshot.estimated_prompt_tokens > 0);
+        assert_eq!(snapshot.estimated_completion_tokens, 256);
+        assert_eq!(snapshot.estimated_tier, "base");
+        assert!(snapshot.estimated_quota_after_group.0 > 0);
     }
 
     #[test]

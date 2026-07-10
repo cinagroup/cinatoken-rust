@@ -126,12 +126,12 @@ Current production blockers:
 Completed local evidence:
 
 - `bun run check:d1:migration-config` passes and requires all three D1 binding
-  tables to use `migrations/d1`, with 18 contiguous migrations through `0018`.
-- `bun run verify:sqlite` applies all 18 migrations by default and verifies 25
-  required tables, 29 incremental key columns, and 9 key indexes.
-- Local Wrangler D1 applied 18/18 migrations on Windows after installing the
+  tables to use `migrations/d1`, with 19 contiguous migrations through `0019`.
+- `bun run verify:sqlite` applies all 19 migrations by default and verifies 26
+  required tables, 55 incremental key columns, and 13 key indexes.
+- Local Wrangler D1 applied 19/19 migrations on Windows after installing the
   Microsoft Visual C++ 2015-2022 x64 runtime required by `workerd`.
-- A real localhost Worker capability request verified the exact 18-name D1
+- A real localhost Worker capability request verified the exact 19-name D1
   ledger and returned D1 readiness true. The same request exposed and closed a
   wasm billing-clock panic; Realtime billing probes passed after switching the
   wasm default clock to `js_sys::Date`.
@@ -253,8 +253,8 @@ Corrected production rules:
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0018, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 18/18 and 25-table replay are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0019, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 19/19 and 26-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -268,7 +268,7 @@ Corrected production rules:
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial: local 18/18 Wrangler apply and 25-table SQLite replay pass | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 18/18 staging apply, real source inventory, staging import report, and rollback point |
+| Data migration | Partial: local 19/19 Wrangler apply and 26-table SQLite replay pass | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 19/19 staging apply, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, and shadow mode | Golden fixture set and shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
@@ -814,3 +814,33 @@ Before G8 cutover, the repository or deployment runbook must contain:
 10. Use `docs/performance-capacity-cost-runbook.md` to produce the
     performance, capacity, and 1x/2x/5x cost forecast before canary expansion
     and full cutover.
+
+## Realtime Paid-Traffic Subgate
+
+Realtime is not covered by a generic WebSocket connectivity smoke. Before any
+paid `/v1/realtime` canary, all of the following evidence is required:
+
+1. D1 migrations are an exact 19-file set through
+   `0019_realtime_billing_reservations.sql` in the target environment.
+2. A single connection completes at least two independently reserved cycles,
+   binds distinct `response.created` identities, and settles their
+   `response.done` events out of order with distinct correct audit rows.
+3. Replaying either client `event_id` or upstream response identity produces no
+   second debit, credit, request-count increment, channel increment, or log.
+4. Insufficient user quota, insufficient token quota, and a forced guarded D1
+   failure leave no partial reservation or quota mutation and do not forward
+   the client event upstream.
+5. Missing usage, local forward failure, disconnect, and upstream terminal
+   failure each produce one documented refund outcome.
+6. Two simultaneous settlement failures persist as two records; alarm retry,
+   alarm replacement, DO eviction, and restart recover both without overwrite;
+   retry exhaustion refunds rather than stranding reserved quota.
+7. Public status, frontend capability output, Worker logs, and archived smoke
+   artifacts contain hashes/metadata only, never raw prompts, event IDs,
+   billing expressions, token IDs, or credentials.
+8. Go/Rust reconciliation for the same frozen request inputs stays inside the
+   approved quota-delta threshold, and rollback/refund ownership is named.
+
+Until every item is archived from isolated staging,
+`realtime_session_billing_settlement_compiled` and
+`realtime_session_v1_cutover_ready` remain false.

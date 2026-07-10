@@ -123,18 +123,18 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - 2026-07-10 D1 migration discovery correction: the root/default, staging, and
   production Wrangler `DB` bindings now all set
   `migrations_dir = "migrations/d1"`, so they resolve the repository's
-  contiguous `0001` through `0018` migration chain. This aligns config only;
+  contiguous `0001` through `0019` migration chain. This aligns config only;
   the remote staging and production databases were not migrated or verified in
   this local increment.
-- 2026-07-10 local D1 evidence: a real local Wrangler D1 applied all 18/18
-  migrations and exposed 25 business tables. The Realtime gateway candidate
+- 2026-07-10 local D1 evidence: a real local Wrangler D1 applied all 19/19
+  migrations and exposed 26 business tables. The Realtime gateway candidate
   matcher was narrowed so `/api/platform/realtime/settlement-batch/smoke` is
   owned by the platform settlement handler rather than the generic Realtime
   session prefix. The resulting local Worker-binding smoke passed all six fixed
   settlement scenarios and cleanup left zero residual smoke rows. This proves
   the local binding path, not remote staging or production settlement.
 - The admin Cloudflare Platform capability now reads the D1 migration ledger,
-  requires the exact compiled 18-name set, and exposes count/latest/expected,
+  requires the exact compiled 19-name set, and exposes count/latest/expected,
   set-match, and readiness fields to the frontend. A live localhost capability
   request returned all D1 migration checks ready. Its first execution also
   exposed and closed a wasm billing-clock panic by using `js_sys::Date` for the
@@ -531,19 +531,23 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   outside a controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker,
   audit-log, and D1 batch/CAS foundation to production-safe settlement. The
-  real local Wrangler D1 now has 18/18 migrations and 25 business tables, and
+  real local Wrangler D1 now has 19/19 migrations and 26 business tables, and
   the local Worker-binding settlement smoke passes 6/6 with zero residual rows
-  after cleanup. Failed settlement batches now have a private, bounded
-  Durable Object alarm retry record, and `/v1/realtime` fails closed unless
-  both its route gate and `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` are on.
-  The local capability also proves exact migration-ledger match, Worker-safe
-  billing probes, the retry contract, and the write-gate state. This is still
-  not production-safe billing: Realtime does not yet perform the matching D1
-  reserve, and its applied guard/replay identity are session-scoped rather than
-  response-scoped. Next, implement idempotent reserve/refund and a two-response
-  `response.done` CAS proof, then authenticate Wrangler, apply and verify the
-  same chain on an isolated remote staging D1, and archive staging
-  capability plus Worker-binding proof for disabled, applied, duplicate,
+  after cleanup. Migration 0019 and the Durable Object now reserve each
+  explicit `response.create` atomically, bind hashed `response.created`
+  identities in sequence order, settle out-of-order `response.done` events by
+  exact identity, refund terminal failures idempotently, and retain up to 64
+  failed settlements behind one bounded-backoff alarm. `/v1/realtime` still
+  fails closed unless both its route gate and
+  `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` are on. The local capability
+  proves exact migration-ledger match, Worker-safe billing probes, retry
+  contract, and write-gate state; the 11-case settlement self-test includes a
+  two-response reverse-completion proof. Production safety still requires
+  authenticating Wrangler, applying and verifying the same chain on an
+  isolated remote staging D1, and archiving staging evidence for
+  multi-response, alarm/eviction, disconnect-refund, queue-capacity, and
+  Go/Rust reconciliation, plus capability and Worker-binding proof for
+  disabled, applied, duplicate,
   guarded-update failure, audit-row failure, rollback, redaction, cleanup, and
   no-double-charge paths before flipping
   `realtime_session_billing_settlement_compiled` or

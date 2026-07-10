@@ -93,11 +93,11 @@ Cloudflare references added 2026-07-05:
 - The top-level, `[env.staging]`, and `[env.production]` D1 binding tables now
   each set `migrations_dir = "migrations/d1"`.
 - `bun run check:d1:migration-config` passes locally and proves exactly three
-  `DB` bindings, a contiguous 18-migration chain, and alignment between the
+  `DB` bindings, a contiguous 19-migration chain, and alignment between the
   latest migration and the Worker capability constant.
-- `bun run verify:sqlite` passes locally by applying all 18 migrations and
-  requiring 25 tables, 29 incremental key columns, and 9 key indexes. Local
-  Wrangler D1 also applied 18/18 migrations.
+- `bun run verify:sqlite` passes locally by applying all 19 migrations and
+  requiring 26 tables, 55 incremental key columns, and 13 key indexes. Local
+  Wrangler D1 also applied 19/19 migrations.
 - Staging resource identifiers are present in `wrangler.toml`, but Wrangler was
   not authenticated during this evidence window. Their account ownership,
   existence, remote migration state, bindings, secrets, deployability, and
@@ -520,11 +520,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-   `d1_migration_status_available=true`, applied count `18`, latest/expected
-   `0018_realtime_settlement_replays.sql`, exact set match, and
+   `d1_migration_status_available=true`, applied count `19`, latest/expected
+   `0019_realtime_billing_reservations.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0018 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0019 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.

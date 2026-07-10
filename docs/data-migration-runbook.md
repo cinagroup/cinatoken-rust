@@ -55,10 +55,10 @@ bun run verify:sqlite
 
 The config audit requires the top-level, staging, and production D1 binding
 tables to set `migrations_dir = "migrations/d1"`; it also requires a contiguous
-18-file sequence from `0001_core.sql` through
-`0018_realtime_settlement_replays.sql`. The SQLite verifier applies all 18
-migrations by default and requires 25 target tables. A real local Wrangler D1
-apply completed 18/18 on 2026-07-10.
+19-file sequence from `0001_core.sql` through
+`0019_realtime_billing_reservations.sql`. The SQLite verifier applies all 19
+migrations by default and requires 26 target tables. A real local Wrangler D1
+apply completed 19/19 on 2026-07-10.
 
 This evidence is local only. Wrangler was not authenticated for remote work in
 this validation window, so no remote staging migration state, database target,
@@ -179,12 +179,12 @@ field-level defects in `docs/source-d1-schema-parity.md`. In particular
 `abilities` must regain its `tag` column and `(group_name, model, channel_id)`
 uniqueness (verify dedup first), `users` needs its OAuth-id lookup indexes, and
 the `logs` admin-search index/strategy must be decided. The repository now
-carries migrations 0001-0018, including `0004_schema_parity.sql`,
+carries migrations 0001-0019, including `0004_schema_parity.sql`,
 `0008_model_meta.sql`, `0010_custom_oauth.sql`, and
-`0018_realtime_settlement_replays.sql`. Apply the complete ordered
+`0019_realtime_billing_reservations.sql`. Apply the complete ordered
 migration set to staging D1 and re-run the row/hash verification below before
 treating Wave 0 as passed. Local SQLite schema replay currently succeeds with
-all 18 migrations, 25 required tables, 29 incremental key columns, and 9 key
+all 19 migrations, 26 required tables, 55 incremental key columns, and 13 key
 indexes; that is not a substitute for source-row reconciliation or staging D1
 evidence.
 
@@ -251,7 +251,7 @@ For a local toolchain rehearsal only:
 wrangler d1 migrations apply cinatoken-rust-db --local
 ```
 
-Record the applied/total count; the 2026-07-10 local rehearsal applied 18/18.
+Record the applied/total count; the 2026-07-10 local rehearsal applied 19/19.
 Do not carry that result into the staging report. The staging report must come
 from an authenticated remote command and identify the remote database by name
 and ID.
@@ -391,7 +391,7 @@ pass:
 
 - source inventory recorded;
 - target D1 schema and migrations applied;
-- remote staging migration state captured independently of local 18/18
+- remote staging migration state captured independently of local 19/19
   evidence;
 - export bundle verified;
 - generated SQL reviewed;

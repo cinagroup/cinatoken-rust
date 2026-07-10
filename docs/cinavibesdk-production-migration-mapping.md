@@ -100,12 +100,12 @@ the production posture:
 
 - All three Wrangler D1 binding declarations now set
   `migrations_dir = "migrations/d1"`. The default, staging, and production
-  configurations therefore point at the same contiguous `0001` through `0018`
+  configurations therefore point at the same contiguous `0001` through `0019`
   migration chain. This is configuration alignment, not proof of a remote
   migration apply.
-- A real local Wrangler D1 applied 18/18 migrations and exposed 25 business
-  tables, including the schema needed by the Realtime settlement replay-marker
-  path.
+- A real local Wrangler D1 applied 19/19 migrations and exposed 26 business
+  tables, including the per-response Realtime reservation ledger and settlement
+  replay-marker path.
 - The scheduling gateway no longer treats every
   `/api/platform/realtime/*` path as a Realtime session. Valid session routes
   remain owned by `RealtimeSession`, while
@@ -549,15 +549,22 @@ As of 2026-07-10, including the local D1 and route-ownership evidence above:
   setup/verify/cleanup evidence plan plus a default-off Worker-binding
   settlement smoke route for the six fixed apply/duplicate/rollback scenarios.
   The real local Worker binding now passes all six scenarios with zero residual
-  smoke rows after cleanup. Failed D1 settlement batches now persist a minimal
-  private DO retry record and use bounded alarm backoff; the public v1 route
-  also fails closed while the settlement-write gate is off. These controls do
-  not close the billing model: Realtime still lacks the matching idempotent D1
-  reserve and still treats settlement/replay as session-scoped rather than one
-  idempotent settlement per upstream response. The migration also lacks
-  archived live staging binding-smoke output, staging
+  smoke rows after cleanup. Realtime billing is now modeled per
+  `response.create`: migration 0019 provides an idempotent D1 reservation
+  ledger, the DO reserves before forwarding, `response.created` binds the
+  oldest unclaimed sequence to a hashed response identity, and
+  `response.done` settles that exact identity even when completions arrive out
+  of order. Terminal failures refund through reservation CAS. Failed
+  settlements coexist in a bounded private retry collection and one DO alarm
+  schedules the earliest due item, matching the cinaVibeSDK
+  single-alarm/multiple-persisted-work pattern. Terminal D1 rows clear private
+  recovery payloads. The public v1 route still fails closed while the
+  settlement-write gate is off.
+  This closes the audited local session-scoping defect, but the migration still
+  lacks archived live staging binding-smoke output, staging
   queue/drain and D1 rollback artifacts, full live fault replay, and billing
-  settlement proof required for production `/v1/realtime`.
+  reconciliation plus alarm/eviction/multi-response proof required for
+  production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
   response-header smoke guard, but still needs a real paid-plan `DISPATCHER`
   binding, uploaded tenant artifact, and live internal dispatch smoke.

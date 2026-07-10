@@ -6862,6 +6862,85 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.141 2026-07-10 Per-Response Realtime Billing State Machine
+
+This increment replaces the audited session-scoped Realtime billing model with
+the production target: one billing lifecycle per client `response.create`.
+The source Go `BillingSession` semantics remain authoritative: reserve before
+provider work, settle the frozen request snapshot against actual usage, and
+refund a reservation exactly once when provider work cannot be charged.
+
+Implemented locally:
+
+- `migrations/d1/0019_realtime_billing_reservations.sql` adds a private D1
+  reservation ledger with deterministic per-session sequence, hashed client
+  and upstream identities, frozen `TieredBillingSnapshot`/`RequestInput`, and
+  `reserved -> settled|refunded` terminal states.
+- A bounded `response.create` JSON event is converted to request-aware billing
+  input with model and endpoint context. Its estimate is frozen independently
+  from every other response on the same WebSocket.
+- The Durable Object reserves user/token quota atomically before forwarding
+  `response.create`. A duplicate client `event_id`, insufficient quota, or D1
+  failure prevents upstream forwarding.
+- Because Realtime Server/Semantic VAD defaults to automatic response creation,
+  a billed upstream connection is bootstrapped with turn detection disabled.
+  Later `session.update` events may re-enable VAD detection, but the gateway
+  forces `create_response=false` and removes idle response timeouts. Clients
+  receive VAD events and must send an explicit reservable `response.create`.
+- `response.created` binds its hashed upstream identity to the oldest unclaimed
+  reserved sequence. `response.done` resolves that identity directly, so
+  parallel responses may finish out of creation order without swapping their
+  frozen billing inputs. Reservation CAS, replay marker, quota delta, user
+  request count, channel usage, and Go-compatible audit row are applied in one
+  D1 batch.
+- A terminal `response.done` without billable usage refunds its reservation;
+  local forwarding failure and terminal session cleanup refund unconsumed
+  reservations. Reservations already carrying captured usage are excluded
+  from cleanup and remain owned by settlement recovery.
+- Failed settlements are stored as up to 64 independent private DO retry
+  records. One Durable Object alarm selects the earliest due record, applies
+  bounded exponential backoff, and reschedules the next item without replacing
+  another response's recovery state. Exhausted records attempt one idempotent
+  reservation refund instead of leaving an indefinitely charged reservation.
+- Settled and refunded reservation rows retain accounting identity and quota
+  evidence but clear frozen snapshot/request JSON plus username, token name,
+  client IP, and request ID recovery fields.
+- The Operations -> Cloudflare Platform frontend now describes the
+  per-response reservation, created/done identity correlation, reservation
+  CAS, and multi-record alarm behavior instead of the former session-level
+  preview.
+- The canonical D1 chain is now 19 migrations through
+  `0019_realtime_billing_reservations.sql`; local migration and settlement
+  smoke tooling checks reservation apply, rollback, settlement, refund, and
+  replay idempotency.
+
+Production invariants:
+
+1. No `response.create` reaches the upstream after a required reservation
+   fails.
+2. No automatic VAD/idle response may bypass the reservation boundary.
+3. One reservation can reach only one terminal state.
+4. A replayed or out-of-order `response.done` cannot consume another response's
+   reservation.
+5. A failed guarded statement rolls back the reservation/replay transition and
+   every quota/audit mutation in the batch.
+6. Raw event IDs, prompts, provider credentials, and billing expressions are
+   absent from public status and retry metadata; D1 stores only required
+   private recovery input and hashed event identities.
+
+Remaining production gates:
+
+- Apply migration 0019 to isolated staging and archive exact migration-set
+  evidence; the current local 19/19 replay is not remote proof.
+- Run a real multi-response WebSocket (`response.create` x2 or more), duplicate
+  event/response replay, missing-usage refund, D1 failure, alarm retry, DO
+  eviction/restart, disconnect cleanup, and queue-capacity rehearsal against
+  the deployed Worker binding.
+- Reconcile user/token/channel/log rows against the Go billing implementation
+  and prove no double charge or double refund before either
+  `realtime_session_billing_settlement_compiled` or
+  `realtime_session_v1_cutover_ready` becomes true.
+
 ### 22.132 2026-07-08 WFP Rust/Wasm Artifact Manifest Identity
 
 This increment tightens the Workers for Platforms Rust tenant deployment
@@ -8660,15 +8739,15 @@ Configuration and route-ownership corrections:
 
 Local evidence captured on 2026-07-10:
 
-- The real local Wrangler D1 applied all 18 of 18 migrations, through
-  `0018_realtime_settlement_replays.sql`, and exposed 25 business tables. This
+- The real local Wrangler D1 applied all 19 of 19 migrations, through
+  `0019_realtime_billing_reservations.sql`, and exposed 26 business tables. This
   proves local schema discovery and application rather than only replaying SQL
   against the Python/in-memory SQLite verifier.
-- The local SQLite full-chain verifier now also requires 29 incremental key
-  columns and 9 key indexes, preventing an `ALTER TABLE` or critical uniqueness
+- The local SQLite full-chain verifier now also requires 55 incremental key
+  columns and 13 key indexes, preventing an `ALTER TABLE` or critical uniqueness
   regression from passing on table names alone.
 - An authenticated localhost call to `/api/platform/capabilities` returned
-  migration status available, count 18, latest/expected 0018, exact set match,
+  migration status available, count 19, latest/expected 0019, exact set match,
   and D1 readiness all true. The first live attempt exposed a wasm-only
   `SystemTime::now()` panic inside billing expression probes; the billing
   engine now uses the Worker-compatible JavaScript clock on wasm, and the
@@ -8707,7 +8786,7 @@ Remaining migration gaps:
   staging deployment, D1 migration apply/list result, table inventory,
   capability snapshot, or settlement binding smoke was captured in this
   increment.
-- Authenticate Wrangler, apply and verify the same 18/18 migration chain on an
+- Authenticate Wrangler, apply and verify the same 19/19 migration chain on an
   isolated staging D1, confirm the expected business-table inventory, and
   archive the six-scenario Worker-binding smoke plus zero-residue cleanup there.
 - Keep `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED`,

@@ -68,7 +68,7 @@ pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0018_realtime_settlement_replays.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0019_realtime_billing_reservations.sql";
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -88,6 +88,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0016_passkey_credentials.sql",
     "0017_user_session_epoch.sql",
     "0018_realtime_settlement_replays.sql",
+    "0019_realtime_billing_reservations.sql",
 ];
 pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
@@ -871,6 +872,14 @@ impl RealtimeSettlementSmokeFixture {
         format!("rtsettle-{}", self.scenario.name())
     }
 
+    fn reservation_key(self) -> String {
+        format!("rtreserve-{}", self.scenario.name())
+    }
+
+    fn response_id_hash(self) -> String {
+        format!("response-hash-{}", self.scenario.name())
+    }
+
     fn session(self) -> String {
         format!("rtsettle-{}", self.scenario.name())
     }
@@ -1082,6 +1091,8 @@ async fn apply_realtime_settlement_smoke_once(
     applied_at: i64,
 ) -> WorkerResult<crate::d1_repositories::RealtimeSettlementBatchOutcome> {
     let replay_key = fixture.replay_key();
+    let reservation_key = fixture.reservation_key();
+    let response_id_hash = fixture.response_id_hash();
     let session = fixture.session();
     let username = fixture.username();
     let token_name = fixture.token_name();
@@ -1125,8 +1136,10 @@ async fn apply_realtime_settlement_smoke_once(
         fixture.scenario.name(),
         fixture.final_quota
     );
-    crate::d1_repositories::apply_realtime_settlement_batch(
+    crate::d1_repositories::apply_realtime_reserved_settlement_batch(
         db,
+        &reservation_key,
+        &response_id_hash,
         crate::d1_repositories::RealtimeSettlementReplayRecord {
             replay_key: &replay_key,
             session: &session,
@@ -1221,6 +1234,42 @@ async fn seed_realtime_settlement_smoke_fixture(
     .run()
     .await?;
 
+    let reservation_key = fixture.reservation_key();
+    let session = fixture.session();
+    let token_name = fixture.token_name();
+    let request_id = fixture.request_id();
+    let reservation_args = [
+        D1Type::Text(reservation_key.as_str()),
+        D1Type::Text(session.as_str()),
+        D1Type::Integer(d1_i32(fixture.user_id)),
+        D1Type::Integer(d1_i32(fixture.token_id)),
+        D1Type::Integer(d1_i32(fixture.channel_id)),
+        D1Type::Text(group),
+        D1Type::Text(model),
+        D1Type::Integer(d1_i32(fixture.pre_consumed_quota)),
+        D1Type::Text(username.as_str()),
+        D1Type::Text(token_name.as_str()),
+        D1Type::Text(request_id.as_str()),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO realtime_billing_reservations (
+          reservation_key, session, client_event_id_hash, reservation_sequence,
+          user_id, token_id, channel_id, selected_group, model_name,
+          pre_consumed_quota, snapshot_json, request_json,
+          username, token_name, request_id, endpoint_path,
+          status, created_at, updated_at
+        ) VALUES (
+          ?1, ?2, 'binding-smoke-client-event', 1,
+          ?3, ?4, ?5, ?6, ?7, ?8, '{}', '{}',
+          ?9, ?10, ?11, 'realtime', 'reserved', 0, 0
+        )
+        "#,
+    )
+    .bind_refs(&reservation_args)?
+    .run()
+    .await?;
+
     Ok(())
 }
 
@@ -1250,6 +1299,13 @@ async fn cleanup_realtime_settlement_smoke_fixture(
     let replay_args = [D1Type::Text(replay_key.as_str())];
     db.prepare("DELETE FROM realtime_settlement_replays WHERE replay_key = ?1")
         .bind_refs(&replay_args)?
+        .run()
+        .await?;
+
+    let reservation_key = fixture.reservation_key();
+    let reservation_args = [D1Type::Text(reservation_key.as_str())];
+    db.prepare("DELETE FROM realtime_billing_reservations WHERE reservation_key = ?1")
+        .bind_refs(&reservation_args)?
         .run()
         .await?;
 
@@ -2139,15 +2195,19 @@ mod tests {
         assert!(!d1_migration_set_matches(&substituted));
 
         let mut extra = expected;
-        extra.push("0019_unexpected.sql".to_string());
+        extra.push("0020_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0018_realtime_settlement_replays.sql"
+            "0019_realtime_billing_reservations.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
+        );
+        assert!(
+            include_str!("../../../migrations/d1/0019_realtime_billing_reservations.sql")
+                .contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations")
         );
     }
 

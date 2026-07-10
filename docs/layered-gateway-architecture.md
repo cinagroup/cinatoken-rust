@@ -115,8 +115,8 @@ are archived.
 
 **M6 local D1 and binding-evidence update (2026-07-10):** all three Wrangler
 D1 binding declarations now explicitly use `migrations_dir = "migrations/d1"`.
-The real local Wrangler D1 applied the contiguous 18/18 chain through
-`0018_realtime_settlement_replays.sql` and exposed 25 business tables. The
+The real local Wrangler D1 applied the contiguous 19/19 chain through
+`0019_realtime_billing_reservations.sql` and exposed 25 business tables. The
 gateway matcher was also narrowed so the generic Realtime session branch no
 longer captures `/api/platform/realtime/settlement-batch/smoke`. With the route
 owned by the platform control plane, the local Worker-binding smoke passed all

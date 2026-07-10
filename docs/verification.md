@@ -4,11 +4,13 @@ Last checked: 2026-07-10
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: passed on 2026-07-10 with 505/505
-  tests after adding the Realtime settlement alarm retry and v1 billing
-  interlock. The retry contract covers bounded/capped backoff and redacted
-  public status; the v1 cutover predicate now treats the settlement-write gate
-  as mandatory while final bridge/settlement release latches remain false.
+- `cargo test -p cinatoken-worker --lib`: passed on 2026-07-10 with 511/511
+  tests after adding the Realtime per-response reservation state machine,
+  request-aware estimate, explicit-response VAD guard, response identity
+  correlation, and multi-record settlement retry queue. The retry contract
+  covers bounded/capped backoff and redacted public status; the v1 cutover
+  predicate still treats the settlement-write gate as mandatory while final
+  bridge/settlement release latches remain false.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `node --check tools/smoke_realtime_session.mjs`,
   `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
@@ -31,33 +33,41 @@ Last checked: 2026-07-10
   linker. No dev server was left running. The compiled route guard and cutover
   tests are local contract evidence only; live Worker alarm/interlock and DO
   eviction evidence remain staging requirements.
-- Production audit boundary: Realtime settlement is still NO-GO even with
-  retry. Its snapshot is not paired with an actual idempotent D1 reserve, the
-  applied guard is session-scoped, and the replay key lacks upstream
-  response/event identity. WFP tenant AI forwarding also remains NO-GO for
+- Production audit boundary: Realtime settlement remains NO-GO for paid
+  traffic, but the audited local correctness defects are now closed by
+  migration 0019: every `response.create` receives an idempotent D1 reserve,
+  settlement/refund is per reservation, and replay identity includes the
+  hashed upstream response. A bounded multi-record DO alarm queue prevents
+  failed responses from replacing one another. Live staging multi-response,
+  alarm/eviction, disconnect-refund, D1 rollback, and Go/Rust reconciliation
+  evidence is still missing. WFP tenant AI forwarding also remains NO-GO for
   paid traffic until central auth/provider/billing authority, real Rust/Wasm
   artifact identity, separate least-privilege runtime credentials, and strict
   2xx canary evidence are proven.
+- `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json`: passed
+  11/11 checks. The added parallel-response case binds two sequence-ordered
+  reservations to distinct hashed `response.created` identities, then settles
+  their `response.done` events in reverse order without swapping final quota.
 
 - `bun run check:d1:migration-config`: passed on 2026-07-10. The audit found
   exactly the top-level, staging, and production D1 binding tables, each with
   binding `DB` and `migrations_dir = "migrations/d1"`; migrations are
   contiguous from `0001_core.sql` through
-  `0018_realtime_settlement_replays.sql` (18 total), and the Worker capability
+  `0019_realtime_billing_reservations.sql` (19 total), and the Worker capability
   constant names the same latest migration.
 - `bun run verify:sqlite`: passed on 2026-07-10 with
-  `sqlite schema ok: 18 migrations, 25 tables, 29 incremental columns, 9 key
+  `sqlite schema ok: 19 migrations, 26 tables, 55 incremental columns, 13 key
   indexes`. The default verifier now exercises the full migration chain rather
   than only `0001_core.sql`.
-- `wrangler d1 migrations apply cinatoken-rust-db --local`: applied all 18/18
+- `wrangler d1 migrations apply cinatoken-rust-db --local`: applied all 19/19
   migrations through real local Wrangler D1 on Windows. Wrangler's local
   `workerd` required Microsoft Visual C++ 2015-2022 Redistributable (x64); with
   that runtime present, the prior local process-start failure was cleared.
 - A real localhost Worker request to the admin-only
   `/api/platform/capabilities` returned D1 migration status available, applied
-  count `18`, latest/expected `0018_realtime_settlement_replays.sql`, exact
+  count `19`, latest/expected `0019_realtime_billing_reservations.sql`, exact
   migration-set match, and overall D1 readiness all true. The runtime gate now
-  compares the complete compiled 18-name set rather than accepting only a row
+  compares the complete compiled 19-name set rather than accepting only a row
   count and latest marker; the config audit locks that compiled set to the SQL
   files in `migrations/d1`.
 - The same capability request initially exposed a wasm-only billing clock panic:
@@ -2681,7 +2691,7 @@ bun run check
 
 - The former Windows local Wrangler/`workerd` startup blocker is closed for the
   2026-07-10 local evidence window after installing the Microsoft Visual C++
-  2015-2022 Redistributable (x64): local D1 applied 18/18 and the localhost
+  2015-2022 Redistributable (x64): local D1 applied 19/19 and the localhost
   Worker `DB` binding settlement smoke passed 6/6 with cleanup at zero. Future
   Windows operators must keep this runtime prerequisite in the bootstrap
   checklist.

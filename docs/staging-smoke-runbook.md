@@ -686,6 +686,8 @@ Record:
   `realtime_session_billing_settlement_replay_marker_compiled`,
   `realtime_session_billing_settlement_audit_log_compiled`,
   `realtime_session_billing_settlement_batch_compiled`,
+  `realtime_session_billing_settlement_retry_compiled`,
+  `realtime_session_billing_settlement_write_enabled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
@@ -716,7 +718,8 @@ Pass criteria:
   billing settlement preview, billing settlement handoff, billing settlement
   mutation plan, default-off billing settlement writer, durable replay marker,
   Go-compatible audit-log foundation, guarded D1 settlement batch foundation,
-  and platform upstream-header boundary;
+  bounded DO alarm retry foundation, current settlement-write gate state, and
+  platform upstream-header boundary;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
@@ -751,6 +754,20 @@ Pass criteria:
   artifacts are reviewed; the same cases are archived against an isolated
   staging D1 through the Worker binding path; and `audit_plan_missing`,
   `write_failed`, and `replay_duplicate` status metadata remains redacted.
+- Prove the v1 runtime interlock before any upstream smoke: with
+  `REALTIME_SESSION_V1_ENABLED=true` and
+  `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED=false`, a valid WebSocket upgrade
+  request must receive structured HTTP `503` with
+  `realtime_billing_settlement_disabled`, and no channel/upstream request may
+  occur. Enable the writer only against isolated staging fixtures.
+- Inject a transient D1 settlement failure through the live DO path, run the
+  Durable Object alarm, and archive redacted pending/attempt/next-retry status,
+  eventual applied-or-duplicate terminal state, retry-record cleanup, and no
+  duplicate quota/audit mutation. Also archive paused behavior when the writer
+  gate is disabled and exhausted behavior after the bounded attempt limit.
+- Treat this alarm proof as durability evidence only. Production billing still
+  requires real pre-reserve/refund and per-response identity/CAS coverage for
+  two legitimate `response.done` events in one Realtime session.
 - If the DO is hibernated/restarted and the outbound upstream socket is no
   longer active, client frames return `upstream_bridge_not_active` rather than
   implying that the upstream session was resumed.

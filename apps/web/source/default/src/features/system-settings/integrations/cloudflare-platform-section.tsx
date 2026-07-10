@@ -130,6 +130,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_settlement_replay_marker_compiled,
         capabilities.realtime_session_billing_settlement_audit_log_compiled,
         capabilities.realtime_session_billing_settlement_batch_compiled,
+        capabilities.realtime_session_billing_settlement_retry_compiled,
         capabilities.realtime_session_billing_settlement_staging_smoke_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
@@ -791,6 +792,19 @@ function buildCapabilityGroups(
           missingVariant: 'neutral',
         },
         {
+          label: t('Realtime settlement write gate'),
+          description: t(
+            'Runtime flag REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED. The public /v1/realtime upgrade fails closed while this gate is off.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_write_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Off'),
+          missingVariant: capabilities.realtime_session_v1_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
           label: t('Platform smoke readiness'),
           description: t(
             'Requires the REALTIME_SESSIONS binding, platform smoke gate, hibernation path, metrics, and no-echo controls.'
@@ -1016,6 +1030,16 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_billing_settlement_batch_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime settlement retry'),
+          description: t(
+            'Persists failed D1 settlement privately in the session Durable Object and retries with bounded alarm backoff without exposing billing handoff data.'
+          ),
+          ready:
+            capabilities.realtime_session_billing_settlement_retry_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

@@ -4,6 +4,41 @@ Last checked: 2026-07-10
 
 ## Passed
 
+- `cargo test -p cinatoken-worker --lib`: passed on 2026-07-10 with 505/505
+  tests after adding the Realtime settlement alarm retry and v1 billing
+  interlock. The retry contract covers bounded/capped backoff and redacted
+  public status; the v1 cutover predicate now treats the settlement-write gate
+  as mandatory while final bridge/settlement release latches remain false.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `node --check tools/smoke_realtime_session.mjs`,
+  `bun run check:realtime-session:v1-smoke-plan`, `bun run check:web`,
+  `git diff --check`, and full `bun run check`: passed on 2026-07-10. The full
+  gate covered frontend build/bundle/redaction/budget/lint, 216 frontend calls
+  against 310 literal Worker routes with zero static misses, all local D1 and
+  smoke contracts, workspace tests, and both Worker and WFP tenant wasm32
+  checks. Only the existing unused topup repository warnings remained.
+- Capability/frontend/smoke contracts now expose
+  `realtime_session_billing_settlement_retry_compiled` and
+  `realtime_session_billing_settlement_write_enabled`. The default, staging,
+  and production Wrangler variable tables explicitly keep
+  `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED="false"`; v1 smoke preflight
+  requires it to be true before attempting a live WebSocket.
+- Evidence boundary: a fresh localhost Worker request for the new structured
+  503 interlock was not captured. `wrangler dev` could not run because
+  `worker-build` was absent; installing it failed under the default GNU host
+  toolchain because `dlltool.exe` is missing, and the installed MSVC Rust
+  toolchain resolved an incompatible Unix `link.exe` ahead of Visual Studio's
+  linker. No dev server was left running. The compiled route guard and cutover
+  tests are local contract evidence only; live Worker alarm/interlock and DO
+  eviction evidence remain staging requirements.
+- Production audit boundary: Realtime settlement is still NO-GO even with
+  retry. Its snapshot is not paired with an actual idempotent D1 reserve, the
+  applied guard is session-scoped, and the replay key lacks upstream
+  response/event identity. WFP tenant AI forwarding also remains NO-GO for
+  paid traffic until central auth/provider/billing authority, real Rust/Wasm
+  artifact identity, separate least-privilege runtime credentials, and strict
+  2xx canary evidence are proven.
+
 - `bun run check:d1:migration-config`: passed on 2026-07-10. The audit found
   exactly the top-level, staging, and production D1 binding tables, each with
   binding `DB` and `migrations_dir = "migrations/d1"`; migrations are

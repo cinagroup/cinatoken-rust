@@ -26,7 +26,7 @@ use crate::realtime_session::{
     realtime_billing_settlement_handoff_compiled,
     realtime_billing_settlement_mutation_plan_compiled,
     realtime_billing_settlement_preview_compiled,
-    realtime_billing_settlement_replay_marker_compiled,
+    realtime_billing_settlement_replay_marker_compiled, realtime_billing_settlement_retry_compiled,
     realtime_billing_settlement_writer_compiled,
     realtime_session_platform_header_boundary_compiled,
     realtime_upstream_bridge_backpressure_policy_compiled,
@@ -39,8 +39,8 @@ use crate::realtime_session::{
     realtime_upstream_bridge_send_failure_guard_compiled,
     realtime_upstream_channel_planner_compiled, realtime_upstream_connect_handoff_compiled,
     realtime_upstream_fetch_upgrade_adapter_compiled, realtime_upstream_usage_capture_compiled,
-    REALTIME_SESSION_CUTOVER_GUARDS, REALTIME_SESSION_GATEWAY_ENABLED_ENV,
-    REALTIME_SESSION_V1_ENABLED_ENV,
+    REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV, REALTIME_SESSION_CUTOVER_GUARDS,
+    REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
 };
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::task_repository::{
@@ -169,6 +169,7 @@ struct PlatformCapabilities {
     wfp_tenant_smoke_ready: bool,
     realtime_session_gateway_enabled: bool,
     realtime_session_v1_enabled: bool,
+    realtime_session_billing_settlement_write_enabled: bool,
     do_websocket_hibernation_compiled: bool,
     realtime_session_cutover_guards: Vec<&'static str>,
     realtime_session_auth_boundary_compiled: bool,
@@ -196,6 +197,7 @@ struct PlatformCapabilities {
     realtime_session_billing_settlement_replay_marker_compiled: bool,
     realtime_session_billing_settlement_audit_log_compiled: bool,
     realtime_session_billing_settlement_batch_compiled: bool,
+    realtime_session_billing_settlement_retry_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_enabled: bool,
     realtime_session_billing_settlement_staging_smoke_ready: bool,
@@ -265,6 +267,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     );
     let realtime_session_gateway_enabled = env_flag(&env, REALTIME_SESSION_GATEWAY_ENABLED_ENV);
     let realtime_session_v1_enabled = env_flag(&env, REALTIME_SESSION_V1_ENABLED_ENV);
+    let realtime_session_billing_settlement_write_enabled =
+        env_flag(&env, REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV);
     let do_websocket_hibernation_compiled = true;
     let realtime_session_auth_boundary_compiled = true;
     let realtime_session_metrics_persisted_compiled = true;
@@ -313,6 +317,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_billing_settlement_audit_log_compiled();
     let realtime_session_billing_settlement_batch_compiled =
         realtime_billing_settlement_batch_compiled();
+    let realtime_session_billing_settlement_retry_compiled =
+        realtime_billing_settlement_retry_compiled();
     let realtime_session_billing_settlement_staging_smoke_compiled =
         realtime_settlement_staging_smoke_compiled();
     let realtime_session_billing_settlement_staging_smoke_enabled =
@@ -336,6 +342,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let realtime_session_v1_cutover_ready = is_realtime_session_v1_cutover_ready(
         realtime_sessions_do_available,
         realtime_session_v1_enabled,
+        realtime_session_billing_settlement_write_enabled,
         realtime_session_auth_boundary_compiled,
         do_websocket_hibernation_compiled,
         realtime_session_metrics_persisted_compiled,
@@ -361,6 +368,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_replay_marker_compiled,
         realtime_session_billing_settlement_audit_log_compiled,
         realtime_session_billing_settlement_batch_compiled,
+        realtime_session_billing_settlement_retry_compiled,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
@@ -427,6 +435,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_smoke_ready,
         realtime_session_gateway_enabled,
         realtime_session_v1_enabled,
+        realtime_session_billing_settlement_write_enabled,
         do_websocket_hibernation_compiled,
         realtime_session_cutover_guards: realtime_session_cutover_guards(),
         realtime_session_auth_boundary_compiled,
@@ -454,6 +463,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_replay_marker_compiled,
         realtime_session_billing_settlement_audit_log_compiled,
         realtime_session_billing_settlement_batch_compiled,
+        realtime_session_billing_settlement_retry_compiled,
         realtime_session_billing_settlement_staging_smoke_compiled,
         realtime_session_billing_settlement_staging_smoke_enabled,
         realtime_session_billing_settlement_staging_smoke_ready,
@@ -1724,6 +1734,7 @@ fn is_realtime_session_platform_smoke_ready(
 fn is_realtime_session_v1_cutover_ready(
     do_available: bool,
     v1_gate_enabled: bool,
+    billing_settlement_write_enabled: bool,
     auth_boundary_compiled: bool,
     hibernation_compiled: bool,
     metrics_persisted_compiled: bool,
@@ -1749,12 +1760,14 @@ fn is_realtime_session_v1_cutover_ready(
     billing_settlement_replay_marker_compiled: bool,
     billing_settlement_audit_log_compiled: bool,
     billing_settlement_batch_compiled: bool,
+    billing_settlement_retry_compiled: bool,
     platform_header_boundary_compiled: bool,
     upstream_bridge_compiled: bool,
     billing_settlement_compiled: bool,
 ) -> bool {
     do_available
         && v1_gate_enabled
+        && billing_settlement_write_enabled
         && auth_boundary_compiled
         && hibernation_compiled
         && metrics_persisted_compiled
@@ -1780,6 +1793,7 @@ fn is_realtime_session_v1_cutover_ready(
         && billing_settlement_replay_marker_compiled
         && billing_settlement_audit_log_compiled
         && billing_settlement_batch_compiled
+        && billing_settlement_retry_compiled
         && platform_header_boundary_compiled
         && upstream_bridge_compiled
         && billing_settlement_compiled
@@ -2161,10 +2175,10 @@ mod tests {
 
     #[test]
     fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
-        assert!(realtime_v1_ready_with_flags([true; 30]));
+        assert!(realtime_v1_ready_with_flags([true; 32]));
 
-        for false_gate in 0..30 {
-            let mut flags = [true; 30];
+        for false_gate in 0..32 {
+            let mut flags = [true; 32];
             flags[false_gate] = false;
             assert!(
                 !realtime_v1_ready_with_flags(flags),
@@ -2173,12 +2187,12 @@ mod tests {
         }
     }
 
-    fn realtime_v1_ready_with_flags(flags: [bool; 30]) -> bool {
+    fn realtime_v1_ready_with_flags(flags: [bool; 32]) -> bool {
         is_realtime_session_v1_cutover_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
             flags[16], flags[17], flags[18], flags[19], flags[20], flags[21], flags[22], flags[23],
-            flags[24], flags[25], flags[26], flags[27], flags[28], flags[29],
+            flags[24], flags[25], flags[26], flags[27], flags[28], flags[29], flags[30], flags[31],
         )
     }
 

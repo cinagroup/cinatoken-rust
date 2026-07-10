@@ -549,8 +549,13 @@ As of 2026-07-10, including the local D1 and route-ownership evidence above:
   setup/verify/cleanup evidence plan plus a default-off Worker-binding
   settlement smoke route for the six fixed apply/duplicate/rollback scenarios.
   The real local Worker binding now passes all six scenarios with zero residual
-  smoke rows after cleanup, but the migration still lacks archived live staging
-  binding-smoke output, staging
+  smoke rows after cleanup. Failed D1 settlement batches now persist a minimal
+  private DO retry record and use bounded alarm backoff; the public v1 route
+  also fails closed while the settlement-write gate is off. These controls do
+  not close the billing model: Realtime still lacks the matching idempotent D1
+  reserve and still treats settlement/replay as session-scoped rather than one
+  idempotent settlement per upstream response. The migration also lacks
+  archived live staging binding-smoke output, staging
   queue/drain and D1 rollback artifacts, full live fault replay, and billing
   settlement proof required for production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced

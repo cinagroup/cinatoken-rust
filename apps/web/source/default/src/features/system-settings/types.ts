@@ -428,6 +428,7 @@ export type PlatformCapabilities = {
   wfp_tenant_smoke_ready: boolean
   realtime_session_gateway_enabled: boolean
   realtime_session_v1_enabled: boolean
+  realtime_session_billing_settlement_write_enabled: boolean
   do_websocket_hibernation_compiled: boolean
   realtime_session_cutover_guards: string[]
   realtime_session_auth_boundary_compiled: boolean
@@ -455,6 +456,7 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_replay_marker_compiled: boolean
   realtime_session_billing_settlement_audit_log_compiled: boolean
   realtime_session_billing_settlement_batch_compiled: boolean
+  realtime_session_billing_settlement_retry_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_enabled: boolean
   realtime_session_billing_settlement_staging_smoke_ready: boolean

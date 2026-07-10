@@ -57,6 +57,7 @@ pub const REALTIME_BILLING_SETTLEMENT_WRITER_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_REPLAY_MARKER_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_AUDIT_LOG_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED: bool = true;
+pub const REALTIME_BILLING_SETTLEMENT_RETRY_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
     "REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED";
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
@@ -88,6 +89,8 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_settlement_replay_marker",
     "billing_settlement_audit_log",
     "billing_settlement_batch",
+    "billing_settlement_retry",
+    "billing_settlement_write_gate",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",
@@ -108,6 +111,10 @@ const OPENAI_REALTIME_BETA_HEADER_VALUE: &str = "realtime=v1";
 const CHANNEL_TYPE_AZURE: i32 = 3;
 const AZURE_DEFAULT_API_VERSION: &str = "2025-04-01-preview";
 const SESSION_METRICS_KEY: &str = "session_metrics_v1";
+const BILLING_SETTLEMENT_RETRY_KEY: &str = "billing_settlement_retry_v1";
+const BILLING_SETTLEMENT_RETRY_INITIAL_DELAY_MS: u64 = 1_000;
+const BILLING_SETTLEMENT_RETRY_MAX_DELAY_MS: u64 = 30_000;
+const BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS: u8 = 7;
 const MAX_STORED_TEXT_CHARS: usize = 160;
 const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
@@ -158,6 +165,7 @@ struct RealtimeSessionStatus {
     restored_attachments: usize,
     hibernation: bool,
     observability: &'static str,
+    billing_settlement_retry: Option<RealtimeBillingSettlementRetryStatus>,
     metrics: RealtimeSessionMetrics,
     attachments: Vec<RealtimeSocketSummary>,
 }
@@ -495,7 +503,7 @@ pub(crate) struct RealtimeBillingSettlementPreviewMetadata {
     mutation_channel_scoped: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 struct RealtimeBillingSettlementWriteMetadata {
     write_enabled: bool,
     write_attempted: bool,
@@ -522,6 +530,45 @@ struct RealtimeBillingSettlementWriteMetadata {
     mutation_plan_present: bool,
     mutation_token_scoped: bool,
     mutation_channel_scoped: bool,
+    #[serde(default)]
+    retry_scheduled: bool,
+    #[serde(default)]
+    retry_attempt: u8,
+    #[serde(default)]
+    retry_max_attempts: u8,
+    #[serde(default)]
+    retry_exhausted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_next_at_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RealtimeBillingSettlementRetryStatus {
+    pending: bool,
+    paused: bool,
+    exhausted: bool,
+    attempts: u8,
+    max_attempts: u8,
+    next_retry_at_ms: Option<f64>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RealtimeBillingSettlementRetryRecord {
+    attachment: SocketAttachment,
+    preview: RealtimeBillingSettlementPreviewMetadata,
+    snapshot: TieredBillingSnapshot,
+    mutation_plan: RealtimeBillingSettlementMutationPlan,
+    audit_plan: RealtimeBillingSettlementAuditPlan,
+    replay_key: String,
+    attempts: u8,
+    max_attempts: u8,
+    created_at_ms: f64,
+    updated_at_ms: f64,
+    next_retry_at_ms: Option<f64>,
+    paused: bool,
+    exhausted: bool,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -643,6 +690,9 @@ impl DurableObject for RealtimeSession {
     async fn fetch(&mut self, req: Request) -> WorkerResult<Response> {
         self.drop_closed_upstream_bridges();
         let session = session_from_request(&req).unwrap_or_else(|| self.state.id().to_string());
+        if let Err(err) = self.resume_billing_settlement_retry_if_enabled().await {
+            worker::console_warn!("RealtimeSession settlement retry resume failed: {}", err);
+        }
         if wants_websocket(&req) {
             return self.accept_websocket(req, session).await;
         }
@@ -671,6 +721,7 @@ impl DurableObject for RealtimeSession {
             .collect::<Vec<_>>();
         let restored_attachments = attachments.len();
         let metrics = self.load_metrics(&session, js_sys::Date::now()).await?;
+        let billing_settlement_retry = self.load_billing_settlement_retry_status().await;
         Response::from_json(&RealtimeSessionStatus {
             session,
             active_websockets: sockets.len(),
@@ -680,6 +731,7 @@ impl DurableObject for RealtimeSession {
             restored_attachments,
             hibernation: true,
             observability: "durable_object_storage",
+            billing_settlement_retry,
             metrics,
             attachments,
         })
@@ -716,13 +768,15 @@ impl DurableObject for RealtimeSession {
                 self.drop_closed_upstream_bridges();
                 let (active_upstream_bridges, queued_upstream_frames, queued_upstream_bytes) =
                     self.upstream_bridge_runtime_status();
+                let billing_settlement_retry = self.load_billing_settlement_retry_status().await;
                 ws.send(&json!({
                     "type": "realtime_session_status",
                     "context": context,
                     "metrics": metrics,
                     "active_upstream_bridges": active_upstream_bridges,
                     "queued_upstream_frames": queued_upstream_frames,
-                    "queued_upstream_bytes": queued_upstream_bytes
+                    "queued_upstream_bytes": queued_upstream_bytes,
+                    "billing_settlement_retry": billing_settlement_retry
                 }))?;
             }
             WebSocketIncomingMessage::String(message) => {
@@ -1084,6 +1138,107 @@ impl DurableObject for RealtimeSession {
         self.store_metrics(&metrics).await?;
         Ok(())
     }
+
+    async fn alarm(&mut self) -> WorkerResult<Response> {
+        let mut storage = self.state.storage();
+        let Some(mut retry) = load_realtime_billing_settlement_retry(&storage).await else {
+            return Response::ok("realtime settlement retry skipped: no record");
+        };
+        let now_ms = js_sys::Date::now();
+        retry.updated_at_ms = now_ms;
+        retry.next_retry_at_ms = None;
+
+        if !realtime_billing_settlement_write_enabled(&self.env) {
+            retry.paused = true;
+            retry.last_error = Some("write_disabled".to_string());
+            storage
+                .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
+                .await?;
+            record_realtime_billing_settlement_retry_metrics(
+                &mut storage,
+                &retry,
+                now_ms,
+                false,
+                false,
+                Some("retry_paused"),
+            )
+            .await?;
+            return Response::ok("realtime settlement retry paused: write disabled");
+        }
+
+        retry.paused = false;
+        retry.attempts = retry.attempts.saturating_add(1);
+        match apply_realtime_billing_settlement_write(
+            &self.env,
+            &retry.attachment,
+            &retry.preview,
+            &retry.snapshot,
+            &retry.mutation_plan,
+            &retry.audit_plan,
+            &retry.replay_key,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                retry.last_error = None;
+                record_realtime_billing_settlement_retry_metrics(
+                    &mut storage,
+                    &retry,
+                    now_ms,
+                    true,
+                    true,
+                    match outcome {
+                        RealtimeBillingSettlementWriteOutcome::Applied => None,
+                        RealtimeBillingSettlementWriteOutcome::DuplicateReplay => {
+                            Some("replay_duplicate_recovered")
+                        }
+                    },
+                )
+                .await?;
+                storage.delete(BILLING_SETTLEMENT_RETRY_KEY).await?;
+                storage.delete_alarm().await?;
+                Response::ok("realtime settlement retry applied")
+            }
+            Err(err) => {
+                retry.last_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
+                retry.exhausted = retry.attempts >= retry.max_attempts;
+                if retry.exhausted {
+                    retry.next_retry_at_ms = None;
+                    storage
+                        .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
+                        .await?;
+                    storage.delete_alarm().await?;
+                } else {
+                    let delay_ms = realtime_billing_settlement_retry_delay_ms(retry.attempts);
+                    persist_realtime_billing_settlement_retry(
+                        &mut storage,
+                        &mut retry,
+                        now_ms,
+                        delay_ms,
+                    )
+                    .await?;
+                }
+                record_realtime_billing_settlement_retry_metrics(
+                    &mut storage,
+                    &retry,
+                    now_ms,
+                    true,
+                    false,
+                    Some(if retry.exhausted {
+                        "retry_exhausted"
+                    } else {
+                        "retry_scheduled"
+                    }),
+                )
+                .await?;
+                Response::ok(if retry.exhausted {
+                    "realtime settlement retry exhausted"
+                } else {
+                    "realtime settlement retry scheduled"
+                })
+            }
+        }
+    }
 }
 
 impl RealtimeSession {
@@ -1258,6 +1413,32 @@ impl RealtimeSession {
         let mut storage = self.state.storage();
         store_realtime_session_metrics(&mut storage, metrics).await
     }
+
+    async fn load_billing_settlement_retry_status(
+        &self,
+    ) -> Option<RealtimeBillingSettlementRetryStatus> {
+        let storage = self.state.storage();
+        load_realtime_billing_settlement_retry(&storage)
+            .await
+            .map(|record| record.status())
+    }
+
+    async fn resume_billing_settlement_retry_if_enabled(&self) -> WorkerResult<()> {
+        if !realtime_billing_settlement_write_enabled(&self.env) {
+            return Ok(());
+        }
+        let mut storage = self.state.storage();
+        let Some(mut retry) = load_realtime_billing_settlement_retry(&storage).await else {
+            return Ok(());
+        };
+        if retry.exhausted || retry.next_retry_at_ms.is_some() {
+            return Ok(());
+        }
+        retry.paused = false;
+        let now_ms = js_sys::Date::now();
+        let delay_ms = realtime_billing_settlement_retry_delay_ms(retry.attempts);
+        persist_realtime_billing_settlement_retry(&mut storage, &mut retry, now_ms, delay_ms).await
+    }
 }
 
 async fn load_realtime_session_metrics(
@@ -1284,6 +1465,136 @@ async fn store_realtime_session_metrics(
     metrics: &RealtimeSessionMetrics,
 ) -> WorkerResult<()> {
     storage.put(SESSION_METRICS_KEY, metrics).await
+}
+
+async fn load_realtime_billing_settlement_retry(
+    storage: &Storage,
+) -> Option<RealtimeBillingSettlementRetryRecord> {
+    storage
+        .get::<RealtimeBillingSettlementRetryRecord>(BILLING_SETTLEMENT_RETRY_KEY)
+        .await
+        .ok()
+}
+
+async fn persist_realtime_billing_settlement_retry(
+    storage: &mut Storage,
+    retry: &mut RealtimeBillingSettlementRetryRecord,
+    now_ms: f64,
+    delay_ms: u64,
+) -> WorkerResult<()> {
+    retry.updated_at_ms = now_ms;
+    retry.next_retry_at_ms = Some(now_ms + delay_ms as f64);
+    storage
+        .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
+        .await?;
+    if let Err(err) = storage.set_alarm(Duration::from_millis(delay_ms)).await {
+        retry.next_retry_at_ms = None;
+        retry.last_error = truncate_text(
+            &format!("failed to arm settlement retry alarm: {err}"),
+            MAX_STORED_TEXT_CHARS,
+        );
+        storage
+            .put(BILLING_SETTLEMENT_RETRY_KEY, retry.clone())
+            .await?;
+        return Err(err);
+    }
+    Ok(())
+}
+
+async fn clear_realtime_billing_settlement_retry(storage: &mut Storage) -> WorkerResult<()> {
+    storage.delete(BILLING_SETTLEMENT_RETRY_KEY).await?;
+    storage.delete_alarm().await
+}
+
+fn realtime_billing_settlement_retry_delay_ms(attempts: u8) -> u64 {
+    let exponent = u32::from(attempts.saturating_sub(1).min(15));
+    BILLING_SETTLEMENT_RETRY_INITIAL_DELAY_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(BILLING_SETTLEMENT_RETRY_MAX_DELAY_MS)
+}
+
+async fn record_realtime_billing_settlement_retry_metrics(
+    storage: &mut Storage,
+    retry: &RealtimeBillingSettlementRetryRecord,
+    now_ms: f64,
+    attempted: bool,
+    applied: bool,
+    skipped_reason: Option<&str>,
+) -> WorkerResult<()> {
+    let mut metrics =
+        load_realtime_session_metrics(storage, &retry.attachment.session, now_ms).await?;
+    let mut metadata = realtime_billing_settlement_write_metadata(
+        &retry.preview,
+        Some(&retry.mutation_plan),
+        Some(&retry.replay_key),
+        applied,
+        true,
+        attempted,
+        applied,
+        skipped_reason,
+        if applied {
+            None
+        } else {
+            retry.last_error.as_deref()
+        },
+    );
+    metadata.audit_plan_present = true;
+    metadata.audit_attempted = attempted;
+    metadata.audit_recorded = applied;
+    metadata.audit_error = (!applied).then(|| retry.last_error.clone()).flatten();
+    metadata.apply_retry_status(&retry.status());
+    metrics.record_billing_settlement_write(Some(&retry.attachment), now_ms, metadata);
+    store_realtime_session_metrics(storage, &metrics).await
+}
+
+impl RealtimeBillingSettlementRetryRecord {
+    fn new(
+        attachment: &SocketAttachment,
+        preview: &RealtimeBillingSettlementPreviewMetadata,
+        handoff: &RealtimeBillingSettlementHandoff,
+        replay_key: &str,
+        now_ms: f64,
+        error: &str,
+    ) -> Option<Self> {
+        Some(Self {
+            attachment: attachment.clone(),
+            preview: preview.clone(),
+            snapshot: handoff.snapshot.clone(),
+            mutation_plan: handoff.mutation_plan()?.clone(),
+            audit_plan: handoff.audit_plan()?.clone(),
+            replay_key: replay_key.to_string(),
+            attempts: 1,
+            max_attempts: BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            next_retry_at_ms: None,
+            paused: false,
+            exhausted: false,
+            last_error: truncate_text(error, MAX_STORED_TEXT_CHARS),
+        })
+    }
+
+    fn status(&self) -> RealtimeBillingSettlementRetryStatus {
+        RealtimeBillingSettlementRetryStatus {
+            pending: !self.paused && !self.exhausted && self.next_retry_at_ms.is_some(),
+            paused: self.paused,
+            exhausted: self.exhausted,
+            attempts: self.attempts,
+            max_attempts: self.max_attempts,
+            next_retry_at_ms: self.next_retry_at_ms,
+            last_error: self.last_error.clone(),
+        }
+    }
+}
+
+impl RealtimeBillingSettlementWriteMetadata {
+    fn apply_retry_status(&mut self, status: &RealtimeBillingSettlementRetryStatus) {
+        self.retry_scheduled = status.pending && status.next_retry_at_ms.is_some();
+        self.retry_attempt = status.attempts;
+        self.retry_max_attempts = status.max_attempts;
+        self.retry_exhausted = status.exhausted;
+        self.retry_next_at_ms = status.next_retry_at_ms;
+    }
 }
 
 impl RealtimeSessionMetrics {
@@ -1520,6 +1831,15 @@ async fn handle_openai_realtime_gateway(req: Request, env: Env) -> WorkerResult<
             "OpenAI Realtime gateway is disabled",
             "invalid_request_error",
             501,
+        );
+    }
+
+    if !realtime_billing_settlement_write_enabled(&env) {
+        return realtime_error_response(
+            "realtime_billing_settlement_disabled",
+            "OpenAI Realtime requires billing settlement writes to be enabled",
+            "server_error",
+            503,
         );
     }
 
@@ -2914,6 +3234,15 @@ pub(crate) fn realtime_billing_settlement_batch_compiled() -> bool {
         && !raw.contains("param(")
 }
 
+pub(crate) fn realtime_billing_settlement_retry_compiled() -> bool {
+    REALTIME_BILLING_SETTLEMENT_RETRY_COMPILED
+        && BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS > 1
+        && realtime_billing_settlement_retry_delay_ms(1) == 1_000
+        && realtime_billing_settlement_retry_delay_ms(2) == 2_000
+        && realtime_billing_settlement_retry_delay_ms(6) == 30_000
+        && realtime_billing_settlement_retry_delay_ms(u8::MAX) == 30_000
+}
+
 fn realtime_billing_settlement_preview(
     snapshot: &TieredBillingSnapshot,
     usage: &RealtimeUsageMetadata,
@@ -3055,6 +3384,11 @@ fn realtime_billing_settlement_write_metadata(
         mutation_channel_scoped: mutation_plan
             .map(RealtimeBillingSettlementMutationPlan::channel_scoped)
             .unwrap_or(false),
+        retry_scheduled: false,
+        retry_attempt: 0,
+        retry_max_attempts: BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS,
+        retry_exhausted: false,
+        retry_next_at_ms: None,
     }
 }
 
@@ -3557,6 +3891,12 @@ async fn record_realtime_upstream_usage(
             .await
             {
                 Ok(RealtimeBillingSettlementWriteOutcome::Applied) => {
+                    if let Err(err) = clear_realtime_billing_settlement_retry(storage).await {
+                        worker::console_warn!(
+                            "RealtimeSession settlement retry cleanup failed after apply: {}",
+                            err
+                        );
+                    }
                     let mut metadata = realtime_billing_settlement_write_metadata(
                         preview,
                         Some(plan),
@@ -3573,17 +3913,26 @@ async fn record_realtime_upstream_usage(
                     metadata
                 }
                 Ok(RealtimeBillingSettlementWriteOutcome::DuplicateReplay) => {
-                    realtime_billing_settlement_write_metadata(
+                    if let Err(err) = clear_realtime_billing_settlement_retry(storage).await {
+                        worker::console_warn!(
+                            "RealtimeSession settlement retry cleanup failed after duplicate: {}",
+                            err
+                        );
+                    }
+                    let mut metadata = realtime_billing_settlement_write_metadata(
                         preview,
                         Some(plan),
                         replay_key_hash,
                         true,
                         true,
-                        false,
-                        false,
+                        true,
+                        true,
                         Some("replay_duplicate"),
                         None,
-                    )
+                    );
+                    metadata.audit_attempted = true;
+                    metadata.audit_recorded = true;
+                    metadata
                 }
                 Err(err) => {
                     let mut metadata = realtime_billing_settlement_write_metadata(
@@ -3599,6 +3948,34 @@ async fn record_realtime_upstream_usage(
                     );
                     metadata.audit_attempted = true;
                     metadata.audit_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
+                    if let Some(mut retry) = billing_settlement.and_then(|handoff| {
+                        RealtimeBillingSettlementRetryRecord::new(
+                            attachment, preview, handoff, replay_key, now_ms, &err,
+                        )
+                    }) {
+                        let retry_delay_ms =
+                            realtime_billing_settlement_retry_delay_ms(retry.attempts);
+                        match persist_realtime_billing_settlement_retry(
+                            storage,
+                            &mut retry,
+                            now_ms,
+                            retry_delay_ms,
+                        )
+                        .await
+                        {
+                            Ok(()) => metadata.apply_retry_status(&retry.status()),
+                            Err(schedule_err) => {
+                                metadata.skipped_reason =
+                                    Some("write_failed_retry_schedule_failed".to_string());
+                                metadata.error = truncate_text(
+                                    &format!(
+                                        "{err}; failed to schedule settlement retry: {schedule_err}"
+                                    ),
+                                    MAX_STORED_TEXT_CHARS,
+                                );
+                            }
+                        }
+                    }
                     metadata
                 }
             }
@@ -5919,6 +6296,33 @@ mod tests {
     #[test]
     fn realtime_billing_settlement_batch_contract_is_compiled() {
         assert!(realtime_billing_settlement_batch_compiled());
+    }
+
+    #[test]
+    fn realtime_billing_settlement_retry_contract_is_compiled() {
+        assert!(realtime_billing_settlement_retry_compiled());
+        assert_eq!(realtime_billing_settlement_retry_delay_ms(0), 1_000);
+        assert_eq!(realtime_billing_settlement_retry_delay_ms(1), 1_000);
+        assert_eq!(realtime_billing_settlement_retry_delay_ms(2), 2_000);
+        assert_eq!(realtime_billing_settlement_retry_delay_ms(6), 30_000);
+        assert_eq!(realtime_billing_settlement_retry_delay_ms(20), 30_000);
+
+        let status = RealtimeBillingSettlementRetryStatus {
+            pending: true,
+            paused: false,
+            exhausted: false,
+            attempts: 2,
+            max_attempts: BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS,
+            next_retry_at_ms: Some(3_000.0),
+            last_error: Some("d1 temporarily unavailable".to_string()),
+        };
+        let raw = serde_json::to_string(&status).unwrap();
+        assert!(raw.contains("\"attempts\":2"));
+        assert!(!raw.contains("user_id"));
+        assert!(!raw.contains("token_id"));
+        assert!(!raw.contains("channel_id"));
+        assert!(!raw.contains("selected_group"));
+        assert!(!raw.contains("upstream_api_key"));
     }
 
     #[test]

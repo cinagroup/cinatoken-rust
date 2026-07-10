@@ -129,6 +129,18 @@ explicit platform control routes are classified before Layer 2 DO session
 routes or Layer 3 WFP dispatch prefixes. It does **not** validate a remote
 staging D1, deployed Realtime DO, live `response.done` settlement,
 hibernation/restore, paid WFP dispatch namespace, or Rust/Wasm tenant artifact.
+
+**M6 retry/interlock update (2026-07-10):** failed Realtime settlement batches
+can now persist a minimal private retry record in the owning DO and re-enter the
+same idempotent D1 batch through bounded alarm backoff. HTTP/WebSocket status
+exposes only redacted retry state, and the public `/v1/realtime` route now
+returns `503` while `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` is off even if
+its v1 route gate is on. This is a durability and fail-closed increment, not a
+billing-completion claim. The current snapshot path still lacks the matching
+D1 reserve, settlement is still session-scoped after the first applied
+response, and replay identity does not yet include upstream response/event
+identity. Those P0 gaps plus live alarm/eviction proof remain before M6 can own
+paid Realtime traffic.
 Wrangler is not authenticated, so staging migration, capability, binding-smoke,
 rollback, and no-double-charge evidence remain open and all cutover gates remain
 conservative/default-off.

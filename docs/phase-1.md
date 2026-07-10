@@ -533,9 +533,16 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   audit-log, and D1 batch/CAS foundation to production-safe settlement. The
   real local Wrangler D1 now has 18/18 migrations and 25 business tables, and
   the local Worker-binding settlement smoke passes 6/6 with zero residual rows
-  after cleanup. The local capability also proves exact migration-ledger match
-  and Worker-safe billing probes. Next, authenticate Wrangler, apply and verify
-  the same chain on an isolated remote staging D1, and archive staging
+  after cleanup. Failed settlement batches now have a private, bounded
+  Durable Object alarm retry record, and `/v1/realtime` fails closed unless
+  both its route gate and `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` are on.
+  The local capability also proves exact migration-ledger match, Worker-safe
+  billing probes, the retry contract, and the write-gate state. This is still
+  not production-safe billing: Realtime does not yet perform the matching D1
+  reserve, and its applied guard/replay identity are session-scoped rather than
+  response-scoped. Next, implement idempotent reserve/refund and a two-response
+  `response.done` CAS proof, then authenticate Wrangler, apply and verify the
+  same chain on an isolated remote staging D1, and archive staging
   capability plus Worker-binding proof for disabled, applied, duplicate,
   guarded-update failure, audit-row failure, rollback, redaction, cleanup, and
   no-double-charge paths before flipping

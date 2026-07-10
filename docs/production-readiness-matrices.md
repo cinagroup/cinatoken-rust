@@ -129,6 +129,7 @@ required for G1-G8 decisions.
 | Runtime D1 capability | Pass: localhost Worker returned count 18, latest/expected 0018, exact ledger-set match, and D1 readiness true | Fail-closed runtime gate is proven locally; staging capability snapshot remains required |
 | Worker billing clock | Pass: wasm default clock uses `js_sys::Date`; capability billing probes returned true after rebuild | Removes a local Worker panic; remote billing shadow/reconciliation evidence is still required for G4/G7 |
 | Realtime settlement Worker binding | Pass: localhost Worker 6/6 scenarios; cleanup left zero fixture rows after the route-precedence fix | Strong local binding-path evidence, but not deployed staging, live no-double-charge, or G7 evidence |
+| Realtime settlement retry/interlock | Pass: bounded DO alarm retry contract, redacted status, explicit default-off writer config, and v1 cutover/write-gate predicate are compiled and locally tested | Durability and fail-closed control evidence only; real reserve/refund, per-response CAS, live alarm/eviction, and staging evidence remain required |
 | Remote staging | Not run: Wrangler unauthenticated | G1, G2, G7, and production Realtime gates remain closed |
 | Exposed token | Must be revoked/rotated; must not be used | Security blocker until replacement credential and rotation evidence exist |
 
@@ -183,13 +184,18 @@ As of 2026-07-08, the Realtime capability surface also exposes separate
 `realtime_session_billing_settlement_writer_compiled`,
 `realtime_session_billing_settlement_replay_marker_compiled`, and
 `realtime_session_billing_settlement_audit_log_compiled`, and
-`realtime_session_billing_settlement_batch_compiled` signals. These are
+`realtime_session_billing_settlement_batch_compiled`, and
+`realtime_session_billing_settlement_retry_compiled` signals. The capability
+also exposes `realtime_session_billing_settlement_write_enabled`; the public
+v1 route fails closed when that runtime gate is false. These are
 default-off settlement foundations guarded by
 `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED`; they do not make
 `realtime_session_billing_settlement_compiled` or
 `realtime_session_v1_cutover_ready` true until quota mutation, replay marker,
-audit row, D1 batch rollback/idempotency proof, and staging replay evidence are
-archived. The local `check:realtime-session:settlement-batch-contract` replay
+audit row, matching reserve/refund, per-response D1 CAS, D1 batch
+rollback/idempotency proof, live DO alarm/eviction proof, and staging replay
+evidence are archived. The local
+`check:realtime-session:settlement-batch-contract` replay
 now covers the SQL shape before staging, and
 `check:realtime-session:settlement-staging-plan` emits setup/verify/cleanup
 artifacts plus Worker-binding apply requirements, but neither is production

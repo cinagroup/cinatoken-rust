@@ -8721,6 +8721,99 @@ Remaining migration gaps:
   evidence, and rollback archive. The local Realtime settlement result must not
   be used to advance WFP readiness.
 
+### 22.140 2026-07-10 Realtime Settlement Retry and Fail-Closed v1 Gate
+
+This increment hardens the existing default-off Realtime settlement foundation
+without claiming that Realtime billing is production-complete. A failed D1
+settlement is now retained inside the owning Durable Object and retried by a
+bounded alarm policy, while the public `/v1/realtime` route refuses to upgrade
+when settlement writes are disabled.
+
+Implemented:
+
+- Added a per-session DO settlement retry record and alarm handler. The first
+  failed batch is attempt 1; subsequent attempts use 1, 2, 4, 8, 16, and 30
+  second delays, then stop after seven total attempts. Applied and duplicate
+  replay outcomes are terminal and clear the record.
+- Kept the retry record private and minimal: socket metadata, frozen billing
+  snapshot, computed settlement preview, mutation plan, audit plan, and replay
+  key. It does not persist the upstream API key, request headers, request body,
+  or the original request-aware billing input.
+- Added default-off kill-switch behavior. If
+  `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` is disabled before an alarm
+  fires, the retry pauses without mutating D1. A later DO request can re-arm a
+  paused record only after the gate is enabled again.
+- Added redacted HTTP/WebSocket status fields for pending, paused, exhausted,
+  attempt count, next retry time, and a bounded error. User/token/channel ids,
+  group names, expressions, request inputs, and upstream credentials are not
+  included in the public retry status.
+- Added `realtime_session_billing_settlement_retry_compiled` and
+  `realtime_session_billing_settlement_write_enabled` capabilities, surfaced
+  both in the Cloudflare Platform panel, and made the write gate part of the
+  v1 cutover predicate.
+- Added a hard runtime interlock: even if `REALTIME_SESSION_V1_ENABLED=true`,
+  `/v1/realtime` returns a structured `503` before authentication or upstream
+  connection unless settlement writes are also enabled. The internal platform
+  session smoke route remains independent.
+- Declared `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED="false"` explicitly in
+  default, staging, and production Wrangler variables. The Realtime smoke
+  preflight now requires the write gate in v1 mode and validates the new
+  capability/guard contract.
+
+Audit boundary and remaining P0 work:
+
+- This retry path improves durability only; it does not make the current
+  settlement formula correct for production. The present Realtime preflight
+  freezes an estimate but does not yet perform the corresponding idempotent D1
+  reserve. Enabling the writer before that is fixed can undercharge additional
+  quota or refund quota that was never reserved.
+- Settlement remains session-scoped after the first applied `response.done`.
+  A production Realtime session can contain multiple responses, so the next
+  billing slice must extract and hash upstream response/event identity, use a
+  per-response replay marker, and settle every legitimate response exactly
+  once rather than using a session-wide applied flag.
+- The next vertical proof must exercise `/v1/realtime -> mock upstream -> two
+  response.done events -> D1`, including reserve, two applies, duplicate-frame
+  no-op, connect/no-usage refund, insufficient quota, alarm retry, DO eviction,
+  and redaction. Keep `realtime_session_billing_settlement_compiled=false` and
+  `realtime_session_v1_cutover_ready=false` until that proof and remote staging
+  evidence are archived.
+- Outbound WebSockets do not hibernate. After DO reconstruction, the client
+  attachment can survive while the in-memory upstream bridge is gone. The
+  next bridge-hardening slice must explicitly reconnect from a safe descriptor
+  or emit a metadata-only terminal event and close the stale client.
+- WFP remains a separate later pillar. Its Rust/Wasm artifact upload, runtime
+  identity, paid dispatch binding, AI Gateway success evidence, and central
+  billing authority are not advanced by this Realtime increment.
+
+Parallel production audit decisions:
+
+- WFP tenant AI forwarding must remain default-off for paid traffic. The
+  current tenant route can stream directly to AI Gateway without traversing
+  the main relay's token authorization, provider policy, quota reserve, usage
+  parser, or settlement. The main Rust relay remains the sole billing
+  authority; WFP may provide scheduling/isolation only until a controlled
+  callback or equivalent centrally settled contract is proven.
+- The Worker control-plane deploy route currently uploads the embedded JS
+  fallback, while the standalone artifact tool owns the Rust/Wasm multipart
+  path. Split readiness into source contract, artifact verified, artifact
+  uploaded, and live runtime verified. A production artifact upload must
+  require the shim, Wasm module, complete import graph, non-2xx process failure,
+  artifact SHA, deploy receipt, and live runtime status evidence.
+- Never reuse the WFP deployment token as a tenant runtime token. Require a
+  distinct least-privilege runtime credential for non-dry-run deployment and
+  fail when deployment and runtime token identities are equal.
+- Separate diagnostic WFP smoke from canary success. A non-2xx response may be
+  archived as diagnostic evidence but must never yield top-level canary
+  success. Production evidence requires 2xx, a valid provider/model route,
+  configured Gateway id, request id, and Gateway log reconciliation.
+- The frontend route audit currently reports 216 calls, 310 literal Worker
+  routes, and zero static misses, but this is not functional parity. Passkey
+  finish endpoints still fail closed pending a Worker-safe WebAuthn verifier;
+  Telegram OAuth remains hidden/unported; and WFP readiness is a compiled/config
+  view rather than live artifact/dispatch proof. Keep those items explicit in
+  G5 instead of treating static route coverage as migration completion.
+
 ### 22.137 2026-07-08 Realtime Settlement Batch Replay Contract
 
 This increment adds local, repeatable evidence for the Realtime settlement D1

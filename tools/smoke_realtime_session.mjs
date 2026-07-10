@@ -368,6 +368,14 @@ async function maybeCheckCapabilities(options, plan) {
   if (options.mode === "v1" && !capabilities.realtime_session_v1_enabled) {
     throw new Error("platform capabilities reported realtime_session_v1_enabled=false");
   }
+  if (
+    options.mode === "v1" &&
+    !capabilities.realtime_session_billing_settlement_write_enabled
+  ) {
+    throw new Error(
+      "platform capabilities reported realtime_session_billing_settlement_write_enabled=false"
+    );
+  }
   return capabilities;
 }
 
@@ -459,6 +467,10 @@ function summarizeCapabilities(data) {
       data.realtime_session_billing_settlement_audit_log_compiled === true,
     realtime_session_billing_settlement_batch_compiled:
       data.realtime_session_billing_settlement_batch_compiled === true,
+    realtime_session_billing_settlement_retry_compiled:
+      data.realtime_session_billing_settlement_retry_compiled === true,
+    realtime_session_billing_settlement_write_enabled:
+      data.realtime_session_billing_settlement_write_enabled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
     realtime_session_upstream_bridge_compiled:
@@ -499,6 +511,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_billing_settlement_replay_marker_compiled", true],
     ["realtime_session_billing_settlement_audit_log_compiled", true],
     ["realtime_session_billing_settlement_batch_compiled", true],
+    ["realtime_session_billing_settlement_retry_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
@@ -528,6 +541,8 @@ function validateCapabilities(capabilities, options) {
     "billing_settlement_replay_marker",
     "billing_settlement_audit_log",
     "billing_settlement_batch",
+    "billing_settlement_retry",
+    "billing_settlement_write_gate",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
     "metadata_only_control_frames",

@@ -131,6 +131,7 @@ export function CloudflarePlatformSection() {
         capabilities.realtime_session_billing_settlement_audit_log_compiled,
         capabilities.realtime_session_billing_settlement_batch_compiled,
         capabilities.realtime_session_billing_settlement_retry_compiled,
+        capabilities.realtime_session_billing_reservation_lease_compiled,
         capabilities.realtime_session_billing_settlement_staging_smoke_compiled,
         capabilities.realtime_session_platform_header_boundary_compiled,
         capabilities.task_poller_scheduled_handler_compiled,
@@ -1030,6 +1031,20 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_billing_settlement_batch_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Realtime reservation lease recovery'),
+          description: t(
+            'Persists active response reservations across Durable Object hibernation and refunds expired work after {{seconds}} seconds through the same single-alarm scheduler.',
+            {
+              seconds:
+                capabilities.realtime_session_billing_reservation_lease_seconds,
+            }
+          ),
+          ready:
+            capabilities.realtime_session_billing_reservation_lease_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

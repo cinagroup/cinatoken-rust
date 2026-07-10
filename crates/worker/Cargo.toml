@@ -34,6 +34,7 @@ rsa = { version = "0.9", features = ["pem", "sha2"] }
 rust_decimal = { version = "1", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
 sha1.workspace = true
 sha2.workspace = true
 url.workspace = true

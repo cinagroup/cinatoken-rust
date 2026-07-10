@@ -21,9 +21,9 @@ use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
 };
 use crate::realtime_session::{
-    realtime_billing_presettlement_snapshot_compiled,
-    realtime_billing_settlement_audit_log_compiled, realtime_billing_settlement_batch_compiled,
-    realtime_billing_settlement_handoff_compiled,
+    realtime_billing_presettlement_snapshot_compiled, realtime_billing_reservation_lease_compiled,
+    realtime_billing_reservation_lease_seconds, realtime_billing_settlement_audit_log_compiled,
+    realtime_billing_settlement_batch_compiled, realtime_billing_settlement_handoff_compiled,
     realtime_billing_settlement_mutation_plan_compiled,
     realtime_billing_settlement_preview_compiled,
     realtime_billing_settlement_replay_marker_compiled, realtime_billing_settlement_retry_compiled,
@@ -68,7 +68,7 @@ pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0019_realtime_billing_reservations.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0020_realtime_billing_reservation_leases.sql";
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -89,6 +89,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0017_user_session_epoch.sql",
     "0018_realtime_settlement_replays.sql",
     "0019_realtime_billing_reservations.sql",
+    "0020_realtime_billing_reservation_leases.sql",
 ];
 pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
@@ -199,6 +200,8 @@ struct PlatformCapabilities {
     realtime_session_billing_settlement_audit_log_compiled: bool,
     realtime_session_billing_settlement_batch_compiled: bool,
     realtime_session_billing_settlement_retry_compiled: bool,
+    realtime_session_billing_reservation_lease_compiled: bool,
+    realtime_session_billing_reservation_lease_seconds: u64,
     realtime_session_billing_settlement_staging_smoke_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_enabled: bool,
     realtime_session_billing_settlement_staging_smoke_ready: bool,
@@ -320,6 +323,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_billing_settlement_batch_compiled();
     let realtime_session_billing_settlement_retry_compiled =
         realtime_billing_settlement_retry_compiled();
+    let realtime_session_billing_reservation_lease_compiled =
+        realtime_billing_reservation_lease_compiled();
+    let realtime_session_billing_reservation_lease_seconds =
+        realtime_billing_reservation_lease_seconds(&env);
     let realtime_session_billing_settlement_staging_smoke_compiled =
         realtime_settlement_staging_smoke_compiled();
     let realtime_session_billing_settlement_staging_smoke_enabled =
@@ -332,6 +339,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_platform_header_boundary_compiled();
     let realtime_session_upstream_bridge_compiled = false;
     let realtime_session_billing_settlement_compiled = false;
+    let d1_migration_ready = d1_migration_status.ready();
     let realtime_session_platform_smoke_ready = is_realtime_session_platform_smoke_ready(
         realtime_sessions_do_available,
         realtime_session_gateway_enabled,
@@ -370,6 +378,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_audit_log_compiled,
         realtime_session_billing_settlement_batch_compiled,
         realtime_session_billing_settlement_retry_compiled,
+        realtime_session_billing_reservation_lease_compiled,
+        d1_migration_ready,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
@@ -396,8 +406,6 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_status_probe_compiled,
         task_runner_staging_replay_verified,
     );
-    let d1_migration_ready = d1_migration_status.ready();
-
     let capabilities = PlatformCapabilities {
         d1_migration_status_available: d1_migration_status.available,
         d1_migration_applied_count: d1_migration_status.applied_count,
@@ -465,6 +473,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_audit_log_compiled,
         realtime_session_billing_settlement_batch_compiled,
         realtime_session_billing_settlement_retry_compiled,
+        realtime_session_billing_reservation_lease_compiled,
+        realtime_session_billing_reservation_lease_seconds,
         realtime_session_billing_settlement_staging_smoke_compiled,
         realtime_session_billing_settlement_staging_smoke_enabled,
         realtime_session_billing_settlement_staging_smoke_ready,
@@ -1817,6 +1827,8 @@ fn is_realtime_session_v1_cutover_ready(
     billing_settlement_audit_log_compiled: bool,
     billing_settlement_batch_compiled: bool,
     billing_settlement_retry_compiled: bool,
+    billing_reservation_lease_compiled: bool,
+    d1_migration_ready: bool,
     platform_header_boundary_compiled: bool,
     upstream_bridge_compiled: bool,
     billing_settlement_compiled: bool,
@@ -1850,6 +1862,8 @@ fn is_realtime_session_v1_cutover_ready(
         && billing_settlement_audit_log_compiled
         && billing_settlement_batch_compiled
         && billing_settlement_retry_compiled
+        && billing_reservation_lease_compiled
+        && d1_migration_ready
         && platform_header_boundary_compiled
         && upstream_bridge_compiled
         && billing_settlement_compiled
@@ -2195,11 +2209,11 @@ mod tests {
         assert!(!d1_migration_set_matches(&substituted));
 
         let mut extra = expected;
-        extra.push("0020_unexpected.sql".to_string());
+        extra.push("0021_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0019_realtime_billing_reservations.sql"
+            "0020_realtime_billing_reservation_leases.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -2209,6 +2223,10 @@ mod tests {
             include_str!("../../../migrations/d1/0019_realtime_billing_reservations.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations")
         );
+        assert!(include_str!(
+            "../../../migrations/d1/0020_realtime_billing_reservation_leases.sql"
+        )
+        .contains("lease_expires_at"));
     }
 
     #[test]
@@ -2235,10 +2253,10 @@ mod tests {
 
     #[test]
     fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
-        assert!(realtime_v1_ready_with_flags([true; 32]));
+        assert!(realtime_v1_ready_with_flags([true; 34]));
 
-        for false_gate in 0..32 {
-            let mut flags = [true; 32];
+        for false_gate in 0..34 {
+            let mut flags = [true; 34];
             flags[false_gate] = false;
             assert!(
                 !realtime_v1_ready_with_flags(flags),
@@ -2247,12 +2265,13 @@ mod tests {
         }
     }
 
-    fn realtime_v1_ready_with_flags(flags: [bool; 32]) -> bool {
+    fn realtime_v1_ready_with_flags(flags: [bool; 34]) -> bool {
         is_realtime_session_v1_cutover_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
             flags[16], flags[17], flags[18], flags[19], flags[20], flags[21], flags[22], flags[23],
             flags[24], flags[25], flags[26], flags[27], flags[28], flags[29], flags[30], flags[31],
+            flags[32], flags[33],
         )
     }
 

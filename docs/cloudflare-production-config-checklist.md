@@ -93,11 +93,11 @@ Cloudflare references added 2026-07-05:
 - The top-level, `[env.staging]`, and `[env.production]` D1 binding tables now
   each set `migrations_dir = "migrations/d1"`.
 - `bun run check:d1:migration-config` passes locally and proves exactly three
-  `DB` bindings, a contiguous 19-migration chain, and alignment between the
+  `DB` bindings, a contiguous 20-migration chain, and alignment between the
   latest migration and the Worker capability constant.
-- `bun run verify:sqlite` passes locally by applying all 19 migrations and
-  requiring 26 tables, 55 incremental key columns, and 13 key indexes. Local
-  Wrangler D1 also applied 19/19 migrations.
+- `bun run verify:sqlite` passes locally by applying all 20 migrations and
+  requiring 26 tables, 56 incremental key columns, and 14 key indexes. Local
+  Wrangler D1 also applied 20/20 migrations.
 - Staging resource identifiers are present in `wrangler.toml`, but Wrangler was
   not authenticated during this evidence window. Their account ownership,
   existence, remote migration state, bindings, secrets, deployability, and
@@ -360,6 +360,7 @@ captured.
 | `REALTIME_SESSION_GATEWAY_ENABLED` | Enables `/api/platform/realtime/:session...` -> `REALTIME_SESSIONS` DO forwarding | `REALTIME_SESSIONS` binding plus `bun run smoke:realtime-session` status/control smoke proving restored attachments, persisted lifecycle metrics, and unsupported-control no-echo behavior; not a `/v1/realtime` cutover by itself |
 | `REALTIME_SESSION_V1_ENABLED` | Requests the OpenAI-compatible `/v1/realtime` WebSocket entry after relay-token auth/model/rate-limit checks; the route still fails closed unless settlement writes are enabled | Upstream Realtime bridge, billing/audit settlement, hibernation/resume smoke, persisted metrics smoke, unsupported-control no-echo smoke, and live protocol replay with `bun run smoke:realtime-session -- --mode v1`; keep off until G7 approval |
 | `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` | Permits Realtime D1 quota/replay/audit settlement and allows the public v1 route to proceed past its billing interlock | Isolated staging D1 only until idempotent pre-reserve/refund, per-response replay identity, two-response settlement, bounded alarm retry, rollback, and no-double-charge evidence pass; explicitly false in default/staging/production config |
+| `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` | Plain non-secret var that bounds how long a newly created per-response reservation may remain unsettled before the Durable Object's shared alarm attempts an idempotent D1 refund | Default `600`; accepted range `30..3600`; missing, unparsable, or out-of-range values fall back to `600`. Changes do not rewrite persisted deadlines. Set from measured staging response-duration p99 plus retry/clock-skew margin, archive the capability value before/after a temporary override, prove a not-yet-due lease is untouched and an expired lease refunds once after eviction/restart, and alert on repeated refund attempts before production canary. Expiry refunds continue when the settlement write gate is off |
 
 ### WFP tenant script deploy control plane
 
@@ -520,12 +521,14 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-   `d1_migration_status_available=true`, applied count `19`, latest/expected
-   `0019_realtime_billing_reservations.sql`, exact set match, and
+   `d1_migration_status_available=true`, applied count `20`, latest/expected
+   `0020_realtime_billing_reservation_leases.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0019 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0020 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
+   Before 0020, prove the 0019 reservation ledger has zero `reserved` rows; the
+   migration fails closed otherwise because D1 cannot reconstruct DO alarms.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.

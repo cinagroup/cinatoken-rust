@@ -100,10 +100,10 @@ the production posture:
 
 - All three Wrangler D1 binding declarations now set
   `migrations_dir = "migrations/d1"`. The default, staging, and production
-  configurations therefore point at the same contiguous `0001` through `0019`
+  configurations therefore point at the same contiguous `0001` through `0020`
   migration chain. This is configuration alignment, not proof of a remote
   migration apply.
-- A real local Wrangler D1 applied 19/19 migrations and exposed 26 business
+- A real local Wrangler D1 applied 20/20 migrations and exposed 26 business
   tables, including the per-response Realtime reservation ledger and settlement
   replay-marker path.
 - The scheduling gateway no longer treats every
@@ -558,7 +558,10 @@ As of 2026-07-10, including the local D1 and route-ownership evidence above:
   settlements coexist in a bounded private retry collection and one DO alarm
   schedules the earliest due item, matching the cinaVibeSDK
   single-alarm/multiple-persisted-work pattern. Terminal D1 rows clear private
-  recovery payloads. The public v1 route still fails closed while the
+  recovery payloads. Migration 0020 adds a persisted active-reservation lease;
+  abandoned work refunds through the same alarm after hibernation, transient
+  refund failures remain scheduled, and settlement retry ownership suppresses
+  concurrent lease refunds. The public v1 route still fails closed while the
   settlement-write gate is off.
   This closes the audited local session-scoping defect, but the migration still
   lacks archived live staging binding-smoke output, staging

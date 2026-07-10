@@ -54,6 +54,7 @@ pub struct RealtimeBillingReservationRecord<'a> {
     pub started_at: i64,
     pub endpoint_path: &'a str,
     pub created_at: i64,
+    pub lease_expires_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -82,6 +83,7 @@ pub struct RealtimeBillingReservation {
     pub final_quota: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    pub lease_expires_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,10 +93,20 @@ pub enum RealtimeBillingReservationWriteOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealtimeBillingReservationLeaseIdentity {
+    pub reservation_sequence: i64,
+    pub lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealtimeBillingReservationRefundOutcome {
     Applied,
     AlreadyFinalized,
     NotFound,
+    LeaseActive {
+        reservation_sequence: i64,
+        lease_expires_at: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -764,7 +776,11 @@ pub async fn reserve_realtime_billing_quota(
     let snapshot_json =
         non_empty_realtime_reservation_field(record.snapshot_json, "snapshot JSON")?;
     let request_json = non_empty_realtime_reservation_field(record.request_json, "request JSON")?;
-    if record.reservation_sequence <= 0 || record.user_id <= 0 || record.channel_id <= 0 {
+    if record.reservation_sequence <= 0
+        || record.user_id <= 0
+        || record.channel_id <= 0
+        || record.lease_expires_at <= record.created_at
+    {
         return Err(worker::Error::RustError(
             "realtime billing reservation identity is invalid".to_string(),
         ));
@@ -795,6 +811,7 @@ pub async fn reserve_realtime_billing_quota(
         D1Type::Integer(d1_i32(record.started_at)),
         D1Type::Text(record.endpoint_path.trim()),
         D1Type::Integer(d1_i32(record.created_at)),
+        D1Type::Integer(d1_i32(record.lease_expires_at)),
     ];
     let insert = db
         .prepare(
@@ -804,10 +821,10 @@ pub async fn reserve_realtime_billing_quota(
               user_id, token_id, channel_id, selected_group, model_name,
               pre_consumed_quota, snapshot_json, request_json,
               username, token_name, client_ip, request_id, started_at,
-              endpoint_path, status, created_at, updated_at
+              endpoint_path, status, created_at, updated_at, lease_expires_at
             ) VALUES (
               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-              ?12, ?13, ?14, ?15, ?16, ?17, ?18, 'reserved', ?19, ?19
+              ?12, ?13, ?14, ?15, ?16, ?17, ?18, 'reserved', ?19, ?19, ?20
             )
             "#,
         )
@@ -879,7 +896,7 @@ pub async fn reserved_realtime_billing_for_session(
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
-          final_quota, created_at, updated_at
+          final_quota, created_at, updated_at, lease_expires_at
         FROM realtime_billing_reservations
         WHERE session = ?1 AND status = 'reserved'
         ORDER BY reservation_sequence ASC, reservation_key ASC
@@ -913,7 +930,7 @@ pub async fn realtime_billing_reservation_for_response(
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
-          final_quota, created_at, updated_at
+          final_quota, created_at, updated_at, lease_expires_at
         FROM realtime_billing_reservations
         WHERE session = ?1 AND upstream_response_id_hash = ?2
         LIMIT 1
@@ -1024,7 +1041,37 @@ pub async fn refund_realtime_billing_reservation(
     reservation_key: &str,
     refunded_at: i64,
 ) -> worker::Result<RealtimeBillingReservationRefundOutcome> {
-    refund_realtime_billing_reservation_inner(db, reservation_key, "", refunded_at).await
+    refund_realtime_billing_reservation_inner(db, reservation_key, "", refunded_at, None).await
+}
+
+pub async fn refund_expired_realtime_billing_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+    reservation_sequence: i64,
+    lease_expires_at: i64,
+    refunded_at: i64,
+) -> worker::Result<RealtimeBillingReservationRefundOutcome> {
+    refund_realtime_billing_reservation_inner(
+        db,
+        reservation_key,
+        "",
+        refunded_at,
+        Some((reservation_sequence, lease_expires_at)),
+    )
+    .await
+}
+
+pub async fn realtime_billing_reservation_lease_identity(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RealtimeBillingReservationLeaseIdentity>> {
+    Ok(realtime_billing_reservation(db, reservation_key)
+        .await?
+        .filter(|record| record.status == "reserved")
+        .map(|record| RealtimeBillingReservationLeaseIdentity {
+            reservation_sequence: record.reservation_sequence,
+            lease_expires_at: record.lease_expires_at,
+        }))
 }
 
 pub async fn refund_realtime_billing_reservation_for_response(
@@ -1042,6 +1089,7 @@ pub async fn refund_realtime_billing_reservation_for_response(
         reservation_key,
         upstream_response_id_hash,
         refunded_at,
+        None,
     )
     .await
 }
@@ -1051,6 +1099,7 @@ async fn refund_realtime_billing_reservation_inner(
     reservation_key: &str,
     upstream_response_id_hash: &str,
     refunded_at: i64,
+    expected_lease: Option<(i64, i64)>,
 ) -> worker::Result<RealtimeBillingReservationRefundOutcome> {
     let reservation_key = non_empty_realtime_reservation_key(reservation_key)?;
     let Some(record) = realtime_billing_reservation(db, reservation_key).await? else {
@@ -1059,11 +1108,28 @@ async fn refund_realtime_billing_reservation_inner(
     if record.status != "reserved" {
         return Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized);
     }
+    if let Some((reservation_sequence, lease_expires_at)) = expected_lease {
+        if record.reservation_sequence != reservation_sequence
+            || record.lease_expires_at != lease_expires_at
+            || record.lease_expires_at > refunded_at
+        {
+            return Ok(RealtimeBillingReservationRefundOutcome::LeaseActive {
+                reservation_sequence: record.reservation_sequence,
+                lease_expires_at: record.lease_expires_at,
+            });
+        }
+    }
     let quota = quota_i32(record.pre_consumed_quota)?;
     let status_args = [
         D1Type::Text(reservation_key),
         D1Type::Integer(d1_i32(refunded_at)),
         D1Type::Text(upstream_response_id_hash),
+        D1Type::Integer(d1_i32(
+            expected_lease.map(|value| value.0).unwrap_or_default(),
+        )),
+        D1Type::Integer(d1_i32(
+            expected_lease.map(|value| value.1).unwrap_or_default(),
+        )),
     ];
     let status_update = db
         .prepare(
@@ -1082,7 +1148,15 @@ async fn refund_realtime_billing_reservation_inner(
                 request_id = '',
                 updated_at = ?2,
                 refunded_at = ?2
-            WHERE reservation_key = ?1 AND status = 'reserved'
+            WHERE reservation_key = ?1
+              AND status = 'reserved'
+              AND (
+                ?4 = 0 OR (
+                  reservation_sequence = ?4
+                  AND lease_expires_at = ?5
+                  AND lease_expires_at <= ?2
+                )
+              )
             "#,
         )
         .bind_refs(&status_args)?;
@@ -1134,6 +1208,20 @@ async fn refund_realtime_billing_reservation_inner(
                 Some(current) if current.status != "reserved" => {
                     Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized)
                 }
+                Some(current)
+                    if expected_lease.is_some_and(
+                        |(reservation_sequence, lease_expires_at)| {
+                            current.reservation_sequence != reservation_sequence
+                                || current.lease_expires_at != lease_expires_at
+                                || current.lease_expires_at > refunded_at
+                        },
+                    ) =>
+                {
+                    Ok(RealtimeBillingReservationRefundOutcome::LeaseActive {
+                        reservation_sequence: current.reservation_sequence,
+                        lease_expires_at: current.lease_expires_at,
+                    })
+                }
                 Some(_) => Err(err),
             };
         }
@@ -1158,7 +1246,7 @@ async fn realtime_billing_reservation(
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
-          final_quota, created_at, updated_at
+          final_quota, created_at, updated_at, lease_expires_at
         FROM realtime_billing_reservations
         WHERE reservation_key = ?1
         LIMIT 1
@@ -9095,6 +9183,8 @@ mod tests {
     fn realtime_billing_reservation_migration_has_atomic_state_indexes() {
         let migration =
             include_str!("../../../migrations/d1/0019_realtime_billing_reservations.sql");
+        let lease_migration =
+            include_str!("../../../migrations/d1/0020_realtime_billing_reservation_leases.sql");
         assert!(migration.contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations"));
         assert!(migration.contains("CHECK (status IN ('reserved', 'settled', 'refunded'))"));
         assert!(migration.contains("reservation_sequence"));
@@ -9107,6 +9197,12 @@ mod tests {
         ));
         assert!(migration
             .contains("ON realtime_billing_reservations(session, upstream_response_id_hash)"));
+        assert!(lease_migration.contains("CHECK (active_count = 0)"));
+        assert!(lease_migration.contains("WHERE status = 'reserved'"));
+        assert!(lease_migration.contains("DROP TABLE migration_0020_realtime_reservation_guard"));
+        assert!(lease_migration.contains("ADD COLUMN lease_expires_at"));
+        assert!(lease_migration.contains("idx_realtime_billing_reservations_lease"));
+        assert!(lease_migration.contains("WHERE status = 'reserved' AND lease_expires_at > 0"));
     }
 
     #[test]

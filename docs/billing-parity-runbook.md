@@ -290,8 +290,8 @@ Approvers:
 ## Realtime Per-Response Matrix
 
 The billing unit is a client `response.create`, not the WebSocket session.
-Each row below must be exercised against migration 0019 and reconciled with the
-source Go reserve/settle/refund lifecycle.
+Each row below must be exercised against the exact migration set through 0020
+and reconciled with the source Go reserve/settle/refund lifecycle.
 
 | Case | Required result |
 | --- | --- |
@@ -306,10 +306,16 @@ source Go reserve/settle/refund lifecycle.
 | Forward/connect/disconnect failure | Every unconsumed reservation is refunded once. |
 | D1 settlement failure | Reservation remains reserved and a private retry record is persisted. |
 | Two failed settlements | Both records survive; one alarm processes earliest due work without overwrite; exhausted work refunds its reservation idempotently. |
+| Active lease before expiry | Alarm replay leaves the reservation untouched and re-arms for the earliest lease/retry deadline. |
+| Active lease expiry | After bridge loss, hibernation, eviction, or restart, the expired reservation is refunded exactly once by D1 CAS. |
+| Retry queue ownership | Persisting a settlement retry removes the active lease; the lease path never refunds work owned by the retry queue. If retry exhaustion cannot refund immediately, ownership returns to the lease queue without losing the private recovery record first. |
 | Alarm replay after eviction | D1/DO state recovers idempotently and neither response is charged twice. |
 
 Evidence must include reservation state, response binding, replay state,
 user/token/channel deltas, request count, audit count, retry count, and
 redaction checks. Raw request JSON and frozen expressions stay out of the
 report, and terminal reservation rows must show private recovery fields
-cleared.
+cleared. Record the configured lease duration, measured staging response-time
+p99, clock-skew/retry margin, highest lease refund attempts, and the final
+owner queue. The production value must exceed the approved p99 plus margin;
+otherwise long but healthy responses can be refunded prematurely.

@@ -6862,6 +6862,83 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.142 2026-07-10 Realtime Reservation Lease Recovery
+
+This increment closes the local crash/hibernation gap left after the
+per-response reservation state machine. A `reserved` row is now paired with a
+Durable Object lease work item before the D1 debit is attempted, so an accepted
+reservation cannot depend on a live in-memory bridge to reach a terminal state.
+
+Implemented locally:
+
+- `0020_realtime_billing_reservation_leases.sql` adds authoritative
+  `lease_expires_at` metadata and a partial session/status/expiry index. The
+  canonical D1 chain is now 20 migrations. It fails closed before `ALTER TABLE`
+  when an unreconciled 0019 `reserved` row exists because a D1 migration cannot
+  reconstruct its DO alarm owner.
+- Each billable `response.create` first persists a private DO lease record and
+  arms the alarm, then executes the atomic D1 reservation batch. A D1 failure
+  leaves only a harmless lease work item, which later resolves as `NotFound`.
+- Active leases and settlement retries use separate bounded persisted queues
+  but one scheduler. The next alarm is the minimum of the earliest lease
+  expiry and settlement retry deadline, matching Cloudflare's one-alarm-per-DO
+  execution model.
+- Lease duration is configured by
+  `REALTIME_BILLING_RESERVATION_LEASE_SECONDS`, defaults explicitly to 600 in
+  every Wrangler environment, and accepts only 30-3600 seconds.
+- An expired lease uses the existing reservation refund CAS. Applied,
+  already-finalized, and missing rows remove the work item; a transient D1
+  failure retains it and retries after 30 seconds without a fixed refund retry
+  limit.
+- `reservation_sequence` is the lease generation in both DO and D1 state. An
+  expiry refund must match generation, authoritative deadline, and due time;
+  stale alarms cannot refund a newer retry or delete its refreshed lease.
+  Duplicate reservations restore the authoritative D1 generation/deadline.
+- After any D1 await, the alarm reloads both persisted queues and mutates only
+  the stable lease/replay key it processed, preserving concurrently added work.
+  Storage read/deserialize failures propagate instead of being treated as an
+  empty queue and deleting the sole alarm.
+- Once a failed settlement is durably queued, settlement retry owns that
+  reservation and lease recovery will not refund it concurrently. If bounded
+  settlement retries are exhausted and the immediate refund fails, ownership
+  transfers back to the lease queue for continued refund recovery. If that
+  transfer itself cannot persist, the exhausted retry keeps a refund-only
+  deadline. Turning the write gate off keeps a bounded 30-second poll so a
+  later gate restore does not strand paused work.
+- Normal settlement, missing-usage refund, forwarding failure, disconnect, and
+  session cleanup remove their lease records. Public HTTP/WebSocket status
+  exposes only record count, due count, next expiry, attempts, and truncated
+  error metadata, never reservation keys.
+- The Cloudflare Platform frontend exposes lease capability and configured
+  duration. The settlement mirror now passes 13 cases, including not-due,
+  first-expiry refund, duplicate-expiry no-op, and stale-generation protection.
+
+Local evidence:
+
+- `bun run check:d1:migration-config`: 20 contiguous migrations through 0020.
+- `python tools/verify_sqlite.py`: 20 migrations, 26 tables, 56 incremental
+  columns, 14 key indexes, plus rejection of an active 0019 reservation and a
+  clean 0020 retry after reconciliation.
+- Real local Wrangler D1 applied 0020; direct readback found the migration
+  ledger row, `lease_expires_at`, and
+  `idx_realtime_billing_reservations_lease`.
+- Wrangler 4.103.0 then replayed the final guarded migration file in a fresh
+  isolated `--persist-to` state: 20/20 applied, latest 0020, lease column/index
+  present, and the temporary guard table absent after success. The Windows
+  helper was stopped only after this readback because Wrangler did not exit on
+  its own.
+
+Production boundary:
+
+- This proves persistence and state-machine contracts, not Cloudflare alarm
+  delivery after actual DO eviction. Isolated staging must archive an active
+  reservation, forced bridge/DO interruption, alarm wake, single refund,
+  duplicate alarm delivery, D1 outage/resume, and zero-private-data status
+  report before paid Realtime traffic is allowed.
+- Operators must choose a lease duration above the measured p99 response time.
+  A too-short lease intentionally favors bounded customer charging over billing
+  completeness and can refund a legitimately long response.
+
 ### 22.141 2026-07-10 Per-Response Realtime Billing State Machine
 
 This increment replaces the audited session-scoped Realtime billing model with
@@ -6909,8 +6986,8 @@ Implemented locally:
   per-response reservation, created/done identity correlation, reservation
   CAS, and multi-record alarm behavior instead of the former session-level
   preview.
-- The canonical D1 chain is now 19 migrations through
-  `0019_realtime_billing_reservations.sql`; local migration and settlement
+- The canonical D1 chain is now 20 migrations through
+  `0020_realtime_billing_reservation_leases.sql`; local migration and settlement
   smoke tooling checks reservation apply, rollback, settlement, refund, and
   replay idempotency.
 
@@ -6930,12 +7007,17 @@ Production invariants:
 
 Remaining production gates:
 
-- Apply migration 0019 to isolated staging and archive exact migration-set
-  evidence; the current local 19/19 replay is not remote proof.
+- Apply the complete exact migration set through 0020 to isolated staging and
+  archive the migration-set evidence; the current local 20/20 replay is not
+  remote proof. Before 0020,
+  reconcile every 0019-era active reservation and prove the `reserved` count is
+  zero. The migration intentionally fails closed rather than creating rows that
+  have no recoverable Durable Object alarm owner.
 - Run a real multi-response WebSocket (`response.create` x2 or more), duplicate
   event/response replay, missing-usage refund, D1 failure, alarm retry, DO
-  eviction/restart, disconnect cleanup, and queue-capacity rehearsal against
-  the deployed Worker binding.
+  eviction/restart, lease-not-due and lease-expiry recovery, disconnect cleanup,
+  queue ownership transfer, and queue-capacity rehearsal against the deployed
+  Worker binding.
 - Reconcile user/token/channel/log rows against the Go billing implementation
   and prove no double charge or double refund before either
   `realtime_session_billing_settlement_compiled` or
@@ -8739,19 +8821,21 @@ Configuration and route-ownership corrections:
 
 Local evidence captured on 2026-07-10:
 
-- The real local Wrangler D1 applied all 19 of 19 migrations, through
-  `0019_realtime_billing_reservations.sql`, and exposed 26 business tables. This
+- The real local Wrangler D1 applied all 20 of 20 migrations, through
+  `0020_realtime_billing_reservation_leases.sql`, and exposed 26 business tables. This
   proves local schema discovery and application rather than only replaying SQL
   against the Python/in-memory SQLite verifier.
-- The local SQLite full-chain verifier now also requires 55 incremental key
-  columns and 13 key indexes, preventing an `ALTER TABLE` or critical uniqueness
+- The local SQLite full-chain verifier now also requires 56 incremental key
+  columns and 14 key indexes, preventing an `ALTER TABLE` or critical uniqueness
   regression from passing on table names alone.
-- An authenticated localhost call to `/api/platform/capabilities` returned
-  migration status available, count 19, latest/expected 0019, exact set match,
+- An earlier pre-0020 authenticated localhost call to
+  `/api/platform/capabilities` returned migration status available, count 19,
+  latest/expected 0019, exact set match,
   and D1 readiness all true. The first live attempt exposed a wasm-only
   `SystemTime::now()` panic inside billing expression probes; the billing
   engine now uses the Worker-compatible JavaScript clock on wasm, and the
-  rebuilt request returned `200` with both Realtime billing probes true.
+  rebuilt request returned `200` with both Realtime billing probes true. This
+  snapshot is historical only and must be refreshed against the 20-name ledger.
 - The local Worker-binding settlement smoke passed all six fixed scenarios:
   `additional-quota-applied`, `duplicate-replay-noop`,
   `guarded-update-rollback`, `audit-failure-rollback`,
@@ -8786,7 +8870,7 @@ Remaining migration gaps:
   staging deployment, D1 migration apply/list result, table inventory,
   capability snapshot, or settlement binding smoke was captured in this
   increment.
-- Authenticate Wrangler, apply and verify the same 19/19 migration chain on an
+- Authenticate Wrangler, apply and verify the same 20/20 migration chain on an
   isolated staging D1, confirm the expected business-table inventory, and
   archive the six-scenario Worker-binding smoke plus zero-residue cleanup there.
 - Keep `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED`,

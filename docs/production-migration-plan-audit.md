@@ -87,15 +87,16 @@ opening a production gate:
 - all three `wrangler.toml` D1 binding tables now set
   `migrations_dir = "migrations/d1"`;
 - `bun run check:d1:migration-config` passes for the three bindings and the
-  contiguous 0001-0019 migration chain;
-- `bun run verify:sqlite` applies all 19 migrations by default and verifies 26
-  required tables, 55 incremental key columns, and 13 key indexes;
-- local Wrangler D1 applied 19/19 migrations on Windows after satisfying the
+  contiguous 0001-0020 migration chain;
+- `bun run verify:sqlite` applies all 20 migrations by default and verifies 26
+  required tables, 56 incremental key columns, and 14 key indexes;
+- local Wrangler D1 applied 20/20 migrations on Windows after satisfying the
   Microsoft Visual C++ 2015-2022 x64 runtime prerequisite;
-- the authenticated localhost Worker capability returned exact D1 ledger-set
-  match and readiness true, then passed both Realtime billing probes after the
+- an earlier pre-0020 authenticated localhost Worker capability snapshot
+  returned exact D1 ledger-set match and readiness true, then passed both
+  Realtime billing probes after the
   wasm default clock was corrected from unsupported `SystemTime` to
-  `js_sys::Date`; and
+  `js_sys::Date`; this historical snapshot must be refreshed for 0020; and
 - the localhost Worker-binding Realtime settlement smoke passed 6/6 scenarios
   with zero smoke rows after cleanup, after fixing generic Realtime route
   precedence so the settlement endpoint reaches its intended handler.
@@ -199,7 +200,7 @@ Production requirement:
 Evidence:
 
 - `docs/verification.md` records no live Jina/Cohere rerank request.
-- Local Wrangler D1 19/19 and a localhost Worker D1-binding Realtime settlement
+- Local Wrangler D1 20/20 and a localhost Worker D1-binding Realtime settlement
   smoke now pass, but no authenticated staging Worker/D1/binding run exists.
 - Remote provider coverage, SSE coverage beyond the recorded local/selected
   live paths, Cloudflare logs/traces, and staging settlement remain incomplete.

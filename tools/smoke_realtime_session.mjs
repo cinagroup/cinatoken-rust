@@ -412,6 +412,7 @@ async function readCapabilitiesEnvelope(response) {
 
 function summarizeCapabilities(data) {
   return {
+    d1_migration_ready: data.d1_migration_ready === true,
     realtime_sessions_do_available: data.realtime_sessions_do_available === true,
     realtime_session_gateway_enabled: data.realtime_session_gateway_enabled === true,
     realtime_session_v1_enabled: data.realtime_session_v1_enabled === true,
@@ -469,6 +470,11 @@ function summarizeCapabilities(data) {
       data.realtime_session_billing_settlement_batch_compiled === true,
     realtime_session_billing_settlement_retry_compiled:
       data.realtime_session_billing_settlement_retry_compiled === true,
+    realtime_session_billing_reservation_lease_compiled:
+      data.realtime_session_billing_reservation_lease_compiled === true,
+    realtime_session_billing_reservation_lease_seconds: Number(
+      data.realtime_session_billing_reservation_lease_seconds
+    ),
     realtime_session_billing_settlement_write_enabled:
       data.realtime_session_billing_settlement_write_enabled === true,
     realtime_session_platform_header_boundary_compiled:
@@ -485,6 +491,7 @@ function summarizeCapabilities(data) {
 
 function validateCapabilities(capabilities, options) {
   for (const [field, expected] of [
+    ["d1_migration_ready", true],
     ["do_websocket_hibernation_compiled", true],
     ["realtime_session_auth_boundary_compiled", true],
     ["realtime_session_metrics_persisted_compiled", true],
@@ -512,11 +519,21 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_billing_settlement_audit_log_compiled", true],
     ["realtime_session_billing_settlement_batch_compiled", true],
     ["realtime_session_billing_settlement_retry_compiled", true],
+    ["realtime_session_billing_reservation_lease_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
       throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);
     }
+  }
+  if (
+    !Number.isInteger(capabilities.realtime_session_billing_reservation_lease_seconds) ||
+    capabilities.realtime_session_billing_reservation_lease_seconds < 30 ||
+    capabilities.realtime_session_billing_reservation_lease_seconds > 3600
+  ) {
+    throw new Error(
+      `platform capabilities realtime_session_billing_reservation_lease_seconds=${capabilities.realtime_session_billing_reservation_lease_seconds} is outside 30..3600`
+    );
   }
   for (const guard of [
     "platform_gateway_gate",
@@ -542,6 +559,8 @@ function validateCapabilities(capabilities, options) {
     "billing_settlement_audit_log",
     "billing_settlement_batch",
     "billing_settlement_retry",
+    "billing_reservation_lease_recovery",
+    "d1_migration_ready",
     "billing_settlement_write_gate",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",

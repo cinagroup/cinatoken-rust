@@ -457,6 +457,8 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_audit_log_compiled: boolean
   realtime_session_billing_settlement_batch_compiled: boolean
   realtime_session_billing_settlement_retry_compiled: boolean
+  realtime_session_billing_reservation_lease_compiled: boolean
+  realtime_session_billing_reservation_lease_seconds: number
   realtime_session_billing_settlement_staging_smoke_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_enabled: boolean
   realtime_session_billing_settlement_staging_smoke_ready: boolean

@@ -90,9 +90,9 @@ bun run verify:sqlite
 ```
 
 The expected 2026-07-10 result is three D1 binding tables using
-`migrations/d1`, 18 contiguous migrations from `0001_core.sql` through
-`0019_realtime_billing_reservations.sql`, 26 required tables, 55 incremental key
-columns, and 13 key indexes. The SQLite verifier applies the full chain by
+`migrations/d1`, 20 contiguous migrations from `0001_core.sql` through
+`0020_realtime_billing_reservation_leases.sql`, 26 required tables, 56 incremental key
+columns, and 14 key indexes. The SQLite verifier applies the full chain by
 default; repeat `--schema` only when a deliberately scoped migration test is
 required.
 
@@ -110,7 +110,7 @@ wrangler d1 create cinatoken-rust-db
 wrangler d1 migrations apply cinatoken-rust-db --local
 ```
 
-The local Wrangler apply was exercised successfully for all 19 migrations on
+The local Wrangler apply was exercised successfully for all 20 migrations on
 2026-07-10. This proves local Wrangler/workerd compatibility and ordered local
 D1 application only. It does not prove Cloudflare authentication, the remote
 staging database target, remote migration state, or a deployed Worker binding.

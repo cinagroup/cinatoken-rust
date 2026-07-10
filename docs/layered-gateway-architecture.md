@@ -115,8 +115,8 @@ are archived.
 
 **M6 local D1 and binding-evidence update (2026-07-10):** all three Wrangler
 D1 binding declarations now explicitly use `migrations_dir = "migrations/d1"`.
-The real local Wrangler D1 applied the contiguous 19/19 chain through
-`0019_realtime_billing_reservations.sql` and exposed 25 business tables. The
+The real local Wrangler D1 applied the contiguous 20/20 chain through
+`0020_realtime_billing_reservation_leases.sql` and exposed 26 business tables. The
 gateway matcher was also narrowed so the generic Realtime session branch no
 longer captures `/api/platform/realtime/settlement-batch/smoke`. With the route
 owned by the platform control plane, the local Worker-binding smoke passed all
@@ -130,17 +130,18 @@ routes or Layer 3 WFP dispatch prefixes. It does **not** validate a remote
 staging D1, deployed Realtime DO, live `response.done` settlement,
 hibernation/restore, paid WFP dispatch namespace, or Rust/Wasm tenant artifact.
 
-**M6 retry/interlock update (2026-07-10):** failed Realtime settlement batches
-can now persist a minimal private retry record in the owning DO and re-enter the
-same idempotent D1 batch through bounded alarm backoff. HTTP/WebSocket status
-exposes only redacted retry state, and the public `/v1/realtime` route now
-returns `503` while `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` is off even if
-its v1 route gate is on. This is a durability and fail-closed increment, not a
-billing-completion claim. The current snapshot path still lacks the matching
-D1 reserve, settlement is still session-scoped after the first applied
-response, and replay identity does not yet include upstream response/event
-identity. Those P0 gaps plus live alarm/eviction proof remain before M6 can own
-paid Realtime traffic.
+**M6 reservation/retry update (2026-07-10):** migration 0019 and the DO now
+reserve each explicit `response.create`, correlate `response.created` and
+out-of-order `response.done` by hashed identity, and settle/refund each response
+through D1 CAS. Migration 0020 adds a fail-closed active-reservation lease.
+Lease and settlement-retry collections share one earliest-deadline alarm,
+transfer ownership explicitly, merge by stable key after D1 awaits, preserve a
+bounded gate-off poll, and keep exhausted refund-only work scheduled until D1
+refund or durable lease transfer succeeds. HTTP/WebSocket status remains
+metadata-only. Realtime cutover now also requires the exact 0020 migration set.
+This closes the previously listed per-response correctness gaps locally; live
+alarm/eviction/outage, multi-response, rollback, and no-double-charge evidence
+remain before M6 can own paid traffic.
 Wrangler is not authenticated, so staging migration, capability, binding-smoke,
 rollback, and no-double-charge evidence remain open and all cutover gates remain
 conservative/default-off.
@@ -373,7 +374,7 @@ by clearing the flag, no redeploy required.
 - **Rollback:** M5a is pure correctness (keep). M5b flag off → cron-only.
 
 ### M6 — `RealtimeSession` DO (3 wk) — Paradigm A
-- **Status (2026-07-08): Gated substrate, default-off settlement writer compiled.** The DO with WS
+- **Status (2026-07-10): Gated substrate, per-response reservation recovery compiled.** The DO with WS
   hibernation (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`)
   and persisted lifecycle metrics has landed (`crates/worker/src/realtime_session.rs`),
   with the `REALTIME_SESSIONS` binding + `new_sqlite_classes` active in all 3
@@ -404,14 +405,20 @@ by clearing the flag, no redeploy required.
   `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED=true`; the default-off writer
   records only redacted enabled/attempt/applied/skip/error status plus quota
   deltas in persisted metrics.
+  Migration `0020_realtime_billing_reservation_leases.sql` now adds a D1 lease
+  deadline for every active reservation. The DO persists lease work before the
+  reservation becomes useful, coordinates the active-lease and settlement-retry
+  collections through one earliest-deadline alarm, transfers ownership between
+  those collections explicitly, and uses D1 CAS to refund expired work once.
+  Refund failures remain durable and re-arm without a fixed retry cap; redacted
+  status and the frontend capability panel expose only counts, deadlines,
+  attempt totals, and the configured bounded lease duration.
   **Remaining:** production bridge hardening (archived local/staging
-  queue/drain/fault proof and full live protocol replay evidence), usage
-  accumulation, pre-settlement billing snapshot, settlement-preview quota
-  calculation, settlement mutation planning, the default-off D1 writer, replay
-  marker, audit-log foundation, and guarded D1 settlement batch foundation are
-  compiled; local SQL-shape replay and staging setup/verify/cleanup planning
-  exist, but final Worker-binding staging replay proof, D1 rollback/idempotency
-  evidence, and the Go-formula settlement below remain incomplete.
+  queue/drain/fault proof and full live protocol replay evidence), remote
+  Worker-binding settlement replay, lease-not-due/expiry/eviction/D1-outage
+  evidence, Go-formula reconciliation, and production lease calibration remain
+  incomplete. Local SQL-shape, batch, lease, and staging-plan evidence cannot
+  satisfy G7 by itself.
 - **Planner landed:** OpenAI-compatible `/v1/realtime?model=...`, Azure
   `/openai/realtime?deployment=...&api-version=...`, and secret-redacted
   Realtime handshake summaries are compiled and exposed as a separate

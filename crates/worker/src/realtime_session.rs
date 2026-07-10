@@ -20,13 +20,14 @@ use cinatoken_relay::{
 };
 use cinatoken_storage::RelayAuditLog;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 use url::Url;
+use wasm_bindgen::JsValue;
 use worker::{
     durable_object, Delay, Env, Fetch, Method, Request, Response, Result as WorkerResult, State,
     Storage, WebSocket, WebSocketIncomingMessage, WebSocketPair, WebsocketEvent,
@@ -60,8 +61,11 @@ pub const REALTIME_BILLING_SETTLEMENT_REPLAY_MARKER_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_AUDIT_LOG_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_RETRY_COMPILED: bool = true;
+pub const REALTIME_BILLING_RESERVATION_LEASE_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
     "REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED";
+pub const REALTIME_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
+    "REALTIME_BILLING_RESERVATION_LEASE_SECONDS";
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
@@ -95,6 +99,8 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_response_reservation",
     "billing_response_correlation",
     "billing_explicit_response_mode",
+    "billing_reservation_lease_recovery",
+    "d1_migration_ready",
     "billing_settlement_write_gate",
     "platform_upstream_header_boundary",
     "hibernation_attachment_restore",
@@ -118,10 +124,16 @@ const AZURE_DEFAULT_API_VERSION: &str = "2025-04-01-preview";
 const SESSION_METRICS_KEY: &str = "session_metrics_v1";
 const BILLING_SETTLEMENT_RETRY_KEY: &str = "billing_settlement_retries_v2";
 const BILLING_RESERVATION_SEQUENCE_KEY: &str = "billing_reservation_sequence_v1";
+const BILLING_RESERVATION_LEASES_KEY: &str = "billing_reservation_leases_v1";
 const BILLING_SETTLEMENT_RETRY_INITIAL_DELAY_MS: u64 = 1_000;
 const BILLING_SETTLEMENT_RETRY_MAX_DELAY_MS: u64 = 30_000;
 const BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS: u8 = 7;
 const BILLING_SETTLEMENT_RETRY_MAX_RECORDS: usize = 64;
+const BILLING_RESERVATION_LEASE_DEFAULT_SECONDS: u64 = 600;
+const BILLING_RESERVATION_LEASE_MIN_SECONDS: u64 = 30;
+const BILLING_RESERVATION_LEASE_MAX_SECONDS: u64 = 3_600;
+const BILLING_RESERVATION_LEASE_MAX_RECORDS: usize = 128;
+const BILLING_RESERVATION_LEASE_RETRY_DELAY_MS: u64 = 30_000;
 const MAX_STORED_TEXT_CHARS: usize = 160;
 const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
@@ -173,6 +185,7 @@ struct RealtimeSessionStatus {
     hibernation: bool,
     observability: &'static str,
     billing_settlement_retry: Option<RealtimeBillingSettlementRetryStatus>,
+    billing_reservation_lease: Option<RealtimeBillingReservationLeaseStatus>,
     metrics: RealtimeSessionMetrics,
     attachments: Vec<RealtimeSocketSummary>,
 }
@@ -571,6 +584,10 @@ struct RealtimeBillingSettlementRetryRecord {
     mutation_plan: RealtimeBillingSettlementMutationPlan,
     audit_plan: RealtimeBillingSettlementAuditPlan,
     reservation_key: String,
+    #[serde(default)]
+    reservation_sequence: i64,
+    #[serde(default)]
+    lease_expires_at: i64,
     upstream_response_id_hash: String,
     replay_key: String,
     attempts: u8,
@@ -586,6 +603,32 @@ struct RealtimeBillingSettlementRetryRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RealtimeBillingSettlementRetryQueue {
     records: Vec<RealtimeBillingSettlementRetryRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RealtimeBillingReservationLeaseStatus {
+    record_count: usize,
+    due_count: usize,
+    next_expiry_at_ms: Option<f64>,
+    highest_attempts: u8,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RealtimeBillingReservationLeaseRecord {
+    reservation_key: String,
+    #[serde(default)]
+    reservation_sequence: i64,
+    #[serde(default)]
+    lease_expires_at: i64,
+    expires_at_ms: f64,
+    attempts: u8,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RealtimeBillingReservationLeaseQueue {
+    records: Vec<RealtimeBillingReservationLeaseRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -738,7 +781,8 @@ impl DurableObject for RealtimeSession {
             .collect::<Vec<_>>();
         let restored_attachments = attachments.len();
         let metrics = self.load_metrics(&session, js_sys::Date::now()).await?;
-        let billing_settlement_retry = self.load_billing_settlement_retry_status().await;
+        let billing_settlement_retry = self.load_billing_settlement_retry_status().await?;
+        let billing_reservation_lease = self.load_billing_reservation_lease_status().await?;
         Response::from_json(&RealtimeSessionStatus {
             session,
             active_websockets: sockets.len(),
@@ -749,6 +793,7 @@ impl DurableObject for RealtimeSession {
             hibernation: true,
             observability: "durable_object_storage",
             billing_settlement_retry,
+            billing_reservation_lease,
             metrics,
             attachments,
         })
@@ -785,7 +830,9 @@ impl DurableObject for RealtimeSession {
                 self.drop_closed_upstream_bridges();
                 let (active_upstream_bridges, queued_upstream_frames, queued_upstream_bytes) =
                     self.upstream_bridge_runtime_status();
-                let billing_settlement_retry = self.load_billing_settlement_retry_status().await;
+                let billing_settlement_retry = self.load_billing_settlement_retry_status().await?;
+                let billing_reservation_lease =
+                    self.load_billing_reservation_lease_status().await?;
                 ws.send(&json!({
                     "type": "realtime_session_status",
                     "context": context,
@@ -793,7 +840,8 @@ impl DurableObject for RealtimeSession {
                     "active_upstream_bridges": active_upstream_bridges,
                     "queued_upstream_frames": queued_upstream_frames,
                     "queued_upstream_bytes": queued_upstream_bytes,
-                    "billing_settlement_retry": billing_settlement_retry
+                    "billing_settlement_retry": billing_settlement_retry,
+                    "billing_reservation_lease": billing_reservation_lease
                 }))?;
             }
             WebSocketIncomingMessage::String(message) => {
@@ -1205,17 +1253,221 @@ impl DurableObject for RealtimeSession {
 
     async fn alarm(&mut self) -> WorkerResult<Response> {
         let mut storage = self.state.storage();
-        let Some(mut queue) = load_realtime_billing_settlement_retry(&storage).await else {
-            return Response::ok("realtime settlement retry skipped: no record");
-        };
         let now_ms = js_sys::Date::now();
+        let mut lease_result = None;
+        let queue = load_realtime_billing_settlement_retry(&storage)
+            .await?
+            .unwrap_or_default();
+        let lease_queue = load_realtime_billing_reservation_leases(&storage)
+            .await?
+            .unwrap_or_default();
+        if let Some(index) = lease_queue.next_due_index(now_ms) {
+            let lease = lease_queue.records[index].clone();
+            let initially_transferred = realtime_billing_reservation_owned_by_retry(
+                &queue,
+                &lease.reservation_key,
+                lease.reservation_sequence,
+                lease.lease_expires_at,
+            );
+            let refund = if initially_transferred {
+                None
+            } else {
+                Some(match self.env.d1("DB") {
+                    Ok(db) => {
+                        crate::d1_repositories::refund_expired_realtime_billing_reservation(
+                            &db,
+                            &lease.reservation_key,
+                            lease.reservation_sequence,
+                            lease.lease_expires_at,
+                            crate::admin::unix_timestamp(),
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                })
+            };
+            let latest_retry_queue = load_realtime_billing_settlement_retry(&storage)
+                .await?
+                .unwrap_or_default();
+            let transferred = initially_transferred
+                || realtime_billing_reservation_owned_by_retry(
+                    &latest_retry_queue,
+                    &lease.reservation_key,
+                    lease.reservation_sequence,
+                    lease.lease_expires_at,
+                );
+            let mut latest_lease_queue = load_realtime_billing_reservation_leases(&storage)
+                .await?
+                .unwrap_or_default();
+            if transferred {
+                latest_lease_queue.records.retain(|record| {
+                    record.reservation_key != lease.reservation_key
+                        || record.reservation_sequence != lease.reservation_sequence
+                        || record.lease_expires_at != lease.lease_expires_at
+                });
+                lease_result = Some("reservation lease transferred to settlement retry");
+            } else {
+                match refund.expect("refund is attempted unless retry owns the reservation") {
+                    Ok(
+                        crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
+                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
+                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound,
+                    ) => {
+                        latest_lease_queue
+                            .records
+                            .retain(|record| {
+                                record.reservation_key != lease.reservation_key
+                                    || record.reservation_sequence != lease.reservation_sequence
+                                    || record.lease_expires_at != lease.lease_expires_at
+                            });
+                        lease_result = Some("reservation lease recovered");
+                    }
+                    Ok(
+                        crate::d1_repositories::RealtimeBillingReservationRefundOutcome::LeaseActive {
+                            reservation_sequence,
+                            lease_expires_at,
+                        },
+                    ) => {
+                        if let Some(current) = latest_lease_queue.records.iter_mut().find(|record| {
+                            record.reservation_key == lease.reservation_key
+                                && record.reservation_sequence == lease.reservation_sequence
+                                && record.lease_expires_at == lease.lease_expires_at
+                        }) {
+                            current.reservation_sequence = reservation_sequence;
+                            current.lease_expires_at = lease_expires_at;
+                            current.expires_at_ms = (lease_expires_at as f64 * 1_000.0)
+                                .max(js_sys::Date::now() + 1.0);
+                            current.last_error = None;
+                        }
+                        lease_result = Some("reservation lease generation refreshed");
+                    }
+                    Err(err) => {
+                        if let Some(current) = latest_lease_queue
+                            .records
+                            .iter_mut()
+                            .find(|record| {
+                                record.reservation_key == lease.reservation_key
+                                    && record.reservation_sequence == lease.reservation_sequence
+                                    && record.lease_expires_at == lease.lease_expires_at
+                            })
+                        {
+                            current.attempts = current.attempts.saturating_add(1);
+                            current.last_error =
+                                truncate_text(&err.to_string(), MAX_STORED_TEXT_CHARS);
+                            current.expires_at_ms = js_sys::Date::now()
+                                + BILLING_RESERVATION_LEASE_RETRY_DELAY_MS as f64;
+                        }
+                        lease_result = Some("reservation lease refund rescheduled");
+                    }
+                }
+            }
+            store_realtime_billing_reservation_lease_queue(
+                &mut storage,
+                &latest_lease_queue,
+                js_sys::Date::now(),
+            )
+            .await?;
+        }
+
+        let mut queue = load_realtime_billing_settlement_retry(&storage)
+            .await?
+            .unwrap_or_default();
+
+        if queue.records.is_empty() {
+            schedule_realtime_billing_alarm(&mut storage, now_ms).await?;
+            return Response::ok(
+                lease_result.unwrap_or("realtime billing alarm skipped: no due work"),
+            );
+        }
+
+        if let Some(index) = queue.next_due_refund_index(now_ms) {
+            let mut retry = queue.records[index].clone();
+            retry.attempts = retry.attempts.saturating_add(1);
+            retry.updated_at_ms = now_ms;
+            let refund = match self.env.d1("DB") {
+                Ok(db) => {
+                    crate::d1_repositories::refund_realtime_billing_reservation(
+                        &db,
+                        &retry.reservation_key,
+                        crate::admin::unix_timestamp(),
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
+            };
+            let refunded = matches!(
+                &refund,
+                Ok(
+                    crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
+                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
+                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound
+                )
+            );
+            let mut latest_queue = load_realtime_billing_settlement_retry(&storage)
+                .await?
+                .unwrap_or_default();
+            if refunded {
+                latest_queue
+                    .records
+                    .retain(|record| record.replay_key != retry.replay_key);
+                retry.next_retry_at_ms = None;
+                retry.last_error = None;
+            } else if let Some(current) = latest_queue
+                .records
+                .iter_mut()
+                .find(|record| record.replay_key == retry.replay_key)
+            {
+                current.attempts = retry.attempts;
+                current.updated_at_ms = js_sys::Date::now();
+                current.next_retry_at_ms =
+                    Some(current.updated_at_ms + BILLING_RESERVATION_LEASE_RETRY_DELAY_MS as f64);
+                current.paused = false;
+                current.exhausted = true;
+                current.last_error = truncate_text(
+                    &format!(
+                        "refund-only retry failed: {}",
+                        refund
+                            .err()
+                            .map(|err| err.to_string())
+                            .unwrap_or_else(|| "unknown refund failure".to_string())
+                    ),
+                    MAX_STORED_TEXT_CHARS,
+                );
+                retry = current.clone();
+            }
+            store_realtime_billing_settlement_retry_queue(
+                &mut storage,
+                &latest_queue,
+                js_sys::Date::now(),
+            )
+            .await?;
+            record_realtime_billing_settlement_retry_metrics(
+                &mut storage,
+                &retry,
+                js_sys::Date::now(),
+                true,
+                false,
+                Some(if refunded {
+                    "retry_exhausted_refunded"
+                } else {
+                    "retry_exhausted_refund_rescheduled"
+                }),
+            )
+            .await?;
+            return Response::ok(if refunded {
+                "realtime settlement exhausted reservation refunded"
+            } else {
+                "realtime settlement exhausted refund rescheduled"
+            });
+        }
 
         if !realtime_billing_settlement_write_enabled(&self.env) {
             for retry in &mut queue.records {
                 if !retry.exhausted {
                     retry.paused = true;
                     retry.updated_at_ms = now_ms;
-                    retry.next_retry_at_ms = None;
+                    retry.next_retry_at_ms =
+                        Some(now_ms + BILLING_RESERVATION_LEASE_RETRY_DELAY_MS as f64);
                     retry.last_error = Some("write_disabled".to_string());
                 }
             }
@@ -1223,11 +1475,24 @@ impl DurableObject for RealtimeSession {
             return Response::ok("realtime settlement retry paused: write disabled");
         }
 
+        let mut resumed = false;
+        for retry in &mut queue.records {
+            if retry.paused && !retry.exhausted {
+                retry.paused = false;
+                retry.updated_at_ms = now_ms;
+                retry.next_retry_at_ms = Some(retry.next_retry_at_ms.unwrap_or(now_ms).min(now_ms));
+                resumed = true;
+            }
+        }
+        if resumed {
+            store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
+        }
+
         let Some(index) = queue.next_due_index(now_ms) else {
             store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
             return Response::ok("realtime settlement retry skipped: no due record");
         };
-        let mut retry = queue.records.remove(index);
+        let mut retry = queue.records[index].clone();
         retry.updated_at_ms = now_ms;
         retry.next_retry_at_ms = None;
         retry.paused = false;
@@ -1247,10 +1512,28 @@ impl DurableObject for RealtimeSession {
         {
             Ok(outcome) => {
                 retry.last_error = None;
+                let mut latest_queue = load_realtime_billing_settlement_retry(&storage)
+                    .await?
+                    .unwrap_or_default();
+                latest_queue
+                    .records
+                    .retain(|record| record.replay_key != retry.replay_key);
+                store_realtime_billing_settlement_retry_queue(
+                    &mut storage,
+                    &latest_queue,
+                    js_sys::Date::now(),
+                )
+                .await?;
+                clear_realtime_billing_reservation_lease(
+                    &mut storage,
+                    &retry.reservation_key,
+                    js_sys::Date::now(),
+                )
+                .await?;
                 record_realtime_billing_settlement_retry_metrics(
                     &mut storage,
                     &retry,
-                    now_ms,
+                    js_sys::Date::now(),
                     true,
                     true,
                     match outcome {
@@ -1261,32 +1544,75 @@ impl DurableObject for RealtimeSession {
                     },
                 )
                 .await?;
-                store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
                 Response::ok("realtime settlement retry applied")
             }
             Err(err) => {
                 retry.last_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
                 retry.exhausted = retry.attempts >= retry.max_attempts;
                 let mut exhausted_refunded = false;
+                let mut exhausted_refund_deferred = false;
                 if retry.exhausted {
                     retry.next_retry_at_ms = None;
-                    if let Ok(db) = self.env.d1("DB") {
-                        match crate::d1_repositories::refund_realtime_billing_reservation(
-                            &db,
+                    match self.env.d1("DB") {
+                        Ok(db) => {
+                            match crate::d1_repositories::refund_realtime_billing_reservation(
+                                &db,
+                                &retry.reservation_key,
+                                crate::admin::unix_timestamp(),
+                            )
+                            .await
+                            {
+                                Ok(
+                                    crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
+                                    | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
+                                    | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound,
+                                ) => exhausted_refunded = true,
+                                Ok(
+                                    crate::d1_repositories::RealtimeBillingReservationRefundOutcome::LeaseActive { .. },
+                                ) => {
+                                    retry.last_error = truncate_text(
+                                        &format!(
+                                            "{err}; exhausted reservation refund observed an unexpected active lease"
+                                        ),
+                                        MAX_STORED_TEXT_CHARS,
+                                    );
+                                }
+                                Err(refund_err) => {
+                                    retry.last_error = truncate_text(
+                                        &format!(
+                                            "{err}; exhausted reservation refund failed: {refund_err}"
+                                        ),
+                                        MAX_STORED_TEXT_CHARS,
+                                    );
+                                }
+                            }
+                        }
+                        Err(refund_err) => {
+                            retry.last_error = truncate_text(
+                                &format!(
+                                    "{err}; exhausted reservation refund DB unavailable: {refund_err}"
+                                ),
+                                MAX_STORED_TEXT_CHARS,
+                            );
+                        }
+                    }
+                    if !exhausted_refunded {
+                        match persist_realtime_billing_reservation_lease(
+                            &mut storage,
                             &retry.reservation_key,
-                            crate::admin::unix_timestamp(),
+                            retry.reservation_sequence,
+                            retry.lease_expires_at,
+                            now_ms + BILLING_RESERVATION_LEASE_RETRY_DELAY_MS as f64,
+                            now_ms,
                         )
                         .await
                         {
-                            Ok(
-                                crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
-                                | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
-                                | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound,
-                            ) => exhausted_refunded = true,
-                            Err(refund_err) => {
+                            Ok(()) => exhausted_refund_deferred = true,
+                            Err(lease_err) => {
                                 retry.last_error = truncate_text(
                                     &format!(
-                                        "{err}; exhausted reservation refund failed: {refund_err}"
+                                        "{}; refund lease persistence failed: {lease_err}",
+                                        retry.last_error.as_deref().unwrap_or(&err)
                                     ),
                                     MAX_STORED_TEXT_CHARS,
                                 );
@@ -1297,18 +1623,59 @@ impl DurableObject for RealtimeSession {
                     let delay_ms = realtime_billing_settlement_retry_delay_ms(retry.attempts);
                     retry.next_retry_at_ms = Some(now_ms + delay_ms as f64);
                 }
-                if !exhausted_refunded {
-                    queue.records.push(retry.clone());
+                if retry.exhausted && !exhausted_refunded && !exhausted_refund_deferred {
+                    retry.next_retry_at_ms =
+                        Some(js_sys::Date::now() + BILLING_RESERVATION_LEASE_RETRY_DELAY_MS as f64);
                 }
-                store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await?;
+                let mut latest_queue = load_realtime_billing_settlement_retry(&storage)
+                    .await?
+                    .unwrap_or_default();
+                match realtime_billing_retry_failure_ownership(
+                    exhausted_refunded,
+                    exhausted_refund_deferred,
+                ) {
+                    RealtimeBillingRetryFailureOwnership::SettlementRetry => {
+                        if let Some(current) = latest_queue
+                            .records
+                            .iter_mut()
+                            .find(|record| record.replay_key == retry.replay_key)
+                        {
+                            *current = retry.clone();
+                        }
+                    }
+                    RealtimeBillingRetryFailureOwnership::Refunded => {
+                        latest_queue
+                            .records
+                            .retain(|record| record.replay_key != retry.replay_key);
+                        clear_realtime_billing_reservation_lease(
+                            &mut storage,
+                            &retry.reservation_key,
+                            js_sys::Date::now(),
+                        )
+                        .await?;
+                    }
+                    RealtimeBillingRetryFailureOwnership::ReservationLease => {
+                        latest_queue
+                            .records
+                            .retain(|record| record.replay_key != retry.replay_key);
+                    }
+                }
+                store_realtime_billing_settlement_retry_queue(
+                    &mut storage,
+                    &latest_queue,
+                    js_sys::Date::now(),
+                )
+                .await?;
                 record_realtime_billing_settlement_retry_metrics(
                     &mut storage,
                     &retry,
-                    now_ms,
+                    js_sys::Date::now(),
                     true,
                     false,
                     Some(if exhausted_refunded {
                         "retry_exhausted_refunded"
+                    } else if exhausted_refund_deferred {
+                        "retry_exhausted_refund_deferred"
                     } else if retry.exhausted {
                         "retry_exhausted"
                     } else {
@@ -1318,6 +1685,8 @@ impl DurableObject for RealtimeSession {
                 .await?;
                 Response::ok(if exhausted_refunded {
                     "realtime settlement retry exhausted and reservation refunded"
+                } else if exhausted_refund_deferred {
+                    "realtime settlement retry exhausted and refund lease scheduled"
                 } else if retry.exhausted {
                     "realtime settlement retry exhausted"
                 } else {
@@ -1443,9 +1812,9 @@ impl RealtimeSession {
             .ok_or_else(|| "realtime billing audit plan is missing".to_string())?;
 
         let mut storage = self.state.storage();
-        let sequence = storage
-            .get::<i64>(BILLING_RESERVATION_SEQUENCE_KEY)
+        let sequence = load_optional_do_value::<i64>(&storage, BILLING_RESERVATION_SEQUENCE_KEY)
             .await
+            .map_err(|err| format!("failed to load realtime reservation sequence: {err}"))?
             .unwrap_or(0)
             .saturating_add(1);
         storage
@@ -1479,11 +1848,25 @@ impl RealtimeSession {
             .map_err(|err| format!("failed to serialize realtime billing snapshot: {err}"))?;
         let request_json = serde_json::to_string(&request)
             .map_err(|err| format!("failed to serialize realtime billing request: {err}"))?;
+        let now_ms = js_sys::Date::now();
+        let lease_seconds = realtime_billing_reservation_lease_seconds(&self.env);
+        let created_at = crate::admin::unix_timestamp();
+        let lease_expires_at = created_at.saturating_add(lease_seconds as i64);
+        let lease_expires_at_ms = lease_expires_at as f64 * 1_000.0;
+        persist_realtime_billing_reservation_lease(
+            &mut storage,
+            &reservation_key,
+            sequence,
+            lease_expires_at,
+            lease_expires_at_ms,
+            now_ms,
+        )
+        .await
+        .map_err(|err| format!("failed to persist realtime reservation lease: {err}"))?;
         let db = self
             .env
             .d1("DB")
             .map_err(|err| format!("failed to load DB binding for realtime reservation: {err}"))?;
-        let created_at = crate::admin::unix_timestamp();
         let endpoint_path = audit_plan.endpoint_path.as_str();
         let empty = "";
         let outcome = crate::d1_repositories::reserve_realtime_billing_quota(
@@ -1508,15 +1891,56 @@ impl RealtimeSession {
                 started_at: audit_plan.started_at,
                 endpoint_path,
                 created_at,
+                lease_expires_at,
             },
         )
         .await
         .map_err(|err| format!("failed to reserve realtime response quota: {err}"))?;
         if outcome == crate::d1_repositories::RealtimeBillingReservationWriteOutcome::Duplicate {
+            match crate::d1_repositories::realtime_billing_reservation_lease_identity(
+                &db,
+                &reservation_key,
+            )
+            .await
+            .map_err(|err| format!("failed to restore duplicate reservation lease: {err}"))?
+            {
+                Some(identity) => {
+                    refresh_realtime_billing_reservation_lease(
+                        &mut storage,
+                        &reservation_key,
+                        identity.reservation_sequence,
+                        identity.lease_expires_at,
+                        identity.lease_expires_at as f64 * 1_000.0,
+                        js_sys::Date::now(),
+                    )
+                    .await
+                    .map_err(|err| {
+                        format!("failed to restore authoritative duplicate lease: {err}")
+                    })?;
+                }
+                None => {
+                    clear_realtime_billing_reservation_lease(
+                        &mut storage,
+                        &reservation_key,
+                        js_sys::Date::now(),
+                    )
+                    .await
+                    .map_err(|err| format!("failed to clear finalized duplicate lease: {err}"))?;
+                }
+            }
             return Err("duplicate response.create event_id was already reserved".to_string());
         }
+        refresh_realtime_billing_reservation_lease(
+            &mut storage,
+            &reservation_key,
+            sequence,
+            lease_expires_at,
+            lease_expires_at_ms,
+            js_sys::Date::now(),
+        )
+        .await
+        .map_err(|err| format!("failed to refresh applied realtime reservation lease: {err}"))?;
 
-        let now_ms = js_sys::Date::now();
         match load_realtime_session_metrics(&storage, &attachment.session, now_ms).await {
             Ok(mut metrics) => {
                 metrics.record_billing_snapshot_metadata(
@@ -1570,18 +1994,34 @@ impl RealtimeSession {
             );
             return;
         };
-        if let Err(err) = crate::d1_repositories::refund_realtime_billing_reservation(
+        match crate::d1_repositories::refund_realtime_billing_reservation(
             &db,
             reservation_key,
             crate::admin::unix_timestamp(),
         )
         .await
         {
-            worker::console_warn!(
+            Ok(_) => {
+                let mut storage = self.state.storage();
+                if let Err(err) = clear_realtime_billing_reservation_lease(
+                    &mut storage,
+                    reservation_key,
+                    js_sys::Date::now(),
+                )
+                .await
+                {
+                    worker::console_warn!(
+                        "RealtimeSession failed to clear reservation lease {}: {}",
+                        reservation_key,
+                        err
+                    );
+                }
+            }
+            Err(err) => worker::console_warn!(
                 "RealtimeSession failed to refund reservation {}: {}",
                 reservation_key,
                 err
-            );
+            ),
         }
     }
 
@@ -1590,16 +2030,23 @@ impl RealtimeSession {
             worker::console_warn!("RealtimeSession could not load DB during session refund");
             return;
         };
-        let retry_reservations = load_realtime_billing_settlement_retry(&self.state.storage())
+        let retry_reservations = match load_realtime_billing_settlement_retry(&self.state.storage())
             .await
-            .map(|queue| {
-                queue
-                    .records
-                    .into_iter()
-                    .map(|record| record.reservation_key)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        {
+            Ok(Some(queue)) => queue
+                .records
+                .into_iter()
+                .map(|record| record.reservation_key)
+                .collect::<Vec<_>>(),
+            Ok(None) => Vec::new(),
+            Err(err) => {
+                worker::console_warn!(
+                    "RealtimeSession could not load settlement retry ownership during session refund: {}",
+                    err
+                );
+                return;
+            }
+        };
         let reservations =
             match crate::d1_repositories::reserved_realtime_billing_for_session(&db, session).await
             {
@@ -1617,18 +2064,34 @@ impl RealtimeSession {
             if retry_reservations.contains(&reservation.reservation_key) {
                 continue;
             }
-            if let Err(err) = crate::d1_repositories::refund_realtime_billing_reservation(
+            match crate::d1_repositories::refund_realtime_billing_reservation(
                 &db,
                 &reservation.reservation_key,
                 now,
             )
             .await
             {
-                worker::console_warn!(
+                Ok(_) => {
+                    let mut storage = self.state.storage();
+                    if let Err(err) = clear_realtime_billing_reservation_lease(
+                        &mut storage,
+                        &reservation.reservation_key,
+                        js_sys::Date::now(),
+                    )
+                    .await
+                    {
+                        worker::console_warn!(
+                            "RealtimeSession failed to clear terminal reservation lease {}: {}",
+                            reservation.reservation_key,
+                            err
+                        );
+                    }
+                }
+                Err(err) => worker::console_warn!(
                     "RealtimeSession failed to refund terminal reservation {}: {}",
                     reservation.reservation_key,
                     err
-                );
+                ),
             }
         }
     }
@@ -1730,11 +2193,20 @@ impl RealtimeSession {
 
     async fn load_billing_settlement_retry_status(
         &self,
-    ) -> Option<RealtimeBillingSettlementRetryStatus> {
+    ) -> WorkerResult<Option<RealtimeBillingSettlementRetryStatus>> {
         let storage = self.state.storage();
-        load_realtime_billing_settlement_retry(&storage)
-            .await
-            .and_then(|queue| queue.status())
+        Ok(load_realtime_billing_settlement_retry(&storage)
+            .await?
+            .and_then(|queue| queue.status()))
+    }
+
+    async fn load_billing_reservation_lease_status(
+        &self,
+    ) -> WorkerResult<Option<RealtimeBillingReservationLeaseStatus>> {
+        let storage = self.state.storage();
+        Ok(load_realtime_billing_reservation_leases(&storage)
+            .await?
+            .and_then(|queue| queue.status(js_sys::Date::now())))
     }
 
     async fn resume_billing_settlement_retry_if_enabled(&self) -> WorkerResult<()> {
@@ -1742,18 +2214,24 @@ impl RealtimeSession {
             return Ok(());
         }
         let mut storage = self.state.storage();
-        let Some(mut queue) = load_realtime_billing_settlement_retry(&storage).await else {
+        let Some(mut queue) = load_realtime_billing_settlement_retry(&storage).await? else {
             return Ok(());
         };
         let now_ms = js_sys::Date::now();
         for retry in &mut queue.records {
-            if retry.exhausted || retry.next_retry_at_ms.is_some() {
+            if retry.exhausted {
                 continue;
             }
-            retry.paused = false;
-            retry.updated_at_ms = now_ms;
-            retry.next_retry_at_ms =
-                Some(now_ms + realtime_billing_settlement_retry_delay_ms(retry.attempts) as f64);
+            if retry.paused {
+                retry.paused = false;
+                retry.updated_at_ms = now_ms;
+                retry.next_retry_at_ms = Some(now_ms);
+            } else if retry.next_retry_at_ms.is_none() {
+                retry.updated_at_ms = now_ms;
+                retry.next_retry_at_ms = Some(
+                    now_ms + realtime_billing_settlement_retry_delay_ms(retry.attempts) as f64,
+                );
+            }
         }
         store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await
     }
@@ -1785,14 +2263,119 @@ async fn store_realtime_session_metrics(
     storage.put(SESSION_METRICS_KEY, metrics).await
 }
 
+async fn load_optional_do_value<T: DeserializeOwned>(
+    storage: &Storage,
+    key: &str,
+) -> WorkerResult<Option<T>> {
+    let values = storage.get_multiple(vec![key]).await?;
+    let value = values.get(&JsValue::from_str(key));
+    if value.is_undefined() {
+        return Ok(None);
+    }
+    serde_wasm_bindgen::from_value(value)
+        .map(Some)
+        .map_err(|err| {
+            worker::Error::RustError(format!("failed to decode DO storage {key}: {err}"))
+        })
+}
+
 async fn load_realtime_billing_settlement_retry(
     storage: &Storage,
-) -> Option<RealtimeBillingSettlementRetryQueue> {
-    storage
-        .get::<RealtimeBillingSettlementRetryQueue>(BILLING_SETTLEMENT_RETRY_KEY)
-        .await
-        .ok()
-        .filter(|queue| !queue.records.is_empty())
+) -> WorkerResult<Option<RealtimeBillingSettlementRetryQueue>> {
+    Ok(
+        load_optional_do_value(storage, BILLING_SETTLEMENT_RETRY_KEY)
+            .await?
+            .filter(|queue: &RealtimeBillingSettlementRetryQueue| !queue.records.is_empty()),
+    )
+}
+
+async fn load_realtime_billing_reservation_leases(
+    storage: &Storage,
+) -> WorkerResult<Option<RealtimeBillingReservationLeaseQueue>> {
+    Ok(
+        load_optional_do_value(storage, BILLING_RESERVATION_LEASES_KEY)
+            .await?
+            .filter(|queue: &RealtimeBillingReservationLeaseQueue| !queue.records.is_empty()),
+    )
+}
+
+async fn persist_realtime_billing_reservation_lease(
+    storage: &mut Storage,
+    reservation_key: &str,
+    reservation_sequence: i64,
+    lease_expires_at: i64,
+    expires_at_ms: f64,
+    now_ms: f64,
+) -> WorkerResult<()> {
+    let mut queue = load_realtime_billing_reservation_leases(storage)
+        .await?
+        .unwrap_or_default();
+    queue
+        .upsert(
+            reservation_key,
+            reservation_sequence,
+            lease_expires_at,
+            expires_at_ms,
+        )
+        .map_err(worker::Error::RustError)?;
+    store_realtime_billing_reservation_lease_queue(storage, &queue, now_ms).await
+}
+
+async fn refresh_realtime_billing_reservation_lease(
+    storage: &mut Storage,
+    reservation_key: &str,
+    reservation_sequence: i64,
+    lease_expires_at: i64,
+    expires_at_ms: f64,
+    now_ms: f64,
+) -> WorkerResult<()> {
+    let mut queue = load_realtime_billing_reservation_leases(storage)
+        .await?
+        .unwrap_or_default();
+    let Some(record) = queue
+        .records
+        .iter_mut()
+        .find(|record| record.reservation_key == reservation_key)
+    else {
+        return Err(worker::Error::RustError(
+            "applied realtime reservation lease is missing".to_string(),
+        ));
+    };
+    record.reservation_sequence = reservation_sequence;
+    record.lease_expires_at = lease_expires_at;
+    record.expires_at_ms = expires_at_ms;
+    record.attempts = 0;
+    record.last_error = None;
+    store_realtime_billing_reservation_lease_queue(storage, &queue, now_ms).await
+}
+
+async fn clear_realtime_billing_reservation_lease(
+    storage: &mut Storage,
+    reservation_key: &str,
+    now_ms: f64,
+) -> WorkerResult<()> {
+    let Some(mut queue) = load_realtime_billing_reservation_leases(storage).await? else {
+        return Ok(());
+    };
+    queue
+        .records
+        .retain(|record| record.reservation_key != reservation_key);
+    store_realtime_billing_reservation_lease_queue(storage, &queue, now_ms).await
+}
+
+async fn store_realtime_billing_reservation_lease_queue(
+    storage: &mut Storage,
+    queue: &RealtimeBillingReservationLeaseQueue,
+    now_ms: f64,
+) -> WorkerResult<()> {
+    if queue.records.is_empty() {
+        storage.delete(BILLING_RESERVATION_LEASES_KEY).await?;
+    } else {
+        storage
+            .put(BILLING_RESERVATION_LEASES_KEY, queue.clone())
+            .await?;
+    }
+    schedule_realtime_billing_alarm(storage, now_ms).await
 }
 
 async fn persist_realtime_billing_settlement_retry(
@@ -1804,7 +2387,7 @@ async fn persist_realtime_billing_settlement_retry(
     retry.updated_at_ms = now_ms;
     retry.next_retry_at_ms = Some(now_ms + delay_ms as f64);
     let mut queue = load_realtime_billing_settlement_retry(storage)
-        .await
+        .await?
         .unwrap_or_default();
     if let Some(existing) = queue
         .records
@@ -1829,7 +2412,7 @@ async fn clear_realtime_billing_settlement_retry(
     replay_key: &str,
     now_ms: f64,
 ) -> WorkerResult<()> {
-    let Some(mut queue) = load_realtime_billing_settlement_retry(storage).await else {
+    let Some(mut queue) = load_realtime_billing_settlement_retry(storage).await? else {
         return Ok(());
     };
     queue
@@ -1845,15 +2428,31 @@ async fn store_realtime_billing_settlement_retry_queue(
 ) -> WorkerResult<()> {
     if queue.records.is_empty() {
         storage.delete(BILLING_SETTLEMENT_RETRY_KEY).await?;
-        return storage.delete_alarm().await;
+    } else {
+        storage
+            .put(BILLING_SETTLEMENT_RETRY_KEY, queue.clone())
+            .await?;
     }
-    storage
-        .put(BILLING_SETTLEMENT_RETRY_KEY, queue.clone())
-        .await?;
-    let Some(next_at_ms) = queue.next_retry_at_ms() else {
+    schedule_realtime_billing_alarm(storage, now_ms).await
+}
+
+async fn schedule_realtime_billing_alarm(storage: &mut Storage, _now_ms: f64) -> WorkerResult<()> {
+    let retry_at_ms = load_realtime_billing_settlement_retry(storage)
+        .await?
+        .and_then(|queue| queue.next_retry_at_ms());
+    let lease_at_ms = load_realtime_billing_reservation_leases(storage)
+        .await?
+        .and_then(|queue| queue.next_expiry_at_ms());
+    let next_at_ms = match (retry_at_ms, lease_at_ms) {
+        (Some(retry), Some(lease)) => Some(retry.min(lease)),
+        (Some(retry), None) => Some(retry),
+        (None, Some(lease)) => Some(lease),
+        (None, None) => None,
+    };
+    let Some(next_at_ms) = next_at_ms else {
         return storage.delete_alarm().await;
     };
-    let delay_ms = (next_at_ms - now_ms).max(1.0) as u64;
+    let delay_ms = (next_at_ms - js_sys::Date::now()).max(1.0) as u64;
     storage.set_alarm(Duration::from_millis(delay_ms)).await
 }
 
@@ -1862,6 +2461,39 @@ fn realtime_billing_settlement_retry_delay_ms(attempts: u8) -> u64 {
     BILLING_SETTLEMENT_RETRY_INITIAL_DELAY_MS
         .saturating_mul(1_u64 << exponent)
         .min(BILLING_SETTLEMENT_RETRY_MAX_DELAY_MS)
+}
+
+fn realtime_billing_reservation_owned_by_retry(
+    queue: &RealtimeBillingSettlementRetryQueue,
+    reservation_key: &str,
+    reservation_sequence: i64,
+    lease_expires_at: i64,
+) -> bool {
+    queue.records.iter().any(|retry| {
+        retry.reservation_key == reservation_key
+            && retry.reservation_sequence == reservation_sequence
+            && retry.lease_expires_at == lease_expires_at
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RealtimeBillingRetryFailureOwnership {
+    SettlementRetry,
+    Refunded,
+    ReservationLease,
+}
+
+fn realtime_billing_retry_failure_ownership(
+    exhausted_refunded: bool,
+    exhausted_refund_deferred: bool,
+) -> RealtimeBillingRetryFailureOwnership {
+    if exhausted_refunded {
+        RealtimeBillingRetryFailureOwnership::Refunded
+    } else if exhausted_refund_deferred {
+        RealtimeBillingRetryFailureOwnership::ReservationLease
+    } else {
+        RealtimeBillingRetryFailureOwnership::SettlementRetry
+    }
 }
 
 async fn record_realtime_billing_settlement_retry_metrics(
@@ -1904,11 +2536,16 @@ impl RealtimeBillingSettlementRetryRecord {
         preview: &RealtimeBillingSettlementPreviewMetadata,
         handoff: &RealtimeBillingSettlementHandoff,
         reservation_key: &str,
+        reservation_sequence: i64,
+        lease_expires_at: i64,
         upstream_response_id_hash: &str,
         replay_key: &str,
         now_ms: f64,
         error: &str,
     ) -> Option<Self> {
+        if reservation_sequence <= 0 || lease_expires_at <= 0 {
+            return None;
+        }
         Some(Self {
             attachment: attachment.clone(),
             preview: preview.clone(),
@@ -1916,6 +2553,8 @@ impl RealtimeBillingSettlementRetryRecord {
             mutation_plan: handoff.mutation_plan()?.clone(),
             audit_plan: handoff.audit_plan()?.clone(),
             reservation_key: reservation_key.to_string(),
+            reservation_sequence,
+            lease_expires_at,
             upstream_response_id_hash: upstream_response_id_hash.to_string(),
             replay_key: replay_key.to_string(),
             attempts: 1,
@@ -1932,7 +2571,7 @@ impl RealtimeBillingSettlementRetryRecord {
     fn status(&self) -> RealtimeBillingSettlementRetryStatus {
         RealtimeBillingSettlementRetryStatus {
             record_count: 1,
-            pending: !self.paused && !self.exhausted && self.next_retry_at_ms.is_some(),
+            pending: self.next_retry_at_ms.is_some(),
             paused: self.paused,
             exhausted: self.exhausted,
             attempts: self.attempts,
@@ -1947,9 +2586,23 @@ impl RealtimeBillingSettlementRetryQueue {
     fn next_retry_at_ms(&self) -> Option<f64> {
         self.records
             .iter()
-            .filter(|record| !record.paused && !record.exhausted)
             .filter_map(|record| record.next_retry_at_ms)
             .min_by(|left, right| left.total_cmp(right))
+    }
+
+    fn next_due_refund_index(&self, now_ms: f64) -> Option<usize> {
+        self.records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.exhausted)
+            .filter_map(|(index, record)| {
+                record
+                    .next_retry_at_ms
+                    .filter(|next_at_ms| *next_at_ms <= now_ms)
+                    .map(|next_at_ms| (index, next_at_ms))
+            })
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(index, _)| index)
     }
 
     fn next_due_index(&self, now_ms: f64) -> Option<usize> {
@@ -1978,9 +2631,10 @@ impl RealtimeBillingSettlementRetryQueue {
         })?;
         Some(RealtimeBillingSettlementRetryStatus {
             record_count: self.records.len(),
-            pending: self.records.iter().any(|record| {
-                !record.paused && !record.exhausted && record.next_retry_at_ms.is_some()
-            }),
+            pending: self
+                .records
+                .iter()
+                .any(|record| record.next_retry_at_ms.is_some()),
             paused: self
                 .records
                 .iter()
@@ -1995,6 +2649,91 @@ impl RealtimeBillingSettlementRetryQueue {
                 .unwrap_or(0),
             max_attempts: representative.max_attempts,
             next_retry_at_ms: self.next_retry_at_ms(),
+            last_error: representative.last_error.clone(),
+        })
+    }
+}
+
+impl RealtimeBillingReservationLeaseQueue {
+    fn upsert(
+        &mut self,
+        reservation_key: &str,
+        reservation_sequence: i64,
+        lease_expires_at: i64,
+        expires_at_ms: f64,
+    ) -> Result<(), String> {
+        if reservation_sequence <= 0 || lease_expires_at <= 0 {
+            return Err("realtime billing reservation lease identity is invalid".to_string());
+        }
+        if let Some(existing) = self
+            .records
+            .iter_mut()
+            .find(|record| record.reservation_key == reservation_key)
+        {
+            if existing.reservation_sequence == reservation_sequence {
+                existing.lease_expires_at = existing.lease_expires_at.min(lease_expires_at);
+                existing.expires_at_ms = existing.expires_at_ms.min(expires_at_ms);
+            } else {
+                existing.reservation_sequence = reservation_sequence;
+                existing.lease_expires_at = lease_expires_at;
+                existing.expires_at_ms = expires_at_ms;
+                existing.attempts = 0;
+                existing.last_error = None;
+            }
+            return Ok(());
+        }
+        if self.records.len() >= BILLING_RESERVATION_LEASE_MAX_RECORDS {
+            return Err(format!(
+                "realtime billing reservation lease queue reached {} records",
+                BILLING_RESERVATION_LEASE_MAX_RECORDS
+            ));
+        }
+        self.records.push(RealtimeBillingReservationLeaseRecord {
+            reservation_key: reservation_key.to_string(),
+            reservation_sequence,
+            lease_expires_at,
+            expires_at_ms,
+            attempts: 0,
+            last_error: None,
+        });
+        Ok(())
+    }
+
+    fn next_expiry_at_ms(&self) -> Option<f64> {
+        self.records
+            .iter()
+            .map(|record| record.expires_at_ms)
+            .min_by(|left, right| left.total_cmp(right))
+    }
+
+    fn next_due_index(&self, now_ms: f64) -> Option<usize> {
+        self.records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.expires_at_ms <= now_ms)
+            .min_by(|(_, left), (_, right)| left.expires_at_ms.total_cmp(&right.expires_at_ms))
+            .map(|(index, _)| index)
+    }
+
+    fn status(&self, now_ms: f64) -> Option<RealtimeBillingReservationLeaseStatus> {
+        let representative = self
+            .records
+            .iter()
+            .min_by(|left, right| left.expires_at_ms.total_cmp(&right.expires_at_ms))?;
+        Some(RealtimeBillingReservationLeaseStatus {
+            record_count: self.records.len(),
+            due_count: self
+                .records
+                .iter()
+                .filter(|record| record.expires_at_ms <= now_ms)
+                .count(),
+            next_expiry_at_ms: self.next_expiry_at_ms(),
+            highest_attempts: self
+                .records
+                .iter()
+                .map(|record| record.attempts)
+                .max()
+                .unwrap_or(0),
             last_error: representative.last_error.clone(),
         })
     }
@@ -3671,6 +4410,19 @@ pub(crate) fn realtime_billing_settlement_retry_compiled() -> bool {
         && realtime_billing_settlement_retry_delay_ms(u8::MAX) == 30_000
 }
 
+pub(crate) fn realtime_billing_reservation_lease_compiled() -> bool {
+    REALTIME_BILLING_RESERVATION_LEASE_COMPILED
+        && BILLING_RESERVATION_LEASE_MAX_RECORDS > BILLING_SETTLEMENT_RETRY_MAX_RECORDS
+        && BILLING_RESERVATION_LEASE_MIN_SECONDS < BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        && BILLING_RESERVATION_LEASE_DEFAULT_SECONDS < BILLING_RESERVATION_LEASE_MAX_SECONDS
+        && normalize_realtime_billing_reservation_lease_seconds(None)
+            == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        && normalize_realtime_billing_reservation_lease_seconds(Some("30".to_string())) == 30
+        && normalize_realtime_billing_reservation_lease_seconds(Some("3600".to_string())) == 3_600
+        && normalize_realtime_billing_reservation_lease_seconds(Some("0".to_string()))
+            == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+}
+
 fn realtime_billing_settlement_preview(
     snapshot: &TieredBillingSnapshot,
     usage: &RealtimeUsageMetadata,
@@ -3773,6 +4525,27 @@ impl RealtimeBillingSettlementAuditPlan {
 
 fn realtime_billing_settlement_write_enabled(env: &Env) -> bool {
     env_flag(env, REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV)
+}
+
+pub(crate) fn realtime_billing_reservation_lease_seconds(env: &Env) -> u64 {
+    normalize_realtime_billing_reservation_lease_seconds(
+        env.var(REALTIME_BILLING_RESERVATION_LEASE_SECONDS_ENV)
+            .ok()
+            .map(|value| value.to_string()),
+    )
+}
+
+fn normalize_realtime_billing_reservation_lease_seconds(value: Option<String>) -> u64 {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| {
+            (BILLING_RESERVATION_LEASE_MIN_SECONDS..=BILLING_RESERVATION_LEASE_MAX_SECONDS)
+                .contains(value)
+        })
+        .unwrap_or(BILLING_RESERVATION_LEASE_DEFAULT_SECONDS)
 }
 
 fn realtime_billing_settlement_write_metadata(
@@ -4257,7 +5030,7 @@ async fn record_realtime_upstream_usage(
         return store_realtime_session_metrics(storage, &metrics).await;
     }
     let retry_queue = load_realtime_billing_settlement_retry(storage)
-        .await
+        .await?
         .unwrap_or_default();
     if retry_queue
         .records
@@ -4309,6 +5082,8 @@ async fn record_realtime_upstream_usage(
                 crate::admin::unix_timestamp(),
             )
             .await?;
+            clear_realtime_billing_reservation_lease(storage, &reservation.reservation_key, now_ms)
+                .await?;
         }
         metrics.record_realtime_usage(Some(attachment), now_ms, usage, None);
         return store_realtime_session_metrics(storage, &metrics).await;
@@ -4434,6 +5209,18 @@ async fn record_realtime_upstream_usage(
                             err
                         );
                     }
+                    if let Err(err) = clear_realtime_billing_reservation_lease(
+                        storage,
+                        reservation_key.expect("checked above"),
+                        now_ms,
+                    )
+                    .await
+                    {
+                        worker::console_warn!(
+                            "RealtimeSession reservation lease cleanup failed after apply: {}",
+                            err
+                        );
+                    }
                     let mut metadata = realtime_billing_settlement_write_metadata(
                         preview,
                         Some(plan),
@@ -4455,6 +5242,18 @@ async fn record_realtime_upstream_usage(
                     {
                         worker::console_warn!(
                             "RealtimeSession settlement retry cleanup failed after duplicate: {}",
+                            err
+                        );
+                    }
+                    if let Err(err) = clear_realtime_billing_reservation_lease(
+                        storage,
+                        reservation_key.expect("checked above"),
+                        now_ms,
+                    )
+                    .await
+                    {
+                        worker::console_warn!(
+                            "RealtimeSession reservation lease cleanup failed after duplicate: {}",
                             err
                         );
                     }
@@ -4488,11 +5287,14 @@ async fn record_realtime_upstream_usage(
                     metadata.audit_attempted = true;
                     metadata.audit_error = truncate_text(&err, MAX_STORED_TEXT_CHARS);
                     if let Some(mut retry) = effective_handoff.and_then(|handoff| {
+                        let reservation = reservation.as_ref()?;
                         RealtimeBillingSettlementRetryRecord::new(
                             attachment,
                             preview,
                             handoff,
                             reservation_key.expect("checked above"),
+                            reservation.reservation_sequence,
+                            reservation.lease_expires_at,
                             &response_identity_hash,
                             replay_key,
                             now_ms,
@@ -4509,7 +5311,21 @@ async fn record_realtime_upstream_usage(
                         )
                         .await
                         {
-                            Ok(()) => metadata.apply_retry_status(&retry.status()),
+                            Ok(()) => {
+                                if let Err(err) = clear_realtime_billing_reservation_lease(
+                                    storage,
+                                    reservation_key.expect("checked above"),
+                                    now_ms,
+                                )
+                                .await
+                                {
+                                    worker::console_warn!(
+                                        "RealtimeSession could not transfer reservation lease to settlement retry: {}",
+                                        err
+                                    );
+                                }
+                                metadata.apply_retry_status(&retry.status());
+                            }
                             Err(schedule_err) => {
                                 metadata.skipped_reason =
                                     Some("write_failed_retry_schedule_failed".to_string());
@@ -7213,6 +8029,87 @@ mod tests {
     }
 
     #[test]
+    fn realtime_billing_reservation_lease_contract_is_compiled_and_redacted() {
+        assert!(realtime_billing_reservation_lease_compiled());
+        assert_eq!(
+            normalize_realtime_billing_reservation_lease_seconds(None),
+            BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        );
+        assert_eq!(
+            normalize_realtime_billing_reservation_lease_seconds(Some("29".to_string())),
+            BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        );
+        assert_eq!(
+            normalize_realtime_billing_reservation_lease_seconds(Some(" 120 ".to_string())),
+            120
+        );
+
+        let mut queue = RealtimeBillingReservationLeaseQueue::default();
+        queue
+            .upsert("private-reservation-2", 2, 2, 2_000.0)
+            .unwrap();
+        queue
+            .upsert("private-reservation-1", 1, 1, 1_000.0)
+            .unwrap();
+        queue
+            .upsert("private-reservation-1", 1, 5, 5_000.0)
+            .unwrap();
+        queue
+            .upsert("private-reservation-1", 3, 500, 500.0)
+            .unwrap();
+        assert_eq!(queue.records.len(), 2);
+        let original = queue
+            .records
+            .iter()
+            .find(|record| record.reservation_key == "private-reservation-1")
+            .unwrap();
+        assert_eq!(original.reservation_sequence, 3);
+        assert_eq!(original.lease_expires_at, 500);
+        assert_eq!(queue.next_due_index(1_500.0), Some(1));
+        assert_eq!(queue.next_expiry_at_ms(), Some(500.0));
+
+        let status = queue.status(1_500.0).expect("lease status");
+        assert_eq!(status.record_count, 2);
+        assert_eq!(status.due_count, 1);
+        assert_eq!(status.next_expiry_at_ms, Some(500.0));
+        let raw = serde_json::to_string(&status).unwrap();
+        assert!(!raw.contains("private-reservation"));
+        assert!(!raw.contains("reservation_key"));
+        assert_eq!(
+            realtime_billing_retry_failure_ownership(false, false),
+            RealtimeBillingRetryFailureOwnership::SettlementRetry
+        );
+        assert_eq!(
+            realtime_billing_retry_failure_ownership(true, false),
+            RealtimeBillingRetryFailureOwnership::Refunded
+        );
+        assert_eq!(
+            realtime_billing_retry_failure_ownership(false, true),
+            RealtimeBillingRetryFailureOwnership::ReservationLease
+        );
+
+        let mut capacity_queue = RealtimeBillingReservationLeaseQueue::default();
+        for index in 0..BILLING_RESERVATION_LEASE_MAX_RECORDS {
+            capacity_queue
+                .upsert(
+                    &format!("reservation-{index}"),
+                    index as i64 + 1,
+                    10_000 + index as i64,
+                    10_000.0 + index as f64,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            capacity_queue.records.len(),
+            BILLING_RESERVATION_LEASE_MAX_RECORDS
+        );
+        assert!(capacity_queue
+            .upsert("reservation-over-capacity", 129, 20_000, 20_000.0)
+            .unwrap_err()
+            .contains("reached 128 records"));
+    }
+
+    #[test]
     fn realtime_billing_retry_queue_keeps_multiple_due_records() {
         let snapshot = estimate_tiered_billing_snapshot_with_request(
             "gpt-4o-realtime-preview",
@@ -7262,6 +8159,8 @@ mod tests {
             &preview,
             &handoff,
             "reservation-1",
+            1,
+            1_000,
             "response-1",
             "replay-1",
             100.0,
@@ -7271,18 +8170,53 @@ mod tests {
         first.next_retry_at_ms = Some(2_000.0);
         let mut second = first.clone();
         second.reservation_key = "reservation-2".to_string();
+        second.reservation_sequence = 2;
         second.upstream_response_id_hash = "response-2".to_string();
         second.replay_key = "replay-2".to_string();
         second.next_retry_at_ms = Some(1_000.0);
+        let mut exhausted_refund = first.clone();
+        exhausted_refund.reservation_key = "reservation-3".to_string();
+        exhausted_refund.reservation_sequence = 3;
+        exhausted_refund.upstream_response_id_hash = "response-3".to_string();
+        exhausted_refund.replay_key = "replay-3".to_string();
+        exhausted_refund.exhausted = true;
+        exhausted_refund.next_retry_at_ms = Some(500.0);
+        let mut gate_paused = first.clone();
+        gate_paused.reservation_key = "reservation-4".to_string();
+        gate_paused.reservation_sequence = 4;
+        gate_paused.upstream_response_id_hash = "response-4".to_string();
+        gate_paused.replay_key = "replay-4".to_string();
+        gate_paused.paused = true;
+        gate_paused.next_retry_at_ms = Some(750.0);
         let queue = RealtimeBillingSettlementRetryQueue {
-            records: vec![first, second],
+            records: vec![first, second, exhausted_refund, gate_paused],
         };
 
         let status = queue.status().expect("queue status");
-        assert_eq!(status.record_count, 2);
-        assert_eq!(status.next_retry_at_ms, Some(1_000.0));
+        assert_eq!(status.record_count, 4);
+        assert_eq!(status.next_retry_at_ms, Some(500.0));
         assert_eq!(queue.next_due_index(1_500.0), Some(1));
         assert_eq!(queue.next_due_index(500.0), None);
+        assert_eq!(queue.next_due_refund_index(500.0), Some(2));
+        assert_eq!(queue.next_due_refund_index(499.0), None);
+        assert!(realtime_billing_reservation_owned_by_retry(
+            &queue,
+            "reservation-1",
+            1,
+            1_000
+        ));
+        assert!(realtime_billing_reservation_owned_by_retry(
+            &queue,
+            "reservation-2",
+            2,
+            1_000
+        ));
+        assert!(!realtime_billing_reservation_owned_by_retry(
+            &queue,
+            "reservation-2",
+            1,
+            1_000
+        ));
     }
 
     #[test]

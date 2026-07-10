@@ -70,10 +70,10 @@ wrangler d1 migrations apply cinatoken-rust-db --local
 ```
 
 As of 2026-07-10, the first command checks all three `wrangler.toml` D1
-bindings for `migrations_dir = "migrations/d1"` and a contiguous 19-migration
-chain. The SQLite verifier applies all 19 migrations by default and requires
-26 tables, 55 incremental key columns, and 13 key indexes. Local Wrangler D1
-has also applied 19/19 migrations successfully.
+bindings for `migrations_dir = "migrations/d1"` and a contiguous 20-migration
+chain. The SQLite verifier applies all 20 migrations by default and requires
+26 tables, 56 incremental key columns, and 14 key indexes. Local Wrangler D1
+has also applied 20/20 migrations successfully.
 These are local prerequisites only; they do not replace an authenticated
 staging migration, deployed Worker smoke, or staging evidence capture.
 

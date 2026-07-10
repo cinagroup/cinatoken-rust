@@ -4,7 +4,7 @@ Last checked: 2026-07-10
 
 ## Passed
 
-- `cargo test -p cinatoken-worker --lib`: passed on 2026-07-10 with 511/511
+- `cargo test -p cinatoken-worker --lib`: passed on 2026-07-10 with 512/512
   tests after adding the Realtime per-response reservation state machine,
   request-aware estimate, explicit-response VAD guard, response identity
   correlation, and multi-record settlement retry queue. The retry contract
@@ -20,11 +20,13 @@ Last checked: 2026-07-10
   smoke contracts, workspace tests, and both Worker and WFP tenant wasm32
   checks. Only the existing unused topup repository warnings remained.
 - Capability/frontend/smoke contracts now expose
-  `realtime_session_billing_settlement_retry_compiled` and
+  `realtime_session_billing_settlement_retry_compiled`,
+  `realtime_session_billing_reservation_lease_compiled`, and
   `realtime_session_billing_settlement_write_enabled`. The default, staging,
   and production Wrangler variable tables explicitly keep
   `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED="false"`; v1 smoke preflight
-  requires it to be true before attempting a live WebSocket.
+  requires it to be true before attempting a live WebSocket. All environments
+  set `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="600"` explicitly.
 - Evidence boundary: a fresh localhost Worker request for the new structured
   503 interlock was not captured. `wrangler dev` could not run because
   `worker-build` was absent; installing it failed under the default GNU host
@@ -35,41 +37,54 @@ Last checked: 2026-07-10
   eviction evidence remain staging requirements.
 - Production audit boundary: Realtime settlement remains NO-GO for paid
   traffic, but the audited local correctness defects are now closed by
-  migration 0019: every `response.create` receives an idempotent D1 reserve,
+  migrations 0019-0020: every `response.create` receives an idempotent D1 reserve,
   settlement/refund is per reservation, and replay identity includes the
   hashed upstream response. A bounded multi-record DO alarm queue prevents
-  failed responses from replacing one another. Live staging multi-response,
+  failed responses from replacing one another, while a persisted active-work
+  lease refunds abandoned reservations after DO hibernation/crash recovery.
+  Lease recovery is generation-bound by `reservation_sequence`, merges queue
+  state after D1 awaits, keeps gate-off and refund-only deadlines scheduled,
+  and treats DO storage read failures as retryable alarm failures rather than
+  empty queues. Migration 0020 also rejects unreconciled active 0019 rows.
+  Live staging multi-response,
   alarm/eviction, disconnect-refund, D1 rollback, and Go/Rust reconciliation
   evidence is still missing. WFP tenant AI forwarding also remains NO-GO for
   paid traffic until central auth/provider/billing authority, real Rust/Wasm
   artifact identity, separate least-privilege runtime credentials, and strict
   2xx canary evidence are proven.
 - `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json`: passed
-  11/11 checks. The added parallel-response case binds two sequence-ordered
+  13/13 checks. The parallel-response case binds two sequence-ordered
   reservations to distinct hashed `response.created` identities, then settles
-  their `response.done` events in reverse order without swapping final quota.
+  their `response.done` events in reverse order without swapping final quota;
+  the lease cases prove not-due, first-expiry refund, replay no-op, and
+  stale-generation protection.
 
 - `bun run check:d1:migration-config`: passed on 2026-07-10. The audit found
   exactly the top-level, staging, and production D1 binding tables, each with
   binding `DB` and `migrations_dir = "migrations/d1"`; migrations are
   contiguous from `0001_core.sql` through
-  `0019_realtime_billing_reservations.sql` (19 total), and the Worker capability
+  `0020_realtime_billing_reservation_leases.sql` (20 total), and the Worker capability
   constant names the same latest migration.
 - `bun run verify:sqlite`: passed on 2026-07-10 with
-  `sqlite schema ok: 19 migrations, 26 tables, 55 incremental columns, 13 key
-  indexes`. The default verifier now exercises the full migration chain rather
-  than only `0001_core.sql`.
-- `wrangler d1 migrations apply cinatoken-rust-db --local`: applied all 19/19
+  `sqlite schema ok: 20 migrations, 26 tables, 56 incremental columns, 14 key
+  indexes + 0020 active-reservation guard`. The default verifier now exercises
+  the full migration chain, active-row rejection, and clean retry after
+  reconciliation rather than only `0001_core.sql`.
+- `wrangler d1 migrations apply cinatoken-rust-db --local`: applied all 20/20
   migrations through real local Wrangler D1 on Windows. Wrangler's local
   `workerd` required Microsoft Visual C++ 2015-2022 Redistributable (x64); with
   that runtime present, the prior local process-start failure was cleared.
-- A real localhost Worker request to the admin-only
-  `/api/platform/capabilities` returned D1 migration status available, applied
-  count `19`, latest/expected `0019_realtime_billing_reservations.sql`, exact
-  migration-set match, and overall D1 readiness all true. The runtime gate now
-  compares the complete compiled 19-name set rather than accepting only a row
-  count and latest marker; the config audit locks that compiled set to the SQL
-  files in `migrations/d1`.
+- The compiled runtime gate now requires the complete 20-name set through
+  `0020_realtime_billing_reservation_leases.sql`. The previous real localhost
+  `/api/platform/capabilities` request proved count 19/latest 0019 and D1
+  readiness before migration 0020 landed; it must be refreshed before serving
+  as current runtime evidence. Direct local D1 readback confirms 0020, its
+  `lease_expires_at` column, and lease index are present.
+- After the fail-closed guard was added, Wrangler 4.103.0 replayed the final
+  20-file chain into a fresh isolated `--persist-to` directory. All 20 displayed
+  applied; direct readback confirmed latest 0020, the lease column/index, and
+  no residual migration guard table. Wrangler printed completion but retained
+  a Windows helper process, which was terminated only after readback.
 - The same capability request initially exposed a wasm-only billing clock panic:
   `std::time::SystemTime::now()` is unavailable on
   `wasm32-unknown-unknown`. The billing engine now uses `js_sys::Date::now()`
@@ -2691,7 +2706,7 @@ bun run check
 
 - The former Windows local Wrangler/`workerd` startup blocker is closed for the
   2026-07-10 local evidence window after installing the Microsoft Visual C++
-  2015-2022 Redistributable (x64): local D1 applied 19/19 and the localhost
+  2015-2022 Redistributable (x64): local D1 applied 20/20 and the localhost
   Worker `DB` binding settlement smoke passed 6/6 with cleanup at zero. Future
   Windows operators must keep this runtime prerequisite in the bootstrap
   checklist.

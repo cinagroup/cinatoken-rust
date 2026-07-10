@@ -282,9 +282,14 @@ application routing.
 
 1. Set Rust traffic to 0% or remove the Rust route.
 2. Route selected tokens/groups back to Go/VPS.
-3. Disable Rust-specific canary flags.
-4. Keep Rust D1/log state immutable.
-5. Start reconciliation.
+3. Disable new Rust Realtime admission, but keep the 0020-aware Realtime DO
+   deployment, `REALTIME_SESSIONS`, and D1 binding available for recovery.
+4. Wait until D1 has zero `reserved` Realtime reservations and both persisted
+   lease/retry queues report zero records. Archive every terminal/refund
+   mutation and reconcile its quota delta.
+5. Disable the remaining Rust-specific canary flags and make D1/log state
+   immutable only after recovery ownership is empty.
+6. Start final reconciliation.
 
 ### Data Rollback
 

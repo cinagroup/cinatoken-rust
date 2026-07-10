@@ -40,8 +40,8 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 19 migrations, 26 required tables, 55
-  incremental key columns, and 13 key indexes.
+- `bun run verify:sqlite` reports 20 migrations, 26 required tables, 56
+  incremental key columns, and 14 key indexes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes.
@@ -136,9 +136,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0019 are
-  contiguous; the local SQLite verifier finds all 26 required tables, 55
-  incremental key columns, and 13 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0020 are
+  contiguous; the local SQLite verifier finds all 26 required tables, 56
+  incremental key columns, and 14 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -192,7 +192,7 @@ Deploy or update staging using the configured staging command.
 Before any remote command, confirm the operator has revoked/rotated every
 exposed token and authenticated Wrangler with a replacement credential. Record
 the account identity and token scope/owner/rotation time, never the token value.
-If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local 19/19
+If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local 20/20
 or localhost smoke output cannot be promoted into this phase.
 
 Record:
@@ -511,7 +511,8 @@ Before promoting Realtime settlement beyond default-off code paths, run the
 local D1-shape settlement batch replay. It does not write Cloudflare D1; it
 proves the Worker batch contract locally for applied, duplicate,
 guarded-update rollback, audit-failure rollback, refund, and tokenless
-settlement paths:
+settlement paths, plus the 0020 reservation-lease contract for not-yet-due
+work, expiry refund, idempotent replay, and earliest-deadline scheduling:
 
 ```powershell
 bun run check:realtime-session:settlement-batch-contract
@@ -533,6 +534,56 @@ as substitute proof for the D1 batch apply step: Cloudflare Worker
 for setup, row snapshots, and cleanup. The batch apply proof must come from the
 deployed Worker path, such as a controlled `/v1/realtime` mock-usage replay or
 a staging-only Worker binding smoke probe.
+
+The six Worker-binding scenarios exercise the settlement batch itself; they do
+not prove Durable Object alarm recovery. Archive separate staging evidence that
+uses a deliberately short approved test lease to show: an alarm before expiry
+does not refund, expiry after DO eviction/restart refunds once, a forced D1
+refund failure leaves one redacted lease and re-arms the alarm, settlement-retry
+ownership suppresses lease refund, and the shared alarm selects the earliest
+deadline across both queues. Restore the production candidate lease value after
+the test and verify it exceeds measured response-duration p99 plus the approved
+retry/clock-skew margin.
+
+### Reservation Lease Recovery Drill
+
+This is a G7-blocking isolated-staging drill. Until a dedicated harness
+automates it, execute the steps with the mock upstream and archive redacted
+HTTP/WS status plus D1 snapshots before and after every transition:
+
+1. Confirm exact D1 readiness through 0020 and zero pre-0020 `reserved` rows.
+   Record the current capability value, deploy a temporary staging-only
+   `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="30"`, and keep production
+   unchanged.
+2. Create one response reservation without a terminal `response.done`. Before
+   30 seconds, prove the D1 row is still `reserved`, `due_count=0`, and no quota
+   refund occurred.
+3. Let the DO hibernate or restart the staging Worker without deleting DO/D1
+   state. After expiry, prove one CAS refund, zero duplicate quota changes, and
+   lease removal. Replay the alarm/status path and prove it stays a no-op.
+4. On a dedicated fixture reservation, install a temporary D1 trigger that
+   aborts the `reserved` to `refunded` update. Prove the redacted lease attempt
+   count increases and the alarm re-arms; drop the trigger, then prove recovery
+   and cleanup. Archive trigger creation/removal and verify no trigger remains.
+5. Force settlement failure for another response. Prove the retry record takes
+   ownership and its active lease disappears; when retry exhaustion cannot
+   refund immediately, prove exactly one refund-only deadline or lease owner
+   remains and eventually clears.
+6. Create lease and retry deadlines in both orders. Prove the single alarm
+   follows the earlier absolute deadline and later work is not overwritten.
+7. Abort D1 reservation insert after the DO lease is stored. At lease expiry,
+   prove `NotFound` removes that lease without quota mutation.
+8. Exercise normal settle, missing usage, forward failure, disconnect, and
+   terminal error. Every path must remove its lease. Then use mock-only
+   reservations to prove 128 active records are accepted and the 129th fails
+   before D1 reservation/upstream forwarding.
+9. Restore the production-candidate lease value, redeploy, archive the before
+   and after capabilities, and verify both persisted queues and all fixture
+   rows/triggers are empty.
+
+The drill is incomplete if eviction/restart is only inferred, fault triggers
+are left behind, raw reservation inputs appear in artifacts, or any D1
+`reserved` row lacks one redacted lease/retry owner.
 
 The Worker-binding smoke route is `POST
 /api/platform/realtime/settlement-batch/smoke`. It is admin-only, rejects
@@ -687,12 +738,16 @@ Record:
   `realtime_session_billing_settlement_audit_log_compiled`,
   `realtime_session_billing_settlement_batch_compiled`,
   `realtime_session_billing_settlement_retry_compiled`,
+  `realtime_session_billing_reservation_lease_compiled`,
+  `realtime_session_billing_reservation_lease_seconds`,
   `realtime_session_billing_settlement_write_enabled`,
   `realtime_session_platform_header_boundary_compiled`,
   `realtime_session_platform_smoke_ready`, and
   `realtime_session_v1_cutover_ready`.
 - WebSocket `pong` response.
-- WebSocket `realtime_session_status` frame.
+- WebSocket `realtime_session_status` frame, including redacted
+  `billing_reservation_lease` record/due counts, next expiry, highest attempts,
+  bounded last error, and settlement retry ownership without reservation keys.
 - WebSocket `realtime_session_control` probe response, including
   `text_bytes`, `text_chars`, `rawProbeEchoed=false`, and no `received` field.
 - Platform header-boundary smoke output, including
@@ -718,12 +773,16 @@ Pass criteria:
   billing settlement preview, billing settlement handoff, billing settlement
   mutation plan, default-off billing settlement writer, durable replay marker,
   Go-compatible audit-log foundation, guarded D1 settlement batch foundation,
-  bounded DO alarm retry foundation, current settlement-write gate state, and
-  platform upstream-header boundary;
+  bounded DO alarm retry foundation, active reservation lease recovery,
+  configured lease seconds, exact D1 migration readiness, current
+  settlement-write gate state, and platform upstream-header boundary;
   `realtime_session_platform_smoke_ready=true` before the platform WebSocket
   smoke runs.
 - The WebSocket opens, `ping` returns `pong`, and `status` returns persisted
   lifecycle metrics.
+- Lease/retry status exposes metadata only; every D1 `reserved` reservation has
+  exactly one owner, the configured lease seconds match capabilities, and the
+  earliest lease/retry deadline remains scheduled across hibernation.
 - Metrics show at least one connect and at least two text messages from the
   WebSocket status frame; platform HTTP status shows at least three text
   messages after `ping`, `status`, and the unsupported-control or frame-limit

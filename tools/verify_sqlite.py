@@ -95,6 +95,7 @@ REQUIRED_COLUMNS = {
         "updated_at",
         "settled_at",
         "refunded_at",
+        "lease_expires_at",
     },
 }
 
@@ -117,6 +118,7 @@ REQUIRED_INDEXES = {
         "idx_realtime_billing_reservations_user_status": False,
         "idx_realtime_billing_reservations_replay_key": True,
         "idx_realtime_billing_reservations_response": True,
+        "idx_realtime_billing_reservations_lease": False,
     },
 }
 
@@ -145,6 +147,11 @@ def main() -> int:
     for schema_path in schema_paths:
         if not schema_path.exists():
             raise SystemExit(f"schema file not found: {schema_path}")
+
+    lease_guard_verified = False
+    if not args.schema:
+        verify_realtime_lease_migration_guard(schema_paths)
+        lease_guard_verified = True
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -189,6 +196,8 @@ def main() -> int:
         f"{sum(map(len, REQUIRED_COLUMNS.values()))} incremental columns, "
         f"{sum(map(len, REQUIRED_INDEXES.values()))} key indexes"
     )
+    if lease_guard_verified:
+        message += " + 0020 active-reservation guard"
 
     if args.seed:
         for value in args.seed:
@@ -217,6 +226,49 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def verify_realtime_lease_migration_guard(schema_paths: list[Path]) -> None:
+    lease_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0020_realtime_billing_reservation_leases.sql"
+        ),
+        None,
+    )
+    if lease_path is None:
+        raise SystemExit("0020 realtime reservation lease migration not found")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == lease_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.execute(
+        """
+        INSERT INTO realtime_billing_reservations (
+          reservation_key, session, user_id, channel_id, model_name,
+          snapshot_json, request_json
+        ) VALUES ('guard-reservation', 'guard-session', 1, 1, 'guard-model', '{}', '{}')
+        """
+    )
+    try:
+        conn.executescript(lease_path.read_text(encoding="utf-8"))
+    except sqlite3.IntegrityError:
+        conn.execute(
+            "UPDATE realtime_billing_reservations SET status = 'refunded' "
+            "WHERE reservation_key = 'guard-reservation'"
+        )
+        conn.executescript(lease_path.read_text(encoding="utf-8"))
+        if "lease_expires_at" not in table_columns(
+            conn, "realtime_billing_reservations"
+        ):
+            raise SystemExit("0020 migration did not succeed after reconciliation")
+        if table_exists(conn, "migration_0020_realtime_reservation_guard"):
+            raise SystemExit("0020 migration guard table was not cleaned up")
+        return
+    raise SystemExit("0020 migration must reject unreconciled realtime reserved rows")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

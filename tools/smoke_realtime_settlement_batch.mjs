@@ -78,6 +78,8 @@ function runSelfTest() {
     runCheck("response_reservation_settles_once", responseReservationSettlesOnce),
     runCheck("response_reservation_guard_rolls_back", responseReservationGuardRollsBack),
     runCheck("response_reservation_refund_is_idempotent", responseReservationRefundIsIdempotent),
+    runCheck("response_reservation_lease_expiry_refunds_once", responseReservationLeaseExpiryRefundsOnce),
+    runCheck("stale_lease_generation_does_not_refund_new_reservation", staleLeaseGenerationDoesNotRefundNewReservation),
     runCheck("parallel_responses_settle_by_response_identity", parallelResponsesSettleByResponseIdentity),
     runCheck("staging_plan_sql_artifacts_replay_locally", stagingPlanSqlArtifactsReplayLocally),
   ];
@@ -202,7 +204,8 @@ function createSchema(db) {
       created_at INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL DEFAULT 0,
       settled_at INTEGER NOT NULL DEFAULT 0,
-      refunded_at INTEGER NOT NULL DEFAULT 0
+      refunded_at INTEGER NOT NULL DEFAULT 0,
+      lease_expires_at INTEGER NOT NULL DEFAULT 0
     );
     CREATE UNIQUE INDEX idx_realtime_billing_reservations_replay_key
       ON realtime_billing_reservations(replay_key)
@@ -210,6 +213,9 @@ function createSchema(db) {
     CREATE UNIQUE INDEX idx_realtime_billing_reservations_response
       ON realtime_billing_reservations(session, upstream_response_id_hash)
       WHERE upstream_response_id_hash <> '';
+    CREATE INDEX idx_realtime_billing_reservations_lease
+      ON realtime_billing_reservations(session, status, lease_expires_at, reservation_sequence)
+      WHERE status = 'reserved' AND lease_expires_at > 0;
   `);
 }
 
@@ -539,6 +545,75 @@ function responseReservationRefundIsIdempotent() {
   });
 }
 
+function responseReservationLeaseExpiryRefundsOnce() {
+  return withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 500,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const record = settlementRecord({
+      reservationKey: "rtreserve-lease-expiry",
+      preConsumedQuota: 100,
+      leaseExpiresAt: defaultNow + 600,
+    });
+    const reserve = reserveRealtimeResponse(db, record);
+    const before = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt - 1);
+    const first = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt);
+    const second = refundExpiredRealtimeResponse(db, record, record.leaseExpiresAt + 1);
+    const snapshot = settlementSnapshot(db, record);
+    const reservation = db
+      .prepare("SELECT status, request_json FROM realtime_billing_reservations WHERE reservation_key = ?1")
+      .get(record.reservationKey);
+    assert(reserve.outcome === "Applied", "lease fixture reservation should apply");
+    assert(before.outcome === "NotDue", "lease must not refund before expiry");
+    assert(first.outcome === "Applied", "expired lease should refund once");
+    assert(second.outcome === "AlreadyFinalized", "lease replay must not double refund");
+    assert(snapshot.userQuota === 1_000, "expired lease should restore user quota");
+    assert(snapshot.tokenRemainQuota === 500, "expired lease should restore token quota");
+    assert(reservation.status === "refunded", "expired lease should reach refunded terminal state");
+    assert(reservation.request_json === "{}", "expired lease should clear private request input");
+    return { reserve: reserve.outcome, before: before.outcome, first: first.outcome, second: second.outcome };
+  });
+}
+
+function staleLeaseGenerationDoesNotRefundNewReservation() {
+  return withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 500,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const current = settlementRecord({
+      reservationKey: "rtreserve-lease-generation",
+      reservationSequence: 2,
+      preConsumedQuota: 100,
+      leaseExpiresAt: defaultNow + 600,
+    });
+    const stale = { ...current, reservationSequence: 1, leaseExpiresAt: defaultNow + 30 };
+    const reserve = reserveRealtimeResponse(db, current);
+    const staleRefund = refundExpiredRealtimeResponse(db, stale, stale.leaseExpiresAt);
+    const beforeCurrentExpiry = settlementSnapshot(db, current);
+    const currentRefund = refundExpiredRealtimeResponse(db, current, current.leaseExpiresAt);
+    const afterCurrentExpiry = settlementSnapshot(db, current);
+    assert(reserve.outcome === "Applied", "generation fixture reservation should apply");
+    assert(staleRefund.outcome === "LeaseActive", "stale generation must not refund current reservation");
+    assert(beforeCurrentExpiry.userQuota === 900, "stale generation must not restore user quota");
+    assert(beforeCurrentExpiry.tokenRemainQuota === 400, "stale generation must not restore token quota");
+    assert(currentRefund.outcome === "Applied", "current generation should refund after its own expiry");
+    assert(afterCurrentExpiry.userQuota === 1_000, "current generation should restore user quota once");
+    return {
+      reserve: reserve.outcome,
+      stale: staleRefund.outcome,
+      current: currentRefund.outcome,
+    };
+  });
+}
+
 function parallelResponsesSettleByResponseIdentity() {
   return withDatabase((db) => {
     seedSettlementFixture(db, {
@@ -632,7 +707,7 @@ function buildStagingPlan(options) {
     },
     requiredBeforeRun: [
       "Confirm the target database is an isolated staging D1, not production.",
-      "Apply migrations through migrations/d1/0019_realtime_billing_reservations.sql.",
+      "Apply migrations through migrations/d1/0020_realtime_billing_reservation_leases.sql.",
       "Write each sqlArtifacts[].sql body to its sqlArtifacts[].path exactly, then review it before running.",
       "Use Wrangler SQL artifacts only for setup, verification, and cleanup; do not treat multi-statement SQL files as D1Database.batch evidence.",
       "Apply the settlement through the deployed Worker binding path, then archive Wrangler stdout/stderr, Worker smoke output, D1 row snapshots, capabilities output, and the matching git commit SHA.",
@@ -708,7 +783,7 @@ function buildBindingSmokePlan(options) {
       "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
       "Keep ENVIRONMENT=staging; the Worker route rejects production.",
       "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
-      "Run against an isolated staging D1 database with migrations through 0019 applied.",
+      "Run against an isolated staging D1 database with migrations through 0020 applied.",
       "Archive /api/platform/capabilities before and after the smoke run.",
     ],
     requests: options.scenarios.map((scenario) => ({
@@ -1400,8 +1475,9 @@ function reserveRealtimeResponse(db, record) {
         `INSERT INTO realtime_billing_reservations (
           reservation_key, session, client_event_id_hash, reservation_sequence,
           user_id, token_id, channel_id, selected_group, model_name,
-          pre_consumed_quota, snapshot_json, request_json, status, created_at, updated_at
-        ) VALUES (?1, ?2, 'client-event-hash', ?3, ?4, ?5, ?6, 'default', ?7, ?8, '{"expr":"private"}', '{"prompt":"private"}', 'reserved', ?9, ?9)`,
+          pre_consumed_quota, snapshot_json, request_json, status, created_at, updated_at,
+          lease_expires_at
+        ) VALUES (?1, ?2, 'client-event-hash', ?3, ?4, ?5, ?6, 'default', ?7, ?8, '{"expr":"private"}', '{"prompt":"private"}', 'reserved', ?9, ?9, ?10)`,
       ).run(
         record.reservationKey,
         record.session,
@@ -1412,6 +1488,7 @@ function reserveRealtimeResponse(db, record) {
         record.modelName,
         record.preConsumedQuota,
         record.createdAt,
+        record.leaseExpiresAt,
       );
       if (record.preConsumedQuota > 0) {
         guardedChanges.push(
@@ -1527,6 +1604,32 @@ function refundRealtimeResponse(db, record) {
     return { outcome: "Error", error: error instanceof Error ? error.message : String(error) };
   }
   return { outcome: "Applied" };
+}
+
+function refundExpiredRealtimeResponse(db, record, now) {
+  const reservation = db
+    .prepare("SELECT status, reservation_sequence, lease_expires_at FROM realtime_billing_reservations WHERE reservation_key = ?1")
+    .get(record.reservationKey);
+  if (!reservation) {
+    return { outcome: "NotFound" };
+  }
+  if (reservation.status !== "reserved") {
+    return { outcome: "AlreadyFinalized" };
+  }
+  if (
+    Number(reservation.reservation_sequence) !== record.reservationSequence ||
+    Number(reservation.lease_expires_at) !== record.leaseExpiresAt
+  ) {
+    return {
+      outcome: "LeaseActive",
+      reservationSequence: Number(reservation.reservation_sequence),
+      leaseExpiresAt: Number(reservation.lease_expires_at),
+    };
+  }
+  if (Number(reservation.lease_expires_at) <= 0 || Number(reservation.lease_expires_at) > now) {
+    return { outcome: "NotDue" };
+  }
+  return refundRealtimeResponse(db, record);
 }
 
 function runRealtimeSettlementBatch(db, record, audit, options = {}) {
@@ -1740,6 +1843,7 @@ function settlementRecord(overrides = {}) {
     finalQuota: overrides.finalQuota ?? 150,
     createdAt: overrides.createdAt ?? defaultNow,
     appliedAt: overrides.appliedAt ?? defaultNow,
+    leaseExpiresAt: overrides.leaseExpiresAt ?? defaultNow + 600,
   };
 }
 

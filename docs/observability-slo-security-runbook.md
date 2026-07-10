@@ -147,6 +147,7 @@ staging and Go/VPS baseline data exists.
 | SSE first-byte overhead | p95 overhead under 500 ms versus Go/VPS baseline | Stream start regression impacts customers or support can reproduce. |
 | Stream completion integrity | 0 unexplained truncations | Any customer-impacting truncation or response corruption. |
 | D1 auth/reserve/settlement writes | 0 failed P0 writes in internal canary | Any quota-affecting write fails without safe refund/pending path. |
+| Realtime reservation recovery | Zero overdue reservations without a scheduled owner; lease refund attempts return to zero after a tested outage | Any lease remains overdue for two alarm intervals, highest attempts keeps increasing, or D1 `reserved` rows have no lease/retry owner. |
 | Upstash availability | No data corruption; degraded mode documented | Redis failure corrupts source-of-truth state or blocks rollback. |
 | Billing delta | Follow `docs/billing-parity-runbook.md` thresholds | Any unexplained positive charge delta. |
 | Logs/traces | All canary requests searchable by request ID or approved sample | Logs unavailable during canary. |
@@ -163,6 +164,7 @@ Create or document dashboards for:
 | D1 health | Auth read latency, reserve/write latency, write failures, overloaded/query errors, migration/import status. |
 | Cache/rate limit | Rate Limiting binding denials by token/IP/route (Analytics Engine `rate_limited` data point + Workers Logs 429s), DO atomic-state contention/latency, token/channel cache hit ratio, any residual Upstash latency/errors. |
 | Billing health | Reserve count, refund count, additional debit count, pending billing, shadow delta distribution. |
+| Realtime reservation recovery | Active/due lease counts, next expiry, highest attempts, refund outcomes, overdue D1 reservations, settlement retry count/owner, and last successful alarm. |
 | Queue/R2/tasks | Queue backlog, DLQ count, retry count, artifact upload/read/delete failures. |
 | Security | Auth failures, WAF/rate-limit blocks, admin mutation audit, OAuth/webhook failures, secret scan events. |
 | Platform limits | CPU time, wall time, memory/limit errors, subrequests, outgoing connection failures, startup errors. |
@@ -185,6 +187,7 @@ action, and evidence link.
 | Rust 5xx above threshold | P0/P1 | Identify route/provider/channel and compare Go baseline | Roll back Worker version or traffic selection. |
 | Wrong provider/channel family | P0 | Disable affected channel/group and inspect routing logs | Route selected tokens back to Go/VPS. |
 | D1 quota write failure | P0 | Stop paid settlement promotion and inspect pending/refund metadata | Stop Rust billing apply and reconcile from logs. |
+| Realtime lease recovery overdue | P0 | Stop Realtime promotion; compare redacted DO lease/retry status with D1 `reserved` rows and inspect the last alarm/refund outcome | Disable new Realtime admission, keep the lease-aware DO/D1 recovery path online, then reconcile and refund before freezing D1. |
 | Billing delta above threshold | P0 | Freeze promotion and compare expression hash/usage parser | Return to shadow mode or Go/VPS settlement. |
 | Raw secret exposure | P0 | Stop affected traffic and identify secret class | Rotate secret, purge reports, and redeploy if needed. |
 | Payment replay/double-credit risk | P0 | Disable Rust payment path and preserve event logs | Route payment/webhooks back to Go/VPS. |

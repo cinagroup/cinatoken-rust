@@ -123,10 +123,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - 2026-07-10 D1 migration discovery correction: the root/default, staging, and
   production Wrangler `DB` bindings now all set
   `migrations_dir = "migrations/d1"`, so they resolve the repository's
-  contiguous `0001` through `0019` migration chain. This aligns config only;
+  contiguous `0001` through `0020` migration chain. This aligns config only;
   the remote staging and production databases were not migrated or verified in
   this local increment.
-- 2026-07-10 local D1 evidence: a real local Wrangler D1 applied all 19/19
+- 2026-07-10 local D1 evidence: a real local Wrangler D1 applied all 20/20
   migrations and exposed 26 business tables. The Realtime gateway candidate
   matcher was narrowed so `/api/platform/realtime/settlement-batch/smoke` is
   owned by the platform settlement handler rather than the generic Realtime
@@ -134,7 +134,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   settlement scenarios and cleanup left zero residual smoke rows. This proves
   the local binding path, not remote staging or production settlement.
 - The admin Cloudflare Platform capability now reads the D1 migration ledger,
-  requires the exact compiled 19-name set, and exposes count/latest/expected,
+  requires the exact compiled 20-name set, and exposes count/latest/expected,
   set-match, and readiness fields to the frontend. A live localhost capability
   request returned all D1 migration checks ready. Its first execution also
   exposed and closed a wasm billing-clock panic by using `js_sys::Date` for the
@@ -531,7 +531,7 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   outside a controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker,
   audit-log, and D1 batch/CAS foundation to production-safe settlement. The
-  real local Wrangler D1 now has 19/19 migrations and 26 business tables, and
+  real local Wrangler D1 now has 20/20 migrations and 26 business tables, and
   the local Worker-binding settlement smoke passes 6/6 with zero residual rows
   after cleanup. Migration 0019 and the Durable Object now reserve each
   explicit `response.create` atomically, bind hashed `response.created`
@@ -541,8 +541,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   fails closed unless both its route gate and
   `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` are on. The local capability
   proves exact migration-ledger match, Worker-safe billing probes, retry
-  contract, and write-gate state; the 11-case settlement self-test includes a
-  two-response reverse-completion proof. Production safety still requires
+  contract, and write-gate state. Migration 0020 now persists a 600-second
+  active-reservation lease before D1 reserve and shares the same alarm across
+  lease refunds and settlement retries; transient refund failures remain
+  scheduled after settlement retry exhaustion. The 13-case settlement
+  self-test includes reverse completion, lease-expiry, and stale-generation
+  proofs. Production
+  safety still requires
   authenticating Wrangler, applying and verifying the same chain on an
   isolated remote staging D1, and archiving staging evidence for
   multi-response, alarm/eviction, disconnect-refund, queue-capacity, and

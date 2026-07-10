@@ -79,6 +79,7 @@ TASK_TIMEOUT_MINUTES = "1440"
 binding = "DB"
 database_name = "cinatoken-rust-db"
 database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations/d1"
 
 [[kv_namespaces]]
 binding = "CACHE_KV"
@@ -200,6 +201,7 @@ crons = ["* * * * *"]
 binding = "DB"
 database_name = "cinatoken-rust-db-staging"
 database_id = "c285553f-7f98-4ec2-b4d6-f84a3b409f3e"
+migrations_dir = "migrations/d1"
 
 [[env.staging.kv_namespaces]]
 binding = "CACHE_KV"
@@ -312,6 +314,7 @@ binding = "DB"
 database_name = "cinatoken-rust-db"
 # Replace with the real production D1 database ID before deploy.
 database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+migrations_dir = "migrations/d1"
 
 [[env.production.kv_namespaces]]
 binding = "CACHE_KV"

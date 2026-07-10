@@ -113,6 +113,26 @@ compiled/enabled/ready smoke fields, but `realtime_session_billing_settlement`
 and v1 cutover remain blocked until the live smoke and no-double-charge bundle
 are archived.
 
+**M6 local D1 and binding-evidence update (2026-07-10):** all three Wrangler
+D1 binding declarations now explicitly use `migrations_dir = "migrations/d1"`.
+The real local Wrangler D1 applied the contiguous 18/18 chain through
+`0018_realtime_settlement_replays.sql` and exposed 25 business tables. The
+gateway matcher was also narrowed so the generic Realtime session branch no
+longer captures `/api/platform/realtime/settlement-batch/smoke`. With the route
+owned by the platform control plane, the local Worker-binding smoke passed all
+six settlement scenarios and cleanup left zero residual fixture rows.
+
+This advances M6 from SQLite/SQL-shape evidence to local Worker `DB` binding
+evidence for the quota mutation, replay marker, audit row, rollback, duplicate,
+refund, and tokenless paths. It also makes the Layer 1 ownership rule concrete:
+explicit platform control routes are classified before Layer 2 DO session
+routes or Layer 3 WFP dispatch prefixes. It does **not** validate a remote
+staging D1, deployed Realtime DO, live `response.done` settlement,
+hibernation/restore, paid WFP dispatch namespace, or Rust/Wasm tenant artifact.
+Wrangler is not authenticated, so staging migration, capability, binding-smoke,
+rollback, and no-double-charge evidence remain open and all cutover gates remain
+conservative/default-off.
+
 **Two refinements the landed code makes over this doc's original design:**
 
 1. **The AiGateway key-URL coupling is *stricter* than cinaVibeSDK.** vibesdk honors a

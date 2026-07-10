@@ -1661,6 +1661,7 @@ mod tests {
             "/api/platform/task-runner/task-smoke/status",
             "/api/platform/dispatch/tenant-a",
             "/api/platform/realtime/session-a",
+            "/api/platform/realtime/settlement-batch/smoke",
             "/api/user/login",
             "/api/user/self",
             "/api/user/checkin",

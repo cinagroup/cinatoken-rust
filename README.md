@@ -56,6 +56,27 @@ bun run install:worker-build
 bun run dev
 ```
 
+On Windows, Wrangler's local `workerd` process also requires the Microsoft
+Visual C++ 2015-2022 Redistributable (x64). If `wrangler dev` or local D1 exits
+before startup, install or repair that runtime before treating the failure as a
+Worker or migration defect.
+
+Run the D1 migration preflight before local Wrangler startup:
+
+```powershell
+bun run check:d1:migration-config
+bun run verify:sqlite
+wrangler d1 migrations apply cinatoken-rust-db --local
+```
+
+As of 2026-07-10, the first command checks all three `wrangler.toml` D1
+bindings for `migrations_dir = "migrations/d1"` and a contiguous 18-migration
+chain. The SQLite verifier applies all 18 migrations by default and requires
+25 tables, 29 incremental key columns, and 9 key indexes. Local Wrangler D1
+has also applied 18/18 migrations successfully.
+These are local prerequisites only; they do not replace an authenticated
+staging migration, deployed Worker smoke, or staging evidence capture.
+
 On the current Windows shared-drive workspace, Cargo checks are more reliable
 when the target directory is moved to a local disk:
 

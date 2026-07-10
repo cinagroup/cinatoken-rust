@@ -120,6 +120,25 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   check:realtime-session:settlement-binding-smoke-plan` dry-runs the six fixed
   scenarios; live staging still requires an admin cookie, `--confirm-live`, and
   archived D1/capability evidence before any cutover flag can move.
+- 2026-07-10 D1 migration discovery correction: the root/default, staging, and
+  production Wrangler `DB` bindings now all set
+  `migrations_dir = "migrations/d1"`, so they resolve the repository's
+  contiguous `0001` through `0018` migration chain. This aligns config only;
+  the remote staging and production databases were not migrated or verified in
+  this local increment.
+- 2026-07-10 local D1 evidence: a real local Wrangler D1 applied all 18/18
+  migrations and exposed 25 business tables. The Realtime gateway candidate
+  matcher was narrowed so `/api/platform/realtime/settlement-batch/smoke` is
+  owned by the platform settlement handler rather than the generic Realtime
+  session prefix. The resulting local Worker-binding smoke passed all six fixed
+  settlement scenarios and cleanup left zero residual smoke rows. This proves
+  the local binding path, not remote staging or production settlement.
+- The admin Cloudflare Platform capability now reads the D1 migration ledger,
+  requires the exact compiled 18-name set, and exposes count/latest/expected,
+  set-match, and readiness fields to the frontend. A live localhost capability
+  request returned all D1 migration checks ready. Its first execution also
+  exposed and closed a wasm billing-clock panic by using `js_sys::Date` for the
+  expression engine's Worker default clock; the rebuilt billing probes passed.
 - The Realtime mock upstream replay harness now makes the
   `response-done-usage` scenario seed an isolated tiered billing expression in
   review-only D1 SQL, then requires live/status metrics to contain both the
@@ -511,10 +530,16 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   proof still remain required before `TASK_RUNNER_DO_ENABLED` can be enabled
   outside a controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker,
-  audit-log, and D1 batch/CAS foundation to production-safe settlement: archive
-  Worker-binding staging proof for disabled, applied, duplicate,
-  guarded-update failure, audit-row failure, rollback, redaction, and
-  no-double-charge paths before flipping `realtime_session_billing_settlement_compiled` or
+  audit-log, and D1 batch/CAS foundation to production-safe settlement. The
+  real local Wrangler D1 now has 18/18 migrations and 25 business tables, and
+  the local Worker-binding settlement smoke passes 6/6 with zero residual rows
+  after cleanup. The local capability also proves exact migration-ledger match
+  and Worker-safe billing probes. Next, authenticate Wrangler, apply and verify
+  the same chain on an isolated remote staging D1, and archive staging
+  capability plus Worker-binding proof for disabled, applied, duplicate,
+  guarded-update failure, audit-row failure, rollback, redaction, cleanup, and
+  no-double-charge paths before flipping
+  `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready`.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.

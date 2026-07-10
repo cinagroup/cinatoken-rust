@@ -8,6 +8,8 @@ Required tools:
 - Bun
 - Wrangler
 - `worker-build`
+- On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64), required by
+  Wrangler's local `workerd` process
 
 Install the Worker build helper once:
 
@@ -33,8 +35,14 @@ Then run:
 cargo fmt --all
 cargo test --workspace --exclude cinatoken-worker
 cargo check -p cinatoken-worker --target wasm32-unknown-unknown
-python tools/verify_sqlite.py
+bun run check:d1:migration-config
+bun run verify:sqlite
 ```
+
+If local Wrangler exits before the Worker starts, verify or repair the x64 VC++
+runtime first. The 2026-07-10 local validation succeeded after this prerequisite
+was present; an early `workerd` process failure is not evidence that the SQL
+migration chain is invalid.
 
 ## Source Repository Inspection
 
@@ -72,6 +80,22 @@ bun run verify:migration -- --input exports\core.cinatoken-export.json --sql exp
 
 ## Wrangler
 
+Before creating or starting a local D1 database, validate that every configured
+environment uses the repository migration directory and that the complete SQL
+chain is SQLite-compatible:
+
+```powershell
+bun run check:d1:migration-config
+bun run verify:sqlite
+```
+
+The expected 2026-07-10 result is three D1 binding tables using
+`migrations/d1`, 18 contiguous migrations from `0001_core.sql` through
+`0018_realtime_settlement_replays.sql`, 25 required tables, 29 incremental key
+columns, and 9 key indexes. The SQLite verifier applies the full chain by
+default; repeat `--schema` only when a deliberately scoped migration test is
+required.
+
 Create local variables from the example file:
 
 ```powershell
@@ -85,6 +109,11 @@ database ID:
 wrangler d1 create cinatoken-rust-db
 wrangler d1 migrations apply cinatoken-rust-db --local
 ```
+
+The local Wrangler apply was exercised successfully for all 18 migrations on
+2026-07-10. This proves local Wrangler/workerd compatibility and ordered local
+D1 application only. It does not prove Cloudflare authentication, the remote
+staging database target, remote migration state, or a deployed Worker binding.
 
 Generate local seed data for a dev user, dev token, and one OpenAI-compatible
 channel:
@@ -102,7 +131,7 @@ The default local client token is `ct-dev-key`.
 If Wrangler local D1 fails, verify the schema and seed SQL with SQLite:
 
 ```powershell
-python tools/verify_sqlite.py --seed .wrangler/dev-seed.sql
+bun run verify:sqlite -- --seed .wrangler/dev-seed.sql
 ```
 
 Start the Worker:

@@ -392,6 +392,13 @@ export type UpstreamRatiosResponse = {
 }
 
 export type PlatformCapabilities = {
+  d1_migration_status_available: boolean
+  d1_migration_applied_count: number
+  d1_migration_latest: string | null
+  d1_expected_migration: string
+  d1_expected_migration_applied: boolean
+  d1_migration_set_matches: boolean
+  d1_migration_ready: boolean
   ai_binding_available: boolean
   ai_gateway_id_configured: boolean
   cloudflare_account_id_configured: boolean

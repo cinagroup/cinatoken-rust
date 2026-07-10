@@ -92,6 +92,7 @@ export function CloudflarePlatformSection() {
 
   const foundationChecks = capabilities
     ? [
+        capabilities.d1_migration_ready,
         capabilities.ai_binding_available,
         capabilities.ai_gateway_id_configured,
         capabilities.channel_affinity_do_available,
@@ -277,6 +278,32 @@ function buildCapabilityGroups(
       title: t('Runtime bindings'),
       description: t('Cloudflare bindings required by the Rust relay gateway.'),
       rows: [
+        {
+          label: t('D1 migration ledger'),
+          description: t(
+            '{{count}} migrations applied; latest {{latest}}.',
+            {
+              count: capabilities.d1_migration_applied_count,
+              latest: capabilities.d1_migration_latest || t('Unavailable'),
+            }
+          ),
+          ready: capabilities.d1_migration_status_available,
+          readyLabel: t('Available'),
+          missingLabel: t('Unavailable'),
+        },
+        {
+          label: t('D1 schema readiness'),
+          description: t('Requires the exact migration set through {{migration}}.', {
+            migration: capabilities.d1_expected_migration,
+          }),
+          ready: capabilities.d1_migration_ready,
+          readyLabel: t('Ready'),
+          missingLabel: !capabilities.d1_migration_status_available
+            ? t('Unavailable')
+            : capabilities.d1_expected_migration_applied
+              ? t('Ledger mismatch')
+              : t('Migration missing'),
+        },
         {
           label: t('Workers AI binding'),
           description: t('Used for direct Workers AI relay channels.'),

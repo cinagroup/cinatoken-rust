@@ -1,8 +1,49 @@
 # Verification
 
-Last checked: 2026-07-08
+Last checked: 2026-07-10
 
 ## Passed
+
+- `bun run check:d1:migration-config`: passed on 2026-07-10. The audit found
+  exactly the top-level, staging, and production D1 binding tables, each with
+  binding `DB` and `migrations_dir = "migrations/d1"`; migrations are
+  contiguous from `0001_core.sql` through
+  `0018_realtime_settlement_replays.sql` (18 total), and the Worker capability
+  constant names the same latest migration.
+- `bun run verify:sqlite`: passed on 2026-07-10 with
+  `sqlite schema ok: 18 migrations, 25 tables, 29 incremental columns, 9 key
+  indexes`. The default verifier now exercises the full migration chain rather
+  than only `0001_core.sql`.
+- `wrangler d1 migrations apply cinatoken-rust-db --local`: applied all 18/18
+  migrations through real local Wrangler D1 on Windows. Wrangler's local
+  `workerd` required Microsoft Visual C++ 2015-2022 Redistributable (x64); with
+  that runtime present, the prior local process-start failure was cleared.
+- A real localhost Worker request to the admin-only
+  `/api/platform/capabilities` returned D1 migration status available, applied
+  count `18`, latest/expected `0018_realtime_settlement_replays.sql`, exact
+  migration-set match, and overall D1 readiness all true. The runtime gate now
+  compares the complete compiled 18-name set rather than accepting only a row
+  count and latest marker; the config audit locks that compiled set to the SQL
+  files in `migrations/d1`.
+- The same capability request initially exposed a wasm-only billing clock panic:
+  `std::time::SystemTime::now()` is unavailable on
+  `wasm32-unknown-unknown`. The billing engine now uses `js_sys::Date::now()`
+  for its default clock on wasm while preserving `SystemTime` on native
+  targets. After rebuilding, the capability request returned `200`, and the
+  Realtime pre-settlement and settlement-preview probes both returned true.
+- The live localhost Worker-binding Realtime settlement smoke passed all six
+  fixed scenarios (6/6): additional quota, duplicate replay no-op, guarded
+  update rollback, audit failure rollback, refund delta, and tokenless apply.
+  The generic Realtime gateway matcher was first narrowed so it no longer
+  intercepts `POST /api/platform/realtime/settlement-batch/smoke`. The smoke
+  exercised the Worker `DB` binding and production settlement batch path, and
+  default cleanup left zero fixture rows and removed the temporary
+  audit-failure trigger.
+- Evidence boundary for the entries above: these are local results. No
+  remote staging command was run because Wrangler was not authenticated. No
+  staging D1 migration state, deployed binding, Worker response, log, trace, or
+  Realtime settlement result is verified. A token exposed during setup must not
+  be used; it requires revocation/rotation before authenticated staging work.
 
 - `node --check tools/smoke_realtime_settlement_batch.mjs` and
   `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json`: passed
@@ -2603,16 +2644,17 @@ bun run check
   still needs heavy route-specific chunk splitting and deployed browser
   performance evidence before G5 production approval.
 
-- `worker-build` installation previously exceeded the local command timeout.
-  Install it with `bun run install:worker-build`, then run `bun run dev` and
-  the Cloudflare preflight scripts.
-- `bun run check:cf:dry-run` and `bun run check:cf:startup` currently reach
-  Wrangler's custom build step but fail on this machine because `worker-build`
-  is not installed.
-- `wrangler d1 migrations apply cinatoken-rust-db --local` currently fails on
-  this Windows/shared-drive machine with `write EOF` from Wrangler's local D1
-  process. The same schema and seed SQL pass SQLite execution.
-- `wrangler dev` has not been run end-to-end with a real D1 database binding.
+- The former Windows local Wrangler/`workerd` startup blocker is closed for the
+  2026-07-10 local evidence window after installing the Microsoft Visual C++
+  2015-2022 Redistributable (x64): local D1 applied 18/18 and the localhost
+  Worker `DB` binding settlement smoke passed 6/6 with cleanup at zero. Future
+  Windows operators must keep this runtime prerequisite in the bootstrap
+  checklist.
+- Remote staging remains unverified. Wrangler was not authenticated, so
+  staging D1 migrations, deploy/startup, `/api/status`, capabilities,
+  logs/traces, and the six-scenario Worker-binding settlement smoke still need
+  authenticated evidence. Do not use the leaked token observed during setup;
+  revoke/rotate it and use a replacement scoped credential.
 - The relay path now has a live smoke against a REAL provider (DeepSeek):
   `/v1/chat/completions` non-stream + streaming and `/v1/messages` (Anthropic
   Messages), all with exact billing on real usage (see the entry above). The

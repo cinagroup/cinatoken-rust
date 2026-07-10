@@ -1,6 +1,6 @@
 # Production Migration Execution Plan
 
-Date: 2026-06-22
+Date: 2026-07-10
 
 Status: production execution source of truth. Update this file whenever a gate,
 workstream status, or rollout decision changes.
@@ -110,16 +110,46 @@ Completed or substantially implemented:
 
 Current production blockers:
 
-- Real staging/prod Cloudflare resources and binding IDs are not configured in
-  the repository.
-- Live Worker, D1, Upstash, and upstream provider smoke tests are still
-  missing.
+- Staging resource IDs are present in the repository but have not been proven
+  by authenticated Wrangler output; production binding IDs remain placeholders.
+- No authenticated remote staging deploy, D1 migration, binding, log/trace, or
+  Realtime settlement result exists. Local evidence cannot replace it.
 - Multipart/raw/pass-through request body forwarding is not implemented, so
   file upload style endpoints must remain blocked.
 - Queue, R2, KV, Pages, admin APIs, payments, subscriptions, async tasks,
   OAuth/Passkey/2FA, and full frontend migration remain incomplete.
 - Billing expression parity is not yet broad enough for full production
   settlement ownership.
+
+### 2026-07-10 Operations Increment
+
+Completed local evidence:
+
+- `bun run check:d1:migration-config` passes and requires all three D1 binding
+  tables to use `migrations/d1`, with 18 contiguous migrations through `0018`.
+- `bun run verify:sqlite` applies all 18 migrations by default and verifies 25
+  required tables, 29 incremental key columns, and 9 key indexes.
+- Local Wrangler D1 applied 18/18 migrations on Windows after installing the
+  Microsoft Visual C++ 2015-2022 x64 runtime required by `workerd`.
+- A real localhost Worker capability request verified the exact 18-name D1
+  ledger and returned D1 readiness true. The same request exposed and closed a
+  wasm billing-clock panic; Realtime billing probes passed after switching the
+  wasm default clock to `js_sys::Date`.
+- The localhost Realtime settlement Worker-binding smoke passed six of six
+  scenarios and cleaned all smoke fixture rows after fixing route precedence
+  for `/api/platform/realtime/settlement-batch/smoke`.
+
+Gate interpretation:
+
+- G1 remains closed: Wrangler was not authenticated and no staging deployment,
+  resource identity, binding, status, log, or trace was verified.
+- G2 remains closed: no remote staging migration output, source export/import,
+  row counts, sample hashes, or rollback point was captured.
+- G7 and Realtime production enablement remain closed: local 6/6 settlement
+  evidence must be repeated through deployed staging D1 with live
+  no-double-charge and protocol evidence.
+- The exposed token must not be used. Revoke/rotate it and authenticate with a
+  replacement least-privilege credential before remote execution.
 
 ## Best-Practice Anchors
 
@@ -223,8 +253,8 @@ Corrected production rules:
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has real D1/KV/R2/Queue/Upstash/provider bindings | `wrangler deploy --env staging`, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables | Source counts/hashes, staging import report, verification report, rollback export | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0018, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 18/18 and 25-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -237,8 +267,8 @@ Corrected production rules:
 
 | Workstream | Current Status | Production Target | Next Evidence |
 | --- | --- | --- | --- |
-| Platform/IaC | Partial | Reproducible staging/prod Cloudflare config with real bindings and generated types | `wrangler deploy --env staging` plus typed bindings |
-| Data migration | Partial | Reversible source export, D1 import, row/hash verification, and rollback bundle | Real source inventory and staging import report |
+| Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
+| Data migration | Partial: local 18/18 Wrangler apply and 25-table SQLite replay pass | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 18/18 staging apply, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
 | Billing/quota | Partial | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, and shadow mode | Golden fixture set and shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |

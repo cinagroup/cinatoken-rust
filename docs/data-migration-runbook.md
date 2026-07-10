@@ -1,6 +1,6 @@
 # Data Migration Runbook
 
-Date: 2026-06-22
+Date: 2026-07-10
 
 Status: production data migration control document for moving authoritative
 state from the Go/VPS deployment to D1-backed Rust/Cloudflare deployment.
@@ -44,6 +44,28 @@ backup windows, and import behavior are platform contracts that can change.
 - Preserve the pre-import D1 state through Time Travel, export, or explicit
   backup evidence before applying a production import.
 
+### 2026-07-10 Local Evidence Boundary
+
+The repository now enforces two local schema/config prerequisites:
+
+```powershell
+bun run check:d1:migration-config
+bun run verify:sqlite
+```
+
+The config audit requires the top-level, staging, and production D1 binding
+tables to set `migrations_dir = "migrations/d1"`; it also requires a contiguous
+18-file sequence from `0001_core.sql` through
+`0018_realtime_settlement_replays.sql`. The SQLite verifier applies all 18
+migrations by default and requires 25 target tables. A real local Wrangler D1
+apply completed 18/18 on 2026-07-10.
+
+This evidence is local only. Wrangler was not authenticated for remote work in
+this validation window, so no remote staging migration state, database target,
+row count, or Worker binding was verified. G1 and G2 remain closed. Any token
+that was exposed during setup must not be reused; revoke/rotate it and
+authenticate Wrangler with a replacement credential before remote commands.
+
 ## D1 Platform Guardrails
 
 Record these checks before every production-shaped import. Values below reflect
@@ -64,7 +86,7 @@ Pre-import platform commands:
 
 ```powershell
 wrangler --version
-wrangler d1 info cinatoken-rust-db --env staging
+wrangler d1 info cinatoken-rust-db-staging --env staging
 wrangler d1 info cinatoken-rust-db --env production
 ```
 
@@ -157,14 +179,14 @@ field-level defects in `docs/source-d1-schema-parity.md`. In particular
 `abilities` must regain its `tag` column and `(group_name, model, channel_id)`
 uniqueness (verify dedup first), `users` needs its OAuth-id lookup indexes, and
 the `logs` admin-search index/strategy must be decided. The repository now
-carries migrations 0001-0010, including `0004_schema_parity.sql`,
-`0008_model_meta.sql`, `0009_prefill_groups.sql`, and
-`0010_custom_oauth.sql`. Apply the complete ordered
+carries migrations 0001-0018, including `0004_schema_parity.sql`,
+`0008_model_meta.sql`, `0010_custom_oauth.sql`, and
+`0018_realtime_settlement_replays.sql`. Apply the complete ordered
 migration set to staging D1 and re-run the row/hash verification below before
 treating Wave 0 as passed. Local SQLite schema replay currently succeeds with
-the ordered migration set, including `custom_oauth_providers` and
-`user_oauth_bindings`; that is not a substitute for source-row reconciliation
-or staging D1 evidence.
+all 18 migrations, 25 required tables, 29 incremental key columns, and 9 key
+indexes; that is not a substitute for source-row reconciliation or staging D1
+evidence.
 
 ## Export And Convert
 
@@ -207,7 +229,8 @@ bun run verify:migration -- `
   --input exports\YYYYMMDD-HHMM-core\core.cinatoken-export.json `
   --sql exports\YYYYMMDD-HHMM-core\core.d1.sql
 
-python tools\verify_sqlite.py
+bun run check:d1:migration-config
+bun run verify:sqlite
 ```
 
 Review the SQL before applying it to D1. Use `--truncate` only for a fresh
@@ -215,12 +238,30 @@ target or a deliberate overwrite with documented rollback approval.
 
 ## Apply To D1
 
+Run the config and full-chain checks before either local or remote application:
+
+```powershell
+bun run check:d1:migration-config
+bun run verify:sqlite
+```
+
+For a local toolchain rehearsal only:
+
+```powershell
+wrangler d1 migrations apply cinatoken-rust-db --local
+```
+
+Record the applied/total count; the 2026-07-10 local rehearsal applied 18/18.
+Do not carry that result into the staging report. The staging report must come
+from an authenticated remote command and identify the remote database by name
+and ID.
+
 Staging example:
 
 ```powershell
-wrangler d1 migrations apply cinatoken-rust-db --env staging
+wrangler d1 migrations apply cinatoken-rust-db-staging --env staging
 
-wrangler d1 execute cinatoken-rust-db `
+wrangler d1 execute cinatoken-rust-db-staging `
   --env staging `
   --file exports\YYYYMMDD-HHMM-core\core.d1.sql
 ```
@@ -350,6 +391,8 @@ pass:
 
 - source inventory recorded;
 - target D1 schema and migrations applied;
+- remote staging migration state captured independently of local 18/18
+  evidence;
 - export bundle verified;
 - generated SQL reviewed;
 - D1 import applied to the intended environment;

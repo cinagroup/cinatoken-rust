@@ -1,6 +1,8 @@
 # Production Migration Plan And Audit
 
-Date: 2026-06-21
+Original audit date: 2026-06-21
+
+Operations evidence addendum: 2026-07-10
 
 Audited revision: `b826076`
 
@@ -77,6 +79,35 @@ escape hatch for long-running or WASM-incompatible workloads. This revised
 direction (2026-06-25) removes Upstash and a separate VPS from the production
 hot path; see `docs/cinatoken-rust-migration-plan.md` §21.
 
+### 2026-07-10 Audit Addendum
+
+The local D1 and Realtime settlement evidence has materially improved without
+opening a production gate:
+
+- all three `wrangler.toml` D1 binding tables now set
+  `migrations_dir = "migrations/d1"`;
+- `bun run check:d1:migration-config` passes for the three bindings and the
+  contiguous 0001-0018 migration chain;
+- `bun run verify:sqlite` applies all 18 migrations by default and verifies 25
+  required tables, 29 incremental key columns, and 9 key indexes;
+- local Wrangler D1 applied 18/18 migrations on Windows after satisfying the
+  Microsoft Visual C++ 2015-2022 x64 runtime prerequisite;
+- the authenticated localhost Worker capability returned exact D1 ledger-set
+  match and readiness true, then passed both Realtime billing probes after the
+  wasm default clock was corrected from unsupported `SystemTime` to
+  `js_sys::Date`; and
+- the localhost Worker-binding Realtime settlement smoke passed 6/6 scenarios
+  with zero smoke rows after cleanup, after fixing generic Realtime route
+  precedence so the settlement endpoint reaches its intended handler.
+
+This closes local toolchain, schema-shape, route-reachability, and Worker D1
+binding risks only. Wrangler was not authenticated, so staging account/resource
+ownership, remote D1 migration state, deploy/startup, logs/traces, and remote
+settlement behavior remain unverified. A leaked token must not be used; it must
+be revoked/rotated before replacement authentication. Therefore the P0
+configuration and live end-to-end findings below remain open, and local evidence
+must not be cited as staging or production proof.
+
 ## Audit Method
 
 The audit used:
@@ -120,8 +151,9 @@ Known incomplete areas:
   non-WAV duration metadata in Worker, but raw/pass-through upload modes, WebM
   duration strategy, real-file replay, and live billing evidence remain
   incomplete.
-- No live provider smoke, no live SSE verification, and no production D1 or
-  Wrangler dev end-to-end result is recorded.
+- No authenticated remote staging deploy or remote D1 result is recorded.
+  Local Wrangler D1 and a localhost Worker-binding settlement path now pass,
+  but live staging provider/SSE and Cloudflare runtime evidence remain missing.
 - Source database row counts/hashes for a real deployment have not been
   captured in the current shell.
 
@@ -131,12 +163,16 @@ Known incomplete areas:
 
 Evidence:
 
-- `wrangler.toml:9-12` sets `ENVIRONMENT = "development"`,
-  `FRONTEND_BASE_URL = "http://localhost:3000"`, and an empty `AI_GATEWAY_ID`.
-- `wrangler.toml:14-25` uses zero placeholder D1/KV IDs.
-- `wrangler.toml` now enables Workers observability in the base config, but
-  production/staging environments still need explicit real bindings and
-  sampling policy.
+- The top-level config remains development-shaped and production D1/KV values
+  remain placeholders.
+- Staging resource IDs are present, but no authenticated Wrangler output proves
+  their account, existence, ownership, or deployed binding state.
+- All three D1 bindings now use `migrations/d1`, and the local config audit
+  passes; that does not validate a remote environment.
+- `wrangler.toml` enables Workers observability, but staging logs/traces have not
+  been observed in an authenticated deploy.
+- The exposed Cloudflare token is not admissible for verification and requires
+  revocation/rotation.
 - Cloudflare recommends current compatibility dates, secrets via Wrangler, and
   Workers Logs/Traces before production.
 
@@ -149,7 +185,9 @@ Production requirement:
 
 - Move to deliberate environment config, preferably `wrangler.jsonc`.
 - Keep `compatibility_date` fresh and retain `nodejs_compat`.
-- Add production/staging bindings with real IDs.
+- Authenticate Wrangler, verify the configured staging bindings against the
+  intended account/resources, and add separate production bindings with real
+  IDs only when the production gate permits it.
 - Store secrets only through `wrangler secret put` or the chosen secret-store
   flow.
 - Enable Workers Logs/Traces with explicit staging/prod sampling rates.
@@ -161,8 +199,10 @@ Production requirement:
 Evidence:
 
 - `docs/verification.md` records no live Jina/Cohere rerank request.
-- The pending section records no live upstream provider request, no live SSE
-  upstream coverage, and no `wrangler dev` end-to-end run with real D1.
+- Local Wrangler D1 18/18 and a localhost Worker D1-binding Realtime settlement
+  smoke now pass, but no authenticated staging Worker/D1/binding run exists.
+- Remote provider coverage, SSE coverage beyond the recorded local/selected
+  live paths, Cloudflare logs/traces, and staging settlement remain incomplete.
 
 Impact:
 

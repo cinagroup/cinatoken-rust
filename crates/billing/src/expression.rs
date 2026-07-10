@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -84,10 +85,18 @@ pub fn validate_billing_expr(expr: &str) -> Result<(), BillingExprError> {
 /// Current Unix time in seconds (UTC). Used as the default clock for the
 /// time helpers when no pinned instant is supplied.
 fn current_unix_seconds() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    #[cfg(target_arch = "wasm32")]
+    {
+        return (js_sys::Date::now() / 1000.0).floor() as i64;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+    }
 }
 
 pub fn run_billing_expr_with_request(

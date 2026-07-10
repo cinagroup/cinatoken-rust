@@ -68,6 +68,27 @@ pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
+pub const EXPECTED_D1_MIGRATION: &str = "0018_realtime_settlement_replays.sql";
+const EXPECTED_D1_MIGRATIONS: &[&str] = &[
+    "0001_core.sql",
+    "0002_admin_tables.sql",
+    "0003_topups.sql",
+    "0004_schema_parity.sql",
+    "0005_topups_credited.sql",
+    "0006_two_fa.sql",
+    "0007_midjourneys.sql",
+    "0008_model_meta.sql",
+    "0009_prefill_groups.sql",
+    "0010_custom_oauth.sql",
+    "0011_checkins.sql",
+    "0012_redemptions.sql",
+    "0013_subscriptions.sql",
+    "0014_redemptions_credited.sql",
+    "0015_topups_payment_provider.sql",
+    "0016_passkey_credentials.sql",
+    "0017_user_session_epoch.sql",
+    "0018_realtime_settlement_replays.sql",
+];
 pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
 const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
@@ -112,6 +133,13 @@ impl DispatchRouteKind {
 
 #[derive(Debug, Serialize)]
 struct PlatformCapabilities {
+    d1_migration_status_available: bool,
+    d1_migration_applied_count: i64,
+    d1_migration_latest: Option<String>,
+    d1_expected_migration: &'static str,
+    d1_expected_migration_applied: bool,
+    d1_migration_set_matches: bool,
+    d1_migration_ready: bool,
     ai_binding_available: bool,
     ai_gateway_id_configured: bool,
     cloudflare_account_id_configured: bool,
@@ -202,6 +230,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(response);
     }
 
+    let d1_migration_status = load_d1_migration_status(&env).await;
     let ai_gateway_id_configured = runtime_value(&env, AI_GATEWAY_ID_ENV).is_some();
     let cloudflare_account_id_configured = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV).is_some();
     let cloudflare_ai_gateway_token_configured = cloudflare_ai_gateway_token_configured(&env);
@@ -358,8 +387,16 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_status_probe_compiled,
         task_runner_staging_replay_verified,
     );
+    let d1_migration_ready = d1_migration_status.ready();
 
     let capabilities = PlatformCapabilities {
+        d1_migration_status_available: d1_migration_status.available,
+        d1_migration_applied_count: d1_migration_status.applied_count,
+        d1_migration_latest: d1_migration_status.latest,
+        d1_expected_migration: EXPECTED_D1_MIGRATION,
+        d1_expected_migration_applied: d1_migration_status.expected_applied,
+        d1_migration_set_matches: d1_migration_status.set_matches,
+        d1_migration_ready,
         ai_binding_available: env.ai("AI").is_ok(),
         ai_gateway_id_configured,
         cloudflare_account_id_configured,
@@ -446,6 +483,74 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     };
 
     envelope_ok_response(&capabilities)
+}
+
+#[derive(Debug, Deserialize)]
+struct D1MigrationNameRow {
+    name: String,
+}
+
+#[derive(Debug, Default)]
+struct D1MigrationStatus {
+    available: bool,
+    applied_count: i64,
+    latest: Option<String>,
+    expected_applied: bool,
+    set_matches: bool,
+}
+
+impl D1MigrationStatus {
+    fn ready(&self) -> bool {
+        d1_migration_ready(self.available, self.set_matches)
+    }
+}
+
+async fn load_d1_migration_status(env: &Env) -> D1MigrationStatus {
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(err) => {
+            worker::console_warn!("D1 migration status binding unavailable: {}", err);
+            return D1MigrationStatus::default();
+        }
+    };
+    let result = db
+        .prepare("SELECT name FROM d1_migrations ORDER BY name")
+        .all()
+        .await;
+    match result {
+        Ok(result) => match result.results::<D1MigrationNameRow>() {
+            Ok(rows) => {
+                let applied: Vec<String> = rows.into_iter().map(|row| row.name).collect();
+                D1MigrationStatus {
+                    available: true,
+                    applied_count: i64::try_from(applied.len()).unwrap_or(i64::MAX),
+                    latest: applied.last().cloned(),
+                    expected_applied: applied.iter().any(|name| name == EXPECTED_D1_MIGRATION),
+                    set_matches: d1_migration_set_matches(&applied),
+                }
+            }
+            Err(err) => {
+                worker::console_warn!("D1 migration status decode unavailable: {}", err);
+                D1MigrationStatus::default()
+            }
+        },
+        Err(err) => {
+            worker::console_warn!("D1 migration status query unavailable: {}", err);
+            D1MigrationStatus::default()
+        }
+    }
+}
+
+fn d1_migration_set_matches(applied: &[String]) -> bool {
+    applied.len() == EXPECTED_D1_MIGRATIONS.len()
+        && applied
+            .iter()
+            .map(String::as_str)
+            .eq(EXPECTED_D1_MIGRATIONS.iter().copied())
+}
+
+fn d1_migration_ready(available: bool, set_matches: bool) -> bool {
+    available && set_matches
 }
 
 pub async fn task_runner_status(
@@ -1998,6 +2103,38 @@ mod tests {
         assert_eq!(expected.user_quota, 870);
         assert_eq!(expected.replay_rows, 1);
         assert_eq!(expected.log_rows, 1);
+    }
+
+    #[test]
+    fn d1_migration_readiness_requires_the_current_schema_marker() {
+        let expected: Vec<String> = EXPECTED_D1_MIGRATIONS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        assert!(d1_migration_set_matches(&expected));
+        assert!(d1_migration_ready(true, true));
+        assert!(!d1_migration_ready(false, true));
+        assert!(!d1_migration_ready(true, false));
+
+        let mut missing = expected.clone();
+        missing.remove(0);
+        assert!(!d1_migration_set_matches(&missing));
+
+        let mut substituted = expected.clone();
+        substituted[0] = "0001_unexpected.sql".to_string();
+        assert!(!d1_migration_set_matches(&substituted));
+
+        let mut extra = expected;
+        extra.push("0019_unexpected.sql".to_string());
+        assert!(!d1_migration_set_matches(&extra));
+        assert_eq!(
+            EXPECTED_D1_MIGRATION,
+            "0018_realtime_settlement_replays.sql"
+        );
+        assert!(
+            include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
+                .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
+        );
     }
 
     #[test]

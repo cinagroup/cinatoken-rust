@@ -8629,6 +8629,98 @@ Remaining migration gaps:
   hibernation/restore, rollback, duplicate replay, and no-double-charge
   evidence are all archived.
 
+### 22.139 2026-07-10 D1 Migration Discovery and Local Worker-Binding Settlement Evidence
+
+This increment removes two local control-plane blockers from the layered
+Realtime migration: Wrangler can now discover the repository's canonical D1
+migration chain, and the settlement smoke route is no longer shadowed by the
+generic Realtime gateway prefix. The resulting evidence is stronger than the
+in-memory SQLite contract in 22.137 because it exercises a real local Wrangler
+D1 database through the Worker `DB` binding. It is still local evidence and
+does not establish remote staging or production readiness.
+
+Configuration and route-ownership corrections:
+
+- Added `migrations_dir = "migrations/d1"` to all three Wrangler D1 binding
+  declarations: the root/default binding, `env.staging`, and `env.production`.
+  This makes Wrangler discover the contiguous `0001` through `0018` chain
+  instead of relying on its default migration-directory convention.
+- Added a config/runtime invariant audit: the Worker embeds the exact ordered
+  18-name migration set, the repository audit requires it to match the SQL
+  files, and runtime readiness fails closed unless the deployed
+  `d1_migrations` ledger is an exact match. A count plus latest marker is no
+  longer sufficient.
+- The config correction aligns migration discovery across environments; it
+  does not prove that migrations were applied to either remote database.
+- Narrowed the Realtime gateway candidate match from the broad
+  `/api/platform/realtime/` prefix to the actual OpenAI Realtime route and
+  valid session control routes. The sibling admin control route
+  `POST /api/platform/realtime/settlement-batch/smoke` now reaches the platform
+  settlement handler instead of being claimed as a Realtime session id.
+
+Local evidence captured on 2026-07-10:
+
+- The real local Wrangler D1 applied all 18 of 18 migrations, through
+  `0018_realtime_settlement_replays.sql`, and exposed 25 business tables. This
+  proves local schema discovery and application rather than only replaying SQL
+  against the Python/in-memory SQLite verifier.
+- The local SQLite full-chain verifier now also requires 29 incremental key
+  columns and 9 key indexes, preventing an `ALTER TABLE` or critical uniqueness
+  regression from passing on table names alone.
+- An authenticated localhost call to `/api/platform/capabilities` returned
+  migration status available, count 18, latest/expected 0018, exact set match,
+  and D1 readiness all true. The first live attempt exposed a wasm-only
+  `SystemTime::now()` panic inside billing expression probes; the billing
+  engine now uses the Worker-compatible JavaScript clock on wasm, and the
+  rebuilt request returned `200` with both Realtime billing probes true.
+- The local Worker-binding settlement smoke passed all six fixed scenarios:
+  `additional-quota-applied`, `duplicate-replay-noop`,
+  `guarded-update-rollback`, `audit-failure-rollback`,
+  `refund-delta-applied`, and the tokenless settlement path.
+- Smoke cleanup completed with zero residual fixture rows. The local evidence
+  therefore covers applied settlement, duplicate no-op, guarded-update
+  rollback, late audit failure rollback, refund, tokenless settlement, and
+  cleanup through the same D1 binding batch path used by the Worker.
+
+Layered migration effect:
+
+- **Rust scheduling gateway:** route-family ownership is now explicit enough
+  for a platform settlement control route to coexist with Realtime session
+  routes. D1 migration discovery is also aligned for default, staging, and
+  production config, providing a schema-readiness prerequisite for downstream
+  canaries.
+- **Rust Realtime DO:** the DO settlement handoff now has local binding-backed
+  evidence for the quota/replay/audit batch it delegates to D1. This advances
+  M6 from SQL-shape-only evidence to local Worker-binding evidence, but it does
+  not prove a remote DO, hibernation/restore, live `response.done` settlement,
+  or staging no-double-charge behavior.
+- **WFP tenant script / cinaVibeSDK layering:** this increment does not validate
+  a WFP dispatch namespace or tenant artifact. It reinforces the intended
+  separation: the Rust gateway owns route classification and central D1 schema
+  readiness, the Realtime DO owns session-local state, and WFP Rust tenant
+  scripts remain isolated execution targets rather than owners of the central
+  quota/replay/audit transaction.
+
+Remaining migration gaps:
+
+- Wrangler is not authenticated for remote Cloudflare operations. No remote
+  staging deployment, D1 migration apply/list result, table inventory,
+  capability snapshot, or settlement binding smoke was captured in this
+  increment.
+- Authenticate Wrangler, apply and verify the same 18/18 migration chain on an
+  isolated staging D1, confirm the expected business-table inventory, and
+  archive the six-scenario Worker-binding smoke plus zero-residue cleanup there.
+- Keep `REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED`,
+  `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED`, `REALTIME_SESSION_V1_ENABLED`,
+  `realtime_session_billing_settlement_compiled`, and
+  `realtime_session_v1_cutover_ready` conservative/default-off until remote
+  staging rollback, duplicate/no-double-charge, live Realtime usage,
+  hibernation/restore, redaction, and rollback evidence are complete.
+- WFP still requires its paid-plan `DISPATCHER` binding, uploaded Rust/Wasm
+  tenant artifact, capability preflight, internal dispatch smoke, AI Gateway
+  evidence, and rollback archive. The local Realtime settlement result must not
+  be used to advance WFP readiness.
+
 ### 22.137 2026-07-08 Realtime Settlement Batch Replay Contract
 
 This increment adds local, repeatable evidence for the Realtime settlement D1

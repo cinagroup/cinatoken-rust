@@ -1477,7 +1477,7 @@ impl RealtimeSessionMetrics {
 }
 
 pub fn realtime_gateway_candidate(path: &str) -> bool {
-    path.starts_with(REALTIME_SESSION_GATEWAY_PREFIX) || path == REALTIME_OPENAI_PATH
+    path == REALTIME_OPENAI_PATH || session_from_gateway_path(path).is_some()
 }
 
 pub async fn handle_gateway(req: Request, env: Env) -> WorkerResult<Response> {
@@ -4650,8 +4650,12 @@ fn session_from_request(req: &Request) -> Option<String> {
 
 fn session_from_gateway_path(path: &str) -> Option<String> {
     let rest = path.strip_prefix(REALTIME_SESSION_GATEWAY_PREFIX)?;
-    let session = rest.split('/').next().unwrap_or_default();
-    normalize_session_name(session)
+    let mut segments = rest.split('/');
+    let session = normalize_session_name(segments.next().unwrap_or_default())?;
+    match (segments.next(), segments.next()) {
+        (None, None) | (Some(""), None) | (Some("status"), None) => Some(session),
+        _ => None,
+    }
 }
 
 fn normalize_session_name(value: &str) -> Option<String> {
@@ -4838,6 +4842,15 @@ mod tests {
         ));
         assert!(realtime_gateway_candidate("/v1/realtime"));
         assert!(!realtime_gateway_candidate("/v1/realtime/sessions"));
+        assert!(!realtime_gateway_candidate(
+            "/api/platform/realtime/settlement-batch/smoke"
+        ));
+        assert!(!realtime_gateway_candidate(
+            "/api/platform/realtime/session-a/unknown"
+        ));
+        assert!(!realtime_gateway_candidate(
+            "/api/platform/realtime/session-a/status/extra"
+        ));
     }
 
     #[test]
@@ -4846,8 +4859,15 @@ mod tests {
             session_from_gateway_path("/api/platform/realtime/Session_1/status").as_deref(),
             Some("session_1")
         );
+        assert_eq!(
+            session_from_gateway_path("/api/platform/realtime/Session_1/").as_deref(),
+            Some("session_1")
+        );
         assert!(session_from_gateway_path("/api/platform/realtime/../bad").is_none());
         assert!(session_from_gateway_path("/api/platform/realtime/").is_none());
+        assert!(
+            session_from_gateway_path("/api/platform/realtime/settlement-batch/smoke").is_none()
+        );
     }
 
     #[test]

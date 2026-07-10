@@ -153,7 +153,12 @@ Missing/verify first, since these block paid settlement:
    Asia/Shanghai +8, night-discount single-value, Jan-1 pattern) — the vectors
    Go could not pin because it reads the wall clock. Still pending: DST-accurate
    tz offsets (`timezone_offset_seconds` uses fixed offsets, not tzdata, so
-   summer DST differs from Go's `time.LoadLocation`).
+   summer DST differs from Go's `time.LoadLocation`). Worker runtime follow-up
+   on 2026-07-10 removed `SystemTime::now()` from the wasm default-clock path:
+   `wasm32` now uses `js_sys::Date::now()`, while native targets retain
+   `SystemTime`. A real localhost Worker capability request executed the
+   pre-settlement and settlement-preview expression probes successfully after
+   the fix.
 4. **Image/audio variables** — `img`,`img_o`,`ai`,`ao` pricing plus no-double-
    subtraction; couple with request-time image-dimension/audio-duration estimate
    parity (open `TokenCountMeta` gap, fully specified in

@@ -2,6 +2,8 @@
 
 Date: 2026-07-06
 
+Latest evidence increment: 2026-07-10
+
 Status: production migration mapping for applying cinaVibeSDK architecture
 patterns to `cinatoken-rust`. This is a docs-only supplement. It does not
 change Rust or TypeScript code.
@@ -90,6 +92,48 @@ Persistent state remains split by responsibility:
 - Durable Objects own session-local or concurrency-sensitive state only.
 - Queues and R2 remain audit/log/artifact escape hatches for large or async
   writes.
+
+## Evidence Increment: 2026-07-10 Local D1 And Route Ownership
+
+The 2026-07-10 local evidence advances the migration contract without changing
+the production posture:
+
+- All three Wrangler D1 binding declarations now set
+  `migrations_dir = "migrations/d1"`. The default, staging, and production
+  configurations therefore point at the same contiguous `0001` through `0018`
+  migration chain. This is configuration alignment, not proof of a remote
+  migration apply.
+- A real local Wrangler D1 applied 18/18 migrations and exposed 25 business
+  tables, including the schema needed by the Realtime settlement replay-marker
+  path.
+- The scheduling gateway no longer treats every
+  `/api/platform/realtime/*` path as a Realtime session. Valid session routes
+  remain owned by `RealtimeSession`, while
+  `/api/platform/realtime/settlement-batch/smoke` remains an explicit platform
+  control route.
+- The local Worker-binding settlement smoke passed all six fixed
+  apply/duplicate/rollback/refund/tokenless scenarios and cleanup left zero
+  residual smoke rows. This upgrades M6 settlement evidence from a local SQL
+  shape to the real local Worker `DB` binding path.
+
+How this maps to the cinaVibeSDK-derived layers:
+
+- **Rust scheduling gateway:** schema readiness and exact route ownership are
+  control-plane responsibilities. Explicit control routes must win before a
+  generic DO or WFP prefix is considered.
+- **Rust Durable Object:** `RealtimeSession` can delegate its final
+  quota/replay/audit mutation to a locally proven binding batch, but remote DO
+  lifecycle, live usage settlement, and staging no-double-charge evidence are
+  still missing.
+- **WFP Rust tenant script:** no dispatch namespace, tenant artifact, or tenant
+  AI route was exercised by this evidence. The central D1 settlement remains a
+  gateway-owned service boundary; tenant scripts must not gain direct ownership
+  of that transaction merely because the local Realtime batch passed.
+
+Wrangler is not authenticated for remote Cloudflare operations, so there is no
+remote staging deployment, migration result, table inventory, capability
+snapshot, or settlement smoke to archive yet. All production and staging
+cutover statements below remain conditional on that remote evidence.
 
 ## cinaVibeSDK Pattern Mapping
 
@@ -491,7 +535,7 @@ Before enabling production traffic:
 
 ## Current Production Blockers
 
-As of the docs reviewed on 2026-07-06:
+As of 2026-07-10, including the local D1 and route-ownership evidence above:
 
 - Main relay AI Gateway forwarding is wired as gated substrate, but still needs
   live staging canary evidence and billing log comparison before cutover.
@@ -503,8 +547,10 @@ As of the docs reviewed on 2026-07-06:
   startup queue/drain probe plus default-off replay/audit/batch settlement
   foundations, a local SQL-shape settlement-batch replay, and a staging
   setup/verify/cleanup evidence plan plus a default-off Worker-binding
-  settlement smoke route for the six fixed apply/duplicate/rollback scenarios,
-  but still lacks archived live staging binding-smoke output, staging
+  settlement smoke route for the six fixed apply/duplicate/rollback scenarios.
+  The real local Worker binding now passes all six scenarios with zero residual
+  smoke rows after cleanup, but the migration still lacks archived live staging
+  binding-smoke output, staging
   queue/drain and D1 rollback artifacts, full live fault replay, and billing
   settlement proof required for production `/v1/realtime`.
 - WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced

@@ -1,6 +1,6 @@
 # Cloudflare Production Config Checklist
 
-Date: 2026-06-22
+Date: 2026-07-10
 
 Status: production configuration checklist for G1, G5, and G6 in
 `docs/production-migration-execution-plan.md`.
@@ -88,6 +88,29 @@ Cloudflare references added 2026-07-05:
 
 ## Current Config Snapshot
 
+### 2026-07-10 D1 And Credential Update
+
+- The top-level, `[env.staging]`, and `[env.production]` D1 binding tables now
+  each set `migrations_dir = "migrations/d1"`.
+- `bun run check:d1:migration-config` passes locally and proves exactly three
+  `DB` bindings, a contiguous 18-migration chain, and alignment between the
+  latest migration and the Worker capability constant.
+- `bun run verify:sqlite` passes locally by applying all 18 migrations and
+  requiring 25 tables, 29 incremental key columns, and 9 key indexes. Local
+  Wrangler D1 also applied 18/18 migrations.
+- Staging resource identifiers are present in `wrangler.toml`, but Wrangler was
+  not authenticated during this evidence window. Their account ownership,
+  existence, remote migration state, bindings, secrets, deployability, and
+  runtime behavior remain unverified.
+- A credential exposed during setup is compromised evidence, not a recovery
+  path. Do not use it. Revoke/rotate it, authenticate Wrangler with a
+  replacement least-privilege credential, and record only credential name,
+  scope, owner, and rotation time.
+
+Result: local D1/config prerequisites pass, but G1 remains **NO-GO**. No local
+command or local Worker smoke substitutes for authenticated staging deploy,
+remote D1 migration output, `/api/status`, capabilities, logs, or traces.
+
 Current `wrangler.toml` is development-shaped:
 
 - Worker name: `cinatoken-rust-api`
@@ -110,7 +133,9 @@ Current `wrangler.toml` is development-shaped:
   `WFP_DISPATCH_WORKER_PREFIX`, `WFP_DISPATCH_NAMESPACE`,
   `WFP_TENANT_COMPATIBILITY_DATE`, `REALTIME_SESSION_GATEWAY_ENABLED`,
   `REALTIME_SESSION_V1_ENABLED`
-- D1/KV IDs are placeholders
+- Top-level D1/KV IDs and production D1/KV IDs are placeholders; staging has
+  concrete-looking IDs that are not yet authenticated or remotely verified
+- All three D1 binding tables explicitly use `migrations/d1`
 - R2/Queue names are declared; relay audit logging and async task polling use
   Queue bindings when configured
 - `CHANNEL_AFFINITY` and `REALTIME_SESSIONS` Durable Objects are declared; WFP
@@ -134,10 +159,12 @@ Production decision:
 | `[env.staging]` | `cinatoken-rust-api-staging` | `staging` | staging smoke, canary rehearsal |
 | `[env.production]` | `cinatoken-rust-api` | `production` | customer canary and full cutover |
 
-Placeholder binding IDs (`00000000-...` for dev, `REPLACE_WITH_STAGING_*` /
-`REPLACE_WITH_PRODUCTION_*` for staging/prod) are intentional and must be
-replaced before the corresponding deploy. Production deploy is gated by G8 in
-`docs/production-migration-execution-plan.md`.
+Top-level zero IDs and `REPLACE_WITH_PRODUCTION_*` production IDs are
+intentional placeholders and must be replaced before the corresponding deploy.
+The staging block currently contains concrete-looking resource IDs, but they
+must not be called verified until authenticated Wrangler commands prove the
+account, target resources, and remote binding state. Production deploy is gated
+by G8 in `docs/production-migration-execution-plan.md`.
 
 Promotion SOP:
 
@@ -197,6 +224,7 @@ These must be true for every deployable environment:
 | `observability` | Enabled with environment-specific sampling policy | Logs/traces visible |
 | Build command | Produces Worker shim reproducibly | `bun run check:cf:dry-run` |
 | Binding names | Match Worker code and generated types exactly | `wrangler types` output |
+| D1 migration directory | Every D1 binding table sets `migrations_dir = "migrations/d1"` | `bun run check:d1:migration-config` |
 | Secrets | Set out of band, never under `vars` | Secret inventory without values |
 | Dev URLs | No localhost or development origins in production | Config review |
 | Placeholder IDs | No zero/placeholder IDs in staging/prod | Config review |
@@ -480,19 +508,31 @@ Detailed sampling, dashboard, alert, SLO, and redaction gates are tracked in
 
 G1 can pass only when:
 
-1. Staging Worker deploys with real resource IDs.
-2. `wrangler types` or the Rust equivalent binding verification is refreshed
+1. `bun run check:d1:migration-config` and `bun run verify:sqlite` pass.
+2. Any exposed Cloudflare credential is revoked/rotated and the replacement
+   credential is validated without recording its value.
+3. Authenticated Wrangler output proves the intended account and staging D1
+   target; a value present in `wrangler.toml` is not proof by itself.
+4. Staging Worker deploys with real resource IDs.
+5. `wrangler types` or the Rust equivalent binding verification is refreshed
    after binding changes.
-3. `/api/status` reports expected staging feature flags, and the admin
+6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
-   `/api/platform/capabilities` binding/flag state.
-4. Logs/traces show the status request.
-5. D1 migrations are applied to staging.
-6. Upstash staging credentials are configured or the feature is deliberately
+   `/api/platform/capabilities` binding/flag state, including
+   `d1_migration_status_available=true`, applied count `18`, latest/expected
+   `0018_realtime_settlement_replays.sql`, exact set match, and
+   `d1_migration_ready=true`.
+7. Logs/traces show the status request.
+8. D1 migrations 0001-0018 are applied to staging, remote output is archived,
+   and the runtime capability exact-set gate agrees with the remote ledger.
+9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
-7. No placeholder IDs or development origins remain in staging config.
-8. No secrets are stored in `vars`.
-9. `docs/staging-smoke-runbook.md` Phase 0 and Phase 1 pass.
+10. No placeholder IDs or development origins remain in staging config.
+11. No secrets are stored in `vars`.
+12. `docs/staging-smoke-runbook.md` Phase 0 and Phase 1 pass.
+
+As of 2026-07-10, only item 1 has local evidence. Items 2-12 require credential
+remediation and authenticated staging work; G1 is still closed.
 
 ## Production Config Gate
 

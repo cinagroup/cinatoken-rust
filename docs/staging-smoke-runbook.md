@@ -1,6 +1,6 @@
 # Staging Smoke Runbook
 
-Date: 2026-06-22
+Date: 2026-07-10
 
 Status: first detailed smoke runbook for the Rust/Cloudflare staging
 environment. This runbook supports G1, G3, G4, G5, G6, and G7 in
@@ -25,11 +25,23 @@ Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
 Do not use production secrets in staging. Do not paste secret values into this
 file or any smoke report.
 
+Current gate state (2026-07-10): **NO-GO for remote staging promotion**.
+Local migration/config checks and a local Worker-binding Realtime settlement
+smoke have passed, but Wrangler is not authenticated and no remote staging
+deploy, migration, binding, log, trace, or smoke result was captured. An
+exposed Cloudflare token must not be used; revoke/rotate it before authenticating
+with a replacement credential.
+
 ## Preconditions
 
 Required local state:
 
 - Clean git worktree or an intentionally documented test branch.
+- On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
+  so Wrangler's local `workerd` can start.
+- `bun run check:d1:migration-config` passes.
+- `bun run verify:sqlite` reports 18 migrations, 25 required tables, 29
+  incremental key columns, and 9 key indexes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes.
@@ -106,6 +118,8 @@ Run from `C:\cinagroup\cinatoken-rust`:
 
 ```powershell
 git status --short --branch
+bun run check:d1:migration-config
+bun run verify:sqlite
 bun run check
 cargo test -p cinatoken-worker --lib
 cargo check -p cinatoken-worker --target wasm32-unknown-unknown
@@ -122,6 +136,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0018 are
+  contiguous; the local SQLite verifier finds all 25 required tables, 29
+  incremental key columns, and 9 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -171,6 +188,12 @@ Pass criteria:
 ## Phase 1: Cloudflare Binding Smoke
 
 Deploy or update staging using the configured staging command.
+
+Before any remote command, confirm the operator has revoked/rotated every
+exposed token and authenticated Wrangler with a replacement credential. Record
+the account identity and token scope/owner/rotation time, never the token value.
+If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local 18/18
+or localhost smoke output cannot be promoted into this phase.
 
 Record:
 
@@ -440,8 +463,9 @@ Pass criteria:
 ## Phase 4b: Realtime Durable Object Smoke
 
 Realtime remains G7-gated until the upstream OpenAI Realtime bridge and billing
-settlement are wired, but the Cloudflare long-session substrate must be proven
-before that bridge is enabled. First run the local bridge replay contract
+settlement are proven on remote staging with live close/error/protocol and
+no-double-charge evidence. Local foundations and smoke results do not prove the
+Cloudflare long-session substrate. First run the local bridge replay contract
 self-test; it validates the expected close/error/send-failure terminal-event
 metadata without opening a network socket:
 
@@ -519,6 +543,15 @@ accepts only fixed scenario names (`additional-quota-applied`,
 `refund-delta-applied`, `tokenless-applied`) and always runs the production
 `apply_realtime_settlement_batch` path through the Worker D1 binding. Live smoke
 requires an admin cookie and an explicit confirmation:
+
+On 2026-07-10, the route precedence bug that allowed the generic Realtime
+gateway matcher to claim this settlement endpoint was corrected. A real local
+`wrangler dev` Worker-binding run then passed all six scenarios (6/6) through
+the Worker `DB` binding, and default cleanup left zero smoke fixture rows and no
+temporary audit-failure trigger. This is stronger than the SQLite-only contract
+test, but it is still localhost evidence. Repeat the command below against the
+deployed staging Worker and isolated staging D1 before changing any G7 or
+Realtime production status.
 
 ```powershell
 bun tools/smoke_realtime_settlement_batch.mjs --binding-smoke --url "$env:STAGING_BASE_URL" --cookie "$env:REALTIME_SETTLEMENT_SMOKE_COOKIE" --confirm-live --json

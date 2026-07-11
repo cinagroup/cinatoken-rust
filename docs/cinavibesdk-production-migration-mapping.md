@@ -522,8 +522,12 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
 - The Rust cross-model fallback is a separate default-off policy layer around
   the existing channel loop. It must not be stacked with Cloudflare Dynamic
   Routes until the actual Gateway-selected provider/model can be reconciled
-  with central billing and exactly-one settlement. `auto` group is also blocked
-  until billing freezes the actual serving group rather than the first plan.
+  with central billing and exactly-one settlement. The local `auto` group plan
+  now freezes one expression result, rebases only the effective ratio for each
+  candidate group, reserves the maximum estimate once, and settles/refunds from
+  the snapshot belonging to the actual serving group. A cross-model fallback
+  refunds the primary plan and builds a new plan for the fallback model. This
+  remains default-off until isolated staging D1 replay proves those invariants.
 - WFP tenant AI routes are currently a transport-only NO-GO for paid traffic:
   the admin dispatch entry bypasses central relay-token policy, channel
   selection, quota reserve/settlement, and relay audit. WFP must run only after

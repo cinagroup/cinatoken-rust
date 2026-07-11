@@ -426,7 +426,9 @@ Record:
 - Command output, with raw cookie and API key values redacted.
 - `/api/platform/capabilities` fields proving router readiness,
   channel opt-in support, compiled forwarder, and compiled same-channel
-  fallback.
+  fallback. For cross-model readiness, also record
+  `relay_ai_gateway_cross_model_actual_group_billing_compiled=true` and the
+  `actual_serving_group_billing` guard.
 - Relay response status, safe request IDs, and response content type.
 - Cloudflare AI Gateway log entry for the same timestamp/model/gateway.
 - Relay audit and billing rows proving usage parsing, settlement, and quota
@@ -448,9 +450,11 @@ Pass criteria:
 
 ## Phase 3c: Cross-Model Fallback Replay
 
-This is a separate canary from same-channel transport fallback. Use a non-auto
-staging token/group and two low-cost AI-Gateway-opted-in channels. Do not enable
-a Cloudflare Dynamic Route for the same request.
+This is a separate canary from same-channel transport fallback. Start with a
+fixed staging token/group and two low-cost AI-Gateway-opted-in channels, then
+repeat the billing cases with an isolated `auto` token whose candidate groups
+have deliberately different effective ratios. Do not enable a Cloudflare
+Dynamic Route for the same request.
 
 Configure staging only:
 
@@ -498,13 +502,19 @@ Archive these independent cases:
    it never starts after a `2xx` stream is exposed.
 7. Rollback. Set `RELAY_MODEL_FALLBACK_ENABLED=false`, redeploy, and prove the
    existing same-model relay behavior is restored.
+8. `auto` group actual-serving-group billing. Prove the expression output is
+   frozen once, candidate snapshots differ only by effective group ratio, one
+   maximum estimated quota is reserved, and final settlement selects the group
+   that served the response and refunds the exact excess. Repeat with a
+   cross-model fallback and prove the primary plan is refunded before a new
+   fallback-model candidate-group plan is reserved.
 
 Keep `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until all cases, quota row
-deltas, final audit `model_route`, and rollback timestamps are archived. Auto
-group remains unsupported for this feature until actual-serving-group billing
-is fixed. The terminal attempt ledger is locally compiled; remote Queue
-delivery, synchronous D1 fallback, refund-before-audit ordering, user-log
-redaction, and admin-log visibility remain production blockers.
+deltas, final audit `model_route`, actual serving group, reservation strategy,
+and rollback timestamps are archived. Actual-serving-group billing and the
+terminal attempt ledger are locally compiled; remote D1/Queue delivery,
+refund-before-audit ordering, user-log redaction, and admin-log visibility
+remain production blockers.
 
 ## Phase 4: SSE Relay Smoke
 

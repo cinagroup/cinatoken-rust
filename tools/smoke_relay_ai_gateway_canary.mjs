@@ -521,6 +521,8 @@ function summarizeCapabilities(data) {
       data.relay_ai_gateway_cross_model_fallback_compiled === true,
     relay_ai_gateway_cross_model_terminal_audit_compiled:
       data.relay_ai_gateway_cross_model_terminal_audit_compiled === true,
+    relay_ai_gateway_cross_model_actual_group_billing_compiled:
+      data.relay_ai_gateway_cross_model_actual_group_billing_compiled === true,
     relay_ai_gateway_cross_model_fallback_enabled:
       data.relay_ai_gateway_cross_model_fallback_enabled === true,
     relay_ai_gateway_cross_model_fallback_configured:
@@ -551,6 +553,7 @@ function validateCapabilities(capabilities, options) {
     ["relay_ai_gateway_same_channel_fallback_compiled", true],
     ["relay_ai_gateway_cross_model_fallback_compiled", true],
     ["relay_ai_gateway_cross_model_terminal_audit_compiled", true],
+    ["relay_ai_gateway_cross_model_actual_group_billing_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
       throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);
@@ -568,7 +571,7 @@ function validateCapabilities(capabilities, options) {
     "token_model_limit_recheck",
     "fallback_channel_reselection",
     "fallback_billing_rereservation",
-    "single_group_billing_scope",
+    "actual_serving_group_billing",
     "server_failure_only",
     "provider_native_direct_body",
     "model_route_audit",
@@ -753,6 +756,7 @@ function runSelfTest() {
     relay_ai_gateway_same_channel_fallback_compiled: true,
     relay_ai_gateway_cross_model_fallback_compiled: true,
     relay_ai_gateway_cross_model_terminal_audit_compiled: true,
+    relay_ai_gateway_cross_model_actual_group_billing_compiled: true,
     relay_ai_gateway_cross_model_fallback_enabled: false,
     relay_ai_gateway_cross_model_fallback_configured: false,
     relay_ai_gateway_cross_model_fallback_config_valid: true,
@@ -767,7 +771,7 @@ function runSelfTest() {
       "token_model_limit_recheck",
       "fallback_channel_reselection",
       "fallback_billing_rereservation",
-      "single_group_billing_scope",
+      "actual_serving_group_billing",
       "server_failure_only",
       "provider_native_direct_body",
       "model_route_audit",
@@ -819,6 +823,15 @@ function runSelfTest() {
       options,
     ),
   );
+  const missingActualGroupBillingRejected = expectFailure(() =>
+    validateCapabilities(
+      summarizeCapabilities({
+        ...raw,
+        relay_ai_gateway_cross_model_actual_group_billing_compiled: false,
+      }),
+      options,
+    ),
+  );
   const servedModelParserOk =
     responseModel('{"model":"fallback/model"}') === "fallback/model";
   const terminalAuditFixture = {
@@ -864,6 +877,7 @@ function runSelfTest() {
       routeDriftRejected &&
       unsafeCutoverRejected &&
       missingTerminalAuditRejected &&
+      missingActualGroupBillingRejected &&
       servedModelParserOk &&
       terminalAuditValidatorOk &&
       duplicateTerminalAuditRejected,
@@ -875,6 +889,10 @@ function runSelfTest() {
       {
         name: "missing-terminal-audit-rejected",
         ok: missingTerminalAuditRejected,
+      },
+      {
+        name: "missing-actual-group-billing-rejected",
+        ok: missingActualGroupBillingRejected,
       },
       {
         name: "served-model-parser",

@@ -33,6 +33,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_ai_gateway_rest_forwarder_compiled: false,
   relay_ai_gateway_same_channel_fallback_compiled: false,
   relay_ai_gateway_cross_model_fallback_compiled: false,
+  relay_ai_gateway_cross_model_actual_group_billing_compiled: false,
   relay_ai_gateway_cross_model_terminal_audit_compiled: false,
   relay_ai_gateway_cross_model_fallback_ready: false,
   relay_ai_gateway_cross_model_fallback_staging_verified: false,
@@ -87,6 +88,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_ai_gateway_rest_forwarder_compiled: true,
         relay_ai_gateway_same_channel_fallback_compiled: true,
         relay_ai_gateway_cross_model_fallback_compiled: true,
+        relay_ai_gateway_cross_model_actual_group_billing_compiled: true,
         relay_ai_gateway_cross_model_terminal_audit_compiled: true,
         wfp_dispatch_binding_available: true,
         wfp_tenant_supported_routes: ['/v1/responses'],
@@ -124,6 +126,26 @@ describe('Cloudflare platform readiness headline', () => {
       summary.every((stage) => stage.complete),
       false
     )
+  })
+
+  test('blocks AI Gateway implementation without actual serving group billing', () => {
+    const implementation = getStage(
+      buildPlatformReadinessSummary(
+        makeCapabilities({
+          relay_ai_gateway_rest_routes: ['/v1/chat/completions'],
+          relay_ai_gateway_cutover_guards: ['actual-serving-group-billing'],
+          relay_ai_gateway_channel_opt_in_supported: true,
+          relay_ai_gateway_rest_forwarder_compiled: true,
+          relay_ai_gateway_same_channel_fallback_compiled: true,
+          relay_ai_gateway_cross_model_fallback_compiled: true,
+          relay_ai_gateway_cross_model_terminal_audit_compiled: true,
+        })
+      ),
+      'implementation'
+    )
+
+    assert.equal(implementation.signals[0]?.id, 'ai-gateway-implementation')
+    assert.equal(implementation.signals[0]?.status, 'blocked')
   })
 
   test('keeps canary and smoke prerequisites distinct from verification', () => {

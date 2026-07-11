@@ -6890,10 +6890,11 @@ Implemented:
   prefix before provider egress and is restricted to fetch/server failures. Its
   internal marker is carried through a fresh mutable Worker response and removed
   before returning to the client, while remaining available to relay audit.
-- `auto` group cross-model fallback is deliberately blocked by the
-  `single_group_billing_scope` guard. Existing tiered preflight freezes the first
-  planned group before a retry can serve from another auto group; enabling model
-  fallback there would make the billing ambiguity larger.
+- The original increment blocked `auto` group cross-model fallback with the
+  `single_group_billing_scope` guard because tiered preflight froze the first
+  planned group. Section 22.148 supersedes that local implementation limit with
+  an actual-serving-group reservation plan; production enablement remains
+  blocked on staging D1 evidence.
 - Added backend capabilities, frontend implementation/configuration/smoke/
   cutover signals, validated mapping counts, explicit guard visibility, and a
   smoke self-test that rejects the former route-contract drift.
@@ -6903,8 +6904,8 @@ Required before cutover:
 - Prove the bounded type-5 terminal attempt ledger through deployed Queue/D1,
   including synchronous fallback, refund-before-audit ordering, DLQ handling,
   user redaction, and admin visibility.
-- Resolve the existing auto-group selected-group billing invariant, then remove
-  the single-group restriction only with D1 integration proof.
+- Prove the actual-serving-group reservation and settlement invariant against
+  isolated staging D1 before treating the replacement guard as cutover evidence.
 - Run isolated staging scenarios for primary server failure, fallback success,
   token-limit denial, missing fallback channel, fallback fetch exhaustion,
   streaming response start, exactly-one reserve/refund/settlement, audit model
@@ -6963,8 +6964,47 @@ Still required before production cutover:
   visibility, user-log redaction, and no duplicate row under delivery retry.
 - Inject D1 refund and audit-write failures and archive the resulting quota,
   response, logs, and operator-alert evidence.
-- Resolve actual-serving-group billing for `auto`; the cross-model gate and
-  staging verification marker remain false.
+- Prove actual-serving-group billing for `auto` against isolated staging D1;
+  the cross-model gate and staging verification marker remain false.
+
+### 22.148 2026-07-11 Actual-Serving-Group Billing Plan
+
+This increment removes the local single-group implementation restriction for
+AI Gateway cross-model fallback without changing the default-off production
+policy. It keeps the billing expression result frozen while allowing retry to
+select a different serving group.
+
+Implemented locally:
+
+- Tiered billing evaluates the expression once for a logical model plan. It
+  derives one frozen snapshot per candidate group by rebasing only that group's
+  effective group ratio; request inputs, expression output, and evaluation time
+  are not recomputed during channel retry.
+- The relay reserves once at the maximum estimated quota across candidate
+  groups. When a response is retained, settlement selects the snapshot for the
+  actual serving group and refunds the difference from that maximum reserve.
+- Cross-model fallback first refunds the primary model plan, then rebuilds and
+  reserves an independent candidate-group plan for the fallback model. The
+  fallback response is settled against its own actual serving group.
+- A configured tiered preflight now excludes the flat-billing path even when
+  tiered settlement persistence fails, so a pending maximum reserve cannot be
+  followed by a second flat charge.
+- `/api/platform/capabilities` and the AI Gateway smoke contract expose
+  `relay_ai_gateway_cross_model_actual_group_billing_compiled=true`; the
+  fallback guard is now `actual_serving_group_billing`.
+
+Still required before production cutover:
+
+- Keep `RELAY_MODEL_FALLBACK_ENABLED=false` and
+  `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until fixed-group and `auto`
+  staging cases prove maximum reservation, selected-group settlement, exact
+  refund deltas, retry exhaustion, and rollback against real D1 rows.
+- Archive cases where the first planned group differs from the serving group,
+  including different ordinary and group-to-group ratios and a cross-model
+  fallback whose candidate groups differ from the primary model.
+- Treat this capability as compiled local evidence only. It does not assert
+  that a production Worker has been deployed or that production cutover is
+  approved.
 
 ### 22.145 2026-07-11 TaskRunner Recurring Alarm And Architecture Re-Audit
 

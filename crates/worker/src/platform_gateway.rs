@@ -44,6 +44,7 @@ use crate::realtime_session::{
     REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
 };
 use crate::relay::{
+    relay_actual_serving_group_billing_contract_compiled,
     relay_ai_gateway_direct_fallback_contract_compiled, relay_model_fallback_contract_compiled,
     relay_model_fallback_runtime_status, relay_terminal_attempt_audit_contract_compiled,
     RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
@@ -80,7 +81,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
     "token_model_limit_recheck",
     "fallback_channel_reselection",
     "fallback_billing_rereservation",
-    "single_group_billing_scope",
+    "actual_serving_group_billing",
     "server_failure_only",
     "provider_native_direct_body",
     "model_route_audit",
@@ -179,6 +180,7 @@ struct PlatformCapabilities {
     relay_ai_gateway_cross_model_fallback_configured: bool,
     relay_ai_gateway_cross_model_fallback_config_valid: bool,
     relay_ai_gateway_cross_model_fallback_mapping_count: usize,
+    relay_ai_gateway_cross_model_actual_group_billing_compiled: bool,
     relay_ai_gateway_cross_model_terminal_audit_compiled: bool,
     relay_ai_gateway_cross_model_fallback_ready: bool,
     relay_ai_gateway_cross_model_fallback_staging_verified: bool,
@@ -282,12 +284,15 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         cloudflare_ai_gateway_token_configured,
     );
     let relay_ai_gateway_cross_model_fallback_compiled = relay_model_fallback_contract_compiled();
+    let relay_ai_gateway_cross_model_actual_group_billing_compiled =
+        relay_actual_serving_group_billing_contract_compiled();
     let relay_ai_gateway_cross_model_terminal_audit_compiled =
         relay_terminal_attempt_audit_contract_compiled();
     let relay_model_fallback_runtime = relay_model_fallback_runtime_status(&env);
     let relay_ai_gateway_cross_model_fallback_ready = is_relay_model_fallback_ready(
         relay_ai_gateway_router_ready,
         relay_ai_gateway_cross_model_fallback_compiled,
+        relay_ai_gateway_cross_model_actual_group_billing_compiled,
         relay_ai_gateway_cross_model_terminal_audit_compiled,
         relay_model_fallback_runtime.enabled,
         relay_model_fallback_runtime.configured,
@@ -490,6 +495,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_cross_model_fallback_config_valid: relay_model_fallback_runtime.valid,
         relay_ai_gateway_cross_model_fallback_mapping_count: relay_model_fallback_runtime
             .mapping_count,
+        relay_ai_gateway_cross_model_actual_group_billing_compiled,
         relay_ai_gateway_cross_model_terminal_audit_compiled,
         relay_ai_gateway_cross_model_fallback_ready,
         relay_ai_gateway_cross_model_fallback_staging_verified,
@@ -1834,6 +1840,7 @@ fn is_relay_ai_gateway_router_ready(
 fn is_relay_model_fallback_ready(
     router_ready: bool,
     contract_compiled: bool,
+    actual_group_billing_compiled: bool,
     terminal_audit_compiled: bool,
     enabled: bool,
     configured: bool,
@@ -1841,6 +1848,7 @@ fn is_relay_model_fallback_ready(
 ) -> bool {
     router_ready
         && contract_compiled
+        && actual_group_billing_compiled
         && terminal_audit_compiled
         && enabled
         && configured
@@ -2144,16 +2152,17 @@ mod tests {
     #[test]
     fn relay_model_fallback_readiness_requires_every_runtime_and_replay_gate() {
         assert!(relay_model_fallback_contract_compiled());
+        assert!(relay_actual_serving_group_billing_contract_compiled());
         assert!(relay_terminal_attempt_audit_contract_compiled());
         assert!(is_relay_model_fallback_ready(
-            true, true, true, true, true, true
+            true, true, true, true, true, true, true
         ));
-        for false_gate in 0..6 {
-            let mut flags = [true; 6];
+        for false_gate in 0..7 {
+            let mut flags = [true; 7];
             flags[false_gate] = false;
             assert!(
                 !is_relay_model_fallback_ready(
-                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5]
+                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6]
                 ),
                 "expected model fallback readiness to wait on gate index {false_gate}"
             );
@@ -2167,7 +2176,7 @@ mod tests {
             "token_model_limit_recheck",
             "fallback_channel_reselection",
             "fallback_billing_rereservation",
-            "single_group_billing_scope",
+            "actual_serving_group_billing",
             "server_failure_only",
             "provider_native_direct_body",
             "model_route_audit",

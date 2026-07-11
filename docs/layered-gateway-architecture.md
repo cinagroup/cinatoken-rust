@@ -46,9 +46,12 @@ changes materially:
    channels/groups for one requested logical model. A separate Rust outer loop
    can now attempt one explicitly mapped AI Gateway model for supported
    chat/responses failures, with fallback token/channel checks, billing handoff,
-   and requested-versus-served model audit metadata. Deployed replay,
-   deployed Queue/D1 proof for the bounded terminal attempt audit and `auto`
-   actual-serving-group billing remain required before production cutover.
+   and requested-versus-served model audit metadata. The local tiered billing
+   plan now freezes one expression result, rebases candidate group ratios,
+   reserves the maximum estimate once, and settles/refunds against the actual
+   serving group; fallback rebuilds that plan for its own model. Deployed
+   replay and Queue/D1 proof for both this invariant and the bounded terminal
+   attempt audit remain required before production cutover.
 5. **The strongest task-system win is a bug-fix, not a DO.** A missing timeout
    sweep (Go's `sweepTimedOutTasks` was never ported for video/suno) plus a dead
    Midjourney timeout guard (seconds-vs-milliseconds units bug) create a real
@@ -100,8 +103,10 @@ maturity levels are used:
   names, fails closed on Gateway `401`/`403`/`429`, revalidates token/channel/
   billing policy for fallback, and persists requested-versus-served model
   metadata. All-fetch/configuration-failed requests now write a bounded,
-  secret-free type-5 ledger after reserve refund. Staging Queue/D1 replay and
-  auto-group billing remain P0 before production cutover.
+  secret-free type-5 ledger after reserve refund. Actual-serving-group billing
+  is now compiled locally for fixed and `auto` groups, but staging Queue/D1
+  replay of reservation, settlement, refund, and terminal audit remains P0
+  before production cutover.
 - M8's five tenant AI routes are transport substrate, not a paid relay entry.
   They bypass central relay-token policy, D1 channel selection, quota
   reserve/settlement, and relay audit when invoked through the admin dispatch

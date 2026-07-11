@@ -83,6 +83,29 @@ pub fn estimate_tiered_billing_snapshot_with_request(
     })
 }
 
+/// Clone a frozen billing snapshot for another serving-group ratio without
+/// re-running the expression. This keeps request/time-dependent expression
+/// output identical across a preplanned cross-group retry set; only the group
+/// multiplier and resulting reservation change.
+pub fn rebase_tiered_billing_snapshot_group_ratio(
+    snapshot: &TieredBillingSnapshot,
+    group_ratio: f64,
+) -> TieredBillingSnapshot {
+    let mut rebased = snapshot.clone();
+    let group_ratio = if group_ratio.is_finite() {
+        group_ratio.max(0.0)
+    } else {
+        0.0
+    };
+    rebased.group_ratio = group_ratio;
+    rebased.estimated_quota_after_group = expression_cost_to_quota(
+        rebased.estimated_expression_cost,
+        rebased.quota_per_unit,
+        group_ratio,
+    );
+    rebased
+}
+
 pub fn compute_tiered_quota(
     snapshot: &TieredBillingSnapshot,
     actual_params: TokenParams,
@@ -209,6 +232,23 @@ mod tests {
         let result = compute_tiered_quota(&snapshot, params(1_000.0, 500.0)).expect("settlement");
         assert_eq!(result.actual_quota_before_group, 3_500.0);
         assert_eq!(result.actual_quota_after_group, Quota(5_250));
+    }
+
+    #[test]
+    fn rebase_group_ratio_preserves_frozen_expression_result() {
+        let snapshot =
+            estimate_tiered_billing_snapshot("gpt-test", FLAT_EXPR, params(1_000.0, 500.0), 1.0)
+                .expect("snapshot should build");
+        let rebased = rebase_tiered_billing_snapshot_group_ratio(&snapshot, 2.0);
+
+        assert_eq!(rebased.group_ratio, 2.0);
+        assert_eq!(rebased.estimated_quota_after_group, Quota(7_000));
+        assert_eq!(rebased.expr_hash, snapshot.expr_hash);
+        assert_eq!(
+            rebased.estimated_expression_cost,
+            snapshot.estimated_expression_cost
+        );
+        assert_eq!(rebased.estimated_tier, snapshot.estimated_tier);
     }
 
     #[test]

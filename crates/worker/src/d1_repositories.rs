@@ -9,7 +9,9 @@ use worker::{D1Database, D1Result, D1Type};
 const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
 const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
 pub(crate) const GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_ratio";
-const LEGACY_GROUP_RATIO_OPTION_KEY: &str = "GroupRatio";
+pub(crate) const LEGACY_GROUP_RATIO_OPTION_KEY: &str = "GroupRatio";
+pub(crate) const GROUP_GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_group_ratio";
+pub(crate) const LEGACY_GROUP_GROUP_RATIO_OPTION_KEY: &str = "GroupGroupRatio";
 const BILLING_MODE_TIERED_EXPR: &str = "tiered_expr";
 // Auto cross-group selection settings (Go option keys, see model/option.go).
 const AUTO_GROUPS_OPTION_KEY: &str = "AutoGroups";
@@ -1954,9 +1956,8 @@ pub async fn tiered_billing_expr_for_model(
     db: &D1Database,
     model: &str,
 ) -> worker::Result<Option<String>> {
-    let billing_mode = option_value(db, BILLING_MODE_OPTION_KEY).await?;
-    let billing_expr = option_value(db, BILLING_EXPR_OPTION_KEY).await?;
-    resolve_tiered_billing_expr_for_model(model, billing_mode.as_deref(), billing_expr.as_deref())
+    let values = option_values(db, &[BILLING_MODE_OPTION_KEY, BILLING_EXPR_OPTION_KEY]).await?;
+    resolve_tiered_billing_expr_for_model(model, values[0].as_deref(), values[1].as_deref())
 }
 
 pub async fn group_ratio_for_group(db: &D1Database, group: &str) -> worker::Result<f64> {
@@ -1971,6 +1972,35 @@ pub async fn group_ratio_for_group(db: &D1Database, group: &str) -> worker::Resu
         }
     }
     Ok(1.0)
+}
+
+/// Resolve every possible serving group's effective ratio in one D1 option
+/// read. Go gives `GroupGroupRatio[user_group][using_group]` precedence over
+/// the ordinary using-group ratio; canonical config keys take precedence over
+/// legacy option aliases while still allowing a missing entry to fall through.
+pub async fn group_ratios_for_user_and_groups(
+    db: &D1Database,
+    user_group: &str,
+    groups: &[String],
+) -> worker::Result<HashMap<String, f64>> {
+    let values = option_values(
+        db,
+        &[
+            GROUP_GROUP_RATIO_OPTION_KEY,
+            LEGACY_GROUP_GROUP_RATIO_OPTION_KEY,
+            GROUP_RATIO_OPTION_KEY,
+            LEGACY_GROUP_RATIO_OPTION_KEY,
+        ],
+    )
+    .await?;
+    resolve_effective_group_ratios_from_options(
+        user_group,
+        groups,
+        values[0].as_deref(),
+        values[1].as_deref(),
+        values[2].as_deref(),
+        values[3].as_deref(),
+    )
 }
 
 async fn option_value(db: &D1Database, key: &str) -> worker::Result<Option<String>> {
@@ -2180,6 +2210,76 @@ fn resolve_group_ratio(group: &str, raw: &str) -> worker::Result<Option<f64>> {
             worker::Error::RustError(format!("group ratio for {group} must be numeric"))
         })?;
     Ok(Some(ratio.max(0.0)))
+}
+
+fn resolve_group_group_ratio(
+    user_group: &str,
+    using_group: &str,
+    raw: &str,
+) -> worker::Result<Option<f64>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let values =
+        serde_json::from_str::<HashMap<String, HashMap<String, Value>>>(raw).map_err(|err| {
+            worker::Error::RustError(format!(
+                "group-group ratio option must be a nested JSON object: {err}"
+            ))
+        })?;
+    let Some(value) = values
+        .get(user_group)
+        .and_then(|using_groups| using_groups.get(using_group))
+    else {
+        return Ok(None);
+    };
+    let ratio = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        .ok_or_else(|| {
+            worker::Error::RustError(format!(
+                "group-group ratio for {user_group}/{using_group} must be numeric"
+            ))
+        })?;
+    Ok(Some(ratio.max(0.0)))
+}
+
+pub(crate) fn resolve_effective_group_ratios_from_options(
+    user_group: &str,
+    groups: &[String],
+    group_group_ratio: Option<&str>,
+    legacy_group_group_ratio: Option<&str>,
+    group_ratio: Option<&str>,
+    legacy_group_ratio: Option<&str>,
+) -> worker::Result<HashMap<String, f64>> {
+    let mut resolved = HashMap::new();
+    for group in groups {
+        if resolved.contains_key(group) {
+            continue;
+        }
+        let mut ratio = None;
+        if let Some(raw) = group_group_ratio {
+            ratio = resolve_group_group_ratio(user_group, group, raw)?;
+        }
+        if ratio.is_none() {
+            if let Some(raw) = legacy_group_group_ratio {
+                ratio = resolve_group_group_ratio(user_group, group, raw)?;
+            }
+        }
+        if ratio.is_none() {
+            if let Some(raw) = group_ratio {
+                ratio = resolve_group_ratio(group, raw)?;
+            }
+        }
+        if ratio.is_none() {
+            if let Some(raw) = legacy_group_ratio {
+                ratio = resolve_group_ratio(group, raw)?;
+            }
+        }
+        let ratio = ratio.unwrap_or(1.0);
+        resolved.insert(group.clone(), ratio);
+    }
+    Ok(resolved)
 }
 
 // ---------------------------------------------------------------------------
@@ -9415,6 +9515,60 @@ mod tests {
             resolve_group_ratio("missing", r#"{"vip":2}"#).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn resolves_effective_group_ratios_with_go_precedence() {
+        let groups = vec![
+            "default".to_string(),
+            "vip".to_string(),
+            "legacy".to_string(),
+            "missing".to_string(),
+        ];
+        let ratios = resolve_effective_group_ratios_from_options(
+            "member",
+            &groups,
+            Some(r#"{"member":{"vip":"0.75"}}"#),
+            Some(r#"{"member":{"legacy":1.25,"vip":9}}"#),
+            Some(r#"{"default":1.5,"vip":2,"legacy":3}"#),
+            Some(r#"{"default":8,"legacy":4}"#),
+        )
+        .unwrap();
+
+        assert_eq!(ratios["default"], 1.5);
+        assert_eq!(ratios["vip"], 0.75);
+        assert_eq!(ratios["legacy"], 1.25);
+        assert_eq!(ratios["missing"], 1.0);
+    }
+
+    #[test]
+    fn effective_group_ratio_rejects_invalid_special_override() {
+        let err = resolve_effective_group_ratios_from_options(
+            "member",
+            &["vip".to_string()],
+            Some(r#"{"member":{"vip":"not-a-number"}}"#),
+            None,
+            Some(r#"{"vip":2}"#),
+            None,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("member/vip must be numeric"));
+    }
+
+    #[test]
+    fn effective_group_ratio_stops_after_highest_priority_match() {
+        let ratios = resolve_effective_group_ratios_from_options(
+            "member",
+            &["vip".to_string()],
+            Some(r#"{"member":{"vip":0.8}}"#),
+            Some("not-json"),
+            Some("not-json"),
+            Some("not-json"),
+        )
+        .unwrap();
+
+        assert_eq!(ratios["vip"], 0.8);
     }
 
     #[test]

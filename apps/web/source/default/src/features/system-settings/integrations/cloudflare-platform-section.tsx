@@ -496,8 +496,17 @@ function buildCapabilityGroups(
           description: t(
             'Revalidates token model limits, reselects D1 channels, re-runs billing reservation, and records requested-versus-served model evidence.'
           ),
+          ready: capabilities.relay_ai_gateway_cross_model_fallback_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Actual serving group billing'),
+          description: t(
+            'Reserves across candidate groups and settles against the group that served the final cross-model response.'
+          ),
           ready:
-            capabilities.relay_ai_gateway_cross_model_fallback_compiled,
+            capabilities.relay_ai_gateway_cross_model_actual_group_billing_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },
@@ -521,12 +530,13 @@ function buildCapabilityGroups(
         },
         {
           label: t('Fallback model mappings'),
-          description: capabilities.relay_ai_gateway_cross_model_fallback_config_valid
-            ? t('{{count}} validated primary-to-fallback mappings.', {
-                count:
-                  capabilities.relay_ai_gateway_cross_model_fallback_mapping_count,
-              })
-            : t('RELAY_MODEL_FALLBACKS_JSON is invalid.'),
+          description:
+            capabilities.relay_ai_gateway_cross_model_fallback_config_valid
+              ? t('{{count}} validated primary-to-fallback mappings.', {
+                  count:
+                    capabilities.relay_ai_gateway_cross_model_fallback_mapping_count,
+                })
+              : t('RELAY_MODEL_FALLBACKS_JSON is invalid.'),
           ready:
             capabilities.relay_ai_gateway_cross_model_fallback_configured &&
             capabilities.relay_ai_gateway_cross_model_fallback_config_valid,
@@ -534,9 +544,10 @@ function buildCapabilityGroups(
             count:
               capabilities.relay_ai_gateway_cross_model_fallback_mapping_count,
           }),
-          missingLabel: capabilities.relay_ai_gateway_cross_model_fallback_config_valid
-            ? t('Not configured')
-            : t('Invalid'),
+          missingLabel:
+            capabilities.relay_ai_gateway_cross_model_fallback_config_valid
+              ? t('Not configured')
+              : t('Invalid'),
         },
         {
           label: t('Cross-model runtime readiness'),

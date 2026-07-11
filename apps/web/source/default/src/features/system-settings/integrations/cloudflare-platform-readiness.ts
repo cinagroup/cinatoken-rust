@@ -59,6 +59,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_ai_gateway_rest_forwarder_compiled'
   | 'relay_ai_gateway_same_channel_fallback_compiled'
   | 'relay_ai_gateway_cross_model_fallback_compiled'
+  | 'relay_ai_gateway_cross_model_actual_group_billing_compiled'
   | 'relay_ai_gateway_cross_model_terminal_audit_compiled'
   | 'relay_ai_gateway_cross_model_fallback_ready'
   | 'relay_ai_gateway_cross_model_fallback_staging_verified'
@@ -125,6 +126,7 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_ai_gateway_rest_forwarder_compiled,
     capabilities.relay_ai_gateway_same_channel_fallback_compiled,
     capabilities.relay_ai_gateway_cross_model_fallback_compiled,
+    capabilities.relay_ai_gateway_cross_model_actual_group_billing_compiled,
     capabilities.relay_ai_gateway_cross_model_terminal_audit_compiled
   )
   const wfpTenantImplementation = allReady(

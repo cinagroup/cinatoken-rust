@@ -16,7 +16,8 @@ pub use flat::{compute_flat_quota, FlatBillingMode, FlatQuotaResult, FlatUsage};
 pub use pricing::PricingConfig;
 pub use tiered::{
     compute_tiered_quota, compute_tiered_quota_with_request, estimate_tiered_billing_snapshot,
-    estimate_tiered_billing_snapshot_with_request, TieredBillingResult, TieredBillingSnapshot,
+    estimate_tiered_billing_snapshot_with_request, rebase_tiered_billing_snapshot_group_ratio,
+    TieredBillingResult, TieredBillingSnapshot,
 };
 
 pub const DEFAULT_QUOTA_PER_UNIT: f64 = 500_000.0;

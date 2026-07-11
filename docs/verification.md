@@ -2764,8 +2764,8 @@ bun run check
   passed, and the complete `bun run check` workspace/frontend/smoke/wasm gate
   passed at the end of the increment.
 - Still pending: deployed replay, terminal audit Queue/D1 delivery evidence,
-  fault-injected D1 reservation proof, and actual-serving-group billing for
-  `auto` tokens. The gate and staging verification marker remain false.
+  and fault-injected D1 proof of the locally compiled actual-serving-group
+  reservation plan. The gate and staging verification marker remain false.
 
 ### Relay terminal attempt audit (2026-07-11)
 
@@ -2803,6 +2803,31 @@ bun run check
 - Final local verification passed: storage 5/5, Worker 522/522, frontend
   readiness 3/3, the Worker WASM target check, smoke self-test/dry-run plans,
   and the complete `bun run check` workspace/frontend/smoke/WASM gate.
+
+### AI Gateway actual-serving-group billing contract (2026-07-11)
+
+- Tiered billing now evaluates and freezes the billing expression once per
+  logical model plan. Candidate group snapshots rebase only the effective group
+  ratio, preserving the same request inputs, expression result, and evaluation
+  time across channel retries.
+- The plan reserves the maximum estimated quota across candidate groups once.
+  The retained response selects the snapshot for the actual serving group;
+  final settlement applies usage to that snapshot and refunds the difference
+  from the maximum reserve.
+- Cross-model fallback refunds the primary plan, rebuilds candidate groups and
+  billing input for the fallback model, and reserves a separate maximum before
+  fallback egress. Its response is settled against the fallback serving group.
+- Flat billing is now gated on the absence of a tiered preflight. A tiered D1
+  settlement failure remains pending/shadowed and cannot fall through to a
+  second flat charge.
+- The capability/smoke contract requires
+  `relay_ai_gateway_cross_model_actual_group_billing_compiled=true` and the
+  `actual_serving_group_billing` guard. The self-test rejects a missing or false
+  capability instead of silently normalizing it into readiness.
+- This is local contract evidence, not deployment evidence. Fixed-group and
+  `auto` D1 replay must still prove reserve amount, actual-group selection,
+  exact refund delta, retry exhaustion, fallback-plan replacement, and rollback
+  before the fallback gate or staging verification marker can be enabled.
 
 ## Still Pending
 

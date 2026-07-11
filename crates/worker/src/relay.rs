@@ -1,9 +1,10 @@
 use cinatoken_billing::{
     build_tiered_token_params, compute_flat_quota, compute_tiered_quota_with_request,
     detect_billing_expr_variables, estimate_tiered_billing_snapshot_with_request,
-    split_billing_expr_request_rule, BillingExprVariables, FlatBillingMode, FlatQuotaResult,
-    FlatUsage, PricingConfig, RequestInput, TieredBillingResult, TieredBillingSnapshot,
-    TieredTokenUsage, TokenParams, UsageSemantic,
+    rebase_tiered_billing_snapshot_group_ratio, settle, split_billing_expr_request_rule,
+    BillingExprVariables, FlatBillingMode, FlatQuotaResult, FlatUsage, PricingConfig, Quota,
+    RequestInput, TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams,
+    UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{
@@ -1136,51 +1137,19 @@ async fn relay_endpoint_with_auth(
     // Resolve the candidate pool(s). For an "auto" token group, walk the user's
     // auto groups (Go `CacheGetRandomSatisfiedChannel`); otherwise a single group.
     let is_auto = group == "auto";
-    let group_pools: Vec<(String, Vec<RelayChannel>)> = if is_auto {
-        let auto_groups =
-            match crate::d1_repositories::resolve_user_auto_groups(&db, &auth.user_group).await {
-                Ok(groups) => groups,
-                Err(err) => {
-                    return openai_error_response(
-                        format!("failed to resolve auto groups: {err}"),
-                        500,
-                    );
-                }
-            };
-        if auto_groups.is_empty() {
-            return json_with_status(&ErrorBody::bad_request("auto groups is not enabled"), 503);
-        }
-        let mut pools = Vec::with_capacity(auto_groups.len());
-        for auto_group in auto_groups {
-            match select_channels(
-                &db,
-                &env,
-                &model,
-                &auto_group,
-                endpoint.cache_family,
-                endpoint.supported_channel_types,
-            )
-            .await
-            {
-                Ok(candidates) => pools.push((auto_group, candidates)),
-                Err(response) => return response,
-            }
-        }
-        pools
-    } else {
-        match select_channels(
-            &db,
-            &env,
-            &model,
-            &group,
-            endpoint.cache_family,
-            endpoint.supported_channel_types,
-        )
-        .await
-        {
-            Ok(candidates) => vec![(group.clone(), candidates)],
-            Err(response) => return response,
-        }
+    let group_pools = match resolve_relay_group_pools(
+        &db,
+        &env,
+        &model,
+        &group,
+        &auth.user_group,
+        endpoint.cache_family,
+        endpoint.supported_channel_types,
+    )
+    .await
+    {
+        Ok(pools) => pools,
+        Err(response) => return response,
     };
 
     // Plan the ordered (group, channel) attempts up front. `cross_group_retry`
@@ -1210,18 +1179,18 @@ async fn relay_endpoint_with_auth(
         attempt_plan
     };
 
-    // Billing uses the selected group's ratio (Go resolves the ratio post-
-    // selection). The first planned attempt's group is the one used unless a
-    // cross-group retry advances; settlement below uses the actual serving group.
-    let billing_group = attempt_plan
-        .first()
+    // Freeze one expression result for every possible serving group, reserve
+    // the maximum candidate-group estimate once, then settle with the snapshot
+    // belonging to the group that actually returns the final response.
+    let billing_groups = attempt_plan
+        .iter()
         .map(|plan| plan.group.clone())
-        .unwrap_or_else(|| group.clone());
-
-    let tiered_billing_preflight = match prepare_tiered_billing_preflight(
+        .collect::<Vec<_>>();
+    let mut tiered_billing_group_plan = match prepare_tiered_billing_group_plan(
         &db,
         &model,
-        &billing_group,
+        &auth.user_group,
+        &billing_groups,
         json_body.as_ref().unwrap_or(&Value::Null),
         &billing_request_input,
         endpoint.uses_openai_chat_format(),
@@ -1229,15 +1198,14 @@ async fn relay_endpoint_with_auth(
     )
     .await
     {
-        Ok(preflight) => preflight,
+        Ok(plan) => plan,
         Err(err) => {
             return openai_error_response(format!("tiered billing preflight failed: {err}"), 500);
         }
     };
-    let mut tiered_billing_preflight = tiered_billing_preflight;
-    if let Some(preflight) = tiered_billing_preflight.as_mut() {
+    if let Some(plan) = tiered_billing_group_plan.as_mut() {
         if let Err(err) =
-            reserve_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+            reserve_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await
         {
             return openai_error_response(
                 format!("tiered billing reserve failed: {err}"),
@@ -1245,9 +1213,10 @@ async fn relay_endpoint_with_auth(
             );
         }
     }
-    let mut terminal_reserve_refund = if tiered_billing_preflight
+    let mut tiered_billing_preflight: Option<TieredBillingPreflight> = None;
+    let mut terminal_reserve_refund = if tiered_billing_group_plan
         .as_ref()
-        .is_some_and(|preflight| preflight.reserve_applied)
+        .is_some_and(|plan| plan.reserve_applied)
     {
         "pending"
     } else {
@@ -1256,8 +1225,8 @@ async fn relay_endpoint_with_auth(
 
     let mut last_failure: Option<RelayAttemptFailure> = None;
     let mut attempt_audits = RelayAttemptAuditLedger::default();
-    // (channel, selected group, upstream response). The group is the channel's
-    // actual serving group (for cross-group it can differ from `billing_group`).
+    // (channel, selected group, upstream response). The group is the actual
+    // serving group and selects the authoritative billing snapshot.
     let mut selected_attempt: Option<(RelayChannel, String, Response)> = None;
 
     // Selection is planned up front (priority tier + weighted-random, shrinking
@@ -1620,16 +1589,13 @@ async fn relay_endpoint_with_auth(
             fallback_model,
         ) {
             model_route_audit.fallback_skip_reason = Some("token_model_limit".to_string());
-        } else if is_auto {
-            model_route_audit.fallback_skip_reason =
-                Some("auto_group_billing_not_supported".to_string());
         } else {
-            if let Some(preflight) = tiered_billing_preflight
+            if let Some(plan) = tiered_billing_group_plan
                 .as_ref()
-                .filter(|preflight| preflight.reserve_applied)
+                .filter(|plan| plan.reserve_applied)
             {
                 if let Err(err) =
-                    refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+                    refund_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await
                 {
                     return openai_error_response(
                         format!(
@@ -1640,24 +1606,26 @@ async fn relay_endpoint_with_auth(
                 }
                 terminal_reserve_refund = "primary_refunded_for_fallback";
             }
+            tiered_billing_group_plan = None;
             tiered_billing_preflight = None;
 
-            let fallback_group_pools: Vec<(String, Vec<RelayChannel>)> = match select_channels(
+            let mut fallback_group_pools = match resolve_relay_group_pools(
                 &db,
                 &env,
                 fallback_model,
                 &group,
+                &auth.user_group,
                 endpoint.cache_family,
                 endpoint.supported_channel_types,
             )
             .await
             {
-                Ok(mut candidates) => {
-                    candidates.retain(RelayChannel::ai_gateway_opted_in);
-                    vec![(group.clone(), candidates)]
-                }
+                Ok(pools) => pools,
                 Err(response) => return response,
             };
+            for (_, candidates) in &mut fallback_group_pools {
+                candidates.retain(RelayChannel::ai_gateway_opted_in);
+            }
             let fallback_attempt_plan = plan_relay_attempts(
                 fallback_group_pools,
                 is_auto,
@@ -1681,20 +1649,21 @@ async fn relay_endpoint_with_auth(
             if fallback_attempt_plan.is_empty() {
                 model_route_audit.fallback_skip_reason = Some("no_fallback_channel".to_string());
             } else {
-                let fallback_billing_group = fallback_attempt_plan
-                    .first()
+                let fallback_billing_groups = fallback_attempt_plan
+                    .iter()
                     .map(|plan| plan.group.clone())
-                    .unwrap_or_else(|| group.clone());
+                    .collect::<Vec<_>>();
                 let mut fallback_request_body = json_body
                     .clone()
                     .unwrap_or_else(|| Value::Object(Default::default()));
                 apply_model_attempt_body(&mut fallback_request_body, fallback_model, None);
                 let mut fallback_billing_request_input = billing_request_input.clone();
                 fallback_billing_request_input.body = Some(fallback_request_body.clone());
-                let mut fallback_preflight = match prepare_tiered_billing_preflight(
+                let mut fallback_group_plan = match prepare_tiered_billing_group_plan(
                     &db,
                     fallback_model,
-                    &fallback_billing_group,
+                    &auth.user_group,
+                    &fallback_billing_groups,
                     &fallback_request_body,
                     &fallback_billing_request_input,
                     endpoint.uses_openai_chat_format(),
@@ -1702,7 +1671,7 @@ async fn relay_endpoint_with_auth(
                 )
                 .await
                 {
-                    Ok(preflight) => preflight,
+                    Ok(plan) => plan,
                     Err(err) => {
                         return openai_error_response(
                             format!("fallback tiered billing preflight failed: {err}"),
@@ -1710,10 +1679,9 @@ async fn relay_endpoint_with_auth(
                         );
                     }
                 };
-                if let Some(preflight) = fallback_preflight.as_mut() {
+                if let Some(plan) = fallback_group_plan.as_mut() {
                     if let Err(err) =
-                        reserve_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp())
-                            .await
+                        reserve_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await
                     {
                         return openai_error_response(
                             format!("fallback tiered billing reserve failed: {err}"),
@@ -1731,7 +1699,7 @@ async fn relay_endpoint_with_auth(
                     &env,
                     &mut endpoint,
                     &request_body,
-                    json_body.as_ref(),
+                    Some(&fallback_request_body),
                     auth_mode,
                     fallback_model,
                     should_relay_stream,
@@ -1743,20 +1711,34 @@ async fn relay_endpoint_with_auth(
                 .await;
                 attempt_audits.append(&mut fallback_execution.attempts);
                 if let Some(fallback_selected) = fallback_execution.selected_attempt {
+                    let fallback_selected_group = fallback_selected.1.clone();
+                    tiered_billing_preflight = match fallback_group_plan.as_ref() {
+                        Some(plan) => match plan.selected_preflight(&fallback_selected_group) {
+                            Some(preflight) => Some(preflight),
+                            None => {
+                                return openai_error_response(
+                                    format!(
+                                        "fallback billing snapshot missing for selected group {fallback_selected_group}"
+                                    ),
+                                    500,
+                                );
+                            }
+                        },
+                        None => None,
+                    };
                     selected_attempt = Some(fallback_selected);
                     last_failure = fallback_execution.last_failure;
-                    tiered_billing_preflight = fallback_preflight;
                     billing_request_input = fallback_billing_request_input;
                     served_model = fallback_model.to_string();
                     model_route_audit.served_model = fallback_model.to_string();
                     affinity_key = fallback_affinity_key;
                 } else {
-                    if let Some(preflight) = fallback_preflight
+                    if let Some(plan) = fallback_group_plan
                         .as_ref()
-                        .filter(|preflight| preflight.reserve_applied)
+                        .filter(|plan| plan.reserve_applied)
                     {
                         if let Err(err) =
-                            refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp())
+                            refund_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp())
                                 .await
                         {
                             return openai_error_response(
@@ -1780,11 +1762,11 @@ async fn relay_endpoint_with_auth(
         // Refund the tiered reserve (if any) and return a structured error
         // describing the last failure.
         let mut refund_error = None;
-        if let Some(preflight) = tiered_billing_preflight
+        if let Some(plan) = tiered_billing_group_plan
             .as_ref()
-            .filter(|preflight| preflight.reserve_applied)
+            .filter(|plan| plan.reserve_applied)
         {
-            match refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await {
+            match refund_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await {
                 Ok(()) => terminal_reserve_refund = "refunded",
                 Err(err) => {
                     terminal_reserve_refund = "refund_failed";
@@ -1868,6 +1850,22 @@ async fn relay_endpoint_with_auth(
             ),
         };
     };
+    if tiered_billing_preflight.is_none() {
+        tiered_billing_preflight = match tiered_billing_group_plan.as_ref() {
+            Some(plan) => match plan.selected_preflight(&selected_group) {
+                Some(preflight) => Some(preflight),
+                None => {
+                    return openai_error_response(
+                        format!(
+                            "billing snapshot missing for actual serving group {selected_group}"
+                        ),
+                        500,
+                    );
+                }
+            },
+            None => None,
+        };
+    }
     let ai_gateway_direct_fallback = upstream_response
         .headers()
         .get(AI_GATEWAY_DIRECT_FALLBACK_AUDIT_HEADER)?;
@@ -2142,6 +2140,13 @@ pub(crate) fn relay_terminal_attempt_audit_contract_compiled() -> bool {
         && RelayAttemptFailureKind::FetchError.audit_label() == "fetch_error"
         && RelayAttemptFailureKind::NoUsableKey.audit_label() == "no_usable_key"
         && RelayAttemptFailureKind::RetryableStatus.audit_label() == "retryable_status"
+}
+
+pub(crate) fn relay_actual_serving_group_billing_contract_compiled() -> bool {
+    TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY == "max_candidate_group"
+        && TIERED_BILLING_SELECTED_GROUP_STRATEGY == "selected_group"
+        && settle(Quota(20), Quota(10)).refund_quota == Quota(10)
+        && settle(Quota(10), Quota(20)).additional_quota == Quota(10)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3387,9 +3392,17 @@ async fn realtime_billing_presettlement(
         "endpoint": "realtime"
     });
     let request = realtime_billing_request_input(req, &request_body);
-    let Some(preflight) =
-        prepare_tiered_billing_preflight(db, model, group, &request_body, &request, false, 0)
-            .await?
+    let Some(preflight) = prepare_tiered_billing_preflight(
+        db,
+        model,
+        &auth.user_group,
+        group,
+        &request_body,
+        &request,
+        false,
+        0,
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -4556,6 +4569,56 @@ async fn mark_token_status(db: &D1Database, token_id: i64, status: i32) {
     }
 }
 
+async fn resolve_relay_group_pools(
+    db: &D1Database,
+    env: &Env,
+    model: &str,
+    token_group: &str,
+    user_group: &str,
+    cache_family: &str,
+    supported_channel_types: &[i32],
+) -> Result<Vec<(String, Vec<RelayChannel>)>, worker::Result<Response>> {
+    if token_group != "auto" {
+        let candidates = select_channels(
+            db,
+            env,
+            model,
+            token_group,
+            cache_family,
+            supported_channel_types,
+        )
+        .await?;
+        return Ok(vec![(token_group.to_string(), candidates)]);
+    }
+
+    let auto_groups = crate::d1_repositories::resolve_user_auto_groups(db, user_group)
+        .await
+        .map_err(|err| {
+            openai_error_response(format!("failed to resolve auto groups: {err}"), 500)
+        })?;
+    if auto_groups.is_empty() {
+        return Err(json_with_status(
+            &ErrorBody::bad_request("auto groups is not enabled"),
+            503,
+        ));
+    }
+
+    let mut pools = Vec::with_capacity(auto_groups.len());
+    for auto_group in auto_groups {
+        let candidates = select_channels(
+            db,
+            env,
+            model,
+            &auto_group,
+            cache_family,
+            supported_channel_types,
+        )
+        .await?;
+        pools.push((auto_group, candidates));
+    }
+    Ok(pools)
+}
+
 /// Return the full ordered candidate list for a relay attempt. The Upstash
 /// read-through cache only stores the highest-priority candidate (to keep the
 /// cache payload small and avoid stale-rotation issues); on cache miss the full
@@ -5642,11 +5705,7 @@ async fn record_relay_audit(
     let mut billing_resolved = false;
     if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
         if upstream_status < 400 && usage_present {
-            match tiered_billing_settlement(
-                &preflight.snapshot,
-                usage,
-                &audit.billing_request_input,
-            ) {
+            match tiered_billing_settlement(preflight, usage, &audit.billing_request_input) {
                 Ok(outcome) => {
                     let final_quota = outcome.final_quota;
                     let quota_result = if preflight.reserve_applied {
@@ -5683,8 +5742,8 @@ async fn record_relay_audit(
                                 Some(&outcome.result),
                             );
                             let metadata = tiered_billing_metadata(
+                                preflight,
                                 outcome.snapshot,
-                                preflight.pre_consumed_quota,
                                 outcome.result,
                                 false,
                                 true,
@@ -5693,8 +5752,8 @@ async fn record_relay_audit(
                         }
                         Err(err) => {
                             let metadata = tiered_billing_metadata(
+                                preflight,
                                 outcome.snapshot,
-                                preflight.pre_consumed_quota,
                                 outcome.result,
                                 true,
                                 false,
@@ -5775,11 +5834,17 @@ async fn record_relay_audit(
         }
     }
 
-    if !billing_applied && upstream_status < 400 && usage_present {
+    if should_apply_flat_billing(
+        audit.tiered_billing_preflight.is_some(),
+        billing_applied,
+        upstream_status,
+        usage_present,
+    ) {
         // Non-tiered ("flat") billing: compute the per-token (or fixed-price)
         // quota from ModelRatio / CompletionRatio / ModelPrice options and
-        // apply it atomically. This is the fallback when no `tiered_expr`
-        // is configured for the model. Mirrors Go's
+        // apply it atomically. This path is used only when no `tiered_expr`
+        // preflight exists; a failed tiered mutation must remain pending rather
+        // than attempting a second, flat charge. Mirrors Go's
         // `service/text_quota.go::PostTextConsumeQuota` non-tiered path.
         match try_flat_billing(db, auth, channel.id, model, group, usage, now).await {
             Ok(Some(flat_result)) => {
@@ -5866,6 +5931,15 @@ async fn record_relay_audit(
     // (local dev without wrangler queue, or `cargo test`).
     let event = AuditLogEvent::from_relay_audit(now, &content, &audit_log, LOG_TYPE_CONSUME);
     persist_audit_log_event(env, db, &event).await
+}
+
+fn should_apply_flat_billing(
+    has_tiered_preflight: bool,
+    billing_applied: bool,
+    upstream_status: u16,
+    usage_present: bool,
+) -> bool {
+    !has_tiered_preflight && !billing_applied && upstream_status < 400 && usage_present
 }
 
 async fn persist_audit_log_event(
@@ -5981,16 +6055,48 @@ struct TieredBillingOutcome {
     result: TieredBillingResult,
 }
 
+const TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY: &str = "max_candidate_group";
+const TIERED_BILLING_SELECTED_GROUP_STRATEGY: &str = "selected_group";
+
 #[derive(Clone)]
 struct TieredBillingPreflight {
     snapshot: TieredBillingSnapshot,
     pre_consumed_quota: i64,
     reserve_applied: bool,
+    selected_group: String,
+    candidate_group_count: usize,
+    reservation_strategy: &'static str,
+}
+
+#[derive(Clone)]
+struct TieredBillingGroupPlan {
+    snapshots: HashMap<String, TieredBillingSnapshot>,
+    reserved_quota: i64,
+    reserve_applied: bool,
+}
+
+impl TieredBillingGroupPlan {
+    fn selected_preflight(&self, selected_group: &str) -> Option<TieredBillingPreflight> {
+        let snapshot = self.snapshots.get(selected_group)?.clone();
+        Some(TieredBillingPreflight {
+            snapshot,
+            pre_consumed_quota: self.reserved_quota,
+            reserve_applied: self.reserve_applied,
+            selected_group: selected_group.to_string(),
+            candidate_group_count: self.snapshots.len(),
+            reservation_strategy: if self.snapshots.len() > 1 {
+                TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY
+            } else {
+                TIERED_BILLING_SELECTED_GROUP_STRATEGY
+            },
+        })
+    }
 }
 
 async fn prepare_tiered_billing_preflight(
     db: &D1Database,
     model: &str,
+    user_group: &str,
     group: &str,
     request_body: &Value,
     request: &RequestInput,
@@ -6000,8 +6106,11 @@ async fn prepare_tiered_billing_preflight(
     let Some(expr) = crate::d1_repositories::tiered_billing_expr_for_model(db, model).await? else {
         return Ok(None);
     };
-    let group_ratio = crate::d1_repositories::group_ratio_for_group(db, group).await?;
-    tiered_billing_preflight_snapshot(
+    let groups = [group.to_string()];
+    let group_ratios =
+        crate::d1_repositories::group_ratios_for_user_and_groups(db, user_group, &groups).await?;
+    let group_ratio = group_ratios.get(group).copied().unwrap_or(1.0);
+    let mut preflight = tiered_billing_preflight_snapshot(
         model,
         &expr,
         group_ratio,
@@ -6010,8 +6119,80 @@ async fn prepare_tiered_billing_preflight(
         is_openai_chat,
         extra_prompt_tokens,
     )
-    .map(Some)
-    .map_err(worker::Error::RustError)
+    .map_err(worker::Error::RustError)?;
+    preflight.selected_group = group.to_string();
+    Ok(Some(preflight))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_tiered_billing_group_plan(
+    db: &D1Database,
+    model: &str,
+    user_group: &str,
+    groups: &[String],
+    request_body: &Value,
+    request: &RequestInput,
+    is_openai_chat: bool,
+    extra_prompt_tokens: i64,
+) -> worker::Result<Option<TieredBillingGroupPlan>> {
+    let mut unique_groups = Vec::new();
+    for group in groups {
+        if !group.trim().is_empty() && !unique_groups.contains(group) {
+            unique_groups.push(group.clone());
+        }
+    }
+    let Some(first_group) = unique_groups.first() else {
+        return Ok(None);
+    };
+    let Some(expr) = crate::d1_repositories::tiered_billing_expr_for_model(db, model).await? else {
+        return Ok(None);
+    };
+    let group_ratios =
+        crate::d1_repositories::group_ratios_for_user_and_groups(db, user_group, &unique_groups)
+            .await?;
+    let first_ratio = group_ratios.get(first_group).copied().unwrap_or(1.0);
+    let base = tiered_billing_preflight_snapshot(
+        model,
+        &expr,
+        first_ratio,
+        request_body,
+        request.clone(),
+        is_openai_chat,
+        extra_prompt_tokens,
+    )
+    .map_err(worker::Error::RustError)?;
+    tiered_billing_group_plan_from_base(base.snapshot, &unique_groups, &group_ratios)
+        .map(Some)
+        .map_err(worker::Error::RustError)
+}
+
+fn tiered_billing_group_plan_from_base(
+    base_snapshot: TieredBillingSnapshot,
+    groups: &[String],
+    group_ratios: &HashMap<String, f64>,
+) -> Result<TieredBillingGroupPlan, String> {
+    let mut snapshots = HashMap::new();
+    let mut reserved_quota = 0i64;
+    for group in groups {
+        if snapshots.contains_key(group) {
+            continue;
+        }
+        let ratio = group_ratios
+            .get(group)
+            .copied()
+            .ok_or_else(|| format!("missing resolved billing ratio for serving group {group}"))?;
+        let snapshot = rebase_tiered_billing_snapshot_group_ratio(&base_snapshot, ratio);
+        reserved_quota = reserved_quota.max(snapshot.estimated_quota_after_group.0.max(0));
+        snapshots.insert(group.clone(), snapshot);
+    }
+    if snapshots.is_empty() {
+        return Err("tiered billing group plan requires at least one serving group".to_string());
+    }
+    Ok(TieredBillingGroupPlan {
+        snapshots,
+        reserved_quota,
+        reserve_applied: false,
+    })
 }
 
 fn tiered_billing_preflight_snapshot(
@@ -6038,28 +6219,50 @@ fn tiered_billing_preflight_snapshot(
         pre_consumed_quota: snapshot.estimated_quota_after_group.0.max(0),
         snapshot,
         reserve_applied: false,
+        selected_group: String::new(),
+        candidate_group_count: 1,
+        reservation_strategy: TIERED_BILLING_SELECTED_GROUP_STRATEGY,
     })
 }
 
-async fn reserve_tiered_billing_preflight(
+async fn reserve_tiered_billing_group_plan(
     db: &D1Database,
     auth: &AuthenticatedToken,
-    preflight: &mut TieredBillingPreflight,
+    plan: &mut TieredBillingGroupPlan,
     now: i64,
 ) -> worker::Result<()> {
-    if preflight.pre_consumed_quota == 0 {
+    if plan.reserved_quota == 0 {
         return Ok(());
     }
     crate::d1_repositories::reserve_relay_quota(
         db,
         auth.user_id,
         auth.token_id,
-        preflight.pre_consumed_quota,
+        plan.reserved_quota,
         now,
     )
     .await?;
-    preflight.reserve_applied = true;
+    plan.reserve_applied = true;
     Ok(())
+}
+
+async fn refund_tiered_billing_group_plan(
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    plan: &TieredBillingGroupPlan,
+    now: i64,
+) -> worker::Result<()> {
+    if !plan.reserve_applied || plan.reserved_quota == 0 {
+        return Ok(());
+    }
+    crate::d1_repositories::refund_reserved_relay_quota(
+        db,
+        auth.user_id,
+        auth.token_id,
+        plan.reserved_quota,
+        now,
+    )
+    .await
 }
 
 async fn refund_tiered_billing_preflight(
@@ -6082,18 +6285,23 @@ async fn refund_tiered_billing_preflight(
 }
 
 fn tiered_billing_settlement(
-    snapshot: &TieredBillingSnapshot,
+    preflight: &TieredBillingPreflight,
     usage: &UsageSummary,
     request: &RequestInput,
 ) -> Result<TieredBillingOutcome, String> {
-    let params = token_params_from_usage(snapshot, usage);
-    let result = compute_tiered_quota_with_request(snapshot, params, request.clone())
-        .map_err(|err| format!("failed to compute tiered billing: {err}"))?;
+    let params = token_params_from_usage(&preflight.snapshot, usage);
+    let mut result =
+        compute_tiered_quota_with_request(&preflight.snapshot, params, request.clone())
+            .map_err(|err| format!("failed to compute tiered billing: {err}"))?;
+    result.settlement = settle(
+        Quota(preflight.pre_consumed_quota),
+        result.actual_quota_after_group,
+    );
     let final_quota = result.settlement.final_quota.0;
 
     Ok(TieredBillingOutcome {
         final_quota,
-        snapshot: snapshot.clone(),
+        snapshot: preflight.snapshot.clone(),
         result,
     })
 }
@@ -6123,6 +6331,9 @@ async fn try_flat_billing(
         "CacheRatio",
         "QuotaPerUnit",
         crate::d1_repositories::GROUP_RATIO_OPTION_KEY,
+        crate::d1_repositories::LEGACY_GROUP_RATIO_OPTION_KEY,
+        crate::d1_repositories::GROUP_GROUP_RATIO_OPTION_KEY,
+        crate::d1_repositories::LEGACY_GROUP_GROUP_RATIO_OPTION_KEY,
         "CreateCacheRatio",
         "ImageRatio",
         "AudioRatio",
@@ -6131,7 +6342,7 @@ async fn try_flat_billing(
     let values = crate::d1_repositories::option_values(db, &keys)
         .await
         .map_err(|err| format!("failed to load pricing options: {err}"))?;
-    let config = PricingConfig::new()
+    let mut config = PricingConfig::new()
         .with_json_maps(
             values[0].as_deref(),
             values[1].as_deref(),
@@ -6141,11 +6352,24 @@ async fn try_flat_billing(
             values[4].as_deref(), // quota per unit
         )
         .with_subcategory_maps(
-            values[6].as_deref(), // create cache ratio
-            values[7].as_deref(), // image ratio
-            values[8].as_deref(), // audio ratio
-            values[9].as_deref(), // audio completion ratio
+            values[9].as_deref(),  // create cache ratio
+            values[10].as_deref(), // image ratio
+            values[11].as_deref(), // audio ratio
+            values[12].as_deref(), // audio completion ratio
         );
+    let effective_ratios = crate::d1_repositories::resolve_effective_group_ratios_from_options(
+        &auth.user_group,
+        &[group.to_string()],
+        values[7].as_deref(),
+        values[8].as_deref(),
+        values[5].as_deref(),
+        values[6].as_deref(),
+    )
+    .map_err(|err| format!("failed to resolve effective group ratio: {err}"))?;
+    config.group_ratios.insert(
+        group.to_string(),
+        effective_ratios.get(group).copied().unwrap_or(1.0),
+    );
 
     // A model is "priced" (billable) if it resolves a ratio OR price through
     // any layer (operator map, Go default table, or compact-wildcard), mirroring
@@ -6190,8 +6414,8 @@ async fn try_flat_billing(
 }
 
 fn tiered_billing_metadata(
+    preflight: &TieredBillingPreflight,
     snapshot: TieredBillingSnapshot,
-    pre_consumed_quota: i64,
     result: TieredBillingResult,
     shadow_only: bool,
     applied: bool,
@@ -6204,7 +6428,10 @@ fn tiered_billing_metadata(
         "expr_version": snapshot.expr_version,
         "has_request_rule": snapshot.request_rule_expr.is_some(),
         "group_ratio": snapshot.group_ratio,
-        "pre_consumed_quota": pre_consumed_quota,
+        "selected_group": preflight.selected_group,
+        "candidate_group_count": preflight.candidate_group_count,
+        "reservation_strategy": preflight.reservation_strategy,
+        "pre_consumed_quota": preflight.pre_consumed_quota,
         "estimated_prompt_tokens": snapshot.estimated_prompt_tokens,
         "estimated_completion_tokens": snapshot.estimated_completion_tokens,
         "estimated_expression_cost": snapshot.estimated_expression_cost,
@@ -6279,6 +6506,9 @@ fn tiered_billing_fallback_metadata(
         "fallback_to_pre_consumed": true,
         "expr_hash": preflight.snapshot.expr_hash,
         "has_request_rule": preflight.snapshot.request_rule_expr.is_some(),
+        "selected_group": preflight.selected_group,
+        "candidate_group_count": preflight.candidate_group_count,
+        "reservation_strategy": preflight.reservation_strategy,
         "pre_consumed_quota": preflight.pre_consumed_quota,
         "estimated_tier": preflight.snapshot.estimated_tier,
         "estimated_quota_after_group": preflight.snapshot.estimated_quota_after_group.0,
@@ -6295,6 +6525,9 @@ fn tiered_billing_refund_metadata(
         "refunded": true,
         "expr_hash": preflight.snapshot.expr_hash,
         "has_request_rule": preflight.snapshot.request_rule_expr.is_some(),
+        "selected_group": preflight.selected_group,
+        "candidate_group_count": preflight.candidate_group_count,
+        "reservation_strategy": preflight.reservation_strategy,
         "pre_consumed_quota": preflight.pre_consumed_quota,
         "estimated_tier": preflight.snapshot.estimated_tier,
         "estimated_quota_after_group": preflight.snapshot.estimated_quota_after_group.0,
@@ -9749,9 +9982,77 @@ mod tests {
         assert_eq!(params.img, 100.0);
         assert_eq!(params.ao, 50.0);
 
-        let outcome = tiered_billing_settlement(&preflight.snapshot, &usage, &request).unwrap();
+        let outcome = tiered_billing_settlement(&preflight, &usage, &request).unwrap();
         assert_eq!(outcome.result.actual_expression_cost, 8_300.0);
         assert_eq!(outcome.final_quota, 4_150);
+    }
+
+    #[test]
+    fn tiered_group_plan_reserves_max_and_settles_selected_group() {
+        let request_body = json!({
+            "prompt": "word ".repeat(1_000),
+            "max_completion_tokens": 2_000
+        });
+        let request = RequestInput::from_json_body(request_body.clone());
+        let base = tiered_billing_preflight_snapshot(
+            "gpt-test",
+            r#"tier("base", p * 2 + c * 10)"#,
+            1.0,
+            &request_body,
+            request.clone(),
+            true,
+            0,
+        )
+        .unwrap();
+        let groups = vec!["default".to_string(), "vip".to_string()];
+        let ratios = HashMap::from([("default".to_string(), 1.0), ("vip".to_string(), 2.0)]);
+        let mut plan =
+            tiered_billing_group_plan_from_base(base.snapshot, &groups, &ratios).unwrap();
+        plan.reserve_applied = true;
+
+        assert_eq!(
+            plan.reserved_quota,
+            plan.snapshots["vip"].estimated_quota_after_group.0
+        );
+        let selected = plan.selected_preflight("default").unwrap();
+        assert_eq!(selected.selected_group, "default");
+        assert_eq!(selected.candidate_group_count, 2);
+        assert_eq!(
+            selected.reservation_strategy,
+            TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY
+        );
+        assert_eq!(selected.pre_consumed_quota, plan.reserved_quota);
+
+        let outcome = tiered_billing_settlement(
+            &selected,
+            &UsageSummary {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                ..UsageSummary::default()
+            },
+            &request,
+        )
+        .unwrap();
+        assert_eq!(outcome.final_quota, 350);
+        assert_eq!(
+            outcome.result.settlement.refund_quota.0,
+            plan.reserved_quota - outcome.final_quota
+        );
+    }
+
+    #[test]
+    fn actual_serving_group_billing_contract_is_compiled() {
+        assert!(relay_actual_serving_group_billing_contract_compiled());
+    }
+
+    #[test]
+    fn flat_billing_never_runs_after_tiered_preflight() {
+        assert!(!should_apply_flat_billing(true, false, 200, true));
+        assert!(should_apply_flat_billing(false, false, 200, true));
+        assert!(!should_apply_flat_billing(false, true, 200, true));
+        assert!(!should_apply_flat_billing(false, false, 500, true));
+        assert!(!should_apply_flat_billing(false, false, 200, false));
     }
 
     #[test]
@@ -9833,7 +10134,7 @@ mod tests {
             "service_tier": "fast"
         });
         let request = RequestInput::from_json_body(request_body.clone());
-        let preflight = tiered_billing_preflight_snapshot(
+        let mut preflight = tiered_billing_preflight_snapshot(
             "gpt-test",
             r#"param("service_tier") == "fast" ? tier("fast", p * 4 + c * 20) : tier("normal", p * 2 + c * 10)"#,
             1.5,
@@ -9843,8 +10144,11 @@ mod tests {
             0,
         )
         .unwrap();
+        preflight.selected_group = "vip".to_string();
+        preflight.candidate_group_count = 2;
+        preflight.reservation_strategy = TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY;
         let outcome = tiered_billing_settlement(
-            &preflight.snapshot,
+            &preflight,
             &UsageSummary {
                 prompt_tokens: 1_000,
                 completion_tokens: 500,
@@ -9854,19 +10158,17 @@ mod tests {
             &request,
         )
         .unwrap();
-        let metadata = tiered_billing_metadata(
-            outcome.snapshot,
-            preflight.pre_consumed_quota,
-            outcome.result,
-            true,
-            false,
-        );
+        let metadata =
+            tiered_billing_metadata(&preflight, outcome.snapshot, outcome.result, true, false);
 
         assert_eq!(metadata["billing_mode"], "tiered_expr");
         assert_eq!(metadata["shadow_only"], true);
         assert_eq!(metadata["applied"], false);
         assert_eq!(metadata["expr_hash"].as_str().unwrap().len(), 64);
         assert_eq!(metadata["has_request_rule"], false);
+        assert_eq!(metadata["selected_group"], "vip");
+        assert_eq!(metadata["candidate_group_count"], 2);
+        assert_eq!(metadata["reservation_strategy"], "max_candidate_group");
         // With the realistic 1000-word prompt the estimator yields ~1440 prompt
         // tokens (Go per-rune state machine); the pre-consume and downstream
         // settlement figures follow from that.
@@ -9910,7 +10212,7 @@ mod tests {
         )
         .unwrap();
         let outcome = tiered_billing_settlement(
-            &preflight.snapshot,
+            &preflight,
             &UsageSummary {
                 prompt_tokens: 1_000,
                 completion_tokens: 500,

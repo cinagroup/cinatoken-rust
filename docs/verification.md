@@ -2924,6 +2924,30 @@ bun run check
   dispatch, missing binding, WFP 404/503 behavior, Realtime control precedence,
   and rollback must be archived from a replacement-credential staging deploy.
 
+### WFP dispatched-fetch failure contract (2026-07-11)
+
+- Cloudflare's current dynamic-dispatch example catches `Worker not found`
+  around the actual user Worker `fetch`; the Rust path previously caught
+  binding/lookup failures but allowed a dispatched-fetch error to escape via
+  `?`.
+- The Worker now catches lookup and fetch errors and maps a versioned,
+  secret-free contract: direct missing worker 404, relay missing worker 502,
+  CPU/subrequest limit 429, other tenant execution failure 502. Platform WFP
+  errors include `Cache-Control: no-store`.
+- `/api/platform/capabilities` and the frontend expose the contract version,
+  classes, and compiled state. WFP implementation readiness requires this
+  contract but remains separate from runtime and staging evidence.
+- Final local evidence passed: Worker 548/548 (including failure
+  classification, route mapping, and smoke-readiness guards), frontend
+  readiness 8/8, route audit 217 frontend calls / 313 Worker routes / 0
+  missing, Worker and WFP tenant wasm32, smoke failure-contract self-test (five
+  code/status/no-store cases plus mismatch rejection), dry-run missing-worker
+  plan, formatting/diff checks, and the complete `bun run check` chain. The only
+  warnings remain the two existing `d1_repositories.rs` dead-code warnings.
+- Live missing-script/binding/limit/exception fixtures, the normal-relay absent
+  worker case, redacted logs, billing refund/audit reconciliation, and rollback
+  remain pending. The exposed credential was not used.
+
 ### Provider relay capability authority and DeepSeek (2026-07-11)
 
 - `cargo test -p cinatoken-providers`: 25 passed, including exact coverage of

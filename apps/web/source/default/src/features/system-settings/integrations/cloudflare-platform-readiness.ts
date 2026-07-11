@@ -77,6 +77,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'wfp_dispatch_binding_available'
   | 'wfp_dispatch_enabled'
   | 'wfp_internal_dispatch_enabled'
+  | 'wfp_dispatch_failure_contract_compiled'
   | 'wfp_relay_transport_enabled'
   | 'wfp_relay_authority_secret_configured'
   | 'wfp_authority_replay_do_available'
@@ -164,7 +165,8 @@ export function buildPlatformReadinessSummary(
     capabilities.wfp_tenant_response_header_guard_compiled,
     capabilities.wfp_tenant_ai_gateway_policy_compiled,
     capabilities.wfp_authority_replay_do_compiled,
-    capabilities.wfp_relay_authority_transport_compiled
+    capabilities.wfp_relay_authority_transport_compiled,
+    capabilities.wfp_dispatch_failure_contract_compiled
   )
   const realtimeImplementation = allReady(
     capabilities.do_websocket_hibernation_compiled,

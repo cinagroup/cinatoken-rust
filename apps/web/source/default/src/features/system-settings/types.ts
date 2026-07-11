@@ -434,6 +434,9 @@ export type PlatformCapabilities = {
   wfp_dispatch_binding_available: boolean
   wfp_dispatch_enabled: boolean
   wfp_internal_dispatch_enabled: boolean
+  wfp_dispatch_failure_contract_version: number
+  wfp_dispatch_failure_classes: string[]
+  wfp_dispatch_failure_contract_compiled: boolean
   wfp_relay_transport_enabled: boolean
   wfp_relay_authority_secret_configured: boolean
   wfp_authority_replay_do_available: boolean

@@ -48,6 +48,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   wfp_dispatch_binding_available: false,
   wfp_dispatch_enabled: false,
   wfp_internal_dispatch_enabled: false,
+  wfp_dispatch_failure_contract_compiled: false,
   wfp_relay_transport_enabled: false,
   wfp_relay_authority_secret_configured: false,
   wfp_authority_replay_do_available: false,
@@ -121,6 +122,7 @@ describe('Cloudflare platform readiness headline', () => {
         wfp_tenant_ai_gateway_policy_compiled: true,
         wfp_authority_replay_do_compiled: true,
         wfp_relay_authority_transport_compiled: true,
+        wfp_dispatch_failure_contract_compiled: true,
         realtime_sessions_do_available: true,
         do_websocket_hibernation_compiled: true,
         realtime_session_auth_boundary_compiled: true,
@@ -204,6 +206,31 @@ describe('Cloudflare platform readiness headline', () => {
         (signal) => signal.id === 'scheduling-gateway-implementation'
       )?.status,
       'ready'
+    )
+  })
+
+  test('requires the WFP dispatch failure contract for implementation readiness', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        wfp_tenant_supported_routes: ['/v1/responses'],
+        wfp_tenant_cutover_guards: ['internal-dispatch'],
+        wfp_tenant_script_plan_compiled: true,
+        wfp_tenant_rust_wasm_runtime_compiled: true,
+        wfp_tenant_route_manifest_compiled: true,
+        wfp_tenant_internal_dispatch_required_compiled: true,
+        wfp_tenant_relay_authority_verifier_compiled: true,
+        wfp_tenant_response_header_guard_compiled: true,
+        wfp_tenant_ai_gateway_policy_compiled: true,
+        wfp_authority_replay_do_compiled: true,
+        wfp_relay_authority_transport_compiled: true,
+      })
+    )
+    const implementation = getStage(summary, 'implementation')
+    assert.equal(
+      implementation.signals.find(
+        (signal) => signal.id === 'wfp-tenant-implementation'
+      )?.status,
+      'blocked'
     )
   })
 

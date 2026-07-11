@@ -129,6 +129,26 @@ References:
 - <https://developers.cloudflare.com/durable-objects/best-practices/websockets/>
 - <https://developers.cloudflare.com/ai-gateway/usage/universal/>
 
+### WFP dispatched-fetch failure refinement
+
+cinaVibeSDK wraps dispatcher lookup and `worker.fetch()` together and never
+falls back from a user-app host to the platform Worker. Cloudflare's current
+dynamic-dispatch examples additionally identify `Worker not found` as the
+stable missing-script signal around the dispatch call. The Rust implementation
+now combines those ideas with central-relay semantics:
+
+- preview/internal missing scripts return structured 404;
+- a missing WFP worker selected as a paid relay backend returns 502 so the
+  OpenAI-compatible relay does not misrepresent a backend outage as a missing
+  client route;
+- CPU/subrequest limit failures return 429 and other tenant execution failures
+  return 502;
+- raw tenant exception messages are not logged or returned, all platform WFP
+  failures are `no-store`, and no case falls back to the main application;
+- the negative smoke contract is executable locally and in staging.
+
+Reference: <https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/dynamic-dispatch/>.
+
 ## Evidence Increment: 2026-07-10 Local D1 And Route Ownership
 
 The 2026-07-10 local evidence advances the migration contract without changing

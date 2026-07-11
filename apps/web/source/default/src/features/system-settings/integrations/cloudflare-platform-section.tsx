@@ -695,6 +695,18 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Dispatch failure contract'),
+          description: t('Version {{version}}: {{classes}}.', {
+            version: capabilities.wfp_dispatch_failure_contract_version,
+            classes:
+              capabilities.wfp_dispatch_failure_classes.join(', ') ||
+              t('Unavailable'),
+          }),
+          ready: capabilities.wfp_dispatch_failure_contract_compiled,
+          readyLabel: t('Fail closed'),
+          missingLabel: t('Unstructured'),
+        },
+        {
           label: t('Tenant dispatch gate'),
           description: t('Runtime flag WFP_DISPATCH_ENABLED.'),
           ready: capabilities.wfp_dispatch_enabled,

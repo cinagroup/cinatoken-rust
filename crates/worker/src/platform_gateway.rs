@@ -167,6 +167,30 @@ impl DispatchRouteKind {
     }
 }
 
+const WFP_DISPATCH_FAILURE_CONTRACT_VERSION: u32 = 1;
+const WFP_DISPATCH_FAILURE_CLASSES: &[&str] = &[
+    "worker_not_found",
+    "resource_limit_exceeded",
+    "tenant_execution_failed",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WfpDispatchFailureKind {
+    WorkerNotFound,
+    ResourceLimitExceeded,
+    TenantExecutionFailed,
+}
+
+impl WfpDispatchFailureKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::WorkerNotFound => "worker_not_found",
+            Self::ResourceLimitExceeded => "resource_limit_exceeded",
+            Self::TenantExecutionFailed => "tenant_execution_failed",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct PlatformCapabilities {
     scheduling_gateway_compiled: bool,
@@ -211,6 +235,9 @@ struct PlatformCapabilities {
     wfp_dispatch_binding_available: bool,
     wfp_dispatch_enabled: bool,
     wfp_internal_dispatch_enabled: bool,
+    wfp_dispatch_failure_contract_version: u32,
+    wfp_dispatch_failure_classes: Vec<&'static str>,
+    wfp_dispatch_failure_contract_compiled: bool,
     wfp_relay_transport_enabled: bool,
     wfp_relay_authority_secret_configured: bool,
     wfp_authority_replay_do_available: bool,
@@ -340,6 +367,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let wfp_dispatch_binding_available = env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok();
     let wfp_dispatch_enabled = env_flag(&env, WFP_DISPATCH_ENABLED_ENV);
     let wfp_internal_dispatch_enabled = env_flag(&env, WFP_INTERNAL_DISPATCH_ENABLED_ENV);
+    let wfp_dispatch_failure_contract_compiled = wfp_dispatch_failure_contract_compiled();
     let wfp_relay_transport_enabled = env_flag(&env, WFP_RELAY_TRANSPORT_ENABLED_ENV);
     let wfp_relay_authority_secret_configured =
         secret_or_var(&env, cinatoken_wfp_authority::AUTHORITY_SECRET_ENV)
@@ -375,6 +403,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_dispatch_binding_available,
         wfp_dispatch_enabled,
         wfp_internal_dispatch_enabled,
+        wfp_dispatch_failure_contract_compiled,
         wfp_tenant_script_plan_compiled,
         wfp_tenant_rust_wasm_runtime_compiled,
         wfp_tenant_route_manifest_compiled,
@@ -570,6 +599,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_dispatch_binding_available,
         wfp_dispatch_enabled,
         wfp_internal_dispatch_enabled,
+        wfp_dispatch_failure_contract_version: WFP_DISPATCH_FAILURE_CONTRACT_VERSION,
+        wfp_dispatch_failure_classes: WFP_DISPATCH_FAILURE_CLASSES.to_vec(),
+        wfp_dispatch_failure_contract_compiled,
         wfp_relay_transport_enabled,
         wfp_relay_authority_secret_configured,
         wfp_authority_replay_do_available,
@@ -1607,7 +1639,7 @@ pub fn dispatch_target_for_plan(plan: &WfpDispatchPlan, env: &Env) -> WorkerResu
 }
 
 pub fn wfp_preview_unavailable_response() -> WorkerResult<Response> {
-    gateway_error(
+    wfp_gateway_error(
         404,
         "wfp_preview_unavailable",
         "This tenant application is not currently available",
@@ -1629,7 +1661,7 @@ async fn dispatch_request_with_env(
         Ok(dispatcher) => dispatcher,
         Err(err) => {
             worker::console_error!("WFP dispatch binding unavailable: {}", err);
-            return gateway_error(
+            return wfp_gateway_error(
                 503,
                 "wfp_dispatch_unavailable",
                 "WFP dispatch binding is not configured",
@@ -1639,24 +1671,101 @@ async fn dispatch_request_with_env(
     let fetcher = match dispatcher.get(target.worker_name.clone()) {
         Ok(fetcher) => fetcher,
         Err(err) => {
-            worker::console_warn!(
-                "failed to resolve WFP tenant worker {}: {}",
-                target.worker_name,
-                err
-            );
-            return gateway_error(
-                404,
-                "wfp_worker_not_found",
-                "WFP tenant worker was not found",
-            );
+            return wfp_dispatch_failure_response(&target, &err.to_string());
         }
     };
 
     let outbound = request_for_dispatch_target(req, &target)?;
-    let mut response = fetcher.fetch_request(outbound).await?;
+    let mut response = match fetcher.fetch_request(outbound).await {
+        Ok(response) => response,
+        Err(err) => return wfp_dispatch_failure_response(&target, &err.to_string()),
+    };
     let headers = response.headers_mut();
     let _ = headers.set(WFP_ROUTE_REQUEST_HEADER, target.route_kind.header_value());
     let _ = headers.set(WFP_WORKER_REQUEST_HEADER, &target.public_name);
+    Ok(response)
+}
+
+fn classify_wfp_dispatch_failure(message: &str) -> WfpDispatchFailureKind {
+    let mut normalized = message.trim().to_ascii_lowercase();
+    for _ in 0..3 {
+        let Some(unwrapped) = normalized.strip_prefix("error: ") else {
+            break;
+        };
+        normalized = unwrapped.trim_start().to_string();
+    }
+    if normalized.starts_with("worker not found") {
+        return WfpDispatchFailureKind::WorkerNotFound;
+    }
+    if normalized.contains("cpu time limit")
+        || (normalized.contains("subrequest") && normalized.contains("limit"))
+    {
+        return WfpDispatchFailureKind::ResourceLimitExceeded;
+    }
+    WfpDispatchFailureKind::TenantExecutionFailed
+}
+
+fn wfp_dispatch_failure_contract_compiled() -> bool {
+    WFP_DISPATCH_FAILURE_CONTRACT_VERSION == 1
+        && WFP_DISPATCH_FAILURE_CLASSES
+            == [
+                "worker_not_found",
+                "resource_limit_exceeded",
+                "tenant_execution_failed",
+            ]
+}
+
+fn wfp_dispatch_failure_response(
+    target: &DispatchTarget,
+    error_message: &str,
+) -> WorkerResult<Response> {
+    let failure = classify_wfp_dispatch_failure(error_message);
+    worker::console_warn!(
+        "WFP dispatch failed: class={} route={} worker={}",
+        failure.label(),
+        target.route_kind.header_value(),
+        target.public_name
+    );
+
+    let (status, code, message) = wfp_dispatch_failure_contract(failure, target.route_kind);
+    wfp_gateway_error(status, code, message)
+}
+
+fn wfp_dispatch_failure_contract(
+    failure: WfpDispatchFailureKind,
+    route_kind: DispatchRouteKind,
+) -> (u16, &'static str, &'static str) {
+    match failure {
+        WfpDispatchFailureKind::WorkerNotFound
+            if route_kind != DispatchRouteKind::RelayAuthority =>
+        {
+            (
+                404,
+                "wfp_worker_not_found",
+                "WFP tenant worker was not found",
+            )
+        }
+        WfpDispatchFailureKind::WorkerNotFound => (
+            502,
+            "wfp_relay_worker_unavailable",
+            "WFP relay worker is unavailable",
+        ),
+        WfpDispatchFailureKind::ResourceLimitExceeded => (
+            429,
+            "wfp_worker_resource_limit_exceeded",
+            "WFP tenant worker exceeded its execution limit",
+        ),
+        WfpDispatchFailureKind::TenantExecutionFailed => (
+            502,
+            "wfp_worker_execution_failed",
+            "WFP tenant worker execution failed",
+        ),
+    }
+}
+
+fn wfp_gateway_error(status: u16, code: &str, message: &str) -> WorkerResult<Response> {
+    let mut response = gateway_error(status, code, message)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
 }
 
@@ -1922,6 +2031,7 @@ fn is_wfp_tenant_smoke_ready(
     dispatcher_bound: bool,
     dispatch_enabled: bool,
     internal_dispatch_enabled: bool,
+    dispatch_failure_contract_compiled: bool,
     tenant_script_plan_compiled: bool,
     rust_wasm_runtime_compiled: bool,
     route_manifest_compiled: bool,
@@ -1932,6 +2042,7 @@ fn is_wfp_tenant_smoke_ready(
     dispatcher_bound
         && dispatch_enabled
         && internal_dispatch_enabled
+        && dispatch_failure_contract_compiled
         && tenant_script_plan_compiled
         && rust_wasm_runtime_compiled
         && route_manifest_compiled
@@ -2094,6 +2205,66 @@ mod tests {
             crate::wfp_tenant::WFP_TENANT_STATUS_PATH,
             "/__cinatoken/tenant/status"
         );
+    }
+
+    #[test]
+    fn wfp_dispatch_failures_follow_the_versioned_fail_closed_contract() {
+        assert_eq!(WFP_DISPATCH_FAILURE_CONTRACT_VERSION, 1);
+        assert_eq!(
+            WFP_DISPATCH_FAILURE_CLASSES,
+            &[
+                "worker_not_found",
+                "resource_limit_exceeded",
+                "tenant_execution_failed",
+            ]
+        );
+        assert_eq!(
+            classify_wfp_dispatch_failure("Worker not found: tenant-a"),
+            WfpDispatchFailureKind::WorkerNotFound
+        );
+        assert_eq!(
+            classify_wfp_dispatch_failure(
+                "Error: Error: Worker not found: tenant-a - Cause: Error: Worker not found"
+            ),
+            WfpDispatchFailureKind::WorkerNotFound
+        );
+        assert_eq!(
+            classify_wfp_dispatch_failure("CPU time limit exceeded"),
+            WfpDispatchFailureKind::ResourceLimitExceeded
+        );
+        assert_eq!(
+            classify_wfp_dispatch_failure("Subrequest limit exceeded"),
+            WfpDispatchFailureKind::ResourceLimitExceeded
+        );
+        assert_eq!(
+            classify_wfp_dispatch_failure("secret-bearing tenant exception"),
+            WfpDispatchFailureKind::TenantExecutionFailed
+        );
+        let preview_missing = wfp_dispatch_failure_contract(
+            WfpDispatchFailureKind::WorkerNotFound,
+            DispatchRouteKind::PreviewHost,
+        );
+        assert_eq!(preview_missing.0, 404);
+        assert_eq!(preview_missing.1, "wfp_worker_not_found");
+        let relay_missing = wfp_dispatch_failure_contract(
+            WfpDispatchFailureKind::WorkerNotFound,
+            DispatchRouteKind::RelayAuthority,
+        );
+        assert_eq!(relay_missing.0, 502);
+        assert_eq!(relay_missing.1, "wfp_relay_worker_unavailable");
+        let limited = wfp_dispatch_failure_contract(
+            WfpDispatchFailureKind::ResourceLimitExceeded,
+            DispatchRouteKind::PreviewHost,
+        );
+        assert_eq!(limited.0, 429);
+        assert_eq!(limited.1, "wfp_worker_resource_limit_exceeded");
+        let failed = wfp_dispatch_failure_contract(
+            WfpDispatchFailureKind::TenantExecutionFailed,
+            DispatchRouteKind::InternalPath,
+        );
+        assert_eq!(failed.0, 502);
+        assert_eq!(failed.1, "wfp_worker_execution_failed");
+        assert!(wfp_dispatch_failure_contract_compiled());
     }
 
     #[test]
@@ -2342,6 +2513,7 @@ mod tests {
         for guard in [
             "dispatcher_binding",
             "dispatch_gate",
+            "dispatch_failure_contract",
             "relay_transport_gate",
             "internal_dispatch_gate",
             "central_relay_authority",
@@ -2376,10 +2548,10 @@ mod tests {
 
     #[test]
     fn wfp_tenant_smoke_ready_requires_binding_gate_and_contracts() {
-        assert!(wfp_tenant_smoke_ready_with_flags([true; 9]));
+        assert!(wfp_tenant_smoke_ready_with_flags([true; 10]));
 
-        for false_gate in 0..9 {
-            let mut flags = [true; 9];
+        for false_gate in 0..10 {
+            let mut flags = [true; 10];
             flags[false_gate] = false;
             assert!(
                 !wfp_tenant_smoke_ready_with_flags(flags),
@@ -2583,10 +2755,10 @@ mod tests {
         )
     }
 
-    fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 9]) -> bool {
+    fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 10]) -> bool {
         is_wfp_tenant_smoke_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-            flags[8],
+            flags[8], flags[9],
         )
     }
 

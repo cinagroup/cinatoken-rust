@@ -9608,3 +9608,37 @@ Remaining evidence: deployed main-host/API/tenant-host route ownership smoke,
 missing-binding behavior, tenant-host negative tests through Cloudflare, and
 rollback evidence. WFP, Realtime, and AI Gateway production gates remain
 independent and default-off where already documented.
+
+### 22.154 2026-07-11 WFP Dispatched-Fetch Failure Contract
+
+This increment closes a production error-boundary gap immediately behind the
+Rust scheduling gateway. Missing `DISPATCHER` already returned structured 503,
+but an exception from the actual dispatched Worker fetch escaped through the
+Worker runtime and could bypass the intended JSON/no-fallback contract.
+
+- Both dispatch lookup and `fetch_request` errors are now classified before a
+  response leaves the platform Worker. The contract is versioned and exposes
+  `worker_not_found`, `resource_limit_exceeded`, and
+  `tenant_execution_failed` classes.
+- Preview/internal missing workers return 404. Missing workers selected by the
+  signed central relay return 502, preserving backend-failure semantics for
+  quota refund/fallback/audit handling. CPU/subrequest limits return 429; other
+  tenant execution failures return 502.
+- Raw tenant exception text is neither returned nor written to the dispatch
+  warning. Platform-generated WFP errors use `Cache-Control: no-store` and no
+  path falls back to the main React application.
+- The admin capability API and Cloudflare Platform frontend expose the version,
+  classes, and compiled state. WFP implementation readiness now requires the
+  contract without claiming staging verification.
+- `tools/smoke_wfp_dispatch.mjs --expect-dispatch-error <code>` validates exact
+  JSON code/status/no-store behavior. A five-case synthetic self-test is wired
+  into the default repository gate as
+  `check:wfp-dispatch:failure-contract`.
+
+Local evidence includes Worker 548/548, frontend readiness 8/8, route audit 217
+frontend calls / 313 Worker routes / 0 missing, Worker and WFP tenant wasm32,
+the five-case smoke-contract self-test, missing-worker dry-run, and the complete
+`bun run check` chain. Production remains Partial until real staging captures
+missing binding/script, CPU/subrequest limit, synthetic tenant error,
+normal-relay missing worker, redacted traces, billing refund/audit, and rollback
+with a replacement least-privilege credential.

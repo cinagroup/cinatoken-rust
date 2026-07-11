@@ -270,6 +270,31 @@ First run the admin-authenticated status smoke against only
 admin request to each paid AI path is rejected. The generated fallback is not
 acceptable evidence for any AI route.
 
+Archive the structured negative contract before a positive tenant smoke. The
+missing-script case is safe to run against a deliberately absent worker name:
+
+```powershell
+bun tools/smoke_wfp_dispatch.mjs --url $env:STAGING_BASE_URL --worker missing-tenant-fixture --cookie $env:WFP_SMOKE_COOKIE --expect-dispatch-error wfp_worker_not_found --json
+```
+
+Use isolated staging variants/fixtures for the other cases:
+
+- no `DISPATCHER` binding with the internal dispatch gates on:
+  `wfp_dispatch_unavailable` / 503;
+- a tenant fixture exceeding configured CPU or subrequest limits:
+  `wfp_worker_resource_limit_exceeded` / 429;
+- a tenant fixture throwing a synthetic non-secret exception:
+  `wfp_worker_execution_failed` / 502;
+- a normal relay request selecting an absent WFP channel worker:
+  `wfp_relay_worker_unavailable` / 502.
+
+Each platform-generated response must be JSON, carry the exact code/status,
+include `Cache-Control: no-store`, omit raw exception text, and never fall back
+to the main application. Run `bun run check:wfp-dispatch:failure-contract`
+locally before staging. The internal status tool cannot prove the paid-relay
+case; capture that through the normal relay-token boundary and reconcile its
+reserve/refund/audit outcome.
+
 For the paid canary, enable `WFP_RELAY_TRANSPORT_ENABLED` briefly and call one
 of the four retained routes through the normal public relay boundary with a
 staging relay token:

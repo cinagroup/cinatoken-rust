@@ -8,6 +8,19 @@ const defaultExpectedRuntime = "rust-wasm";
 const statusTenantPath = "/__cinatoken/tenant/status";
 const supportedRuntimes = new Set(["rust-wasm", "js-fallback"]);
 const runtimeExpectations = new Set(["rust-wasm", "js-fallback", "any"]);
+const dispatchErrorStatuses = new Map([
+  ["wfp_worker_not_found", 404],
+  ["wfp_dispatch_unavailable", 503],
+  ["wfp_worker_resource_limit_exceeded", 429],
+  ["wfp_worker_execution_failed", 502],
+  ["wfp_relay_worker_unavailable", 502],
+]);
+const statusDispatchErrorCodes = new Set([
+  "wfp_worker_not_found",
+  "wfp_dispatch_unavailable",
+  "wfp_worker_resource_limit_exceeded",
+  "wfp_worker_execution_failed",
+]);
 const supportedRoutePaths = [
   "/v1/chat/completions",
   "/v1/responses",
@@ -88,6 +101,9 @@ try {
   if (args.flags.has("self-test-response-header-guard")) {
     const result = runResponseHeaderGuardSelfTest();
     printSelfTestResult(result, args.flags.has("json"));
+  } else if (args.flags.has("self-test-dispatch-error-contract")) {
+    const result = await runDispatchErrorContractSelfTest();
+    printSelfTestResult(result, args.flags.has("json"));
   } else if (args.flags.has("self-test-route-contract")) {
     const result = runRouteContractSelfTest();
     printSelfTestResult(result, args.flags.has("json"));
@@ -115,6 +131,24 @@ async function smoke(options) {
     },
     options.timeoutMs,
   );
+
+  if (options.expectDispatchError) {
+    const dispatchError = await validateExpectedDispatchError(
+      statusResponse,
+      options.expectDispatchError,
+    );
+    return {
+      ok: true,
+      dryRun: false,
+      negative: true,
+      worker: options.worker,
+      statusUrl: redactUrl(plan.statusUrl),
+      adminCookieConfigured: Boolean(options.adminCookie),
+      expectedDispatchError: options.expectDispatchError,
+      dispatchError,
+      capabilities,
+    };
+  }
 
   if (!statusResponse.ok) {
     throw new Error(
@@ -198,12 +232,113 @@ async function smoke(options) {
     statusUrl: redactUrl(plan.statusUrl),
     adminCookieConfigured: Boolean(options.adminCookie),
     expectRuntime: options.expectRuntime,
+    expectDispatchError: options.expectDispatchError,
     skipCapabilities: options.skipCapabilities,
     capabilities,
     status: summarizeTenantStatus(statusBody),
     dispatchHeaders: dispatchHeaders(statusResponse.headers),
     responseHeaderGuard: statusHeaderGuard,
     route: routeResult,
+  };
+}
+
+function validateExpectedDispatchErrorCode(value) {
+  if (!value) return null;
+  if (!statusDispatchErrorCodes.has(value)) {
+    throw new Error(
+      `expect-dispatch-error must be one of ${Array.from(statusDispatchErrorCodes).join(", ")}`,
+    );
+  }
+  return value;
+}
+
+async function validateExpectedDispatchError(response, expectedCode) {
+  const expectedStatus = dispatchErrorStatuses.get(expectedCode);
+  const text = await response.text();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `WFP dispatch error returned non-JSON response: ${error.message}: ${text.slice(0, 1024)}`,
+    );
+  }
+  if (response.status !== expectedStatus) {
+    throw new Error(
+      `WFP dispatch error ${expectedCode} returned status ${response.status}, expected ${expectedStatus}`,
+    );
+  }
+  if (body?.error?.code !== expectedCode) {
+    throw new Error(
+      `WFP dispatch error code=${body?.error?.code} did not equal ${expectedCode}`,
+    );
+  }
+  const cacheControl = response.headers.get("cache-control") || "";
+  if (!cacheControl.toLowerCase().includes("no-store")) {
+    throw new Error(
+      `WFP dispatch error ${expectedCode} must return Cache-Control: no-store`,
+    );
+  }
+  return {
+    status: response.status,
+    code: expectedCode,
+    type: body?.error?.type || null,
+    cacheControl,
+  };
+}
+
+async function runDispatchErrorContractSelfTest() {
+  const cases = [];
+  for (const [code, status] of dispatchErrorStatuses) {
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          code,
+          message: "redacted synthetic failure",
+          type: "platform_gateway_error",
+        },
+      }),
+      {
+        status,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+        },
+      },
+    );
+    cases.push(await validateExpectedDispatchError(response, code));
+  }
+
+  let mismatchRejected = false;
+  try {
+    await validateExpectedDispatchError(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "wfp_worker_execution_failed",
+            type: "platform_gateway_error",
+          },
+        }),
+        {
+          status: 500,
+          headers: { "cache-control": "no-store" },
+        },
+      ),
+      "wfp_worker_execution_failed",
+    );
+  } catch {
+    mismatchRejected = true;
+  }
+  if (!mismatchRejected) {
+    throw new Error("dispatch error self-test did not reject a status mismatch");
+  }
+
+  return {
+    ok: true,
+    selfTest: "wfp-dispatch-error-contract",
+    contractVersion: 1,
+    cases,
+    mismatchRejected,
   };
 }
 
@@ -231,6 +366,7 @@ function buildPlan(options) {
       : 0,
     adminCookieConfigured: Boolean(options.adminCookie),
     expectRuntime: options.expectRuntime,
+    expectDispatchError: options.expectDispatchError,
     skipCapabilities: options.skipCapabilities,
     allowNon2xx: options.allowNon2xx,
     responseHeaderGuard: options.responseHeaderGuard,
@@ -260,6 +396,7 @@ function buildPlan(options) {
       "internal dispatch smoke is admin-authenticated; dry-run output reports whether a Cookie header is configured without printing its value.",
       "the dispatch Worker strips platform/admin credentials before invoking the tenant Worker; live status smoke fails if tenant status reports sensitive inbound headers.",
       "status smoke validates the dispatch binding, internal path rewrite, controlled internal dispatch markers, expected tenant runtime, AI Gateway policy contract, tenant status contract, and x-cinatoken WFP headers.",
+      "--expect-dispatch-error switches status smoke into a negative contract check, skips positive capability prerequisites, and requires the exact JSON code/status plus Cache-Control: no-store.",
       "response-header guard fails live smoke if auth/cookie, cf-aig-*, or non-WFP x-cinatoken-* headers leak; strict mode additionally rejects non-allowlisted headers when the edge envelope is controlled.",
       "admin internal-path route smoke is negative-only because paid AI requires signed relay-authority; use --allow-non-2xx for response-boundary checks and the central relay transport for positive AI evidence.",
     ],
@@ -283,6 +420,7 @@ function parseArgs(argv) {
         "--strict-response-header-allowlist",
         "--skip-capabilities",
         "--self-test-response-header-guard",
+        "--self-test-dispatch-error-contract",
         "--self-test-route-contract",
       ].includes(arg)
     ) {
@@ -314,6 +452,9 @@ async function normalizeOptions(args) {
   const bodyText = normalizedRoute
     ? await resolveBodyText(args, normalizedRoute)
     : "";
+  const expectDispatchError = validateExpectedDispatchErrorCode(
+    value("expect-dispatch-error", "WFP_SMOKE_EXPECT_DISPATCH_ERROR"),
+  );
   return {
     url: value("url", "WFP_SMOKE_URL") || process.env.STAGING_BASE_URL,
     worker: validateWorkerName(
@@ -329,6 +470,7 @@ async function normalizeOptions(args) {
       value("expect-runtime", "WFP_SMOKE_EXPECT_RUNTIME") ||
         defaultExpectedRuntime,
     ),
+    expectDispatchError,
     timeoutMs:
       Number.isFinite(timeoutMs) && timeoutMs > 0
         ? timeoutMs
@@ -338,7 +480,8 @@ async function normalizeOptions(args) {
     strictResponseHeaderAllowlist: args.flags.has(
       "strict-response-header-allowlist",
     ),
-    skipCapabilities: args.flags.has("skip-capabilities"),
+    skipCapabilities:
+      args.flags.has("skip-capabilities") || Boolean(expectDispatchError),
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
   };
@@ -378,12 +521,14 @@ function usage(exitCode, error) {
       "  --body-file <path>    Optional JSON body file for --route",
       "  --cookie <header>     or WFP_SMOKE_COOKIE, admin session Cookie header required for live internal dispatch smoke",
       "  --expect-runtime <runtime>  rust-wasm, js-fallback, or any; default rust-wasm",
+      "  --expect-dispatch-error <code>  Expect a structured WFP status error instead of a tenant response",
       "  --timeout-ms <ms>     or WFP_SMOKE_TIMEOUT_MS, default 10000",
       "  --allow-non-2xx       Record POST route responses even if the AI Gateway/provider rejects the payload",
       "  --no-response-header-guard  Disable response header leakage checks",
       "  --strict-response-header-allowlist  Also reject headers outside the public tenant/WFP/CORS/edge allowlist",
       "  --skip-capabilities  Do not preflight /api/platform/capabilities before live smoke",
       "  --self-test-response-header-guard  Run local synthetic guard tests without network",
+      "  --self-test-dispatch-error-contract  Verify status/code/no-store handling for WFP failures",
       "  --self-test-route-contract  Verify the exact route manifest and default request bodies",
       "  --dry-run             Resolve URLs without network",
       "  --json",
@@ -391,6 +536,7 @@ function usage(exitCode, error) {
       "Examples:",
       "  bun tools/smoke_wfp_dispatch.mjs --dry-run --json --url http://127.0.0.1:8787 --worker tenant-smoke",
       '  bun tools/smoke_wfp_dispatch.mjs --url https://staging.example.com --worker tenant-smoke --cookie "$WFP_SMOKE_COOKIE" --json',
+      '  bun tools/smoke_wfp_dispatch.mjs --url https://staging.example.com --worker missing-tenant --expect-dispatch-error wfp_worker_not_found --cookie "$WFP_SMOKE_COOKIE" --json',
       '  bun tools/smoke_wfp_dispatch.mjs --url https://staging.example.com --worker tenant-smoke --route /v1/responses --body \'{"model":"openai/gpt-4.1","input":"wfp smoke"}\' --cookie "$WFP_SMOKE_COOKIE" --json',
     ].join("\n"),
   );
@@ -460,6 +606,13 @@ function summarizeCapabilities(data) {
       data.wfp_dispatch_binding_available === true,
     wfp_dispatch_enabled: data.wfp_dispatch_enabled === true,
     wfp_internal_dispatch_enabled: data.wfp_internal_dispatch_enabled === true,
+    wfp_dispatch_failure_contract_version:
+      data.wfp_dispatch_failure_contract_version,
+    wfp_dispatch_failure_classes: arrayOfStrings(
+      data.wfp_dispatch_failure_classes,
+    ),
+    wfp_dispatch_failure_contract_compiled:
+      data.wfp_dispatch_failure_contract_compiled === true,
     wfp_tenant_supported_routes: arrayOfStrings(
       data.wfp_tenant_supported_routes,
     ),
@@ -505,6 +658,24 @@ function validateWfpCapabilities(capabilities) {
       );
     }
   }
+  if (capabilities.wfp_dispatch_failure_contract_version !== 1) {
+    throw new Error(
+      `platform capabilities WFP dispatch failure contract version=${capabilities.wfp_dispatch_failure_contract_version} did not equal 1`,
+    );
+  }
+  const expectedFailureClasses = [
+    "worker_not_found",
+    "resource_limit_exceeded",
+    "tenant_execution_failed",
+  ];
+  if (
+    JSON.stringify(capabilities.wfp_dispatch_failure_classes) !==
+    JSON.stringify(expectedFailureClasses)
+  ) {
+    throw new Error(
+      `platform capabilities WFP dispatch failure classes did not match ${expectedFailureClasses.join(",")}`,
+    );
+  }
 }
 
 function expectedWfpCapabilityBooleans() {
@@ -512,6 +683,7 @@ function expectedWfpCapabilityBooleans() {
     "wfp_dispatch_binding_available",
     "wfp_dispatch_enabled",
     "wfp_internal_dispatch_enabled",
+    "wfp_dispatch_failure_contract_compiled",
     "wfp_tenant_script_plan_compiled",
     "wfp_tenant_rust_wasm_runtime_compiled",
     "wfp_tenant_route_manifest_compiled",
@@ -533,6 +705,7 @@ function expectedWfpCutoverGuards() {
   return [
     "dispatcher_binding",
     "dispatch_gate",
+    "dispatch_failure_contract",
     "relay_transport_gate",
     "internal_dispatch_gate",
     "central_relay_authority",

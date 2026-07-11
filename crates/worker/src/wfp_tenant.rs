@@ -59,6 +59,7 @@ pub(crate) const WFP_TENANT_SUPPORTED_ROUTES: &[&str] = &[
 pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
     "dispatcher_binding",
     "dispatch_gate",
+    "dispatch_failure_contract",
     "relay_transport_gate",
     "internal_dispatch_gate",
     "central_relay_authority",

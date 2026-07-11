@@ -16,6 +16,21 @@ Do not interpret code presence, passing unit tests, or a subsystem staging smoke
 as production completion. Production requires data reconciliation, frontend
 runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 
+## Objective Re-Audit (2026-07-11)
+
+| Objective requirement | Current authoritative evidence | Status | Evidence still required |
+| --- | --- | --- | --- |
+| Complete Go/VPS to Rust/Cloudflare migration | Rust owns the main route surface and the route audit reports zero explicit frontend gaps, but provider-specific, payment, async-task, data, and operational matrices still contain partial rows | Partial | Production SQLite-to-D1 reconciliation, all enabled provider/payment fixtures, capacity/security evidence, canary, rollback, and decommission proof |
+| Frontend migration | React/Bun source, strict lint, bundle redaction/budget, route audit, and production build pass locally | Locally wired | Deployed browser hard-refresh, session/role/CRUD/2FA/Passkey, callback, console, performance, and rollback evidence |
+| Rust scheduling gateway | `cinatoken-gateway` is the live versioned owner planner before Worker execution adapters | Locally wired | Main/API/static/tenant host matrix, negative dispatch, edge-auth parity, and rollback smoke on Cloudflare |
+| Rust Durable Objects | RealtimeSession, TaskRunner, channel affinity, settlement/replay, and WFP authority replay DO substrates compile with focused tests | Gated substrate | Live eviction/alarm/reconnect/replay/load evidence; Realtime upstream and billing must complete without duplicate charge |
+| WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, signed relay authority, and replay guard are present | Gated substrate | Real staging namespace upload/readback, missing-worker/resource-limit faults, one paid provider call, central billing outcome, and traces |
+| AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
+| `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
+
+This re-audit keeps the overall migration goal open. Passing local gates proves
+implementation readiness only for the covered behavior.
+
 ## Substantial And Verified
 
 - Rust workspace, Cloudflare Worker entrypoint, D1 repositories and migrations.
@@ -92,6 +107,21 @@ A full diff of every Go-registered route against the Rust worker closed these
   model-delete remain structured 501 compatibility surfaces.
 
 ## In Progress
+
+### WFP dispatch failure contract (2026-07-11)
+
+- The dynamic-dispatch execution path now catches errors from both dispatcher
+  lookup and the dispatched Worker `fetch`, matching Cloudflare's current
+  guidance that a missing script is reported during the dispatch call.
+- Missing preview/internal workers return structured 404; a missing paid-relay
+  worker returns 502; CPU/subrequest limits return 429; other tenant execution
+  failures return 502. Raw tenant exception text is not returned or logged.
+- Every platform-generated WFP failure uses `Cache-Control: no-store`. The
+  capability API/frontend expose contract version/classes as implementation
+  evidence, and the smoke tool can assert negative status/code/no-store cases.
+- Remaining evidence is a replacement-credential staging run against missing,
+  resource-limited, and deliberately failing tenant scripts plus relay billing
+  and rollback proof.
 
 ### Rust scheduling gateway ownership (2026-07-11)
 

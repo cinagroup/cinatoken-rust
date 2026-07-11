@@ -6862,6 +6862,58 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.146 2026-07-11 Central-Policy Cross-Model Fallback Foundation
+
+This increment moves the cinaVibeSDK primary/fallback model idea into the Rust
+relay without delegating authorization or settlement to Cloudflare Dynamic
+Routing. The implementation remains default-off and production cutover remains
+blocked pending deployed replay.
+
+Implemented:
+
+- Added `RELAY_MODEL_FALLBACK_ENABLED`, an exact primary-to-fallback JSON map in
+  `RELAY_MODEL_FALLBACKS_JSON`, and
+  `RELAY_MODEL_FALLBACK_STAGING_VERIFIED`. All environments default the gate and
+  verification marker to `false`.
+- Cross-model fallback is limited to JSON OpenAI-compatible
+  `chat/completions` and `responses`, requires the normal AI Gateway router and
+  per-channel opt-in, and triggers only after server failures. Gateway/token
+  `401`, `403`, and `429`, client errors, timeout exclusions, and successful
+  response starts fail closed without changing model.
+- Before fallback egress, the relay re-checks token model limits, re-selects D1
+  abilities/channels for the fallback model, replaces the logical model before
+  channel mapping, rebuilds the billing request input, refunds the primary
+  tiered reserve, and computes/reserves a new fallback snapshot. The final audit
+  row uses the served model and stores requested model, configured fallback,
+  trigger, skip reason, and whether fallback was attempted.
+- Same-channel AI Gateway-to-direct fallback now strips the Gateway provider
+  prefix before provider egress and is restricted to fetch/server failures. Its
+  internal marker is carried through a fresh mutable Worker response and removed
+  before returning to the client, while remaining available to relay audit.
+- `auto` group cross-model fallback is deliberately blocked by the
+  `single_group_billing_scope` guard. Existing tiered preflight freezes the first
+  planned group before a retry can serve from another auto group; enabling model
+  fallback there would make the billing ambiguity larger.
+- Added backend capabilities, frontend implementation/configuration/smoke/
+  cutover signals, validated mapping counts, explicit guard visibility, and a
+  smoke self-test that rejects the former route-contract drift.
+
+Required before cutover:
+
+- Add durable attempt-ledger evidence for all-fetch-failed terminal requests;
+  the final successful/error-response relay row is authoritative today, but a
+  request with no upstream `Response` still exits before normal audit writing.
+- Resolve the existing auto-group selected-group billing invariant, then remove
+  the single-group restriction only with D1 integration proof.
+- Run isolated staging scenarios for primary server failure, fallback success,
+  token-limit denial, missing fallback channel, fallback fetch exhaustion,
+  streaming response start, exactly-one reserve/refund/settlement, audit model
+  identity, flag rollback, and no leaked internal headers.
+- Keep Cloudflare Dynamic Routes as a separate future canary. Do not stack
+  Cloudflare-managed fallback with the Rust outer model-attempt loop until
+  `cf-aig-model`/`cf-aig-provider` evidence can drive the same central billing
+  and audit identity without double charging.
+
 ### 22.145 2026-07-11 TaskRunner Recurring Alarm And Architecture Re-Audit
 
 This increment corrects the optional M5b fast path after a fresh audit of the

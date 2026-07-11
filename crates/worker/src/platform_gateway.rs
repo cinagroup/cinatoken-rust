@@ -43,6 +43,10 @@ use crate::realtime_session::{
     REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV, REALTIME_SESSION_CUTOVER_GUARDS,
     REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
 };
+use crate::relay::{
+    relay_ai_gateway_direct_fallback_contract_compiled, relay_model_fallback_contract_compiled,
+    relay_model_fallback_runtime_status, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
+};
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::task_repository::{
     task_refund_cas_batch_compiled, task_refund_replay_contract_compiled,
@@ -68,6 +72,19 @@ pub const WFP_INTERNAL_DISPATCH_ENABLED_ENV: &str = "WFP_INTERNAL_DISPATCH_ENABL
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
+const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
+    "router_ready",
+    "fallback_gate",
+    "validated_mapping",
+    "token_model_limit_recheck",
+    "fallback_channel_reselection",
+    "fallback_billing_rereservation",
+    "single_group_billing_scope",
+    "server_failure_only",
+    "provider_native_direct_body",
+    "model_route_audit",
+    "staging_replay",
+];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
 pub const EXPECTED_D1_MIGRATION: &str = "0020_realtime_billing_reservation_leases.sql";
@@ -155,6 +172,15 @@ struct PlatformCapabilities {
     relay_ai_gateway_channel_opt_in_supported: bool,
     relay_ai_gateway_rest_forwarder_compiled: bool,
     relay_ai_gateway_same_channel_fallback_compiled: bool,
+    relay_ai_gateway_cross_model_fallback_compiled: bool,
+    relay_ai_gateway_cross_model_fallback_enabled: bool,
+    relay_ai_gateway_cross_model_fallback_configured: bool,
+    relay_ai_gateway_cross_model_fallback_config_valid: bool,
+    relay_ai_gateway_cross_model_fallback_mapping_count: usize,
+    relay_ai_gateway_cross_model_fallback_ready: bool,
+    relay_ai_gateway_cross_model_fallback_staging_verified: bool,
+    relay_ai_gateway_cross_model_fallback_cutover_ready: bool,
+    relay_ai_gateway_cross_model_fallback_cutover_guards: Vec<&'static str>,
     channel_affinity_do_available: bool,
     realtime_sessions_do_available: bool,
     wfp_dispatch_binding_available: bool,
@@ -251,6 +277,21 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         cloudflare_account_id_configured,
         ai_gateway_id_configured,
         cloudflare_ai_gateway_token_configured,
+    );
+    let relay_ai_gateway_cross_model_fallback_compiled = relay_model_fallback_contract_compiled();
+    let relay_model_fallback_runtime = relay_model_fallback_runtime_status(&env);
+    let relay_ai_gateway_cross_model_fallback_ready = is_relay_model_fallback_ready(
+        relay_ai_gateway_router_ready,
+        relay_ai_gateway_cross_model_fallback_compiled,
+        relay_model_fallback_runtime.enabled,
+        relay_model_fallback_runtime.configured,
+        relay_model_fallback_runtime.valid,
+    );
+    let relay_ai_gateway_cross_model_fallback_staging_verified =
+        env_flag(&env, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV);
+    let relay_ai_gateway_cross_model_fallback_cutover_ready = is_relay_model_fallback_cutover_ready(
+        relay_ai_gateway_cross_model_fallback_ready,
+        relay_ai_gateway_cross_model_fallback_staging_verified,
     );
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
     let wfp_dispatch_binding_available = env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok();
@@ -435,7 +476,19 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_cutover_guards: relay_ai_gateway_cutover_guards(),
         relay_ai_gateway_channel_opt_in_supported: true,
         relay_ai_gateway_rest_forwarder_compiled: true,
-        relay_ai_gateway_same_channel_fallback_compiled: true,
+        relay_ai_gateway_same_channel_fallback_compiled:
+            relay_ai_gateway_direct_fallback_contract_compiled(),
+        relay_ai_gateway_cross_model_fallback_compiled,
+        relay_ai_gateway_cross_model_fallback_enabled: relay_model_fallback_runtime.enabled,
+        relay_ai_gateway_cross_model_fallback_configured: relay_model_fallback_runtime.configured,
+        relay_ai_gateway_cross_model_fallback_config_valid: relay_model_fallback_runtime.valid,
+        relay_ai_gateway_cross_model_fallback_mapping_count: relay_model_fallback_runtime
+            .mapping_count,
+        relay_ai_gateway_cross_model_fallback_ready,
+        relay_ai_gateway_cross_model_fallback_staging_verified,
+        relay_ai_gateway_cross_model_fallback_cutover_ready,
+        relay_ai_gateway_cross_model_fallback_cutover_guards: RELAY_MODEL_FALLBACK_CUTOVER_GUARDS
+            .to_vec(),
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
         realtime_sessions_do_available,
         wfp_dispatch_binding_available,
@@ -1771,6 +1824,20 @@ fn is_relay_ai_gateway_router_ready(
     router_enabled && account_configured && gateway_id_configured && token_configured
 }
 
+fn is_relay_model_fallback_ready(
+    router_ready: bool,
+    contract_compiled: bool,
+    enabled: bool,
+    configured: bool,
+    config_valid: bool,
+) -> bool {
+    router_ready && contract_compiled && enabled && configured && config_valid
+}
+
+fn is_relay_model_fallback_cutover_ready(ready: bool, staging_verified: bool) -> bool {
+    ready && staging_verified
+}
+
 #[allow(clippy::too_many_arguments)]
 fn is_wfp_tenant_smoke_ready(
     dispatcher_bound: bool,
@@ -2059,6 +2126,40 @@ mod tests {
         assert!(!is_relay_ai_gateway_router_ready(true, false, true, true));
         assert!(!is_relay_ai_gateway_router_ready(true, true, false, true));
         assert!(!is_relay_ai_gateway_router_ready(true, true, true, false));
+    }
+
+    #[test]
+    fn relay_model_fallback_readiness_requires_every_runtime_and_replay_gate() {
+        assert!(relay_model_fallback_contract_compiled());
+        assert!(is_relay_model_fallback_ready(true, true, true, true, true));
+        for false_gate in 0..5 {
+            let mut flags = [true; 5];
+            flags[false_gate] = false;
+            assert!(
+                !is_relay_model_fallback_ready(flags[0], flags[1], flags[2], flags[3], flags[4]),
+                "expected model fallback readiness to wait on gate index {false_gate}"
+            );
+        }
+        assert!(!is_relay_model_fallback_cutover_ready(true, false));
+        assert!(is_relay_model_fallback_cutover_ready(true, true));
+        for guard in [
+            "router_ready",
+            "fallback_gate",
+            "validated_mapping",
+            "token_model_limit_recheck",
+            "fallback_channel_reselection",
+            "fallback_billing_rereservation",
+            "single_group_billing_scope",
+            "server_failure_only",
+            "provider_native_direct_body",
+            "model_route_audit",
+            "staging_replay",
+        ] {
+            assert!(
+                RELAY_MODEL_FALLBACK_CUTOVER_GUARDS.contains(&guard),
+                "missing model fallback guard {guard}"
+            );
+        }
     }
 
     #[test]

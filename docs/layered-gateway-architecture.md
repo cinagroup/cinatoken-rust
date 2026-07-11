@@ -41,11 +41,14 @@ changes materially:
    only concurrency control today is optimistic guarded `UPDATE`s plus manual
    half-batch compensation. The DO migration must be shadow-first and
    tiered-traffic-scoped.
-4. **Same-model channel retry exists; true model fallback does not.** The
-   N-attempt `plan_relay_attempts` loop changes channels/groups for one requested
-   logical model. AI Gateway failure can fall back to the same selected channel's
-   direct provider path, but there is no cinaVibeSDK-style `fallbackModel` attempt,
-   fallback-model token-policy check, billing handoff, or durable fallback audit.
+4. **Cross-model fallback exists as default-off substrate, not production
+   policy.** The N-attempt `plan_relay_attempts` loop still changes
+   channels/groups for one requested logical model. A separate Rust outer loop
+   can now attempt one explicitly mapped AI Gateway model for supported
+   chat/responses failures, with fallback token/channel checks, billing handoff,
+   and requested-versus-served model audit metadata. Deployed replay,
+   all-fetch-failed durable attempt audit, and `auto` actual-serving-group billing
+   remain required before production cutover.
 5. **The strongest task-system win is a bug-fix, not a DO.** A missing timeout
    sweep (Go's `sweepTimedOutTasks` was never ported for video/suno) plus a dead
    Midjourney timeout guard (seconds-vs-milliseconds units bug) create a real
@@ -90,12 +93,14 @@ maturity levels are used:
 
 **2026-07-11 audit correction (supersedes optimistic wording in the ledger):**
 
-- M7's existing fallback is only AI Gateway -> direct provider on the same
-  selected channel, followed by optional same-logical-model channel retries.
-  True cross-model/provider fallback remains P0 work. The current direct fallback
-  also needs separate provider-native model restoration, a dedicated failure
-  policy that does not bypass Gateway `401`/`403`/`429`, and persisted fallback
-  audit metadata before production canary.
+- M7 retains AI Gateway -> direct provider fallback on the same selected
+  channel, followed by optional same-logical-model channel retries. The
+  2026-07-11 increment also adds a default-off Rust outer model-attempt layer for
+  OpenAI-compatible chat/responses. It restores provider-native direct model
+  names, fails closed on Gateway `401`/`403`/`429`, revalidates token/channel/
+  billing policy for fallback, and persists requested-versus-served model
+  metadata. Staging replay, all-fetch-failed attempt audit, and auto-group billing
+  remain P0 before production cutover.
 - M8's five tenant AI routes are transport substrate, not a paid relay entry.
   They bypass central relay-token policy, D1 channel selection, quota
   reserve/settlement, and relay audit when invoked through the admin dispatch

@@ -523,6 +523,17 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   rows in staging D1, prove the Worker cron fails them through CAS, applies the
   CAS-winner refund batch once, skips legacy imported-row refunds, and
   continues polling newer tasks after the stale window is cleared.
+- Continue AI Gateway cross-model fallback from the new default-off Rust outer
+  model-attempt foundation. It now supports single-group OpenAI-compatible
+  chat/responses, re-checks token limits, re-selects opted-in fallback channels,
+  replaces the request model before channel mapping, rebuilds billing input,
+  swaps tiered reservations, and records requested-versus-served model data.
+  Keep `RELAY_MODEL_FALLBACK_ENABLED=false` and
+  `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until isolated staging proves
+  all status/fetch/refund/settlement/audit/stream/rollback cases. Before auto
+  tokens are admitted, fix the existing first-planned-group versus
+  actual-serving-group billing snapshot. Add a durable attempt ledger for the
+  all-fetch-failed path before production cutover.
 - Continue TaskRunner M5b only after M5a staging evidence: the `TASK_RUNNER`
   Durable Object and video/remix/Suno submit-path arming remain default-off.
   Its typed poll result now distinguishes terminal settlement from non-terminal

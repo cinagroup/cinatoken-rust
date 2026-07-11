@@ -2739,6 +2739,34 @@ bun run check
   self-test/dry-run passed locally. Live alarm/cron race and no-double-settlement
   evidence are still required before the gate can be enabled.
 
+### AI Gateway cross-model fallback foundation (2026-07-11)
+
+- `RELAY_MODEL_FALLBACK_ENABLED=false` gates an exact bounded JSON map from a
+  requested primary model to one AI-Gateway-prefixed fallback. Malformed, empty,
+  self-referential, oversized, or provider-unprefixed fallback configuration
+  fails validation.
+- The Rust outer model-attempt path supports OpenAI-compatible chat/responses
+  only, re-checks token model limits, filters fallback channels to explicit AI
+  Gateway opt-in, replaces the logical model before channel mapping, rebuilds
+  billing request input, refunds primary tiered reserve, and reserves the
+  fallback snapshot before egress.
+- Direct transport fallback now strips the Gateway prefix and is limited to
+  fetch/server failures. `401`, `403`, and `429` remain Gateway responses and do
+  not bypass policy. Internal transport evidence is carried through a fresh
+  mutable response and removed before the client response.
+- Capabilities and frontend readiness separate compiled, enabled, configured,
+  valid, runtime-ready, staging-verified, and cutover-ready states. The smoke
+  self-test validates canonical capability routes and rejects optimistic
+  cutover.
+- Focused Worker model-fallback/direct-fallback tests and frontend readiness
+  tests pass locally. `cargo test -p cinatoken-worker --lib` passed all 520
+  tests, `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
+  passed, and the complete `bun run check` workspace/frontend/smoke/wasm gate
+  passed at the end of the increment.
+- Still pending: deployed replay, all-fetch-failed terminal attempt audit,
+  fault-injected D1 reservation proof, and actual-serving-group billing for
+  `auto` tokens. The gate and staging verification marker remain false.
+
 ## Still Pending
 
 - The frontend artifact and public HTTP contract still need deployed

@@ -410,6 +410,15 @@ export type PlatformCapabilities = {
   relay_ai_gateway_channel_opt_in_supported: boolean
   relay_ai_gateway_rest_forwarder_compiled: boolean
   relay_ai_gateway_same_channel_fallback_compiled: boolean
+  relay_ai_gateway_cross_model_fallback_compiled: boolean
+  relay_ai_gateway_cross_model_fallback_enabled: boolean
+  relay_ai_gateway_cross_model_fallback_configured: boolean
+  relay_ai_gateway_cross_model_fallback_config_valid: boolean
+  relay_ai_gateway_cross_model_fallback_mapping_count: number
+  relay_ai_gateway_cross_model_fallback_ready: boolean
+  relay_ai_gateway_cross_model_fallback_staging_verified: boolean
+  relay_ai_gateway_cross_model_fallback_cutover_ready: boolean
+  relay_ai_gateway_cross_model_fallback_cutover_guards: string[]
   channel_affinity_do_available: boolean
   realtime_sessions_do_available: boolean
   wfp_dispatch_binding_available: boolean

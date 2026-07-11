@@ -103,9 +103,12 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Billing shadow comparison and exact tokenizer/media parity.
 - Relay weighted channel-selection staging evidence for distribution, retry,
   auto-group, affinity, and provider-family filter behavior.
-- True AI Gateway model/provider fallback. Current fallback is only same-channel
-  Gateway-to-direct plus same-logical-model channel retry and is not yet safely
-  auditable or protected from direct bypass on Gateway auth/rate-limit failures.
+- AI Gateway cross-model fallback production proof. A default-off Rust outer
+  fallback is now implemented for mapped OpenAI-compatible chat/responses
+  requests, with served-model billing handoff, token/channel revalidation,
+  provider-native direct bodies, and fail-closed auth/rate-limit handling. It
+  still needs deployed replay, durable all-fetch-failed attempt audit, and
+  actual-serving-group billing for `auto` before production use.
 - Authority-first WFP relay transport. Tenant paid AI routes must remain off
   until token policy, channel selection, quota settlement, and audit all remain
   owned by the central relay.
@@ -161,8 +164,9 @@ A full diff of every Go-registered route against the Rust worker closed these
    admin-disable/delete replay rejection. OAuth production approval still
    needs deployed replay smoke, custom-provider access-policy evidence, and
    separated frontend/API redirect-origin proof where applicable.
-8. AI Gateway true fallback and WFP paid traffic are not production-ready. Keep
-   `RELAY_AI_GATEWAY_ROUTER_ENABLED`, `WFP_DISPATCH_ENABLED`, and
+8. AI Gateway cross-model fallback and WFP paid traffic are not
+   production-ready. Keep `RELAY_AI_GATEWAY_ROUTER_ENABLED`,
+   `RELAY_MODEL_FALLBACK_ENABLED`, `WFP_DISPATCH_ENABLED`, and
    `WFP_INTERNAL_DISPATCH_ENABLED` constrained to explicit staging canaries until
    their billing, authority, fallback-policy, and durable audit gates close.
 

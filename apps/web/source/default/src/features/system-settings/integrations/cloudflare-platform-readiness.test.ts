@@ -32,6 +32,10 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_ai_gateway_channel_opt_in_supported: false,
   relay_ai_gateway_rest_forwarder_compiled: false,
   relay_ai_gateway_same_channel_fallback_compiled: false,
+  relay_ai_gateway_cross_model_fallback_compiled: false,
+  relay_ai_gateway_cross_model_fallback_ready: false,
+  relay_ai_gateway_cross_model_fallback_staging_verified: false,
+  relay_ai_gateway_cross_model_fallback_cutover_ready: false,
   wfp_dispatch_binding_available: false,
   wfp_dispatch_enabled: false,
   wfp_internal_dispatch_enabled: false,
@@ -81,6 +85,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_ai_gateway_channel_opt_in_supported: true,
         relay_ai_gateway_rest_forwarder_compiled: true,
         relay_ai_gateway_same_channel_fallback_compiled: true,
+        relay_ai_gateway_cross_model_fallback_compiled: true,
         wfp_dispatch_binding_available: true,
         wfp_tenant_supported_routes: ['/v1/responses'],
         wfp_tenant_cutover_guards: ['internal-dispatch'],
@@ -139,7 +144,13 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(smoke.verifiedCount, 1)
     assert.deepEqual(
       smoke.signals.map((signal) => signal.status),
-      ['ready-to-verify', 'ready-to-verify', 'ready-to-verify', 'verified']
+      [
+        'ready-to-verify',
+        'blocked',
+        'ready-to-verify',
+        'ready-to-verify',
+        'verified',
+      ]
     )
   })
 
@@ -147,6 +158,7 @@ describe('Cloudflare platform readiness headline', () => {
     const blocked = buildPlatformReadinessSummary(makeCapabilities())
     const ready = buildPlatformReadinessSummary(
       makeCapabilities({
+        relay_ai_gateway_cross_model_fallback_cutover_ready: true,
         task_runner_cutover_ready: true,
         realtime_session_v1_cutover_ready: true,
       })
@@ -154,7 +166,7 @@ describe('Cloudflare platform readiness headline', () => {
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 2)
+    assert.equal(getStage(ready, 'cutover').readyCount, 3)
   })
 })
 

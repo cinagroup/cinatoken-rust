@@ -123,6 +123,9 @@ Current `wrangler.toml` is development-shaped:
 - `FRONTEND_BASE_URL = "http://localhost:3000"`
 - `AI_GATEWAY_ID = ""`
 - `RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"`
+- `RELAY_MODEL_FALLBACK_ENABLED = "false"`
+- `RELAY_MODEL_FALLBACKS_JSON = "{}"`
+- `RELAY_MODEL_FALLBACK_STAGING_VERIFIED = "false"`
 - Route-specific WFP tenant AI Gateway IDs default empty:
   `AI_GATEWAY_ID_OPENAI_CHAT`, `AI_GATEWAY_ID_OPENAI_RESPONSES`,
   `AI_GATEWAY_ID_ANTHROPIC_MESSAGES`, `AI_GATEWAY_ID_OPENAI_EMBEDDINGS`,
@@ -388,6 +391,9 @@ build with `bun run build:wfp-tenant`, then upload the generated
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
 | `RELAY_AI_GATEWAY_ROUTER_ENABLED` | var | Main relay AI Gateway REST router gate | Must stay `false` until channel-editor-created `channels.other_info.ai_gateway.enabled` canary metadata, provider-prefix policy, key/base-url coupling, same-channel direct fallback smoke, billing settlement, forwarder smoke, and staging panel evidence are approved |
+| `RELAY_MODEL_FALLBACK_ENABLED` | var | Independent Rust primary-to-fallback model gate | Default `false`; requires the AI Gateway router, opted-in primary/fallback channels, supported chat/responses route, and a validated mapping |
+| `RELAY_MODEL_FALLBACKS_JSON` | var | Exact JSON object from requested primary model to one AI-Gateway-prefixed fallback model | Default `{}`; maximum 128 mappings and 200 characters per model name; never use a silent wildcard or secret value |
+| `RELAY_MODEL_FALLBACK_STAGING_VERIFIED` | var | Production cutover evidence marker | Keep `false` until archived staging proves primary server failure, served fallback identity, token denial, channel reselection, exactly-one reserve/refund/settlement, audit metadata, streaming boundary, and rollback |
 | `AI_GATEWAY_ID_OPENAI_CHAT` | var | Optional WFP tenant gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_OPENAI_RESPONSES` | var | Optional WFP tenant gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | var | Optional WFP tenant gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only |

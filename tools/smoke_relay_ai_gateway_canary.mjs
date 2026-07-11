@@ -13,6 +13,11 @@ const endpointPaths = new Map([
 
 try {
   const args = parseArgs(process.argv.slice(2));
+  if (args.flags.has("self-test")) {
+    const result = runSelfTest();
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(result.ok ? 0 : 1);
+  }
   const options = await normalizeOptions(args);
   const result = options.dryRun ? buildPlan(options) : await smoke(options);
   printResult(result, options);
@@ -70,6 +75,15 @@ async function smoke(options) {
       requestIds: requestIds(response.headers),
       responsePreview: preview,
     };
+    if (options.expectServedModel) {
+      const servedModel = responseModel(preview);
+      if (servedModel !== options.expectServedModel) {
+        throw new Error(
+          `relay served model ${servedModel || "<missing>"} did not match expected ${options.expectServedModel}`,
+        );
+      }
+      relay.servedModel = servedModel;
+    }
   }
 
   return {
@@ -109,6 +123,12 @@ function buildPlan(options) {
     expectRouterEnabled: options.expectRouterEnabled,
     expectRouterReady: options.expectRouterReady,
     expectRouterDisabled: options.expectRouterDisabled,
+    expectFallbackEnabled: options.expectFallbackEnabled,
+    expectFallbackDisabled: options.expectFallbackDisabled,
+    expectFallbackReady: options.expectFallbackReady,
+    expectFallbackStagingVerified: options.expectFallbackStagingVerified,
+    expectFallbackCutoverReady: options.expectFallbackCutoverReady,
+    expectServedModel: options.expectServedModel || null,
     allowNon2xx: options.allowNon2xx,
     timeoutMs: options.timeoutMs,
     notes: [
@@ -134,6 +154,12 @@ function parseArgs(argv) {
     "expect-router-enabled",
     "expect-router-ready",
     "expect-router-disabled",
+    "expect-fallback-enabled",
+    "expect-fallback-disabled",
+    "expect-fallback-ready",
+    "expect-fallback-staging-verified",
+    "expect-fallback-cutover-ready",
+    "self-test",
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -194,6 +220,9 @@ async function normalizeOptions(args) {
   if (args.flags.has("expect-router-enabled") && args.flags.has("expect-router-disabled")) {
     throw new Error("use only one of --expect-router-enabled or --expect-router-disabled");
   }
+  if (args.flags.has("expect-fallback-enabled") && args.flags.has("expect-fallback-disabled")) {
+    throw new Error("use only one of --expect-fallback-enabled or --expect-fallback-disabled");
+  }
 
   return {
     url: value("url", "RELAY_AI_GATEWAY_SMOKE_URL") || process.env.STAGING_BASE_URL,
@@ -210,6 +239,15 @@ async function normalizeOptions(args) {
     expectRouterEnabled: args.flags.has("expect-router-enabled"),
     expectRouterReady: args.flags.has("expect-router-ready"),
     expectRouterDisabled: args.flags.has("expect-router-disabled"),
+    expectFallbackEnabled: args.flags.has("expect-fallback-enabled"),
+    expectFallbackDisabled: args.flags.has("expect-fallback-disabled"),
+    expectFallbackReady: args.flags.has("expect-fallback-ready"),
+    expectFallbackStagingVerified: args.flags.has("expect-fallback-staging-verified"),
+    expectFallbackCutoverReady: args.flags.has("expect-fallback-cutover-ready"),
+    expectServedModel: value(
+      "expect-served-model",
+      "RELAY_AI_GATEWAY_SMOKE_EXPECT_SERVED_MODEL",
+    ),
     dryRun,
     json: args.flags.has("json"),
   };
@@ -277,9 +315,16 @@ function usage(exitCode, error) {
       "  --expect-router-enabled Require capabilities relay_ai_gateway_router_enabled=true",
       "  --expect-router-disabled Require capabilities relay_ai_gateway_router_enabled=false",
       "  --expect-router-ready   Require capabilities relay_ai_gateway_router_ready=true",
+      "  --expect-fallback-enabled Require cross-model fallback gate enabled",
+      "  --expect-fallback-disabled Require cross-model fallback gate disabled",
+      "  --expect-fallback-ready Require configured runtime fallback readiness",
+      "  --expect-fallback-staging-verified Require archived staging replay flag",
+      "  --expect-fallback-cutover-ready Require all fallback production gates",
+      "  --expect-served-model <model> Require non-stream response.model to match",
       "  --allow-non-2xx         Record relay responses even when they are not 2xx",
       "  --confirm-live          Required for non-dry-run mode",
       "  --dry-run               Resolve URLs and payload size without network",
+      "  --self-test             Validate capability and route contracts locally",
       "  --json",
       "",
       "Examples:",
@@ -339,6 +384,28 @@ function summarizeCapabilities(data) {
       data.relay_ai_gateway_rest_forwarder_compiled === true,
     relay_ai_gateway_same_channel_fallback_compiled:
       data.relay_ai_gateway_same_channel_fallback_compiled === true,
+    relay_ai_gateway_cross_model_fallback_compiled:
+      data.relay_ai_gateway_cross_model_fallback_compiled === true,
+    relay_ai_gateway_cross_model_fallback_enabled:
+      data.relay_ai_gateway_cross_model_fallback_enabled === true,
+    relay_ai_gateway_cross_model_fallback_configured:
+      data.relay_ai_gateway_cross_model_fallback_configured === true,
+    relay_ai_gateway_cross_model_fallback_config_valid:
+      data.relay_ai_gateway_cross_model_fallback_config_valid === true,
+    relay_ai_gateway_cross_model_fallback_mapping_count: Number.isFinite(
+      data.relay_ai_gateway_cross_model_fallback_mapping_count,
+    )
+      ? data.relay_ai_gateway_cross_model_fallback_mapping_count
+      : 0,
+    relay_ai_gateway_cross_model_fallback_ready:
+      data.relay_ai_gateway_cross_model_fallback_ready === true,
+    relay_ai_gateway_cross_model_fallback_staging_verified:
+      data.relay_ai_gateway_cross_model_fallback_staging_verified === true,
+    relay_ai_gateway_cross_model_fallback_cutover_ready:
+      data.relay_ai_gateway_cross_model_fallback_cutover_ready === true,
+    relay_ai_gateway_cross_model_fallback_cutover_guards: arrayOfStrings(
+      data.relay_ai_gateway_cross_model_fallback_cutover_guards,
+    ),
   };
 }
 
@@ -347,14 +414,32 @@ function validateCapabilities(capabilities, options) {
     ["relay_ai_gateway_channel_opt_in_supported", true],
     ["relay_ai_gateway_rest_forwarder_compiled", true],
     ["relay_ai_gateway_same_channel_fallback_compiled", true],
+    ["relay_ai_gateway_cross_model_fallback_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
       throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);
     }
   }
-  for (const route of ["/ai/v1/chat/completions", "/ai/v1/responses", "/ai/v1/messages"]) {
+  for (const route of ["chat/completions", "responses", "messages"]) {
     if (!capabilities.relay_ai_gateway_rest_routes.includes(route)) {
       throw new Error(`platform capabilities missing AI Gateway REST route ${route}`);
+    }
+  }
+  for (const guard of [
+    "router_ready",
+    "fallback_gate",
+    "validated_mapping",
+    "token_model_limit_recheck",
+    "fallback_channel_reselection",
+    "fallback_billing_rereservation",
+    "single_group_billing_scope",
+    "server_failure_only",
+    "provider_native_direct_body",
+    "model_route_audit",
+    "staging_replay",
+  ]) {
+    if (!capabilities.relay_ai_gateway_cross_model_fallback_cutover_guards.includes(guard)) {
+      throw new Error(`platform capabilities missing model fallback guard ${guard}`);
     }
   }
   for (const guard of [
@@ -375,6 +460,27 @@ function validateCapabilities(capabilities, options) {
   }
   if (options.expectRouterReady && !capabilities.relay_ai_gateway_router_ready) {
     throw new Error("expected relay_ai_gateway_router_ready=true");
+  }
+  if (options.expectFallbackEnabled && !capabilities.relay_ai_gateway_cross_model_fallback_enabled) {
+    throw new Error("expected relay_ai_gateway_cross_model_fallback_enabled=true");
+  }
+  if (options.expectFallbackDisabled && capabilities.relay_ai_gateway_cross_model_fallback_enabled) {
+    throw new Error("expected relay_ai_gateway_cross_model_fallback_enabled=false");
+  }
+  if (options.expectFallbackReady && !capabilities.relay_ai_gateway_cross_model_fallback_ready) {
+    throw new Error("expected relay_ai_gateway_cross_model_fallback_ready=true");
+  }
+  if (
+    options.expectFallbackStagingVerified &&
+    !capabilities.relay_ai_gateway_cross_model_fallback_staging_verified
+  ) {
+    throw new Error("expected relay_ai_gateway_cross_model_fallback_staging_verified=true");
+  }
+  if (
+    options.expectFallbackCutoverReady &&
+    !capabilities.relay_ai_gateway_cross_model_fallback_cutover_ready
+  ) {
+    throw new Error("expected relay_ai_gateway_cross_model_fallback_cutover_ready=true");
   }
 }
 
@@ -478,6 +584,115 @@ function evidenceReminder() {
     "Capture relay audit and billing rows proving usage parsing and settlement.",
     "If a retryable Gateway failure was induced, capture the direct-provider fallback audit branch.",
   ];
+}
+
+function responseModel(preview) {
+  try {
+    const value = JSON.parse(preview);
+    return typeof value?.model === "string" ? value.model : null;
+  } catch {
+    return null;
+  }
+}
+
+function runSelfTest() {
+  const raw = {
+    cloudflare_account_id_configured: true,
+    ai_gateway_id_configured: true,
+    cloudflare_ai_gateway_token_configured: true,
+    relay_ai_gateway_router_enabled: false,
+    relay_ai_gateway_router_ready: false,
+    relay_ai_gateway_rest_routes: ["chat/completions", "responses", "messages"],
+    relay_ai_gateway_cutover_guards: [
+      "router_ready",
+      "channel_opted_in",
+      "direct_provider_fallback",
+      "billing_settlement_invariant",
+    ],
+    relay_ai_gateway_channel_opt_in_supported: true,
+    relay_ai_gateway_rest_forwarder_compiled: true,
+    relay_ai_gateway_same_channel_fallback_compiled: true,
+    relay_ai_gateway_cross_model_fallback_compiled: true,
+    relay_ai_gateway_cross_model_fallback_enabled: false,
+    relay_ai_gateway_cross_model_fallback_configured: false,
+    relay_ai_gateway_cross_model_fallback_config_valid: true,
+    relay_ai_gateway_cross_model_fallback_mapping_count: 0,
+    relay_ai_gateway_cross_model_fallback_ready: false,
+    relay_ai_gateway_cross_model_fallback_staging_verified: false,
+    relay_ai_gateway_cross_model_fallback_cutover_ready: false,
+    relay_ai_gateway_cross_model_fallback_cutover_guards: [
+      "router_ready",
+      "fallback_gate",
+      "validated_mapping",
+      "token_model_limit_recheck",
+      "fallback_channel_reselection",
+      "fallback_billing_rereservation",
+      "single_group_billing_scope",
+      "server_failure_only",
+      "provider_native_direct_body",
+      "model_route_audit",
+      "staging_replay",
+    ],
+  };
+  const options = {
+    expectRouterEnabled: false,
+    expectRouterDisabled: true,
+    expectRouterReady: false,
+    expectFallbackEnabled: false,
+    expectFallbackDisabled: true,
+    expectFallbackReady: false,
+    expectFallbackStagingVerified: false,
+    expectFallbackCutoverReady: false,
+  };
+  const capabilities = summarizeCapabilities(raw);
+  validateCapabilities(capabilities, options);
+  const routeDriftRejected = expectFailure(() =>
+    validateCapabilities(
+      summarizeCapabilities({
+        ...raw,
+        relay_ai_gateway_rest_routes: [
+          "/ai/v1/chat/completions",
+          "/ai/v1/responses",
+          "/ai/v1/messages",
+        ],
+      }),
+      options,
+    ),
+  );
+  const unsafeCutoverRejected = expectFailure(() =>
+    validateCapabilities(
+      summarizeCapabilities({
+        ...raw,
+        relay_ai_gateway_cross_model_fallback_enabled: true,
+        relay_ai_gateway_cross_model_fallback_ready: false,
+      }),
+      { ...options, expectFallbackDisabled: false, expectFallbackReady: true },
+    ),
+  );
+  const servedModelParserOk =
+    responseModel('{"model":"fallback/model"}') === "fallback/model";
+  return {
+    ok: routeDriftRejected && unsafeCutoverRejected && servedModelParserOk,
+    selfTest: true,
+    cases: [
+      { name: "canonical-capability-contract", ok: true },
+      { name: "route-drift-rejected", ok: routeDriftRejected },
+      { name: "unsafe-cutover-rejected", ok: unsafeCutoverRejected },
+      {
+        name: "served-model-parser",
+        ok: servedModelParserOk,
+      },
+    ],
+  };
+}
+
+function expectFailure(fn) {
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function optionalHeaderValue(value, name) {

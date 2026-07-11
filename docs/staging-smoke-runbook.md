@@ -431,8 +431,9 @@ Record:
 - Cloudflare AI Gateway log entry for the same timestamp/model/gateway.
 - Relay audit and billing rows proving usage parsing, settlement, and quota
   delta.
-- If a retryable Gateway failure is induced, evidence that the same selected
-  channel fell back to the direct provider path without double settlement.
+- If a Gateway fetch/server failure is induced, evidence that the same selected
+  channel used the provider-native direct model without double settlement.
+- Prove Gateway `401`, `403`, and `429` do not enter the direct-provider branch.
 
 Pass criteria:
 
@@ -444,6 +445,52 @@ Pass criteria:
   traffic for Gateway success and, when tested, fallback.
 - The global router gate is turned back off or left scoped to the approved
   staging canary window after evidence capture.
+
+## Phase 3c: Cross-Model Fallback Replay
+
+This is a separate canary from same-channel transport fallback. Use a non-auto
+staging token/group and two low-cost AI-Gateway-opted-in channels. Do not enable
+a Cloudflare Dynamic Route for the same request.
+
+Configure staging only:
+
+```powershell
+# Example deployment vars; do not put provider or Cloudflare secrets in JSON.
+RELAY_MODEL_FALLBACK_ENABLED = "true"
+RELAY_MODEL_FALLBACKS_JSON = '{"openai/gpt-4.1":"anthropic/claude-sonnet-4"}'
+RELAY_MODEL_FALLBACK_STAGING_VERIFIED = "false"
+```
+
+Run the local contract first, then a live non-stream request whose primary
+channel is isolated to return a controlled `5xx`:
+
+```powershell
+bun run check:relay-ai-gateway:fallback-contract
+bun run smoke:relay-ai-gateway -- --url $env:STAGING_BASE_URL --cookie $env:RELAY_AI_GATEWAY_SMOKE_COOKIE --api-key $env:RELAY_AI_GATEWAY_SMOKE_API_KEY --model openai/gpt-4.1 --expect-router-ready --expect-fallback-enabled --expect-fallback-ready --expect-served-model anthropic/claude-sonnet-4 --confirm-live --json
+```
+
+Archive these independent cases:
+
+1. Primary `5xx` -> fallback success. Response, Gateway log, and relay audit all
+   identify the fallback model; the final log has one settlement.
+2. Fallback denied by token model limits. No fallback D1 selection/fetch occurs,
+   and the primary failure remains authoritative.
+3. Missing/disabled fallback channel. Primary reserve is refunded and no
+   fallback egress occurs.
+4. Fallback fetch exhaustion and fallback preflight/forwarder failure. Exactly
+   one active reserve is refunded before the error is returned.
+5. Primary `401`, `403`, `429`, `400`, `408`, `504`, and `524`. No cross-model
+   fallback occurs.
+6. Streaming request. Fallback may occur before a successful response starts;
+   it never starts after a `2xx` stream is exposed.
+7. Rollback. Set `RELAY_MODEL_FALLBACK_ENABLED=false`, redeploy, and prove the
+   existing same-model relay behavior is restored.
+
+Keep `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until all cases, quota row
+deltas, final audit `model_route`, and rollback timestamps are archived. Auto
+group remains unsupported for this feature until actual-serving-group billing
+is fixed. All-fetch-failed terminal attempt-ledger coverage is also still a
+production blocker even though the final-response audit path is compiled.
 
 ## Phase 4: SSE Relay Smoke
 

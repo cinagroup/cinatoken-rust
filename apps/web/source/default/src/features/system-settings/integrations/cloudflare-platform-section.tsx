@@ -344,6 +344,10 @@ function buildCapabilityGroups(
     capabilities.relay_ai_gateway_rest_routes.join(', ') || t('No routes')
   const relayAiGatewayGuards =
     capabilities.relay_ai_gateway_cutover_guards.join(', ') || t('No guards')
+  const relayModelFallbackGuards =
+    capabilities.relay_ai_gateway_cross_model_fallback_cutover_guards.join(
+      ', '
+    ) || t('No guards')
   const realtimeSessionGuards =
     capabilities.realtime_session_cutover_guards.join(', ') || t('No guards')
   const wfpTenantRoutes =
@@ -481,11 +485,94 @@ function buildCapabilityGroups(
         {
           label: t('Same-channel direct fallback'),
           description: t(
-            'Retries through the original provider channel when AI Gateway returns a retryable status or fetch error.'
+            'Retries through the original provider channel with a provider-native model only for Gateway server failures or fetch errors; auth and rate-limit responses fail closed.'
           ),
           ready: capabilities.relay_ai_gateway_same_channel_fallback_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
+        },
+        {
+          label: t('Cross-model fallback contract'),
+          description: t(
+            'Revalidates token model limits, reselects D1 channels, re-runs billing reservation, and records requested-versus-served model evidence.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_cross_model_fallback_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Cross-model fallback gate'),
+          description: t('Runtime flag RELAY_MODEL_FALLBACK_ENABLED.'),
+          ready: capabilities.relay_ai_gateway_cross_model_fallback_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Off'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Fallback model mappings'),
+          description: capabilities.relay_ai_gateway_cross_model_fallback_config_valid
+            ? t('{{count}} validated primary-to-fallback mappings.', {
+                count:
+                  capabilities.relay_ai_gateway_cross_model_fallback_mapping_count,
+              })
+            : t('RELAY_MODEL_FALLBACKS_JSON is invalid.'),
+          ready:
+            capabilities.relay_ai_gateway_cross_model_fallback_configured &&
+            capabilities.relay_ai_gateway_cross_model_fallback_config_valid,
+          readyLabel: t('{{count}} mappings', {
+            count:
+              capabilities.relay_ai_gateway_cross_model_fallback_mapping_count,
+          }),
+          missingLabel: capabilities.relay_ai_gateway_cross_model_fallback_config_valid
+            ? t('Not configured')
+            : t('Invalid'),
+        },
+        {
+          label: t('Cross-model runtime readiness'),
+          description: t(
+            'Requires the AI Gateway router, explicit fallback gate, and a validated mapping set.'
+          ),
+          ready: capabilities.relay_ai_gateway_cross_model_fallback_ready,
+          readyLabel: t('Ready to verify'),
+          missingLabel: t('Blocked'),
+        },
+        {
+          label: t('Cross-model staging replay'),
+          description: t(
+            'Requires archived primary failure, fallback identity, single settlement, audit, and rollback evidence.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_cross_model_fallback_staging_verified,
+          readyLabel: t('Verified'),
+          missingLabel: t('Required'),
+          missingVariant: 'warning',
+        },
+        {
+          label: t('Cross-model cutover guards'),
+          description: t('Compiled guards: {{guards}}', {
+            guards: relayModelFallbackGuards,
+          }),
+          ready:
+            capabilities.relay_ai_gateway_cross_model_fallback_cutover_guards
+              .length > 0,
+          readyLabel: t('{{count}} guards', {
+            count:
+              capabilities.relay_ai_gateway_cross_model_fallback_cutover_guards
+                .length,
+          }),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Cross-model production cutover'),
+          description: t(
+            'Remains blocked until runtime readiness and staging replay are both true.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_cross_model_fallback_cutover_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant: 'warning',
         },
         {
           label: t('Router canary readiness'),

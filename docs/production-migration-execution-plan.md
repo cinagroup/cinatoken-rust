@@ -162,11 +162,13 @@ Production decisions from the refreshed cinaVibeSDK and Cloudflare audit:
   lost CAS outcomes re-read D1, and the fast path explicitly falls back to cron
   after its configured horizon. The runtime gate remains false pending staging
   alarm/cron race and no-double-settlement evidence.
-- AI Gateway has no true cross-model fallback yet. Treat the existing
-  same-channel direct path as transport failover only. Do not approve production
-  until Gateway-only model names are separated from direct-provider names,
-  auth/rate-limit responses cannot be bypassed, billing follows the served model,
-  and durable fallback audit metadata exists.
+- AI Gateway now has a default-off Rust cross-model fallback foundation for
+  explicitly mapped OpenAI-compatible chat/responses requests. It separates
+  provider-native direct model names, fails closed on auth/rate-limit responses,
+  re-runs token/channel policy, and hands settlement to the served model. Treat
+  it as non-production until deployed replay is archived, all-fetch-failed
+  attempts are durably audited, and `auto` billing follows the actual serving
+  group; keep Cloudflare Dynamic Routing as a separately canaried option.
 - WFP tenant AI routes are not an alternate paid entry point. They currently lack
   the central relay's token policy, channel selection, quota settlement, and
   audit ownership. Keep WFP paid dispatch disabled until it is a post-admission

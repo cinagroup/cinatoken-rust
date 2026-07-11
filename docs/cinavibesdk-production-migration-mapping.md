@@ -309,12 +309,16 @@ cinaVibeSDK pattern:
 - Billing and usage parsing remain the main relay's responsibility. AI Gateway
   is transport and observability, not a billing replacement.
 - The current same-channel direct path is transport failover only; it does not
-  implement cinaVibeSDK's primary/fallback model switch. A later default-off
-  model-attempt layer must revalidate token model limits, channel availability,
-  pricing/reservation, and audit identity for the fallback model.
+  implement cinaVibeSDK's primary/fallback model switch. The default-off Rust
+  outer model-attempt layer now implements that switch for OpenAI-compatible
+  chat/responses: it revalidates token model limits, channel availability,
+  pricing/reservation, and audit identity for the fallback model. Production
+  replay and terminal attempt-ledger coverage remain open.
 - Do not reuse the Gateway-prefixed body for direct egress, and do not treat
   Gateway `401`, `403`, or `429` as permission to bypass Gateway policy by going
-  direct. Those failures require a dedicated fail-closed classification.
+  direct. The Rust direct-fallback classifier and provider-native body rewrite
+  now enforce this; staging still has to prove the behavior against a deployed
+  Gateway.
 
 Production rule:
 
@@ -514,6 +518,11 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   terminal, retry, and cron-fallback metadata. Live alarm/cron race and
   no-double-poll CAS proof remain required before the fast path can influence
   settlement latency.
+- The Rust cross-model fallback is a separate default-off policy layer around
+  the existing channel loop. It must not be stacked with Cloudflare Dynamic
+  Routes until the actual Gateway-selected provider/model can be reconciled
+  with central billing and exactly-one settlement. `auto` group is also blocked
+  until billing freezes the actual serving group rather than the first plan.
 - WFP tenant AI routes are currently a transport-only NO-GO for paid traffic:
   the admin dispatch entry bypasses central relay-token policy, channel
   selection, quota reserve/settlement, and relay audit. WFP must run only after

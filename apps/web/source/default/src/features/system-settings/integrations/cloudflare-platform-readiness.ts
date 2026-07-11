@@ -30,14 +30,17 @@ export type PlatformReadinessSignalId =
   | 'realtime-implementation'
   | 'task-runner-implementation'
   | 'ai-gateway-runtime'
+  | 'ai-gateway-fallback-runtime'
   | 'wfp-tenant-runtime'
   | 'realtime-runtime'
   | 'task-runner-runtime'
   | 'ai-gateway-canary'
+  | 'ai-gateway-fallback-replay'
   | 'wfp-tenant-smoke'
   | 'realtime-smoke'
   | 'task-runner-replay'
   | 'task-runner-cutover'
+  | 'ai-gateway-fallback-cutover'
   | 'realtime-v1-cutover'
 
 export type PlatformReadinessSignalStatus =
@@ -55,6 +58,10 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_ai_gateway_channel_opt_in_supported'
   | 'relay_ai_gateway_rest_forwarder_compiled'
   | 'relay_ai_gateway_same_channel_fallback_compiled'
+  | 'relay_ai_gateway_cross_model_fallback_compiled'
+  | 'relay_ai_gateway_cross_model_fallback_ready'
+  | 'relay_ai_gateway_cross_model_fallback_staging_verified'
+  | 'relay_ai_gateway_cross_model_fallback_cutover_ready'
   | 'wfp_dispatch_binding_available'
   | 'wfp_dispatch_enabled'
   | 'wfp_internal_dispatch_enabled'
@@ -115,7 +122,8 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_ai_gateway_cutover_guards.length > 0,
     capabilities.relay_ai_gateway_channel_opt_in_supported,
     capabilities.relay_ai_gateway_rest_forwarder_compiled,
-    capabilities.relay_ai_gateway_same_channel_fallback_compiled
+    capabilities.relay_ai_gateway_same_channel_fallback_compiled,
+    capabilities.relay_ai_gateway_cross_model_fallback_compiled
   )
   const wfpTenantImplementation = allReady(
     capabilities.wfp_tenant_supported_routes.length > 0,
@@ -159,6 +167,10 @@ export function buildPlatformReadinessSummary(
       capabilities.relay_ai_gateway_router_ready
     ),
     readySignal(
+      'ai-gateway-fallback-runtime',
+      capabilities.relay_ai_gateway_cross_model_fallback_ready
+    ),
+    readySignal(
       'wfp-tenant-runtime',
       allReady(
         capabilities.wfp_dispatch_binding_available,
@@ -197,6 +209,11 @@ export function buildPlatformReadinessSummary(
       false
     ),
     verificationSignal(
+      'ai-gateway-fallback-replay',
+      capabilities.relay_ai_gateway_cross_model_fallback_ready,
+      capabilities.relay_ai_gateway_cross_model_fallback_staging_verified
+    ),
+    verificationSignal(
       'wfp-tenant-smoke',
       capabilities.wfp_tenant_smoke_ready,
       false
@@ -217,6 +234,10 @@ export function buildPlatformReadinessSummary(
   ])
 
   const cutover = createReadyStage('cutover', [
+    readySignal(
+      'ai-gateway-fallback-cutover',
+      capabilities.relay_ai_gateway_cross_model_fallback_cutover_ready
+    ),
     readySignal('task-runner-cutover', capabilities.task_runner_cutover_ready),
     readySignal(
       'realtime-v1-cutover',

@@ -25,6 +25,7 @@ export type PlatformReadinessStageId =
   | 'cutover'
 
 export type PlatformReadinessSignalId =
+  | 'scheduling-gateway-implementation'
   | 'ai-gateway-implementation'
   | 'wfp-tenant-implementation'
   | 'realtime-implementation'
@@ -53,6 +54,10 @@ export type PlatformReadinessSignalStatus =
 
 export type PlatformReadinessCapabilities = Pick<
   PlatformCapabilities,
+  | 'scheduling_gateway_compiled'
+  | 'scheduling_gateway_active'
+  | 'scheduling_gateway_route_precedence'
+  | 'scheduling_gateway_preview_fail_closed_compiled'
   | 'd1_migration_ready'
   | 'relay_ai_gateway_router_ready'
   | 'relay_ai_gateway_rest_routes'
@@ -131,6 +136,12 @@ export type PlatformReadinessStage = {
 export function buildPlatformReadinessSummary(
   capabilities: PlatformReadinessCapabilities
 ): PlatformReadinessStage[] {
+  const schedulingGatewayImplementation = allReady(
+    capabilities.scheduling_gateway_compiled,
+    capabilities.scheduling_gateway_active,
+    capabilities.scheduling_gateway_route_precedence.length > 0,
+    capabilities.scheduling_gateway_preview_fail_closed_compiled
+  )
   const aiGatewayImplementation = allReady(
     capabilities.relay_ai_gateway_rest_routes.length > 0,
     capabilities.relay_ai_gateway_cutover_guards.length > 0,
@@ -175,6 +186,10 @@ export function buildPlatformReadinessSummary(
   )
 
   const implementation = createReadyStage('implementation', [
+    readySignal(
+      'scheduling-gateway-implementation',
+      schedulingGatewayImplementation
+    ),
     readySignal('ai-gateway-implementation', aiGatewayImplementation),
     readySignal('wfp-tenant-implementation', wfpTenantImplementation),
     readySignal('realtime-implementation', realtimeImplementation),

@@ -163,6 +163,11 @@ export function CloudflarePlatformSection() {
               <ul className='text-muted-foreground mt-2 list-disc space-y-1 ps-5 text-xs'>
                 <li>
                   {t(
+                    'Configured WFP preview hosts are tenant-owned before central API routes and fail closed when dispatch is disabled.'
+                  )}
+                </li>
+                <li>
+                  {t(
                     'WFP tenant traffic needs the DISPATCHER binding plus WFP_DISPATCH_ENABLED; live internal smoke also requires WFP_INTERNAL_DISPATCH_ENABLED and the tenant contract guards to pass.'
                   )}
                 </li>
@@ -285,6 +290,8 @@ function getReadinessSignalLabel(
   t: (key: string) => string
 ) {
   switch (signal.id) {
+    case 'scheduling-gateway-implementation':
+      return t('Scheduling gateway')
     case 'ai-gateway-implementation':
     case 'ai-gateway-runtime':
       return t('AI Gateway')
@@ -354,8 +361,40 @@ function buildCapabilityGroups(
     capabilities.wfp_tenant_supported_routes.join(', ') || t('No routes')
   const wfpTenantGuards =
     capabilities.wfp_tenant_cutover_guards.join(', ') || t('No guards')
+  const schedulingGatewayPrecedence =
+    capabilities.scheduling_gateway_route_precedence.join(' -> ') ||
+    t('Unavailable')
 
   return [
+    {
+      title: t('Scheduling gateway'),
+      description: t(
+        'Request ownership before Cloudflare bindings and compatibility routes execute.'
+      ),
+      rows: [
+        {
+          label: t('Owner planner'),
+          description: t('Contract version {{version}}; {{precedence}}.', {
+            version: capabilities.scheduling_gateway_owner_contract_version,
+            precedence: schedulingGatewayPrecedence,
+          }),
+          ready:
+            capabilities.scheduling_gateway_compiled &&
+            capabilities.scheduling_gateway_active,
+          readyLabel: t('Active'),
+          missingLabel: t('Inactive'),
+        },
+        {
+          label: t('WFP preview isolation'),
+          description: t(
+            'Configured tenant preview hosts never fall back to the main application when dispatch is disabled.'
+          ),
+          ready: capabilities.scheduling_gateway_preview_fail_closed_compiled,
+          readyLabel: t('Fail closed'),
+          missingLabel: t('Fallback risk'),
+        },
+      ],
+    },
     {
       title: t('Runtime bindings'),
       description: t('Cloudflare bindings required by the Rust relay gateway.'),

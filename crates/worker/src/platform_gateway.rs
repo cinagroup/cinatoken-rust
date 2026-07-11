@@ -5,6 +5,10 @@
 //! forwards preview/tenant traffic to scripts inside a dispatch namespace. The
 //! feature is off by default and only activates when explicitly configured.
 
+use cinatoken_gateway::{
+    WfpDispatchKind, WfpDispatchPlan, SCHEDULING_GATEWAY_OWNER_CONTRACT_VERSION,
+    SCHEDULING_GATEWAY_ROUTE_PRECEDENCE,
+};
 use cinatoken_providers::ai_gateway::{
     MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS, MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS,
 };
@@ -117,7 +121,8 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0019_realtime_billing_reservations.sql",
     "0020_realtime_billing_reservation_leases.sql",
 ];
-pub const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
+#[cfg(test)]
+const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
 const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
 const CLOUDFLARE_AI_GATEWAY_TOKEN_ENV: &str = "CLOUDFLARE_AI_GATEWAY_TOKEN";
@@ -164,6 +169,11 @@ impl DispatchRouteKind {
 
 #[derive(Debug, Serialize)]
 struct PlatformCapabilities {
+    scheduling_gateway_compiled: bool,
+    scheduling_gateway_active: bool,
+    scheduling_gateway_owner_contract_version: u32,
+    scheduling_gateway_route_precedence: Vec<&'static str>,
+    scheduling_gateway_preview_fail_closed_compiled: bool,
     d1_migration_status_available: bool,
     d1_migration_applied_count: i64,
     d1_migration_latest: Option<String>,
@@ -515,6 +525,11 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_staging_replay_verified,
     );
     let capabilities = PlatformCapabilities {
+        scheduling_gateway_compiled: true,
+        scheduling_gateway_active: true,
+        scheduling_gateway_owner_contract_version: SCHEDULING_GATEWAY_OWNER_CONTRACT_VERSION,
+        scheduling_gateway_route_precedence: SCHEDULING_GATEWAY_ROUTE_PRECEDENCE.to_vec(),
+        scheduling_gateway_preview_fail_closed_compiled: true,
         d1_migration_status_available: d1_migration_status.available,
         d1_migration_applied_count: d1_migration_status.applied_count,
         d1_migration_latest: d1_migration_status.latest,
@@ -1569,53 +1584,34 @@ async fn drop_realtime_settlement_smoke_audit_failure_trigger(db: &D1Database) -
     Ok(())
 }
 
-/// Resolve whether this request should be handled by WFP dispatch before the
-/// normal API/static-asset router sees it.
-pub fn dispatch_target_for_request(
-    req: &Request,
-    env: &Env,
-) -> WorkerResult<Option<DispatchTarget>> {
-    if !env_flag(env, WFP_DISPATCH_ENABLED_ENV) {
-        return Ok(None);
-    }
-
-    let prefix = runtime_value(env, WFP_DISPATCH_WORKER_PREFIX_ENV);
-    if env_flag(env, WFP_INTERNAL_DISPATCH_ENABLED_ENV) {
-        if let Some(route) = internal_dispatch_route(&req.path()) {
-            return Ok(Some(dispatch_target(
-                DispatchRouteKind::InternalPath,
-                &route.public_name,
-                prefix.as_deref(),
-                Some(route.tenant_path),
-            )?));
-        }
-    }
-
-    let suffix = match runtime_value(env, WFP_PREVIEW_HOST_SUFFIX_ENV) {
-        Some(value) => value,
-        None => return Ok(None),
-    };
-    let Some(host) = host_header(req)? else {
-        return Ok(None);
-    };
-    let Some(public_name) = preview_script_name_from_host(&host, &suffix) else {
-        return Ok(None);
-    };
-
-    Ok(Some(dispatch_target(
-        DispatchRouteKind::PreviewHost,
-        &public_name,
-        prefix.as_deref(),
-        None,
-    )?))
-}
-
 pub async fn dispatch_request(
     req: Request,
     env: Env,
     target: DispatchTarget,
 ) -> WorkerResult<Response> {
     dispatch_request_with_env(req, &env, target).await
+}
+
+pub fn dispatch_target_for_plan(plan: &WfpDispatchPlan, env: &Env) -> WorkerResult<DispatchTarget> {
+    let route_kind = match plan.kind {
+        WfpDispatchKind::InternalStatus => DispatchRouteKind::InternalPath,
+        WfpDispatchKind::PreviewHost => DispatchRouteKind::PreviewHost,
+    };
+    let prefix = runtime_value(env, WFP_DISPATCH_WORKER_PREFIX_ENV);
+    dispatch_target(
+        route_kind,
+        &plan.public_name,
+        prefix.as_deref(),
+        plan.tenant_path.clone(),
+    )
+}
+
+pub fn wfp_preview_unavailable_response() -> WorkerResult<Response> {
+    gateway_error(
+        404,
+        "wfp_preview_unavailable",
+        "This tenant application is not currently available",
+    )
 }
 
 async fn dispatch_request_with_env(
@@ -1712,20 +1708,14 @@ fn dispatch_target(
     })
 }
 
-fn host_header(req: &Request) -> WorkerResult<Option<String>> {
-    Ok(req.headers().get("Host")?.or_else(|| {
-        req.url()
-            .ok()
-            .and_then(|url| url.host_str().map(str::to_string))
-    }))
-}
-
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InternalDispatchRoute {
     public_name: String,
     tenant_path: String,
 }
 
+#[cfg(test)]
 fn internal_dispatch_route(path: &str) -> Option<InternalDispatchRoute> {
     let rest = path.strip_prefix(INTERNAL_DISPATCH_PREFIX)?;
     let (script, tenant_path) = rest.split_once('/').unwrap_or((rest, ""));
@@ -1744,6 +1734,7 @@ fn internal_dispatch_script_name(path: &str) -> Option<String> {
     internal_dispatch_route(path).map(|route| route.public_name)
 }
 
+#[cfg(test)]
 fn normalize_tenant_dispatch_path(value: &str) -> String {
     if value.is_empty() {
         "/".to_string()
@@ -1752,18 +1743,9 @@ fn normalize_tenant_dispatch_path(value: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn preview_script_name_from_host(host: &str, suffix: &str) -> Option<String> {
-    let host = normalize_host(host)?;
-    let suffix = normalize_host(suffix.trim_start_matches('.'))?;
-    if host == suffix {
-        return None;
-    }
-    let expected_tail = format!(".{suffix}");
-    let script = host.strip_suffix(&expected_tail)?;
-    if script.contains('.') {
-        return None;
-    }
-    normalize_worker_name(script)
+    cinatoken_gateway::preview_tenant_name(host, suffix)
 }
 
 fn prefixed_worker_name(public_name: &str, prefix: Option<&str>) -> Option<String> {
@@ -1853,38 +1835,12 @@ fn is_blocked_dispatch_request_header(name: &str) -> bool {
     BLOCKED_DISPATCH_REQUEST_HEADERS.contains(&name.as_str()) || name.starts_with("x-cinatoken-")
 }
 
-fn normalize_host(host: &str) -> Option<String> {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty() {
-        return None;
-    }
-    if let Some(stripped) = host.strip_prefix('[') {
-        return stripped
-            .split_once(']')
-            .map(|(ipv6, _)| ipv6.to_string())
-            .filter(|value| !value.is_empty());
-    }
-    let without_port = host.split_once(':').map(|(name, _)| name).unwrap_or(&host);
-    (!without_port.is_empty()).then(|| without_port.to_string())
-}
-
 pub(crate) fn normalize_worker_name(value: &str) -> Option<String> {
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() || value.len() > 63 {
-        return None;
-    }
-    if value.starts_with('-')
-        || value.ends_with('-')
-        || value.starts_with('_')
-        || value.ends_with('_')
-    {
-        return None;
-    }
-    value.chars().all(is_worker_name_char).then_some(value)
+    cinatoken_gateway::normalize_worker_name(value)
 }
 
 pub(crate) fn is_worker_name_char(ch: char) -> bool {
-    ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_'
+    cinatoken_gateway::is_worker_name_char(ch)
 }
 
 pub(crate) fn env_flag(env: &Env, name: &str) -> bool {
@@ -2117,6 +2073,28 @@ fn gateway_error(status: u16, code: &str, message: &str) -> WorkerResult<Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduling_gateway_contract_is_operator_visible_and_tenant_first() {
+        assert_eq!(SCHEDULING_GATEWAY_OWNER_CONTRACT_VERSION, 1);
+        assert_eq!(
+            SCHEDULING_GATEWAY_ROUTE_PRECEDENCE,
+            &[
+                "cors_preflight",
+                "wfp_internal_dispatch",
+                "wfp_preview_dispatch",
+                "wfp_preview_unavailable",
+                "gemini_native",
+                "realtime_session",
+                "static_assets",
+                "api_router",
+            ]
+        );
+        assert_eq!(
+            crate::wfp_tenant::WFP_TENANT_STATUS_PATH,
+            "/__cinatoken/tenant/status"
+        );
+    }
 
     #[test]
     fn internal_dispatch_extracts_script_name_only() {

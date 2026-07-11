@@ -392,6 +392,11 @@ export type UpstreamRatiosResponse = {
 }
 
 export type PlatformCapabilities = {
+  scheduling_gateway_compiled: boolean
+  scheduling_gateway_active: boolean
+  scheduling_gateway_owner_contract_version: number
+  scheduling_gateway_route_precedence: string[]
+  scheduling_gateway_preview_fail_closed_compiled: boolean
   d1_migration_status_available: boolean
   d1_migration_applied_count: number
   d1_migration_latest: string | null

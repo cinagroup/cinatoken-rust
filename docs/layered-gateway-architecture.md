@@ -126,6 +126,7 @@ maturity levels are used:
 
 | Pillar / milestone | Paradigm | Maturity | What landed | What remains | Evidence |
 |---|---|---|---|---|---|
+| M3 Scheduling gateway | A/B/C | **Wired** | `cinatoken-gateway` is the live, pure owner planner for preflight, WFP host/internal dispatch, Gemini-native relay, RealtimeSession, assets, and the compatibility Router. Tenant preview hosts resolve before central APIs and fail closed when dispatch is disabled. The admin API/frontend expose the contract version and precedence. | Deployed host/path ownership smoke, missing-binding replay, tenant negative tests, and rollback evidence | `crates/gateway/src/lib.rs`; `crates/worker/src/lib.rs`; `crates/worker/src/platform_gateway.rs`; Cloudflare Platform frontend readiness panel |
 | M2 Provider registry | — | **Wired** | `ProviderRegistry::resolve` drives per-endpoint provider routing on the live relay path | Fold remaining private-enum branches into adapters | `crates/providers/src/routing.rs:77-80`; called at `crates/worker/src/relay.rs:194` |
 | M7 AiGateway router | C | **Gated substrate (fallback wired)** | Full cutover **decision ladder** + security coupling, gateway **URL builders**, model-author classifier, 8 cutover guards, `channels.other_info` opt-in metadata support, default-off REST forwarder, same-channel direct fallback, admin readiness panel | Live staging canary, AI Gateway log capture, and billing/usage evidence | `crates/providers/src/ai_gateway.rs` (722 ln): `plan_ai_gateway_cutover:190`, `rest_gateway_endpoint_url:353`, guards `:89-98`; `crates/storage/src/lib.rs` opt-in parser; `crates/worker/src/relay.rs` runtime/forwarder/fallback; gate `RELAY_AI_GATEWAY_ROUTER_ENABLED` + readiness `platform_gateway.rs:100-116` |
 | M8 WFP dispatch | B | **Gated substrate (authority + replay guarded)** | The central relay may select WFP only from `channels.other_info.wfp_worker` after relay-token authentication, D1 selection, and quota reserve. The platform retains `WFP_RELAY_AUTHORITY_SECRET`; the tenant receives a derived key and an external `WfpAuthorityReplay` binding. It verifies the exact-body envelope and atomically consumes the request ID before one of chat, responses, messages, or ai-run can egress. Admin dispatch is status-only; preview AI and JS fallback AI deploy are disabled. | Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; upload/read back the strict Rust/Wasm artifact and exact replay script/class binding; archive sequential/concurrent duplicate, eviction, cleanup, load, one-provider-call, billing, audit, and redaction evidence | `crates/wfp-authority/src/lib.rs`: authority/bucket contract; `crates/worker/src/wfp_authority_replay.rs`: canonical DO consume; `crates/worker/src/relay.rs`: post-admission selection and settlement; `crates/wfp-tenant/src/lib.rs`: verifier/consume/route manifest; `tools/deploy_wfp_tenant_artifact.mjs`: derived key plus external DO binding; gate `WFP_RELAY_TRANSPORT_ENABLED` |
@@ -348,15 +349,26 @@ by clearing the flag, no redeploy required.
 - **Rollback:** registry behind a compile-time default identical to today's enum.
 
 ### M3 — Gateway dispatch seam + edge-auth pre-pass (1 wk)
-- **Scope:** Add a `route()` dispatcher **inside the existing `#[event(fetch)]`
-  router** (not a big-bang new crate): run `authenticate_edge` once, then branch —
-  realtime WS → DO; async submit → task path; tenant Host → WFP (M8); default →
-  pipeline. Feature-gate the new dispatch order (`GATEWAY_ROUTER_ENABLED`) so the
-  legacy router remains the fallback.
-- **Files:** `crates/gateway/src/{router,auth_edge}.rs` (new, thin), `crates/worker/src/lib.rs`.
-- **Verify:** golden route table unchanged (`check:web:routes` SHA-256 digest);
-  auth-cache hit/miss parity.
-- **Rollback:** clear the flag → legacy router.
+- **Status (2026-07-11): owner planner wired.** The pure
+  `cinatoken-gateway` crate now classifies every live fetch into one owner and
+  is called before bindings/handlers in `crates/worker/src/lib.rs`. WFP tenant
+  preview hosts are isolated before Gemini/central API routes and fail closed
+  when dispatch is disabled; Realtime control routes retain explicit Router
+  ownership. The remaining part of M3 is shared edge-auth context extraction,
+  which must not duplicate relay/admin authentication or expose credentials.
+- **Scope:** Keep request execution **inside the existing `#[event(fetch)]`
+  Worker** while the small `cinatoken-gateway` crate owns only deterministic,
+  Cloudflare-I/O-free route classification. A later `authenticate_edge`
+  context may be shared by branches only after auth-cache hit/miss and
+  role/token parity are proven; existing handlers remain authoritative until
+  then.
+- **Files:** `crates/gateway/src/lib.rs`, `crates/worker/src/lib.rs`, and the
+  existing WFP/Realtime execution adapters.
+- **Verify:** owner-precedence unit tests, route-table audit with zero missing
+  frontend calls, Worker/WASM checks, then deployed host/path negative smoke;
+  shared auth additionally requires auth-cache hit/miss parity.
+- **Rollback:** revert the owner-planner release. WFP, Realtime, and AI Gateway
+  traffic continue to have their own default-off runtime gates.
 
 ### M4 — `QuotaCoordinator` DO, shadow-first (2 wk build + ≥30-day bake)
 - **Scope:** Per-token DO (`id_from_name(token_id)`), **key-value** storage
@@ -525,6 +537,10 @@ by clearing the flag, no redeploy required.
   `base_url` override only when the resolved key is the user's) — net-new, since
   no BYOK base_url override exists today. Usage still settles through the
   untouched `crates/billing` engine.
+- **Current Cloudflare constraint:** do not implement this with the deprecated
+  Universal Endpoint. The landed router uses `/compat` or provider-specific
+  endpoint forms. Cloudflare Dynamic Routing remains a later option only after
+  central billing can reconcile the actual selected provider and model.
 - **Files:** `crates/ai-gateway/src/router.rs` (new), `crates/providers/src/ai_gateway.rs`,
   `crates/worker/src/relay.rs`.
 - **Verify:** echo-upstream staging smoke (`verification.md:834-852`); fallback

@@ -5,6 +5,7 @@ members = [
   "crates/billing",
   "crates/cache",
   "crates/core",
+  "crates/gateway",
   "crates/migration",
   "crates/observability",
   "crates/payments",

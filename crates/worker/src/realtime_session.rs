@@ -69,8 +69,7 @@ pub const REALTIME_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
-pub const REALTIME_SESSION_GATEWAY_PREFIX: &str = "/api/platform/realtime/";
-pub const REALTIME_OPENAI_PATH: &str = "/v1/realtime";
+pub use cinatoken_gateway::REALTIME_OPENAI_PATH;
 pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "platform_gateway_gate",
     "v1_gateway_gate",
@@ -3020,8 +3019,9 @@ impl RealtimeSessionMetrics {
     }
 }
 
-pub fn realtime_gateway_candidate(path: &str) -> bool {
-    path == REALTIME_OPENAI_PATH || session_from_gateway_path(path).is_some()
+#[cfg(test)]
+fn realtime_gateway_candidate(path: &str) -> bool {
+    cinatoken_gateway::realtime_gateway_candidate(path)
 }
 
 pub async fn handle_gateway(req: Request, env: Env) -> WorkerResult<Response> {
@@ -6693,24 +6693,12 @@ fn session_from_request(req: &Request) -> Option<String> {
 }
 
 fn session_from_gateway_path(path: &str) -> Option<String> {
-    let rest = path.strip_prefix(REALTIME_SESSION_GATEWAY_PREFIX)?;
-    let mut segments = rest.split('/');
-    let session = normalize_session_name(segments.next().unwrap_or_default())?;
-    match (segments.next(), segments.next()) {
-        (None, None) | (Some(""), None) | (Some("status"), None) => Some(session),
-        _ => None,
-    }
+    cinatoken_gateway::realtime_session_from_path(path)
 }
 
+#[cfg(test)]
 fn normalize_session_name(value: &str) -> Option<String> {
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() || value.len() > 96 {
-        return None;
-    }
-    value
-        .chars()
-        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
-        .then_some(value)
+    cinatoken_gateway::normalize_realtime_session_name(value)
 }
 
 fn realtime_session_name(model: &str, websocket_key: &str, token_hash: &str) -> String {

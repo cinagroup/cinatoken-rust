@@ -93,6 +93,20 @@ A full diff of every Go-registered route against the Rust worker closed these
 
 ## In Progress
 
+### Rust scheduling gateway ownership (2026-07-11)
+
+- `cinatoken-gateway` is now the live owner planner used before Worker binding
+  execution. Its versioned precedence covers WFP host/internal dispatch,
+  Gemini-native routes, RealtimeSession, static assets, and compatibility APIs.
+- WFP preview hosts no longer fall back to the main SPA when dispatch is off,
+  and tenant host ownership precedes central provider routes.
+- Realtime session/static/API path classification shares the pure planner; the
+  admin capability API and frontend expose implementation status separately
+  from smoke and cutover evidence.
+- Remaining M3 work is deployed host/path negative smoke and a carefully
+  shared edge-auth context. This increment does not enable WFP, Realtime, or AI
+  Gateway production traffic.
+
 ### Provider relay capability authority (2026-07-11)
 
 - All 53 real Go channel types now have one route-level Rust implementation

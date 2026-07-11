@@ -57,6 +57,7 @@ mod wfp_tenant;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
 
+use cinatoken_gateway::{plan_request, GatewayConfig, GatewayMethod, GatewayOwner, GatewayRequest};
 use cinatoken_storage::AuditLogEvent;
 use worker::D1Type;
 
@@ -76,27 +77,73 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         resolve_cors_allow_origin(configured.as_deref(), request_origin.as_deref())
     };
 
-    if req.method() == Method::Options {
+    let method = if req.method() == Method::Options {
+        GatewayMethod::Options
+    } else if req.method() == Method::Post {
+        GatewayMethod::Post
+    } else {
+        GatewayMethod::Other
+    };
+    let path = req.path();
+    let gemini_route = (method == GatewayMethod::Post)
+        .then(|| cinatoken_relay::parse_gemini_native_path(&path))
+        .flatten();
+    let preview_host_suffix =
+        platform_gateway::runtime_value(&env, platform_gateway::WFP_PREVIEW_HOST_SUFFIX_ENV);
+    let request_host = scheduling_gateway_request_host(&req)?;
+    let plan = plan_request(
+        GatewayRequest {
+            method,
+            path: &path,
+            host: request_host.as_deref(),
+            gemini_native_candidate: gemini_route.is_some(),
+        },
+        GatewayConfig {
+            wfp_dispatch_enabled: platform_gateway::env_flag(
+                &env,
+                platform_gateway::WFP_DISPATCH_ENABLED_ENV,
+            ),
+            wfp_internal_dispatch_enabled: platform_gateway::env_flag(
+                &env,
+                platform_gateway::WFP_INTERNAL_DISPATCH_ENABLED_ENV,
+            ),
+            wfp_preview_host_suffix: preview_host_suffix.as_deref(),
+            wfp_tenant_status_path: wfp_tenant::WFP_TENANT_STATUS_PATH,
+        },
+    );
+
+    if plan.owner == GatewayOwner::CorsPreflight {
         let mut response = empty_cors_response()?;
         upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
         return Ok(response);
     }
 
-    if req.method() == Method::Post {
-        if let Some(route) = cinatoken_relay::parse_gemini_native_path(&req.path()) {
-            let mut response = relay::gemini_native(req, env, ctx, route).await?;
-            upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
-            return Ok(response);
-        }
+    if plan.owner == GatewayOwner::GeminiNative {
+        let Some(route) = gemini_route else {
+            return scheduling_gateway_invariant_response("missing Gemini native route");
+        };
+        let mut response = relay::gemini_native(req, env, ctx, route).await?;
+        upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+        return Ok(response);
     }
 
-    if let Some(target) = platform_gateway::dispatch_target_for_request(&req, &env)? {
+    if plan.owner == GatewayOwner::WfpDispatch {
+        let Some(wfp_dispatch) = plan.wfp_dispatch.as_ref() else {
+            return scheduling_gateway_invariant_response("missing WFP dispatch plan");
+        };
+        let target = platform_gateway::dispatch_target_for_plan(wfp_dispatch, &env)?;
         let mut response = platform_gateway::dispatch_request(req, env.clone(), target).await?;
         upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
         return Ok(response);
     }
 
-    if realtime_session::realtime_gateway_candidate(&req.path()) {
+    if plan.owner == GatewayOwner::WfpPreviewUnavailable {
+        let mut response = platform_gateway::wfp_preview_unavailable_response()?;
+        upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+        return Ok(response);
+    }
+
+    if plan.owner == GatewayOwner::RealtimeSession {
         let mut response = realtime_session::handle_gateway(req, env.clone()).await?;
         upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
         return Ok(response);
@@ -109,8 +156,7 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     // application` not_found_handling takes care of serving index.html for
     // unknown paths. API paths (/api, /v1, /v1beta, /mj, /suno) never reach
     // the asset binding and are always handled by the Router below.
-    let path = req.path();
-    if is_static_asset_path(&path) {
+    if plan.owner == GatewayOwner::StaticAssets {
         if let Ok(assets) = env.assets("ASSETS") {
             return assets.fetch_request(req).await;
         }
@@ -1562,45 +1608,30 @@ fn is_supported_preflight(method: &Method) -> bool {
 /// Return `true` when `path` should be served by the static-asset binding
 /// rather than the API router. The API prefixes mirror the route groups
 /// declared by the Go gateway (`router/relay-router.go`, `router/api-router.go`,
-/// `router/video-router.go`) so adding a new API group here is the only place
-/// that needs to change when the API surface grows.
+/// `router/video-router.go`); the pure gateway crate is the ownership authority.
+#[cfg(test)]
 fn is_static_asset_path(path: &str) -> bool {
-    let path = path.split('?').next().unwrap_or(path);
-    for prefix in [
-        "/api/",
-        "/v1/",
-        "/v1beta/",
-        "/mj/",
-        "/jimeng/",
-        "/suno/",
-        "/pg/",
-        // OpenAI-compatible billing views (Go dashboard.go) — API, not the SPA
-        // `/dashboard` route.
-        "/dashboard/billing/",
-    ] {
-        if path.starts_with(prefix) {
-            return false;
-        }
-    }
-    // Exact-match API endpoints without a trailing slash (e.g. `/api/status`,
-    // `/v1/models`) are also router-owned.
-    !matches!(
-        path,
-        "/api/status"
-            | "/api/setup"
-            | "/v1/models"
-            | "/v1/chat/completions"
-            | "/v1/completions"
-            | "/v1/responses"
-            | "/v1/messages"
-            | "/v1/embeddings"
-            | "/v1/rerank"
-            | "/v1/images/generations"
-            | "/v1/audio/speech"
-            | "/v1/audio/transcriptions"
-            | "/v1/audio/translations"
-            | "/v1/images/edits"
-            | "/jimeng"
+    cinatoken_gateway::is_static_asset_path(path)
+}
+
+fn scheduling_gateway_request_host(req: &Request) -> Result<Option<String>> {
+    Ok(req.headers().get("Host")?.or_else(|| {
+        req.url()
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+    }))
+}
+
+fn scheduling_gateway_invariant_response(detail: &str) -> Result<Response> {
+    json_with_status(
+        &serde_json::json!({
+            "error": {
+                "code": "scheduling_gateway_invariant_failed",
+                "message": detail,
+                "type": "platform_gateway_error"
+            }
+        }),
+        500,
     )
 }
 

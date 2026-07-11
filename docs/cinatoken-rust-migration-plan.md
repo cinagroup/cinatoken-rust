@@ -9570,3 +9570,41 @@ frontend route audit with 0 missing calls, and the complete `bun run check`
 chain. Production status remains Partial. Each enabled provider/route still
 needs route-specific live upstream fixtures, usage/error reconciliation,
 staging billing evidence, and rollback proof before canary approval.
+
+### 22.153 2026-07-11 Rust Scheduling Gateway Owner Planner
+
+This increment wires the previously pending M3 scheduling-gateway seam into
+the live Worker fetch path, following cinaVibeSDK's host-first dispatch model.
+
+- Added the pure `cinatoken-gateway` crate. It owns the versioned request-owner
+  contract and the exact precedence among CORS preflight, WFP internal/preview
+  dispatch, Gemini-native relay, RealtimeSession DO, static assets, and the
+  compatibility API router.
+- `crates/worker/src/lib.rs` now asks the planner for one owner before executing
+  Cloudflare bindings or route handlers. Existing relay, DO, WFP, assets, and
+  Router handlers remain execution adapters rather than independent routing
+  authorities.
+- WFP tenant preview hosts are host-isolated before provider/API routing. When
+  a preview suffix root, invalid nested host, or disabled tenant dispatch is
+  encountered, the gateway returns a bounded `404 wfp_preview_unavailable`
+  response instead of falling back to the main React application. This matches
+  cinaVibeSDK's rule
+  that a user-app request never falls back to the platform Worker.
+- Realtime path parsing and static/API ownership now delegate to the same pure
+  crate. The settlement smoke control route remains API-owned and cannot be
+  shadowed by the Realtime DO prefix.
+- `/api/platform/capabilities` and the Cloudflare Platform frontend expose the
+  active owner-contract version, route precedence, and preview fail-closed
+  contract as implementation evidence. They do not treat it as staging or
+  production verification.
+
+The current AI Gateway implementation continues to use Cloudflare's
+OpenAI-compatible `/compat` and provider-specific endpoint forms. It does not
+adopt the deprecated Universal Endpoint. Realtime continues to use hibernation
+for the client-facing server WebSocket only; an outbound upstream WebSocket
+keeps the DO active and cannot hibernate.
+
+Remaining evidence: deployed main-host/API/tenant-host route ownership smoke,
+missing-binding behavior, tenant-host negative tests through Cloudflare, and
+rollback evidence. WFP, Realtime, and AI Gateway production gates remain
+independent and default-off where already documented.

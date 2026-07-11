@@ -2,7 +2,7 @@
 
 Date: 2026-07-06
 
-Latest evidence increment: 2026-07-10
+Latest evidence increment: 2026-07-11
 
 Status: production migration mapping for applying cinaVibeSDK architecture
 patterns to `cinatoken-rust`. This is a docs-only supplement. It does not
@@ -93,6 +93,42 @@ Persistent state remains split by responsibility:
 - Queues and R2 remain audit/log/artifact escape hatches for large or async
   writes.
 
+## Evidence Increment: 2026-07-11 Scheduling Gateway Ownership
+
+- The live fetch path now uses the pure `cinatoken-gateway` owner planner before
+  invoking provider-native relay, WFP, RealtimeSession, static assets, or the
+  compatibility Router. Route order is a versioned contract rather than an
+  incidental sequence of Worker `if` statements.
+- Tenant preview-host ownership is resolved before central provider/API routes.
+  A preview suffix root, invalid nested host, or disabled tenant host never
+  falls through to the main SPA; it returns `wfp_preview_unavailable` instead.
+  This applies cinaVibeSDK's explicit rule that user-app handling does not fall
+  back to the main Worker.
+- Realtime session recognition and static/API classification moved behind the
+  same pure boundary. `/api/platform/realtime/settlement-batch/smoke` remains
+  owned by the platform control router rather than the session DO.
+- The admin capability API and frontend cockpit expose the owner-contract
+  version and precedence as implementation evidence only.
+
+Latest Cloudflare documentation was rechecked for this increment:
+
+- A dynamic dispatch Worker is the entry point that selects a User Worker via
+  a dispatch namespace; tenant Workers should share an environment namespace,
+  with a separate namespace for staging.
+- WebSocket hibernation applies when a DO acts as the WebSocket server. An
+  active outbound WebSocket prevents hibernation, so the upstream Realtime
+  connection remains transient and cannot be advertised as sleep-resumable.
+- AI Gateway's Universal Endpoint is deprecated. New work must use the
+  OpenAI-compatible endpoint and provider-specific endpoints, with Dynamic
+  Routing considered only after central billing can reconcile the selected
+  provider/model.
+
+References:
+
+- <https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/how-workers-for-platforms-works/>
+- <https://developers.cloudflare.com/durable-objects/best-practices/websockets/>
+- <https://developers.cloudflare.com/ai-gateway/usage/universal/>
+
 ## Evidence Increment: 2026-07-10 Local D1 And Route Ownership
 
 The 2026-07-10 local evidence advances the migration contract without changing
@@ -156,8 +192,9 @@ cinaVibeSDK pattern:
   main relay, realtime DO, WFP tenant script, or admin platform probe.
 - Preserve OpenAI-compatible route paths and response shapes. The gateway is a
   router, not a compatibility-breaking API facade.
-- Treat WFP as optional and paid-plan-gated. When `DISPATCHER` is absent or
-  `WFP_DISPATCH_ENABLED=false`, the default route remains the in-gateway relay.
+- Treat WFP as optional and paid-plan-gated. Main-domain relay traffic remains
+  in-gateway when WFP is disabled, but a host recognized by
+  `WFP_PREVIEW_HOST_SUFFIX` fails closed and never falls back to the main app.
 - Strip credential and `x-cinatoken-*` control headers before tenant dispatch;
   add only controlled dispatch markers such as route and worker identity.
 
@@ -592,7 +629,7 @@ Before enabling production traffic:
 
 ## Current Production Blockers
 
-As of 2026-07-10, including the local D1 and route-ownership evidence above:
+As of 2026-07-11, including the scheduling-gateway and local D1 evidence above:
 
 - Main relay AI Gateway forwarding is wired as gated substrate, but still needs
   live staging canary evidence and billing log comparison before cutover.

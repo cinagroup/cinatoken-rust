@@ -2905,6 +2905,25 @@ bun run check
 
 ## Still Pending
 
+### Rust scheduling gateway owner contract (2026-07-11)
+
+- `cargo test -p cinatoken-gateway` covers owner precedence, exact WFP internal
+  status dispatch, tenant preview normalization/no-fallback behavior, Realtime
+  control-route ownership, and static/API boundaries.
+- Worker unit and wasm checks cover the live planner integration plus existing
+  Realtime/WFP/platform handler contracts.
+- Cloudflare Platform frontend readiness tests cover the distinction between a
+  compiled/active owner contract and staging/production verification.
+- Final local verification passed: `cargo test -p cinatoken-gateway` (5/5),
+  `cargo test -p cinatoken-worker --lib` (547/547),
+  `bun run check:web:routes` (217 frontend calls, 313 Worker routes, 0 missing
+  calls), `cargo fmt --all --check`, `git diff --check`, and the complete
+  `bun run check` workspace/frontend/smoke/WASM gate. The only warnings remain
+  the two existing `d1_repositories.rs` dead-code warnings.
+- Deployment evidence remains pending: main and tenant host routing, disabled
+  dispatch, missing binding, WFP 404/503 behavior, Realtime control precedence,
+  and rollback must be archived from a replacement-credential staging deploy.
+
 ### Provider relay capability authority and DeepSeek (2026-07-11)
 
 - `cargo test -p cinatoken-providers`: 25 passed, including exact coverage of

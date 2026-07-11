@@ -150,6 +150,16 @@ required for G1-G8 decisions.
 | G8 | Cutover evidence checklist | Planned | Capture final export, DNS/route plan, freeze window, owner sign-off, and approved 1x/2x/5x cost forecast. |
 | G9 | Decommission matrix | Planned | Post-cutover audit, cost report, and VPS decommission plan. |
 
+### Scheduling Gateway Ownership Matrix
+
+| Boundary | Rust Status | Required Production Evidence |
+| --- | --- | --- |
+| Request owner planner | Wired: `cinatoken-gateway` is called by the live fetch entry before bindings and handlers; the owner contract is versioned and shown in the admin frontend | Deployed route/host matrix for main host, tenant preview host, provider-native routes, Realtime, static assets, and unknown paths |
+| WFP preview isolation | Wired: recognized tenant preview hosts resolve before central APIs and return `wfp_preview_unavailable` when dispatch is disabled | Staging negative smoke for disabled gate, missing binding, missing tenant Worker, and no main-SPA/API fallback |
+| Realtime/control precedence | Wired: valid session paths are DO-owned while the settlement smoke path remains platform-router-owned | Deployed status/session/smoke route evidence with gates both on and off |
+| Static/API boundary | Wired through the same pure planner | Browser hard-refresh smoke plus API 404/405 evidence proving SPA fallback never shadows API routes |
+| Shared edge authentication | Partial: existing relay/admin handlers remain authoritative; no duplicate pre-auth context has been introduced | Extract a secret-safe shared context only after auth-cache hit/miss and role/token parity fixtures prove no policy drift |
+
 ## Route Readiness Matrix
 
 The complete, source-derived route list (every method/path, auth class, handler,
@@ -175,7 +185,8 @@ only become visible with production data.
 As of 2026-07-07, the default admin frontend also exposes an Operations ->
 Cloudflare Platform readiness panel backed by the admin-only
 `/api/platform/capabilities` probe. It gives G1/G5 operators a read-only view
-of Workers AI, AI Gateway, Durable Object, WFP dispatch, WFP tenant route/guard
+of the scheduling-gateway owner contract, Workers AI, AI Gateway, Durable
+Object, WFP dispatch, WFP tenant route/guard
 contracts, WFP tenant smoke readiness, realtime gate state, async task refund
 replay-contract readiness, and the default-off TaskRunner submit/alarm
 foundation plus terminal-aware recurring-alarm, backoff/horizon, poll-path, and

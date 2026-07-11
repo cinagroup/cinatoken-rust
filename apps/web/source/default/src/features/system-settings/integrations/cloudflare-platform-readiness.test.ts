@@ -25,6 +25,10 @@ import {
 } from './cloudflare-platform-readiness'
 
 const baseCapabilities: PlatformReadinessCapabilities = {
+  scheduling_gateway_compiled: false,
+  scheduling_gateway_active: false,
+  scheduling_gateway_route_precedence: [],
+  scheduling_gateway_preview_fail_closed_compiled: false,
   d1_migration_ready: false,
   relay_ai_gateway_router_ready: false,
   relay_ai_gateway_rest_routes: [],
@@ -91,6 +95,10 @@ describe('Cloudflare platform readiness headline', () => {
   test('does not report every stage complete from compiled and bound state', () => {
     const summary = buildPlatformReadinessSummary(
       makeCapabilities({
+        scheduling_gateway_compiled: true,
+        scheduling_gateway_active: true,
+        scheduling_gateway_route_precedence: ['cors_preflight', 'api_router'],
+        scheduling_gateway_preview_fail_closed_compiled: true,
         d1_migration_ready: true,
         relay_ai_gateway_rest_routes: ['/v1/chat/completions'],
         relay_ai_gateway_cutover_guards: ['channel-opt-in'],
@@ -158,8 +166,45 @@ describe('Cloudflare platform readiness headline', () => {
       'implementation'
     )
 
-    assert.equal(implementation.signals[0]?.id, 'ai-gateway-implementation')
-    assert.equal(implementation.signals[0]?.status, 'blocked')
+    const signal = implementation.signals.find(
+      (item) => item.id === 'ai-gateway-implementation'
+    )
+    assert.equal(signal?.status, 'blocked')
+  })
+
+  test('requires the active scheduling gateway and preview fail-closed contract', () => {
+    const blocked = getStage(
+      buildPlatformReadinessSummary(makeCapabilities()),
+      'implementation'
+    )
+    assert.equal(
+      blocked.signals.find(
+        (signal) => signal.id === 'scheduling-gateway-implementation'
+      )?.status,
+      'blocked'
+    )
+
+    const ready = getStage(
+      buildPlatformReadinessSummary(
+        makeCapabilities({
+          scheduling_gateway_compiled: true,
+          scheduling_gateway_active: true,
+          scheduling_gateway_route_precedence: [
+            'cors_preflight',
+            'wfp_preview_unavailable',
+            'api_router',
+          ],
+          scheduling_gateway_preview_fail_closed_compiled: true,
+        })
+      ),
+      'implementation'
+    )
+    assert.equal(
+      ready.signals.find(
+        (signal) => signal.id === 'scheduling-gateway-implementation'
+      )?.status,
+      'ready'
+    )
   })
 
   test('keeps canary and smoke prerequisites distinct from verification', () => {

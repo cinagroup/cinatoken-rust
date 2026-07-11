@@ -166,6 +166,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cinatoken-gateway"
+version = "0.1.0"
+
+[[package]]
 name = "cinatoken-migration"
 version = "0.1.0"
 dependencies = [
@@ -307,6 +311,7 @@ dependencies = [
  "cinatoken-billing",
  "cinatoken-cache",
  "cinatoken-core",
+ "cinatoken-gateway",
  "cinatoken-payments",
  "cinatoken-providers",
  "cinatoken-relay",

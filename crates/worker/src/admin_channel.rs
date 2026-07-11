@@ -745,6 +745,9 @@ pub async fn create_channel(mut req: Request, env: Env) -> WorkerResult<Response
             "channel name must not be empty",
         ));
     }
+    if let Err(message) = validate_wfp_channel_other_info(payload.other_info.as_deref()) {
+        return Ok(envelope_error_response(400, message));
+    }
     let now = unix_timestamp();
     let db = env.d1("DB")?;
     let channel_id = d1_repositories::create_channel(
@@ -837,6 +840,9 @@ pub async fn update_channel(mut req: Request, env: Env) -> WorkerResult<Response
         }
     };
     let id = payload.id;
+    if let Err(message) = validate_wfp_channel_other_info(payload.other_info.as_deref()) {
+        return Ok(envelope_error_response(400, message));
+    }
     let db = env.d1("DB")?;
     let updated = d1_repositories::update_channel(
         &db,
@@ -2112,9 +2118,59 @@ fn validate_batch_tag_ids(ids: &[i64]) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn validate_wfp_channel_other_info(value: Option<&str>) -> Result<(), &'static str> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) else {
+        // Preserve opaque legacy other_info values that do not opt into WFP.
+        return Ok(());
+    };
+    let Some(object) = parsed.as_object() else {
+        return Ok(());
+    };
+    let Some(worker) = object.get("wfp_worker") else {
+        return Ok(());
+    };
+    let Some(worker) = worker
+        .as_str()
+        .map(str::trim)
+        .filter(|worker| !worker.is_empty())
+    else {
+        return Err("other_info.wfp_worker must be a nonempty string");
+    };
+    if crate::platform_gateway::normalize_worker_name(worker).as_deref() != Some(worker) {
+        return Err("other_info.wfp_worker must be a normalized WFP worker name");
+    }
+    if cinatoken_storage::channel_ai_gateway_opted_in(value) {
+        return Err("WFP transport and direct relay AI Gateway routing cannot both be enabled");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wfp_channel_other_info_requires_normalized_exclusive_transport() {
+        assert!(validate_wfp_channel_other_info(Some(
+            r#"{"wfp_worker":"tenant-a","custom":true}"#
+        ))
+        .is_ok());
+        assert!(validate_wfp_channel_other_info(Some("legacy-opaque-value")).is_ok());
+        for value in [
+            r#"{"wfp_worker":true}"#,
+            r#"{"wfp_worker":"Tenant-A"}"#,
+            r#"{"wfp_worker":"../tenant"}"#,
+            r#"{"wfp_worker":"tenant-a","ai_gateway":{"enabled":true}}"#,
+        ] {
+            assert!(
+                validate_wfp_channel_other_info(Some(value)).is_err(),
+                "expected invalid WFP channel other_info: {value}"
+            );
+        }
+    }
 
     #[test]
     fn override_validation_requires_json_or_blank() {

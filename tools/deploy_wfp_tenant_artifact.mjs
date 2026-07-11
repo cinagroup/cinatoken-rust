@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +14,10 @@ const defaultArtifactDir = path.join(
   "worker",
 );
 const defaultMainModule = "shim.mjs";
-const defaultCompatibilityDate = "2026-06-17";
+const defaultCompatibilityDate = "2026-07-11";
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
+const wasmMagic = Uint8Array.from([0x00, 0x61, 0x73, 0x6d]);
+const authorityKeyDomain = Buffer.from("cinatoken-wfp-authority-key:v1\0", "utf8");
 const routeGatewayBindings = [
   {
     key: "openaiChat",
@@ -31,11 +33,6 @@ const routeGatewayBindings = [
     key: "anthropicMessages",
     binding: "AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
     flag: "ai-gateway-id-anthropic-messages",
-  },
-  {
-    key: "openaiEmbeddings",
-    binding: "AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
-    flag: "ai-gateway-id-openai-embeddings",
   },
   {
     key: "aiRun",
@@ -100,6 +97,9 @@ try {
   if (args.flags.has("self-test-artifact-manifest")) {
     const result = runArtifactManifestSelfTest();
     printSelfTestResult(result, args.flags.has("json"));
+  } else if (args.flags.has("self-test-deploy-plan")) {
+    const result = runDeployPlanSelfTest();
+    printSelfTestResult(result, args.flags.has("json"));
   } else {
     const options = normalizeOptions(args);
     const result = await main(options);
@@ -134,29 +134,29 @@ async function main(options) {
   const routeAiGatewayIds = validateRouteGatewayIds(options.routeAiGatewayIds);
   const aiGatewayPolicy = validateAiGatewayPolicy(options.aiGatewayPolicy);
   const apiToken = required(options.apiToken, "api-token");
-  const tenantApiToken =
-    options.attachGatewayToken && options.tenantApiToken
-      ? validatePlainValue(options.tenantApiToken, "tenant-api-token")
-      : options.attachGatewayToken
-        ? validatePlainValue(apiToken, "api-token")
-        : null;
+  const tenantApiToken = resolveTenantApiToken(options, apiToken);
+  const authoritySecret = resolveAuthoritySecret(options.authoritySecret);
+  const authorityKey = deriveTenantAuthorityKey(authoritySecret, publicScriptName);
 
   const metadata = uploadMetadata({
     mainModule: options.mainModule,
     compatibilityDate,
     tenantId,
+    workerName: publicScriptName,
     accountId,
     aiGatewayId,
     routeAiGatewayIds,
     aiGatewayPolicy,
     tenantApiToken,
+    authorityKey,
   });
   const uploadUrl = dispatchUploadUrl(accountId, namespace, scriptName);
-  const modules = options.manifestOnly
-    ? []
-    : await collectArtifactModules(options.artifactDir, options.mainModule);
+  const modules = await collectArtifactModules(
+    options.artifactDir,
+    options.mainModule,
+  );
 
-  if (options.dryRun || options.manifestOnly) {
+  if (options.dryRun) {
     return {
       dryRun: true,
       publicScriptName,
@@ -177,7 +177,7 @@ async function main(options) {
         contentType: module.contentType,
       })),
       metadata: redactMetadata(metadata),
-      warnings: artifactWarnings(options, modules, apiToken, tenantApiToken),
+      warnings: artifactWarnings(options),
     };
   }
 
@@ -226,7 +226,7 @@ async function main(options) {
     ok: response.ok,
     cloudflareResponsePreview: preview.slice(0, 32768),
     cloudflareResponseJson: parsed,
-    warnings: artifactWarnings(options, modules, apiToken, tenantApiToken),
+    warnings: artifactWarnings(options),
   };
 }
 
@@ -241,8 +241,8 @@ function parseArgs(argv) {
     if (
       arg === "--dry-run" ||
       arg === "--json" ||
-      arg === "--manifest-only" ||
-      arg === "--self-test-artifact-manifest"
+      arg === "--self-test-artifact-manifest" ||
+      arg === "--self-test-deploy-plan"
     ) {
       flags.add(arg.slice(2));
       continue;
@@ -250,6 +250,12 @@ function parseArgs(argv) {
     if (arg === "--no-attach-gateway-token") {
       flags.add("no-attach-gateway-token");
       continue;
+    }
+    if (arg === "--manifest-only") {
+      usage(
+        2,
+        "--manifest-only is no longer supported; deploy plans must validate a real Rust/Wasm artifact",
+      );
     }
     if (!arg.startsWith("--")) {
       usage(2, `Unexpected argument: ${arg}`);
@@ -278,6 +284,10 @@ function normalizeOptions(args) {
     tenantApiToken:
       value("tenant-api-token", "WFP_TENANT_CF_API_TOKEN") ||
       value("tenant-api-token", "CLOUDFLARE_AI_GATEWAY_TOKEN"),
+    authoritySecret: value(
+      "authority-secret",
+      "WFP_RELAY_AUTHORITY_SECRET",
+    ),
     aiGatewayId: value("ai-gateway-id", "AI_GATEWAY_ID"),
     routeAiGatewayIds: Object.fromEntries(
       routeGatewayBindings.map((binding) => [
@@ -300,7 +310,6 @@ function normalizeOptions(args) {
     attachGatewayToken: !args.flags.has("no-attach-gateway-token"),
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
-    manifestOnly: args.flags.has("manifest-only"),
   };
 }
 
@@ -315,6 +324,9 @@ function usage(exitCode, error) {
       "Required for deploy:",
       "  --account-id <id>      or CLOUDFLARE_ACCOUNT_ID",
       "  --api-token <token>    or CLOUDFLARE_API_TOKEN",
+      "  --tenant-api-token <token> or WFP_TENANT_CF_API_TOKEN / CLOUDFLARE_AI_GATEWAY_TOKEN",
+      "    unless --no-attach-gateway-token is explicitly set",
+      "  --authority-secret <secret> or WFP_RELAY_AUTHORITY_SECRET (minimum 32 bytes)",
       "",
       "Options:",
       "  --tenant-id <id>",
@@ -323,7 +335,6 @@ function usage(exitCode, error) {
       "  --ai-gateway-id-openai-chat <id>        or AI_GATEWAY_ID_OPENAI_CHAT",
       "  --ai-gateway-id-openai-responses <id>   or AI_GATEWAY_ID_OPENAI_RESPONSES",
       "  --ai-gateway-id-anthropic-messages <id> or AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
-      "  --ai-gateway-id-openai-embeddings <id>  or AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
       "  --ai-gateway-id-ai-run <id>             or AI_GATEWAY_ID_AI_RUN",
       "  --ai-gateway-request-timeout-ms <ms>    or AI_GATEWAY_REQUEST_TIMEOUT_MS",
       "  --ai-gateway-max-attempts <1-5>         or AI_GATEWAY_MAX_ATTEMPTS",
@@ -337,8 +348,8 @@ function usage(exitCode, error) {
       "  --artifact-dir <path>       default crates/wfp-tenant/build/worker",
       "  --main-module <path>        default shim.mjs",
       "  --dry-run                   print redacted upload plan without PUT",
-      "  --manifest-only             skip artifact directory scan; dry-run style only",
-      "  --self-test-artifact-manifest  validate local artifact manifest hashing without network",
+      "  --self-test-artifact-manifest  validate strict Rust/Wasm artifacts without network",
+      "  --self-test-deploy-plan        validate fail-closed token handling without network",
       "  --json",
       "  --no-attach-gateway-token   omit CF_API_TOKEN binding from tenant metadata",
     ].join("\n"),
@@ -370,12 +381,50 @@ async function collectArtifactModules(artifactDir, mainModule) {
     }),
   );
   modules.sort((left, right) => left.name.localeCompare(right.name));
-  if (!modules.some((module) => module.name === mainModule)) {
+  validateRustWasmArtifact(modules, mainModule);
+  return modules;
+}
+
+function validateRustWasmArtifact(modules, mainModule) {
+  const main = modules.find((module) => module.name === mainModule);
+  if (!main) {
+    throw new Error(`main module ${mainModule} was not found in the artifact`);
+  }
+  if (main.bytes.length === 0) {
+    throw new Error(`main module ${mainModule} is empty`);
+  }
+
+  const wasmModules = modules.filter((module) => module.name.endsWith(".wasm"));
+  if (wasmModules.length === 0) {
     throw new Error(
-      `main module ${mainModule} was not found in ${relativePath(artifactDir)}`,
+      "Rust/Wasm artifact must include at least one .wasm module",
     );
   }
-  return modules;
+  for (const module of wasmModules) {
+    if (module.bytes.length < 8 || !hasWasmMagic(module.bytes)) {
+      throw new Error(
+        `Wasm module ${module.name} must be nonempty and start with magic bytes 00 61 73 6d`,
+      );
+    }
+  }
+
+  let shimText;
+  try {
+    shimText = new TextDecoder("utf-8", { fatal: true }).decode(main.bytes);
+  } catch {
+    throw new Error(
+      `main module ${mainModule} must contain valid UTF-8 shim text`,
+    );
+  }
+  if (!wasmModules.some((module) => shimText.includes(module.name))) {
+    throw new Error(
+      `main module ${mainModule} must reference at least one uploaded .wasm module by name`,
+    );
+  }
+}
+
+function hasWasmMagic(bytes) {
+  return wasmMagic.every((byte, index) => bytes[index] === byte);
 }
 
 async function listFiles(directory) {
@@ -394,11 +443,13 @@ function uploadMetadata({
   mainModule,
   compatibilityDate,
   tenantId,
+  workerName,
   accountId,
   aiGatewayId,
   routeAiGatewayIds,
   aiGatewayPolicy,
   tenantApiToken,
+  authorityKey,
 }) {
   const bindings = [
     {
@@ -410,6 +461,11 @@ function uploadMetadata({
       name: "CF_ACCOUNT_ID",
       type: "plain_text",
       text: accountId,
+    },
+    {
+      name: "CINATOKEN_WFP_WORKER_NAME",
+      type: "plain_text",
+      text: workerName,
     },
   ];
   if (aiGatewayId) {
@@ -446,6 +502,11 @@ function uploadMetadata({
       text: tenantApiToken,
     });
   }
+  bindings.push({
+    name: "WFP_RELAY_AUTHORITY_KEY",
+    type: "secret_text",
+    text: authorityKey,
+  });
   return {
     main_module: mainModule,
     compatibility_date: compatibilityDate,
@@ -527,24 +588,50 @@ function redactMetadata(metadata) {
   };
 }
 
-function artifactWarnings(options, modules, apiToken, tenantApiToken) {
-  const warnings = [];
-  if (options.manifestOnly) {
-    warnings.push("manifest-only mode skipped artifact directory scanning");
-  }
-  if (options.attachGatewayToken && !options.tenantApiToken) {
-    warnings.push(
-      "tenant CF_API_TOKEN binding uses the deployment token; prefer WFP_TENANT_CF_API_TOKEN or CLOUDFLARE_AI_GATEWAY_TOKEN for staging/prod",
+function resolveTenantApiToken(options, apiToken) {
+  if (!options.attachGatewayToken) return null;
+  if (!options.tenantApiToken) {
+    throw new Error(
+      "tenant-api-token is required when attaching CF_API_TOKEN; set --tenant-api-token, WFP_TENANT_CF_API_TOKEN, or CLOUDFLARE_AI_GATEWAY_TOKEN, or explicitly use --no-attach-gateway-token",
     );
   }
+  const tenantApiToken = validatePlainValue(
+    options.tenantApiToken,
+    "tenant-api-token",
+  );
+  if (tenantApiToken === apiToken) {
+    throw new Error(
+      "deployment token and tenant runtime token must be different values",
+    );
+  }
+  return tenantApiToken;
+}
+
+function resolveAuthoritySecret(value) {
+  const secret = required(value, "authority-secret").trim();
+  if (new TextEncoder().encode(secret).length < 32) {
+    throw new Error("authority-secret must contain at least 32 UTF-8 bytes");
+  }
+  return secret;
+}
+
+function deriveTenantAuthorityKey(authoritySecret, workerName) {
+  const normalizedWorker = normalizeWorkerName(workerName);
+  if (!normalizedWorker || normalizedWorker !== workerName) {
+    throw new Error("worker name must be normalized before deriving authority key");
+  }
+  return createHmac("sha256", Buffer.from(authoritySecret, "utf8"))
+    .update(authorityKeyDomain)
+    .update(Buffer.from(normalizedWorker, "utf8"))
+    .digest("base64url");
+}
+
+function artifactWarnings(options) {
+  const warnings = [];
   if (!options.attachGatewayToken) {
-    warnings.push("tenant CF_API_TOKEN binding omitted; runtime will fail closed until attached");
-  }
-  if (!options.manifestOnly && modules.length === 0) {
-    warnings.push("no artifact modules were attached");
-  }
-  if (options.tenantApiToken && tenantApiToken && apiToken === tenantApiToken) {
-    warnings.push("deployment token and tenant runtime token are the same value");
+    warnings.push(
+      "tenant CF_API_TOKEN binding omitted; runtime will fail closed until attached",
+    );
   }
   return warnings;
 }
@@ -556,7 +643,7 @@ function artifactManifest(options, modules) {
     buildCommand: "bun run build:wfp-tenant",
     artifactDir: relativePath(options.artifactDir),
     mainModule: options.mainModule,
-    scanned: !options.manifestOnly,
+    scanned: true,
     moduleCount: modules.length,
     totalBytes,
     mainModulePresent: modules.some((module) => module.name === options.mainModule),
@@ -572,25 +659,59 @@ function artifactManifest(options, modules) {
 
 function runArtifactManifestSelfTest() {
   const encode = (value) => new TextEncoder().encode(value);
+  const validWasm = Uint8Array.from([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  ]);
   const options = {
     artifactDir: defaultArtifactDir,
     mainModule: defaultMainModule,
-    manifestOnly: false,
   };
+  const module = (name, bytes, contentType = contentTypeFor(name)) => ({
+    name,
+    bytes,
+    sha256: sha256Hex(bytes),
+    contentType,
+  });
+  const cases = [];
+  expectArtifactValidationFailure(
+    "missing-main-shim",
+    [module("index_bg.wasm", validWasm)],
+    /main module shim\.mjs was not found/,
+    cases,
+  );
+  expectArtifactValidationFailure(
+    "missing-wasm",
+    [module(defaultMainModule, encode('import "./index_bg.wasm";'))],
+    /at least one \.wasm module/,
+    cases,
+  );
+  expectArtifactValidationFailure(
+    "fake-wasm",
+    [
+      module("index_bg.wasm", encode("not-wasm")),
+      module(defaultMainModule, encode('import "./index_bg.wasm";')),
+    ],
+    /magic bytes 00 61 73 6d/,
+    cases,
+  );
+  expectArtifactValidationFailure(
+    "unreferenced-wasm",
+    [
+      module("index_bg.wasm", validWasm),
+      module(defaultMainModule, encode("export default {};")),
+    ],
+    /must reference at least one uploaded \.wasm module/,
+    cases,
+  );
   const modules = [
-    {
-      name: "index_bg.wasm",
-      bytes: encode("wasm-bytes"),
-      sha256: sha256Hex(encode("wasm-bytes")),
-      contentType: "application/wasm",
-    },
-    {
-      name: defaultMainModule,
-      bytes: encode("export default {};"),
-      sha256: sha256Hex(encode("export default {};")),
-      contentType: "application/javascript+module",
-    },
+    module("index_bg.wasm", validWasm),
+    module(
+      defaultMainModule,
+      encode('import wasm from "./index_bg.wasm"; export default wasm;'),
+    ),
   ];
+  validateRustWasmArtifact(modules, defaultMainModule);
+  cases.push({ name: "valid-rust-wasm", passed: true });
   const manifest = artifactManifest(options, modules);
   if (manifest.runtime !== "rust-wasm") {
     throw new Error("artifact manifest did not report rust-wasm runtime");
@@ -609,8 +730,172 @@ function runArtifactManifestSelfTest() {
   return {
     ok: true,
     artifactManifestSelfTest: true,
+    cases,
     artifactManifest: manifest,
   };
+}
+
+function expectArtifactValidationFailure(name, modules, expected, cases) {
+  try {
+    validateRustWasmArtifact(modules, defaultMainModule);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!expected.test(message)) {
+      throw new Error(`${name} failed with unexpected error: ${message}`);
+    }
+    cases.push({ name, passed: true });
+    return;
+  }
+  throw new Error(`${name} artifact unexpectedly passed validation`);
+}
+
+function runDeployPlanSelfTest() {
+  const cases = [];
+  expectTokenResolutionFailure(
+    "missing-runtime-token",
+    { attachGatewayToken: true, tenantApiToken: null },
+    "deploy-token",
+    /tenant-api-token is required/,
+    cases,
+  );
+  expectTokenResolutionFailure(
+    "equal-runtime-token",
+    { attachGatewayToken: true, tenantApiToken: "deploy-token" },
+    "deploy-token",
+    /must be different values/,
+    cases,
+  );
+  const separate = resolveTenantApiToken(
+    { attachGatewayToken: true, tenantApiToken: "runtime-token" },
+    "deploy-token",
+  );
+  if (separate !== "runtime-token") {
+    throw new Error("separate runtime token was not preserved");
+  }
+  const separateMetadata = selfTestUploadMetadata(separate);
+  const separateBinding = separateMetadata.bindings.find(
+    (binding) => binding.name === "CF_API_TOKEN",
+  );
+  if (
+    separateBinding?.text !== "runtime-token" ||
+    separateMetadata.bindings.some((binding) => binding.text === "deploy-token")
+  ) {
+    throw new Error("deployment metadata did not preserve token separation");
+  }
+  cases.push({ name: "separate-runtime-token", passed: true });
+  const omitted = resolveTenantApiToken(
+    { attachGatewayToken: false, tenantApiToken: null },
+    "deploy-token",
+  );
+  if (omitted !== null) {
+    throw new Error("explicit no-attach mode did not omit the runtime token");
+  }
+  if (
+    selfTestUploadMetadata(omitted).bindings.some(
+      (binding) => binding.name === "CF_API_TOKEN",
+    )
+  ) {
+    throw new Error(
+      "explicit no-attach mode still produced a CF_API_TOKEN binding",
+    );
+  }
+  cases.push({ name: "explicit-no-attach", passed: true });
+  expectAuthorityResolutionFailure(
+    "missing-authority-secret",
+    null,
+    /authority-secret is required/,
+    cases,
+  );
+  expectAuthorityResolutionFailure(
+    "short-authority-secret",
+    "too-short",
+    /at least 32 UTF-8 bytes/,
+    cases,
+  );
+  const authoritySecret = resolveAuthoritySecret(
+    "0123456789abcdef0123456789abcdef",
+  );
+  const authorityKey = deriveTenantAuthorityKey(authoritySecret, "tenant-smoke");
+  const authorityMetadata = selfTestUploadMetadata(
+    "runtime-token",
+    authorityKey,
+  );
+  const authorityBinding = authorityMetadata.bindings.find(
+    (binding) => binding.name === "WFP_RELAY_AUTHORITY_KEY",
+  );
+  if (
+    authorityBinding?.type !== "secret_text" ||
+    authorityBinding.text !== authorityKey ||
+    authorityBinding.text === authoritySecret ||
+    !authorityMetadata.bindings.some(
+      (binding) =>
+        binding.name === "CINATOKEN_WFP_WORKER_NAME" &&
+        binding.text === "tenant-smoke",
+    )
+  ) {
+    throw new Error("derived authority key or worker identity binding is missing");
+  }
+  const otherTenantKey = deriveTenantAuthorityKey(authoritySecret, "tenant-other");
+  if (otherTenantKey === authorityKey) {
+    throw new Error("authority key derivation was not tenant scoped");
+  }
+  cases.push({ name: "tenant-scoped-authority-binding", passed: true });
+  return { ok: true, deployPlanSelfTest: true, cases };
+}
+
+function selfTestUploadMetadata(
+  tenantApiToken,
+  authorityKey = deriveTenantAuthorityKey(
+    "0123456789abcdef0123456789abcdef",
+    "tenant-smoke",
+  ),
+) {
+  return uploadMetadata({
+    mainModule: defaultMainModule,
+    compatibilityDate: defaultCompatibilityDate,
+    tenantId: "tenant-smoke",
+    workerName: "tenant-smoke",
+    accountId: "00000000000000000000000000000000",
+    aiGatewayId: null,
+    routeAiGatewayIds: {},
+    aiGatewayPolicy: {},
+    tenantApiToken,
+    authorityKey,
+  });
+}
+
+function expectAuthorityResolutionFailure(name, value, expected, cases) {
+  try {
+    resolveAuthoritySecret(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!expected.test(message)) {
+      throw new Error(`${name} failed with unexpected error: ${message}`);
+    }
+    cases.push({ name, passed: true });
+    return;
+  }
+  throw new Error(`${name} unexpectedly passed authority validation`);
+}
+
+function expectTokenResolutionFailure(
+  name,
+  options,
+  apiToken,
+  expected,
+  cases,
+) {
+  try {
+    resolveTenantApiToken(options, apiToken);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!expected.test(message)) {
+      throw new Error(`${name} failed with unexpected error: ${message}`);
+    }
+    cases.push({ name, passed: true });
+    return;
+  }
+  throw new Error(`${name} unexpectedly passed token validation`);
 }
 
 function sha256Hex(bytes) {
@@ -765,6 +1050,18 @@ function printSelfTestResult(result, json) {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
+  if (result.deployPlanSelfTest) {
+    console.log(
+      [
+        "WFP tenant deploy-plan self-test",
+        `ok: ${result.ok}`,
+        ...result.cases.map(
+          (testCase) => `${testCase.name}: ${testCase.passed}`,
+        ),
+      ].join("\n"),
+    );
+    return;
+  }
   console.log(
     [
       "WFP tenant artifact manifest self-test",
@@ -774,6 +1071,7 @@ function printSelfTestResult(result, json) {
       `total_bytes: ${result.artifactManifest.totalBytes}`,
       `main_module_present: ${result.artifactManifest.mainModulePresent}`,
       `wasm_module_present: ${result.artifactManifest.wasmModulePresent}`,
+      ...result.cases.map((testCase) => `${testCase.name}: ${testCase.passed}`),
     ].join("\n"),
   );
 }

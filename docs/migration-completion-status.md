@@ -112,9 +112,16 @@ A full diff of every Go-registered route against the Rust worker closed these
   now has a default-off Worker-binding proof route for actual-serving-group
   billing, but still needs deployed Queue/D1 replay and archived remote staging
   evidence before production use.
-- Authority-first WFP relay transport. Tenant paid AI routes must remain off
-  until token policy, channel selection, quota settlement, and audit all remain
-  owned by the central relay.
+- Authority-first WFP relay transport is locally implemented but remains
+  default-off. The central relay authenticates the token, selects the D1
+  channel, reserves quota, reads `channels.other_info.wfp_worker`, and sends a
+  30-second HMAC-SHA256 authority derived per worker from the platform-only
+  `WFP_RELAY_AUTHORITY_SECRET`. The uploader binds only the derived
+  `WFP_RELAY_AUTHORITY_KEY` into that tenant. The tenant verifies the body/path/
+  method/channel/request-id binding and returns the response to central
+  settlement/refund and audit. Production still needs staging signed-authority
+  billing and replay-resistance evidence plus a real strict Rust/Wasm
+  upload/readback; the envelope is not claimed to be replay-proof.
 - Frontend bundle-size reduction and budget ratchet tightening after heavy
   route-specific chunks are split. Strict lint is now zero-debt gated and
   `check:web:quality` is green locally.
@@ -169,13 +176,16 @@ A full diff of every Go-registered route against the Rust worker closed these
    separated frontend/API redirect-origin proof where applicable.
 8. AI Gateway cross-model fallback and WFP paid traffic are not
    production-ready. Keep `RELAY_AI_GATEWAY_ROUTER_ENABLED`,
-   `RELAY_MODEL_FALLBACK_ENABLED`, `WFP_DISPATCH_ENABLED`, and
-   `WFP_INTERNAL_DISPATCH_ENABLED` constrained to explicit staging canaries until
-   their billing, authority, fallback-policy, and durable audit gates close.
+   `RELAY_MODEL_FALLBACK_ENABLED`, `WFP_DISPATCH_ENABLED`,
+   `WFP_INTERNAL_DISPATCH_ENABLED`, and `WFP_RELAY_TRANSPORT_ENABLED`
+   constrained to explicit staging canaries until their billing, authority,
+   fallback-policy, upload/readback, and durable audit gates close. Admin WFP
+   dispatch is status-only and must never be used for a paid route canary.
 
 ## Current Safe Statement
 
 The current system can support staged and scoped Rust/Cloudflare validation.
 It cannot yet be described as a complete replacement for the Go/VPS deployment,
 and the Go deployment must remain available for rollback until the production
-gates close.
+gates close. No WFP tenant deployment, signed-authority billing canary, or
+replay-resistance evidence is claimed by this status document.

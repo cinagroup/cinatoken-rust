@@ -38,6 +38,7 @@ export type PlatformReadinessSignalId =
   | 'ai-gateway-actual-group-billing-smoke'
   | 'ai-gateway-fallback-replay'
   | 'wfp-tenant-smoke'
+  | 'wfp-relay-authority-smoke'
   | 'realtime-smoke'
   | 'task-runner-replay'
   | 'task-runner-cutover'
@@ -71,14 +72,19 @@ export type PlatformReadinessCapabilities = Pick<
   | 'wfp_dispatch_binding_available'
   | 'wfp_dispatch_enabled'
   | 'wfp_internal_dispatch_enabled'
+  | 'wfp_relay_transport_enabled'
+  | 'wfp_relay_authority_secret_configured'
   | 'wfp_tenant_supported_routes'
   | 'wfp_tenant_cutover_guards'
   | 'wfp_tenant_script_plan_compiled'
   | 'wfp_tenant_rust_wasm_runtime_compiled'
   | 'wfp_tenant_route_manifest_compiled'
   | 'wfp_tenant_internal_dispatch_required_compiled'
+  | 'wfp_tenant_relay_authority_verifier_compiled'
   | 'wfp_tenant_response_header_guard_compiled'
   | 'wfp_tenant_ai_gateway_policy_compiled'
+  | 'wfp_relay_authority_transport_compiled'
+  | 'wfp_relay_authority_transport_ready'
   | 'wfp_tenant_smoke_ready'
   | 'realtime_sessions_do_available'
   | 'realtime_session_gateway_enabled'
@@ -141,8 +147,10 @@ export function buildPlatformReadinessSummary(
     capabilities.wfp_tenant_rust_wasm_runtime_compiled,
     capabilities.wfp_tenant_route_manifest_compiled,
     capabilities.wfp_tenant_internal_dispatch_required_compiled,
+    capabilities.wfp_tenant_relay_authority_verifier_compiled,
     capabilities.wfp_tenant_response_header_guard_compiled,
-    capabilities.wfp_tenant_ai_gateway_policy_compiled
+    capabilities.wfp_tenant_ai_gateway_policy_compiled,
+    capabilities.wfp_relay_authority_transport_compiled
   )
   const realtimeImplementation = allReady(
     capabilities.do_websocket_hibernation_compiled,
@@ -230,6 +238,11 @@ export function buildPlatformReadinessSummary(
     verificationSignal(
       'wfp-tenant-smoke',
       capabilities.wfp_tenant_smoke_ready,
+      false
+    ),
+    verificationSignal(
+      'wfp-relay-authority-smoke',
+      capabilities.wfp_relay_authority_transport_ready,
       false
     ),
     verificationSignal(

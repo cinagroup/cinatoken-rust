@@ -1,6 +1,6 @@
 name = "cinatoken-wfp-tenant"
 main = "build/worker/shim.mjs"
-compatibility_date = "2026-06-17"
+compatibility_date = "2026-07-11"
 compatibility_flags = ["nodejs_compat"]
 
 [build]
@@ -8,8 +8,11 @@ command = "worker-build --release"
 
 [vars]
 CINATOKEN_TENANT_ID = "local"
+CINATOKEN_WFP_WORKER_NAME = "cinatoken-wfp-tenant"
 CF_ACCOUNT_ID = ""
 AI_GATEWAY_ID = ""
 
 # Set at deploy/upload time. Do not commit the value.
 # wrangler secret put CF_API_TOKEN
+# Bind only the per-worker derived key. Never expose the platform master secret here.
+# wrangler secret put WFP_RELAY_AUTHORITY_KEY

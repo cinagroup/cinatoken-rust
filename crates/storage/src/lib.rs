@@ -77,6 +77,20 @@ impl RelayChannel {
     pub fn ai_gateway_opted_in(&self) -> bool {
         channel_ai_gateway_opted_in(&self.other_info)
     }
+
+    pub fn wfp_worker(&self) -> Option<String> {
+        channel_wfp_worker(&self.other_info)
+    }
+}
+
+pub fn channel_wfp_worker(other_info: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(other_info.trim()).ok()?;
+    value
+        .get("wfp_worker")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub fn channel_ai_gateway_opted_in(other_info: &str) -> bool {
@@ -330,6 +344,23 @@ mod tests {
             r#"{"relay_ai_gateway_enabled":0}"#,
         ] {
             assert!(!channel_ai_gateway_opted_in(other_info), "{other_info}");
+        }
+    }
+
+    #[test]
+    fn relay_channel_wfp_worker_requires_an_explicit_nonempty_string() {
+        assert_eq!(
+            channel_wfp_worker(r#"{"wfp_worker":" tenant-a "}"#).as_deref(),
+            Some("tenant-a")
+        );
+        for other_info in [
+            "",
+            "{}",
+            "not-json",
+            r#"{"wfp_worker":""}"#,
+            r#"{"wfp_worker":true}"#,
+        ] {
+            assert_eq!(channel_wfp_worker(other_info), None, "{other_info}");
         }
     }
 

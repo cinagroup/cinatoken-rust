@@ -270,9 +270,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cinatoken-wfp-authority"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "cinatoken-wfp-tenant"
 version = "0.1.0"
 dependencies = [
+ "cinatoken-wfp-authority",
  "console_error_panic_hook",
  "js-sys",
  "serde",
@@ -301,6 +313,7 @@ dependencies = [
  "cinatoken-storage",
  "cinatoken-tasks",
  "cinatoken-tokenizer",
+ "cinatoken-wfp-authority",
  "console_error_panic_hook",
  "futures-util",
  "getrandom",

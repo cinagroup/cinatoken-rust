@@ -357,6 +357,7 @@ captured.
 | Flag | Effect when on | Required binding/evidence |
 | --- | --- | --- |
 | `WFP_DISPATCH_ENABLED` | Enables the Rust dispatch Worker pre-router for tenant/preview traffic | `DISPATCHER` dispatch namespace, admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` route smoke for internal paths proving controlled `inbound_dispatch_route=internal-path` |
+| `WFP_RELAY_TRANSPORT_ENABLED` | Allows an already authenticated, D1-selected, and quota-reserved central relay request to use the channel's `channels.other_info.wfp_worker` as its outbound transport | Default `false` in every environment; signed-authority rejection tests, strict Rust/Wasm upload/readback, staging reserve/settle/refund/audit canary, and replay-resistance evidence |
 | `WFP_PREVIEW_HOST_SUFFIX` | Maps `{tenant}.{suffix}` hostnames to dispatch namespace worker names | DNS/route review, tenant-name validation |
 | `WFP_INTERNAL_DISPATCH_ENABLED` | Enables `/api/platform/dispatch/:worker/...` as an admin-only internal dispatch test path | Admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` status smoke with empty `inbound_sensitive_headers`, `inbound_dispatch_route=internal-path`, matching `inbound_dispatch_worker` and `x-cinatoken-wfp-runtime`, plus unauthenticated 401/403 check; keep off in production unless explicitly needed |
 | `WFP_DISPATCH_WORKER_PREFIX` | Prefixes sanitized tenant names before `DISPATCHER.get()` | Naming convention and collision review |
@@ -365,28 +366,30 @@ captured.
 | `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` | Permits Realtime D1 quota/replay/audit settlement and allows the public v1 route to proceed past its billing interlock | Isolated staging D1 only until idempotent pre-reserve/refund, per-response replay identity, two-response settlement, bounded alarm retry, rollback, and no-double-charge evidence pass; explicitly false in default/staging/production config |
 | `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` | Plain non-secret var that bounds how long a newly created per-response reservation may remain unsettled before the Durable Object's shared alarm attempts an idempotent D1 refund | Default `600`; accepted range `30..3600`; missing, unparsable, or out-of-range values fall back to `600`. Changes do not rewrite persisted deadlines. Set from measured staging response-duration p99 plus retry/clock-skew margin, archive the capability value before/after a temporary override, prove a not-yet-due lease is untouched and an expired lease refunds once after eviction/restart, and alert on repeated refund attempts before production canary. Expiry refunds continue when the settlement write gate is off |
 
-### WFP tenant script deploy control plane
+### WFP tenant artifact and relay authority
 
-The root-only control-plane routes:
+The root-only plan route may report redacted artifact requirements, but the
+Worker-side deploy route is disabled. The generated JavaScript fallback is
+status-only and is not a production AI runtime. Build `crates/wfp-tenant` with
+`bun run build:wfp-tenant`, then use only the strict Rust/Wasm artifact uploader
+behind `bun run deploy:wfp-tenant`. It rejects a missing/empty main shim, a
+missing or invalid Wasm module, an incomplete import graph, and token reuse.
 
-- `POST /api/platform/wfp/tenant-script/plan`
-- `POST /api/platform/wfp/tenant-script/deploy`
-
-generate a small tenant Worker module and, for `deploy`, upload it to the
-Cloudflare Workers for Platforms dispatch namespace API. This REST call is
-control-plane only; hot tenant traffic still uses the `DISPATCHER` binding.
-The repository also includes a standalone Rust/Wasm tenant Worker at
-`crates/wfp-tenant`. The Worker-side deploy route still uploads the ES module
-fallback, but the preferred Rust/Wasm path is the local artifact uploader:
-build with `bun run build:wfp-tenant`, then upload the generated
-`crates/wfp-tenant/build/worker` directory with `bun run deploy:wfp-tenant`.
+The official Workers for Platforms Scripts REST API documents the dispatch
+namespace script upload and readback endpoints:
+<https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/subresources/namespaces/subresources/scripts/>.
+Cloudflare's Worker guidance also recommends explicit secret handling and
+request-boundary validation:
+<https://developers.cloudflare.com/workers/best-practices/workers-best-practices/>.
 
 | Var/secret | Kind | Required for | Notes |
 | --- | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | var | Tenant script plan/deploy URL and runtime AI Gateway calls | Plain account identifier; may be left empty until WFP staging |
-| `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace script upload, tenant runtime AI Gateway calls, and fallback main-relay AI Gateway readiness signal | Never commit; scope to Worker dispatch namespace script edit plus AI Gateway/Workers AI calls needed by the tenant script |
+| `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace Rust/Wasm script upload/readback only | Never commit; use a least-privilege deploy token and do not attach it to the tenant runtime |
 | `CLOUDFLARE_AI_GATEWAY_TOKEN` | secret | Preferred main-relay AI Gateway REST runtime token once the router is canaried | Prefer this narrower runtime secret over reusing the WFP dispatch deploy token |
-| `WFP_TENANT_CF_API_TOKEN` or `CLOUDFLARE_AI_GATEWAY_TOKEN` | local secret/env for artifact uploader | Optional tenant runtime `CF_API_TOKEN` binding | Prefer this over reusing the dispatch deploy token for staging/prod tenant runtime calls |
+| `WFP_TENANT_CF_API_TOKEN` or `CLOUDFLARE_AI_GATEWAY_TOKEN` | local secret/env for artifact uploader | Required tenant runtime `CF_API_TOKEN` binding for real upload | Must be non-empty and distinct from `CLOUDFLARE_API_TOKEN`; least privilege for runtime AI Gateway/Workers AI calls only |
+| `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central authority signing only | Master secret, minimum 32 bytes; retained only by the platform Worker and local artifact uploader context; never bind it into a tenant Worker or expose it in manifests/logs |
+| `WFP_RELAY_AUTHORITY_KEY` | tenant Worker secret | Verification for one named tenant Worker | The artifact uploader derives this per-worker HMAC key from the platform master and worker name, then binds only this key into that tenant; it must not equal or reveal the platform master |
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
@@ -398,7 +401,6 @@ build with `bun run build:wfp-tenant`, then upload the generated
 | `AI_GATEWAY_ID_OPENAI_CHAT` | var | Optional WFP tenant gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_OPENAI_RESPONSES` | var | Optional WFP tenant gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | var | Optional WFP tenant gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only |
-| `AI_GATEWAY_ID_OPENAI_EMBEDDINGS` | var | Optional WFP tenant gateway override for `/v1/embeddings` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_AI_RUN` | var | Optional WFP tenant gateway override for `/ai/run` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_REQUEST_TIMEOUT_MS` | var | Optional WFP tenant `cf-aig-request-timeout` header | Positive integer milliseconds; controlled by tenant binding, never by caller headers |
 | `AI_GATEWAY_MAX_ATTEMPTS` | var | Optional WFP tenant `cf-aig-max-attempts` header | Positive integer 1-5 |
@@ -410,66 +412,37 @@ build with `bun run build:wfp-tenant`, then upload the generated
 
 Smoke order:
 
-1. Set `CLOUDFLARE_ACCOUNT_ID`, `WFP_DISPATCH_NAMESPACE`, and
-   `CLOUDFLARE_API_TOKEN` in staging.
-2. Call `/api/platform/wfp/tenant-script/plan` as a root admin and archive the
-   redacted metadata plus generated script.
-3. Run `bun run check:wfp-tenant`, `bun run check:wfp-tenant:deploy-plan`, and,
-   when `worker-build` is installed, `bun run build:wfp-tenant`; archive the
-   `crates/wfp-tenant/build/worker` artifact manifest. On Windows, ensure
-   either GNU binutils provides `dlltool.exe` or Visual Studio Build Tools'
-   `link.exe` wins over Git/Hermes in PATH before installing `worker-build`.
-4. Preferred Rust/Wasm path: run `bun run deploy:wfp-tenant -- --script-name
-   <tenant> --tenant-id <tenant> --namespace <dispatch-namespace>` first with
-   `--dry-run`, then without `--dry-run`, and confirm a 2xx Cloudflare API
-   response. When staging uses route-separated AI Gateway policies, pass the
-    matching uploader flags (`--ai-gateway-id-openai-chat`,
-    `--ai-gateway-id-openai-responses`,
-    `--ai-gateway-id-anthropic-messages`,
-    `--ai-gateway-id-openai-embeddings`, and/or `--ai-gateway-id-ai-run`) or
-   set the same-named env vars before upload. If staging needs per-request AI
-   Gateway controls, pass the matching `--ai-gateway-*` request-policy flags or
-   set the env vars listed above; tenant status must later report configured
-   policy entries as `valid=true`. Fallback path: call
-   `/api/platform/wfp/tenant-script/deploy` to upload the generated ES module.
-5. Enable the commented `DISPATCHER` binding and, only then, run an
-   admin-authenticated internal
-   `/api/platform/dispatch/:worker/__cinatoken/tenant/status` smoke with
-   `WFP_DISPATCH_ENABLED=true` in staging using
-   `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm`. Confirm the same
-   URL fails 401/403 without an admin session and that tenant status reports
-   `inbound_sensitive_headers_present=false`,
-   `inbound_dispatch_route=internal-path`, and
-   `inbound_dispatch_worker=<worker>`. The main Worker rewrites the internal
-   prefix away before invoking the dispatch namespace, so the tenant Worker
-   should receive `/__cinatoken/tenant/status`, not the
-   `/api/platform/dispatch/...` control-plane path. The tenant Worker should
-   not receive the admin cookie, relay/API-key headers, Cloudflare Access
-   client credentials, or caller-supplied `x-cinatoken-*` markers; only the
-   controlled WFP route/worker request markers are allowed through.
-6. Run route-set parity smoke through the generated fallback and preferred
-   Rust/Wasm artifact for `/v1/chat/completions`, `/v1/responses`,
-   `/v1/messages`, `/v1/embeddings`, and `/ai/run`. Confirm the fallback status
-   reports `runtime: "js-fallback"` only when smoke is run with
-   `--expect-runtime js-fallback`, the artifact status reports
-   `runtime: "rust-wasm"` by default, `x-cinatoken-wfp-runtime` matches the
-   expected runtime, `route_gateways` reports the expected route-specific env
-   names, `ai_gateway_request_policy` reports valid configured policy bindings,
-   client `Authorization` is not forwarded, and AI Gateway logs include flat
-   tenant metadata for each route family. If route-specific gateway IDs are set,
-   confirm each route lands in the intended Gateway before comparing provider
-   output. Public preview-host AI route attempts must remain disabled or return
-   `403 tenant_internal_dispatch_required`; only the
-   admin-authenticated internal dispatch path is allowed to reach tenant AI
-   forwarding. `bun run smoke:wfp-dispatch` now enforces the response-header
-   leakage guard: tenant/runtime marker headers must be present while
-   `cf-aig-*`, auth/cookie/API-key headers, non-WFP `x-cinatoken-*`, and
-   upstream provider metadata are absent. Cloudflare edge envelope headers such
-   as `date`, `cf-ray`, content length, and transfer metadata may be recorded
-   separately and do not count as tenant allowlist evidence.
-   Keep legacy `/v1/completions` on the main relay unless Cloudflare documents
-   a matching REST endpoint or a provider-native tenant path is explicitly
-   added.
+1. Keep `WFP_RELAY_TRANSPORT_ENABLED=false`. Provision the platform-only
+   `WFP_RELAY_AUTHORITY_SECRET` and prepare separate least-privilege deploy and
+   tenant runtime tokens. Never bind the master secret into a tenant Worker.
+2. Run the WFP tenant checks and `bun run build:wfp-tenant`; archive the strict
+   dry-run manifest from `tools/deploy_wfp_tenant_artifact.mjs`, including every
+   module hash and the validated Wasm import graph.
+3. Against staging only, run the strict uploader with the deploy token, distinct
+   runtime token, and platform master available only to the uploader process.
+   Verify it derives and binds `WFP_RELAY_AUTHORITY_KEY` for the named worker,
+   not `WFP_RELAY_AUTHORITY_SECRET`. Archive the redacted PUT result and a GET
+   content/metadata readback that matches the dry-run artifact hashes. Do not use
+   `/api/platform/wfp/tenant-script/deploy`; it is intentionally disabled.
+4. Enable only the gates needed for an admin-authenticated status probe. Confirm
+   `/api/platform/dispatch/:worker/__cinatoken/tenant/status` reaches the
+   Rust/Wasm runtime, while every admin AI path, preview-host AI path, and
+   `/v1/embeddings` attempt is rejected.
+5. Seed an isolated staging channel with
+   `channels.other_info.wfp_worker=<worker>`, enable
+   `WFP_RELAY_TRANSPORT_ENABLED` for the canary, and call one retained AI route
+   through the normal public relay token boundary. Do not call a tenant AI route
+   through the admin dispatch endpoint.
+6. Archive authority rejection cases for wrong worker/method/path/body/channel,
+   stale/expired time, and tampering. Separately capture replay-resistance
+   evidence; the 30-second body-bound envelope is not by itself proof that a
+   valid authority cannot be replayed. For the accepted request, prove one D1
+   channel selection and reserve, then exactly one central settlement or refund
+   and the matching audit record. Disable the transport gate after smoke.
+
+No staging upload, readback, signed-authority billing canary, or
+replay-resistance evidence is claimed by this checklist; those are still
+required production evidence.
 
 ### Migration prerequisite
 

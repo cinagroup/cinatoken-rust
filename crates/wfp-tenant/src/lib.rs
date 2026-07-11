@@ -5,6 +5,10 @@
 //! exposes a status smoke endpoint and forwards selected AI routes to
 //! Cloudflare AI Gateway with tenant-scoped headers.
 
+use cinatoken_wfp_authority::{
+    decode_worker_key, validate_worker_name, verify_authority_with_worker_key,
+    AuthorityExpectation, AUTHORITY_HEADER, AUTHORITY_TENANT_KEY_ENV,
+};
 use serde::Serialize;
 use serde_json::json;
 use url::Url;
@@ -21,7 +25,6 @@ const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
 const AI_GATEWAY_ID_OPENAI_CHAT_ENV: &str = "AI_GATEWAY_ID_OPENAI_CHAT";
 const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES";
 const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
-const AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV: &str = "AI_GATEWAY_ID_OPENAI_EMBEDDINGS";
 const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
 const AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV: &str = "AI_GATEWAY_REQUEST_TIMEOUT_MS";
 const AI_GATEWAY_MAX_ATTEMPTS_ENV: &str = "AI_GATEWAY_MAX_ATTEMPTS";
@@ -32,7 +35,12 @@ const AI_GATEWAY_SKIP_CACHE_ENV: &str = "AI_GATEWAY_SKIP_CACHE";
 const AI_GATEWAY_COLLECT_LOG_ENV: &str = "AI_GATEWAY_COLLECT_LOG";
 const WFP_ROUTE_HEADER: &str = "x-cinatoken-wfp-route";
 const WFP_WORKER_HEADER: &str = "x-cinatoken-wfp-worker";
+const WFP_WORKER_NAME_ENV: &str = "CINATOKEN_WFP_WORKER_NAME";
 const WFP_INTERNAL_ROUTE: &str = "internal-path";
+const WFP_RELAY_AUTHORITY_ROUTE: &str = "relay-authority";
+const STATUS_CONTROL_AUTHORITY_MODES: &[&str] = &[WFP_INTERNAL_ROUTE, WFP_RELAY_AUTHORITY_ROUTE];
+const PAID_AI_AUTHORITY_VERIFIER: &str = "hmac-sha256-body-bound-v1";
+const MAX_VERIFIED_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
 const UNKNOWN_TENANT: &str = "unknown";
 const SAFE_RESPONSE_HEADERS: &[&str] = &[
     "content-type",
@@ -76,11 +84,6 @@ const SUPPORTED_ROUTES: &[TenantRoute] = &[
         api_family: "anthropic_messages",
     },
     TenantRoute {
-        public_path: "/v1/embeddings",
-        upstream_path: "/v1/embeddings",
-        api_family: "openai_embeddings",
-    },
-    TenantRoute {
         public_path: "/ai/run",
         upstream_path: "/run",
         api_family: "ai_run",
@@ -91,7 +94,6 @@ const SUPPORTED_ROUTE_PATHS: &[&str] = &[
     "/v1/chat/completions",
     "/v1/responses",
     "/v1/messages",
-    "/v1/embeddings",
     "/ai/run",
 ];
 const AI_GATEWAY_REQUEST_POLICIES: &[AiGatewayRequestPolicy] = &[
@@ -159,6 +161,10 @@ struct TenantStatus {
     ai_gateway_request_policy: Vec<AiGatewayRequestPolicyStatus>,
     inbound_sensitive_headers_present: bool,
     inbound_sensitive_headers: Vec<String>,
+    status_control_authority_modes: &'static [&'static str],
+    paid_ai_authority_mode: &'static str,
+    paid_ai_authority_verifier: &'static str,
+    paid_ai_capable: bool,
     inbound_dispatch_route: Option<String>,
     inbound_dispatch_worker: Option<String>,
     forwarding: &'static str,
@@ -194,6 +200,12 @@ enum AiGatewayPolicyValidator {
     PositiveInteger { min: u32, max: Option<u32> },
     Boolean,
     Backoff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifiedJsonBodyError {
+    TooLarge,
+    InvalidJson,
 }
 
 #[event(fetch)]
@@ -235,6 +247,12 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
             .iter()
             .any(|route| route.gateway_id_configured);
     let inbound_sensitive_headers = inbound_sensitive_header_names(req.headers());
+    let paid_ai_capable = paid_ai_runtime_configured(
+        secret_or_var(env, AUTHORITY_TENANT_KEY_ENV).as_deref(),
+        runtime_value(env, WFP_WORKER_NAME_ENV).as_deref(),
+        runtime_value(env, "CF_ACCOUNT_ID").as_deref(),
+        secret_or_var(env, "CF_API_TOKEN").as_deref(),
+    );
     let status = TenantStatus {
         service: SERVICE_NAME,
         runtime: "rust-wasm",
@@ -245,10 +263,14 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
         ai_gateway_request_policy: ai_gateway_request_policy_statuses(env),
         inbound_sensitive_headers_present: !inbound_sensitive_headers.is_empty(),
         inbound_sensitive_headers,
+        status_control_authority_modes: STATUS_CONTROL_AUTHORITY_MODES,
+        paid_ai_authority_mode: WFP_RELAY_AUTHORITY_ROUTE,
+        paid_ai_authority_verifier: PAID_AI_AUTHORITY_VERIFIER,
+        paid_ai_capable,
         inbound_dispatch_route: request_header(req, WFP_ROUTE_HEADER),
         inbound_dispatch_worker: request_header(req, WFP_WORKER_HEADER),
         forwarding: "cloudflare-ai-gateway-rest",
-        body_mode: "streamed_request_body",
+        body_mode: "bounded_verified_json",
         routes: SUPPORTED_ROUTE_PATHS,
     };
     let mut response = json_response(&status, 200)?;
@@ -261,12 +283,94 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
     Ok(response)
 }
 
-async fn forward_ai_gateway(req: Request, env: Env, route: TenantRoute) -> WorkerResult<Response> {
-    if !request_is_internal_dispatch(&req) {
+async fn forward_ai_gateway(
+    mut req: Request,
+    env: Env,
+    route: TenantRoute,
+) -> WorkerResult<Response> {
+    if !request_has_paid_ai_authority_mode(&req) {
         return tenant_error(
             403,
-            "tenant_internal_dispatch_required",
-            "tenant AI Gateway routes require internal WFP dispatch",
+            "tenant_relay_authority_required",
+            "tenant AI Gateway routes require relay authority",
+        );
+    }
+    if request_url_has_query(&req.url()?) {
+        return tenant_error(
+            400,
+            "tenant_query_not_supported",
+            "tenant AI routes do not accept query strings",
+        );
+    }
+
+    let Some(authority_key) = secret_or_var(&env, AUTHORITY_TENANT_KEY_ENV) else {
+        return tenant_error(
+            500,
+            "tenant_relay_authority_not_configured",
+            "tenant relay authority key must be bound",
+        );
+    };
+    let Some(worker_name) = runtime_value(&env, WFP_WORKER_NAME_ENV) else {
+        return tenant_error(
+            500,
+            "tenant_relay_authority_not_configured",
+            "tenant relay worker name must be bound",
+        );
+    };
+    let Some(authority_token) = request_header(&req, AUTHORITY_HEADER) else {
+        return tenant_error(
+            403,
+            "tenant_relay_authority_required",
+            "tenant relay authority token is required",
+        );
+    };
+
+    if request_content_length_exceeds(&req, MAX_VERIFIED_JSON_BODY_BYTES)? {
+        return tenant_error(
+            413,
+            "tenant_request_body_too_large",
+            "tenant AI request body exceeds 4 MiB",
+        );
+    }
+    let body = req.bytes().await?;
+    match validate_verified_json_body(&body) {
+        Ok(()) => {}
+        Err(VerifiedJsonBodyError::TooLarge) => {
+            return tenant_error(
+                413,
+                "tenant_request_body_too_large",
+                "tenant AI request body exceeds 4 MiB",
+            );
+        }
+        Err(VerifiedJsonBodyError::InvalidJson) => {
+            return tenant_error(
+                400,
+                "tenant_invalid_json_body",
+                "tenant AI request body must be valid JSON",
+            );
+        }
+    }
+
+    let verified = decode_worker_key(&authority_key)
+        .and_then(|worker_key| {
+            verify_authority_with_worker_key(
+                &worker_key,
+                &authority_token,
+                AuthorityExpectation {
+                    worker: &worker_name,
+                    method: "POST",
+                    path: route.public_path,
+                    body: &body,
+                    now: unix_timestamp(),
+                },
+            )
+        })
+        .is_ok();
+    if !verified {
+        return tenant_error(
+            403,
+            "tenant_relay_authority_invalid",
+            "tenant relay authority verification failed",
         );
     }
 
@@ -285,17 +389,16 @@ async fn forward_ai_gateway(req: Request, env: Env, route: TenantRoute) -> Worke
         );
     };
 
-    let target = ai_gateway_url(&account_id, route.upstream_path, req.url()?.query())?;
+    let target = ai_gateway_url(&account_id, route.upstream_path)?;
     let headers = upstream_headers(&req, &env, &api_token, route)?;
-    let body = req.inner().body().map(JsValue::from);
 
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_redirect(RequestRedirect::Error);
-    if let Some(body) = body {
-        init.with_body(Some(body));
-    }
+        .with_redirect(RequestRedirect::Error)
+        .with_body(Some(JsValue::from(js_sys::Uint8Array::from(
+            body.as_slice(),
+        ))));
     let outbound = Request::new_with_init(target.as_str(), &init)?;
     let mut upstream = Fetch::Request(outbound).send().await?;
     let status = upstream.status_code();
@@ -312,7 +415,7 @@ fn target_route(path: &str) -> Option<TenantRoute> {
         .find(|route| route.public_path == path)
 }
 
-fn ai_gateway_url(account_id: &str, upstream_path: &str, query: Option<&str>) -> WorkerResult<Url> {
+fn ai_gateway_url(account_id: &str, upstream_path: &str) -> WorkerResult<Url> {
     let account_id = account_id.trim();
     if account_id.is_empty()
         || account_id.len() > 128
@@ -324,12 +427,10 @@ fn ai_gateway_url(account_id: &str, upstream_path: &str, query: Option<&str>) ->
             "CF_ACCOUNT_ID is not a valid account id".to_string(),
         ));
     }
-    let mut url = Url::parse(&format!(
+    Url::parse(&format!(
         "{AI_GATEWAY_BASE}/accounts/{account_id}/ai{upstream_path}"
     ))
-    .map_err(|err| worker::Error::RustError(format!("failed to build AI Gateway URL: {err}")))?;
-    url.set_query(query);
-    Ok(url)
+    .map_err(|err| worker::Error::RustError(format!("failed to build AI Gateway URL: {err}")))
 }
 
 fn upstream_headers(
@@ -427,7 +528,6 @@ fn route_gateway_env_name(route: TenantRoute) -> &'static str {
         "openai_chat" => AI_GATEWAY_ID_OPENAI_CHAT_ENV,
         "openai_responses" => AI_GATEWAY_ID_OPENAI_RESPONSES_ENV,
         "anthropic_messages" => AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
-        "openai_embeddings" => AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV,
         "ai_run" => AI_GATEWAY_ID_AI_RUN_ENV,
         _ => AI_GATEWAY_ID_ENV,
     }
@@ -509,12 +609,55 @@ fn request_header(req: &Request, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn request_is_internal_dispatch(req: &Request) -> bool {
-    is_internal_dispatch_route(request_header(req, WFP_ROUTE_HEADER).as_deref())
+fn request_has_paid_ai_authority_mode(req: &Request) -> bool {
+    is_paid_ai_authority_mode(request_header(req, WFP_ROUTE_HEADER).as_deref())
 }
 
-fn is_internal_dispatch_route(value: Option<&str>) -> bool {
-    matches!(value.map(str::trim), Some(value) if value.eq_ignore_ascii_case(WFP_INTERNAL_ROUTE))
+fn is_paid_ai_authority_mode(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some(value) if value.eq_ignore_ascii_case(WFP_RELAY_AUTHORITY_ROUTE))
+}
+
+fn request_content_length_exceeds(req: &Request, limit: usize) -> WorkerResult<bool> {
+    Ok(req
+        .headers()
+        .get("content-length")?
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .is_some_and(|length| length > limit))
+}
+
+fn request_url_has_query(url: &Url) -> bool {
+    url.query().is_some()
+}
+
+fn authority_bindings_configured(worker_key: Option<&str>, worker_name: Option<&str>) -> bool {
+    let (Some(worker_key), Some(worker_name)) = (worker_key, worker_name) else {
+        return false;
+    };
+    decode_worker_key(worker_key).is_ok() && validate_worker_name(worker_name).is_ok()
+}
+
+fn paid_ai_runtime_configured(
+    authority_key: Option<&str>,
+    worker_name: Option<&str>,
+    account_id: Option<&str>,
+    tenant_api_token: Option<&str>,
+) -> bool {
+    authority_bindings_configured(authority_key, worker_name)
+        && account_id.is_some_and(|value| !value.trim().is_empty())
+        && tenant_api_token.is_some_and(|value| !value.trim().is_empty())
+}
+
+fn validate_verified_json_body(body: &[u8]) -> Result<(), VerifiedJsonBodyError> {
+    if body.len() > MAX_VERIFIED_JSON_BODY_BYTES {
+        return Err(VerifiedJsonBodyError::TooLarge);
+    }
+    serde_json::from_slice::<serde_json::Value>(body)
+        .map(|_| ())
+        .map_err(|_| VerifiedJsonBodyError::InvalidJson)
+}
+
+fn unix_timestamp() -> i64 {
+    (js_sys::Date::now() / 1000.0) as i64
 }
 
 fn inbound_sensitive_header_names(headers: &Headers) -> Vec<String> {
@@ -585,50 +728,74 @@ mod tests {
 
     #[test]
     fn supported_routes_map_to_ai_gateway_paths() {
-        assert_eq!(
-            target_route("/v1/chat/completions").map(|route| route.upstream_path),
-            Some("/v1/chat/completions")
-        );
-        assert_eq!(
-            target_route("/v1/responses").map(|route| route.upstream_path),
-            Some("/v1/responses")
-        );
-        assert_eq!(
-            target_route("/v1/messages").map(|route| route.upstream_path),
-            Some("/v1/messages")
-        );
-        assert_eq!(
-            target_route("/v1/embeddings").map(|route| route.upstream_path),
-            Some("/v1/embeddings")
-        );
-        assert_eq!(
-            target_route("/ai/run").map(|route| route.upstream_path),
-            Some("/run")
-        );
+        let expected = [
+            ("/v1/chat/completions", "/v1/chat/completions"),
+            ("/v1/responses", "/v1/responses"),
+            ("/v1/messages", "/v1/messages"),
+            ("/ai/run", "/run"),
+        ];
+        for (public_path, upstream_path) in expected {
+            assert_eq!(
+                target_route(public_path).map(|route| route.upstream_path),
+                Some(upstream_path)
+            );
+        }
+        assert_eq!(target_route("/v1/embeddings"), None);
         assert_eq!(target_route("/v1/models"), None);
     }
 
     #[test]
-    fn status_route_manifest_includes_every_supported_route() {
-        assert!(SUPPORTED_ROUTE_PATHS.contains(&STATUS_PATH));
-        for route in SUPPORTED_ROUTES {
-            assert!(
-                SUPPORTED_ROUTE_PATHS.contains(&route.public_path),
-                "status manifest missing {}",
-                route.public_path
-            );
-        }
+    fn status_route_manifest_exactly_matches_supported_routes() {
+        assert_eq!(
+            SUPPORTED_ROUTE_PATHS,
+            &[
+                STATUS_PATH,
+                "/v1/chat/completions",
+                "/v1/responses",
+                "/v1/messages",
+                "/ai/run",
+            ]
+        );
+        assert_eq!(
+            SUPPORTED_ROUTES
+                .iter()
+                .map(|route| route.public_path)
+                .collect::<Vec<_>>(),
+            SUPPORTED_ROUTE_PATHS[1..]
+        );
     }
 
     #[test]
-    fn ai_gateway_url_preserves_query_and_rejects_bad_account_ids() {
-        let url = ai_gateway_url("account123", "/v1/responses", Some("debug=true&x=1")).unwrap();
-        assert_eq!(
-            url.as_str(),
-            "https://api.cloudflare.com/client/v4/accounts/account123/ai/v1/responses?debug=true&x=1"
-        );
-        assert!(ai_gateway_url("bad/account", "/v1/responses", None).is_err());
-        assert!(ai_gateway_url("", "/v1/responses", None).is_err());
+    fn ai_gateway_urls_exactly_match_supported_routes() {
+        let expected = [
+            (
+                "/v1/chat/completions",
+                "https://api.cloudflare.com/client/v4/accounts/account123/ai/v1/chat/completions",
+            ),
+            (
+                "/v1/responses",
+                "https://api.cloudflare.com/client/v4/accounts/account123/ai/v1/responses",
+            ),
+            (
+                "/v1/messages",
+                "https://api.cloudflare.com/client/v4/accounts/account123/ai/v1/messages",
+            ),
+            (
+                "/ai/run",
+                "https://api.cloudflare.com/client/v4/accounts/account123/ai/run",
+            ),
+        ];
+        for (public_path, final_url) in expected {
+            let route = target_route(public_path).unwrap();
+            assert_eq!(
+                ai_gateway_url("account123", route.upstream_path)
+                    .unwrap()
+                    .as_str(),
+                final_url
+            );
+        }
+        assert!(ai_gateway_url("bad/account", "/v1/responses").is_err());
+        assert!(ai_gateway_url("", "/v1/responses").is_err());
     }
 
     #[test]
@@ -663,10 +830,6 @@ mod tests {
         assert_eq!(
             route_gateway_env_name(target_route("/v1/messages").unwrap()),
             AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV
-        );
-        assert_eq!(
-            route_gateway_env_name(target_route("/v1/embeddings").unwrap()),
-            AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV
         );
         assert_eq!(
             route_gateway_env_name(target_route("/ai/run").unwrap()),
@@ -781,6 +944,7 @@ mod tests {
             "CF-Access-Client-Secret",
             "X-Cinatoken-Smoke",
             "x-cinatoken-tenant",
+            AUTHORITY_HEADER,
         ] {
             assert!(
                 is_sensitive_inbound_header(header),
@@ -804,11 +968,102 @@ mod tests {
     }
 
     #[test]
-    fn internal_dispatch_route_header_is_required_for_ai_forwarding() {
-        assert!(is_internal_dispatch_route(Some("internal-path")));
-        assert!(is_internal_dispatch_route(Some(" INTERNAL-PATH ")));
-        assert!(!is_internal_dispatch_route(Some("preview-host")));
-        assert!(!is_internal_dispatch_route(Some("")));
-        assert!(!is_internal_dispatch_route(None));
+    fn paid_ai_requires_relay_authority_mode() {
+        assert!(is_paid_ai_authority_mode(Some("relay-authority")));
+        assert!(is_paid_ai_authority_mode(Some(" RELAY-AUTHORITY ")));
+        assert!(!is_paid_ai_authority_mode(Some("internal-path")));
+        assert!(!is_paid_ai_authority_mode(Some("preview-host")));
+        assert!(!is_paid_ai_authority_mode(Some("")));
+        assert!(!is_paid_ai_authority_mode(None));
+    }
+
+    #[test]
+    fn status_authority_contract_matches_shared_verifier() {
+        assert_eq!(
+            STATUS_CONTROL_AUTHORITY_MODES,
+            &["internal-path", "relay-authority"]
+        );
+        assert_eq!(WFP_RELAY_AUTHORITY_ROUTE, "relay-authority");
+        assert_eq!(PAID_AI_AUTHORITY_VERIFIER, "hmac-sha256-body-bound-v1");
+        assert_eq!(WFP_WORKER_NAME_ENV, "CINATOKEN_WFP_WORKER_NAME");
+        assert_eq!(AUTHORITY_TENANT_KEY_ENV, "WFP_RELAY_AUTHORITY_KEY");
+        assert_eq!(MAX_VERIFIED_JSON_BODY_BYTES, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn paid_ai_capability_requires_both_authority_bindings() {
+        assert!(authority_bindings_configured(
+            Some("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"),
+            Some("tenant-a")
+        ));
+        assert!(!authority_bindings_configured(None, Some("tenant-a")));
+        assert!(!authority_bindings_configured(
+            Some("0123456789abcdef0123456789abcdef"),
+            None
+        ));
+        assert!(!authority_bindings_configured(
+            Some("short"),
+            Some("tenant-a")
+        ));
+        assert!(!authority_bindings_configured(
+            Some("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"),
+            Some("../tenant")
+        ));
+    }
+
+    #[test]
+    fn paid_ai_capability_requires_authority_account_and_tenant_token() {
+        let secret = Some("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY");
+        let worker = Some("tenant-a");
+        assert!(paid_ai_runtime_configured(
+            secret,
+            worker,
+            Some("account-a"),
+            Some("tenant-api-token")
+        ));
+        assert!(!paid_ai_runtime_configured(
+            secret,
+            worker,
+            None,
+            Some("tenant-api-token")
+        ));
+        assert!(!paid_ai_runtime_configured(
+            secret,
+            worker,
+            Some("account-a"),
+            None
+        ));
+        assert!(!paid_ai_runtime_configured(
+            secret,
+            worker,
+            Some("  "),
+            Some("tenant-api-token")
+        ));
+    }
+
+    #[test]
+    fn verified_json_body_enforces_valid_json_and_hard_limit() {
+        assert_eq!(validate_verified_json_body(br#"{"ok":true}"#), Ok(()));
+        assert_eq!(
+            validate_verified_json_body(b"not-json"),
+            Err(VerifiedJsonBodyError::InvalidJson)
+        );
+        assert_eq!(
+            validate_verified_json_body(&vec![b' '; MAX_VERIFIED_JSON_BODY_BYTES + 1]),
+            Err(VerifiedJsonBodyError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn paid_ai_rejects_all_query_strings() {
+        assert!(!request_url_has_query(
+            &Url::parse("https://tenant.example/v1/responses").unwrap()
+        ));
+        assert!(request_url_has_query(
+            &Url::parse("https://tenant.example/v1/responses?debug=true").unwrap()
+        ));
+        assert!(request_url_has_query(
+            &Url::parse("https://tenant.example/v1/responses?").unwrap()
+        ));
     }
 }

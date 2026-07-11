@@ -170,11 +170,16 @@ Production decisions from the refreshed cinaVibeSDK and Cloudflare audit:
   type-5 audit delivery/refund ordering is proven through staging Queue and D1,
   and `auto` billing follows the actual serving group; keep Cloudflare Dynamic
   Routing as a separately canaried option.
-- WFP tenant AI routes are not an alternate paid entry point. They currently lack
-  the central relay's token policy, channel selection, quota settlement, and
-  audit ownership. Keep WFP paid dispatch disabled until it is a post-admission
-  transport behind a short-lived body-bound authority envelope and the response
-  returns through the central settlement pipeline.
+- WFP tenant AI routes are not an alternate paid entry point. The local
+  increment now makes WFP a post-admission transport: the central relay owns
+  token auth, D1 channel selection, reserve, settlement/refund, and audit, while
+  `channels.other_info.wfp_worker` selects the tenant Worker. A 30-second
+  HMAC-SHA256 authority binds body, path, method, channel, request ID, and
+  worker using a per-worker key derived from platform-only
+  `WFP_RELAY_AUTHORITY_SECRET`. The uploader binds only
+  `WFP_RELAY_AUTHORITY_KEY` into that tenant; the platform master must never
+  enter the tenant binding set. Keep `WFP_RELAY_TRANSPORT_ENABLED=false` until
+  staging proves the complete path and replay resistance.
 
 ## Best-Practice Anchors
 
@@ -190,6 +195,8 @@ Cloudflare references were refreshed on 2026-07-11:
   <https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/how-workers-for-platforms-works/>
 - WFP dynamic dispatch:
   <https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/dynamic-dispatch/>
+- Workers for Platforms Scripts REST API:
+  <https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/subresources/namespaces/subresources/scripts/>
 - Workers limits:
   <https://developers.cloudflare.com/workers/platform/limits/>
 - Workers Streams:
@@ -644,16 +651,22 @@ Required tasks:
    foundation, but production still needs local/staging proof for applied,
    duplicate, guarded-update failure, audit failure, rollback, and
    no-double-charge paths.
-8. Use the root-only WFP tenant script control plane to generate and deploy
-   staging tenant Workers before enabling dispatch traffic:
-   `/api/platform/wfp/tenant-script/plan` must produce redacted metadata and a
-   reviewed script, `bun run check:wfp-tenant` must prove the Rust/Wasm tenant
-   runtime, `bun run check:wfp-tenant:deploy-plan` must prove the redacted
-   artifact upload manifest, the preferred `bun run deploy:wfp-tenant -- ...`
-   path must upload the `worker-build` Rust/Wasm artifact, the fallback
-   `/api/platform/wfp/tenant-script/deploy` route may upload the ES module
-   script, and only then may
-   `WFP_DISPATCH_ENABLED` be armed for dispatch smoke.
+8. Build and upload only the strict Rust/Wasm WFP tenant artifact. The generated
+   JavaScript fallback is status-only and
+   `/api/platform/wfp/tenant-script/deploy` is disabled. The uploader must
+   validate the main shim, Wasm magic/import graph, and module hashes; require a
+   tenant runtime token distinct from the deploy token; derive the named
+   worker's key from `WFP_RELAY_AUTHORITY_SECRET`; bind only
+   `WFP_RELAY_AUTHORITY_KEY` into the tenant; and archive real PUT plus GET
+   readback evidence. The platform master must remain platform-side.
+   Admin dispatch may prove tenant status only. For paid smoke, seed
+   `channels.other_info.wfp_worker`, temporarily arm
+   `WFP_RELAY_TRANSPORT_ENABLED`, and call one of chat/responses/messages/ai-run
+   through the normal relay token path. Prove signed-authority rejection cases
+   and exactly one central reserve followed by settlement/refund and audit.
+   Separately capture replay-resistance evidence; short lifetime and body binding
+   are not replay-proof. Then turn the transport gate off. `/v1/embeddings` is
+   not in the tenant route set.
 
 Exit evidence:
 
@@ -665,10 +678,13 @@ Exit evidence:
 - Payment replay cannot double-credit.
 - Task retry cannot double-charge or lose artifacts.
 - Frontend build and route checks pass under Bun.
-- WFP tenant script deploy smoke proves the Cloudflare dispatch namespace API,
-  local Rust/Wasm artifact uploader, `DISPATCHER` binding, Rust/Wasm tenant
-  runtime, and AI Gateway runtime bindings before tenant traffic is routed
-  through the new path.
+- WFP evidence proves the Cloudflare dispatch namespace Scripts REST API,
+  strict Rust/Wasm upload/readback, separate deploy/runtime credentials,
+  `DISPATCHER` binding, authority rejection cases, and central billing/audit
+  ownership before tenant traffic is routed through the new path.
+
+No WFP upload, readback, signed-authority billing canary, or replay-resistance
+evidence has been completed or is claimed by this execution plan.
 
 ## Performance And Cost Plan
 

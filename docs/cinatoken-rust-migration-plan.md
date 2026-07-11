@@ -7068,12 +7068,12 @@ Audit corrections retained for the next increments:
   provider-native model names, refuse direct bypass on `401`/`403`/`429`,
   revalidate fallback model limits/channels, preserve billing, and persist the
   fallback attempt path.
-- Current WFP tenant AI routes remain NO-GO for paid traffic. The admin dispatch
-  path reaches tenant AI Gateway forwarding without central relay-token policy,
-  channel selection, quota reserve/settlement, or relay audit. WFP must become a
-  post-admission transport that returns through the existing settlement pipeline,
-  with a body-bound short-lived authority envelope, before either dispatch gate
-  can be enabled for paid routes.
+- Historical WFP audit finding: the then-current admin dispatch path could reach
+  tenant AI without central paid-request controls. Section 22.150 closes that
+  local architecture defect by making admin dispatch status-only and adding the
+  post-admission authority transport. WFP remains a production NO-GO until the
+  staged upload/readback, signed-authority billing canary, and replay-resistance
+  evidence in 22.150 pass.
 
 Local validation for this increment includes focused TaskRunner Worker tests,
 frontend readiness tests, and TaskRunner smoke self-test/dry-run. Full workspace,
@@ -9453,3 +9453,47 @@ Remaining migration gaps:
   audit logs before `realtime_session_upstream_bridge_compiled`,
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
+### 22.150 2026-07-11 WFP Central Relay Authority Transport
+
+This increment supersedes earlier WFP notes that described tenant AI routes as
+reachable through public preview or admin internal dispatch, included
+`/v1/embeddings`, or treated the generated JavaScript module as a deployable AI
+fallback.
+
+Current architecture:
+
+- The central relay remains the only paid-request authority. It authenticates
+  the relay token, performs D1 channel selection, reserves quota, and only then
+  may use `channels.other_info.wfp_worker` to select WFP as the transport.
+- `WFP_RELAY_TRANSPORT_ENABLED` is a dedicated default-off gate. Existing WFP
+  preview and admin controls do not authorize paid AI traffic.
+- The central relay sends `x-cinatoken-wfp-authority`, an HMAC-SHA256 envelope
+  signed with a per-worker key derived from the platform-only
+  `WFP_RELAY_AUTHORITY_SECRET`. Its 30-second authority binds worker, method,
+  path, body SHA-256, selected channel ID, and request ID. The uploader binds
+  only the derived `WFP_RELAY_AUTHORITY_KEY` into the named Rust/Wasm tenant;
+  the tenant verifies with that key and never receives the platform master.
+- The WFP response returns to the central relay for the existing quota
+  settlement/refund and audit path. The tenant runtime does not own token auth,
+  D1 channel choice, reserve, settlement, or paid-request audit.
+- The retained WFP tenant AI REST routes are `/v1/chat/completions`,
+  `/v1/responses`, `/v1/messages`, and `/ai/run`. Invalid
+  `/v1/embeddings` support has been removed.
+- Admin dispatch is status-only at
+  `/api/platform/dispatch/:worker/__cinatoken/tenant/status`; public/preview and
+  admin AI dispatch do not form alternate paid entry points.
+- The generated JavaScript fallback is status-only and control-plane fallback
+  deploy is disabled. Production upload uses the strict Rust/Wasm artifact tool
+  `tools/deploy_wfp_tenant_artifact.mjs`.
+- A tenant runtime token is mandatory for real upload and must differ from the
+  Cloudflare deploy token. `WFP_RELAY_AUTHORITY_SECRET` is also mandatory but
+  remains only on the platform Worker and in the uploader derivation context;
+  the tenant receives only `WFP_RELAY_AUTHORITY_KEY` as a secret binding.
+
+Production status remains **not deployed / not proven**. The next evidence is a
+real dispatch-namespace Rust/Wasm upload and REST readback plus a staging relay
+request that proves signed-authority rejection cases and exactly one central
+reserve followed by settlement or refund and the matching audit outcome.
+Replay-resistance evidence is still required: the short-lived, body-bound
+envelope is not claimed to be replay-proof. Keep the transport gate off until
+that evidence is archived.

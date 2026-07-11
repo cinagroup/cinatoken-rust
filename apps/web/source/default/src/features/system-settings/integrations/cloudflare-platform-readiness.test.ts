@@ -44,14 +44,19 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   wfp_dispatch_binding_available: false,
   wfp_dispatch_enabled: false,
   wfp_internal_dispatch_enabled: false,
+  wfp_relay_transport_enabled: false,
+  wfp_relay_authority_secret_configured: false,
   wfp_tenant_supported_routes: [],
   wfp_tenant_cutover_guards: [],
   wfp_tenant_script_plan_compiled: false,
   wfp_tenant_rust_wasm_runtime_compiled: false,
   wfp_tenant_route_manifest_compiled: false,
   wfp_tenant_internal_dispatch_required_compiled: false,
+  wfp_tenant_relay_authority_verifier_compiled: false,
   wfp_tenant_response_header_guard_compiled: false,
   wfp_tenant_ai_gateway_policy_compiled: false,
+  wfp_relay_authority_transport_compiled: false,
+  wfp_relay_authority_transport_ready: false,
   wfp_tenant_smoke_ready: false,
   realtime_sessions_do_available: false,
   realtime_session_gateway_enabled: false,
@@ -101,8 +106,10 @@ describe('Cloudflare platform readiness headline', () => {
         wfp_tenant_rust_wasm_runtime_compiled: true,
         wfp_tenant_route_manifest_compiled: true,
         wfp_tenant_internal_dispatch_required_compiled: true,
+        wfp_tenant_relay_authority_verifier_compiled: true,
         wfp_tenant_response_header_guard_compiled: true,
         wfp_tenant_ai_gateway_policy_compiled: true,
+        wfp_relay_authority_transport_compiled: true,
         realtime_sessions_do_available: true,
         do_websocket_hibernation_compiled: true,
         realtime_session_auth_boundary_compiled: true,
@@ -177,10 +184,29 @@ describe('Cloudflare platform readiness headline', () => {
         'blocked',
         'blocked',
         'ready-to-verify',
+        'blocked',
         'ready-to-verify',
         'verified',
       ]
     )
+  })
+
+  test('keeps WFP signed relay transport readiness separate from verification', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        wfp_relay_transport_enabled: true,
+        wfp_relay_authority_secret_configured: true,
+        wfp_relay_authority_transport_compiled: true,
+        wfp_relay_authority_transport_ready: true,
+      })
+    )
+    const signal = getStage(summary, 'smoke').signals.find(
+      (item) => item.id === 'wfp-relay-authority-smoke'
+    )
+
+    assert.equal(signal?.status, 'ready-to-verify')
+    assert.equal(getStage(summary, 'smoke').complete, false)
+    assert.equal(getStage(summary, 'cutover').complete, false)
   })
 
   test('keeps actual-group smoke readiness separate from verification and cutover', () => {

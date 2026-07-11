@@ -31,9 +31,13 @@ use cinatoken_relay::{
     OPENAI_COMPATIBLE_CHANNEL_TYPES, RELAY_CACHE_SCHEMA_VERSION, RERANK_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
+use cinatoken_wfp_authority::{
+    sign_authority, verify_authority, AuthorityExpectation, AuthorityInput, AUTHORITY_SECRET_ENV,
+};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use url::Url;
 use wasm_bindgen::JsValue;
 use worker::{
     Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response, ResponseBody,
@@ -1383,6 +1387,7 @@ async fn relay_endpoint_with_auth(
                                                     channel.id
                                                 );
                                                     forward_relay_request(
+                                                        &env,
                                                         endpoint.provider,
                                                         &upstream_url,
                                                         &upstream_key,
@@ -1417,6 +1422,7 @@ async fn relay_endpoint_with_auth(
                                                 err
                                             );
                                                 forward_relay_request(
+                                                    &env,
                                                     endpoint.provider,
                                                     &upstream_url,
                                                     &upstream_key,
@@ -1439,6 +1445,7 @@ async fn relay_endpoint_with_auth(
                                 }
                                 Ok(None) => {
                                     forward_relay_request(
+                                        &env,
                                         endpoint.provider,
                                         &upstream_url,
                                         &upstream_key,
@@ -1457,6 +1464,7 @@ async fn relay_endpoint_with_auth(
                         }
                         None => {
                             forward_relay_request(
+                                &env,
                                 endpoint.provider,
                                 &upstream_url,
                                 &upstream_key,
@@ -1476,14 +1484,19 @@ async fn relay_endpoint_with_auth(
                 // Multipart/raw bodies are forwarded verbatim. Model mapping
                 // is intentionally NOT applied (see docs/relay-mvp.md). All
                 // upload endpoints are OpenAI-compatible.
-                forward_raw_openai_compatible(
-                    &upstream_url,
-                    &upstream_key,
-                    &channel,
-                    bytes,
-                    content_type,
-                )
-                .await
+                if let Err(err) = ensure_wfp_json_body(&channel) {
+                    forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
+                    Err(err)
+                } else {
+                    forward_raw_openai_compatible(
+                        &upstream_url,
+                        &upstream_key,
+                        &channel,
+                        bytes,
+                        content_type,
+                    )
+                    .await
+                }
             }
         };
 
@@ -1854,6 +1867,10 @@ async fn relay_endpoint_with_auth(
             ),
         };
     };
+    model_route_audit.wfp_worker = channel.wfp_worker();
+    if model_route_audit.wfp_worker.is_some() {
+        strip_wfp_internal_response_headers(upstream_response.headers_mut())?;
+    }
     if tiered_billing_preflight.is_none() {
         tiered_billing_preflight = match tiered_billing_group_plan.as_ref() {
             Some(plan) => match plan.selected_preflight(&selected_group) {
@@ -2154,6 +2171,50 @@ pub(crate) fn relay_actual_serving_group_billing_contract_compiled() -> bool {
         && settle(Quota(10), Quota(20)).additional_quota == Quota(10)
 }
 
+pub(crate) fn relay_wfp_authority_transport_contract_compiled() -> bool {
+    cinatoken_storage::channel_wfp_worker(r#"{"wfp_worker":"tenant-a"}"#).as_deref()
+        == Some("tenant-a")
+        && WFP_RELAY_SUPPORTED_PATHS
+            == [
+                "/v1/chat/completions",
+                "/v1/responses",
+                "/v1/messages",
+                "/ai/run",
+            ]
+        && wfp_authority_contract_self_check()
+}
+
+fn wfp_authority_contract_self_check() -> bool {
+    const SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+    let body = br#"{"model":"openai/gpt-4.1"}"#;
+    let Ok(token) = sign_authority(
+        SECRET,
+        AuthorityInput {
+            worker: "tenant-a",
+            method: "POST",
+            path: "/v1/chat/completions",
+            body,
+            request_id: "contract",
+            channel_id: 1,
+            issued_at: 100,
+        },
+    ) else {
+        return false;
+    };
+    verify_authority(
+        SECRET,
+        &token,
+        AuthorityExpectation {
+            worker: "tenant-a",
+            method: "POST",
+            path: "/v1/chat/completions",
+            body,
+            now: 101,
+        },
+    )
+    .is_ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RelayModelRouteAudit {
     requested_model: String,
@@ -2166,6 +2227,7 @@ struct RelayModelRouteAudit {
     cross_group_retry: bool,
     primary_planned_group_count: usize,
     fallback_planned_group_count: Option<usize>,
+    wfp_worker: Option<String>,
 }
 
 impl RelayModelRouteAudit {
@@ -2181,6 +2243,7 @@ impl RelayModelRouteAudit {
             cross_group_retry: false,
             primary_planned_group_count: 0,
             fallback_planned_group_count: None,
+            wfp_worker: None,
         }
     }
 }
@@ -2366,6 +2429,7 @@ async fn execute_relay_attempt_plan(
                                                     channel.id
                                                 );
                                                     forward_relay_request(
+                                                        env,
                                                         endpoint.provider,
                                                         &upstream_url,
                                                         &upstream_key,
@@ -2400,6 +2464,7 @@ async fn execute_relay_attempt_plan(
                                                 err
                                             );
                                                 forward_relay_request(
+                                                    env,
                                                     endpoint.provider,
                                                     &upstream_url,
                                                     &upstream_key,
@@ -2441,14 +2506,19 @@ async fn execute_relay_attempt_plan(
                 bytes,
                 content_type,
             } => {
-                forward_raw_openai_compatible(
-                    &upstream_url,
-                    &upstream_key,
-                    &channel,
-                    bytes,
-                    content_type,
-                )
-                .await
+                if let Err(err) = ensure_wfp_json_body(&channel) {
+                    forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
+                    Err(err)
+                } else {
+                    forward_raw_openai_compatible(
+                        &upstream_url,
+                        &upstream_key,
+                        &channel,
+                        bytes,
+                        content_type,
+                    )
+                    .await
+                }
             }
         };
 
@@ -3721,6 +3791,11 @@ fn plan_relay_ai_gateway_attempt(
     channel: &RelayChannel,
     upstream_model: &str,
 ) -> worker::Result<Option<RelayAiGatewayAttempt>> {
+    if channel.wfp_worker().is_some() && channel.ai_gateway_opted_in() {
+        return Err(worker::Error::RustError(
+            "channel cannot enable both relay AI Gateway and WFP transport".to_string(),
+        ));
+    }
     let decision = plan_ai_gateway_cutover(AiGatewayCutoverInput {
         router_ready: true,
         channel_opted_in: channel.ai_gateway_opted_in(),
@@ -4733,6 +4808,7 @@ impl RelayProviderHeaders {
 }
 
 async fn forward_relay_request(
+    env: &Env,
     provider: RelayProviderKind,
     url: &str,
     upstream_key: &str,
@@ -4740,6 +4816,14 @@ async fn forward_relay_request(
     body: &Value,
     provider_headers: &RelayProviderHeaders,
 ) -> worker::Result<Response> {
+    if channel.wfp_worker().is_some() && channel.ai_gateway_opted_in() {
+        return Err(worker::Error::RustError(
+            "channel cannot enable both relay AI Gateway and WFP transport".to_string(),
+        ));
+    }
+    if let Some(worker_name) = channel.wfp_worker() {
+        return forward_wfp_relay_transport(env, url, &worker_name, channel.id, body).await;
+    }
     match provider {
         RelayProviderKind::OpenAiCompatible => {
             forward_openai_compatible(url, upstream_key, channel, body).await
@@ -4749,6 +4833,112 @@ async fn forward_relay_request(
         }
         RelayProviderKind::GeminiNative => forward_gemini_native(url, upstream_key, body).await,
     }
+}
+
+fn ensure_wfp_json_body(channel: &RelayChannel) -> worker::Result<()> {
+    if channel.wfp_worker().is_some() {
+        Err(worker::Error::RustError(
+            "WFP relay transport supports JSON request bodies only".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+const WFP_RELAY_SUPPORTED_PATHS: &[&str] = &[
+    "/v1/chat/completions",
+    "/v1/responses",
+    "/v1/messages",
+    "/ai/run",
+];
+const WFP_INTERNAL_RESPONSE_HEADERS: &[&str] = &[
+    "x-cinatoken-wfp-route",
+    "x-cinatoken-wfp-worker",
+    "x-cinatoken-wfp-tenant",
+    "x-cinatoken-wfp-runtime",
+];
+
+fn strip_wfp_internal_response_headers(headers: &mut Headers) -> worker::Result<()> {
+    for name in WFP_INTERNAL_RESPONSE_HEADERS {
+        headers.delete(name)?;
+    }
+    Ok(())
+}
+
+fn wfp_relay_path(url: &str) -> worker::Result<String> {
+    let url = Url::parse(url)
+        .map_err(|err| worker::Error::RustError(format!("invalid WFP relay URL: {err}")))?;
+    if url.query().is_some() {
+        return Err(worker::Error::RustError(
+            "WFP relay transport does not allow unsigned upstream query parameters".to_string(),
+        ));
+    }
+    let path = url.path();
+    if !WFP_RELAY_SUPPORTED_PATHS.contains(&path) {
+        return Err(worker::Error::RustError(format!(
+            "WFP relay transport does not support upstream path {path}"
+        )));
+    }
+    Ok(path.to_string())
+}
+
+async fn forward_wfp_relay_transport(
+    env: &Env,
+    url: &str,
+    worker_name: &str,
+    channel_id: i64,
+    body: &Value,
+) -> worker::Result<Response> {
+    let worker_name =
+        crate::platform_gateway::normalize_worker_name(worker_name).ok_or_else(|| {
+            worker::Error::RustError("channel WFP worker name is invalid".to_string())
+        })?;
+    let path = wfp_relay_path(url)?;
+    let mut target = Url::parse(url)
+        .map_err(|err| worker::Error::RustError(format!("invalid WFP relay URL: {err}")))?;
+    target.set_path(&path);
+    let body = serde_json::to_string(body)?;
+    let secret = optional_secret_or_env_var(env, AUTHORITY_SECRET_ENV)
+        .ok_or_else(|| worker::Error::RustError(format!("{AUTHORITY_SECRET_ENV} must be bound")))?;
+    let request_id = wfp_authority_request_id()?;
+    let authority = sign_authority(
+        secret.as_bytes(),
+        AuthorityInput {
+            worker: &worker_name,
+            method: "POST",
+            path: &path,
+            body: body.as_bytes(),
+            request_id: &request_id,
+            channel_id,
+            issued_at: unix_timestamp(),
+        },
+    )
+    .map_err(|err| worker::Error::RustError(format!("failed to sign WFP authority: {err}")))?;
+    let mut headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("accept", "application/json")?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body)));
+    let outbound = Request::new_with_init(target.as_str(), &init)?;
+    crate::platform_gateway::dispatch_authorized_relay_request(
+        outbound,
+        env,
+        &worker_name,
+        &authority,
+    )
+    .await
+}
+
+fn wfp_authority_request_id() -> worker::Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|err| {
+        worker::Error::RustError(format!(
+            "failed to generate WFP authority request id: {err}"
+        ))
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// Execute a Cloudflare Workers AI channel natively over the `AI` binding —
@@ -5699,6 +5889,7 @@ async fn record_relay_audit(
             "cross_group_retry": audit.model_route.cross_group_retry,
             "primary_planned_group_count": audit.model_route.primary_planned_group_count,
             "fallback_planned_group_count": audit.model_route.fallback_planned_group_count,
+            "wfp_worker": audit.model_route.wfp_worker,
         },
     });
     let mut admin_info = serde_json::Map::new();
@@ -6032,6 +6223,7 @@ fn terminal_relay_failure_event(
             "cross_group_retry": model_route.cross_group_retry,
             "primary_planned_group_count": model_route.primary_planned_group_count,
             "fallback_planned_group_count": model_route.fallback_planned_group_count,
+            "wfp_worker": model_route.wfp_worker,
         },
         "admin_info": {
             "attempt_count": attempts.total,
@@ -9612,6 +9804,19 @@ mod tests {
     }
 
     #[test]
+    fn relay_ai_gateway_attempt_rejects_conflicting_wfp_transport() {
+        let runtime = ai_gateway_runtime_for_tests();
+        let endpoint = ai_gateway_chat_endpoint_for_tests();
+        let mut channel = test_channel(1, 0, 1);
+        channel.other_info =
+            r#"{"ai_gateway":{"enabled":true},"wfp_worker":"tenant-a"}"#.to_string();
+
+        let error = plan_relay_ai_gateway_attempt(&runtime, &endpoint, &channel, "openai/gpt-4.1")
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot enable both"));
+    }
+
+    #[test]
     fn relay_ai_gateway_attempt_keeps_custom_base_url_direct() {
         let runtime = ai_gateway_runtime_for_tests();
         let endpoint = ai_gateway_chat_endpoint_for_tests();
@@ -9851,6 +10056,42 @@ mod tests {
                 "vip".to_string(),
             ]),
             2
+        );
+    }
+
+    #[test]
+    fn wfp_relay_transport_accepts_only_cloudflare_ai_rest_routes() {
+        assert!(relay_wfp_authority_transport_contract_compiled());
+        for path in WFP_RELAY_SUPPORTED_PATHS {
+            let url = format!("https://upstream.invalid{path}");
+            assert_eq!(wfp_relay_path(&url).unwrap(), *path);
+        }
+        assert!(wfp_relay_path("https://upstream.invalid/v1/responses?trace=1").is_err());
+        assert!(wfp_relay_path("https://upstream.invalid/v1/embeddings").is_err());
+        assert!(wfp_relay_path("https://upstream.invalid/v1/audio/transcriptions").is_err());
+    }
+
+    #[test]
+    fn wfp_relay_transport_rejects_raw_body_attempts() {
+        let mut channel = test_channel(1, 0, 1);
+        assert!(ensure_wfp_json_body(&channel).is_ok());
+        channel.other_info = r#"{"wfp_worker":"tenant-a"}"#.to_string();
+        assert!(ensure_wfp_json_body(&channel)
+            .unwrap_err()
+            .to_string()
+            .contains("JSON request bodies only"));
+    }
+
+    #[test]
+    fn wfp_relay_transport_internal_response_header_set_is_explicit() {
+        assert_eq!(
+            WFP_INTERNAL_RESPONSE_HEADERS,
+            [
+                "x-cinatoken-wfp-route",
+                "x-cinatoken-wfp-worker",
+                "x-cinatoken-wfp-tenant",
+                "x-cinatoken-wfp-runtime",
+            ]
         );
     }
 

@@ -242,13 +242,32 @@ cinaVibeSDK pattern:
 `cinatoken-rust` mapping:
 
 - Keep the main relay as the default single-tenant path.
-- Use `DISPATCHER` only for explicit tenant hosts or admin-authenticated
-  internal dispatch routes.
+- Paid tenant AI traffic remains a central relay request. Relay-token
+  authentication, D1 channel selection, and quota reservation run before the
+  selected channel's `channels.other_info.wfp_worker` value can choose WFP as
+  the outbound transport. The response returns to the same central settlement
+  and audit path.
+- `WFP_RELAY_TRANSPORT_ENABLED` is a dedicated, default-off transport gate.
+  It is independent of preview-host and admin status dispatch.
 - The tenant runtime target is Rust/Wasm through the `cinatoken-wfp-tenant`
   crate, not a JS fallback for production.
-- Tenant scripts may support AI routes, but only through controlled
-  internal-path dispatch. Preview-host public AI routes should reject or stay
-  disabled unless explicitly approved.
+- Before WFP dispatch, the central relay creates an
+  `x-cinatoken-wfp-authority` envelope. It is HMAC-SHA256 signed with a
+  per-worker key derived from the platform-only
+  `WFP_RELAY_AUTHORITY_SECRET`, expires after 30 seconds, and binds the worker,
+  HTTP method, path, request-body SHA-256, selected channel ID, and request ID.
+  The artifact uploader binds only the derived `WFP_RELAY_AUTHORITY_KEY` into
+  that named tenant. The Rust/Wasm tenant verifies with that key and must never
+  receive the platform master.
+- The paid tenant route set is deliberately limited to
+  `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, and `/ai/run`.
+  `/v1/embeddings` is not a valid WFP tenant route and has been removed.
+- `/api/platform/dispatch/:worker/...` is admin-authenticated and status-only.
+  It may reach `/__cinatoken/tenant/status`, but it cannot invoke paid tenant AI
+  routes. Preview-host/public AI dispatch is also rejected.
+- The generated JavaScript fallback is status-only and its control-plane deploy
+  route is disabled. Production upload must use the strict
+  `tools/deploy_wfp_tenant_artifact.mjs` Rust/Wasm artifact path.
 - Inbound sensitive headers must be empty from the tenant's point of view.
 - Tenant responses must pass through a safe response-header allowlist so auth,
   cookies, `cf-aig-*`, upstream transfer metadata, and upstream platform
@@ -267,18 +286,26 @@ Current mapped status from existing docs:
 
 - WFP dispatch code and smoke harnesses exist, but the `DISPATCHER` binding is
   still commented and paid-plan-gated.
-- `crates/wfp-tenant` is compile-ready and has local checks.
+- `crates/wfp-authority` and `crates/wfp-tenant` provide the local signed
+  authority and Rust/Wasm verification substrate.
 - The Cloudflare Platform frontend panel now shows WFP tenant route/guard and
   smoke-readiness signals from `/api/platform/capabilities`; those signals do
   not replace archived staging smoke.
-- Production proof still needs an uploaded Rust/Wasm tenant artifact, a real
-  dispatch namespace, an archived artifact manifest with per-module SHA-256
-  hashes, internal-path status smoke, and at least one POST AI route smoke.
+- The artifact uploader requires a tenant runtime token and rejects reuse of the
+  Cloudflare deploy token. The runtime token is attached to the tenant Worker;
+  the deploy token is used only for dispatch-namespace script administration.
+- No deployment is claimed. Production proof still needs a real Rust/Wasm
+  upload plus REST readback, an archived manifest with per-module SHA-256
+  hashes, and a staging signed-authority billing canary proving one central
+  reserve followed by exactly one settlement or refund and one audit outcome.
+  Replay-resistance evidence is separate and remains pending; short lifetime and
+  body binding are not described as replay-proof.
 
 Production rule:
 
 WFP cutover is last-mile multi-tenant enablement. It must not become a
-dependency for the first single-tenant relay production cutover.
+dependency for the first single-tenant relay production cutover, and it must
+never become a second public or admin paid-request authority.
 
 ### 4. AI Gateway Forwarding
 
@@ -331,11 +358,12 @@ and fallback behavior as the direct path.
 
 | Route or traffic family | Production owner | cinaVibeSDK pattern used | Main gates | Required evidence |
 | --- | --- | --- | --- | --- |
-| `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/embeddings` | Main Rust relay | AI Gateway primary/fallback forwarding | `RELAY_AI_GATEWAY_ROUTER_ENABLED`, per-channel opt-in | Direct and AI Gateway canary, same-channel fallback, unchanged settlement |
+| `/v1/chat/completions`, `/v1/responses`, `/v1/messages` | Main Rust relay | AI Gateway primary/fallback forwarding | `RELAY_AI_GATEWAY_ROUTER_ENABLED`, per-channel opt-in | Direct and AI Gateway canary, same-channel fallback, unchanged settlement |
+| `/v1/embeddings` | Main Rust relay direct-provider path | Central auth, channel selection, bounded body, and settlement only; Cloudflare exposes no generic AI Gateway REST embeddings route | Existing relay gates | Direct-provider canary, batch policy, usage, and billing evidence |
 | `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, frame guard, close/error mapping, send-failure cleanup, terminal event trace, upstream replay contract, backpressure policy plus runtime FIFO queue, controlled mock startup queue/drain and early fault plans, archived staging evidence, billing settlement, live protocol replay |
 | `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe, forged internal upstream header boundary smoke |
 | Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Capability preflight with tenant route/guard contract, Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
-| Tenant AI routes | WFP Rust tenant script plus AI Gateway | Dispatch plus AI Gateway proxy | Real `DISPATCHER`, tenant Gateway vars | Capability preflight, route-specific Gateway logs, request policy headers, response-header allowlist |
+| Tenant AI routes | Main Rust relay, then WFP Rust tenant transport, then AI Gateway | Post-admission dispatch with signed body-bound authority | Real `DISPATCHER`, `WFP_RELAY_TRANSPORT_ENABLED`, tenant Gateway vars | Central reserve/settlement/audit evidence, tenant-scoped authority-key readback, route-specific Gateway logs, request policy headers, response-header allowlist, and replay-resistance canary |
 | Admin platform readiness | Main Rust Worker | Capability probe | Admin session | `/api/platform/capabilities` matches bindings, gates, WFP tenant route/guard contracts, and smoke readiness |
 
 ## Migration Stages
@@ -533,12 +561,13 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   planning. The default-off actual-group Worker-binding smoke exercises the same
   authenticated value, but local self-test/dry-run output is not remote staging
   evidence.
-- WFP tenant AI routes are currently a transport-only NO-GO for paid traffic:
-  the admin dispatch entry bypasses central relay-token policy, channel
-  selection, quota reserve/settlement, and relay audit. WFP must run only after
-  central admission, receive a short-lived body-bound authority envelope, and
-  return through the existing billing/audit pipeline before either dispatch gate
-  can be enabled for paid routes.
+- WFP tenant AI is now locally shaped as a post-admission transport, but remains
+  a production NO-GO. Central token policy, D1 channel selection, reserve,
+  settlement/refund, and audit remain authoritative; WFP is selected only from
+  `channels.other_info.wfp_worker` and receives the 30-second signed authority.
+  Admin dispatch is status-only. Keep `WFP_RELAY_TRANSPORT_ENABLED=false` until
+  staging signed-authority billing canary, replay-resistance evidence, and real
+  Rust/Wasm upload/readback are archived.
 - Flat-billed and tiered-expression traffic keep their current semantics; do
   not convert flat traffic to pre-reserve semantics as part of this mapping.
 

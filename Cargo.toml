@@ -17,6 +17,7 @@ members = [
   "crates/tokenizer",
   "crates/worker",
   "crates/wfp-tenant",
+  "crates/wfp-authority",
   "crates/xtask",
 ]
 resolver = "2"

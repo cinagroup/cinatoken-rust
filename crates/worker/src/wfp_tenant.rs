@@ -5,15 +5,9 @@
 //! a small tenant Worker module and, when explicitly requested, uploads it to a
 //! Workers for Platforms dispatch namespace through the Cloudflare API.
 
-use std::time::Duration;
-
-use futures_util::{future::select, future::Either, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use worker::{
-    AbortController, Delay, Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect,
-    Response, Result as WorkerResult,
-};
+use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_root_auth,
@@ -26,12 +20,10 @@ pub const WFP_DISPATCH_NAMESPACE_ENV: &str = "WFP_DISPATCH_NAMESPACE";
 pub const WFP_TENANT_COMPATIBILITY_DATE_ENV: &str = "WFP_TENANT_COMPATIBILITY_DATE";
 
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
-const CLOUDFLARE_API_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
 const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
 const AI_GATEWAY_ID_OPENAI_CHAT_ENV: &str = "AI_GATEWAY_ID_OPENAI_CHAT";
 const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES";
 const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
-const AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV: &str = "AI_GATEWAY_ID_OPENAI_EMBEDDINGS";
 const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
 const AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV: &str = "AI_GATEWAY_REQUEST_TIMEOUT_MS";
 const AI_GATEWAY_MAX_ATTEMPTS_ENV: &str = "AI_GATEWAY_MAX_ATTEMPTS";
@@ -41,10 +33,12 @@ const AI_GATEWAY_CACHE_TTL_SECONDS_ENV: &str = "AI_GATEWAY_CACHE_TTL_SECONDS";
 const AI_GATEWAY_SKIP_CACHE_ENV: &str = "AI_GATEWAY_SKIP_CACHE";
 const AI_GATEWAY_COLLECT_LOG_ENV: &str = "AI_GATEWAY_COLLECT_LOG";
 const TENANT_MODULE_NAME: &str = "tenant.mjs";
-const DEFAULT_COMPATIBILITY_DATE: &str = "2026-06-17";
+const CONTROL_PLANE_DEPLOYMENT_RUNTIME: &str = "js-fallback";
+const CONTROL_PLANE_ARTIFACT_UPLOAD_REQUIRED: bool = true;
+const JS_FALLBACK_AI_CAPABLE: bool = false;
+const CONTROL_PLANE_DEPLOY_ERROR: &str = "generated JS fallback deployment is disabled; build and upload the Rust/Wasm tenant artifact with bun run deploy:wfp-tenant";
+const DEFAULT_COMPATIBILITY_DATE: &str = "2026-07-11";
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
-const CF_API_RESPONSE_LIMIT_BYTES: usize = 32 * 1024;
-const CF_API_TIMEOUT: Duration = Duration::from_secs(20);
 const RUST_TENANT_CRATE: &str = "crates/wfp-tenant";
 const RUST_TENANT_BUILD_COMMAND: &str = "bun run build:wfp-tenant";
 const RUST_TENANT_SHIM_PATH: &str = "crates/wfp-tenant/build/worker/shim.mjs";
@@ -53,7 +47,6 @@ pub(crate) const WFP_TENANT_AI_GATEWAY_ROUTES: &[&str] = &[
     "/v1/chat/completions",
     "/v1/responses",
     "/v1/messages",
-    "/v1/embeddings",
     "/ai/run",
 ];
 pub(crate) const WFP_TENANT_SUPPORTED_ROUTES: &[&str] = &[
@@ -61,22 +54,28 @@ pub(crate) const WFP_TENANT_SUPPORTED_ROUTES: &[&str] = &[
     "/v1/chat/completions",
     "/v1/responses",
     "/v1/messages",
-    "/v1/embeddings",
     "/ai/run",
 ];
 pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
     "dispatcher_binding",
     "dispatch_gate",
+    "relay_transport_gate",
     "internal_dispatch_gate",
+    "central_relay_authority",
+    "signed_body_bound_authority",
+    "tenant_scoped_authority_key",
+    "separate_runtime_token",
     "tenant_script_plan",
     "rust_wasm_runtime",
+    "rust_wasm_artifact_validation",
     "route_manifest",
     "internal_dispatch_required",
     "request_header_scrub",
     "response_header_allowlist",
     "ai_gateway_policy_headers",
+    "central_billing_settlement",
     "tenant_status_smoke",
-    "route_smoke",
+    "relay_authority_staging_replay",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -88,7 +87,6 @@ struct TenantScriptRequest {
     ai_gateway_id_openai_chat: Option<String>,
     ai_gateway_id_openai_responses: Option<String>,
     ai_gateway_id_anthropic_messages: Option<String>,
-    ai_gateway_id_openai_embeddings: Option<String>,
     ai_gateway_id_ai_run: Option<String>,
     ai_gateway_request_timeout_ms: Option<String>,
     ai_gateway_max_attempts: Option<String>,
@@ -107,14 +105,12 @@ struct TenantScriptPlan {
     script_name: String,
     tenant_id: String,
     namespace: Option<String>,
-    api_token: Option<String>,
     ai_gateway_id: Option<String>,
     route_ai_gateway_ids: RouteGatewayIds,
     ai_gateway_request_policy: GatewayRequestPolicy,
     compatibility_date: String,
     module_name: String,
     script: String,
-    upload_metadata: Value,
     redacted_metadata: Value,
     upload_url: Option<String>,
     missing: Vec<ConfigRequirement>,
@@ -135,11 +131,14 @@ struct TenantScriptPlanResponse {
     namespace: Option<String>,
     upload_url: Option<String>,
     module_name: String,
+    deployment_runtime: &'static str,
     compatibility_date: String,
     ai_gateway_id_configured: bool,
     route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
     ai_gateway_request_policy_configured: GatewayRequestPolicyConfigured,
     attach_gateway_token: bool,
+    artifact_upload_required: bool,
+    js_fallback_ai_capable: bool,
     deployable: bool,
     missing: Vec<ConfigRequirement>,
     warnings: Vec<String>,
@@ -157,31 +156,11 @@ struct RustWasmRuntimePlan {
     deployment_status: &'static str,
 }
 
-#[derive(Debug, Serialize)]
-struct TenantScriptDeployResponse {
-    public_script_name: String,
-    script_name: String,
-    tenant_id: String,
-    namespace: String,
-    upload_url: String,
-    module_name: String,
-    compatibility_date: String,
-    ai_gateway_id_configured: bool,
-    route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
-    ai_gateway_request_policy_configured: GatewayRequestPolicyConfigured,
-    status: u16,
-    ok: bool,
-    cloudflare_response_preview: String,
-    cloudflare_response_json: Option<Value>,
-    warnings: Vec<String>,
-}
-
 #[derive(Debug, Clone, Default)]
 struct RouteGatewayIds {
     openai_chat: Option<String>,
     openai_responses: Option<String>,
     anthropic_messages: Option<String>,
-    openai_embeddings: Option<String>,
     ai_run: Option<String>,
 }
 
@@ -190,7 +169,6 @@ struct RouteGatewayIdConfigured {
     openai_chat: bool,
     openai_responses: bool,
     anthropic_messages: bool,
-    openai_embeddings: bool,
     ai_run: bool,
 }
 
@@ -237,12 +215,6 @@ impl RouteGatewayIds {
                 AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
                 "ai_gateway_id_anthropic_messages",
             )?,
-            openai_embeddings: optional_request_or_env(
-                request.ai_gateway_id_openai_embeddings.as_deref(),
-                env,
-                AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV,
-                "ai_gateway_id_openai_embeddings",
-            )?,
             ai_run: optional_request_or_env(
                 request.ai_gateway_id_ai_run.as_deref(),
                 env,
@@ -256,7 +228,6 @@ impl RouteGatewayIds {
         self.openai_chat.is_some()
             || self.openai_responses.is_some()
             || self.anthropic_messages.is_some()
-            || self.openai_embeddings.is_some()
             || self.ai_run.is_some()
     }
 
@@ -265,7 +236,6 @@ impl RouteGatewayIds {
             openai_chat: self.openai_chat.is_some(),
             openai_responses: self.openai_responses.is_some(),
             anthropic_messages: self.anthropic_messages.is_some(),
-            openai_embeddings: self.openai_embeddings.is_some(),
             ai_run: self.ai_run.is_some(),
         }
     }
@@ -381,73 +351,11 @@ pub async fn plan(mut req: Request, env: Env) -> WorkerResult<Response> {
     Ok(response)
 }
 
-pub async fn deploy(mut req: Request, env: Env) -> WorkerResult<Response> {
+pub async fn deploy(req: Request, env: Env) -> WorkerResult<Response> {
     if let Err(response) = require_root_auth(&req, &env).await? {
         return Ok(response);
     }
-    let body = match read_json_body(&mut req).await {
-        Ok(body) => body,
-        Err(response) => return Ok(response),
-    };
-    let payload: TenantScriptRequest = match serde_json::from_value(body) {
-        Ok(payload) => payload,
-        Err(err) => {
-            return Ok(envelope_error_response(
-                400,
-                &format!("invalid WFP tenant script deploy request: {err}"),
-            ));
-        }
-    };
-    let plan_internal = match build_tenant_script_plan(&env, payload) {
-        Ok(plan) => plan,
-        Err(message) => return Ok(envelope_error_response(400, &message)),
-    };
-    if !plan_internal.missing.is_empty() {
-        let missing = plan_internal
-            .missing
-            .iter()
-            .map(|item| item.name)
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Ok(envelope_error_response(
-            400,
-            &format!("missing required Cloudflare deployment configuration: {missing}"),
-        ));
-    }
-
-    let plan = plan_internal.plan;
-    let namespace = plan.namespace.clone().unwrap_or_default();
-    let upload_url = plan.upload_url.clone().unwrap_or_default();
-    let body = build_multipart_upload_body(
-        "cinatoken_wfp_tenant_boundary",
-        &plan.upload_metadata,
-        &plan.module_name,
-        &plan.script,
-    )
-    .map_err(|err| worker::Error::RustError(format!("failed to build upload body: {err}")))?;
-    let (status, preview, parsed) =
-        upload_tenant_script(&upload_url, plan.api_token.as_deref(), body).await?;
-    let ok = (200..300).contains(&status);
-    let deploy_response = TenantScriptDeployResponse {
-        public_script_name: plan.public_script_name,
-        script_name: plan.script_name,
-        tenant_id: plan.tenant_id,
-        namespace,
-        upload_url,
-        module_name: plan.module_name,
-        compatibility_date: plan.compatibility_date,
-        ai_gateway_id_configured: plan.ai_gateway_id.is_some()
-            || plan.route_ai_gateway_ids.any_configured(),
-        route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
-        ai_gateway_request_policy_configured: plan.ai_gateway_request_policy.configured(),
-        status,
-        ok,
-        cloudflare_response_preview: preview,
-        cloudflare_response_json: parsed,
-        warnings: plan.warnings,
-    };
-    let mut response =
-        envelope_ok_response(&deploy_response)?.with_status(if ok { 200 } else { 502 });
+    let mut response = envelope_error_response(409, CONTROL_PLANE_DEPLOY_ERROR);
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
 }
@@ -480,7 +388,6 @@ fn build_tenant_script_plan(
     };
     let account_id =
         runtime_value(env, CLOUDFLARE_ACCOUNT_ID_ENV).and_then(|value| validate_account_id(&value));
-    let api_token = secret_or_var(env, CLOUDFLARE_API_TOKEN_ENV);
     let ai_gateway_id = optional_request_or_env(
         request.ai_gateway_id.as_deref(),
         env,
@@ -512,29 +419,10 @@ fn build_tenant_script_plan(
             secret: false,
         });
     }
-    if api_token.is_none() {
-        missing.push(ConfigRequirement {
-            name: CLOUDFLARE_API_TOKEN_ENV,
-            secret: true,
-        });
-    }
-
     let upload_url = account_id
         .as_deref()
         .zip(namespace.as_deref())
         .map(|(account, ns)| dispatch_script_upload_url(account, ns, &script_name));
-    let actual_metadata = upload_metadata(
-        &compatibility_date,
-        &tenant_id,
-        account_id.as_deref(),
-        ai_gateway_id.as_deref(),
-        &route_ai_gateway_ids,
-        &ai_gateway_request_policy,
-        attach_gateway_token
-            .then_some(api_token.as_deref())
-            .flatten(),
-        false,
-    );
     let redacted_metadata = upload_metadata(
         &compatibility_date,
         &tenant_id,
@@ -546,11 +434,12 @@ fn build_tenant_script_plan(
         true,
     );
     let mut warnings = vec![
-        "Generated tenant script forwards request bodies to Cloudflare AI Gateway REST without reading them; model policy and billing remain enforced by the main cinatoken relay.".to_string(),
+        "The generated JS fallback is status-only and cannot serve paid AI traffic.".to_string(),
+        "Rust/Wasm artifact upload is required; use bun run deploy:wfp-tenant instead of the control-plane deploy endpoint.".to_string(),
     ];
     if !attach_gateway_token {
         warnings.push(
-            "attach_gateway_token=false uses CLOUDFLARE_API_TOKEN only for the upload call; tenant runtime will fail closed until CF_API_TOKEN is attached out of band.".to_string(),
+            "attach_gateway_token=false omits CF_API_TOKEN from plan metadata; control-plane deploy remains disabled and the Rust/Wasm artifact upload path owns runtime secret binding.".to_string(),
         );
     }
 
@@ -560,14 +449,12 @@ fn build_tenant_script_plan(
             script_name,
             tenant_id,
             namespace,
-            api_token,
             ai_gateway_id,
             route_ai_gateway_ids,
             ai_gateway_request_policy,
             compatibility_date,
             module_name: TENANT_MODULE_NAME.to_string(),
             script,
-            upload_metadata: actual_metadata,
             redacted_metadata,
             upload_url,
             missing,
@@ -598,13 +485,16 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
         namespace: plan.namespace.clone(),
         upload_url: plan.upload_url.clone(),
         module_name: plan.module_name.clone(),
+        deployment_runtime: CONTROL_PLANE_DEPLOYMENT_RUNTIME,
         compatibility_date: plan.compatibility_date.clone(),
         ai_gateway_id_configured: plan.ai_gateway_id.is_some()
             || plan.route_ai_gateway_ids.any_configured(),
         route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
         ai_gateway_request_policy_configured: plan.ai_gateway_request_policy.configured(),
         attach_gateway_token: plan.attach_gateway_token,
-        deployable: plan.missing.is_empty(),
+        artifact_upload_required: CONTROL_PLANE_ARTIFACT_UPLOAD_REQUIRED,
+        js_fallback_ai_capable: JS_FALLBACK_AI_CAPABLE,
+        deployable: false,
         missing: plan.missing.clone(),
         warnings: plan.warnings.clone(),
         metadata: plan.redacted_metadata.clone(),
@@ -614,7 +504,7 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
             crate_path: RUST_TENANT_CRATE,
             build_command: RUST_TENANT_BUILD_COMMAND,
             shim_path: RUST_TENANT_SHIM_PATH,
-            deployment_status: "compile_ready_artifact_upload_not_wired",
+            deployment_status: "artifact_upload_tool_required",
         },
     }
 }
@@ -705,7 +595,7 @@ fn gateway_request_policy_binding_values(
 
 fn route_gateway_binding_values(
     route_ai_gateway_ids: &RouteGatewayIds,
-) -> [(&'static str, Option<&str>); 5] {
+) -> [(&'static str, Option<&str>); 4] {
     [
         (
             AI_GATEWAY_ID_OPENAI_CHAT_ENV,
@@ -718,10 +608,6 @@ fn route_gateway_binding_values(
         (
             AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
             route_ai_gateway_ids.anthropic_messages.as_deref(),
-        ),
-        (
-            AI_GATEWAY_ID_OPENAI_EMBEDDINGS_ENV,
-            route_ai_gateway_ids.openai_embeddings.as_deref(),
         ),
         (
             AI_GATEWAY_ID_AI_RUN_ENV,
@@ -740,86 +626,77 @@ pub(crate) fn wfp_tenant_cutover_guards() -> Vec<&'static str> {
 
 pub(crate) fn wfp_tenant_script_plan_compiled() -> bool {
     let script = tenant_worker_script();
-    script.contains("cloudflare-ai-gateway-rest")
-        && script.contains("body_mode: \"streamed_request_body\"")
-        && script.contains("CF_ACCOUNT_ID and CF_API_TOKEN must be bound")
-        && WFP_TENANT_AI_GATEWAY_ROUTES
-            .iter()
-            .all(|route| script.contains(route))
-        && WFP_TENANT_SUPPORTED_ROUTES
-            .iter()
-            .all(|route| script.contains(route))
+    script.contains("forwarding: \"disabled-status-only\"")
+        && script.contains("body_mode: \"none\"")
+        && script.contains("paid_ai_capable: false")
+        && script.contains("status_only_tenant_runtime")
+        && !script.contains("CF_API_TOKEN")
+        && !script.contains("await fetch(")
 }
 
 pub(crate) fn wfp_tenant_rust_wasm_runtime_compiled() -> bool {
+    let deploy_tool = include_str!("../../../tools/deploy_wfp_tenant_artifact.mjs");
     RUST_TENANT_CRATE == "crates/wfp-tenant"
         && RUST_TENANT_BUILD_COMMAND == "bun run build:wfp-tenant"
         && RUST_TENANT_SHIM_PATH == "crates/wfp-tenant/build/worker/shim.mjs"
+        && deploy_tool.contains("wasmMagic")
+        && deploy_tool.contains("WFP_RELAY_AUTHORITY_KEY")
+        && deploy_tool.contains("deployment token and tenant runtime token must be different")
+        && deploy_tool.contains("--manifest-only is no longer supported")
 }
 
 pub(crate) fn wfp_tenant_route_manifest_compiled() -> bool {
     let script = tenant_worker_script();
-    script.contains("const SUPPORTED_ROUTES")
+    script.contains("const SUPPORTED_ROUTES = [STATUS_PATH];")
         && WFP_TENANT_SUPPORTED_ROUTES
+            == &[
+                WFP_TENANT_STATUS_PATH,
+                "/v1/chat/completions",
+                "/v1/responses",
+                "/v1/messages",
+                "/ai/run",
+            ]
+        && WFP_TENANT_AI_GATEWAY_ROUTES == &WFP_TENANT_SUPPORTED_ROUTES[1..]
+        && WFP_TENANT_AI_GATEWAY_ROUTES
             .iter()
-            .all(|route| script.contains(route))
+            .all(|route| !script.contains(route))
 }
 
 pub(crate) fn wfp_tenant_internal_dispatch_required_compiled() -> bool {
     let script = tenant_worker_script();
-    script.contains("tenant_internal_dispatch_required")
-        && script.contains("function isInternalDispatch")
+    script.contains("STATUS_CONTROL_AUTHORITY_MODES")
+        && script.contains("paid_ai_authority_mode: WFP_RELAY_AUTHORITY_ROUTE")
+        && script.contains("paid_ai_capable: false")
         && script.contains("WFP_INTERNAL_ROUTE")
+        && script.contains("WFP_RELAY_AUTHORITY_ROUTE")
+}
+
+pub(crate) fn wfp_tenant_relay_authority_verifier_compiled() -> bool {
+    let source = include_str!("../../wfp-tenant/src/lib.rs");
+    source.contains("verify_authority_with_worker_key")
+        && source.contains("decode_worker_key")
+        && source.contains("AUTHORITY_TENANT_KEY_ENV")
+        && source.contains("bounded_verified_json")
+        && !source.contains("secret_or_var(&env, AUTHORITY_SECRET_ENV)")
 }
 
 pub(crate) fn wfp_tenant_response_header_guard_compiled() -> bool {
     let script = tenant_worker_script();
-    script.contains("const SAFE_RESPONSE_HEADERS")
-        && script.contains("safeResponseHeaders(upstream.headers)")
-        && script.contains("responseHeaders.set(\"x-cinatoken-wfp-tenant\"")
-        && script.contains("responseHeaders.set(\"x-cinatoken-wfp-runtime\"")
+    script.contains("\"x-cinatoken-wfp-tenant\": env.CINATOKEN_TENANT_ID")
+        && script.contains("\"x-cinatoken-wfp-runtime\": \"js-fallback\"")
+        && !script.contains("upstream.headers")
         && !script.contains("new Headers(upstream.headers)")
 }
 
 pub(crate) fn wfp_tenant_ai_gateway_policy_compiled() -> bool {
-    let script = tenant_worker_script();
-    script.contains("const AI_GATEWAY_REQUEST_POLICIES")
-        && script.contains("appendGatewayPolicyHeaders(headers, env)")
-        && script.contains("routeGatewayId(env, pathname)")
-        && script.contains("cf-aig-metadata")
-        && script.contains("gatewayRequestPolicyStatus(env)")
+    WFP_TENANT_AI_GATEWAY_ROUTES.len() == 4
+        && route_gateway_binding_values(&RouteGatewayIds::default()).len() == 4
+        && gateway_request_policy_binding_values(&GatewayRequestPolicy::default()).len() == 7
 }
 
 fn tenant_worker_script() -> String {
     r#"const STATUS_PATH = "/__cinatoken/tenant/status";
-const REST_API_PATHS = new Set([
-  "/v1/chat/completions",
-  "/v1/responses",
-  "/v1/messages",
-  "/v1/embeddings"
-]);
-const SUPPORTED_ROUTES = [
-  STATUS_PATH,
-  "/v1/chat/completions",
-  "/v1/responses",
-  "/v1/messages",
-  "/v1/embeddings",
-  "/ai/run"
-];
-const SAFE_RESPONSE_HEADERS = [
-  "content-type",
-  "cache-control",
-  "content-language",
-  "expires",
-  "last-modified",
-  "etag",
-  "vary",
-  "retry-after",
-  "x-request-id",
-  "request-id",
-  "openai-request-id",
-  "anthropic-request-id"
-];
+const SUPPORTED_ROUTES = [STATUS_PATH];
 const SENSITIVE_INBOUND_HEADERS = [
   "authorization",
   "cookie",
@@ -833,62 +710,12 @@ const SENSITIVE_INBOUND_HEADERS = [
 const WFP_ROUTE_HEADER = "x-cinatoken-wfp-route";
 const WFP_WORKER_HEADER = "x-cinatoken-wfp-worker";
 const WFP_INTERNAL_ROUTE = "internal-path";
+const WFP_RELAY_AUTHORITY_ROUTE = "relay-authority";
+const STATUS_CONTROL_AUTHORITY_MODES = [
+  WFP_INTERNAL_ROUTE,
+  WFP_RELAY_AUTHORITY_ROUTE
+];
 const CONTROLLED_INBOUND_HEADERS = new Set([WFP_ROUTE_HEADER, WFP_WORKER_HEADER]);
-const ROUTE_GATEWAY_ENVS = {
-  "/v1/chat/completions": "AI_GATEWAY_ID_OPENAI_CHAT",
-  "/v1/responses": "AI_GATEWAY_ID_OPENAI_RESPONSES",
-  "/v1/messages": "AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
-  "/v1/embeddings": "AI_GATEWAY_ID_OPENAI_EMBEDDINGS",
-  "/ai/run": "AI_GATEWAY_ID_AI_RUN"
-};
-const AI_GATEWAY_REQUEST_POLICIES = [
-  {
-    env: "AI_GATEWAY_REQUEST_TIMEOUT_MS",
-    header: "cf-aig-request-timeout",
-    kind: "positive-integer",
-    min: 1,
-    max: 600000
-  },
-  {
-    env: "AI_GATEWAY_MAX_ATTEMPTS",
-    header: "cf-aig-max-attempts",
-    kind: "positive-integer",
-    min: 1,
-    max: 5
-  },
-  {
-    env: "AI_GATEWAY_RETRY_DELAY_MS",
-    header: "cf-aig-retry-delay",
-    kind: "positive-integer",
-    min: 1,
-    max: 5000
-  },
-  {
-    env: "AI_GATEWAY_BACKOFF",
-    header: "cf-aig-backoff",
-    kind: "backoff"
-  },
-  {
-    env: "AI_GATEWAY_CACHE_TTL_SECONDS",
-    header: "cf-aig-cache-ttl",
-    kind: "positive-integer",
-    min: 1
-  },
-  {
-    env: "AI_GATEWAY_SKIP_CACHE",
-    header: "cf-aig-skip-cache",
-    kind: "boolean"
-  },
-  {
-    env: "AI_GATEWAY_COLLECT_LOG",
-    header: "cf-aig-collect-log",
-    kind: "boolean"
-  }
-];
-const GATEWAY_ID_ENVS = [
-  "AI_GATEWAY_ID",
-  ...Object.values(ROUTE_GATEWAY_ENVS)
-];
 
 export default {
   async fetch(request, env) {
@@ -899,16 +726,20 @@ export default {
         service: "cinatoken-wfp-tenant",
         runtime: "js-fallback",
         tenant_id: env.CINATOKEN_TENANT_ID || "unknown",
-        ai_gateway_id_configured: gatewayIdConfigured(env),
-        default_ai_gateway_id_configured: Boolean(env.AI_GATEWAY_ID),
-        route_gateways: routeGatewayStatus(env),
-        ai_gateway_request_policy: gatewayRequestPolicyStatus(env),
+        ai_gateway_id_configured: false,
+        default_ai_gateway_id_configured: false,
+        route_gateways: [],
+        ai_gateway_request_policy: [],
         inbound_sensitive_headers_present: inboundSensitiveHeaders.length > 0,
         inbound_sensitive_headers: inboundSensitiveHeaders,
+        status_control_authority_modes: STATUS_CONTROL_AUTHORITY_MODES,
+        paid_ai_authority_mode: WFP_RELAY_AUTHORITY_ROUTE,
+        paid_ai_authority_verifier: "disabled-status-only",
+        paid_ai_capable: false,
         inbound_dispatch_route: headerValue(request.headers, WFP_ROUTE_HEADER),
         inbound_dispatch_worker: headerValue(request.headers, WFP_WORKER_HEADER),
-        forwarding: "cloudflare-ai-gateway-rest",
-        body_mode: "streamed_request_body",
+        forwarding: "disabled-status-only",
+        body_mode: "none",
         routes: SUPPORTED_ROUTES
       }, {
         headers: {
@@ -918,128 +749,9 @@ export default {
       });
     }
 
-    const upstreamPath = targetPath(url.pathname);
-    if (!upstreamPath) {
-      return jsonError(404, "unsupported_tenant_route", "unsupported tenant AI Gateway route");
-    }
-    if (request.method !== "POST") {
-      return jsonError(405, "method_not_allowed", "tenant AI Gateway routes require POST");
-    }
-    if (!isInternalDispatch(request.headers)) {
-      return jsonError(403, "tenant_internal_dispatch_required", "tenant AI Gateway routes require internal WFP dispatch");
-    }
-    if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
-      return jsonError(500, "tenant_gateway_not_configured", "CF_ACCOUNT_ID and CF_API_TOKEN must be bound");
-    }
-
-    const target = new URL(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/ai${upstreamPath}`);
-    target.search = url.search;
-    const headers = upstreamHeaders(request.headers, env, url.pathname);
-    const upstream = await fetch(target.toString(), {
-      method: "POST",
-      headers,
-      body: request.body,
-      redirect: "error"
-    });
-    const responseHeaders = safeResponseHeaders(upstream.headers);
-    responseHeaders.set("x-cinatoken-wfp-tenant", env.CINATOKEN_TENANT_ID || "unknown");
-    responseHeaders.set("x-cinatoken-wfp-runtime", "js-fallback");
-    return new Response(upstream.body, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: responseHeaders
-    });
+    return jsonError(404, "status_only_tenant_runtime", "generated JS fallback serves status only; deploy the Rust/Wasm tenant artifact for AI routes");
   }
 };
-
-function targetPath(pathname) {
-  if (REST_API_PATHS.has(pathname)) return pathname;
-  if (pathname === "/ai/run") return "/run";
-  return null;
-}
-
-function upstreamHeaders(input, env, pathname) {
-  const headers = new Headers();
-  copyHeader(input, headers, "content-type");
-  copyHeader(input, headers, "accept");
-  headers.set("authorization", `Bearer ${env.CF_API_TOKEN}`);
-  const gatewayId = routeGatewayId(env, pathname);
-  if (gatewayId) headers.set("cf-aig-gateway-id", gatewayId);
-  appendGatewayPolicyHeaders(headers, env);
-  headers.set("x-cinatoken-tenant", env.CINATOKEN_TENANT_ID || "unknown");
-  headers.set("x-cinatoken-wfp-runtime", "js-fallback");
-  headers.set("cf-aig-metadata", JSON.stringify({
-    tenant_id: env.CINATOKEN_TENANT_ID || "unknown",
-    runtime: "js-fallback",
-    source: "cinatoken-wfp-tenant",
-    route: pathname,
-    api: routeFamily(pathname)
-  }));
-  return headers;
-}
-
-function routeGatewayId(env, pathname) {
-  const gatewayEnv = ROUTE_GATEWAY_ENVS[pathname];
-  const routeGatewayId = gatewayEnv ? env[gatewayEnv] : "";
-  return routeGatewayId || env.AI_GATEWAY_ID || "";
-}
-
-function gatewayIdConfigured(env) {
-  return GATEWAY_ID_ENVS.some((name) => Boolean(env[name]));
-}
-
-function routeGatewayStatus(env) {
-  return Object.entries(ROUTE_GATEWAY_ENVS).map(([route, gatewayEnv]) => ({
-    route,
-    api: routeFamily(route),
-    gateway_env: gatewayEnv,
-    gateway_id_configured: Boolean(env[gatewayEnv])
-  }));
-}
-
-function appendGatewayPolicyHeaders(headers, env) {
-  for (const policy of AI_GATEWAY_REQUEST_POLICIES) {
-    const configured = Boolean(String(env[policy.env] || "").trim());
-    const value = validatedGatewayPolicyValue(env[policy.env], policy);
-    if (configured && !value) {
-      throw new Error(`${policy.env} is not a valid ${policy.header} value`);
-    }
-    if (value) headers.set(policy.header, value);
-  }
-}
-
-function gatewayRequestPolicyStatus(env) {
-  return AI_GATEWAY_REQUEST_POLICIES.map((policy) => {
-    const value = env[policy.env];
-    return {
-      env: policy.env,
-      header: policy.header,
-      configured: Boolean(String(value || "").trim()),
-      valid: Boolean(validatedGatewayPolicyValue(value, policy))
-    };
-  });
-}
-
-function validatedGatewayPolicyValue(value, policy) {
-  const normalized = String(value || "").trim();
-  if (!normalized) return "";
-  if (policy.kind === "positive-integer") {
-    if (!/^\d+$/.test(normalized)) return "";
-    const parsed = Number.parseInt(normalized, 10);
-    if (!Number.isSafeInteger(parsed) || parsed < policy.min) return "";
-    if (policy.max && parsed > policy.max) return "";
-    return String(parsed);
-  }
-  if (policy.kind === "boolean") {
-    const lowered = normalized.toLowerCase();
-    return lowered === "true" || lowered === "false" ? lowered : "";
-  }
-  if (policy.kind === "backoff") {
-    const lowered = normalized.toLowerCase();
-    return ["constant", "linear", "exponential"].includes(lowered) ? lowered : "";
-  }
-  return "";
-}
 
 function inboundSensitiveHeaderNames(input) {
   const names = new Set();
@@ -1055,36 +767,9 @@ function isSensitiveInboundHeader(name) {
     (normalized.startsWith("x-cinatoken-") && !CONTROLLED_INBOUND_HEADERS.has(normalized));
 }
 
-function isInternalDispatch(input) {
-  return (input.get(WFP_ROUTE_HEADER) || "").trim().toLowerCase() === WFP_INTERNAL_ROUTE;
-}
-
 function headerValue(input, name) {
   const value = input.get(name);
   return value && value.trim() ? value.trim() : null;
-}
-
-function safeResponseHeaders(input) {
-  const headers = new Headers();
-  for (const name of SAFE_RESPONSE_HEADERS) {
-    const value = input.get(name);
-    if (value) headers.set(name, value);
-  }
-  return headers;
-}
-
-function routeFamily(pathname) {
-  if (pathname === "/v1/chat/completions") return "openai_chat";
-  if (pathname === "/v1/responses") return "openai_responses";
-  if (pathname === "/v1/messages") return "anthropic_messages";
-  if (pathname === "/v1/embeddings") return "openai_embeddings";
-  if (pathname === "/ai/run") return "ai_run";
-  return "unknown";
-}
-
-function copyHeader(input, output, name) {
-  const value = input.get(name);
-  if (value) output.set(name, value);
 }
 
 function jsonResponse(data, init = {}) {
@@ -1250,108 +935,10 @@ fn validate_compatibility_date(value: &str) -> Result<String, String> {
     }
 }
 
-fn secret_or_var(env: &Env, name: &str) -> Option<String> {
-    env.secret(name)
-        .map(|value| value.to_string())
-        .ok()
-        .or_else(|| runtime_value(env, name))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn dispatch_script_upload_url(account_id: &str, namespace: &str, script_name: &str) -> String {
     format!(
         "{CLOUDFLARE_API_BASE}/accounts/{account_id}/workers/dispatch/namespaces/{namespace}/scripts/{script_name}"
     )
-}
-
-fn build_multipart_upload_body(
-    boundary: &str,
-    metadata: &Value,
-    module_name: &str,
-    script: &str,
-) -> serde_json::Result<Vec<u8>> {
-    let metadata = serde_json::to_string(metadata)?;
-    let body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{metadata}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"{module_name}\"; filename=\"{module_name}\"\r\nContent-Type: application/javascript+module\r\n\r\n{script}\r\n--{boundary}--\r\n"
-    );
-    Ok(body.into_bytes())
-}
-
-async fn upload_tenant_script(
-    upload_url: &str,
-    api_token: Option<&str>,
-    body: Vec<u8>,
-) -> WorkerResult<(u16, String, Option<Value>)> {
-    let api_token = api_token.ok_or_else(|| {
-        worker::Error::RustError("CLOUDFLARE_API_TOKEN is required for WFP deploy".to_string())
-    })?;
-    let mut headers = Headers::new();
-    headers.set("Authorization", &format!("Bearer {api_token}"))?;
-    headers.set(
-        "Content-Type",
-        "multipart/form-data; boundary=cinatoken_wfp_tenant_boundary",
-    )?;
-    headers.set("Accept", "application/json")?;
-    let mut init = RequestInit::new();
-    init.with_method(Method::Put)
-        .with_headers(headers)
-        .with_redirect(RequestRedirect::Error)
-        .with_body(Some(wasm_bindgen::JsValue::from(js_sys::Uint8Array::from(
-            body.as_slice(),
-        ))));
-    let request = Request::new_with_init(upload_url, &init)?;
-    let controller = AbortController::default();
-    let signal = controller.signal();
-    let outbound = Fetch::Request(request);
-    let fetch = outbound.send_with_signal(&signal);
-    let delay = Delay::from(CF_API_TIMEOUT);
-    futures_util::pin_mut!(fetch);
-    futures_util::pin_mut!(delay);
-    let mut response = match select(fetch, delay).await {
-        Either::Left((result, _)) => result?,
-        Either::Right(((), _)) => {
-            controller.abort();
-            return Err(worker::Error::RustError(
-                "Cloudflare dispatch script upload timed out".to_string(),
-            ));
-        }
-    };
-    let status = response.status_code();
-    let bytes = read_limited_response_body(&mut response, CF_API_RESPONSE_LIMIT_BYTES).await?;
-    let preview = String::from_utf8_lossy(&bytes).trim().to_string();
-    let parsed = serde_json::from_slice::<Value>(&bytes).ok();
-    Ok((status, preview, parsed))
-}
-
-async fn read_limited_response_body(
-    response: &mut Response,
-    limit: usize,
-) -> WorkerResult<Vec<u8>> {
-    if let Some(raw) = response.headers().get("Content-Length")? {
-        if raw
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .is_some_and(|length| length > limit)
-        {
-            return Err(worker::Error::RustError(format!(
-                "Cloudflare API response exceeds {limit} bytes"
-            )));
-        }
-    }
-    response
-        .stream()?
-        .try_fold(Vec::new(), |mut bytes, chunk| async move {
-            if bytes.len().saturating_add(chunk.len()) > limit {
-                return Err(worker::Error::RustError(format!(
-                    "Cloudflare API response exceeds {limit} bytes"
-                )));
-            }
-            bytes.extend_from_slice(&chunk);
-            Ok(bytes)
-        })
-        .await
 }
 
 #[cfg(test)]
@@ -1359,99 +946,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tenant_worker_streams_body_to_ai_gateway_without_client_auth_forward() {
+    fn generated_js_fallback_is_status_only() {
         let script = tenant_worker_script();
-        assert!(script.contains("request.body"));
-        assert!(script.contains("Bearer ${env.CF_API_TOKEN}"));
-        assert!(script.contains("cf-aig-gateway-id"));
-        assert!(script.contains("AI_GATEWAY_ID_OPENAI_CHAT"));
-        assert!(script.contains("AI_GATEWAY_ID_OPENAI_RESPONSES"));
-        assert!(script.contains("AI_GATEWAY_ID_ANTHROPIC_MESSAGES"));
-        assert!(script.contains("AI_GATEWAY_ID_OPENAI_EMBEDDINGS"));
-        assert!(script.contains("AI_GATEWAY_ID_AI_RUN"));
-        assert!(script.contains("routeGatewayId(env, pathname)"));
-        assert!(script.contains("routeGatewayStatus(env)"));
-        assert!(script.contains("AI_GATEWAY_REQUEST_POLICIES"));
-        assert!(script.contains("gatewayRequestPolicyStatus(env)"));
-        assert!(script.contains("appendGatewayPolicyHeaders(headers, env)"));
-        assert!(script.contains("cf-aig-request-timeout"));
-        assert!(script.contains("cf-aig-max-attempts"));
-        assert!(script.contains("cf-aig-retry-delay"));
-        assert!(script.contains("cf-aig-backoff"));
-        assert!(script.contains("cf-aig-cache-ttl"));
-        assert!(script.contains("cf-aig-skip-cache"));
-        assert!(script.contains("cf-aig-collect-log"));
-        assert!(script.contains("cf-aig-metadata"));
         assert!(script.contains("runtime: \"js-fallback\""));
-        assert!(script.contains("body_mode: \"streamed_request_body\""));
+        assert!(script.contains("forwarding: \"disabled-status-only\""));
+        assert!(script.contains("body_mode: \"none\""));
+        assert!(script.contains("paid_ai_capable: false"));
+        assert!(script.contains("status_only_tenant_runtime"));
         assert!(script.contains("inbound_sensitive_headers_present"));
         assert!(script.contains("inboundSensitiveHeaderNames(request.headers)"));
         assert!(script.contains("SENSITIVE_INBOUND_HEADERS"));
         assert!(script.contains("CONTROLLED_INBOUND_HEADERS"));
         assert!(script.contains("WFP_ROUTE_HEADER"));
+        assert!(script.contains("status_control_authority_modes"));
+        assert!(script.contains("paid_ai_authority_mode"));
+        assert!(script.contains("paid_ai_authority_verifier"));
         assert!(script.contains("inbound_dispatch_route"));
-        assert!(script.contains("isInternalDispatch(request.headers)"));
-        assert!(script.contains("tenant_internal_dispatch_required"));
         assert!(script.contains("x-cinatoken-wfp-runtime"));
         assert!(script.contains("\"x-cinatoken-wfp-runtime\": \"js-fallback\""));
-        assert!(script.contains("safeResponseHeaders(upstream.headers)"));
-        assert!(script.contains("SAFE_RESPONSE_HEADERS"));
-        assert!(!script.contains("new Headers(upstream.headers)"));
-        assert!(!script.contains("input.get(\"authorization\")"));
-        assert!(!script.contains("input.get(\"cookie\")"));
-        assert!(!script.contains("if (env.AI_GATEWAY_ID) headers.set"));
-        assert!(!script.contains("await request.json()"));
+        for forbidden in [
+            "request.body",
+            "CF_API_TOKEN",
+            "cf-aig-",
+            "await fetch(",
+            "upstream.headers",
+            "AI_GATEWAY_ID_",
+        ] {
+            assert!(
+                !script.contains(forbidden),
+                "status-only script contains {forbidden}"
+            );
+        }
     }
 
     #[test]
-    fn tenant_worker_generated_route_manifest_stays_in_sync() {
+    fn generated_js_fallback_manifest_is_status_only() {
         let script = tenant_worker_script();
-        for route in [
-            "/__cinatoken/tenant/status",
-            "/v1/chat/completions",
-            "/v1/responses",
-            "/v1/messages",
-            "/v1/embeddings",
-            "/ai/run",
-        ] {
-            assert!(script.contains(route), "missing generated route {route}");
+        assert!(script.contains("const SUPPORTED_ROUTES = [STATUS_PATH];"));
+        assert_eq!(
+            WFP_TENANT_SUPPORTED_ROUTES,
+            &[
+                "/__cinatoken/tenant/status",
+                "/v1/chat/completions",
+                "/v1/responses",
+                "/v1/messages",
+                "/ai/run",
+            ]
+        );
+        for route in WFP_TENANT_AI_GATEWAY_ROUTES {
+            assert!(
+                !script.contains(route),
+                "status-only script contains AI route {route}"
+            );
         }
-        for family in [
-            "openai_chat",
-            "openai_responses",
-            "anthropic_messages",
-            "openai_embeddings",
-            "ai_run",
-        ] {
-            assert!(script.contains(family), "missing route family {family}");
-        }
+        assert!(!script.contains("/v1/embeddings"));
     }
 
     #[test]
-    fn multipart_upload_body_contains_metadata_and_module() {
-        let metadata = upload_metadata(
-            "2026-06-17",
-            "tenant-a",
-            Some("account"),
-            Some("gateway"),
-            &RouteGatewayIds::default(),
-            &GatewayRequestPolicy::default(),
-            Some("secret"),
-            false,
-        );
-        let body = build_multipart_upload_body(
-            "boundary",
-            &metadata,
-            TENANT_MODULE_NAME,
-            "export default {}",
-        )
-        .unwrap();
-        let body = String::from_utf8(body).unwrap();
-        assert!(body.contains("name=\"metadata\""));
-        assert!(body.contains("\"main_module\":\"tenant.mjs\""));
-        assert!(body.contains("\"type\":\"secret_text\""));
-        assert!(body.contains("name=\"tenant.mjs\"; filename=\"tenant.mjs\""));
-        assert!(body.ends_with("--boundary--\r\n"));
+    fn generated_js_fallback_authority_status_is_explicit() {
+        let script = tenant_worker_script();
+        assert!(script.contains(
+            r#"const STATUS_CONTROL_AUTHORITY_MODES = [
+  WFP_INTERNAL_ROUTE,
+  WFP_RELAY_AUTHORITY_ROUTE
+];"#
+        ));
+        assert!(script.contains("const WFP_INTERNAL_ROUTE = \"internal-path\";"));
+        assert!(script.contains("const WFP_RELAY_AUTHORITY_ROUTE = \"relay-authority\";"));
+        assert!(script.contains("paid_ai_authority_mode: WFP_RELAY_AUTHORITY_ROUTE"));
+        assert!(script.contains("paid_ai_capable: false"));
+        assert!(!script.contains("\"preview-host\""));
+    }
+
+    #[test]
+    fn control_plane_requires_rust_artifact_and_disables_fallback_ai() {
+        assert_eq!(CONTROL_PLANE_DEPLOYMENT_RUNTIME, "js-fallback");
+        assert!(CONTROL_PLANE_ARTIFACT_UPLOAD_REQUIRED);
+        assert!(!JS_FALLBACK_AI_CAPABLE);
+        assert!(CONTROL_PLANE_DEPLOY_ERROR.contains("bun run deploy:wfp-tenant"));
+        assert_eq!(TENANT_MODULE_NAME, "tenant.mjs");
+        assert!(tenant_worker_script().contains("runtime: \"js-fallback\""));
     }
 
     #[test]

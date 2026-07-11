@@ -47,7 +47,7 @@ use crate::relay::{
     relay_actual_serving_group_billing_contract_compiled,
     relay_ai_gateway_direct_fallback_contract_compiled, relay_model_fallback_contract_compiled,
     relay_model_fallback_runtime_status, relay_terminal_attempt_audit_contract_compiled,
-    RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
+    relay_wfp_authority_transport_contract_compiled, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
 };
 use crate::relay_billing_smoke::{smoke_compiled, smoke_enabled, smoke_ready};
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
@@ -64,14 +64,16 @@ use crate::task_runner::{
 };
 use crate::wfp_tenant::{
     wfp_tenant_ai_gateway_policy_compiled, wfp_tenant_cutover_guards,
-    wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_response_header_guard_compiled,
-    wfp_tenant_route_manifest_compiled, wfp_tenant_rust_wasm_runtime_compiled,
-    wfp_tenant_script_plan_compiled, wfp_tenant_supported_routes,
+    wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_relay_authority_verifier_compiled,
+    wfp_tenant_response_header_guard_compiled, wfp_tenant_route_manifest_compiled,
+    wfp_tenant_rust_wasm_runtime_compiled, wfp_tenant_script_plan_compiled,
+    wfp_tenant_supported_routes,
 };
 
 pub const WFP_DISPATCH_BINDING: &str = "DISPATCHER";
 pub const WFP_DISPATCH_ENABLED_ENV: &str = "WFP_DISPATCH_ENABLED";
 pub const WFP_INTERNAL_DISPATCH_ENABLED_ENV: &str = "WFP_INTERNAL_DISPATCH_ENABLED";
+pub const WFP_RELAY_TRANSPORT_ENABLED_ENV: &str = "WFP_RELAY_TRANSPORT_ENABLED";
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
@@ -138,6 +140,7 @@ pub struct DispatchTarget {
     pub public_name: String,
     pub worker_name: String,
     pub tenant_path: Option<String>,
+    authority: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -145,6 +148,7 @@ pub struct DispatchTarget {
 pub enum DispatchRouteKind {
     PreviewHost,
     InternalPath,
+    RelayAuthority,
 }
 
 impl DispatchRouteKind {
@@ -152,6 +156,7 @@ impl DispatchRouteKind {
         match self {
             DispatchRouteKind::PreviewHost => "preview-host",
             DispatchRouteKind::InternalPath => "internal-path",
+            DispatchRouteKind::RelayAuthority => "relay-authority",
         }
     }
 }
@@ -195,6 +200,8 @@ struct PlatformCapabilities {
     wfp_dispatch_binding_available: bool,
     wfp_dispatch_enabled: bool,
     wfp_internal_dispatch_enabled: bool,
+    wfp_relay_transport_enabled: bool,
+    wfp_relay_authority_secret_configured: bool,
     wfp_preview_host_suffix_configured: bool,
     wfp_worker_prefix_configured: bool,
     wfp_tenant_supported_routes: Vec<&'static str>,
@@ -203,8 +210,11 @@ struct PlatformCapabilities {
     wfp_tenant_rust_wasm_runtime_compiled: bool,
     wfp_tenant_route_manifest_compiled: bool,
     wfp_tenant_internal_dispatch_required_compiled: bool,
+    wfp_tenant_relay_authority_verifier_compiled: bool,
     wfp_tenant_response_header_guard_compiled: bool,
     wfp_tenant_ai_gateway_policy_compiled: bool,
+    wfp_relay_authority_transport_compiled: bool,
+    wfp_relay_authority_transport_ready: bool,
     wfp_tenant_smoke_ready: bool,
     realtime_session_gateway_enabled: bool,
     realtime_session_v1_enabled: bool,
@@ -317,13 +327,31 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let wfp_dispatch_binding_available = env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok();
     let wfp_dispatch_enabled = env_flag(&env, WFP_DISPATCH_ENABLED_ENV);
     let wfp_internal_dispatch_enabled = env_flag(&env, WFP_INTERNAL_DISPATCH_ENABLED_ENV);
+    let wfp_relay_transport_enabled = env_flag(&env, WFP_RELAY_TRANSPORT_ENABLED_ENV);
+    let wfp_relay_authority_secret_configured =
+        secret_or_var(&env, cinatoken_wfp_authority::AUTHORITY_SECRET_ENV)
+            .is_some_and(|value| value.as_bytes().len() >= 32);
     let wfp_tenant_script_plan_compiled = wfp_tenant_script_plan_compiled();
     let wfp_tenant_rust_wasm_runtime_compiled = wfp_tenant_rust_wasm_runtime_compiled();
     let wfp_tenant_route_manifest_compiled = wfp_tenant_route_manifest_compiled();
     let wfp_tenant_internal_dispatch_required_compiled =
         wfp_tenant_internal_dispatch_required_compiled();
+    let wfp_tenant_relay_authority_verifier_compiled =
+        wfp_tenant_relay_authority_verifier_compiled();
     let wfp_tenant_response_header_guard_compiled = wfp_tenant_response_header_guard_compiled();
     let wfp_tenant_ai_gateway_policy_compiled = wfp_tenant_ai_gateway_policy_compiled();
+    let wfp_relay_authority_transport_compiled = relay_wfp_authority_transport_contract_compiled();
+    let wfp_relay_authority_transport_ready = is_wfp_relay_authority_transport_ready(
+        wfp_dispatch_binding_available,
+        wfp_dispatch_enabled,
+        wfp_relay_transport_enabled,
+        wfp_relay_authority_secret_configured,
+        wfp_relay_authority_transport_compiled,
+        wfp_tenant_rust_wasm_runtime_compiled,
+        wfp_tenant_route_manifest_compiled,
+        wfp_tenant_relay_authority_verifier_compiled,
+        wfp_tenant_response_header_guard_compiled,
+    );
     let wfp_tenant_smoke_ready = is_wfp_tenant_smoke_ready(
         wfp_dispatch_binding_available,
         wfp_dispatch_enabled,
@@ -518,6 +546,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_dispatch_binding_available,
         wfp_dispatch_enabled,
         wfp_internal_dispatch_enabled,
+        wfp_relay_transport_enabled,
+        wfp_relay_authority_secret_configured,
         wfp_preview_host_suffix_configured: runtime_value(&env, WFP_PREVIEW_HOST_SUFFIX_ENV)
             .is_some(),
         wfp_worker_prefix_configured: runtime_value(&env, WFP_DISPATCH_WORKER_PREFIX_ENV).is_some(),
@@ -527,8 +557,11 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_rust_wasm_runtime_compiled,
         wfp_tenant_route_manifest_compiled,
         wfp_tenant_internal_dispatch_required_compiled,
+        wfp_tenant_relay_authority_verifier_compiled,
         wfp_tenant_response_header_guard_compiled,
         wfp_tenant_ai_gateway_policy_compiled,
+        wfp_relay_authority_transport_compiled,
+        wfp_relay_authority_transport_ready,
         wfp_tenant_smoke_ready,
         realtime_session_gateway_enabled,
         realtime_session_v1_enabled,
@@ -1571,8 +1604,16 @@ pub async fn dispatch_request(
     env: Env,
     target: DispatchTarget,
 ) -> WorkerResult<Response> {
+    dispatch_request_with_env(req, &env, target).await
+}
+
+async fn dispatch_request_with_env(
+    req: Request,
+    env: &Env,
+    target: DispatchTarget,
+) -> WorkerResult<Response> {
     if internal_dispatch_requires_admin_auth(&target) {
-        if let Err(response) = require_admin_auth(&req, &env).await? {
+        if let Err(response) = require_admin_auth(&req, env).await? {
             return Ok(response);
         }
     }
@@ -1612,6 +1653,35 @@ pub async fn dispatch_request(
     Ok(response)
 }
 
+/// Dispatch an upstream request selected by the central relay. The caller has
+/// already applied relay-token authentication, channel selection, quota
+/// reservation, and audit ownership; this helper only supplies the WFP
+/// transport and its controlled authority marker.
+pub(crate) async fn dispatch_authorized_relay_request(
+    req: Request,
+    env: &Env,
+    public_name: &str,
+    authority: &str,
+) -> WorkerResult<Response> {
+    if !env_flag(env, WFP_DISPATCH_ENABLED_ENV) || !env_flag(env, WFP_RELAY_TRANSPORT_ENABLED_ENV) {
+        return gateway_error(
+            503,
+            "wfp_relay_transport_disabled",
+            "WFP relay transport is disabled",
+        );
+    }
+    let tenant_path = req.path();
+    let prefix = runtime_value(env, WFP_DISPATCH_WORKER_PREFIX_ENV);
+    let mut target = dispatch_target(
+        DispatchRouteKind::RelayAuthority,
+        public_name,
+        prefix.as_deref(),
+        Some(tenant_path),
+    )?;
+    target.authority = Some(authority.to_string());
+    dispatch_request_with_env(req, env, target).await
+}
+
 fn dispatch_target(
     route_kind: DispatchRouteKind,
     public_name: &str,
@@ -1627,6 +1697,7 @@ fn dispatch_target(
         public_name,
         worker_name,
         tenant_path,
+        authority: None,
     })
 }
 
@@ -1647,9 +1718,13 @@ struct InternalDispatchRoute {
 fn internal_dispatch_route(path: &str) -> Option<InternalDispatchRoute> {
     let rest = path.strip_prefix(INTERNAL_DISPATCH_PREFIX)?;
     let (script, tenant_path) = rest.split_once('/').unwrap_or((rest, ""));
+    let tenant_path = normalize_tenant_dispatch_path(tenant_path);
+    if tenant_path != crate::wfp_tenant::WFP_TENANT_STATUS_PATH {
+        return None;
+    }
     Some(InternalDispatchRoute {
         public_name: normalize_worker_name(script)?,
-        tenant_path: normalize_tenant_dispatch_path(tenant_path),
+        tenant_path,
     })
 }
 
@@ -1738,18 +1813,23 @@ fn append_dispatch_platform_headers(
     let values = dispatch_platform_header_values(target);
     headers.set(WFP_ROUTE_REQUEST_HEADER, values.route)?;
     headers.set(WFP_WORKER_REQUEST_HEADER, values.worker)?;
+    if let Some(authority) = values.authority {
+        headers.set(cinatoken_wfp_authority::AUTHORITY_HEADER, authority)?;
+    }
     Ok(())
 }
 
 struct DispatchPlatformHeaderValues<'a> {
     route: &'static str,
     worker: &'a str,
+    authority: Option<&'a str>,
 }
 
 fn dispatch_platform_header_values(target: &DispatchTarget) -> DispatchPlatformHeaderValues<'_> {
     DispatchPlatformHeaderValues {
         route: target.route_kind.header_value(),
         worker: &target.public_name,
+        authority: target.authority.as_deref(),
     }
 }
 
@@ -1878,7 +1958,7 @@ fn is_wfp_tenant_smoke_ready(
     tenant_script_plan_compiled: bool,
     rust_wasm_runtime_compiled: bool,
     route_manifest_compiled: bool,
-    internal_dispatch_required_compiled: bool,
+    relay_authority_verifier_compiled: bool,
     response_header_guard_compiled: bool,
     ai_gateway_policy_compiled: bool,
 ) -> bool {
@@ -1888,9 +1968,31 @@ fn is_wfp_tenant_smoke_ready(
         && tenant_script_plan_compiled
         && rust_wasm_runtime_compiled
         && route_manifest_compiled
-        && internal_dispatch_required_compiled
+        && relay_authority_verifier_compiled
         && response_header_guard_compiled
         && ai_gateway_policy_compiled
+}
+
+fn is_wfp_relay_authority_transport_ready(
+    dispatcher_bound: bool,
+    dispatch_enabled: bool,
+    relay_transport_enabled: bool,
+    authority_secret_configured: bool,
+    relay_transport_compiled: bool,
+    rust_wasm_runtime_compiled: bool,
+    route_manifest_compiled: bool,
+    internal_dispatch_required_compiled: bool,
+    response_header_guard_compiled: bool,
+) -> bool {
+    dispatcher_bound
+        && dispatch_enabled
+        && relay_transport_enabled
+        && authority_secret_configured
+        && relay_transport_compiled
+        && rust_wasm_runtime_compiled
+        && route_manifest_compiled
+        && internal_dispatch_required_compiled
+        && response_header_guard_compiled
 }
 
 fn is_realtime_session_platform_smoke_ready(
@@ -2004,11 +2106,17 @@ mod tests {
     #[test]
     fn internal_dispatch_extracts_script_name_only() {
         assert_eq!(
-            internal_dispatch_script_name("/api/platform/dispatch/tenant-a/v1/models").as_deref(),
+            internal_dispatch_script_name(
+                "/api/platform/dispatch/tenant-a/__cinatoken/tenant/status"
+            )
+            .as_deref(),
             Some("tenant-a")
         );
         assert_eq!(
-            internal_dispatch_script_name("/api/platform/dispatch/Tenant_1").as_deref(),
+            internal_dispatch_script_name(
+                "/api/platform/dispatch/Tenant_1/__cinatoken/tenant/status"
+            )
+            .as_deref(),
             Some("tenant_1")
         );
         assert!(internal_dispatch_script_name("/api/platform/dispatch/../x").is_none());
@@ -2023,21 +2131,18 @@ mod tests {
         assert_eq!(route.public_name, "tenant-a");
         assert_eq!(route.tenant_path, "/__cinatoken/tenant/status");
 
-        let route =
-            internal_dispatch_route("/api/platform/dispatch/tenant-a/v1/responses").unwrap();
-        assert_eq!(route.tenant_path, "/v1/responses");
-
-        let route = internal_dispatch_route("/api/platform/dispatch/tenant-a").unwrap();
-        assert_eq!(route.tenant_path, "/");
+        assert!(internal_dispatch_route("/api/platform/dispatch/tenant-a/v1/responses").is_none());
+        assert!(internal_dispatch_route("/api/platform/dispatch/tenant-a").is_none());
     }
 
     #[test]
-    fn internal_dispatch_requires_admin_auth_but_preview_host_does_not() {
+    fn only_operator_internal_dispatch_requires_admin_auth() {
         let internal = DispatchTarget {
             route_kind: DispatchRouteKind::InternalPath,
             public_name: "tenant-a".to_string(),
             worker_name: "tenant-a".to_string(),
             tenant_path: Some("/__cinatoken/tenant/status".to_string()),
+            authority: None,
         };
         assert!(internal_dispatch_requires_admin_auth(&internal));
 
@@ -2046,8 +2151,19 @@ mod tests {
             public_name: "tenant-a".to_string(),
             worker_name: "tenant-a".to_string(),
             tenant_path: None,
+            authority: None,
         };
         assert!(!internal_dispatch_requires_admin_auth(&preview));
+
+        let relay = DispatchTarget {
+            route_kind: DispatchRouteKind::RelayAuthority,
+            public_name: "tenant-a".to_string(),
+            worker_name: "tenant-a".to_string(),
+            tenant_path: Some("/v1/responses".to_string()),
+            authority: Some("signed".to_string()),
+        };
+        assert!(!internal_dispatch_requires_admin_auth(&relay));
+        assert_eq!(relay.route_kind.header_value(), "relay-authority");
     }
 
     #[test]
@@ -2063,6 +2179,7 @@ mod tests {
             "CF-Access-Client-Secret",
             "X-Cinatoken-Smoke",
             "x-cinatoken-tenant",
+            cinatoken_wfp_authority::AUTHORITY_HEADER,
         ] {
             assert!(
                 !should_forward_dispatch_request_header(header),
@@ -2085,18 +2202,31 @@ mod tests {
             public_name: "tenant-a".to_string(),
             worker_name: "tenant-a".to_string(),
             tenant_path: Some("/v1/responses".to_string()),
+            authority: None,
         };
 
         let values = dispatch_platform_header_values(&target);
 
         assert_eq!(values.route, "internal-path");
         assert_eq!(values.worker, "tenant-a");
+        assert_eq!(values.authority, None);
         assert!(!should_forward_dispatch_request_header(
             WFP_ROUTE_REQUEST_HEADER
         ));
         assert!(!should_forward_dispatch_request_header(
             WFP_WORKER_REQUEST_HEADER
         ));
+
+        let relay = DispatchTarget {
+            route_kind: DispatchRouteKind::RelayAuthority,
+            public_name: "tenant-a".to_string(),
+            worker_name: "tenant-a".to_string(),
+            tenant_path: Some("/v1/responses".to_string()),
+            authority: Some("signed-envelope".to_string()),
+        };
+        let relay_values = dispatch_platform_header_values(&relay);
+        assert_eq!(relay_values.route, "relay-authority");
+        assert_eq!(relay_values.authority, Some("signed-envelope"));
     }
 
     #[test]
@@ -2210,7 +2340,6 @@ mod tests {
             "/v1/chat/completions",
             "/v1/responses",
             "/v1/messages",
-            "/v1/embeddings",
             "/ai/run",
         ] {
             assert!(routes.contains(&route), "missing WFP tenant route {route}");
@@ -2220,16 +2349,23 @@ mod tests {
         for guard in [
             "dispatcher_binding",
             "dispatch_gate",
+            "relay_transport_gate",
             "internal_dispatch_gate",
+            "central_relay_authority",
+            "signed_body_bound_authority",
+            "tenant_scoped_authority_key",
+            "separate_runtime_token",
             "tenant_script_plan",
             "rust_wasm_runtime",
+            "rust_wasm_artifact_validation",
             "route_manifest",
             "internal_dispatch_required",
             "request_header_scrub",
             "response_header_allowlist",
             "ai_gateway_policy_headers",
+            "central_billing_settlement",
             "tenant_status_smoke",
-            "route_smoke",
+            "relay_authority_staging_replay",
         ] {
             assert!(guards.contains(&guard), "missing WFP tenant guard {guard}");
         }
@@ -2238,6 +2374,7 @@ mod tests {
         assert!(wfp_tenant_rust_wasm_runtime_compiled());
         assert!(wfp_tenant_route_manifest_compiled());
         assert!(wfp_tenant_internal_dispatch_required_compiled());
+        assert!(wfp_tenant_relay_authority_verifier_compiled());
         assert!(wfp_tenant_response_header_guard_compiled());
         assert!(wfp_tenant_ai_gateway_policy_compiled());
     }
@@ -2252,6 +2389,20 @@ mod tests {
             assert!(
                 !wfp_tenant_smoke_ready_with_flags(flags),
                 "expected WFP tenant smoke readiness to wait on gate index {false_gate}"
+            );
+        }
+    }
+
+    #[test]
+    fn wfp_relay_authority_readiness_requires_every_transport_boundary() {
+        assert!(relay_wfp_authority_transport_contract_compiled());
+        assert!(wfp_relay_authority_ready_with_flags([true; 9]));
+        for false_gate in 0..9 {
+            let mut flags = [true; 9];
+            flags[false_gate] = false;
+            assert!(
+                !wfp_relay_authority_ready_with_flags(flags),
+                "expected WFP relay authority readiness to wait on gate index {false_gate}"
             );
         }
     }
@@ -2439,6 +2590,13 @@ mod tests {
 
     fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 9]) -> bool {
         is_wfp_tenant_smoke_ready(
+            flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
+            flags[8],
+        )
+    }
+
+    fn wfp_relay_authority_ready_with_flags(flags: [bool; 9]) -> bool {
+        is_wfp_relay_authority_transport_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8],
         )

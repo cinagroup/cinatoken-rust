@@ -377,6 +377,7 @@ export function ChannelMutateDrawer({
   )
   const currentSettings = form.watch('settings')
   const aiGatewayEnabled = form.watch('ai_gateway_enabled')
+  const wfpWorker = form.watch('wfp_worker')
   const {
     unlocked: doubaoApiEditUnlocked,
     handleClick: handleApiConfigSecretClick,
@@ -2629,6 +2630,7 @@ export function ChannelMutateDrawer({
                                 <Switch
                                   checked={field.value === true}
                                   onCheckedChange={field.onChange}
+                                  disabled={Boolean(wfpWorker?.trim())}
                                 />
                               </FormControl>
                             </FormItem>
@@ -2640,6 +2642,42 @@ export function ChannelMutateDrawer({
                             <AlertDescription>
                               {t(
                                 'AI Gateway routing is still a canary path. Keep the normal provider route available until staging latency, status-code, and fallback checks pass.'
+                              )}
+                            </AlertDescription>
+                          </Alert>
+                        )}
+
+                        <FormField
+                          control={form.control}
+                          name='wfp_worker'
+                          render={({ field }) => (
+                            <FormItem>
+                              <div className='flex flex-wrap items-center gap-2'>
+                                <FormLabel>{t('WFP tenant worker')}</FormLabel>
+                                <Badge variant='outline'>{t('M8')}</Badge>
+                              </div>
+                              <FormControl>
+                                <Input
+                                  placeholder='tenant-a'
+                                  {...field}
+                                  disabled={aiGatewayEnabled}
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                {t(
+                                  'Routes this channel through the named Rust/Wasm tenant Worker only after the central relay has authenticated, selected, reserved, and audited the request.'
+                                )}
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+
+                        {wfpWorker?.trim() && (
+                          <Alert className='border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-50'>
+                            <AlertDescription>
+                              {t(
+                                'WFP transport remains staging-only until the dedicated tenant runtime token, Rust/Wasm artifact, relay-authority smoke, billing settlement, and rollback evidence are archived.'
                               )}
                             </AlertDescription>
                           </Alert>

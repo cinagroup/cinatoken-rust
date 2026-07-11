@@ -10,6 +10,7 @@ rust-version.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+cinatoken-wfp-authority = { path = "../wfp-authority" }
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
 serde.workspace = true

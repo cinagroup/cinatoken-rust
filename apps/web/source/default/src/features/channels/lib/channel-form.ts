@@ -172,6 +172,15 @@ export const channelFormSchema = z
     other: z.string().optional(),
     other_info: z.string().optional(),
     ai_gateway_enabled: z.boolean().optional(),
+    wfp_worker: z
+      .string()
+      .optional()
+      .refine(
+        (value) =>
+          !value?.trim() ||
+          /^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$/.test(value.trim()),
+        'WFP worker must use 1-63 lowercase letters, numbers, hyphens, or underscores'
+      ),
     // Multi-key options (not sent to backend directly)
     multi_key_mode: z.enum(['single', 'batch', 'multi_to_single']).optional(),
     multi_key_type: z.enum(['random', 'polling']).optional(),
@@ -203,6 +212,13 @@ export const channelFormSchema = z
     upstream_model_update_ignored_models: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    if (data.ai_gateway_enabled === true && data.wfp_worker?.trim()) {
+      addRequiredIssue(
+        ctx,
+        'wfp_worker',
+        'WFP transport and direct AI Gateway routing cannot both be enabled'
+      )
+    }
     if ([3, 8, 36, 45].includes(data.type) && !data.base_url?.trim()) {
       addRequiredIssue(
         ctx,
@@ -293,6 +309,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   other: '',
   other_info: '',
   ai_gateway_enabled: false,
+  wfp_worker: '',
   multi_key_mode: 'single',
   multi_key_type: 'random',
   batch_add_set_key_prefix_2_name: false,
@@ -430,6 +447,7 @@ export function transformChannelToFormDefaults(
     ai_gateway_enabled: parseAiGatewayEnabledFromOtherInfo(
       channel.other_info || ''
     ),
+    wfp_worker: parseWfpWorkerFromOtherInfo(channel.other_info || ''),
     multi_key_mode: 'single',
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
     batch_add_set_key_prefix_2_name: false,
@@ -632,8 +650,21 @@ function parseAiGatewayEnabledFromOtherInfo(
   }
 }
 
+function parseWfpWorkerFromOtherInfo(value: string | undefined): string {
+  try {
+    const parsed = parseOptionalJson(value)
+    if (!isJsonObjectValue(parsed) || typeof parsed.wfp_worker !== 'string') {
+      return ''
+    }
+    return parsed.wfp_worker.trim()
+  } catch {
+    return ''
+  }
+}
+
 function buildOtherInfoJSON(formData: ChannelFormValues): string {
   const source = formData.other_info?.trim() || ''
+  const hasWfpWorker = Boolean(formData.wfp_worker?.trim())
   let otherInfo: Record<string, unknown> = {}
 
   if (source) {
@@ -641,13 +672,11 @@ function buildOtherInfoJSON(formData: ChannelFormValues): string {
       const parsed = JSON.parse(source)
       if (isJsonObjectValue(parsed)) {
         otherInfo = parsed
-      } else if (formData.ai_gateway_enabled !== true) {
+      } else if (formData.ai_gateway_enabled !== true && !hasWfpWorker) {
         return source
       }
     } catch {
-      return formData.ai_gateway_enabled === true
-        ? JSON.stringify({ ai_gateway: { enabled: true } })
-        : source
+      if (formData.ai_gateway_enabled !== true && !hasWfpWorker) return source
     }
   }
 
@@ -670,6 +699,13 @@ function buildOtherInfoJSON(formData: ChannelFormValues): string {
     }
   } else {
     delete otherInfo.ai_gateway
+  }
+
+  const wfpWorker = formData.wfp_worker?.trim()
+  if (wfpWorker) {
+    otherInfo.wfp_worker = wfpWorker
+  } else {
+    delete otherInfo.wfp_worker
   }
 
   return Object.keys(otherInfo).length > 0 ? JSON.stringify(otherInfo) : ''

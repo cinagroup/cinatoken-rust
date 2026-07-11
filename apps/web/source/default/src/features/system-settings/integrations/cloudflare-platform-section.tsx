@@ -744,6 +744,58 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Tenant authority verifier'),
+          description: t(
+            'Verifies the short-lived worker, path, method, and exact-body signature with a tenant-scoped derived key; the platform master secret is never bound to the tenant.'
+          ),
+          ready: capabilities.wfp_tenant_relay_authority_verifier_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Central relay WFP transport'),
+          description: t(
+            'Allows channel other_info.wfp_worker only after central token authentication, D1 selection, quota reservation, and a short-lived worker/path/body-bound authority signature.'
+          ),
+          ready: capabilities.wfp_relay_authority_transport_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('WFP relay transport gate'),
+          description: t(
+            'Uses a dedicated default-off gate that is independent from the admin status-dispatch gate.'
+          ),
+          ready: capabilities.wfp_relay_transport_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Disabled'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('WFP authority secret'),
+          description: t(
+            'Requires the shared WFP_RELAY_AUTHORITY_SECRET secret in the main Worker and each Rust/Wasm tenant deployment.'
+          ),
+          ready: capabilities.wfp_relay_authority_secret_configured,
+          readyLabel: t('Configured'),
+          missingLabel: t('Missing'),
+          missingVariant: capabilities.wfp_relay_transport_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('WFP relay authority readiness'),
+          description: t(
+            'Ready means the signed central transport can be tested; it does not mean billing replay or production cutover has been verified.'
+          ),
+          ready: capabilities.wfp_relay_authority_transport_ready,
+          readyLabel: t('Ready to verify'),
+          missingLabel: t('Blocked'),
+          missingVariant: capabilities.wfp_relay_transport_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
           label: t('Tenant response-header guard'),
           description: t(
             'Allows only public upstream headers and WFP evidence headers back through the dispatch boundary.'

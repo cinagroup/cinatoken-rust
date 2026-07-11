@@ -227,19 +227,27 @@ Pass criteria:
 
 ## Phase 1b: WFP Dispatch Smoke
 
-Run this only after the staging dispatch namespace exists, the tenant Worker is
-uploaded, and `WFP_DISPATCH_ENABLED=true` plus
-`WFP_INTERNAL_DISPATCH_ENABLED=true` are enabled in staging. The default smoke
-first preflights admin-only `/api/platform/capabilities`, then checks the
-admin-authenticated internal dispatch path and tenant status route without
-sending an AI request:
+WFP paid traffic is a central relay transport canary, not an admin-dispatch AI
+smoke. The central request must complete relay-token authentication, D1 channel
+selection, and quota reserve before `channels.other_info.wfp_worker` selects the
+tenant Worker. The response must return through central settlement/refund and
+audit. Keep `WFP_RELAY_TRANSPORT_ENABLED=false` except for the isolated canary.
 
-Before uploading a Rust/Wasm tenant Worker, build it and archive the redacted
-artifact manifest from the deploy dry-run. The manifest records the artifact
-directory, main module, module count, total bytes, per-module SHA-256 hashes,
-content types, and whether a Wasm module is present. Keep this JSON beside the
-later upload and dispatch smoke output; do not paste Cloudflare tokens or admin
-cookies into the evidence bundle.
+Preconditions:
+
+- Provision a staging-only `WFP_RELAY_AUTHORITY_SECRET` of at least 32 bytes on
+  the platform Worker. The artifact uploader may read it only to derive the
+  named worker's key. Bind only `WFP_RELAY_AUTHORITY_KEY` into the tenant Worker;
+  the tenant must never receive the platform master. Do not record either value.
+- Use a least-privilege Cloudflare deploy token for script PUT/GET and a
+  separate tenant runtime token for AI Gateway/Workers AI. The strict uploader
+  must reject identical deploy and runtime tokens.
+- Apply a staging channel row whose `channels.other_info.wfp_worker` names the
+  intended dispatch worker. Record the before/after row without channel keys.
+- Keep the generated JavaScript fallback out of the upload path. It is
+  status-only, and `/api/platform/wfp/tenant-script/deploy` is disabled.
+
+Build and archive the strict Rust/Wasm dry-run manifest:
 
 ```powershell
 New-Item -ItemType Directory -Force .wrangler/evidence | Out-Null
@@ -247,100 +255,66 @@ bun run build:wfp-tenant
 bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID > .wrangler/evidence/wfp-tenant-artifact-manifest.json
 ```
 
-```powershell
-$env:WFP_SMOKE_URL = $env:STAGING_BASE_URL
-$env:WFP_SMOKE_COOKIE = "session=<redacted admin session cookie>"
-bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --cookie $env:WFP_SMOKE_COOKIE --expect-runtime rust-wasm --json
-```
+Run the strict uploader only after the dry-run passes. Archive the redacted
+Cloudflare PUT result and GET content/metadata readback; verify the returned
+module set and SHA-256 values match the dry-run manifest. The official endpoint
+contract is the Workers for Platforms Scripts REST API:
+<https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/subresources/namespaces/subresources/scripts/>.
 
-If the tenant has staging `CF_ACCOUNT_ID`, `CF_API_TOKEN`, and AI Gateway ID
-bindings, run one explicit AI route smoke with a low-risk payload:
+First run the admin-authenticated status smoke against only
+`/api/platform/dispatch/:worker/__cinatoken/tenant/status`. Then prove that an
+admin request to each paid AI path is rejected. The generated fallback is not
+acceptable evidence for any AI route.
 
-```powershell
-bun run smoke:wfp-dispatch -- --url $env:WFP_SMOKE_URL --worker tenant-smoke --route /v1/responses --body '{"model":"gpt-4o-mini","input":"wfp dispatch smoke","max_output_tokens":1}' --cookie $env:WFP_SMOKE_COOKIE --expect-runtime rust-wasm --json
-```
+For the paid canary, enable `WFP_RELAY_TRANSPORT_ENABLED` briefly and call one
+of the four retained routes through the normal public relay boundary with a
+staging relay token:
 
-If the generated JS fallback is being tested deliberately, rerun the same smoke
-with `--expect-runtime js-fallback` and record it separately from the
-Rust/Wasm artifact evidence.
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+- `POST /ai/run`
 
-`--skip-capabilities` is only for diagnosing a broken staging control plane. Do
-not accept WFP smoke evidence for cutover if the capabilities preflight is
-skipped.
+Do not send the paid canary through `/api/platform/dispatch/:worker/...`.
+`POST /v1/embeddings` is not a WFP tenant route and must be rejected.
 
 Record:
 
-- Command output.
-- The redacted WFP tenant artifact manifest from
-  `tools/deploy_wfp_tenant_artifact.mjs --dry-run --json`, including
-  `artifactManifest.runtime`, `mainModulePresent`, `wasmModulePresent`,
-  `moduleCount`, `totalBytes`, and every module `sha256`.
-- `/api/platform/capabilities` WFP fields from the smoke output, including
-  `wfp_tenant_supported_routes`, `wfp_tenant_cutover_guards`,
-  `wfp_tenant_script_plan_compiled`, `wfp_tenant_rust_wasm_runtime_compiled`,
-  `wfp_tenant_route_manifest_compiled`,
-  `wfp_tenant_internal_dispatch_required_compiled`,
-  `wfp_tenant_response_header_guard_compiled`,
-  `wfp_tenant_ai_gateway_policy_compiled`, and `wfp_tenant_smoke_ready`.
-- Admin-authenticated smoke evidence only; do not paste the raw
-  `WFP_SMOKE_COOKIE` value into the report.
-- Tenant status body, including `runtime`, `forwarding`, `body_mode`, routes,
-  per-route gateway configuration, `ai_gateway_request_policy`,
-  `inbound_sensitive_headers_present`, `inbound_dispatch_route`, and
-  `inbound_dispatch_worker`.
-- `x-cinatoken-wfp-route`, `x-cinatoken-wfp-worker`,
-  `x-cinatoken-wfp-tenant`, and `x-cinatoken-wfp-runtime` headers.
-- `responseHeaderGuard` output from the smoke tool, including observed public
-  headers, WFP evidence headers, platform edge envelope headers, and any
-  unclassified headers. The smoke fails before evidence is accepted if
-  sensitive or upstream-only headers leak.
-- AI Gateway log entry for any opt-in POST route smoke.
-- Worker log/trace link for both the main dispatch Worker and the tenant
-  Worker.
+- Capability output showing the dispatch binding, transport gate, authority
+  secret readiness, four-route manifest, and Rust/Wasm runtime.
+- The dry-run artifact manifest plus real PUT and GET readback evidence. Do not
+  include either token or any secret value. Readback must show that the tenant
+  has `WFP_RELAY_AUTHORITY_KEY` and does not have
+  `WFP_RELAY_AUTHORITY_SECRET`.
+- Admin status success, unauthenticated status rejection, admin AI rejection,
+  preview-host AI rejection, and `/v1/embeddings` rejection.
+- Signed-authority negative cases: tampered signature, wrong worker, method,
+  path, body, or channel, and expired or future-invalid timestamps.
+- Replay-resistance evidence for a repeated otherwise-valid authority. The
+  30-second lifetime and body binding reduce exposure but are not replay-proof.
+- D1 evidence for the accepted canary: selected channel ID, one reserve, exactly
+  one settlement or refund, final quota delta, and matching audit outcome.
+- Redacted central and tenant Worker traces correlated by request ID. Do not
+  expose the raw authority header or runtime credential.
 
 Pass criteria:
 
-- The same internal dispatch URL without an admin session fails with 401/403,
-  while authenticated admin smoke reaches the tenant status route through
-  `/api/platform/dispatch/:worker/...`.
-- The capabilities preflight reports the WFP `DISPATCHER` binding, both WFP
-  dispatch gates, the tenant route manifest, Rust/Wasm tenant artifact plan,
-  internal-dispatch requirement, response-header guard, AI Gateway policy
-  contract, and `wfp_tenant_smoke_ready=true`.
-- The archived artifact manifest reports `runtime: "rust-wasm"`,
-  `mainModulePresent=true`, `wasmModulePresent=true`, and stable SHA-256 values
-  for the uploaded module set. If the uploaded artifact differs, the manifest
-  must be regenerated and re-archived before smoke evidence is accepted.
-- Default WFP dispatch smoke proves the uploaded Rust/Wasm artifact by
-  requiring `runtime: "rust-wasm"` in the tenant status body and
-  `x-cinatoken-wfp-runtime: rust-wasm` in response headers. Generated fallback
-  evidence is accepted only when the command explicitly uses
-  `--expect-runtime js-fallback`.
-- `forwarding` is `cloudflare-ai-gateway-rest`, `body_mode` is streamed, and
-  every supported tenant AI route appears in the route manifest.
-- `ai_gateway_request_policy` is present. Any configured policy entry must be
-  `valid=true`; invalid tenant policy binding values fail smoke before route
-  forwarding evidence is accepted.
-- `inbound_sensitive_headers_present` is `false` and
-  `inbound_sensitive_headers` is an empty array, proving the dispatch Worker
-  stripped the admin cookie, relay/API-key headers, Cloudflare Access client
-  headers, and `x-cinatoken-*` platform markers before invoking the tenant
-  Worker.
-- Tenant status reports `inbound_dispatch_route: "internal-path"` and
-  `inbound_dispatch_worker: "<worker>"`, proving the main Worker injected the
-  controlled internal-dispatch markers after stripping caller-supplied platform
-  markers.
-- Dispatch headers identify `internal-path` and the public tenant worker name.
-- Optional AI route smoke returns the expected staging status and passes the
-  smoke tool's response-header guard. Raw authorization/cookie headers,
-  `cf-aig-*`, non-WFP `x-cinatoken-*`, and provider platform metadata are not
-  exposed to the caller; Cloudflare edge envelope headers such as `date`,
-  `cf-ray`, and transfer metadata may be recorded separately and are not tenant
-  allowlist evidence.
-- Tenant AI route smoke only passes through the admin-authenticated internal
-  dispatch path. Preview-host/public AI attempts must either remain disabled or
-  return `403 tenant_internal_dispatch_required`; the tenant status route may
-  still be used for non-AI preview diagnostics.
+- Readback proves the uploaded runtime is exactly the reviewed Rust/Wasm module
+  graph; no JavaScript AI fallback is present.
+- The tenant runtime token is present and distinct from the deploy token.
+- Admin dispatch reaches status only. No public preview or admin dispatch route
+  can invoke tenant AI.
+- Accepted tenant AI traffic has a valid HMAC-SHA256 authority with a 30-second
+  lifetime binding worker, method, path, body hash, channel, and request ID.
+- The platform Worker retains the authority master; the tenant receives only
+  its derived `WFP_RELAY_AUTHORITY_KEY`.
+- The normal relay path owns token auth, D1 selection, reserve, exactly-once
+  settlement/refund, and audit. Tenant forwarding does not duplicate them.
+- The transport gate is returned to `false` after the canary.
+
+Status as of 2026-07-11: the signed-authority billing canary,
+replay-resistance evidence, and real upload/readback remain pending. This
+runbook does not claim deployment or replay-proof authority.
 
 ## Phase 2: Auth And Rejection Smoke
 

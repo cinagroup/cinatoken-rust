@@ -1,6 +1,34 @@
 # Verification
 
-Last checked: 2026-07-10
+Last checked: 2026-07-11
+
+## WFP Authority Increment Boundary
+
+- Current source inspection shows a default-off post-admission WFP transport:
+  relay-token authentication, D1 channel selection, and quota reserve occur
+  before `channels.other_info.wfp_worker` selects the tenant Worker. The response
+  returns through central settlement/refund and audit.
+- `WFP_RELAY_TRANSPORT_ENABLED` is explicitly false in tracked environments.
+  The platform Worker retains `WFP_RELAY_AUTHORITY_SECRET` and signs with its
+  derived per-worker HMAC key. The uploader binds only
+  `WFP_RELAY_AUTHORITY_KEY` into that tenant; the tenant must never receive the
+  platform master. The 30-second envelope binds worker, method, path, body hash,
+  channel ID, and request ID.
+- Admin dispatch is status-only, generated JavaScript fallback AI deploy is
+  disabled, and the strict production artifact path is the Rust/Wasm uploader.
+  A tenant runtime token is required for real upload and must differ from the
+  deploy token.
+- The retained WFP tenant routes are `/v1/chat/completions`, `/v1/responses`,
+  `/v1/messages`, and `/ai/run`. `/v1/embeddings` is removed from this tenant
+  transport contract.
+- This section supersedes historical 2026-07-05 WFP entries below that describe
+  admin AI dispatch, generated fallback AI parity/deploy, or embeddings support.
+  Those entries remain only as an implementation history.
+- No deployment is verified here. A real dispatch-namespace Rust/Wasm upload
+  and REST readback plus a staging signed-authority billing canary and
+  replay-resistance evidence are still pending. The short-lived, body-bound
+  envelope is not claimed to be replay-proof. Do not treat local compile/tests,
+  dry-run manifests, or capability fields as production evidence.
 
 ## Passed
 

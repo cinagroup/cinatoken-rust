@@ -431,6 +431,8 @@ export type PlatformCapabilities = {
   wfp_internal_dispatch_enabled: boolean
   wfp_relay_transport_enabled: boolean
   wfp_relay_authority_secret_configured: boolean
+  wfp_authority_replay_do_available: boolean
+  wfp_authority_replay_do_compiled: boolean
   wfp_preview_host_suffix_configured: boolean
   wfp_worker_prefix_configured: boolean
   wfp_tenant_supported_routes: string[]

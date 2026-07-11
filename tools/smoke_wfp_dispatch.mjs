@@ -472,6 +472,12 @@ function summarizeCapabilities(data) {
       data.wfp_tenant_route_manifest_compiled === true,
     wfp_tenant_internal_dispatch_required_compiled:
       data.wfp_tenant_internal_dispatch_required_compiled === true,
+    wfp_tenant_relay_authority_verifier_compiled:
+      data.wfp_tenant_relay_authority_verifier_compiled === true,
+    wfp_authority_replay_do_available:
+      data.wfp_authority_replay_do_available === true,
+    wfp_authority_replay_do_compiled:
+      data.wfp_authority_replay_do_compiled === true,
     wfp_tenant_response_header_guard_compiled:
       data.wfp_tenant_response_header_guard_compiled === true,
     wfp_tenant_ai_gateway_policy_compiled:
@@ -511,6 +517,8 @@ function expectedWfpCapabilityBooleans() {
     "wfp_tenant_route_manifest_compiled",
     "wfp_tenant_internal_dispatch_required_compiled",
     "wfp_tenant_relay_authority_verifier_compiled",
+    "wfp_authority_replay_do_available",
+    "wfp_authority_replay_do_compiled",
     "wfp_tenant_response_header_guard_compiled",
     "wfp_tenant_ai_gateway_policy_compiled",
     "wfp_tenant_smoke_ready",
@@ -529,6 +537,7 @@ function expectedWfpCutoverGuards() {
     "internal_dispatch_gate",
     "central_relay_authority",
     "signed_body_bound_authority",
+    "authority_replay_do",
     "tenant_scoped_authority_key",
     "separate_runtime_token",
     "tenant_script_plan",
@@ -747,6 +756,16 @@ function validateAuthorityStatus(body, requestedRoute) {
         "Rust tenant status did not report the shared HMAC authority verifier",
       );
     }
+    if (body.paid_ai_replay_guard !== "platform-durable-object-once-v1") {
+      throw new Error(
+        "Rust tenant status did not report the platform replay guard",
+      );
+    }
+    if (body.authority_replay_binding_configured !== true) {
+      throw new Error(
+        "Rust tenant status did not report its replay Durable Object binding",
+      );
+    }
     if (typeof body.paid_ai_capable !== "boolean") {
       throw new Error(
         "Rust tenant status must report paid_ai_capable as a boolean",
@@ -765,6 +784,14 @@ function validateAuthorityStatus(body, requestedRoute) {
     }
     if (body.paid_ai_capable !== false) {
       throw new Error("JS fallback must never report paid AI capability");
+    }
+    if (
+      body.paid_ai_replay_guard !== "disabled-status-only" ||
+      body.authority_replay_binding_configured !== false
+    ) {
+      throw new Error(
+        "JS fallback must report its disabled replay guard and no binding",
+      );
     }
   }
 }
@@ -1093,6 +1120,7 @@ function runRouteContractSelfTest() {
   for (const guard of [
     "relay_transport_gate",
     "signed_body_bound_authority",
+    "authority_replay_do",
     "tenant_scoped_authority_key",
     "separate_runtime_token",
     "rust_wasm_artifact_validation",

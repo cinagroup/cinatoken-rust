@@ -246,13 +246,17 @@ Preconditions:
   intended dispatch worker. Record the before/after row without channel keys.
 - Keep the generated JavaScript fallback out of the upload path. It is
   status-only, and `/api/platform/wfp/tenant-script/deploy` is disabled.
+- Deploy the staging main Worker with migration `v4-wfp-authority-replay` and
+  binding `WFP_AUTHORITY_REPLAY` to class `WfpAuthorityReplay`. Set
+  `WFP_AUTHORITY_REPLAY_SCRIPT_NAME` to that exact staging script name; never
+  reuse the production owner script.
 
 Build and archive the strict Rust/Wasm dry-run manifest:
 
 ```powershell
 New-Item -ItemType Directory -Force .wrangler/evidence | Out-Null
 bun run build:wfp-tenant
-bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID > .wrangler/evidence/wfp-tenant-artifact-manifest.json
+bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID --authority-replay-script $env:WFP_AUTHORITY_REPLAY_SCRIPT_NAME > .wrangler/evidence/wfp-tenant-artifact-manifest.json
 ```
 
 Run the strict uploader only after the dry-run passes. Archive the redacted
@@ -281,17 +285,22 @@ Do not send the paid canary through `/api/platform/dispatch/:worker/...`.
 Record:
 
 - Capability output showing the dispatch binding, transport gate, authority
-  secret readiness, four-route manifest, and Rust/Wasm runtime.
+  secret readiness, replay DO compiled/bound states, four-route manifest, and
+  Rust/Wasm runtime.
 - The dry-run artifact manifest plus real PUT and GET readback evidence. Do not
   include either token or any secret value. Readback must show that the tenant
   has `WFP_RELAY_AUTHORITY_KEY` and does not have
-  `WFP_RELAY_AUTHORITY_SECRET`.
+  `WFP_RELAY_AUTHORITY_SECRET`. It must also show `WFP_AUTHORITY_REPLAY` bound
+  to `WfpAuthorityReplay` on the expected staging main Worker script.
 - Admin status success, unauthenticated status rejection, admin AI rejection,
   preview-host AI rejection, and `/v1/embeddings` rejection.
 - Signed-authority negative cases: tampered signature, wrong worker, method,
   path, body, or channel, and expired or future-invalid timestamps.
-- Replay-resistance evidence for a repeated otherwise-valid authority. The
-  30-second lifetime and body binding reduce exposure but are not replay-proof.
+- Replay evidence for the same otherwise-valid authority: sequential and
+  concurrent attempts produce exactly one success and `409` duplicates; wrong
+  canonical shard is rejected; eviction/redeploy does not reopen consumption;
+  alarm cleanup occurs only after expiry. Record latency, bucket throughput,
+  storage growth, and exactly one mock/provider egress call.
 - D1 evidence for the accepted canary: selected channel ID, one reserve, exactly
   one settlement or refund, final quota delta, and matching audit outcome.
 - Redacted central and tenant Worker traces correlated by request ID. Do not
@@ -308,13 +317,16 @@ Pass criteria:
   lifetime binding worker, method, path, body hash, channel, and request ID.
 - The platform Worker retains the authority master; the tenant receives only
   its derived `WFP_RELAY_AUTHORITY_KEY`.
+- The tenant status reports `paid_ai_replay_guard=platform-durable-object-once-v1`
+  and `authority_replay_binding_configured=true`.
 - The normal relay path owns token auth, D1 selection, reserve, exactly-once
   settlement/refund, and audit. Tenant forwarding does not duplicate them.
 - The transport gate is returned to `false` after the canary.
 
-Status as of 2026-07-11: the signed-authority billing canary,
-replay-resistance evidence, and real upload/readback remain pending. This
-runbook does not claim deployment or replay-proof authority.
+Status as of 2026-07-11: the replay DO contract is locally compiled, but the
+signed-authority billing canary, live duplicate race, and real upload/binding
+readback remain pending. This runbook does not claim deployment evidence or
+exactly-once upstream execution across newly signed retries.
 
 ## Phase 2: Auth And Rejection Smoke
 

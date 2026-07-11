@@ -6,8 +6,9 @@
 //! Cloudflare AI Gateway with tenant-scoped headers.
 
 use cinatoken_wfp_authority::{
-    decode_worker_key, validate_worker_name, verify_authority_with_worker_key,
-    AuthorityExpectation, AUTHORITY_HEADER, AUTHORITY_TENANT_KEY_ENV,
+    authority_replay_bucket, decode_worker_key, validate_worker_name,
+    verify_authority_with_worker_key, AuthorityClaims, AuthorityExpectation, AUTHORITY_HEADER,
+    AUTHORITY_REPLAY_BINDING, AUTHORITY_TENANT_KEY_ENV,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -40,6 +41,7 @@ const WFP_INTERNAL_ROUTE: &str = "internal-path";
 const WFP_RELAY_AUTHORITY_ROUTE: &str = "relay-authority";
 const STATUS_CONTROL_AUTHORITY_MODES: &[&str] = &[WFP_INTERNAL_ROUTE, WFP_RELAY_AUTHORITY_ROUTE];
 const PAID_AI_AUTHORITY_VERIFIER: &str = "hmac-sha256-body-bound-v1";
+const PAID_AI_REPLAY_GUARD: &str = "platform-durable-object-once-v1";
 const MAX_VERIFIED_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
 const UNKNOWN_TENANT: &str = "unknown";
 const SAFE_RESPONSE_HEADERS: &[&str] = &[
@@ -164,6 +166,8 @@ struct TenantStatus {
     status_control_authority_modes: &'static [&'static str],
     paid_ai_authority_mode: &'static str,
     paid_ai_authority_verifier: &'static str,
+    paid_ai_replay_guard: &'static str,
+    authority_replay_binding_configured: bool,
     paid_ai_capable: bool,
     inbound_dispatch_route: Option<String>,
     inbound_dispatch_worker: Option<String>,
@@ -247,11 +251,13 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
             .iter()
             .any(|route| route.gateway_id_configured);
     let inbound_sensitive_headers = inbound_sensitive_header_names(req.headers());
+    let authority_replay_binding_configured = env.durable_object(AUTHORITY_REPLAY_BINDING).is_ok();
     let paid_ai_capable = paid_ai_runtime_configured(
         secret_or_var(env, AUTHORITY_TENANT_KEY_ENV).as_deref(),
         runtime_value(env, WFP_WORKER_NAME_ENV).as_deref(),
         runtime_value(env, "CF_ACCOUNT_ID").as_deref(),
         secret_or_var(env, "CF_API_TOKEN").as_deref(),
+        authority_replay_binding_configured,
     );
     let status = TenantStatus {
         service: SERVICE_NAME,
@@ -266,6 +272,8 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
         status_control_authority_modes: STATUS_CONTROL_AUTHORITY_MODES,
         paid_ai_authority_mode: WFP_RELAY_AUTHORITY_ROUTE,
         paid_ai_authority_verifier: PAID_AI_AUTHORITY_VERIFIER,
+        paid_ai_replay_guard: PAID_AI_REPLAY_GUARD,
+        authority_replay_binding_configured,
         paid_ai_capable,
         inbound_dispatch_route: request_header(req, WFP_ROUTE_HEADER),
         inbound_dispatch_worker: request_header(req, WFP_WORKER_HEADER),
@@ -351,27 +359,52 @@ async fn forward_ai_gateway(
         }
     }
 
-    let verified = decode_worker_key(&authority_key)
-        .and_then(|worker_key| {
-            verify_authority_with_worker_key(
-                &worker_key,
-                &authority_token,
-                AuthorityExpectation {
-                    worker: &worker_name,
-                    method: "POST",
-                    path: route.public_path,
-                    body: &body,
-                    now: unix_timestamp(),
-                },
-            )
-        })
-        .is_ok();
-    if !verified {
-        return tenant_error(
-            403,
-            "tenant_relay_authority_invalid",
-            "tenant relay authority verification failed",
-        );
+    let claims = decode_worker_key(&authority_key).and_then(|worker_key| {
+        verify_authority_with_worker_key(
+            &worker_key,
+            &authority_token,
+            AuthorityExpectation {
+                worker: &worker_name,
+                method: "POST",
+                path: route.public_path,
+                body: &body,
+                now: unix_timestamp(),
+            },
+        )
+    });
+    let claims = match claims {
+        Ok(claims) => claims,
+        Err(_) => {
+            return tenant_error(
+                403,
+                "tenant_relay_authority_invalid",
+                "tenant relay authority verification failed",
+            );
+        }
+    };
+    match consume_authority_once(&env, &worker_name, &authority_token, &claims).await {
+        Ok(()) => {}
+        Err(ReplayConsumeError::Replay) => {
+            return tenant_error(
+                409,
+                "tenant_relay_authority_replayed",
+                "tenant relay authority was already consumed",
+            );
+        }
+        Err(ReplayConsumeError::Rejected) => {
+            return tenant_error(
+                403,
+                "tenant_relay_authority_invalid",
+                "tenant relay authority replay guard rejected the request",
+            );
+        }
+        Err(ReplayConsumeError::Unavailable) => {
+            return tenant_error(
+                503,
+                "tenant_relay_authority_replay_guard_unavailable",
+                "tenant relay authority replay guard is unavailable",
+            );
+        }
     }
 
     let Some(account_id) = runtime_value(&env, "CF_ACCOUNT_ID") else {
@@ -641,10 +674,57 @@ fn paid_ai_runtime_configured(
     worker_name: Option<&str>,
     account_id: Option<&str>,
     tenant_api_token: Option<&str>,
+    authority_replay_binding_configured: bool,
 ) -> bool {
     authority_bindings_configured(authority_key, worker_name)
         && account_id.is_some_and(|value| !value.trim().is_empty())
         && tenant_api_token.is_some_and(|value| !value.trim().is_empty())
+        && authority_replay_binding_configured
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayConsumeError {
+    Replay,
+    Rejected,
+    Unavailable,
+}
+
+async fn consume_authority_once(
+    env: &Env,
+    worker_name: &str,
+    authority_token: &str,
+    claims: &AuthorityClaims,
+) -> Result<(), ReplayConsumeError> {
+    let namespace = env
+        .durable_object(AUTHORITY_REPLAY_BINDING)
+        .map_err(|_| ReplayConsumeError::Unavailable)?;
+    let bucket = authority_replay_bucket(worker_name, claims.issued_at)
+        .map_err(|_| ReplayConsumeError::Rejected)?;
+    let stub = namespace
+        .id_from_name(&bucket)
+        .and_then(|id| id.get_stub())
+        .map_err(|_| ReplayConsumeError::Unavailable)?;
+    let mut headers = Headers::new();
+    headers
+        .set(AUTHORITY_HEADER, authority_token)
+        .map_err(|_| ReplayConsumeError::Unavailable)?;
+    headers
+        .set(WFP_WORKER_HEADER, worker_name)
+        .map_err(|_| ReplayConsumeError::Unavailable)?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_headers(headers);
+    let request = Request::new_with_init("https://wfp-authority-replay.internal/consume", &init)
+        .map_err(|_| ReplayConsumeError::Unavailable)?;
+    let response = stub
+        .fetch_with_request(request)
+        .await
+        .map_err(|_| ReplayConsumeError::Unavailable)?;
+    match response.status_code() {
+        200..=299 => Ok(()),
+        409 => Err(ReplayConsumeError::Replay),
+        401 | 403 => Err(ReplayConsumeError::Rejected),
+        _ => Err(ReplayConsumeError::Unavailable),
+    }
 }
 
 fn validate_verified_json_body(body: &[u8]) -> Result<(), VerifiedJsonBodyError> {
@@ -985,6 +1065,8 @@ mod tests {
         );
         assert_eq!(WFP_RELAY_AUTHORITY_ROUTE, "relay-authority");
         assert_eq!(PAID_AI_AUTHORITY_VERIFIER, "hmac-sha256-body-bound-v1");
+        assert_eq!(PAID_AI_REPLAY_GUARD, "platform-durable-object-once-v1");
+        assert_eq!(AUTHORITY_REPLAY_BINDING, "WFP_AUTHORITY_REPLAY");
         assert_eq!(WFP_WORKER_NAME_ENV, "CINATOKEN_WFP_WORKER_NAME");
         assert_eq!(AUTHORITY_TENANT_KEY_ENV, "WFP_RELAY_AUTHORITY_KEY");
         assert_eq!(MAX_VERIFIED_JSON_BODY_BYTES, 4 * 1024 * 1024);
@@ -1019,26 +1101,47 @@ mod tests {
             secret,
             worker,
             Some("account-a"),
-            Some("tenant-api-token")
+            Some("tenant-api-token"),
+            true
         ));
         assert!(!paid_ai_runtime_configured(
             secret,
             worker,
             None,
-            Some("tenant-api-token")
+            Some("tenant-api-token"),
+            true
         ));
         assert!(!paid_ai_runtime_configured(
             secret,
             worker,
             Some("account-a"),
-            None
+            None,
+            true
         ));
         assert!(!paid_ai_runtime_configured(
             secret,
             worker,
             Some("  "),
-            Some("tenant-api-token")
+            Some("tenant-api-token"),
+            true
         ));
+        assert!(!paid_ai_runtime_configured(
+            secret,
+            worker,
+            Some("account-a"),
+            Some("tenant-api-token"),
+            false
+        ));
+    }
+
+    #[test]
+    fn replay_guard_status_mapping_is_fail_closed() {
+        assert_eq!(ReplayConsumeError::Replay, ReplayConsumeError::Replay);
+        assert_ne!(ReplayConsumeError::Replay, ReplayConsumeError::Unavailable);
+        assert_ne!(
+            ReplayConsumeError::Rejected,
+            ReplayConsumeError::Unavailable
+        );
     }
 
     #[test]

@@ -239,9 +239,11 @@ through central settlement/refund and audit.
 `WFP_RELAY_TRANSPORT_ENABLED` remains false in all
 tracked environments. Admin dispatch is status-only; JS fallback AI deploy is
 disabled; `/v1/embeddings` has been removed from the tenant route set. This is
-local gated substrate, not deployment evidence. Signed-authority billing,
-replay-resistance, and real Rust/Wasm upload/readback evidence remain G7
-blockers. The short-lived, body-bound envelope is not claimed to be replay-proof.
+local gated substrate, not deployment evidence. The tenant now consumes each
+authority once through the platform-owned `WfpAuthorityReplay` DO with
+canonical shard validation and fail-closed outcomes. Signed-authority billing,
+live sequential/concurrent replay, eviction/cleanup/load, and real Rust/Wasm
+upload plus external-binding readback evidence remain G7 blockers.
 
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -433,7 +435,8 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | Payment/OAuth/Turnstile/JWT/session secrets | Go/VPS-owned today | Cloudflare secrets or forced re-auth/defer plan | Secret inventory without values. |
 | AI Gateway IDs and request policy | Empty default `AI_GATEWAY_ID`; the Rust/Wasm WFP tenant supports route-specific gateway overrides for chat, responses, Anthropic Messages, and `/ai/run`, plus tenant-bound `cf-aig-*` timeout/retry/cache/logging policy. Main-relay AI Gateway routing and cross-model fallback remain independently gated. | Real default/route IDs or a documented direct-provider policy | Live logs for only the four retained WFP routes; no embeddings tenant route. Main-relay canary evidence must separately prove channel opt-in, provider policy, billing, terminal audit, and fallback replay. |
 | `DISPATCHER` WFP namespace | Commented binding; central relay transport selection exists behind `WFP_RELAY_TRANSPORT_ENABLED=false` and requires `channels.other_info.wfp_worker` after token auth, D1 selection, and reserve. Admin dispatch is status-only and preview-host AI is rejected. | Real staging namespace and binding, with transport gate enabled only for canary | Admin status smoke plus public/admin AI rejection; signed-authority central relay canary proving reserve, exactly-one settlement/refund, and audit. |
-| `cinatoken-wfp-tenant` Rust/Wasm runtime | Local HMAC authority verification and the four retained routes are implemented. Generated JS fallback is status-only; Worker-side fallback deploy is disabled. | Strict Rust/Wasm artifact uploaded and read back from staging | Dry-run manifest, REST PUT/GET hash match, Rust/Wasm status, authority tamper/expiry rejection, route/header guard, central billing canary, and replay-resistance evidence. No live upload is currently claimed. |
+| `WFP_AUTHORITY_REPLAY` / `WfpAuthorityReplay` | Platform-owned Rust DO, canonical worker/time-bucket shard, atomic digest consumption, alarm cleanup, and fail-closed tenant call are locally compiled. `v4-wfp-authority-replay` is declared in all env scopes. | Main Worker DO deployed; each strict tenant upload binds the expected environment script/class | Multipart binding readback; one winner for sequential and concurrent duplicate envelopes; wrong shard rejected; eviction/redeploy and cleanup proof; latency/throughput/storage evidence; exactly one provider call. Local tests are not staging verification. |
+| `cinatoken-wfp-tenant` Rust/Wasm runtime | Local HMAC authority verification, replay-DO consumption, and the four retained routes are implemented. Generated JS fallback is status-only; Worker-side fallback deploy is disabled. | Strict Rust/Wasm artifact uploaded and read back from staging with external replay DO binding | Dry-run manifest, REST PUT/GET hash and binding match, Rust/Wasm status, authority tamper/expiry/duplicate rejection, route/header guard, central billing canary, and replay evidence. No live upload is currently claimed. |
 | `CLOUDFLARE_ACCOUNT_ID`, `WFP_DISPATCH_NAMESPACE`, `WFP_TENANT_COMPATIBILITY_DATE` | Empty/default vars | Real account/namespace/date in staging/prod | Redacted plan response shows deployable metadata. |
 | `CLOUDFLARE_API_TOKEN` | Secret-only; not in config | Scoped dispatch script deploy/readback token | Secret inventory, least-privilege scope, redacted PUT/GET evidence, rotation owner. |
 | `WFP_TENANT_CF_API_TOKEN` / `CLOUDFLARE_AI_GATEWAY_TOKEN` | Secret-only tenant runtime credential | Required runtime AI credential, distinct from deploy token | Uploader rejection on token reuse plus secret inventory and rotation owner. |

@@ -7,10 +7,14 @@ use std::fmt;
 pub const AUTHORITY_HEADER: &str = "x-cinatoken-wfp-authority";
 pub const AUTHORITY_SECRET_ENV: &str = "WFP_RELAY_AUTHORITY_SECRET";
 pub const AUTHORITY_TENANT_KEY_ENV: &str = "WFP_RELAY_AUTHORITY_KEY";
+pub const AUTHORITY_REPLAY_BINDING: &str = "WFP_AUTHORITY_REPLAY";
+pub const AUTHORITY_REPLAY_CLASS: &str = "WfpAuthorityReplay";
 pub const AUTHORITY_VERSION: u8 = 1;
 pub const AUTHORITY_TTL_SECONDS: i64 = 30;
+pub const AUTHORITY_REPLAY_BUCKET_SECONDS: i64 = 60;
 const MAX_CLOCK_SKEW_SECONDS: i64 = 5;
 const MAX_AUTHORITY_LIFETIME_SECONDS: i64 = 60;
+pub const AUTHORITY_REPLAY_CLEANUP_GRACE_SECONDS: i64 = 5;
 const KEY_DOMAIN: &[u8] = b"cinatoken-wfp-authority-key:v1\0";
 
 type HmacSha256 = Hmac<Sha256>;
@@ -84,6 +88,9 @@ pub fn sign_authority(secret: &[u8], input: AuthorityInput<'_>) -> Result<String
         input.request_id,
         input.channel_id,
     )?;
+    if input.issued_at <= 0 {
+        return Err(AuthorityError::InvalidTimeWindow);
+    }
     let claims = AuthorityClaims {
         version: AUTHORITY_VERSION,
         worker: input.worker.to_string(),
@@ -118,6 +125,32 @@ pub fn verify_authority_with_worker_key(
     token: &str,
     expected: AuthorityExpectation<'_>,
 ) -> Result<AuthorityClaims, AuthorityError> {
+    let claims = verify_claims_with_worker_key(worker_key, token, expected.worker, expected.now)?;
+    if claims.method != expected.method.to_ascii_uppercase()
+        || claims.path != expected.path
+        || claims.body_sha256 != body_sha256(expected.body)
+    {
+        return Err(AuthorityError::ClaimMismatch);
+    }
+    Ok(claims)
+}
+
+pub fn verify_authority_claims(
+    secret: &[u8],
+    token: &str,
+    expected_worker: &str,
+    now: i64,
+) -> Result<AuthorityClaims, AuthorityError> {
+    let key = derive_worker_key(secret, expected_worker)?;
+    verify_claims_with_worker_key(&key, token, expected_worker, now)
+}
+
+fn verify_claims_with_worker_key(
+    worker_key: &[u8],
+    token: &str,
+    expected_worker: &str,
+    now: i64,
+) -> Result<AuthorityClaims, AuthorityError> {
     validate_worker_key(worker_key)?;
     let mut parts = token.split('.');
     let payload = parts.next().ok_or(AuthorityError::InvalidToken)?;
@@ -141,21 +174,16 @@ pub fn verify_authority_with_worker_key(
         &claims.request_id,
         claims.channel_id,
     )?;
-    if claims.version != AUTHORITY_VERSION
-        || claims.worker != expected.worker
-        || claims.method != expected.method.to_ascii_uppercase()
-        || claims.path != expected.path
-        || claims.body_sha256 != body_sha256(expected.body)
-    {
+    if claims.version != AUTHORITY_VERSION || claims.worker != expected_worker {
         return Err(AuthorityError::ClaimMismatch);
     }
-    if claims.expires_at <= expected.now {
+    if claims.expires_at <= now {
         return Err(AuthorityError::Expired);
     }
-    if claims.issued_at > expected.now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
+    if claims.issued_at > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
         || claims.expires_at <= claims.issued_at
         || claims.expires_at.saturating_sub(claims.issued_at) > MAX_AUTHORITY_LIFETIME_SECONDS
-        || expected.now.saturating_sub(claims.issued_at) > MAX_AUTHORITY_LIFETIME_SECONDS
+        || now.saturating_sub(claims.issued_at) > MAX_AUTHORITY_LIFETIME_SECONDS
     {
         return Err(AuthorityError::InvalidTimeWindow);
     }
@@ -180,6 +208,30 @@ pub fn decode_worker_key(value: &str) -> Result<[u8; 32], AuthorityError> {
         .decode(value.trim())
         .map_err(|_| AuthorityError::InvalidSecret)?;
     bytes.try_into().map_err(|_| AuthorityError::InvalidSecret)
+}
+
+pub fn authority_replay_bucket(worker: &str, issued_at: i64) -> Result<String, AuthorityError> {
+    validate_worker_name(worker)?;
+    if issued_at <= 0 {
+        return Err(AuthorityError::InvalidTimeWindow);
+    }
+    Ok(format!(
+        "{worker}:{}",
+        issued_at.div_euclid(AUTHORITY_REPLAY_BUCKET_SECONDS)
+    ))
+}
+
+pub fn authority_replay_cleanup_at(issued_at: i64) -> Result<i64, AuthorityError> {
+    if issued_at <= 0 {
+        return Err(AuthorityError::InvalidTimeWindow);
+    }
+    let bucket = issued_at.div_euclid(AUTHORITY_REPLAY_BUCKET_SECONDS);
+    bucket
+        .checked_add(1)
+        .and_then(|value| value.checked_mul(AUTHORITY_REPLAY_BUCKET_SECONDS))
+        .and_then(|value| value.checked_add(AUTHORITY_TTL_SECONDS))
+        .and_then(|value| value.checked_add(AUTHORITY_REPLAY_CLEANUP_GRACE_SECONDS))
+        .ok_or(AuthorityError::InvalidTimeWindow)
 }
 
 fn validate_secret(secret: &[u8]) -> Result<(), AuthorityError> {
@@ -304,6 +356,12 @@ mod tests {
         let decoded = decode_worker_key(&encoded).unwrap();
         assert_eq!(decoded, worker_key);
         assert!(verify_authority_with_worker_key(&decoded, &token, expected(b"{}", 101)).is_ok());
+        assert_eq!(
+            verify_authority_claims(SECRET, &token, "tenant-a", 101)
+                .unwrap()
+                .request_id,
+            "req-1"
+        );
     }
 
     #[test]
@@ -320,6 +378,28 @@ mod tests {
         assert_eq!(
             decode_worker_key("not-a-worker-key").unwrap_err(),
             AuthorityError::InvalidSecret
+        );
+    }
+
+    #[test]
+    fn replay_bucket_is_worker_scoped_and_cleanup_outlives_bucket_tokens() {
+        assert_eq!(
+            authority_replay_bucket("tenant-a", 119).unwrap(),
+            "tenant-a:1"
+        );
+        assert_eq!(
+            authority_replay_bucket("tenant-a", 120).unwrap(),
+            "tenant-a:2"
+        );
+        assert_eq!(authority_replay_cleanup_at(119).unwrap(), 155);
+        assert_eq!(authority_replay_cleanup_at(120).unwrap(), 215);
+        assert_eq!(
+            authority_replay_bucket("../tenant", 120).unwrap_err(),
+            AuthorityError::InvalidInput
+        );
+        assert_eq!(
+            authority_replay_cleanup_at(0).unwrap_err(),
+            AuthorityError::InvalidTimeWindow
         );
     }
 
@@ -367,6 +447,10 @@ mod tests {
         assert_eq!(
             verify_authority(SECRET, &future, expected(b"{}", 100)).unwrap_err(),
             AuthorityError::InvalidTimeWindow
+        );
+        assert_eq!(
+            verify_authority_claims(SECRET, &expired, "tenant-a", 130).unwrap_err(),
+            AuthorityError::Expired
         );
     }
 

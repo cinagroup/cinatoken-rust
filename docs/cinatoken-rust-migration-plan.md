@@ -9497,3 +9497,39 @@ reserve followed by settlement or refund and the matching audit outcome.
 Replay-resistance evidence is still required: the short-lived, body-bound
 envelope is not claimed to be replay-proof. Keep the transport gate off until
 that evidence is archived.
+
+### 22.151 2026-07-11 WFP Authority Replay Durable Object
+
+This increment closes the local exact-envelope replay gap in 22.150 without
+moving admission, billing, or audit ownership into the tenant Worker.
+
+- Added the platform-owned Rust Durable Object `WfpAuthorityReplay`, exposed to
+  the main Worker as `WFP_AUTHORITY_REPLAY` with migration
+  `v4-wfp-authority-replay` in default, staging, and production configuration.
+- The Rust/Wasm tenant first verifies the worker/method/path/exact-body HMAC,
+  then atomically consumes the signed request ID in the replay DO before any AI
+  Gateway egress. A duplicate returns `409`; invalid authority returns `403`;
+  missing binding, storage failure, or replay-service failure returns `503`.
+- Replay objects are sharded by worker and 60-second issuance bucket. The DO
+  recomputes that bucket from the master-verified claims and rejects a request
+  delivered to any non-canonical object ID. Stored keys are SHA-256 digests,
+  not raw request IDs; one bucket alarm deletes state only after every authority
+  issued in the bucket has expired plus cleanup grace.
+- The artifact uploader now requires `--authority-replay-script` or
+  `WFP_AUTHORITY_REPLAY_SCRIPT_NAME` and uploads an external
+  `durable_object_namespace` binding for `WfpAuthorityReplay`. The tenant still
+  receives only its derived `WFP_RELAY_AUTHORITY_KEY`; the platform master stays
+  in the main Worker and uploader derivation context.
+- Platform capabilities and the admin frontend distinguish the compiled replay
+  contract from the live DO binding. Paid WFP readiness requires both, while
+  staging verification and cutover readiness remain separate evidence states.
+
+Local evidence: authority tests 6/6, Rust tenant tests 16/16, Worker WFP tests
+19/19, frontend readiness tests 6/6, both wasm32 checks, deploy-plan self-test,
+route-contract self-test, and response-header self-test passed. This does not
+prove a deployed duplicate race. Staging must still demonstrate one winner for
+sequential and concurrent duplicate envelopes, canonical binding readback,
+survival across eviction/redeploy, cleanup timing, bucket throughput/latency,
+one provider call, one central reserve and settlement/refund, and secret-free
+traces. A fresh centrally signed request ID is a new envelope, so this guard is
+not a claim of exactly-once upstream execution across ambiguous retries.

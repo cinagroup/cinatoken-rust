@@ -16,3 +16,10 @@ AI_GATEWAY_ID = ""
 # wrangler secret put CF_API_TOKEN
 # Bind only the per-worker derived key. Never expose the platform master secret here.
 # wrangler secret put WFP_RELAY_AUTHORITY_KEY
+
+# Local/default external replay guard. Artifact uploads bind the environment-
+# specific platform Worker script explicitly in multipart metadata.
+[[durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+script_name = "cinatoken-rust-api"

@@ -178,8 +178,11 @@ Production decisions from the refreshed cinaVibeSDK and Cloudflare audit:
   worker using a per-worker key derived from platform-only
   `WFP_RELAY_AUTHORITY_SECRET`. The uploader binds only
   `WFP_RELAY_AUTHORITY_KEY` into that tenant; the platform master must never
-  enter the tenant binding set. Keep `WFP_RELAY_TRANSPORT_ENABLED=false` until
-  staging proves the complete path and replay resistance.
+  enter the tenant binding set. The tenant now atomically consumes the signed
+  request ID through the platform-owned `WfpAuthorityReplay` DO before egress;
+  duplicate/invalid/unavailable checks fail closed. Keep
+  `WFP_RELAY_TRANSPORT_ENABLED=false` until staging proves the complete path,
+  external binding identity, and sequential/concurrent replay behavior.
 
 ## Best-Practice Anchors
 
@@ -657,16 +660,22 @@ Required tasks:
    validate the main shim, Wasm magic/import graph, and module hashes; require a
    tenant runtime token distinct from the deploy token; derive the named
    worker's key from `WFP_RELAY_AUTHORITY_SECRET`; bind only
-   `WFP_RELAY_AUTHORITY_KEY` into the tenant; and archive real PUT plus GET
-   readback evidence. The platform master must remain platform-side.
+   `WFP_RELAY_AUTHORITY_KEY` into the tenant; bind the environment-specific
+   platform `WfpAuthorityReplay` namespace using
+   `--authority-replay-script`; and archive real PUT plus GET content, hash,
+   class, and script readback evidence. The platform master must remain
+   platform-side.
    Admin dispatch may prove tenant status only. For paid smoke, seed
    `channels.other_info.wfp_worker`, temporarily arm
    `WFP_RELAY_TRANSPORT_ENABLED`, and call one of chat/responses/messages/ai-run
    through the normal relay token path. Prove signed-authority rejection cases
    and exactly one central reserve followed by settlement/refund and audit.
-   Separately capture replay-resistance evidence; short lifetime and body binding
-   are not replay-proof. Then turn the transport gate off. `/v1/embeddings` is
-   not in the tenant route set.
+   Prove the same envelope has exactly one winner under sequential and
+   concurrent replay, alternate DO IDs are rejected, eviction/redeploy does not
+   reset consumption, cleanup is late enough, and only one provider call is
+   observed. This exact-envelope guard does not make a newly signed retry an
+   exactly-once upstream execution. Then turn the transport gate off.
+   `/v1/embeddings` is not in the tenant route set.
 
 Exit evidence:
 
@@ -683,8 +692,8 @@ Exit evidence:
   `DISPATCHER` binding, authority rejection cases, and central billing/audit
   ownership before tenant traffic is routed through the new path.
 
-No WFP upload, readback, signed-authority billing canary, or replay-resistance
-evidence has been completed or is claimed by this execution plan.
+No WFP upload, external-binding readback, signed-authority billing canary, or
+live replay race has been completed or is claimed by this execution plan.
 
 ## Performance And Cost Plan
 

@@ -26,9 +26,11 @@ Last checked: 2026-07-11
   Those entries remain only as an implementation history.
 - No deployment is verified here. A real dispatch-namespace Rust/Wasm upload
   and REST readback plus a staging signed-authority billing canary and
-  replay-resistance evidence are still pending. The short-lived, body-bound
-  envelope is not claimed to be replay-proof. Do not treat local compile/tests,
-  dry-run manifests, or capability fields as production evidence.
+  live replay evidence are still pending. The local tenant now consumes each
+  envelope once through `WfpAuthorityReplay`, but sequential/concurrent races,
+  external binding identity, eviction/redeploy persistence, cleanup, load, and
+  one-provider-call behavior are not deployed evidence. Do not treat local
+  compile/tests, dry-run manifests, or capability fields as production proof.
 
 ## Passed
 
@@ -2878,6 +2880,28 @@ bun run check
 - D1 auth now carries `tokens.cross_group_retry` through ordinary REST,
   cross-model fallback, and Realtime planning. This local CLI contract does not
   claim that any deployed staging Worker or remote D1 has executed the smoke.
+
+### WFP authority replay Durable Object contract (2026-07-11)
+
+- Added the platform-owned `WfpAuthorityReplay` SQLite Durable Object and
+  `v4-wfp-authority-replay` configuration migration in all Worker environments.
+- The Rust/Wasm tenant verifies the exact-body authority first, then consumes
+  the signed request ID before paid egress. Duplicate, invalid, and unavailable
+  outcomes map to explicit `409`, `403`, and `503` fail-closed responses.
+- The DO re-verifies claims with the platform master and requires its own ID to
+  equal the canonical worker/issuance-bucket ID. Storage keys hash request IDs;
+  alarm cleanup is scheduled after the whole bucket's token lifetime.
+- The strict uploader binds the external `WFP_AUTHORITY_REPLAY` namespace by
+  expected script and class. Capabilities and the frontend expose compiled and
+  bound states separately.
+- Local checks passed: authority 6/6, tenant 16/16, Worker WFP 19/19, frontend
+  readiness 6/6, Worker and tenant wasm32 checks, deploy-plan, route-contract,
+  and response-header self-tests.
+- No live duplicate was executed. Required staging evidence remains: upload
+  binding readback, sequential and concurrent one-winner replay, wrong-shard
+  rejection, eviction/redeploy persistence, alarm cleanup, load/latency, one
+  provider call, one central billing outcome, and redacted traces. A new signed
+  request ID on a retry is outside this exact-envelope guarantee.
 
 ## Still Pending
 

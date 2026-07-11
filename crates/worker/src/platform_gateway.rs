@@ -62,6 +62,7 @@ use crate::task_runner::{
     task_runner_status_probe_task_id, task_runner_submit_path_compiled, TASK_RUNNER_BINDING,
     TASK_RUNNER_DO_ENABLED_ENV,
 };
+use crate::wfp_authority_replay::replay_contract_compiled as wfp_authority_replay_contract_compiled;
 use crate::wfp_tenant::{
     wfp_tenant_ai_gateway_policy_compiled, wfp_tenant_cutover_guards,
     wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_relay_authority_verifier_compiled,
@@ -202,6 +203,8 @@ struct PlatformCapabilities {
     wfp_internal_dispatch_enabled: bool,
     wfp_relay_transport_enabled: bool,
     wfp_relay_authority_secret_configured: bool,
+    wfp_authority_replay_do_available: bool,
+    wfp_authority_replay_do_compiled: bool,
     wfp_preview_host_suffix_configured: bool,
     wfp_worker_prefix_configured: bool,
     wfp_tenant_supported_routes: Vec<&'static str>,
@@ -331,6 +334,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let wfp_relay_authority_secret_configured =
         secret_or_var(&env, cinatoken_wfp_authority::AUTHORITY_SECRET_ENV)
             .is_some_and(|value| value.as_bytes().len() >= 32);
+    let wfp_authority_replay_do_available = env
+        .durable_object(cinatoken_wfp_authority::AUTHORITY_REPLAY_BINDING)
+        .is_ok();
+    let wfp_authority_replay_do_compiled = wfp_authority_replay_contract_compiled();
     let wfp_tenant_script_plan_compiled = wfp_tenant_script_plan_compiled();
     let wfp_tenant_rust_wasm_runtime_compiled = wfp_tenant_rust_wasm_runtime_compiled();
     let wfp_tenant_route_manifest_compiled = wfp_tenant_route_manifest_compiled();
@@ -346,6 +353,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_dispatch_enabled,
         wfp_relay_transport_enabled,
         wfp_relay_authority_secret_configured,
+        wfp_authority_replay_do_available,
+        wfp_authority_replay_do_compiled,
         wfp_relay_authority_transport_compiled,
         wfp_tenant_rust_wasm_runtime_compiled,
         wfp_tenant_route_manifest_compiled,
@@ -548,6 +557,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_internal_dispatch_enabled,
         wfp_relay_transport_enabled,
         wfp_relay_authority_secret_configured,
+        wfp_authority_replay_do_available,
+        wfp_authority_replay_do_compiled,
         wfp_preview_host_suffix_configured: runtime_value(&env, WFP_PREVIEW_HOST_SUFFIX_ENV)
             .is_some(),
         wfp_worker_prefix_configured: runtime_value(&env, WFP_DISPATCH_WORKER_PREFIX_ENV).is_some(),
@@ -1978,20 +1989,24 @@ fn is_wfp_relay_authority_transport_ready(
     dispatch_enabled: bool,
     relay_transport_enabled: bool,
     authority_secret_configured: bool,
+    authority_replay_do_available: bool,
+    authority_replay_do_compiled: bool,
     relay_transport_compiled: bool,
     rust_wasm_runtime_compiled: bool,
     route_manifest_compiled: bool,
-    internal_dispatch_required_compiled: bool,
+    relay_authority_verifier_compiled: bool,
     response_header_guard_compiled: bool,
 ) -> bool {
     dispatcher_bound
         && dispatch_enabled
         && relay_transport_enabled
         && authority_secret_configured
+        && authority_replay_do_available
+        && authority_replay_do_compiled
         && relay_transport_compiled
         && rust_wasm_runtime_compiled
         && route_manifest_compiled
-        && internal_dispatch_required_compiled
+        && relay_authority_verifier_compiled
         && response_header_guard_compiled
 }
 
@@ -2353,6 +2368,7 @@ mod tests {
             "internal_dispatch_gate",
             "central_relay_authority",
             "signed_body_bound_authority",
+            "authority_replay_do",
             "tenant_scoped_authority_key",
             "separate_runtime_token",
             "tenant_script_plan",
@@ -2375,6 +2391,7 @@ mod tests {
         assert!(wfp_tenant_route_manifest_compiled());
         assert!(wfp_tenant_internal_dispatch_required_compiled());
         assert!(wfp_tenant_relay_authority_verifier_compiled());
+        assert!(wfp_authority_replay_contract_compiled());
         assert!(wfp_tenant_response_header_guard_compiled());
         assert!(wfp_tenant_ai_gateway_policy_compiled());
     }
@@ -2396,9 +2413,9 @@ mod tests {
     #[test]
     fn wfp_relay_authority_readiness_requires_every_transport_boundary() {
         assert!(relay_wfp_authority_transport_contract_compiled());
-        assert!(wfp_relay_authority_ready_with_flags([true; 9]));
-        for false_gate in 0..9 {
-            let mut flags = [true; 9];
+        assert!(wfp_relay_authority_ready_with_flags([true; 11]));
+        for false_gate in 0..11 {
+            let mut flags = [true; 11];
             flags[false_gate] = false;
             assert!(
                 !wfp_relay_authority_ready_with_flags(flags),
@@ -2595,10 +2612,10 @@ mod tests {
         )
     }
 
-    fn wfp_relay_authority_ready_with_flags(flags: [bool; 9]) -> bool {
+    fn wfp_relay_authority_ready_with_flags(flags: [bool; 11]) -> bool {
         is_wfp_relay_authority_transport_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-            flags[8],
+            flags[8], flags[9], flags[10],
         )
     }
 }

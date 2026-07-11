@@ -566,8 +566,8 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   settlement/refund, and audit remain authoritative; WFP is selected only from
   `channels.other_info.wfp_worker` and receives the 30-second signed authority.
   Admin dispatch is status-only. Keep `WFP_RELAY_TRANSPORT_ENABLED=false` until
-  staging signed-authority billing canary, replay-resistance evidence, and real
-  Rust/Wasm upload/readback are archived.
+  staging signed-authority billing canary, live replay-DO race evidence, and
+  real Rust/Wasm upload plus external-binding readback are archived.
 - Flat-billed and tiered-expression traffic keep their current semantics; do
   not convert flat traffic to pre-reserve semantics as part of this mapping.
 
@@ -625,9 +625,11 @@ As of 2026-07-10, including the local D1 and route-ownership evidence above:
   queue/drain and D1 rollback artifacts, full live fault replay, and billing
   reconciliation plus alarm/eviction/multi-response proof required for
   production `/v1/realtime`.
-- WFP dispatch has code, local Rust/Wasm tenant checks, and a tool-enforced
-  response-header smoke guard, but still needs a real paid-plan `DISPATCHER`
-  binding, uploaded tenant artifact, and live internal dispatch smoke.
+- WFP dispatch now also has a platform-owned one-time authority Durable Object,
+  canonical shard enforcement, fail-closed tenant consumption, and external DO
+  upload metadata. It still needs a real paid-plan `DISPATCHER` binding, strict
+  Rust/Wasm artifact plus replay binding readback, and deployed sequential and
+  concurrent replay proof before any paid canary.
 - The first production cutover should not depend on WFP. Keep WFP as a later
   multi-tenant extension.
 

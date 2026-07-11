@@ -774,7 +774,7 @@ function buildCapabilityGroups(
         {
           label: t('WFP authority secret'),
           description: t(
-            'Requires the shared WFP_RELAY_AUTHORITY_SECRET secret in the main Worker and each Rust/Wasm tenant deployment.'
+            'Keeps the WFP_RELAY_AUTHORITY_SECRET master only in the main Worker and uploader; each tenant receives a derived worker-scoped key.'
           ),
           ready: capabilities.wfp_relay_authority_secret_configured,
           readyLabel: t('Configured'),
@@ -782,6 +782,27 @@ function buildCapabilityGroups(
           missingVariant: capabilities.wfp_relay_transport_enabled
             ? 'warning'
             : 'neutral',
+        },
+        {
+          label: t('WFP authority replay Durable Object'),
+          description: t(
+            'Requires the platform-owned WFP_AUTHORITY_REPLAY binding before a tenant can perform paid AI egress.'
+          ),
+          ready: capabilities.wfp_authority_replay_do_available,
+          readyLabel: t('Bound'),
+          missingLabel: t('Missing'),
+          missingVariant: capabilities.wfp_relay_transport_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('WFP replay guard contract'),
+          description: t(
+            'Consumes every signed request ID exactly once and fails closed on duplicates or replay-service errors.'
+          ),
+          ready: capabilities.wfp_authority_replay_do_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
         },
         {
           label: t('WFP relay authority readiness'),

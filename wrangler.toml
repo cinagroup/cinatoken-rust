@@ -137,6 +137,10 @@ class_name = "RealtimeSession"
 name = "TASK_RUNNER"
 class_name = "TaskRunner"
 
+[[durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+
 [[migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -148,6 +152,10 @@ new_sqlite_classes = ["RealtimeSession"]
 [[migrations]]
 tag = "v3-task-runner"
 new_sqlite_classes = ["TaskRunner"]
+
+[[migrations]]
+tag = "v4-wfp-authority-replay"
+new_sqlite_classes = ["WfpAuthorityReplay"]
 
 # ---------------------------------------------------------------------------
 # Staging environment.
@@ -258,6 +266,10 @@ class_name = "RealtimeSession"
 name = "TASK_RUNNER"
 class_name = "TaskRunner"
 
+[[env.staging.durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+
 [[env.staging.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -269,6 +281,10 @@ new_sqlite_classes = ["RealtimeSession"]
 [[env.staging.migrations]]
 tag = "v3-task-runner"
 new_sqlite_classes = ["TaskRunner"]
+
+[[env.staging.migrations]]
+tag = "v4-wfp-authority-replay"
+new_sqlite_classes = ["WfpAuthorityReplay"]
 
 # ---------------------------------------------------------------------------
 # Production environment.
@@ -381,6 +397,10 @@ class_name = "RealtimeSession"
 name = "TASK_RUNNER"
 class_name = "TaskRunner"
 
+[[env.production.durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+
 [[env.production.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -392,3 +412,7 @@ new_sqlite_classes = ["RealtimeSession"]
 [[env.production.migrations]]
 tag = "v3-task-runner"
 new_sqlite_classes = ["TaskRunner"]
+
+[[env.production.migrations]]
+tag = "v4-wfp-authority-replay"
+new_sqlite_classes = ["WfpAuthorityReplay"]

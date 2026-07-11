@@ -63,6 +63,7 @@ pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
     "internal_dispatch_gate",
     "central_relay_authority",
     "signed_body_bound_authority",
+    "authority_replay_do",
     "tenant_scoped_authority_key",
     "separate_runtime_token",
     "tenant_script_plan",
@@ -641,6 +642,8 @@ pub(crate) fn wfp_tenant_rust_wasm_runtime_compiled() -> bool {
         && RUST_TENANT_SHIM_PATH == "crates/wfp-tenant/build/worker/shim.mjs"
         && deploy_tool.contains("wasmMagic")
         && deploy_tool.contains("WFP_RELAY_AUTHORITY_KEY")
+        && deploy_tool.contains("WFP_AUTHORITY_REPLAY")
+        && deploy_tool.contains("durable_object_namespace")
         && deploy_tool.contains("deployment token and tenant runtime token must be different")
         && deploy_tool.contains("--manifest-only is no longer supported")
 }
@@ -676,6 +679,8 @@ pub(crate) fn wfp_tenant_relay_authority_verifier_compiled() -> bool {
     source.contains("verify_authority_with_worker_key")
         && source.contains("decode_worker_key")
         && source.contains("AUTHORITY_TENANT_KEY_ENV")
+        && source.contains("consume_authority_once")
+        && source.contains("AUTHORITY_REPLAY_BINDING")
         && source.contains("bounded_verified_json")
         && !source.contains("secret_or_var(&env, AUTHORITY_SECRET_ENV)")
 }
@@ -735,6 +740,8 @@ export default {
         status_control_authority_modes: STATUS_CONTROL_AUTHORITY_MODES,
         paid_ai_authority_mode: WFP_RELAY_AUTHORITY_ROUTE,
         paid_ai_authority_verifier: "disabled-status-only",
+        paid_ai_replay_guard: "disabled-status-only",
+        authority_replay_binding_configured: false,
         paid_ai_capable: false,
         inbound_dispatch_route: headerValue(request.headers, WFP_ROUTE_HEADER),
         inbound_dispatch_worker: headerValue(request.headers, WFP_WORKER_HEADER),

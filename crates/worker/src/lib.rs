@@ -52,6 +52,7 @@ mod rankings_api;
 mod ratio_sync;
 mod realtime_session;
 mod turnstile;
+mod wfp_authority_replay;
 mod wfp_tenant;
 
 use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};

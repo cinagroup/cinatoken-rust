@@ -112,16 +112,18 @@ A full diff of every Go-registered route against the Rust worker closed these
   now has a default-off Worker-binding proof route for actual-serving-group
   billing, but still needs deployed Queue/D1 replay and archived remote staging
   evidence before production use.
-- Authority-first WFP relay transport is locally implemented but remains
-  default-off. The central relay authenticates the token, selects the D1
-  channel, reserves quota, reads `channels.other_info.wfp_worker`, and sends a
-  30-second HMAC-SHA256 authority derived per worker from the platform-only
-  `WFP_RELAY_AUTHORITY_SECRET`. The uploader binds only the derived
-  `WFP_RELAY_AUTHORITY_KEY` into that tenant. The tenant verifies the body/path/
-  method/channel/request-id binding and returns the response to central
-  settlement/refund and audit. Production still needs staging signed-authority
-  billing and replay-resistance evidence plus a real strict Rust/Wasm
-  upload/readback; the envelope is not claimed to be replay-proof.
+- Authority-first WFP relay transport and exact-envelope replay prevention are
+  locally implemented but remain default-off. After central token auth, D1
+  selection, and reserve, the Rust/Wasm tenant verifies the 30-second
+  worker/method/path/body/channel/request-id HMAC and atomically consumes its
+  request ID in the platform-owned `WfpAuthorityReplay` Durable Object before
+  AI Gateway egress. Duplicate, invalid, and unavailable replay checks fail
+  closed. The master stays platform-side; the tenant receives a derived key and
+  an external DO binding. Production still needs strict Rust/Wasm upload and
+  binding readback plus sequential/concurrent duplicate, eviction, cleanup,
+  throughput, provider-call, billing, audit, and redaction evidence. This is
+  exact-envelope replay protection, not exactly-once upstream execution for a
+  newly signed retry.
 - Frontend bundle-size reduction and budget ratchet tightening after heavy
   route-specific chunks are split. Strict lint is now zero-debt gated and
   `check:web:quality` is green locally.
@@ -187,5 +189,6 @@ A full diff of every Go-registered route against the Rust worker closed these
 The current system can support staged and scoped Rust/Cloudflare validation.
 It cannot yet be described as a complete replacement for the Go/VPS deployment,
 and the Go deployment must remain available for rollback until the production
-gates close. No WFP tenant deployment, signed-authority billing canary, or
-replay-resistance evidence is claimed by this status document.
+gates close. No WFP tenant deployment, external replay binding readback,
+signed-authority billing canary, or live replay-race evidence is claimed by
+this status document.

@@ -128,8 +128,7 @@ Current `wrangler.toml` is development-shaped:
 - `RELAY_MODEL_FALLBACK_STAGING_VERIFIED = "false"`
 - Route-specific WFP tenant AI Gateway IDs default empty:
   `AI_GATEWAY_ID_OPENAI_CHAT`, `AI_GATEWAY_ID_OPENAI_RESPONSES`,
-  `AI_GATEWAY_ID_ANTHROPIC_MESSAGES`, `AI_GATEWAY_ID_OPENAI_EMBEDDINGS`,
-  and `AI_GATEWAY_ID_AI_RUN`
+  `AI_GATEWAY_ID_ANTHROPIC_MESSAGES`, and `AI_GATEWAY_ID_AI_RUN`
 - `CLOUDFLARE_ACCOUNT_ID = ""`
 - WFP/realtime flags default off or empty: `WFP_DISPATCH_ENABLED`,
   `WFP_INTERNAL_DISPATCH_ENABLED`, `WFP_PREVIEW_HOST_SUFFIX`,
@@ -249,6 +248,7 @@ These must be true for every deployable environment:
 | Service bindings | Optional | Use for Worker-to-Worker calls if split | Same | Platform | Binding type and smoke |
 | `CHANNEL_AFFINITY` Durable Object | Optional | Required before channel-affinity canary | Same | Relay/Platform | Migration entry, affinity smoke, fail-open smoke |
 | `REALTIME_SESSIONS` Durable Object | Optional | Required before realtime/session cutover | Same | Platform/Relay | Migration entry, `bun run smoke:realtime-session` hibernation WebSocket smoke, restored attachment + persisted metrics smoke, unsupported-control no-echo probe, protocol bridge smoke |
+| `WFP_AUTHORITY_REPLAY` Durable Object | Optional until WFP canary | Required before any paid WFP tenant route | Required before WFP cutover | Platform/Security | `v4-wfp-authority-replay` migration, main script/class binding, tenant external-binding readback, sequential/concurrent duplicate rejection, eviction and cleanup smoke |
 | `DISPATCHER` WFP dispatch namespace | Optional | Required before tenant/preview WFP traffic | Required before WFP cutover | Platform | Namespace created, binding uncommented, tenant script plan/deploy smoke, admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` status/route smoke |
 | Rate Limiting binding | Optional | Required once relay rate limits move off Upstash | Required before relay canary | Platform/Security | 429 telemetry via Analytics Engine, limit smoke |
 | Workflows | Optional | Required before multi-step async cutover | Required before multi-step async cutover | Platform/Tasks | Workflow smoke and retry test |
@@ -357,7 +357,7 @@ captured.
 | Flag | Effect when on | Required binding/evidence |
 | --- | --- | --- |
 | `WFP_DISPATCH_ENABLED` | Enables the Rust dispatch Worker pre-router for tenant/preview traffic | `DISPATCHER` dispatch namespace, admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` route smoke for internal paths proving controlled `inbound_dispatch_route=internal-path` |
-| `WFP_RELAY_TRANSPORT_ENABLED` | Allows an already authenticated, D1-selected, and quota-reserved central relay request to use the channel's `channels.other_info.wfp_worker` as its outbound transport | Default `false` in every environment; signed-authority rejection tests, strict Rust/Wasm upload/readback, staging reserve/settle/refund/audit canary, and replay-resistance evidence |
+| `WFP_RELAY_TRANSPORT_ENABLED` | Allows an already authenticated, D1-selected, and quota-reserved central relay request to use the channel's `channels.other_info.wfp_worker` as its outbound transport | Default `false` in every environment; signed-authority rejection tests, replay DO binding/readback and live duplicate race, strict Rust/Wasm upload/readback, and staging reserve/settle/refund/audit canary |
 | `WFP_PREVIEW_HOST_SUFFIX` | Maps `{tenant}.{suffix}` hostnames to dispatch namespace worker names | DNS/route review, tenant-name validation |
 | `WFP_INTERNAL_DISPATCH_ENABLED` | Enables `/api/platform/dispatch/:worker/...` as an admin-only internal dispatch test path | Admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` status smoke with empty `inbound_sensitive_headers`, `inbound_dispatch_route=internal-path`, matching `inbound_dispatch_worker` and `x-cinatoken-wfp-runtime`, plus unauthenticated 401/403 check; keep off in production unless explicitly needed |
 | `WFP_DISPATCH_WORKER_PREFIX` | Prefixes sanitized tenant names before `DISPATCHER.get()` | Naming convention and collision review |
@@ -390,6 +390,8 @@ request-boundary validation:
 | `WFP_TENANT_CF_API_TOKEN` or `CLOUDFLARE_AI_GATEWAY_TOKEN` | local secret/env for artifact uploader | Required tenant runtime `CF_API_TOKEN` binding for real upload | Must be non-empty and distinct from `CLOUDFLARE_API_TOKEN`; least privilege for runtime AI Gateway/Workers AI calls only |
 | `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central authority signing only | Master secret, minimum 32 bytes; retained only by the platform Worker and local artifact uploader context; never bind it into a tenant Worker or expose it in manifests/logs |
 | `WFP_RELAY_AUTHORITY_KEY` | tenant Worker secret | Verification for one named tenant Worker | The artifact uploader derives this per-worker HMAC key from the platform master and worker name, then binds only this key into that tenant; it must not equal or reveal the platform master |
+| `WFP_AUTHORITY_REPLAY_SCRIPT_NAME` | uploader-only var | External tenant DO binding | Exact environment-specific main Worker script that owns `WfpAuthorityReplay`; pass as `--authority-replay-script`; never point staging tenants at production or vice versa |
+| `WFP_AUTHORITY_REPLAY` | Durable Object binding | One-time authority consumption before tenant AI egress | Main Worker owns the class and master verifier; strict tenant metadata binds the external namespace. Missing/error fails paid AI closed |
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
@@ -421,8 +423,11 @@ Smoke order:
 3. Against staging only, run the strict uploader with the deploy token, distinct
    runtime token, and platform master available only to the uploader process.
    Verify it derives and binds `WFP_RELAY_AUTHORITY_KEY` for the named worker,
-   not `WFP_RELAY_AUTHORITY_SECRET`. Archive the redacted PUT result and a GET
-   content/metadata readback that matches the dry-run artifact hashes. Do not use
+   not `WFP_RELAY_AUTHORITY_SECRET`. Pass the staging main Worker script with
+   `--authority-replay-script`; readback must show `WFP_AUTHORITY_REPLAY` as an
+   external `durable_object_namespace` for class `WfpAuthorityReplay` on that
+   exact script. Archive the redacted PUT result and a GET content/metadata
+   readback that matches the dry-run artifact hashes. Do not use
    `/api/platform/wfp/tenant-script/deploy`; it is intentionally disabled.
 4. Enable only the gates needed for an admin-authenticated status probe. Confirm
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` reaches the
@@ -434,15 +439,17 @@ Smoke order:
    through the normal public relay token boundary. Do not call a tenant AI route
    through the admin dispatch endpoint.
 6. Archive authority rejection cases for wrong worker/method/path/body/channel,
-   stale/expired time, and tampering. Separately capture replay-resistance
-   evidence; the 30-second body-bound envelope is not by itself proof that a
-   valid authority cannot be replayed. For the accepted request, prove one D1
+   stale/expired time, tampering, and non-canonical replay-object selection.
+   Submit the same otherwise-valid envelope sequentially and concurrently;
+   require exactly one winner and `409` for every duplicate, including after DO
+   eviction or Worker redeploy. Measure bucket latency, throughput, storage,
+   and alarm cleanup. For the accepted request, prove one provider call, one D1
    channel selection and reserve, then exactly one central settlement or refund
    and the matching audit record. Disable the transport gate after smoke.
 
-No staging upload, readback, signed-authority billing canary, or
-replay-resistance evidence is claimed by this checklist; those are still
-required production evidence.
+No staging upload, binding readback, signed-authority billing canary, or live
+replay race is claimed by this checklist; those are still required production
+evidence. Local compilation proves only the contract shape.
 
 ### Migration prerequisite
 

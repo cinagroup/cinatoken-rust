@@ -198,6 +198,26 @@ impl AuditLogEvent {
             other: audit.other.to_string(),
         }
     }
+
+    pub fn is_terminal_relay_attempt_audit(&self) -> bool {
+        self.log_type == 5
+            && self
+                .other
+                .contains(r#""error_code":"relay_attempts_exhausted""#)
+    }
+
+    pub fn terminal_relay_attempt_audit_id(&self) -> Option<String> {
+        if !self.is_terminal_relay_attempt_audit() {
+            return None;
+        }
+        serde_json::from_str::<Value>(&self.other)
+            .ok()?
+            .get("terminal_audit_event_id")?
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
 }
 
 #[async_trait(?Send)]
@@ -314,5 +334,44 @@ mod tests {
 
         assert_eq!(channel.other_info, "");
         assert!(!channel.ai_gateway_opted_in());
+    }
+
+    #[test]
+    fn terminal_relay_attempt_event_is_identified_without_matching_other_errors() {
+        let mut event = AuditLogEvent {
+            user_id: 1,
+            created_at: 1,
+            log_type: 5,
+            content: "terminal".to_string(),
+            username: "user".to_string(),
+            token_name: "token".to_string(),
+            model_name: "model".to_string(),
+            quota: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            use_time: 0,
+            is_stream: 0,
+            channel_id: 1,
+            token_id: 1,
+            group: "default".to_string(),
+            ip: String::new(),
+            request_id: "request".to_string(),
+            upstream_request_id: String::new(),
+            other:
+                r#"{"error_code":"relay_attempts_exhausted","terminal_audit_event_id":"audit-1"}"#
+                    .to_string(),
+        };
+        assert!(event.is_terminal_relay_attempt_audit());
+        assert_eq!(
+            event.terminal_relay_attempt_audit_id().as_deref(),
+            Some("audit-1")
+        );
+
+        event.log_type = 2;
+        assert!(!event.is_terminal_relay_attempt_audit());
+        event.log_type = 5;
+        event.other = r#"{"error_code":"another_error"}"#.to_string();
+        assert!(!event.is_terminal_relay_attempt_audit());
+        assert!(event.terminal_relay_attempt_audit_id().is_none());
     }
 }

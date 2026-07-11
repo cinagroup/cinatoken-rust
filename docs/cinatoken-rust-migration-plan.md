@@ -6900,9 +6900,9 @@ Implemented:
 
 Required before cutover:
 
-- Add durable attempt-ledger evidence for all-fetch-failed terminal requests;
-  the final successful/error-response relay row is authoritative today, but a
-  request with no upstream `Response` still exits before normal audit writing.
+- Prove the bounded type-5 terminal attempt ledger through deployed Queue/D1,
+  including synchronous fallback, refund-before-audit ordering, DLQ handling,
+  user redaction, and admin visibility.
 - Resolve the existing auto-group selected-group billing invariant, then remove
   the single-group restriction only with D1 integration proof.
 - Run isolated staging scenarios for primary server failure, fallback success,
@@ -6913,6 +6913,58 @@ Required before cutover:
   Cloudflare-managed fallback with the Rust outer model-attempt loop until
   `cf-aig-model`/`cf-aig-provider` evidence can drive the same central billing
   and audit identity without double charging.
+
+### 22.147 2026-07-11 Durable Terminal Relay Attempt Audit
+
+This increment closes the local implementation gap for relay requests that
+never retain an upstream `Response`. It reuses the existing Go-compatible logs
+table and `LOG_QUEUE` pipeline instead of creating a second attempt database.
+
+Implemented:
+
+- Every exhausted logical request now refunds its active tiered reserve before
+  creating one `logs.type=5` error event. Successful/settled relay rows remain
+  type 2, and no quota or token usage is attached to the terminal error row.
+- The admin-only `other.admin_info.relay_attempts` ledger records phase,
+  logical model, selected group, channel id, sanitized outcome/status, and AI
+  Gateway opt-in. Channel names, raw Worker/fetch errors, URLs, credentials,
+  request bodies, and response bodies are deliberately excluded.
+- Ledger entries are capped at 32. `attempt_count` preserves the actual number
+  observed and `attempts_truncated` reports whether the serialized list was
+  shortened, preventing retry configuration from creating oversized Queue/D1
+  events.
+- Primary and fallback URL/AI Gateway planning failures now flow through the
+  same retry/refund/audit path. They are classified as `configuration_error`,
+  do not trigger cross-model fallback, and cannot strand pre-consumed quota via
+  an early `?` return.
+- `AuditLogEvent` is now the shared synchronous D1 fallback input, so Queue and
+  local/no-Queue writes preserve the same log type and fields.
+- Queue redelivery is idempotent when the Worker random source succeeds: each
+  terminal event carries a 128-bit `terminal_audit_event_id`, and both the
+  consumer and synchronous fallback use one conditional insert keyed by log
+  type plus the exact event payload. Random-source failure deliberately falls
+  back to a normal insert so audit availability wins over deduplication.
+- Added an explicit terminal-audit capability, frontend readiness dependency,
+  Cloudflare panel row, cutover guard, and smoke-contract assertion.
+
+Local evidence:
+
+- Pure Worker tests prove type 5, zero quota/tokens, request/channel identity,
+  secret redaction, refund metadata, and the 32-entry cap with true total count.
+- AI Gateway smoke self-test and frontend readiness tests require the new
+  capability and `terminal_attempt_audit` guard.
+
+Still required before production cutover:
+
+- Run controlled primary/fallback fetch exhaustion against deployed staging and
+  prove one refund precedes one type-5 row in both Queue and synchronous D1
+  fallback modes.
+- Prove Queue retry/DLQ behavior, conditional-insert deduplication, admin query
+  visibility, user-log redaction, and no duplicate row under delivery retry.
+- Inject D1 refund and audit-write failures and archive the resulting quota,
+  response, logs, and operator-alert evidence.
+- Resolve actual-serving-group billing for `auto`; the cross-model gate and
+  staging verification marker remain false.
 
 ### 22.145 2026-07-11 TaskRunner Recurring Alarm And Architecture Re-Audit
 

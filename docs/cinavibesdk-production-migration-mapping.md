@@ -313,7 +313,8 @@ cinaVibeSDK pattern:
   outer model-attempt layer now implements that switch for OpenAI-compatible
   chat/responses: it revalidates token model limits, channel availability,
   pricing/reservation, and audit identity for the fallback model. Production
-  replay and terminal attempt-ledger coverage remain open.
+  replay and deployed Queue/D1 proof for the locally compiled terminal
+  attempt-ledger remain open.
 - Do not reuse the Gateway-prefixed body for direct egress, and do not treat
   Gateway `401`, `403`, or `429` as permission to bypass Gateway policy by going
   direct. The Rust direct-fallback classifier and provider-native body rewrite

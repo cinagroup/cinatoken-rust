@@ -1,6 +1,6 @@
 use cinatoken_core::format_matching_model_name;
 use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_contains};
-use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
+use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -484,15 +484,52 @@ pub async fn increment_user_request_count(db: &D1Database, user_id: i64) -> work
     Ok(())
 }
 
-pub async fn insert_relay_audit_log(
-    db: &D1Database,
-    created_at: i64,
-    content: &str,
-    audit_log: &RelayAuditLog<'_>,
-) -> worker::Result<()> {
-    insert_relay_audit_log_statement(db, created_at, content, audit_log)?
-        .run()
-        .await?;
+pub async fn insert_audit_log_event(db: &D1Database, event: &AuditLogEvent) -> worker::Result<()> {
+    let args = [
+        D1Type::Integer(d1_i32(event.user_id)),
+        D1Type::Integer(d1_i32(event.created_at)),
+        D1Type::Integer(event.log_type),
+        D1Type::Text(&event.content),
+        D1Type::Text(&event.username),
+        D1Type::Text(&event.token_name),
+        D1Type::Text(&event.model_name),
+        D1Type::Integer(d1_i32(event.quota)),
+        D1Type::Integer(event.prompt_tokens),
+        D1Type::Integer(event.completion_tokens),
+        D1Type::Integer(d1_i32(event.use_time)),
+        D1Type::Integer(event.is_stream),
+        D1Type::Integer(d1_i32(event.channel_id)),
+        D1Type::Integer(d1_i32(event.token_id)),
+        D1Type::Text(&event.group),
+        D1Type::Text(&event.ip),
+        D1Type::Text(&event.request_id),
+        D1Type::Text(&event.upstream_request_id),
+        D1Type::Text(&event.other),
+    ];
+    let sql = if event.terminal_relay_attempt_audit_id().is_some() {
+        r#"
+        INSERT INTO logs (
+          user_id, created_at, type, content, username, token_name, model_name,
+          quota, prompt_tokens, completion_tokens, use_time, is_stream,
+          channel_id, token_id, "group", ip, request_id, upstream_request_id, other
+        )
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+        WHERE NOT EXISTS (
+          SELECT 1 FROM logs WHERE type = ?3 AND other = ?19
+        )
+        "#
+    } else {
+        r#"
+        INSERT INTO logs (
+          user_id, created_at, type, content, username, token_name, model_name,
+          quota, prompt_tokens, completion_tokens, use_time, is_stream,
+          channel_id, token_id, "group", ip, request_id, upstream_request_id, other
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+        )
+        "#
+    };
+    db.prepare(sql).bind_refs(&args)?.run().await?;
     Ok(())
 }
 

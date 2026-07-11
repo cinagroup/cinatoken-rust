@@ -167,8 +167,9 @@ Production decisions from the refreshed cinaVibeSDK and Cloudflare audit:
   provider-native direct model names, fails closed on auth/rate-limit responses,
   re-runs token/channel policy, and hands settlement to the served model. Treat
   it as non-production until deployed replay is archived, all-fetch-failed
-  attempts are durably audited, and `auto` billing follows the actual serving
-  group; keep Cloudflare Dynamic Routing as a separately canaried option.
+  type-5 audit delivery/refund ordering is proven through staging Queue and D1,
+  and `auto` billing follows the actual serving group; keep Cloudflare Dynamic
+  Routing as a separately canaried option.
 - WFP tenant AI routes are not an alternate paid entry point. They currently lack
   the central relay's token policy, channel selection, quota settlement, and
   audit ownership. Keep WFP paid dispatch disabled until it is a post-admission

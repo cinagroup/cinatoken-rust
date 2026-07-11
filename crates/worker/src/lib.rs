@@ -1386,6 +1386,19 @@ pub async fn queue(
         )
         "#,
     );
+    let terminal_attempt_stmt = db.prepare(
+        r#"
+        INSERT INTO logs (
+          user_id, created_at, type, content, username, token_name, model_name,
+          quota, prompt_tokens, completion_tokens, use_time, is_stream,
+          channel_id, token_id, "group", ip, request_id, upstream_request_id, other
+        )
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+        WHERE NOT EXISTS (
+          SELECT 1 FROM logs WHERE type = ?3 AND other = ?19
+        )
+        "#,
+    );
 
     let mut stmts = Vec::with_capacity(messages.len());
     for msg in &messages {
@@ -1411,7 +1424,12 @@ pub async fn queue(
             D1Type::Text(&event.upstream_request_id),
             D1Type::Text(&event.other),
         ];
-        match stmt.bind_refs(&args) {
+        let event_stmt = if event.terminal_relay_attempt_audit_id().is_some() {
+            &terminal_attempt_stmt
+        } else {
+            &stmt
+        };
+        match event_stmt.bind_refs(&args) {
             Ok(bound) => stmts.push(bound),
             Err(err) => {
                 worker::console_error!("LOG_QUEUE: failed to bind event: {err}");

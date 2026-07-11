@@ -2763,9 +2763,46 @@ bun run check
   tests, `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
   passed, and the complete `bun run check` workspace/frontend/smoke/wasm gate
   passed at the end of the increment.
-- Still pending: deployed replay, all-fetch-failed terminal attempt audit,
+- Still pending: deployed replay, terminal audit Queue/D1 delivery evidence,
   fault-injected D1 reservation proof, and actual-serving-group billing for
   `auto` tokens. The gate and staging verification marker remain false.
+
+### Relay terminal attempt audit (2026-07-11)
+
+- Requests that exhaust every channel without retaining an upstream response
+  now refund any active tiered reserve before emitting one Go-compatible
+  `logs.type=5` error event through the existing `LOG_QUEUE` producer and
+  synchronous D1 fallback.
+- The admin-only ledger records primary/fallback phase, logical model, selected
+  group, channel id, sanitized failure class, status when available, and AI
+  Gateway opt-in. It never serializes channel names, raw fetch/configuration
+  errors, URLs, keys, request bodies, or response bodies.
+- Ledger storage is capped at 32 entries while preserving the true attempt
+  count and an `attempts_truncated` marker. A normal first-attempt success adds
+  no attempt array; successful consume rows remain type 2.
+- Terminal events carry a Worker-generated 128-bit audit id when randomness is
+  available. The Queue consumer and synchronous D1 fallback then use the same
+  conditional insert keyed by log type plus exact event payload. Random-source
+  failure uses a normal insert so an audit is not dropped merely because it
+  cannot be deduplicated.
+- Primary and fallback URL/AI Gateway planning failures now enter the same
+  refund/audit path instead of returning after pre-consume. Configuration
+  failures do not trigger cross-model fallback.
+- `/api/platform/capabilities`, the Cloudflare admin panel, frontend readiness,
+  and the AI Gateway smoke contract require
+  `relay_ai_gateway_cross_model_terminal_audit_compiled=true` and expose the
+  `terminal_attempt_audit` cutover guard.
+- `smoke_relay_ai_gateway_canary.mjs --expect-terminal-audit` injects a unique
+  request id, polls the admin type-5 log query through Queue delay, and rejects
+  missing/duplicate rows, unsettled refund metadata, oversized ledgers, missing
+  random audit ids, or sensitive markers.
+- Local pure-contract tests cover type 5, terminal-event recognition, zero
+  quota/tokens, redaction, refund metadata, and bounded ledger behavior. Remote
+  Queue/D1 delivery, conditional-insert replay, DLQ behavior, user/admin log
+  rendering, and injected refund failure remain unverified.
+- Final local verification passed: storage 5/5, Worker 522/522, frontend
+  readiness 3/3, the Worker WASM target check, smoke self-test/dry-run plans,
+  and the complete `bun run check` workspace/frontend/smoke/WASM gate.
 
 ## Still Pending
 

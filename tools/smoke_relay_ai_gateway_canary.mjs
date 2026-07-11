@@ -28,6 +28,9 @@ try {
 
 async function smoke(options) {
   const plan = buildPlan(options);
+  const terminalAuditRequestId = options.expectTerminalAudit
+    ? `relay-ai-gateway-smoke-${Date.now()}-${crypto.randomUUID()}`
+    : null;
   let capabilities = null;
   if (!options.skipCapabilities) {
     const response = await fetchWithTimeout(
@@ -54,7 +57,7 @@ async function smoke(options) {
       plan.relayUrl,
       {
         method: "POST",
-        headers: relayHeaders(options),
+        headers: relayHeaders(options, terminalAuditRequestId),
         body: options.bodyText,
         redirect: "error",
       },
@@ -65,6 +68,9 @@ async function smoke(options) {
       throw new Error(
         `relay AI Gateway canary failed: ${response.status} ${response.statusText}: ${preview}`,
       );
+    }
+    if (options.expectTerminalAudit && response.ok) {
+      throw new Error("terminal audit smoke expected the relay request to fail without a response");
     }
     relay = {
       endpoint: options.endpoint,
@@ -86,6 +92,10 @@ async function smoke(options) {
     }
   }
 
+  const terminalAudit = options.expectTerminalAudit
+    ? await pollTerminalAudit(options, terminalAuditRequestId)
+    : null;
+
   return {
     ok: true,
     dryRun: false,
@@ -96,6 +106,7 @@ async function smoke(options) {
     bodyBytes: plan.bodyBytes,
     capabilities,
     relay,
+    terminalAudit,
     evidenceReminder: evidenceReminder(),
   };
 }
@@ -114,7 +125,9 @@ function buildPlan(options) {
       ? "GET capabilities only"
       : options.skipCapabilities
         ? "POST relay only"
-        : "GET capabilities, then POST relay",
+        : options.expectTerminalAudit
+          ? "GET capabilities, POST relay, then poll admin type-5 logs"
+          : "GET capabilities, then POST relay",
     model: options.model,
     bodyBytes: new TextEncoder().encode(options.bodyText).byteLength,
     adminCookieConfigured: Boolean(options.adminCookie),
@@ -129,6 +142,7 @@ function buildPlan(options) {
     expectFallbackStagingVerified: options.expectFallbackStagingVerified,
     expectFallbackCutoverReady: options.expectFallbackCutoverReady,
     expectServedModel: options.expectServedModel || null,
+    expectTerminalAudit: options.expectTerminalAudit,
     allowNon2xx: options.allowNon2xx,
     timeoutMs: options.timeoutMs,
     notes: [
@@ -137,6 +151,9 @@ function buildPlan(options) {
       "before live mode, enable the target channel in the editor so it writes channels.other_info.ai_gateway.enabled.",
       "capabilities smoke is admin-authenticated and validates the compiled AI Gateway forwarder, opt-in support, and fallback signals.",
       "relay smoke uses a low-token non-stream request; collect Cloudflare AI Gateway logs plus relay audit/billing evidence after the run.",
+      ...(options.expectTerminalAudit
+        ? ["terminal-audit mode injects a unique request id and requires exactly one redacted, settled type-5 admin log row."]
+        : []),
     ],
   };
 }
@@ -159,6 +176,7 @@ function parseArgs(argv) {
     "expect-fallback-ready",
     "expect-fallback-staging-verified",
     "expect-fallback-cutover-ready",
+    "expect-terminal-audit",
     "self-test",
   ]);
   for (let i = 0; i < argv.length; i += 1) {
@@ -223,6 +241,16 @@ async function normalizeOptions(args) {
   if (args.flags.has("expect-fallback-enabled") && args.flags.has("expect-fallback-disabled")) {
     throw new Error("use only one of --expect-fallback-enabled or --expect-fallback-disabled");
   }
+  const expectTerminalAudit = args.flags.has("expect-terminal-audit");
+  if (expectTerminalAudit && skipRelay) {
+    throw new Error("--expect-terminal-audit cannot be used with --skip-relay");
+  }
+  if (expectTerminalAudit && !adminCookie && !dryRun) {
+    throw new Error("--expect-terminal-audit requires an admin --cookie");
+  }
+  if (expectTerminalAudit && !args.flags.has("allow-non-2xx")) {
+    throw new Error("--expect-terminal-audit requires --allow-non-2xx");
+  }
 
   return {
     url: value("url", "RELAY_AI_GATEWAY_SMOKE_URL") || process.env.STAGING_BASE_URL,
@@ -248,6 +276,7 @@ async function normalizeOptions(args) {
       "expect-served-model",
       "RELAY_AI_GATEWAY_SMOKE_EXPECT_SERVED_MODEL",
     ),
+    expectTerminalAudit,
     dryRun,
     json: args.flags.has("json"),
   };
@@ -321,6 +350,7 @@ function usage(exitCode, error) {
       "  --expect-fallback-staging-verified Require archived staging replay flag",
       "  --expect-fallback-cutover-ready Require all fallback production gates",
       "  --expect-served-model <model> Require non-stream response.model to match",
+      "  --expect-terminal-audit Require one bounded type-5 terminal audit row",
       "  --allow-non-2xx         Record relay responses even when they are not 2xx",
       "  --confirm-live          Required for non-dry-run mode",
       "  --dry-run               Resolve URLs and payload size without network",
@@ -331,6 +361,7 @@ function usage(exitCode, error) {
       "  bun tools/smoke_relay_ai_gateway_canary.mjs --dry-run --json --url http://127.0.0.1:8787",
       "  bun tools/smoke_relay_ai_gateway_canary.mjs --url https://staging.example.com --cookie \"$RELAY_AI_GATEWAY_SMOKE_COOKIE\" --api-key \"$RELAY_AI_GATEWAY_SMOKE_API_KEY\" --model openai/gpt-4.1 --expect-router-ready --confirm-live --json",
       "  bun tools/smoke_relay_ai_gateway_canary.mjs --url https://staging.example.com --endpoint messages --model anthropic/claude-sonnet-4-5 --cookie \"$RELAY_AI_GATEWAY_SMOKE_COOKIE\" --api-key \"$RELAY_AI_GATEWAY_SMOKE_API_KEY\" --expect-router-ready --confirm-live --json",
+      "  bun tools/smoke_relay_ai_gateway_canary.mjs --url https://staging.example.com --cookie \"$RELAY_AI_GATEWAY_SMOKE_COOKIE\" --api-key \"$RELAY_AI_GATEWAY_SMOKE_API_KEY\" --allow-non-2xx --expect-terminal-audit --confirm-live --json",
     ].join("\n"),
   );
   process.exit(exitCode);
@@ -352,6 +383,10 @@ async function fetchWithTimeout(url, init, timeoutMs) {
 }
 
 async function readEnvelope(response, label) {
+  return summarizeCapabilities(await readDataEnvelope(response, label));
+}
+
+async function readDataEnvelope(response, label) {
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`${label} failed: ${response.status} ${response.statusText}: ${text.slice(0, 1024)}`);
@@ -365,7 +400,105 @@ async function readEnvelope(response, label) {
   if (!body || typeof body !== "object" || body.success !== true || !body.data) {
     throw new Error(`${label} did not return a successful {success,data} envelope`);
   }
-  return summarizeCapabilities(body.data);
+  return body.data;
+}
+
+async function pollTerminalAudit(options, requestId) {
+  const url = new URL(
+    buildHttpUrl(normalizeBaseUrl(required(options.url, "url")), "/api/log/"),
+  );
+  url.searchParams.set("type", "5");
+  url.searchParams.set("request_id", requestId);
+  url.searchParams.set("page_size", "10");
+
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    const response = await fetchWithTimeout(
+      url.toString(),
+      {
+        method: "GET",
+        headers: adminHeaders(options),
+        redirect: "error",
+      },
+      options.timeoutMs,
+    );
+    const data = await readDataEnvelope(response, "terminal relay audit");
+    const rows = Array.isArray(data?.items) ? data.items : [];
+    if (rows.length > 0) {
+      return validateTerminalAuditRows(rows, requestId, attempt);
+    }
+    await sleep(1000);
+  }
+  throw new Error(`terminal relay audit did not appear for request ${requestId}`);
+}
+
+function validateTerminalAuditRows(rows, requestId, pollAttempt = 1) {
+  if (rows.length !== 1) {
+    throw new Error(`expected exactly one terminal audit row, received ${rows.length}`);
+  }
+  const row = rows[0];
+  if (row.type !== 5 || row.request_id !== requestId) {
+    throw new Error("terminal audit row type/request_id did not match the smoke request");
+  }
+  if (row.quota !== 0 || row.prompt_tokens !== 0 || row.completion_tokens !== 0) {
+    throw new Error("terminal audit row must have zero quota and token usage");
+  }
+  const other = parseJsonObject(row.other || "{}", "terminal audit other");
+  const adminInfo = other.admin_info;
+  const attempts = adminInfo?.relay_attempts;
+  if (other.error_code !== "relay_attempts_exhausted" || other.terminal_failure !== true) {
+    throw new Error("terminal audit row is missing the exhausted-attempt error contract");
+  }
+  if (!/^[0-9a-f]{32}$/.test(other.terminal_audit_event_id || "")) {
+    throw new Error("terminal audit row is missing its Worker-generated event id");
+  }
+  if (!Array.isArray(attempts) || attempts.length > 32) {
+    throw new Error("terminal audit relay_attempts must be an array capped at 32 entries");
+  }
+  if (!Number.isInteger(adminInfo.attempt_count) || adminInfo.attempt_count < attempts.length) {
+    throw new Error("terminal audit attempt_count must cover every serialized attempt");
+  }
+  if (typeof adminInfo.attempts_truncated !== "boolean") {
+    throw new Error("terminal audit attempts_truncated must be boolean");
+  }
+  if (
+    ![
+      "not_reserved",
+      "refunded",
+      "primary_refunded_for_fallback",
+      "fallback_refunded",
+    ].includes(adminInfo.reserve_refund)
+  ) {
+    throw new Error(`terminal audit reserve_refund=${adminInfo.reserve_refund} is not settled`);
+  }
+  const serialized = JSON.stringify(other).toLowerCase();
+  for (const forbidden of [
+    "authorization",
+    "api_key",
+    "channel_name",
+    "secret",
+    "bearer ",
+    "https://",
+    "http://",
+  ]) {
+    if (serialized.includes(forbidden)) {
+      throw new Error(`terminal audit contains forbidden marker ${forbidden}`);
+    }
+  }
+  return {
+    requestId,
+    pollAttempt,
+    rowId: row.id,
+    type: row.type,
+    attemptCount: adminInfo.attempt_count,
+    serializedAttemptCount: attempts.length,
+    attemptsTruncated: adminInfo.attempts_truncated,
+    reserveRefund: adminInfo.reserve_refund,
+    dedupeEventIdPresent: true,
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function summarizeCapabilities(data) {
@@ -386,6 +519,8 @@ function summarizeCapabilities(data) {
       data.relay_ai_gateway_same_channel_fallback_compiled === true,
     relay_ai_gateway_cross_model_fallback_compiled:
       data.relay_ai_gateway_cross_model_fallback_compiled === true,
+    relay_ai_gateway_cross_model_terminal_audit_compiled:
+      data.relay_ai_gateway_cross_model_terminal_audit_compiled === true,
     relay_ai_gateway_cross_model_fallback_enabled:
       data.relay_ai_gateway_cross_model_fallback_enabled === true,
     relay_ai_gateway_cross_model_fallback_configured:
@@ -415,6 +550,7 @@ function validateCapabilities(capabilities, options) {
     ["relay_ai_gateway_rest_forwarder_compiled", true],
     ["relay_ai_gateway_same_channel_fallback_compiled", true],
     ["relay_ai_gateway_cross_model_fallback_compiled", true],
+    ["relay_ai_gateway_cross_model_terminal_audit_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
       throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);
@@ -436,6 +572,7 @@ function validateCapabilities(capabilities, options) {
     "server_failure_only",
     "provider_native_direct_body",
     "model_route_audit",
+    "terminal_attempt_audit",
     "staging_replay",
   ]) {
     if (!capabilities.relay_ai_gateway_cross_model_fallback_cutover_guards.includes(guard)) {
@@ -497,13 +634,15 @@ function adminHeaders(options) {
   return headers;
 }
 
-function relayHeaders(options) {
-  return {
+function relayHeaders(options, requestId = null) {
+  const headers = {
     accept: "application/json",
     "content-type": "application/json",
     authorization: `Bearer ${required(options.apiKey, "api-key")}`,
     "x-cinatoken-smoke": "relay-ai-gateway-canary",
   };
+  if (requestId) headers["x-request-id"] = requestId;
+  return headers;
 }
 
 function normalizeBaseUrl(value) {
@@ -613,6 +752,7 @@ function runSelfTest() {
     relay_ai_gateway_rest_forwarder_compiled: true,
     relay_ai_gateway_same_channel_fallback_compiled: true,
     relay_ai_gateway_cross_model_fallback_compiled: true,
+    relay_ai_gateway_cross_model_terminal_audit_compiled: true,
     relay_ai_gateway_cross_model_fallback_enabled: false,
     relay_ai_gateway_cross_model_fallback_configured: false,
     relay_ai_gateway_cross_model_fallback_config_valid: true,
@@ -631,6 +771,7 @@ function runSelfTest() {
       "server_failure_only",
       "provider_native_direct_body",
       "model_route_audit",
+      "terminal_attempt_audit",
       "staging_replay",
     ],
   };
@@ -669,18 +810,83 @@ function runSelfTest() {
       { ...options, expectFallbackDisabled: false, expectFallbackReady: true },
     ),
   );
+  const missingTerminalAuditRejected = expectFailure(() =>
+    validateCapabilities(
+      summarizeCapabilities({
+        ...raw,
+        relay_ai_gateway_cross_model_terminal_audit_compiled: false,
+      }),
+      options,
+    ),
+  );
   const servedModelParserOk =
     responseModel('{"model":"fallback/model"}') === "fallback/model";
+  const terminalAuditFixture = {
+    id: 1,
+    type: 5,
+    request_id: "req-terminal-self-test",
+    quota: 0,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    other: JSON.stringify({
+      error_code: "relay_attempts_exhausted",
+      terminal_failure: true,
+      terminal_audit_event_id: "00112233445566778899aabbccddeeff",
+      admin_info: {
+        attempt_count: 1,
+        relay_attempts: [
+          {
+            sequence: 1,
+            phase: "primary",
+            model: "openai/gpt-4.1",
+            group: "default",
+            channel_id: 7,
+            outcome: "fetch_error",
+            status: null,
+            ai_gateway_opted_in: true,
+          },
+        ],
+        attempts_truncated: false,
+        reserve_refund: "refunded",
+      },
+    }),
+  };
+  const terminalAuditValidatorOk =
+    validateTerminalAuditRows([terminalAuditFixture], "req-terminal-self-test").attemptCount === 1;
+  const duplicateTerminalAuditRejected = expectFailure(() =>
+    validateTerminalAuditRows(
+      [terminalAuditFixture, terminalAuditFixture],
+      "req-terminal-self-test",
+    ),
+  );
   return {
-    ok: routeDriftRejected && unsafeCutoverRejected && servedModelParserOk,
+    ok:
+      routeDriftRejected &&
+      unsafeCutoverRejected &&
+      missingTerminalAuditRejected &&
+      servedModelParserOk &&
+      terminalAuditValidatorOk &&
+      duplicateTerminalAuditRejected,
     selfTest: true,
     cases: [
       { name: "canonical-capability-contract", ok: true },
       { name: "route-drift-rejected", ok: routeDriftRejected },
       { name: "unsafe-cutover-rejected", ok: unsafeCutoverRejected },
       {
+        name: "missing-terminal-audit-rejected",
+        ok: missingTerminalAuditRejected,
+      },
+      {
         name: "served-model-parser",
         ok: servedModelParserOk,
+      },
+      {
+        name: "terminal-audit-validator",
+        ok: terminalAuditValidatorOk,
+      },
+      {
+        name: "duplicate-terminal-audit-rejected",
+        ok: duplicateTerminalAuditRejected,
       },
     ],
   };

@@ -29,7 +29,7 @@ use cinatoken_relay::{
     ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, GEMINI_CHANNEL_TYPES,
     OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
 };
-use cinatoken_storage::{AuthenticatedToken, RelayAuditLog, RelayChannel};
+use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -42,6 +42,9 @@ use crate::{affinity, json_with_status, set_cors_headers};
 
 const TOKEN_STATUS_EXPIRED: i32 = 3;
 const TOKEN_STATUS_EXHAUSTED: i32 = 4;
+const LOG_TYPE_CONSUME: i32 = 2;
+const LOG_TYPE_ERROR: i32 = 5;
+const RELAY_ATTEMPT_AUDIT_MAX_ENTRIES: usize = 32;
 const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u32 = 60;
 const TOKEN_RATE_LIMIT_ENV: &str = "RELAY_TOKEN_RATE_LIMIT_PER_WINDOW";
 const IP_RATE_LIMIT_ENV: &str = "RELAY_IP_RATE_LIMIT_PER_WINDOW";
@@ -1242,8 +1245,17 @@ async fn relay_endpoint_with_auth(
             );
         }
     }
+    let mut terminal_reserve_refund = if tiered_billing_preflight
+        .as_ref()
+        .is_some_and(|preflight| preflight.reserve_applied)
+    {
+        "pending"
+    } else {
+        "not_reserved"
+    };
 
     let mut last_failure: Option<RelayAttemptFailure> = None;
+    let mut attempt_audits = RelayAttemptAuditLedger::default();
     // (channel, selected group, upstream response). The group is the channel's
     // actual serving group (for cross-group it can differ from `billing_group`).
     let mut selected_attempt: Option<(RelayChannel, String, Response)> = None;
@@ -1265,20 +1277,43 @@ async fn relay_endpoint_with_auth(
         let upstream_key = match first_channel_key(&channel.key) {
             Some(key) => key,
             None => {
-                last_failure = Some(RelayAttemptFailure::no_key(
+                let failure = RelayAttemptFailure::no_key(
                     channel.id,
                     channel.name.clone(),
                     channel.ai_gateway_opted_in(),
+                );
+                attempt_audits.push(RelayAttemptAudit::from_failure(
+                    "primary",
+                    &model,
+                    &selected_group,
+                    &failure,
                 ));
+                last_failure = Some(failure);
                 continue;
             }
         };
 
         let upstream_url = match endpoint.try_upstream_url(&channel) {
             Ok(url) => url,
-            Err(err) => return worker_error_response(err),
+            Err(err) => {
+                let failure = RelayAttemptFailure::configuration_error(
+                    channel.id,
+                    channel.name.clone(),
+                    err.to_string(),
+                    channel.ai_gateway_opted_in(),
+                );
+                attempt_audits.push(RelayAttemptAudit::from_failure(
+                    "primary",
+                    &model,
+                    &selected_group,
+                    &failure,
+                ));
+                last_failure = Some(failure);
+                continue;
+            }
         };
 
+        let mut forward_error_kind = RelayAttemptFailureKind::FetchError;
         let forward_result = match &request_body {
             RelayRequestBody::Json(_) => {
                 let Some(mut upstream_body) = json_body.clone() else {
@@ -1357,8 +1392,8 @@ async fn relay_endpoint_with_auth(
                                 &endpoint,
                                 &channel,
                                 upstream_model,
-                            )? {
-                                Some(attempt) => {
+                            ) {
+                                Ok(Some(attempt)) => {
                                     match forward_ai_gateway_rest(&attempt, runtime, &upstream_body)
                                         .await
                                     {
@@ -1431,7 +1466,7 @@ async fn relay_endpoint_with_auth(
                                         }
                                     }
                                 }
-                                None => {
+                                Ok(None) => {
                                     forward_relay_request(
                                         endpoint.provider,
                                         &upstream_url,
@@ -1441,6 +1476,11 @@ async fn relay_endpoint_with_auth(
                                         &provider_headers,
                                     )
                                     .await
+                                }
+                                Err(err) => {
+                                    forward_error_kind =
+                                        RelayAttemptFailureKind::ConfigurationError;
+                                    Err(err)
                                 }
                             }
                         }
@@ -1481,12 +1521,19 @@ async fn relay_endpoint_with_auth(
                 let status = response.status_code();
                 if is_retryable_status(status) {
                     record_retryable_channel_failure(&env, &channel, status).await;
-                    last_failure = Some(RelayAttemptFailure::retryable_status(
+                    let failure = RelayAttemptFailure::retryable_status(
                         channel.id,
                         channel.name.clone(),
                         status,
                         channel.ai_gateway_opted_in(),
+                    );
+                    attempt_audits.push(RelayAttemptAudit::from_failure(
+                        "primary",
+                        &model,
+                        &selected_group,
+                        &failure,
                     ));
+                    last_failure = Some(failure);
                     if attempt_index + 1 < attempt_count {
                         // About to retry and discard this response — inspect its
                         // error body for a disable keyword (Go ShouldDisableChannel
@@ -1508,12 +1555,20 @@ async fn relay_endpoint_with_auth(
             }
             Err(err) => {
                 record_retryable_channel_failure(&env, &channel, 0).await;
-                last_failure = Some(RelayAttemptFailure::fetch_error(
+                let failure = RelayAttemptFailure::with_detail(
+                    forward_error_kind,
                     channel.id,
                     channel.name.clone(),
                     err.to_string(),
                     channel.ai_gateway_opted_in(),
+                );
+                attempt_audits.push(RelayAttemptAudit::from_failure(
+                    "primary",
+                    &model,
+                    &selected_group,
+                    &failure,
                 ));
+                last_failure = Some(failure);
                 continue;
             }
         }
@@ -1531,7 +1586,8 @@ async fn relay_endpoint_with_auth(
                     .as_ref()
                     .and_then(|failure| match failure.kind {
                         RelayAttemptFailureKind::FetchError => Some("fetch_exhausted".to_string()),
-                        RelayAttemptFailureKind::NoUsableKey
+                        RelayAttemptFailureKind::ConfigurationError
+                        | RelayAttemptFailureKind::NoUsableKey
                         | RelayAttemptFailureKind::RetryableStatus => None,
                     })
             })?
@@ -1568,7 +1624,10 @@ async fn relay_endpoint_with_auth(
             model_route_audit.fallback_skip_reason =
                 Some("auto_group_billing_not_supported".to_string());
         } else {
-            if let Some(preflight) = tiered_billing_preflight.as_ref() {
+            if let Some(preflight) = tiered_billing_preflight
+                .as_ref()
+                .filter(|preflight| preflight.reserve_applied)
+            {
                 if let Err(err) =
                     refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
                 {
@@ -1579,6 +1638,7 @@ async fn relay_endpoint_with_auth(
                         500,
                     );
                 }
+                terminal_reserve_refund = "primary_refunded_for_fallback";
             }
             tiered_billing_preflight = None;
 
@@ -1660,12 +1720,13 @@ async fn relay_endpoint_with_auth(
                             quota_mutation_error_status(&err),
                         );
                     }
+                    terminal_reserve_refund = "pending_fallback";
                 }
 
                 let primary_selected_attempt = selected_attempt.take();
                 let primary_failure = last_failure.take();
                 model_route_audit.fallback_attempted = true;
-                let fallback_execution = execute_relay_attempt_plan(
+                let mut fallback_execution = execute_relay_attempt_plan(
                     fallback_attempt_plan,
                     &env,
                     &mut endpoint,
@@ -1680,29 +1741,7 @@ async fn relay_endpoint_with_auth(
                     &provider_headers,
                 )
                 .await;
-                let fallback_execution = match fallback_execution {
-                    Ok(execution) => execution,
-                    Err(err) => {
-                        if let Some(preflight) = fallback_preflight.as_ref() {
-                            if let Err(refund_err) = refund_tiered_billing_preflight(
-                                &db,
-                                &auth,
-                                preflight,
-                                unix_timestamp(),
-                            )
-                            .await
-                            {
-                                return openai_error_response(
-                                    format!(
-                                        "fallback execution failed ({err}); reserve refund failed: {refund_err}"
-                                    ),
-                                    500,
-                                );
-                            }
-                        }
-                        return worker_error_response(err);
-                    }
-                };
+                attempt_audits.append(&mut fallback_execution.attempts);
                 if let Some(fallback_selected) = fallback_execution.selected_attempt {
                     selected_attempt = Some(fallback_selected);
                     last_failure = fallback_execution.last_failure;
@@ -1712,7 +1751,10 @@ async fn relay_endpoint_with_auth(
                     model_route_audit.served_model = fallback_model.to_string();
                     affinity_key = fallback_affinity_key;
                 } else {
-                    if let Some(preflight) = fallback_preflight.as_ref() {
+                    if let Some(preflight) = fallback_preflight
+                        .as_ref()
+                        .filter(|preflight| preflight.reserve_applied)
+                    {
                         if let Err(err) =
                             refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp())
                                 .await
@@ -1724,6 +1766,7 @@ async fn relay_endpoint_with_auth(
                                 500,
                             );
                         }
+                        terminal_reserve_refund = "fallback_refunded";
                     }
                     selected_attempt = primary_selected_attempt;
                     last_failure = fallback_execution.last_failure.or(primary_failure);
@@ -1736,19 +1779,60 @@ async fn relay_endpoint_with_auth(
         // Every attempt failed with a fetch error or unconfigurable channel.
         // Refund the tiered reserve (if any) and return a structured error
         // describing the last failure.
-        if let Some(preflight) = tiered_billing_preflight.as_ref() {
-            if let Err(refund_err) =
-                refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
-            {
-                return openai_error_response(
-                    format!(
-                        "tiered billing reserve refund failed after all retry attempts: {refund_err}"
-                    ),
-                    500,
-                );
+        let mut refund_error = None;
+        if let Some(preflight) = tiered_billing_preflight
+            .as_ref()
+            .filter(|preflight| preflight.reserve_applied)
+        {
+            match refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await {
+                Ok(()) => terminal_reserve_refund = "refunded",
+                Err(err) => {
+                    terminal_reserve_refund = "refund_failed";
+                    refund_error = Some(err);
+                }
             }
         }
+        let now = unix_timestamp();
+        let terminal_audit_event_id = random_terminal_audit_event_id();
+        let event = terminal_relay_failure_event(
+            now,
+            started_at,
+            &auth,
+            &model,
+            &group,
+            &endpoint.upstream_path,
+            client_ip.as_deref(),
+            request_id.as_deref(),
+            should_relay_stream,
+            &model_route_audit,
+            &attempt_audits,
+            last_failure.as_ref(),
+            terminal_audit_event_id.as_deref(),
+            terminal_reserve_refund,
+        );
+        if let Err(err) = persist_audit_log_event(&env, &db, &event).await {
+            worker::console_error!("failed to record terminal relay attempt audit: {err}");
+        }
+        if let Some(refund_err) = refund_error {
+            return openai_error_response(
+                format!(
+                    "tiered billing reserve refund failed after all retry attempts: {refund_err}"
+                ),
+                500,
+            );
+        }
         return match last_failure {
+            Some(RelayAttemptFailure {
+                kind: RelayAttemptFailureKind::ConfigurationError,
+                channel_id,
+                channel_name,
+                ..
+            }) => json_with_status(
+                &ErrorBody::bad_request(format!(
+                    "relay configuration failed for channel {channel_id} ({channel_name})"
+                )),
+                502,
+            ),
             Some(RelayAttemptFailure {
                 kind: RelayAttemptFailureKind::FetchError,
                 channel_id,
@@ -1849,6 +1933,7 @@ async fn relay_endpoint_with_auth(
         usage_locally_estimated: false,
         affinity: affinity_audit,
         model_route: model_route_audit,
+        attempts: attempt_audits,
     };
 
     if should_relay_stream {
@@ -2051,6 +2136,14 @@ pub(crate) fn relay_ai_gateway_direct_fallback_contract_compiled() -> bool {
         && direct_provider_model("@cf/meta/llama", AiGatewayModelAuthor::WorkersAi).is_none()
 }
 
+pub(crate) fn relay_terminal_attempt_audit_contract_compiled() -> bool {
+    LOG_TYPE_ERROR == 5
+        && RelayAttemptFailureKind::ConfigurationError.audit_label() == "configuration_error"
+        && RelayAttemptFailureKind::FetchError.audit_label() == "fetch_error"
+        && RelayAttemptFailureKind::NoUsableKey.audit_label() == "no_usable_key"
+        && RelayAttemptFailureKind::RetryableStatus.audit_label() == "retryable_status"
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RelayModelRouteAudit {
     requested_model: String,
@@ -2100,6 +2193,7 @@ struct RelayAttemptPlan {
 struct RelayAttemptExecution {
     selected_attempt: Option<(RelayChannel, String, Response)>,
     last_failure: Option<RelayAttemptFailure>,
+    attempts: RelayAttemptAuditLedger,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2116,9 +2210,10 @@ async fn execute_relay_attempt_plan(
     keyword_ban_enabled: bool,
     ai_gateway_runtime: Option<&RelayAiGatewayRuntime>,
     provider_headers: &RelayProviderHeaders,
-) -> worker::Result<RelayAttemptExecution> {
+) -> RelayAttemptExecution {
     let mut last_failure = None;
     let mut selected_attempt = None;
+    let mut attempts = RelayAttemptAuditLedger::default();
     let attempt_count = attempt_plan.len();
 
     for (attempt_index, plan) in attempt_plan.into_iter().enumerate() {
@@ -2130,16 +2225,42 @@ async fn execute_relay_attempt_plan(
         let upstream_key = match first_channel_key(&channel.key) {
             Some(key) => key,
             None => {
-                last_failure = Some(RelayAttemptFailure::no_key(
+                let failure = RelayAttemptFailure::no_key(
                     channel.id,
                     channel.name.clone(),
                     channel.ai_gateway_opted_in(),
+                );
+                attempts.push(RelayAttemptAudit::from_failure(
+                    "fallback",
+                    model,
+                    &selected_group,
+                    &failure,
                 ));
+                last_failure = Some(failure);
                 continue;
             }
         };
 
-        let upstream_url = endpoint.try_upstream_url(&channel)?;
+        let upstream_url = match endpoint.try_upstream_url(&channel) {
+            Ok(url) => url,
+            Err(err) => {
+                let failure = RelayAttemptFailure::configuration_error(
+                    channel.id,
+                    channel.name.clone(),
+                    err.to_string(),
+                    channel.ai_gateway_opted_in(),
+                );
+                attempts.push(RelayAttemptAudit::from_failure(
+                    "fallback",
+                    model,
+                    &selected_group,
+                    &failure,
+                ));
+                last_failure = Some(failure);
+                continue;
+            }
+        };
+        let mut forward_error_kind = RelayAttemptFailureKind::FetchError;
         let forward_result = match request_body {
             RelayRequestBody::Json(_) => {
                 let Some(mut upstream_body) = json_body.cloned() else {
@@ -2209,8 +2330,8 @@ async fn execute_relay_attempt_plan(
                                 endpoint,
                                 &channel,
                                 upstream_model,
-                            )? {
-                                Some(attempt) => {
+                            ) {
+                                Ok(Some(attempt)) => {
                                     match forward_ai_gateway_rest(&attempt, runtime, &upstream_body)
                                         .await
                                     {
@@ -2283,10 +2404,15 @@ async fn execute_relay_attempt_plan(
                                         }
                                     }
                                 }
-                                None => Err(worker::Error::RustError(format!(
+                                Ok(None) => Err(worker::Error::RustError(format!(
                                     "cross-model fallback channel {} did not produce an AI Gateway plan",
                                     channel.id
                                 ))),
+                                Err(err) => {
+                                    forward_error_kind =
+                                        RelayAttemptFailureKind::ConfigurationError;
+                                    Err(err)
+                                }
                             }
                         }
                         None => Err(worker::Error::RustError(
@@ -2315,12 +2441,19 @@ async fn execute_relay_attempt_plan(
                 let status = response.status_code();
                 if is_retryable_status(status) {
                     record_retryable_channel_failure(env, &channel, status).await;
-                    last_failure = Some(RelayAttemptFailure::retryable_status(
+                    let failure = RelayAttemptFailure::retryable_status(
                         channel.id,
                         channel.name.clone(),
                         status,
                         channel.ai_gateway_opted_in(),
+                    );
+                    attempts.push(RelayAttemptAudit::from_failure(
+                        "fallback",
+                        model,
+                        &selected_group,
+                        &failure,
                     ));
+                    last_failure = Some(failure);
                     if attempt_index + 1 < attempt_count {
                         if keyword_ban_enabled {
                             maybe_keyword_disable_channel(env, &channel, &mut response).await;
@@ -2335,20 +2468,29 @@ async fn execute_relay_attempt_plan(
             }
             Err(err) => {
                 record_retryable_channel_failure(env, &channel, 0).await;
-                last_failure = Some(RelayAttemptFailure::fetch_error(
+                let failure = RelayAttemptFailure::with_detail(
+                    forward_error_kind,
                     channel.id,
                     channel.name.clone(),
                     err.to_string(),
                     channel.ai_gateway_opted_in(),
+                );
+                attempts.push(RelayAttemptAudit::from_failure(
+                    "fallback",
+                    model,
+                    &selected_group,
+                    &failure,
                 ));
+                last_failure = Some(failure);
             }
         }
     }
 
-    Ok(RelayAttemptExecution {
+    RelayAttemptExecution {
         selected_attempt,
         last_failure,
-    })
+        attempts,
+    }
 }
 
 /// Build the ordered list of `(group, channel)` attempts up to `max_attempts`.
@@ -2490,31 +2632,143 @@ struct RelayAttemptFailure {
     channel_id: i64,
     channel_name: String,
     ai_gateway_opted_in: bool,
+    status: Option<u16>,
     #[allow(dead_code)]
     detail: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelayAttemptFailureKind {
+    ConfigurationError,
     FetchError,
     NoUsableKey,
     RetryableStatus,
 }
 
+impl RelayAttemptFailureKind {
+    fn audit_label(self) -> &'static str {
+        match self {
+            Self::ConfigurationError => "configuration_error",
+            Self::FetchError => "fetch_error",
+            Self::NoUsableKey => "no_usable_key",
+            Self::RetryableStatus => "retryable_status",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelayAttemptAudit {
+    phase: &'static str,
+    model: String,
+    group: String,
+    channel_id: i64,
+    outcome: &'static str,
+    status: Option<u16>,
+    ai_gateway_opted_in: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RelayAttemptAuditLedger {
+    entries: Vec<RelayAttemptAudit>,
+    total: usize,
+}
+
+impl RelayAttemptAuditLedger {
+    fn push(&mut self, attempt: RelayAttemptAudit) {
+        self.total = self.total.saturating_add(1);
+        if self.entries.len() < RELAY_ATTEMPT_AUDIT_MAX_ENTRIES {
+            self.entries.push(attempt);
+        }
+    }
+
+    fn append(&mut self, other: &mut Self) {
+        self.total = self.total.saturating_add(other.total);
+        let remaining = RELAY_ATTEMPT_AUDIT_MAX_ENTRIES.saturating_sub(self.entries.len());
+        let take = remaining.min(other.entries.len());
+        self.entries.extend(other.entries.drain(..take));
+        other.total = 0;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    fn truncated(&self) -> bool {
+        self.total > self.entries.len()
+    }
+
+    fn json_entries(&self) -> Vec<Value> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(index, attempt)| attempt.to_json(index + 1))
+            .collect()
+    }
+}
+
+impl RelayAttemptAudit {
+    fn from_failure(
+        phase: &'static str,
+        model: &str,
+        group: &str,
+        failure: &RelayAttemptFailure,
+    ) -> Self {
+        Self {
+            phase,
+            model: model.to_string(),
+            group: group.to_string(),
+            channel_id: failure.channel_id,
+            outcome: failure.kind.audit_label(),
+            status: failure.status,
+            ai_gateway_opted_in: failure.ai_gateway_opted_in,
+        }
+    }
+
+    fn to_json(&self, sequence: usize) -> Value {
+        json!({
+            "sequence": sequence,
+            "phase": self.phase,
+            "model": self.model,
+            "group": self.group,
+            "channel_id": self.channel_id,
+            "outcome": self.outcome,
+            "status": self.status,
+            "ai_gateway_opted_in": self.ai_gateway_opted_in,
+        })
+    }
+}
+
 impl RelayAttemptFailure {
-    fn fetch_error(
+    fn with_detail(
+        kind: RelayAttemptFailureKind,
         channel_id: i64,
         channel_name: String,
         detail: String,
         ai_gateway_opted_in: bool,
     ) -> Self {
         Self {
-            kind: RelayAttemptFailureKind::FetchError,
+            kind,
             channel_id,
             channel_name,
             ai_gateway_opted_in,
+            status: None,
             detail,
         }
+    }
+
+    fn configuration_error(
+        channel_id: i64,
+        channel_name: String,
+        detail: String,
+        ai_gateway_opted_in: bool,
+    ) -> Self {
+        Self::with_detail(
+            RelayAttemptFailureKind::ConfigurationError,
+            channel_id,
+            channel_name,
+            detail,
+            ai_gateway_opted_in,
+        )
     }
 
     fn no_key(channel_id: i64, channel_name: String, ai_gateway_opted_in: bool) -> Self {
@@ -2523,6 +2777,7 @@ impl RelayAttemptFailure {
             channel_id,
             channel_name,
             ai_gateway_opted_in,
+            status: None,
             detail: String::new(),
         }
     }
@@ -2539,6 +2794,7 @@ impl RelayAttemptFailure {
             channel_id,
             channel_name,
             ai_gateway_opted_in,
+            status: Some(status),
             detail: format!("upstream status {status}"),
         }
     }
@@ -5309,6 +5565,9 @@ struct RelayAuditContext {
     /// fallback visible without changing the final relay log's role as the
     /// authoritative settlement row.
     model_route: RelayModelRouteAudit,
+    /// Bounded, secret-free channel-attempt evidence. User log responses strip
+    /// `other`; operators retain this ledger under `other.admin_info`.
+    attempts: RelayAttemptAuditLedger,
 }
 
 async fn record_relay_audit(
@@ -5354,14 +5613,29 @@ async fn record_relay_audit(
             "ai_gateway_direct_fallback": audit.model_route.ai_gateway_direct_fallback,
         },
     });
+    let mut admin_info = serde_json::Map::new();
     if let Some(affinity_context) = audit.affinity.as_ref() {
-        set_json_value(
-            &mut other,
-            "admin_info",
-            json!({
-                "channel_affinity": affinity::affinity_log_info(affinity_context),
-            }),
+        admin_info.insert(
+            "channel_affinity".to_string(),
+            affinity::affinity_log_info(affinity_context),
         );
+    }
+    if !audit.attempts.is_empty() {
+        admin_info.insert(
+            "relay_attempts".to_string(),
+            Value::Array(audit.attempts.json_entries()),
+        );
+        admin_info.insert(
+            "relay_attempt_count".to_string(),
+            json!(audit.attempts.total),
+        );
+        admin_info.insert(
+            "relay_attempts_truncated".to_string(),
+            json!(audit.attempts.truncated()),
+        );
+    }
+    if !admin_info.is_empty() {
+        set_json_value(&mut other, "admin_info", Value::Object(admin_info));
     }
     let mut quota = 0;
     let mut billing_applied = false;
@@ -5590,7 +5864,15 @@ async fn record_relay_audit(
     // Send the audit event to LOG_QUEUE for async batch INSERT. Falls back
     // to a synchronous D1 INSERT when the queue binding is not configured
     // (local dev without wrangler queue, or `cargo test`).
-    let event = cinatoken_storage::AuditLogEvent::from_relay_audit(now, &content, &audit_log, 2);
+    let event = AuditLogEvent::from_relay_audit(now, &content, &audit_log, LOG_TYPE_CONSUME);
+    persist_audit_log_event(env, db, &event).await
+}
+
+async fn persist_audit_log_event(
+    env: &Env,
+    db: &D1Database,
+    event: &AuditLogEvent,
+) -> worker::Result<()> {
     match env.queue("LOG_QUEUE") {
         Ok(queue) => match queue.send(&event).await {
             Ok(()) => Ok(()),
@@ -5598,14 +5880,99 @@ async fn record_relay_audit(
                 worker::console_warn!(
                     "LOG_QUEUE send failed, falling back to synchronous D1 insert: {err}"
                 );
-                crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
+                crate::d1_repositories::insert_audit_log_event(db, event).await
             }
         },
         Err(_) => {
             // Queue binding not configured (local dev / tests).
-            crate::d1_repositories::insert_relay_audit_log(db, now, &content, &audit_log).await
+            crate::d1_repositories::insert_audit_log_event(db, event).await
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn terminal_relay_failure_event(
+    now: i64,
+    started_at: i64,
+    auth: &AuthenticatedToken,
+    model: &str,
+    group: &str,
+    endpoint_path: &str,
+    client_ip: Option<&str>,
+    request_id: Option<&str>,
+    is_stream: bool,
+    model_route: &RelayModelRouteAudit,
+    attempts: &RelayAttemptAuditLedger,
+    last_failure: Option<&RelayAttemptFailure>,
+    terminal_audit_event_id: Option<&str>,
+    reserve_refund: &str,
+) -> AuditLogEvent {
+    let channel_id = last_failure.map(|failure| failure.channel_id).unwrap_or(0);
+    let failure_kind = last_failure
+        .map(|failure| failure.kind.audit_label())
+        .unwrap_or("no_candidate");
+    let status = last_failure.and_then(|failure| failure.status);
+    let attempt_values = attempts.json_entries();
+    let other = json!({
+        "relay_runtime": "cloudflare_worker_rust",
+        "request_path": endpoint_path,
+        "error_type": "upstream_error",
+        "error_code": "relay_attempts_exhausted",
+        "status_code": status,
+        "channel_id": channel_id,
+        "terminal_failure": true,
+        "terminal_audit_event_id": terminal_audit_event_id,
+        "model_route": {
+            "requested_model": model_route.requested_model,
+            "served_model": model_route.served_model,
+            "fallback_model": model_route.fallback_model,
+            "fallback_attempted": model_route.fallback_attempted,
+            "fallback_trigger": model_route.fallback_trigger,
+            "fallback_skip_reason": model_route.fallback_skip_reason,
+            "ai_gateway_direct_fallback": model_route.ai_gateway_direct_fallback,
+        },
+        "admin_info": {
+            "attempt_count": attempts.total,
+            "relay_attempts": attempt_values,
+            "attempts_truncated": attempts.truncated(),
+            "last_failure_kind": failure_kind,
+            "reserve_refund": reserve_refund,
+        },
+    });
+    let other_json = other.to_string();
+    let content = format!("Rust relay failed {endpoint_path}: all upstream attempts exhausted");
+    let empty = "";
+    let audit_log = RelayAuditLog {
+        user_id: auth.user_id,
+        username: &auth.username,
+        token_id: auth.token_id,
+        token_name: &auth.token_name,
+        channel_id,
+        model,
+        group,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        quota: 0,
+        use_time_seconds: now.saturating_sub(started_at),
+        is_stream,
+        ip: client_ip.unwrap_or(empty),
+        request_id: request_id.unwrap_or(empty),
+        upstream_request_id: empty,
+        other: &other_json,
+    };
+    AuditLogEvent::from_relay_audit(now, &content, &audit_log, LOG_TYPE_ERROR)
+}
+
+fn random_terminal_audit_event_id() -> Option<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).ok()?;
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Some(encoded)
 }
 
 struct TieredBillingOutcome {
@@ -8164,17 +8531,115 @@ mod tests {
 
     #[test]
     fn relay_attempt_failure_records_correct_kind() {
-        let fetch =
-            RelayAttemptFailure::fetch_error(7, "alpha".to_string(), "tcp reset".to_string(), true);
+        let fetch = RelayAttemptFailure::with_detail(
+            RelayAttemptFailureKind::FetchError,
+            7,
+            "alpha".to_string(),
+            "tcp reset".to_string(),
+            true,
+        );
         assert_eq!(fetch.kind, RelayAttemptFailureKind::FetchError);
         assert_eq!(fetch.channel_id, 7);
         assert!(fetch.ai_gateway_opted_in);
+
+        let configuration = RelayAttemptFailure::configuration_error(
+            8,
+            "configured".to_string(),
+            "invalid URL".to_string(),
+            true,
+        );
+        assert_eq!(
+            configuration.kind,
+            RelayAttemptFailureKind::ConfigurationError
+        );
 
         let no_key = RelayAttemptFailure::no_key(9, "beta".to_string(), false);
         assert_eq!(no_key.kind, RelayAttemptFailureKind::NoUsableKey);
 
         let status = RelayAttemptFailure::retryable_status(11, "gamma".to_string(), 500, true);
         assert_eq!(status.kind, RelayAttemptFailureKind::RetryableStatus);
+        assert_eq!(status.status, Some(500));
+    }
+
+    #[test]
+    fn terminal_relay_attempt_audit_is_error_typed_bounded_and_secret_free() {
+        assert!(relay_terminal_attempt_audit_contract_compiled());
+        let auth = test_auth(42, 7);
+        let failure = RelayAttemptFailure::with_detail(
+            RelayAttemptFailureKind::FetchError,
+            9,
+            "private-channel-name".to_string(),
+            "fetch https://provider.example/?api_key=secret-value failed".to_string(),
+            true,
+        );
+        let mut attempts = RelayAttemptAuditLedger::default();
+        attempts.push(RelayAttemptAudit::from_failure(
+            "primary",
+            "openai/gpt-4.1",
+            "default",
+            &failure,
+        ));
+        let event = terminal_relay_failure_event(
+            110,
+            100,
+            &auth,
+            "openai/gpt-4.1",
+            "default",
+            "chat/completions",
+            Some("203.0.113.8"),
+            Some("req_terminal"),
+            false,
+            &RelayModelRouteAudit::primary("openai/gpt-4.1", Some("anthropic/claude-sonnet-4")),
+            &attempts,
+            Some(&failure),
+            Some("00112233445566778899aabbccddeeff"),
+            "refunded",
+        );
+        let other: Value = serde_json::from_str(&event.other).unwrap();
+
+        assert_eq!(event.log_type, LOG_TYPE_ERROR);
+        assert_eq!(event.quota, 0);
+        assert_eq!(event.prompt_tokens, 0);
+        assert_eq!(event.completion_tokens, 0);
+        assert_eq!(event.channel_id, 9);
+        assert_eq!(event.request_id, "req_terminal");
+        assert_eq!(other["error_code"], "relay_attempts_exhausted");
+        assert_eq!(
+            other["terminal_audit_event_id"],
+            "00112233445566778899aabbccddeeff"
+        );
+        assert_eq!(other["admin_info"]["attempt_count"], 1);
+        assert_eq!(
+            other["admin_info"]["relay_attempts"][0]["outcome"],
+            "fetch_error"
+        );
+        assert_eq!(other["admin_info"]["reserve_refund"], "refunded");
+        assert!(!event.other.contains("secret-value"));
+        assert!(!event.other.contains("private-channel-name"));
+    }
+
+    #[test]
+    fn relay_attempt_audit_ledger_caps_entries_without_losing_total() {
+        let mut ledger = RelayAttemptAuditLedger::default();
+        for status in 0..(RELAY_ATTEMPT_AUDIT_MAX_ENTRIES + 5) {
+            let failure = RelayAttemptFailure::retryable_status(
+                7,
+                "private-name".to_string(),
+                500 + status as u16,
+                true,
+            );
+            ledger.push(RelayAttemptAudit::from_failure(
+                "primary", "gpt-test", "default", &failure,
+            ));
+        }
+
+        assert_eq!(
+            ledger.total,
+            RELAY_ATTEMPT_AUDIT_MAX_ENTRIES.saturating_add(5)
+        );
+        assert_eq!(ledger.entries.len(), RELAY_ATTEMPT_AUDIT_MAX_ENTRIES);
+        assert!(ledger.truncated());
+        assert_eq!(ledger.json_entries().len(), RELAY_ATTEMPT_AUDIT_MAX_ENTRIES);
     }
 
     #[test]

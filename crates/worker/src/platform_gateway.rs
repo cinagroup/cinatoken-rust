@@ -45,7 +45,8 @@ use crate::realtime_session::{
 };
 use crate::relay::{
     relay_ai_gateway_direct_fallback_contract_compiled, relay_model_fallback_contract_compiled,
-    relay_model_fallback_runtime_status, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
+    relay_model_fallback_runtime_status, relay_terminal_attempt_audit_contract_compiled,
+    RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
 };
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::task_repository::{
@@ -83,6 +84,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
     "server_failure_only",
     "provider_native_direct_body",
     "model_route_audit",
+    "terminal_attempt_audit",
     "staging_replay",
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
@@ -177,6 +179,7 @@ struct PlatformCapabilities {
     relay_ai_gateway_cross_model_fallback_configured: bool,
     relay_ai_gateway_cross_model_fallback_config_valid: bool,
     relay_ai_gateway_cross_model_fallback_mapping_count: usize,
+    relay_ai_gateway_cross_model_terminal_audit_compiled: bool,
     relay_ai_gateway_cross_model_fallback_ready: bool,
     relay_ai_gateway_cross_model_fallback_staging_verified: bool,
     relay_ai_gateway_cross_model_fallback_cutover_ready: bool,
@@ -279,10 +282,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         cloudflare_ai_gateway_token_configured,
     );
     let relay_ai_gateway_cross_model_fallback_compiled = relay_model_fallback_contract_compiled();
+    let relay_ai_gateway_cross_model_terminal_audit_compiled =
+        relay_terminal_attempt_audit_contract_compiled();
     let relay_model_fallback_runtime = relay_model_fallback_runtime_status(&env);
     let relay_ai_gateway_cross_model_fallback_ready = is_relay_model_fallback_ready(
         relay_ai_gateway_router_ready,
         relay_ai_gateway_cross_model_fallback_compiled,
+        relay_ai_gateway_cross_model_terminal_audit_compiled,
         relay_model_fallback_runtime.enabled,
         relay_model_fallback_runtime.configured,
         relay_model_fallback_runtime.valid,
@@ -484,6 +490,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_cross_model_fallback_config_valid: relay_model_fallback_runtime.valid,
         relay_ai_gateway_cross_model_fallback_mapping_count: relay_model_fallback_runtime
             .mapping_count,
+        relay_ai_gateway_cross_model_terminal_audit_compiled,
         relay_ai_gateway_cross_model_fallback_ready,
         relay_ai_gateway_cross_model_fallback_staging_verified,
         relay_ai_gateway_cross_model_fallback_cutover_ready,
@@ -1827,11 +1834,17 @@ fn is_relay_ai_gateway_router_ready(
 fn is_relay_model_fallback_ready(
     router_ready: bool,
     contract_compiled: bool,
+    terminal_audit_compiled: bool,
     enabled: bool,
     configured: bool,
     config_valid: bool,
 ) -> bool {
-    router_ready && contract_compiled && enabled && configured && config_valid
+    router_ready
+        && contract_compiled
+        && terminal_audit_compiled
+        && enabled
+        && configured
+        && config_valid
 }
 
 fn is_relay_model_fallback_cutover_ready(ready: bool, staging_verified: bool) -> bool {
@@ -2131,12 +2144,17 @@ mod tests {
     #[test]
     fn relay_model_fallback_readiness_requires_every_runtime_and_replay_gate() {
         assert!(relay_model_fallback_contract_compiled());
-        assert!(is_relay_model_fallback_ready(true, true, true, true, true));
-        for false_gate in 0..5 {
-            let mut flags = [true; 5];
+        assert!(relay_terminal_attempt_audit_contract_compiled());
+        assert!(is_relay_model_fallback_ready(
+            true, true, true, true, true, true
+        ));
+        for false_gate in 0..6 {
+            let mut flags = [true; 6];
             flags[false_gate] = false;
             assert!(
-                !is_relay_model_fallback_ready(flags[0], flags[1], flags[2], flags[3], flags[4]),
+                !is_relay_model_fallback_ready(
+                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5]
+                ),
                 "expected model fallback readiness to wait on gate index {false_gate}"
             );
         }
@@ -2153,6 +2171,7 @@ mod tests {
             "server_failure_only",
             "provider_native_direct_body",
             "model_route_audit",
+            "terminal_attempt_audit",
             "staging_replay",
         ] {
             assert!(

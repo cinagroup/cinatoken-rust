@@ -532,8 +532,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until isolated staging proves
   all status/fetch/refund/settlement/audit/stream/rollback cases. Before auto
   tokens are admitted, fix the existing first-planned-group versus
-  actual-serving-group billing snapshot. Add a durable attempt ledger for the
-  all-fetch-failed path before production cutover.
+  actual-serving-group billing snapshot. The all-fetch-failed path now emits a
+  bounded, secret-free Go-compatible type-5 attempt ledger through
+  `LOG_QUEUE`/D1; prove queue delivery, synchronous fallback, refund ordering,
+  and admin-log visibility in staging before production cutover.
 - Continue TaskRunner M5b only after M5a staging evidence: the `TASK_RUNNER`
   Durable Object and video/remix/Suno submit-path arming remain default-off.
   Its typed poll result now distinguishes terminal settlement from non-terminal

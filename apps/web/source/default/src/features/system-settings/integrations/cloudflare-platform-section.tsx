@@ -502,6 +502,16 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Terminal attempt audit'),
+          description: t(
+            'Persists a Go-compatible error log with a bounded, secret-free channel-attempt ledger when no upstream response survives.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_cross_model_terminal_audit_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Cross-model fallback gate'),
           description: t('Runtime flag RELAY_MODEL_FALLBACK_ENABLED.'),
           ready: capabilities.relay_ai_gateway_cross_model_fallback_enabled,

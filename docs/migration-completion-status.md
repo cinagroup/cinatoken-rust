@@ -107,8 +107,10 @@ A full diff of every Go-registered route against the Rust worker closed these
   fallback is now implemented for mapped OpenAI-compatible chat/responses
   requests, with served-model billing handoff, token/channel revalidation,
   provider-native direct bodies, and fail-closed auth/rate-limit handling. It
-  still needs deployed replay, durable all-fetch-failed attempt audit, and
-  actual-serving-group billing for `auto` before production use.
+  now persists bounded secret-free all-fetch/configuration-failed attempt
+  metadata as a Go-compatible type-5 error log after reserve refund. It still
+  needs deployed Queue/D1 replay and actual-serving-group billing for `auto`
+  before production use.
 - Authority-first WFP relay transport. Tenant paid AI routes must remain off
   until token policy, channel selection, quota settlement, and audit all remain
   owned by the central relay.

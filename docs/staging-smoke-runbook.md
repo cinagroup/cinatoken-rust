@@ -469,6 +469,13 @@ bun run check:relay-ai-gateway:fallback-contract
 bun run smoke:relay-ai-gateway -- --url $env:STAGING_BASE_URL --cookie $env:RELAY_AI_GATEWAY_SMOKE_COOKIE --api-key $env:RELAY_AI_GATEWAY_SMOKE_API_KEY --model openai/gpt-4.1 --expect-router-ready --expect-fallback-enabled --expect-fallback-ready --expect-served-model anthropic/claude-sonnet-4 --confirm-live --json
 ```
 
+For the isolated fetch-exhaustion case, make both selected transports
+unreachable and let the harness prove the resulting admin row:
+
+```powershell
+bun run smoke:relay-ai-gateway -- --url $env:STAGING_BASE_URL --cookie $env:RELAY_AI_GATEWAY_SMOKE_COOKIE --api-key $env:RELAY_AI_GATEWAY_SMOKE_API_KEY --model openai/gpt-4.1 --expect-router-ready --expect-fallback-enabled --expect-fallback-ready --allow-non-2xx --expect-terminal-audit --confirm-live --json
+```
+
 Archive these independent cases:
 
 1. Primary `5xx` -> fallback success. Response, Gateway log, and relay audit all
@@ -478,7 +485,13 @@ Archive these independent cases:
 3. Missing/disabled fallback channel. Primary reserve is refunded and no
    fallback egress occurs.
 4. Fallback fetch exhaustion and fallback preflight/forwarder failure. Exactly
-   one active reserve is refunded before the error is returned.
+   one active reserve is refunded before the error is returned. Query admin
+   logs by `request_id`: one type-5 row must contain
+   `error_code=relay_attempts_exhausted`, bounded `admin_info.relay_attempts`,
+   the true `attempt_count`, `attempts_truncated`, and `reserve_refund`, with no
+   URL, channel name, credential, raw fetch error, or response body. Replay the
+   exact same Queue event and prove its random `terminal_audit_event_id` plus
+   conditional insert keep exactly one terminal row.
 5. Primary `401`, `403`, `429`, `400`, `408`, `504`, and `524`. No cross-model
    fallback occurs.
 6. Streaming request. Fallback may occur before a successful response starts;
@@ -489,8 +502,9 @@ Archive these independent cases:
 Keep `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until all cases, quota row
 deltas, final audit `model_route`, and rollback timestamps are archived. Auto
 group remains unsupported for this feature until actual-serving-group billing
-is fixed. All-fetch-failed terminal attempt-ledger coverage is also still a
-production blocker even though the final-response audit path is compiled.
+is fixed. The terminal attempt ledger is locally compiled; remote Queue
+delivery, synchronous D1 fallback, refund-before-audit ordering, user-log
+redaction, and admin-log visibility remain production blockers.
 
 ## Phase 4: SSE Relay Smoke
 

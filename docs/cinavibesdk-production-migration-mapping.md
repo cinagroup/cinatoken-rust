@@ -308,6 +308,13 @@ cinaVibeSDK pattern:
   channel before cross-channel retry logic sees the result.
 - Billing and usage parsing remain the main relay's responsibility. AI Gateway
   is transport and observability, not a billing replacement.
+- The current same-channel direct path is transport failover only; it does not
+  implement cinaVibeSDK's primary/fallback model switch. A later default-off
+  model-attempt layer must revalidate token model limits, channel availability,
+  pricing/reservation, and audit identity for the fallback model.
+- Do not reuse the Gateway-prefixed body for direct egress, and do not treat
+  Gateway `401`, `403`, or `429` as permission to bypass Gateway policy by going
+  direct. Those failures require a dedicated fail-closed classification.
 
 Production rule:
 
@@ -499,18 +506,20 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   legacy no-refund, and stale-window unblock semantics before staging, but the
   cron still requires staging timeout/provider-failure/no-duplicate-refund
   replay before it can be treated as eviction-proof billing infrastructure.
-- Optional TaskRunner M5b follows the cinaVibeSDK DO-alarm idea without changing
-  billing authority: one deterministic `TASK_RUNNER` DO per task, bounded alarm
-  delay, persisted alarm-fired evidence, and default-off video/remix/Suno
-  submit-path arming behind `TASK_RUNNER_DO_ENABLED=false`. Alarm poll-path
-  wiring and an admin-only `/api/platform/task-runner/:task_id/status` probe
-  are now compiled, and `tools/smoke_task_runner_alarm_replay.mjs` provides the
-  read-only replay plan with derived first-apply/second-noop/fallback evidence
-  labels. Live replay, cron fallback, and no-double-poll CAS
-  proof remain required before the fast path can influence settlement latency.
-- WFP tenant AI routes must either call back through an owned billing path or
-  produce equivalent audit and settlement evidence before paid traffic is routed
-  there.
+- Optional TaskRunner M5b follows the cinaVibeSDK recurring DO-alarm idea without
+  changing billing authority: one deterministic `TASK_RUNNER` DO per task,
+  terminal-aware poll outcomes, non-terminal rearm, D1 recheck after lost CAS,
+  bounded failure backoff and fast-path horizon, with cron remaining the
+  correctness spine. The status probe/frontend/smoke plan expose progress,
+  terminal, retry, and cron-fallback metadata. Live alarm/cron race and
+  no-double-poll CAS proof remain required before the fast path can influence
+  settlement latency.
+- WFP tenant AI routes are currently a transport-only NO-GO for paid traffic:
+  the admin dispatch entry bypasses central relay-token policy, channel
+  selection, quota reserve/settlement, and relay audit. WFP must run only after
+  central admission, receive a short-lived body-bound authority envelope, and
+  return through the existing billing/audit pipeline before either dispatch gate
+  can be enabled for paid routes.
 - Flat-billed and tiered-expression traffic keep their current semantics; do
   not convert flat traffic to pre-reserve semantics as part of this mapping.
 

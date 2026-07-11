@@ -2723,6 +2723,22 @@ bun run check
 - Still pending: deployed DO eviction/restore, D1 outage plus lease recovery,
   duplicate close/refund, redaction, and fresh reconnect evidence.
 
+### TaskRunner recurring alarm state machine (2026-07-11)
+
+- `poll_one_task` now returns a typed `{cas_won, terminal}` outcome, so a
+  non-terminal progress update is not mislabeled as terminal settlement and the
+  cron settled counter increments only for terminal CAS wins.
+- The per-task DO re-reads D1 after a lost CAS, re-arms non-terminal progress,
+  retries transient D1/provider failures with bounded `15/30/60s` backoff, and
+  stops after `TASK_RUNNER_MAX_ALARM_FIRES` (default `20`, clamped `1..240`) with
+  an explicit `fast_path_horizon_exhausted` cron-fallback reason.
+- `/api/platform/capabilities`, the admin TaskRunner probe, the Cloudflare panel,
+  and `smoke_task_runner_alarm_replay.mjs` distinguish `progress_applied`,
+  `nonterminal_cas_noop`, confirmed terminal replay, retry, and cron fallback.
+- Focused Worker TaskRunner tests, frontend readiness tests, and TaskRunner smoke
+  self-test/dry-run passed locally. Live alarm/cron race and no-double-settlement
+  evidence are still required before the gate can be enabled.
+
 ## Still Pending
 
 - The frontend artifact and public HTTP contract still need deployed

@@ -694,6 +694,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('TaskRunner recurring alarm contract'),
+          description: t(
+            'Re-arms non-terminal progress, retries transient failures with bounded backoff, and hands work back to cron after the fast-path horizon.'
+          ),
+          ready: capabilities.task_runner_rearm_contract_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('TaskRunner fast path gate'),
           description: t(
             'TASK_RUNNER_DO_ENABLED must stay off until staging alarm replay and rollback evidence are proven.'
@@ -1398,6 +1407,34 @@ function TaskRunnerStatusProbePanel(props: {
               value={String(durable.alarm_fired_count ?? 0)}
             />
             <ProbeField
+              label={t('Rearm count')}
+              value={String(durable.rearm_count ?? 0)}
+            />
+            <ProbeField
+              label={t('Last rearmed')}
+              value={formatTimestamp(durable.last_rearmed_at_ms, t)}
+            />
+            <ProbeField
+              label={t('Last rearm delay')}
+              value={formatMilliseconds(durable.last_rearm_delay_ms, t)}
+            />
+            <ProbeField
+              label={t('Fast-path horizon')}
+              value={String(durable.max_alarm_fires ?? 0)}
+            />
+            <ProbeField
+              label={t('Consecutive failures')}
+              value={String(durable.consecutive_failures ?? 0)}
+            />
+            <ProbeField
+              label={t('Observed terminal')}
+              value={formatObservedTerminal(durable.poll_terminal, t)}
+            />
+            <ProbeField
+              label={t('Cron fallback')}
+              value={durable.cron_fallback_reason ?? t('Not active')}
+            />
+            <ProbeField
               label={t('Poll attempted')}
               value={formatTimestamp(durable.poll_attempted_at_ms, t)}
             />
@@ -1493,6 +1530,7 @@ function taskRunnerStatusVariant(
   status: TaskRunnerStatusProbe['durable_object_status']['status']
 ): StatusVariant {
   if (status === 'poll_applied') return 'success'
+  if (status === 'poll_progressed') return 'info'
   if (status === 'poll_failed') return 'danger'
   if (status === 'poll_noop' || status === 'poll_skipped') return 'warning'
   if (status === 'alarm_fired') return 'info'
@@ -1504,6 +1542,7 @@ function taskRunnerPollStatusVariant(
   status: TaskRunnerStatusProbe['durable_object_status']['poll_status']
 ): StatusVariant {
   if (status === 'applied') return 'success'
+  if (status === 'progressed') return 'info'
   if (status === 'failed') return 'danger'
   if (status === 'noop' || status === 'skipped') return 'warning'
   return 'neutral'
@@ -1521,11 +1560,13 @@ function taskRunnerReplayEvidenceVariant(
   if (evidence === 'first_apply' || evidence === 'second_replay_noop') {
     return 'success'
   }
+  if (evidence === 'progress_applied') return 'info'
   if (
     evidence === 'gate_disabled_fallback' ||
     evidence === 'cron_already_settled' ||
     evidence === 'armed_pending' ||
     evidence === 'alarm_fired_pending_poll' ||
+    evidence === 'nonterminal_cas_noop' ||
     evidence === 'poll_skipped'
   ) {
     return 'warning'
@@ -1541,6 +1582,15 @@ function formatCasWon(
   if (value === true) return t('CAS won')
   if (value === false) return t('CAS no-op')
   return t('CAS not recorded')
+}
+
+function formatObservedTerminal(
+  value: boolean | null,
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  if (value === true) return t('Terminal')
+  if (value === false) return t('Non-terminal')
+  return t('Not observed')
 }
 
 function formatReplayEvidence(

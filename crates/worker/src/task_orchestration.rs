@@ -358,7 +358,7 @@ async fn poll_vertex_task(
     base_url: &str,
     service_account_json: &str,
     now: i64,
-) -> worker::Result<bool> {
+) -> worker::Result<TaskPollApplyOutcome> {
     let operation_name =
         decode_local_task_id(&task.upstream_task_id).map_err(worker::Error::RustError)?;
     let url =
@@ -377,7 +377,8 @@ async fn poll_vertex_task(
     let info = vertex::parse_task_result(&response).map_err(worker::Error::RustError)?;
     let finish_time = if info.status.is_terminal() { now } else { 0 };
     let result_data = String::from_utf8_lossy(&response);
-    apply_poll_result(
+    let terminal = info.status.is_terminal();
+    let cas_won = apply_poll_result(
         db,
         task,
         &info,
@@ -385,7 +386,8 @@ async fn poll_vertex_task(
         finish_time,
         now,
     )
-    .await
+    .await?;
+    Ok(TaskPollApplyOutcome { cas_won, terminal })
 }
 
 pub struct SubmitTaskOutcome {
@@ -1298,14 +1300,20 @@ pub async fn poll_task(
 /// from the channel type, build the (simple-auth) poll request, fetch + parse,
 /// and apply the result through the CAS settle-apply.
 ///
-/// Returns `Ok(None)` when the channel type runs no task provider, or when the
-/// provider needs worker-side signing that is not yet ported (Kling JWT, Jimeng
-/// Volcengine HMAC, Vertex GCP OAuth); `Ok(Some(won))` otherwise, where `won`
-/// reports whether this call won the settlement transition.
+/// Returns `Ok(None)` when the channel type runs no task provider;
+/// `Ok(Some(outcome))` otherwise. The outcome separates the D1 CAS result from
+/// the provider's terminal state so callers do not mistake a non-terminal
+/// progress update for completed task settlement.
 ///
 /// The fetch id is the task's `upstream_task_id` (for Gemini that is the
 /// base64-encoded operation name the request builder decodes). The exact id
 /// field per provider is confirmed by a staging poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskPollApplyOutcome {
+    pub cas_won: bool,
+    pub terminal: bool,
+}
+
 pub async fn poll_one_task(
     db: &D1Database,
     task: &TaskRow,
@@ -1314,7 +1322,7 @@ pub async fn poll_one_task(
     channel_base_url: &str,
     gemini_version: &str,
     now: i64,
-) -> worker::Result<Option<bool>> {
+) -> worker::Result<Option<TaskPollApplyOutcome>> {
     let Some(provider) = VideoProvider::from_channel_type(channel_type as i64) else {
         return Ok(None);
     };
@@ -1365,7 +1373,8 @@ pub async fn poll_one_task(
     let (info, body) = poll_task(provider, &request).await?;
     let finish_time = if info.status.is_terminal() { now } else { 0 };
     let result_data = String::from_utf8_lossy(&body);
-    let won = apply_poll_result(
+    let terminal = info.status.is_terminal();
+    let cas_won = apply_poll_result(
         db,
         task,
         &info,
@@ -1374,7 +1383,7 @@ pub async fn poll_one_task(
         now,
     )
     .await?;
-    Ok(Some(won))
+    Ok(Some(TaskPollApplyOutcome { cas_won, terminal }))
 }
 
 /// Drive one batch of the poller: load up to `limit` unfinished tasks, look up
@@ -1425,7 +1434,11 @@ pub async fn poll_unfinished_tasks(
             now,
         )
         .await;
-        if let Ok(Some(true)) = outcome {
+        if let Ok(Some(TaskPollApplyOutcome {
+            cas_won: true,
+            terminal: true,
+        })) = outcome
+        {
             settled += 1;
         }
     }

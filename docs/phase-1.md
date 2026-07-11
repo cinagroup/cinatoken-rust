@@ -524,15 +524,16 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   CAS-winner refund batch once, skips legacy imported-row refunds, and
   continues polling newer tasks after the stale window is cleared.
 - Continue TaskRunner M5b only after M5a staging evidence: the `TASK_RUNNER`
-  Durable Object alarm foundation and video/remix/Suno submit-path arming are
-  wired default-off. Alarm firing now reuses the shared provider poll and D1 CAS
-  settlement path, and operators now have an admin-only per-task status probe,
-  a frontend probe form in the Cloudflare Platform panel, and
-  `bun run check:task-runner:alarm-replay-*` contracts with derived replay
-  evidence labels for first apply, second replay/no-op, and fallback states.
-  Live alarm replay, cron-sweeper fallback, rollback, and no-double-poll CAS
-  proof still remain required before `TASK_RUNNER_DO_ENABLED` can be enabled
-  outside a controlled staging replay.
+  Durable Object and video/remix/Suno submit-path arming remain default-off.
+  Its typed poll result now distinguishes terminal settlement from non-terminal
+  progress, re-reads D1 after a lost CAS, re-arms progress, retries transient
+  failures with bounded `15/30/60s` backoff, and records cron fallback after the
+  configurable `TASK_RUNNER_MAX_ALARM_FIRES` horizon (default `20`, max `240`).
+  The capability/status/frontend surfaces expose the rearm contract, observed
+  terminal state, rearm/failure counts, delay, and fallback reason. Live alarm
+  replay, cron-sweeper fallback, rollback, and no-double-poll CAS proof still
+  remain required before `TASK_RUNNER_DO_ENABLED` can be enabled outside a
+  controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker,
   audit-log, and D1 batch/CAS foundation to production-safe settlement. The
   real local Wrangler D1 now has 20/20 migrations and 26 business tables, and

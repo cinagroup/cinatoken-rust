@@ -1,6 +1,6 @@
 # Migration Completion Status
 
-Date: 2026-07-10
+Date: 2026-07-11
 
 This is the short status page. The evidence-based audit is
 `docs/migration-progress-audit-2026-07-02.md`; the canonical Go route list is
@@ -50,6 +50,9 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   types, rule matches, endpoint backfill, vendor counts, and server-side
   status/sync filters.
 - Task submit/poll/CAS-settlement foundations and scheduled polling.
+- Default-off TaskRunner recurring-alarm fast path with terminal-aware CAS
+  outcomes, D1 recheck after lost CAS, bounded failure backoff/horizon, cron
+  fallback metadata, admin status probe, and frontend operator visibility.
 - Deterministic P0 source-to-D1 reconciliation CLI for counts, logical-key
   bounds, canonical hashes, samples, and core relationships; production-source
   execution remains pending.
@@ -100,6 +103,12 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Billing shadow comparison and exact tokenizer/media parity.
 - Relay weighted channel-selection staging evidence for distribution, retry,
   auto-group, affinity, and provider-family filter behavior.
+- True AI Gateway model/provider fallback. Current fallback is only same-channel
+  Gateway-to-direct plus same-logical-model channel retry and is not yet safely
+  auditable or protected from direct bypass on Gateway auth/rate-limit failures.
+- Authority-first WFP relay transport. Tenant paid AI routes must remain off
+  until token policy, channel selection, quota settlement, and audit all remain
+  owned by the central relay.
 - Frontend bundle-size reduction and budget ratchet tightening after heavy
   route-specific chunks are split. Strict lint is now zero-debt gated and
   `check:web:quality` is green locally.
@@ -152,6 +161,10 @@ A full diff of every Go-registered route against the Rust worker closed these
    admin-disable/delete replay rejection. OAuth production approval still
    needs deployed replay smoke, custom-provider access-policy evidence, and
    separated frontend/API redirect-origin proof where applicable.
+8. AI Gateway true fallback and WFP paid traffic are not production-ready. Keep
+   `RELAY_AI_GATEWAY_ROUTER_ENABLED`, `WFP_DISPATCH_ENABLED`, and
+   `WFP_INTERNAL_DISPATCH_ENABLED` constrained to explicit staging canaries until
+   their billing, authority, fallback-policy, and durable audit gates close.
 
 ## Current Safe Statement
 

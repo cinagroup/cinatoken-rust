@@ -285,6 +285,10 @@ function summarizeCapabilities(data) {
     task_runner_do_enabled: data.task_runner_do_enabled === true,
     task_runner_do_foundation_compiled: data.task_runner_do_foundation_compiled === true,
     task_runner_alarm_contract_compiled: data.task_runner_alarm_contract_compiled === true,
+    task_runner_rearm_contract_compiled: data.task_runner_rearm_contract_compiled === true,
+    task_runner_max_alarm_fires: Number.isFinite(data.task_runner_max_alarm_fires)
+      ? data.task_runner_max_alarm_fires
+      : 0,
     task_runner_submit_path_compiled: data.task_runner_submit_path_compiled === true,
     task_runner_poll_path_compiled: data.task_runner_poll_path_compiled === true,
     task_runner_status_probe_compiled: data.task_runner_status_probe_compiled === true,
@@ -304,6 +308,12 @@ function validateCapabilities(capabilities, options) {
     if (!capabilities.task_runner_cutover_guards.includes(guard)) {
       throw new Error(`platform capabilities missing TaskRunner cutover guard ${guard}`);
     }
+  }
+  if (
+    capabilities.task_runner_max_alarm_fires < 1 ||
+    capabilities.task_runner_max_alarm_fires > 240
+  ) {
+    throw new Error("platform capabilities task_runner_max_alarm_fires must be between 1 and 240");
   }
   if (!options.allowCutoverReady && capabilities.task_runner_cutover_ready !== false) {
     throw new Error("TaskRunner cutover readiness must remain false until staging replay is archived");
@@ -337,6 +347,15 @@ function summarizeStatus(data) {
     poll_status: stringOrNull(durable.poll_status),
     poll_reason: stringOrNull(durable.poll_reason),
     poll_cas_won: typeof durable.poll_cas_won === "boolean" ? durable.poll_cas_won : null,
+    poll_terminal: typeof durable.poll_terminal === "boolean" ? durable.poll_terminal : null,
+    last_rearmed_at_ms: numberOrNull(durable.last_rearmed_at_ms),
+    last_rearm_delay_ms: numberOrNull(durable.last_rearm_delay_ms),
+    rearm_count: Number.isFinite(durable.rearm_count) ? durable.rearm_count : 0,
+    consecutive_failures: Number.isFinite(durable.consecutive_failures)
+      ? durable.consecutive_failures
+      : 0,
+    max_alarm_fires: Number.isFinite(durable.max_alarm_fires) ? durable.max_alarm_fires : 0,
+    cron_fallback_reason: stringOrNull(durable.cron_fallback_reason),
   };
 }
 
@@ -371,6 +390,25 @@ function validateStatus(status, options) {
       `TaskRunner replay_evidence ${status.replay_evidence} did not match expected ${options.expectReplayEvidence}`,
     );
   }
+  validateRecurringState(status);
+}
+
+function validateRecurringState(status) {
+  if (status.status === "poll_progressed") {
+    if (status.poll_status !== "progressed" || status.poll_terminal !== false) {
+      throw new Error("TaskRunner non-terminal progress was not classified as progressed");
+    }
+    if (status.alarm_scheduled_at_ms === null || status.rearm_count < 1) {
+      throw new Error("TaskRunner non-terminal progress did not re-arm the fast path");
+    }
+  }
+  if (
+    status.status === "poll_failed" &&
+    status.cron_fallback_reason === null &&
+    (status.alarm_scheduled_at_ms === null || status.last_rearm_delay_ms === null)
+  ) {
+    throw new Error("TaskRunner transient failure did not schedule bounded retry");
+  }
 }
 
 async function fetchWithTimeout(url, init, timeoutMs) {
@@ -399,6 +437,7 @@ function requiredCapabilityTrueFields() {
     "task_runner_do_available",
     "task_runner_do_foundation_compiled",
     "task_runner_alarm_contract_compiled",
+    "task_runner_rearm_contract_compiled",
     "task_runner_submit_path_compiled",
     "task_runner_poll_path_compiled",
     "task_runner_status_probe_compiled",
@@ -411,6 +450,9 @@ function requiredCutoverGuards() {
     "task_runner_gate",
     "deterministic_task_instance",
     "alarm_contract",
+    "nonterminal_rearm",
+    "failure_backoff",
+    "fast_path_horizon",
     "submit_path_armed",
     "cron_sweeper_fallback",
     "no_double_poll_cas",
@@ -456,6 +498,8 @@ function runSelfTest() {
       task_runner_do_enabled: false,
       task_runner_do_foundation_compiled: true,
       task_runner_alarm_contract_compiled: true,
+      task_runner_rearm_contract_compiled: true,
+      task_runner_max_alarm_fires: 20,
       task_runner_submit_path_compiled: true,
       task_runner_poll_path_compiled: true,
       task_runner_status_probe_compiled: true,
@@ -476,11 +520,38 @@ function runSelfTest() {
         replay_evidence: "first_apply",
         alarm_fired_count: 1,
         poll_status: "applied",
-        poll_reason: "cas_applied",
+        poll_reason: "terminal_cas_applied",
         poll_cas_won: true,
+        poll_terminal: true,
+        rearm_count: 0,
+        consecutive_failures: 0,
+        max_alarm_fires: 20,
       },
     }),
     options,
+  );
+  validateRecurringState(
+    summarizeStatus({
+      task_id: "task_smoke",
+      instance: "task:task_smoke",
+      durable_object_status: {
+        compiled: true,
+        task_id: "task_smoke",
+        status: "poll_progressed",
+        replay_evidence: "progress_applied",
+        alarm_scheduled_at_ms: 30_000,
+        alarm_fired_count: 1,
+        poll_status: "progressed",
+        poll_reason: "progress_cas_applied",
+        poll_cas_won: true,
+        poll_terminal: false,
+        last_rearmed_at_ms: 15_000,
+        last_rearm_delay_ms: 15_000,
+        rearm_count: 1,
+        consecutive_failures: 0,
+        max_alarm_fires: 20,
+      },
+    }),
   );
   const failures = [
     expectFailure(
@@ -491,6 +562,8 @@ function runSelfTest() {
             task_runner_do_enabled: false,
             task_runner_do_foundation_compiled: true,
             task_runner_alarm_contract_compiled: true,
+            task_runner_rearm_contract_compiled: true,
+            task_runner_max_alarm_fires: 20,
             task_runner_submit_path_compiled: true,
             task_runner_poll_path_compiled: true,
             task_runner_status_probe_compiled: false,
@@ -546,6 +619,7 @@ function runSelfTest() {
       { name: "dry-run-redacts-cookie", ok: true },
       { name: "capability-contract", ok: true },
       { name: "status-contract", ok: true },
+      { name: "nonterminal-rearm-contract", ok: true },
       ...failures,
     ],
   };

@@ -476,6 +476,8 @@ export type PlatformCapabilities = {
   task_runner_do_enabled: boolean
   task_runner_do_foundation_compiled: boolean
   task_runner_alarm_contract_compiled: boolean
+  task_runner_rearm_contract_compiled: boolean
+  task_runner_max_alarm_fires: number
   task_runner_submit_path_compiled: boolean
   task_runner_poll_path_compiled: boolean
   task_runner_status_probe_compiled: boolean
@@ -496,6 +498,7 @@ export type TaskRunnerDurableObjectStatus = {
     | 'alarm_fired'
     | 'poll_skipped'
     | 'poll_noop'
+    | 'poll_progressed'
     | 'poll_applied'
     | 'poll_failed'
     | null
@@ -504,6 +507,8 @@ export type TaskRunnerDurableObjectStatus = {
     | 'armed_pending'
     | 'alarm_fired_pending_poll'
     | 'first_apply'
+    | 'progress_applied'
+    | 'nonterminal_cas_noop'
     | 'second_replay_noop'
     | 'gate_disabled_fallback'
     | 'cron_already_settled'
@@ -516,9 +521,16 @@ export type TaskRunnerDurableObjectStatus = {
   alarm_fired_count: number
   poll_attempted_at_ms: number | null
   poll_completed_at_ms: number | null
-  poll_status: 'skipped' | 'noop' | 'applied' | 'failed' | null
+  poll_status: 'skipped' | 'noop' | 'progressed' | 'applied' | 'failed' | null
   poll_reason: string | null
   poll_cas_won: boolean | null
+  poll_terminal: boolean | null
+  last_rearmed_at_ms: number | null
+  last_rearm_delay_ms: number | null
+  rearm_count: number
+  consecutive_failures: number
+  max_alarm_fires: number
+  cron_fallback_reason: string | null
 }
 
 export type TaskRunnerStatusProbe = {

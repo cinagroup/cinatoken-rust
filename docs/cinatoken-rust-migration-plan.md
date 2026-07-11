@@ -6862,6 +6862,51 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.145 2026-07-11 TaskRunner Recurring Alarm And Architecture Re-Audit
+
+This increment corrects the optional M5b fast path after a fresh audit of the
+Go/Rust migration and cinaVibeSDK layering. The previous TaskRunner alarm fired
+once, treated every winning task-row CAS as terminal settlement, caught failures
+without scheduling another alarm, and therefore could emit optimistic replay
+evidence for an ordinary `IN_PROGRESS` update.
+
+Implemented:
+
+- `poll_one_task` returns a typed result containing both `cas_won` and the
+  provider-observed terminal state. The scheduled cron counter now counts only
+  terminal CAS wins instead of every progress-row update.
+- `TaskRunner` classifies a non-terminal CAS win as `progressed`, re-arms the
+  per-task alarm at the configured base delay, and re-reads the D1 row after a
+  lost CAS before distinguishing a stale non-terminal update from a confirmed
+  terminal replay.
+- Transient binding, lookup, recheck, channel, and provider failures re-arm with
+  deterministic bounded backoff. The per-task fast path stops after
+  `TASK_RUNNER_MAX_ALARM_FIRES` (default `20`, clamped `1..240`) and persists
+  `fast_path_horizon_exhausted` so the one-minute cron remains authoritative.
+- Added `task_runner_rearm_contract_compiled`, the `nonterminal_rearm`,
+  `failure_backoff`, and `fast_path_horizon` guards, status metadata for terminal
+  observation/rearm/failure/fallback state, frontend rendering, and smoke
+  contract checks. Cutover readiness now requires the rearm contract.
+
+Audit corrections retained for the next increments:
+
+- Current AI Gateway fallback is Gateway-to-direct on one selected channel plus
+  optional same-logical-model channel retry. It is not cinaVibeSDK-style true
+  model/provider fallback. A production implementation must separate Gateway and
+  provider-native model names, refuse direct bypass on `401`/`403`/`429`,
+  revalidate fallback model limits/channels, preserve billing, and persist the
+  fallback attempt path.
+- Current WFP tenant AI routes remain NO-GO for paid traffic. The admin dispatch
+  path reaches tenant AI Gateway forwarding without central relay-token policy,
+  channel selection, quota reserve/settlement, or relay audit. WFP must become a
+  post-admission transport that returns through the existing settlement pipeline,
+  with a body-bound short-lived authority envelope, before either dispatch gate
+  can be enabled for paid routes.
+
+Local validation for this increment includes focused TaskRunner Worker tests,
+frontend readiness tests, and TaskRunner smoke self-test/dry-run. Full workspace,
+wasm32, frontend quality, and deployed staging replay remain separate gates.
+
 ### 22.144 2026-07-10 Deterministic P0 Source-to-D1 Reconciliation Gate
 
 The migration CLI now turns the data-plan acceptance criteria in section 8.5

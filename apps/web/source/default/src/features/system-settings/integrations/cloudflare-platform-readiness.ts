@@ -86,6 +86,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'task_runner_do_enabled'
   | 'task_runner_do_foundation_compiled'
   | 'task_runner_alarm_contract_compiled'
+  | 'task_runner_rearm_contract_compiled'
   | 'task_runner_submit_path_compiled'
   | 'task_runner_poll_path_compiled'
   | 'task_runner_status_probe_compiled'
@@ -139,6 +140,7 @@ export function buildPlatformReadinessSummary(
   const taskRunnerImplementation = allReady(
     capabilities.task_runner_do_foundation_compiled,
     capabilities.task_runner_alarm_contract_compiled,
+    capabilities.task_runner_rearm_contract_compiled,
     capabilities.task_runner_submit_path_compiled,
     capabilities.task_runner_poll_path_compiled,
     capabilities.task_runner_status_probe_compiled

@@ -160,28 +160,35 @@ has been enabled only for the controlled replay, run:
 bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --json
 ```
 
-For archived proof, rerun the same command with the expected replay state as
-the scenario advances:
+For archived proof, rerun the same read-only command as the alarm state machine
+advances. The GET probe does not cause another alarm; the submit path and the
+DO's persisted rearm decision must produce each observed state:
 
 ```powershell
-bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --expect-replay-evidence first_apply --json
+bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --expect-status poll_progressed --expect-poll-status progressed --expect-replay-evidence progress_applied --json
+bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --expect-status poll_applied --expect-poll-status applied --expect-replay-evidence first_apply --json
 bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-enabled --expect-replay-evidence second_replay_noop --json
 bun run smoke:task-runner -- --url "$env:STAGING_BASE_URL" --task-id "$env:TASK_RUNNER_SMOKE_TASK_ID" --cookie "$env:TASK_RUNNER_SMOKE_COOKIE" --confirm-live --expect-gate-disabled --expect-replay-evidence gate_disabled_fallback --json
 ```
 
 Pass criteria:
 
-- `/api/platform/capabilities` reports `task_runner_status_probe_compiled=true`
-  and `task_runner_cutover_ready=false`.
+- `/api/platform/capabilities` reports
+  `task_runner_rearm_contract_compiled=true`, a bounded
+  `task_runner_max_alarm_fires`, `task_runner_status_probe_compiled=true`, and
+  `task_runner_cutover_ready=false`.
 - `GET /api/platform/task-runner/:task_id/status` returns only metadata:
-  alarm timing, poll status, bounded reason, and CAS ownership.
+  alarm/rearm timing, poll status, bounded reason, CAS ownership, observed
+  terminal state, failure count, fast-path horizon, and cron fallback reason.
 - The admin Cloudflare Platform panel's `TaskRunner status probe` form can query
   the same task id and display the returned Durable Object metadata without
   exposing arm/delete controls.
-- The status JSON and frontend badge show the expected `replay_evidence` for
-  first apply, second replay/no-op, and rollback/fallback snapshots.
-- The report includes first poll evidence and a second replay/no-op or cron
-  fallback snapshot before `TASK_RUNNER_STAGING_REPLAY_VERIFIED` is considered.
+- A non-terminal provider result reports `progress_applied`, keeps an alarm
+  scheduled, and increments `rearm_count`; it must not report `first_apply`.
+- A lost CAS is re-read from D1 and reports either `nonterminal_cas_noop` with a
+  new alarm or confirmed-terminal `second_replay_noop` without one.
+- Transient failure evidence shows bounded backoff. Horizon exhaustion records
+  `fast_path_horizon_exhausted` before cron-only fallback.
 - Rollback evidence shows `TASK_RUNNER_DO_ENABLED=false` with cron still owning
   settlement.
 

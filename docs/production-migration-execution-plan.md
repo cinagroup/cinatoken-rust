@@ -1,6 +1,6 @@
 # Production Migration Execution Plan
 
-Date: 2026-07-10
+Date: 2026-07-11
 
 Status: production execution source of truth. Update this file whenever a gate,
 workstream status, or rollout decision changes.
@@ -153,12 +153,40 @@ Gate interpretation:
 - The exposed token must not be used. Revoke/rotate it and authenticate with a
   replacement least-privilege credential before remote execution.
 
+### 2026-07-11 Layered Architecture Re-Audit
+
+Production decisions from the refreshed cinaVibeSDK and Cloudflare audit:
+
+- TaskRunner now uses a bounded recurring-alarm state machine rather than a
+  one-shot poll. Non-terminal progress re-arms, transient failures back off,
+  lost CAS outcomes re-read D1, and the fast path explicitly falls back to cron
+  after its configured horizon. The runtime gate remains false pending staging
+  alarm/cron race and no-double-settlement evidence.
+- AI Gateway has no true cross-model fallback yet. Treat the existing
+  same-channel direct path as transport failover only. Do not approve production
+  until Gateway-only model names are separated from direct-provider names,
+  auth/rate-limit responses cannot be bypassed, billing follows the served model,
+  and durable fallback audit metadata exists.
+- WFP tenant AI routes are not an alternate paid entry point. They currently lack
+  the central relay's token policy, channel selection, quota settlement, and
+  audit ownership. Keep WFP paid dispatch disabled until it is a post-admission
+  transport behind a short-lived body-bound authority envelope and the response
+  returns through the central settlement pipeline.
+
 ## Best-Practice Anchors
 
-Cloudflare references were refreshed on 2026-06-22:
+Cloudflare references were refreshed on 2026-07-11:
 
 - Workers best practices:
   <https://developers.cloudflare.com/workers/best-practices/workers-best-practices/>
+- Durable Object alarms:
+  <https://developers.cloudflare.com/durable-objects/api/alarms/>
+- AI Gateway dynamic routing:
+  <https://developers.cloudflare.com/ai-gateway/features/dynamic-routing/>
+- Workers for Platforms architecture:
+  <https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/how-workers-for-platforms-works/>
+- WFP dynamic dispatch:
+  <https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/dynamic-dispatch/>
 - Workers limits:
   <https://developers.cloudflare.com/workers/platform/limits/>
 - Workers Streams:

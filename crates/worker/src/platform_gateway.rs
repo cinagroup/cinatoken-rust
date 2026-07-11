@@ -49,7 +49,8 @@ use crate::task_repository::{
 };
 use crate::task_runner::{
     fetch_task_runner_status, is_task_runner_cutover_ready, task_runner_alarm_contract_compiled,
-    task_runner_cutover_guards, task_runner_do_foundation_compiled, task_runner_poll_path_compiled,
+    task_runner_cutover_guards, task_runner_do_foundation_compiled, task_runner_max_alarm_fires,
+    task_runner_poll_path_compiled, task_runner_rearm_contract_compiled,
     task_runner_staging_replay_verified, task_runner_status_probe_compiled,
     task_runner_status_probe_task_id, task_runner_submit_path_compiled, TASK_RUNNER_BINDING,
     TASK_RUNNER_DO_ENABLED_ENV,
@@ -220,6 +221,8 @@ struct PlatformCapabilities {
     task_runner_do_enabled: bool,
     task_runner_do_foundation_compiled: bool,
     task_runner_alarm_contract_compiled: bool,
+    task_runner_rearm_contract_compiled: bool,
+    task_runner_max_alarm_fires: u32,
     task_runner_submit_path_compiled: bool,
     task_runner_poll_path_compiled: bool,
     task_runner_status_probe_compiled: bool,
@@ -397,6 +400,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let task_runner_do_enabled = env_flag(&env, TASK_RUNNER_DO_ENABLED_ENV);
     let task_runner_do_foundation_compiled = task_runner_do_foundation_compiled();
     let task_runner_alarm_contract_compiled = task_runner_alarm_contract_compiled();
+    let task_runner_rearm_contract_compiled = task_runner_rearm_contract_compiled();
+    let task_runner_max_alarm_fires = task_runner_max_alarm_fires(&env);
     let task_runner_submit_path_compiled = task_runner_submit_path_compiled();
     let task_runner_poll_path_compiled = task_runner_poll_path_compiled();
     let task_runner_status_probe_compiled = task_runner_status_probe_compiled();
@@ -406,6 +411,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_do_enabled,
         task_runner_do_foundation_compiled,
         task_runner_alarm_contract_compiled,
+        task_runner_rearm_contract_compiled,
         task_runner_submit_path_compiled,
         task_runner_poll_path_compiled,
         task_runner_status_probe_compiled,
@@ -497,6 +503,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         task_runner_do_enabled,
         task_runner_do_foundation_compiled,
         task_runner_alarm_contract_compiled,
+        task_runner_rearm_contract_compiled,
+        task_runner_max_alarm_fires,
         task_runner_submit_path_compiled,
         task_runner_poll_path_compiled,
         task_runner_status_probe_compiled,
@@ -2118,18 +2126,22 @@ mod tests {
     fn task_runner_alarm_foundation_is_operator_visible_but_not_cutover_ready() {
         assert!(task_runner_do_foundation_compiled());
         assert!(task_runner_alarm_contract_compiled());
+        assert!(task_runner_rearm_contract_compiled());
         assert!(task_runner_submit_path_compiled());
         assert!(task_runner_poll_path_compiled());
         assert!(task_runner_status_probe_compiled());
         let guards = task_runner_cutover_guards();
         assert!(guards.contains(&"task_runner_binding"));
         assert!(guards.contains(&"alarm_contract"));
+        assert!(guards.contains(&"nonterminal_rearm"));
+        assert!(guards.contains(&"failure_backoff"));
+        assert!(guards.contains(&"fast_path_horizon"));
         assert!(guards.contains(&"submit_path_armed"));
         assert!(guards.contains(&"cron_sweeper_fallback"));
         assert!(guards.contains(&"no_double_poll_cas"));
         assert!(guards.contains(&"status_probe"));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, false
+            true, true, true, true, true, true, true, true, false
         ));
     }
 

@@ -1,6 +1,6 @@
 # Layered Gateway Architecture — Implementation Scheme
 
-> **Status:** Partially implemented · updated 2026-07-06 — the provider registry
+> **Status:** Partially implemented · updated 2026-07-11 — the provider registry
 > (wired), the AI-Gateway cutover planner, the RealtimeSession DO substrate, and
 > the WFP dispatch layer have all landed behind env gates. See the **Status
 > ledger (TS → Rust)** below for what is wired vs. gated vs. pending, per pillar.
@@ -41,9 +41,11 @@ changes materially:
    only concurrency control today is optimistic guarded `UPDATE`s plus manual
    half-batch compensation. The DO migration must be shadow-first and
    tiered-traffic-scoped.
-4. **Primary+fallback routing already exists** as an N-attempt planned loop —
-   the AI-Gateway "multi-model" paradigm is mostly *configuration + labeling*
-   over `plan_relay_attempts`, not new machinery.
+4. **Same-model channel retry exists; true model fallback does not.** The
+   N-attempt `plan_relay_attempts` loop changes channels/groups for one requested
+   logical model. AI Gateway failure can fall back to the same selected channel's
+   direct provider path, but there is no cinaVibeSDK-style `fallbackModel` attempt,
+   fallback-model token-policy check, billing handoff, or durable fallback audit.
 5. **The strongest task-system win is a bug-fix, not a DO.** A missing timeout
    sweep (Go's `sweepTimedOutTasks` was never ported for video/suno) plus a dead
    Midjourney timeout guard (seconds-vs-milliseconds units bug) create a real
@@ -85,6 +87,25 @@ maturity levels are used:
 - **Gated substrate** — code exists, compiles, is tested and bound, but is inert
   behind an `*_ENABLED=false` flag / commented binding and not yet on a hot path.
 - **Pending** — not started.
+
+**2026-07-11 audit correction (supersedes optimistic wording in the ledger):**
+
+- M7's existing fallback is only AI Gateway -> direct provider on the same
+  selected channel, followed by optional same-logical-model channel retries.
+  True cross-model/provider fallback remains P0 work. The current direct fallback
+  also needs separate provider-native model restoration, a dedicated failure
+  policy that does not bypass Gateway `401`/`403`/`429`, and persisted fallback
+  audit metadata before production canary.
+- M8's five tenant AI routes are transport substrate, not a paid relay entry.
+  They bypass central relay-token policy, D1 channel selection, quota
+  reserve/settlement, and relay audit when invoked through the admin dispatch
+  path. Keep both WFP gates false for paid traffic until WFP is selected only
+  after central admission and returns through the existing settlement pipeline.
+- M5 TaskRunner is no longer a one-shot alarm: the 2026-07-11 increment separates
+  terminal settlement from non-terminal progress CAS, re-reads D1 after a lost
+  CAS, re-arms progress, backs off transient failures, and returns ownership to
+  cron after a bounded per-task fast-path horizon. Staging alarm/cron race proof
+  is still required before enabling the gate.
 
 | Pillar / milestone | Paradigm | Maturity | What landed | What remains | Evidence |
 |---|---|---|---|---|---|

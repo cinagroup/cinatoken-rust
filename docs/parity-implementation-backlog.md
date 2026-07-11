@@ -34,10 +34,14 @@ deferred past their phase:
    Remaining P2 gaps: cache/audio/image default tables, compact-suffix
    wildcard, `AcceptUnsetRatioModel` override + config-error path, cache 5m/1h
    split, sub-category subtraction. `source-pricing-ratio-parity.md`.
-2. **Missing-usage SSE handling** — UPDATE 2026-06-25: Rust **refunds** on missing
-   usage (`relay.rs::refund_reason`) instead of Go's estimate-from-text-and-bill,
-   so it under-bills usage-less streams. Decision needed, not a build gap.
-   `source-usage-parsing-parity.md`. (G4, Scenario A)
+2. **Missing-usage SSE handling** — UPDATE 2026-07-10: **implemented behind
+   `RELAY_MISSING_USAGE_ESTIMATE_ENABLED`**. OpenAI-compatible streams collect
+   completion/reasoning text plus the Go-compatible maximum tool count, apply
+   the `toolCount * 7` bump, and settle locally estimated usage instead of
+   refunding. Non-stream responses use the same Go-compatible prompt/completion
+   fallback. Remaining work is staging shadow evidence and the production flag
+   decision, not relay implementation. `source-usage-parsing-parity.md`. (G4,
+   Scenario A)
 3. **CAS idempotency** for payments (conditional credit) and tasks (conditional
    status) — prevents double-credit/double-refund.
    `source-payment-idempotency-parity.md`, `source-task-lifecycle-parity.md`.
@@ -90,7 +94,7 @@ Build in this order; each depends on the previous unless noted.
 | 1.4 | Auto cross-group retry state machine (exhaust priorities → advance group) | G3 | channel-selection | 1.2 |
 | 1.5 | Retry loop (RetryTimes+1) + `shouldRetry` rule order + `use_channel` chain | G3 | retry-autoban | 1.2 |
 | 1.6 | Auto-ban: `ShouldDisableChannel` (status + keyword AC match), CAS ban off-path (wait_until/DO), **invalidate selection cache**, AutoDisabled vs manual, recovery | G3 | retry-autoban | 1.5, 0.2 |
-| 1.7 | `BLOCKER` Usage parsing: final-chunk (audio second-to-last), `ValidUsage` gate, **missing-usage estimate fallback** (+toolCount*7), stream_options strip/forward/synthesize matrix | G3/G4 | usage-parsing | — |
+| 1.7 | Implemented, staging evidence pending: final-chunk usage parsing, `ValidUsage` gate, flag-gated **missing-usage estimate fallback** (+toolCount*7), and stream_options strip/forward/synthesize matrix | G3/G4 | usage-parsing | — |
 | 1.8 | Token estimation: tiktoken **cl100k + o200k**, OpenAI overhead (8/3/3/3), image algorithm (patch/tile), audio duration, media fallbacks; bundle/CPU budget (vocab from KV/R2, `cpu_ms`) | G4 | token-estimation | — |
 | 1.9 | `BLOCKER` Non-tiered billing: three-way branch (per-call/tiered/per-token), full ratio set, default-37.5 tri-state, hardcoded completion table, options-backed cached maps (CONFIG_KV/DO + invalidation) | G4 | pricing-ratio | 1.7, 1.8 |
 | 1.10 | Tiered billing: engine contract (rounding half-away-from-zero, single round at group step), version dispatch, AST exclusion, request-rule split; golden fixtures (rounding, time, image/audio, math, fuzz, gjson `param()`, cross-tier) | G4 | billing-expr | 1.7, 1.8 |

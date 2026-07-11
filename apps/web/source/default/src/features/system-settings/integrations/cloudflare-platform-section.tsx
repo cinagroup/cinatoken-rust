@@ -27,6 +27,11 @@ import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { getPlatformCapabilities, getTaskRunnerStatus } from '../api'
 import { SettingsSection } from '../components/settings-section'
 import type { PlatformCapabilities, TaskRunnerStatusProbe } from '../types'
+import {
+  buildPlatformReadinessSummary,
+  type PlatformReadinessSignal,
+  type PlatformReadinessStage,
+} from './cloudflare-platform-readiness'
 
 type CapabilityRow = {
   label: string
@@ -90,92 +95,21 @@ export function CloudflarePlatformSection() {
     setTaskRunnerProbeId(normalizedTaskRunnerTaskId)
   }
 
-  const foundationChecks = capabilities
-    ? [
-        capabilities.d1_migration_ready,
-        capabilities.ai_binding_available,
-        capabilities.ai_gateway_id_configured,
-        capabilities.channel_affinity_do_available,
-        capabilities.realtime_sessions_do_available,
-        capabilities.wfp_dispatch_binding_available,
-        capabilities.wfp_tenant_script_plan_compiled,
-        capabilities.wfp_tenant_rust_wasm_runtime_compiled,
-        capabilities.wfp_tenant_route_manifest_compiled,
-        capabilities.wfp_tenant_internal_dispatch_required_compiled,
-        capabilities.wfp_tenant_response_header_guard_compiled,
-        capabilities.wfp_tenant_ai_gateway_policy_compiled,
-        capabilities.do_websocket_hibernation_compiled,
-        capabilities.realtime_session_auth_boundary_compiled,
-        capabilities.realtime_session_metrics_persisted_compiled,
-        capabilities.realtime_session_control_no_echo_compiled,
-        capabilities.realtime_session_upstream_bridge_planner_compiled,
-        capabilities.realtime_session_upstream_channel_planner_compiled,
-        capabilities.realtime_session_upstream_bridge_connect_contract_compiled,
-        capabilities.realtime_session_upstream_connect_handoff_compiled,
-        capabilities.realtime_session_upstream_fetch_upgrade_adapter_compiled,
-        capabilities.realtime_session_upstream_bridge_lifecycle_compiled,
-        capabilities.realtime_session_upstream_bridge_frame_guard_compiled,
-        capabilities.realtime_session_upstream_bridge_close_mapping_compiled,
-        capabilities.realtime_session_upstream_bridge_send_failure_guard_compiled,
-        capabilities.realtime_session_upstream_bridge_event_trace_compiled,
-        capabilities.realtime_session_upstream_bridge_replay_contract_compiled,
-        capabilities.realtime_session_upstream_bridge_backpressure_policy_compiled,
-        capabilities.realtime_session_upstream_bridge_backpressure_runtime_compiled,
-        capabilities.realtime_session_upstream_usage_capture_compiled,
-        capabilities.realtime_session_billing_presettlement_snapshot_compiled,
-        capabilities.realtime_session_billing_settlement_preview_compiled,
-        capabilities.realtime_session_billing_settlement_handoff_compiled,
-        capabilities.realtime_session_billing_settlement_mutation_plan_compiled,
-        capabilities.realtime_session_billing_settlement_writer_compiled,
-        capabilities.realtime_session_billing_settlement_replay_marker_compiled,
-        capabilities.realtime_session_billing_settlement_audit_log_compiled,
-        capabilities.realtime_session_billing_settlement_batch_compiled,
-        capabilities.realtime_session_billing_settlement_retry_compiled,
-        capabilities.realtime_session_billing_reservation_lease_compiled,
-        capabilities.realtime_session_billing_settlement_staging_smoke_compiled,
-        capabilities.realtime_session_platform_header_boundary_compiled,
-        capabilities.task_poller_scheduled_handler_compiled,
-        capabilities.task_poller_timeout_sweep_compiled,
-        capabilities.task_poller_refund_batch_compiled,
-        capabilities.task_poller_refund_replay_contract_compiled,
-        capabilities.task_runner_do_available,
-        capabilities.task_runner_do_foundation_compiled,
-        capabilities.task_runner_alarm_contract_compiled,
-        capabilities.task_runner_submit_path_compiled,
-        capabilities.task_runner_poll_path_compiled,
-        capabilities.task_runner_status_probe_compiled,
-      ]
-    : []
-  const readyCount = foundationChecks.filter(Boolean).length
-
   return (
     <SettingsSection title={t('Cloudflare Platform')}>
       <div className='space-y-4'>
-        <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4'>
-          <div className='space-y-1'>
-            <p className='text-sm font-medium'>
-              {t('Cloudflare migration readiness')}
-            </p>
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Tracks Worker bindings, Durable Objects, WFP dispatch, AI Gateway, and realtime feature gates reported by the Rust Worker.'
-              )}
-            </p>
-          </div>
-          <div className='flex items-center gap-2'>
-            {capabilities ? (
-              <StatusBadge
-                variant={
-                  readyCount === foundationChecks.length ? 'success' : 'warning'
-                }
-                copyable={false}
-              >
-                {t('{{ready}}/{{total}} foundation signals ready', {
-                  ready: readyCount,
-                  total: foundationChecks.length,
-                })}
-              </StatusBadge>
-            ) : null}
+        <div className='flex flex-col gap-4 rounded-lg border p-4'>
+          <div className='flex flex-wrap items-center justify-between gap-3'>
+            <div className='space-y-1'>
+              <p className='text-sm font-medium'>
+                {t('Cloudflare migration readiness')}
+              </p>
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Rust Worker capability report grouped by implementation, runtime configuration, smoke evidence, and production cutover.'
+                )}
+              </p>
+            </div>
             <Button
               type='button'
               variant='outline'
@@ -186,6 +120,9 @@ export function CloudflarePlatformSection() {
               {capabilitiesQuery.isFetching ? t('Refreshing...') : t('Refresh')}
             </Button>
           </div>
+          {capabilities ? (
+            <PlatformReadinessHeadline capabilities={capabilities} />
+          ) : null}
         </div>
 
         {capabilitiesQuery.isError ? (
@@ -260,6 +197,145 @@ export function CloudflarePlatformSection() {
   )
 }
 
+function PlatformReadinessHeadline(props: {
+  capabilities: PlatformCapabilities
+}) {
+  const { t } = useTranslation()
+  const stages = buildPlatformReadinessSummary(props.capabilities)
+
+  return (
+    <div className='grid gap-4 border-t pt-4 sm:grid-cols-2 xl:grid-cols-4'>
+      {stages.map((stage) => (
+        <section
+          key={stage.id}
+          className='flex min-w-0 flex-col gap-2'
+          aria-label={getReadinessStageTitle(stage, t)}
+        >
+          <div className='flex items-center justify-between gap-2'>
+            <p className='text-xs font-medium'>
+              {getReadinessStageTitle(stage, t)}
+            </p>
+            <StatusBadge
+              variant={stage.complete ? 'success' : 'warning'}
+              copyable={false}
+            >
+              {getReadinessStageCount(stage, t)}
+            </StatusBadge>
+          </div>
+          <ul className='flex flex-col gap-1.5'>
+            {stage.signals.map((signal) => (
+              <li
+                key={signal.id}
+                className='flex min-w-0 items-center justify-between gap-2 text-xs'
+              >
+                <span className='text-muted-foreground min-w-0 truncate'>
+                  {getReadinessSignalLabel(signal, t)}
+                </span>
+                <StatusBadge
+                  type='text'
+                  variant={getReadinessSignalVariant(signal)}
+                  copyable={false}
+                  className='shrink-0'
+                >
+                  {getReadinessSignalStatus(signal, t)}
+                </StatusBadge>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+function getReadinessStageTitle(
+  stage: PlatformReadinessStage,
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  switch (stage.id) {
+    case 'implementation':
+      return t('Implementation')
+    case 'configuration':
+      return t('Runtime configuration')
+    case 'smoke':
+      return t('Smoke evidence')
+    case 'cutover':
+      return t('Production cutover')
+  }
+}
+
+function getReadinessStageCount(
+  stage: PlatformReadinessStage,
+  t: (key: string, options?: Record<string, unknown>) => string
+) {
+  if (stage.id === 'smoke') {
+    return t('{{verified}}/{{total}} verified', {
+      verified: stage.verifiedCount,
+      total: stage.signals.length,
+    })
+  }
+  return t('{{ready}}/{{total}} ready', {
+    ready: stage.readyCount,
+    total: stage.signals.length,
+  })
+}
+
+function getReadinessSignalLabel(
+  signal: PlatformReadinessSignal,
+  t: (key: string) => string
+) {
+  switch (signal.id) {
+    case 'ai-gateway-implementation':
+    case 'ai-gateway-runtime':
+      return t('AI Gateway')
+    case 'wfp-tenant-implementation':
+    case 'wfp-tenant-runtime':
+      return t('WFP tenant')
+    case 'realtime-implementation':
+    case 'realtime-runtime':
+      return t('Realtime')
+    case 'task-runner-implementation':
+    case 'task-runner-runtime':
+      return t('TaskRunner')
+    case 'ai-gateway-canary':
+      return t('AI Gateway canary')
+    case 'wfp-tenant-smoke':
+      return t('WFP tenant smoke')
+    case 'realtime-smoke':
+      return t('Realtime smoke')
+    case 'task-runner-replay':
+      return t('TaskRunner replay')
+    case 'task-runner-cutover':
+      return t('TaskRunner')
+    case 'realtime-v1-cutover':
+      return t('Realtime v1')
+  }
+}
+
+function getReadinessSignalStatus(
+  signal: PlatformReadinessSignal,
+  t: (key: string) => string
+) {
+  switch (signal.status) {
+    case 'ready':
+      return t('Ready')
+    case 'verified':
+      return t('Verified')
+    case 'ready-to-verify':
+      return t('Ready to verify')
+    case 'blocked':
+      return t('Blocked')
+  }
+}
+
+function getReadinessSignalVariant(
+  signal: PlatformReadinessSignal
+): StatusVariant {
+  return signal.status === 'ready' || signal.status === 'verified'
+    ? 'success'
+    : 'warning'
+}
+
 function buildCapabilityGroups(
   capabilities: PlatformCapabilities,
   t: (key: string, options?: Record<string, unknown>) => string
@@ -282,22 +358,22 @@ function buildCapabilityGroups(
       rows: [
         {
           label: t('D1 migration ledger'),
-          description: t(
-            '{{count}} migrations applied; latest {{latest}}.',
-            {
-              count: capabilities.d1_migration_applied_count,
-              latest: capabilities.d1_migration_latest || t('Unavailable'),
-            }
-          ),
+          description: t('{{count}} migrations applied; latest {{latest}}.', {
+            count: capabilities.d1_migration_applied_count,
+            latest: capabilities.d1_migration_latest || t('Unavailable'),
+          }),
           ready: capabilities.d1_migration_status_available,
           readyLabel: t('Available'),
           missingLabel: t('Unavailable'),
         },
         {
           label: t('D1 schema readiness'),
-          description: t('Requires the exact migration set through {{migration}}.', {
-            migration: capabilities.d1_expected_migration,
-          }),
+          description: t(
+            'Requires the exact migration set through {{migration}}.',
+            {
+              migration: capabilities.d1_expected_migration,
+            }
+          ),
           ready: capabilities.d1_migration_ready,
           readyLabel: t('Ready'),
           missingLabel: !capabilities.d1_migration_status_available
@@ -412,13 +488,13 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
-          label: t('Router cutover readiness'),
+          label: t('Router canary readiness'),
           description: t(
-            'Requires account, gateway ID, runtime token, and explicit router gate.'
+            'Runtime prerequisites for an AI Gateway traffic canary: account, gateway ID, token, and explicit router gate.'
           ),
           ready: capabilities.relay_ai_gateway_router_ready,
-          readyLabel: t('Ready'),
-          missingLabel: t('Waiting'),
+          readyLabel: t('Ready to verify'),
+          missingLabel: t('Blocked'),
           missingVariant: capabilities.relay_ai_gateway_router_enabled
             ? 'warning'
             : 'neutral',
@@ -672,6 +748,31 @@ function buildCapabilityGroups(
             : 'neutral',
         },
         {
+          label: t('TaskRunner cutover guards'),
+          description: t('Compiled guards: {{guards}}', {
+            guards:
+              capabilities.task_runner_cutover_guards.join(', ') ||
+              t('No guards'),
+          }),
+          ready: capabilities.task_runner_cutover_guards.length > 0,
+          readyLabel: t('{{count}} guards', {
+            count: capabilities.task_runner_cutover_guards.length,
+          }),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('TaskRunner cutover readiness'),
+          description: t(
+            'Requires the Durable Object binding and gate, compiled submit and poll paths, status probe, and verified staging replay.'
+          ),
+          ready: capabilities.task_runner_cutover_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant: capabilities.task_runner_do_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
           label: t('Timeout sweep gate'),
           description: t(
             'TASK_TIMEOUT_MINUTES={{minutes}}; zero disables timeout cleanup.',
@@ -797,8 +898,7 @@ function buildCapabilityGroups(
           description: t(
             'Runtime flag REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED. The public /v1/realtime upgrade fails closed while this gate is off.'
           ),
-          ready:
-            capabilities.realtime_session_billing_settlement_write_enabled,
+          ready: capabilities.realtime_session_billing_settlement_write_enabled,
           readyLabel: t('Enabled'),
           missingLabel: t('Off'),
           missingVariant: capabilities.realtime_session_v1_enabled
@@ -877,6 +977,16 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Hibernation fail-closed bridge'),
+          description: t(
+            'Closes a resumed Realtime session with redacted terminal evidence when transient upstream bridge state is unavailable after hibernation.'
+          ),
+          ready:
+            capabilities.realtime_session_upstream_bridge_hibernation_fail_closed_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Upstream frame guard'),
           description: t(
             'Rejects oversized Realtime bridge text and binary frames with message-too-big close handling alongside the bounded backpressure queue.'
@@ -951,8 +1061,7 @@ function buildCapabilityGroups(
           description: t(
             'Captures response.done usage token metadata into DO metrics without storing raw upstream frames or secrets; final billing settlement remains separately gated.'
           ),
-          ready:
-            capabilities.realtime_session_upstream_usage_capture_compiled,
+          ready: capabilities.realtime_session_upstream_usage_capture_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },
@@ -971,7 +1080,8 @@ function buildCapabilityGroups(
           description: t(
             'Computes redacted final/refund/additional quota metadata from a frozen tiered snapshot and response.done usage without applying quota yet.'
           ),
-          ready: capabilities.realtime_session_billing_settlement_preview_compiled,
+          ready:
+            capabilities.realtime_session_billing_settlement_preview_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },
@@ -980,7 +1090,8 @@ function buildCapabilityGroups(
           description: t(
             'Keeps the full tiered snapshot and request probe in the internal connect handoff so the Durable Object can compute redacted settlement preview metrics without persisting raw billing rules.'
           ),
-          ready: capabilities.realtime_session_billing_settlement_handoff_compiled,
+          ready:
+            capabilities.realtime_session_billing_settlement_handoff_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },
@@ -1124,7 +1235,7 @@ function buildCapabilityGroups(
           missingVariant: 'neutral',
         },
         {
-          label: t('v1 production readiness'),
+          label: t('v1 cutover readiness'),
           description: t(
             'Requires DO binding, v1 gate, auth boundary, hibernation, metrics, no-echo controls, upstream bridge, and billing settlement.'
           ),
@@ -1200,7 +1311,10 @@ function TaskRunnerStatusProbePanel(props: {
         </StatusBadge>
       </div>
 
-      <form className='mt-3 flex flex-col gap-2 sm:flex-row' onSubmit={onSubmit}>
+      <form
+        className='mt-3 flex flex-col gap-2 sm:flex-row'
+        onSubmit={onSubmit}
+      >
         <Input
           aria-label={t('TaskRunner task id')}
           autoComplete='off'
@@ -1254,9 +1368,7 @@ function TaskRunnerStatusProbePanel(props: {
               {formatCasWon(durable.poll_cas_won, t)}
             </StatusBadge>
             <StatusBadge
-              variant={taskRunnerReplayEvidenceVariant(
-                durable.replay_evidence
-              )}
+              variant={taskRunnerReplayEvidenceVariant(durable.replay_evidence)}
               copyable={false}
             >
               {formatReplayEvidence(durable.replay_evidence, t)}
@@ -1363,9 +1475,7 @@ function CapabilityGroupCard({ group }: { group: CapabilityGroup }) {
 }
 
 function normalizeTaskRunnerTaskId(value: string) {
-  return value
-    .slice(0, 128)
-    .replace(/[^A-Za-z0-9_-]/g, '')
+  return value.slice(0, 128).replace(/[^A-Za-z0-9_-]/g, '')
 }
 
 function formatProbeStatus(

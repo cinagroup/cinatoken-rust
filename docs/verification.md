@@ -2694,6 +2694,35 @@ cargo check -p cinatoken-worker --target wasm32-unknown-unknown
 bun run check
 ```
 
+### Deterministic P0 source-to-D1 reconciliation (2026-07-10)
+
+- Added `cinatoken-migrate reconcile` and `bun run reconcile:migration` for
+  source/target SQLite comparison of `users`, `tokens`, `channels`, `abilities`,
+  and `options`.
+- The v1 manifest contains counts, logical PK bounds, canonical SHA-256 values,
+  deterministic logical-key/row-hash samples, and integrity/relationship
+  results without raw rows or secrets. JSON normalization is restricted to
+  declared configuration columns; token/channel credentials stay byte-exact.
+- `cargo test -p cinatoken-migration` passed all 30 tests and the CLI help smoke
+  passed. Real production-source execution and remote staging D1 reconciliation
+  remain pending.
+
+### Realtime hibernation bridge-loss fail-closed (2026-07-10)
+
+- A restored client attachment with `upstream_connect_handoff=true` and no
+  active in-memory provider bridge now fails closed on its first business text
+  or binary frame. Control-only platform sockets and `ping`/`status` diagnostics
+  keep their previous behavior.
+- The terminal path runs before a new `response.create` reservation, sends only
+  metadata (`upstream_unavailable`, direction, frame kind/bytes, close code),
+  and closes the client with 1011 before any D1 await. It then best-effort
+  refunds non-retry-owned reservations through the existing idempotent D1 path.
+- Verified locally with the two focused Worker tests for the terminal event and
+  compiled capability contract, plus
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`.
+- Still pending: deployed DO eviction/restore, D1 outage plus lease recovery,
+  duplicate close/refund, redaction, and fresh reconnect evidence.
+
 ## Still Pending
 
 - The frontend artifact and public HTTP contract still need deployed

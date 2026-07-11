@@ -1,6 +1,6 @@
 # Migration Completion Status
 
-Date: 2026-07-04
+Date: 2026-07-10
 
 This is the short status page. The evidence-based audit is
 `docs/migration-progress-audit-2026-07-02.md`; the canonical Go route list is
@@ -50,6 +50,9 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
   types, rule matches, endpoint backfill, vendor counts, and server-side
   status/sync filters.
 - Task submit/poll/CAS-settlement foundations and scheduled polling.
+- Deterministic P0 source-to-D1 reconciliation CLI for counts, logical-key
+  bounds, canonical hashes, samples, and core relationships; production-source
+  execution remains pending.
 - Stripe top-up reference flow plus Epay wallet checkout/callback with D1
   provider-aware credited-anchor settlement. Subscription balance-pay order
   suffixes now preserve the Go-visible shape while using CSPRNG digits.

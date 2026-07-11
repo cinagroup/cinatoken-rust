@@ -242,6 +242,38 @@ bun run check:d1:migration-config
 bun run verify:sqlite
 ```
 
+Build a local D1-compatible SQLite target with the complete migration chain and
+the generated import SQL, then run the deterministic P0 reconciliation gate:
+
+```powershell
+bun run reconcile:migration -- `
+  --source <source-sqlite-path> `
+  --target <locally-migrated-target-sqlite-path> `
+  --manifest-output exports\YYYYMMDD-HHMM-core\p0-reconciliation-manifest.json
+```
+
+`reconcile:migration` is a hard gate for `users`, `tokens`, `channels`,
+`abilities`, and `options`. The versioned
+`cinatoken-source-to-d1-reconciliation-v1` manifest records, per table:
+
+- row count and logical primary-key minimum/maximum;
+- a full canonical SHA-256 over rows ordered by logical primary key;
+- up to 1,000 deterministic samples selected by a SHA-256 of the logical key;
+- logical-key uniqueness/null checks and non-empty option keys;
+- `tokens.user_id -> users.id` and
+  `abilities.channel_id -> channels.id` relationship checks.
+
+The canonical projection mirrors import semantics: `abilities.group` maps to
+`group_name`, source null/missing values use target D1 defaults where the
+importer would omit them, SQLite numeric affinities are normalized, and JSON
+object key order is ignored only for explicitly declared JSON configuration
+columns. Opaque credentials such as token/channel keys remain byte-exact even
+when their text happens to parse as JSON. Synthetic target IDs for `abilities` and
+`options` are excluded in favor of their source logical keys. Sample artifacts
+contain logical keys and row hashes, not token/channel secrets or raw rows.
+Any count, logical-key range, full hash, sample, or relationship/integrity drift
+returns a non-zero process exit and must block staging/cutover.
+
 Review the SQL before applying it to D1. Use `--truncate` only for a fresh
 target or a deliberate overwrite with documented rollback approval.
 
@@ -404,6 +436,8 @@ pass:
   evidence;
 - export bundle verified;
 - generated SQL reviewed;
+- local P0 source-to-target reconciliation passed with the versioned manifest
+  archived;
 - D1 import applied to the intended environment;
 - source and target row counts match or have approved differences;
 - deterministic sample hashes match;

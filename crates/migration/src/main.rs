@@ -14,6 +14,7 @@ fn main() {
         "export" => export_sqlite(args.collect()),
         "import" => import_d1_sql(args.collect()),
         "verify" => verify_migration(args.collect()),
+        "reconcile" => reconcile_migration(args.collect()),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -38,6 +39,7 @@ fn print_help() {
     println!("  cinatoken-migrate export --sqlite <path> --output <path> [options]");
     println!("  cinatoken-migrate import --input <path> --output <path> [options]");
     println!("  cinatoken-migrate verify [options]");
+    println!("  cinatoken-migrate reconcile --source <path> --target <path> [options]");
     println!();
     println!("dev-seed options:");
     println!("  --upstream-key <key>       upstream provider key, or CINATOKEN_DEV_UPSTREAM_KEY");
@@ -69,6 +71,12 @@ fn print_help() {
     println!("  --input <path>             JSON export bundle to validate");
     println!("  --sql <path>               generated D1 SQL to execute with SQLite");
     println!("  --schema <path>            D1 schema SQL, default migrations/d1/0001_core.sql");
+    println!();
+    println!("reconcile options:");
+    println!("  --source <path>            authoritative source SQLite database");
+    println!("  --target <path>            locally migrated D1-compatible SQLite database");
+    println!("  --manifest-output <path>   write the deterministic v1 source manifest");
+    println!("  --sample-size <number>     maximum samples per P0 table, default 1000");
 }
 
 fn print_dev_seed(args: Vec<String>) -> Result<(), String> {
@@ -164,6 +172,79 @@ fn verify_migration(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn reconcile_migration(args: Vec<String>) -> Result<(), String> {
+    let config = ReconcileConfig::from_args(args)?;
+    let result = reconcile_sqlite_databases(&config)?;
+    let manifest = result
+        .get("source_manifest")
+        .ok_or_else(|| "reconciliation result is missing source_manifest".to_string())?;
+
+    if let Some(output) = config.manifest_output.as_deref() {
+        ensure_parent_dir(output)?;
+        let mut encoded = serde_json::to_string_pretty(manifest)
+            .map_err(|err| format!("failed to encode reconciliation manifest: {err}"))?;
+        encoded.push('\n');
+        fs::write(output, encoded)
+            .map_err(|err| format!("failed to write {}: {err}", output.display()))?;
+    }
+
+    let differences = result
+        .get("differences")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "reconciliation result is missing differences array".to_string())?;
+    if !differences.is_empty() {
+        let details = differences
+            .iter()
+            .map(|difference| {
+                difference
+                    .as_str()
+                    .map(|difference| format!("  - {difference}"))
+                    .ok_or_else(|| {
+                        "reconciliation result contains a non-string difference".to_string()
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n");
+        let manifest_note = config
+            .manifest_output
+            .as_deref()
+            .map(|path| format!("\nExpected manifest: {}", path.display()))
+            .unwrap_or_default();
+        return Err(format!(
+            "P0 source-to-D1 reconciliation failed with {} drift(s):\n{details}{manifest_note}",
+            differences.len()
+        ));
+    }
+
+    let tables = manifest
+        .get("tables")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "reconciliation manifest is missing tables object".to_string())?;
+    println!("P0 source-to-D1 reconciliation passed");
+    println!("Manifest: cinatoken-source-to-d1-reconciliation-v1");
+    println!("Tables:");
+    for table in D1_CORE_IMPORT_TABLES {
+        let table_manifest = tables
+            .get(*table)
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("reconciliation manifest is missing table {table}"))?;
+        let count = table_manifest
+            .get("count")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("reconciliation manifest table {table} has no count"))?;
+        let sha256 = table_manifest
+            .get("sha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("reconciliation manifest table {table} has no SHA-256"))?;
+        println!("  {table}: {count} rows, sha256={sha256}");
+    }
+    println!("Relationship and integrity checks: passed");
+    if let Some(output) = config.manifest_output.as_deref() {
+        println!("Manifest written to {}", output.display());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DevSeedConfig {
     upstream_key: String,
@@ -201,6 +282,14 @@ struct VerifyConfig {
     input: Option<PathBuf>,
     sql: Option<PathBuf>,
     schema: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReconcileConfig {
+    source: PathBuf,
+    target: PathBuf,
+    manifest_output: Option<PathBuf>,
+    sample_size: usize,
 }
 
 impl SourceInspectConfig {
@@ -433,6 +522,85 @@ impl VerifyConfig {
     }
 }
 
+impl ReconcileConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut source = None;
+        let mut target = None;
+        let mut manifest_output = None;
+        let mut sample_size = 1_000usize;
+
+        let mut iter = args.into_iter();
+        while let Some(flag) = iter.next() {
+            match flag.as_str() {
+                "--source" => source = Some(PathBuf::from(next_value(&mut iter, &flag)?)),
+                "--target" => target = Some(PathBuf::from(next_value(&mut iter, &flag)?)),
+                "--manifest-output" => {
+                    manifest_output = Some(PathBuf::from(next_value(&mut iter, &flag)?))
+                }
+                "--sample-size" => {
+                    let value = next_value(&mut iter, &flag)?;
+                    sample_size = value.parse::<usize>().map_err(|_| {
+                        format!("--sample-size must be a positive integer, got {value}")
+                    })?;
+                }
+                "--" => {}
+                "-h" | "--help" => {
+                    print_help();
+                    process::exit(0);
+                }
+                _ => return Err(format!("unknown reconcile option: {flag}")),
+            }
+        }
+
+        let source = source.ok_or_else(|| "reconcile requires --source <path>".to_string())?;
+        let target = target.ok_or_else(|| "reconcile requires --target <path>".to_string())?;
+        ensure_existing_file(&source, "source SQLite database")?;
+        ensure_existing_file(&target, "target SQLite database")?;
+        let canonical_source = fs::canonicalize(&source)
+            .map_err(|err| format!("failed to resolve {}: {err}", source.display()))?;
+        let canonical_target = fs::canonicalize(&target)
+            .map_err(|err| format!("failed to resolve {}: {err}", target.display()))?;
+        if canonical_source == canonical_target {
+            return Err("--source and --target must be different SQLite databases".to_string());
+        }
+        if !(1..=10_000).contains(&sample_size) {
+            return Err("--sample-size must be between 1 and 10000".to_string());
+        }
+        if matches!(
+            manifest_output
+                .as_deref()
+                .and_then(Path::to_str)
+                .map(str::trim),
+            Some("")
+        ) {
+            return Err("--manifest-output cannot be empty".to_string());
+        }
+        if let Some(output) = manifest_output.as_deref().filter(|path| path.exists()) {
+            if !output.is_file() {
+                return Err(format!(
+                    "reconciliation manifest output is not a file: {}",
+                    output.display()
+                ));
+            }
+            let canonical_output = fs::canonicalize(output)
+                .map_err(|err| format!("failed to resolve {}: {err}", output.display()))?;
+            if canonical_output == canonical_source || canonical_output == canonical_target {
+                return Err(
+                    "--manifest-output must not overwrite the source or target database"
+                        .to_string(),
+                );
+            }
+        }
+
+        Ok(Self {
+            source,
+            target,
+            manifest_output,
+            sample_size,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceMarkerStatus {
     label: &'static str,
@@ -538,6 +706,9 @@ const D1_IMPORT_TABLES: &[&str] = &[
 
 const D1_CORE_IMPORT_TABLES: &[&str] = &["users", "tokens", "channels", "abilities", "options"];
 
+const RECONCILIATION_RESULT_FORMAT: &str = "cinatoken-source-to-d1-reconciliation-result-v1";
+const RECONCILE_SQLITE_SCRIPT: &str = include_str!("../scripts/reconcile_sqlite.py");
+
 const USERS_D1_COLUMNS: &[&str] = &[
     "id",
     "username",
@@ -631,6 +802,7 @@ const ABILITIES_D1_COLUMNS: &[&str] = &[
     "enabled",
     "priority",
     "weight",
+    "tag",
 ];
 
 const OPTIONS_D1_COLUMNS: &[&str] = &["id", "key", "value"];
@@ -1210,6 +1382,40 @@ for table in tables:
         .to_string())
 }
 
+fn reconcile_sqlite_databases(config: &ReconcileConfig) -> Result<Value, String> {
+    let output = Command::new("python")
+        .arg("-c")
+        .arg(RECONCILE_SQLITE_SCRIPT)
+        .arg(&config.source)
+        .arg(&config.target)
+        .arg(config.sample_size.to_string())
+        .output()
+        .map_err(|err| format!("failed to run Python reconciliation engine: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "SQLite reconciliation engine failed: {}{}",
+            stdout.trim_end(),
+            stderr.trim_end()
+        ));
+    }
+
+    let result: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("reconciliation engine returned invalid JSON: {err}"))?;
+    let format = result
+        .get("format")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "reconciliation result is missing format".to_string())?;
+    if format != RECONCILIATION_RESULT_FORMAT {
+        return Err(format!(
+            "unsupported reconciliation result format: {format}"
+        ));
+    }
+    Ok(result)
+}
+
 fn validate_export_tables(tables: Vec<String>) -> Result<Vec<String>, String> {
     let mut validated = Vec::new();
     for table in tables {
@@ -1293,8 +1499,18 @@ for table in tables:
         }}
         continue
 
-    cursor = conn.execute(f"SELECT * FROM {{quote_ident(table)}}")
+    cursor = conn.execute(f"SELECT * FROM {{quote_ident(table)}} LIMIT 0")
     columns = [column[0] for column in cursor.description]
+    preferred_order = {{
+        "abilities": ["group", "model", "channel_id"],
+        "options": ["key"],
+    }}.get(table, ["id"] if "id" in columns else columns)
+    order_columns = [column for column in preferred_order if column in columns]
+    order_sql = ", ".join(quote_ident(column) for column in order_columns)
+    query = f"SELECT * FROM {{quote_ident(table)}}"
+    if order_sql:
+        query += f" ORDER BY {{order_sql}}"
+    cursor = conn.execute(query)
     rows = [
         dict(zip(columns, [normalize(value) for value in row]))
         for row in cursor.fetchall()
@@ -1638,6 +1854,12 @@ fn sql_literal(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+
+    const P0_SOURCE_FIXTURE: &str = include_str!("../tests/fixtures/p0_source.sql");
+    const P0_TARGET_ROWS_FIXTURE: &str = include_str!("../tests/fixtures/p0_target_rows.sql");
+    const D1_CORE_SCHEMA: &str = include_str!("../../../migrations/d1/0001_core.sql");
+    const D1_SCHEMA_PARITY: &str = include_str!("../../../migrations/d1/0004_schema_parity.sql");
 
     #[test]
     fn sql_string_escapes_single_quotes() {
@@ -1958,13 +2180,31 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_config_rejects_the_same_source_and_target() {
+        let temp = unique_temp_dir("reconcile-same-database");
+        let sqlite = temp.join("source.db");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(&sqlite, "").unwrap();
+
+        let error = ReconcileConfig::from_args(vec![
+            "--source".to_string(),
+            sqlite.display().to_string(),
+            "--target".to_string(),
+            sqlite.display().to_string(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("must be different SQLite databases"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn render_import_sql_maps_ability_group_to_group_name() {
         let bundle = r#"{
           "format": "cinatoken-sqlite-export-v1",
           "tables": {
             "abilities": {
               "missing": false,
-              "columns": ["group", "model", "channel_id", "enabled", "priority", "weight"],
+              "columns": ["group", "model", "channel_id", "enabled", "priority", "weight", "tag"],
               "rows": [
                 {
                   "group": "default",
@@ -1972,7 +2212,8 @@ mod tests {
                   "channel_id": 7,
                   "enabled": 1,
                   "priority": 2,
-                  "weight": 100
+                  "weight": 100,
+                  "tag": "primary"
                 }
               ]
             }
@@ -1983,7 +2224,192 @@ mod tests {
         assert!(sql.contains("\"group_name\""));
         assert!(sql.contains("'default'"));
         assert!(sql.contains("'gpt-test'"));
+        assert!(sql.contains("\"tag\""));
+        assert!(sql.contains("'primary'"));
         assert!(sql.contains("INSERT OR REPLACE INTO \"abilities\""));
+    }
+
+    #[test]
+    fn export_orders_synthetic_id_tables_by_logical_key() {
+        let temp = unique_temp_dir("export-logical-order");
+        let source = temp.join("source.db");
+        let output = temp.join("source.json");
+        fs::create_dir_all(&temp).unwrap();
+        execute_sqlite(&source, P0_SOURCE_FIXTURE);
+
+        let summary = export_sqlite_json(&ExportConfig {
+            sqlite: source,
+            output: output.clone(),
+            tables: D1_CORE_IMPORT_TABLES
+                .iter()
+                .map(|table| (*table).to_string())
+                .collect(),
+        })
+        .unwrap();
+        assert!(summary.contains("options: 2 rows"));
+
+        let bundle: Value = serde_json::from_str(&fs::read_to_string(&output).unwrap()).unwrap();
+        let options = bundle["tables"]["options"]["rows"].as_array().unwrap();
+        assert_eq!(options[0]["key"], "ModelRatio");
+        assert_eq!(options[1]["key"], "SystemName");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reconcile_p0_manifest_is_deterministic_and_accepts_equivalent_rows() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-pass");
+
+        let first = reconcile_sqlite_databases(&config).unwrap();
+        let second = reconcile_sqlite_databases(&config).unwrap();
+        assert_eq!(first["source_manifest"], second["source_manifest"]);
+        assert_eq!(
+            first["target_manifest"]["tables"],
+            second["target_manifest"]["tables"]
+        );
+        assert!(first["differences"].as_array().unwrap().is_empty());
+
+        let manifest = first["source_manifest"].as_object().unwrap();
+        assert_eq!(
+            manifest["format"],
+            "cinatoken-source-to-d1-reconciliation-v1"
+        );
+        assert_eq!(manifest["tables"]["users"]["count"], 1);
+        assert_eq!(manifest["tables"]["options"]["count"], 2);
+        assert_eq!(
+            manifest["tables"]["users"]["pk_min"],
+            serde_json::json!([["number", "1"]])
+        );
+        assert_eq!(
+            manifest["tables"]["users"]["pk_max"],
+            serde_json::json!([["number", "1"]])
+        );
+        assert_eq!(
+            manifest["tables"]["users"]["sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        assert_eq!(
+            manifest["relationships"]["tokens.user_id->users.id"]["violations"],
+            0
+        );
+        assert_eq!(
+            manifest["relationships"]["abilities.channel_id->channels.id"]["violations"],
+            0
+        );
+        let options_samples = manifest["tables"]["options"]["samples"].as_array().unwrap();
+        assert_eq!(options_samples.len(), 2);
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reconcile_command_writes_versioned_manifest_without_raw_secrets() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-manifest-output");
+        let output = temp.join("p0-manifest.json");
+
+        reconcile_migration(vec![
+            "--source".to_string(),
+            config.source.display().to_string(),
+            "--target".to_string(),
+            config.target.display().to_string(),
+            "--manifest-output".to_string(),
+            output.display().to_string(),
+            "--sample-size".to_string(),
+            "10".to_string(),
+        ])
+        .unwrap();
+
+        let manifest = fs::read_to_string(output).unwrap();
+        assert!(manifest.contains("cinatoken-source-to-d1-reconciliation-v1"));
+        assert!(manifest.contains("sha256-smallest-logical-pk-v1"));
+        assert!(!manifest.contains("source-token-secret"));
+        assert!(!manifest.contains("source-channel-secret"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reconcile_p0_fails_clearly_on_canonical_hash_drift() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-hash-drift");
+        execute_sqlite(
+            &config.target,
+            "UPDATE tokens SET remain_quota = remain_quota - 1 WHERE id = 10;",
+        );
+
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let differences = result["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()
+            .unwrap()
+            .join("\n");
+        assert!(differences.contains("table tokens: canonical SHA-256 differs"));
+        assert!(differences.contains("table tokens: deterministic samples differ"));
+
+        let error = reconcile_migration(vec![
+            "--source".to_string(),
+            config.source.display().to_string(),
+            "--target".to_string(),
+            config.target.display().to_string(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("P0 source-to-D1 reconciliation failed"));
+        assert!(error.contains("table tokens: canonical SHA-256 differs"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reconcile_p0_keeps_json_shaped_credentials_byte_exact() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-opaque-credentials");
+        execute_sqlite(
+            &config.source,
+            r#"UPDATE tokens SET "key" = '{"a":1,"b":2}' WHERE id = 10;"#,
+        );
+        execute_sqlite(
+            &config.target,
+            r#"UPDATE tokens SET "key" = '{"b":2,"a":1}' WHERE id = 10;"#,
+        );
+
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let differences = result["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(differences.contains("table tokens: canonical SHA-256 differs"));
+
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains(r#"{"a":1,"b":2}"#));
+        assert!(!serialized.contains(r#"{"b":2,"a":1}"#));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reconcile_p0_fails_on_broken_token_user_relationship() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-relationship-drift");
+        execute_sqlite(
+            &config.target,
+            "UPDATE tokens SET user_id = 999 WHERE id = 10;",
+        );
+
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let differences = result["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()
+            .unwrap()
+            .join("\n");
+        assert!(
+            differences.contains("target relationship tokens.user_id->users.id: 1 violation(s)")
+        );
+        fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
@@ -2180,5 +2606,52 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn p0_reconciliation_fixture(name: &str) -> (PathBuf, ReconcileConfig) {
+        let temp = unique_temp_dir(name);
+        let source = temp.join("source.db");
+        let target = temp.join("target.db");
+        fs::create_dir_all(&temp).unwrap();
+        execute_sqlite(&source, P0_SOURCE_FIXTURE);
+        execute_sqlite(
+            &target,
+            &format!("{D1_CORE_SCHEMA}\n{D1_SCHEMA_PARITY}\n{P0_TARGET_ROWS_FIXTURE}"),
+        );
+        let config = ReconcileConfig {
+            source,
+            target,
+            manifest_output: None,
+            sample_size: 1_000,
+        };
+        (temp, config)
+    }
+
+    fn execute_sqlite(path: &Path, sql: &str) {
+        let mut child = Command::new("python")
+            .arg("-c")
+            .arg(
+                "import sqlite3, sys; connection = sqlite3.connect(sys.argv[1]); \
+                 connection.executescript(sys.stdin.read()); connection.close()",
+            )
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(sql.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "SQLite fixture failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

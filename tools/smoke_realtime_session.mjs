@@ -436,6 +436,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_upstream_fetch_upgrade_adapter_compiled === true,
     realtime_session_upstream_bridge_lifecycle_compiled:
       data.realtime_session_upstream_bridge_lifecycle_compiled === true,
+    realtime_session_upstream_bridge_hibernation_fail_closed_compiled:
+      data.realtime_session_upstream_bridge_hibernation_fail_closed_compiled === true,
     realtime_session_upstream_bridge_frame_guard_compiled:
       data.realtime_session_upstream_bridge_frame_guard_compiled === true,
     realtime_session_upstream_bridge_close_mapping_compiled:
@@ -502,6 +504,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_upstream_connect_handoff_compiled", true],
     ["realtime_session_upstream_fetch_upgrade_adapter_compiled", true],
     ["realtime_session_upstream_bridge_lifecycle_compiled", true],
+    ["realtime_session_upstream_bridge_hibernation_fail_closed_compiled", true],
     ["realtime_session_upstream_bridge_frame_guard_compiled", true],
     ["realtime_session_upstream_bridge_close_mapping_compiled", true],
     ["realtime_session_upstream_bridge_send_failure_guard_compiled", true],
@@ -542,6 +545,7 @@ function validateCapabilities(capabilities, options) {
     "relay_rate_limits",
     "upstream_fetch_upgrade_adapter",
     "upstream_bridge_lifecycle",
+    "upstream_bridge_hibernation_fail_closed",
     "upstream_bridge_frame_guard",
     "upstream_bridge_close_mapping",
     "upstream_bridge_send_failure_guard",

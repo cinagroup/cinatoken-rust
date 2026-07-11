@@ -34,6 +34,7 @@ use crate::realtime_session::{
     realtime_upstream_bridge_close_mapping_compiled,
     realtime_upstream_bridge_connect_contract_compiled,
     realtime_upstream_bridge_event_trace_compiled, realtime_upstream_bridge_frame_guard_compiled,
+    realtime_upstream_bridge_hibernation_fail_closed_compiled,
     realtime_upstream_bridge_lifecycle_compiled, realtime_upstream_bridge_planner_compiled,
     realtime_upstream_bridge_replay_contract_compiled,
     realtime_upstream_bridge_send_failure_guard_compiled,
@@ -183,6 +184,7 @@ struct PlatformCapabilities {
     realtime_session_upstream_connect_handoff_compiled: bool,
     realtime_session_upstream_fetch_upgrade_adapter_compiled: bool,
     realtime_session_upstream_bridge_lifecycle_compiled: bool,
+    realtime_session_upstream_bridge_hibernation_fail_closed_compiled: bool,
     realtime_session_upstream_bridge_frame_guard_compiled: bool,
     realtime_session_upstream_bridge_close_mapping_compiled: bool,
     realtime_session_upstream_bridge_send_failure_guard_compiled: bool,
@@ -289,6 +291,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_upstream_fetch_upgrade_adapter_compiled();
     let realtime_session_upstream_bridge_lifecycle_compiled =
         realtime_upstream_bridge_lifecycle_compiled();
+    let realtime_session_upstream_bridge_hibernation_fail_closed_compiled =
+        realtime_upstream_bridge_hibernation_fail_closed_compiled();
     let realtime_session_upstream_bridge_frame_guard_compiled =
         realtime_upstream_bridge_frame_guard_compiled();
     let realtime_session_upstream_bridge_close_mapping_compiled =
@@ -361,6 +365,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_connect_handoff_compiled,
         realtime_session_upstream_fetch_upgrade_adapter_compiled,
         realtime_session_upstream_bridge_lifecycle_compiled,
+        realtime_session_upstream_bridge_hibernation_fail_closed_compiled,
         realtime_session_upstream_bridge_frame_guard_compiled,
         realtime_session_upstream_bridge_close_mapping_compiled,
         realtime_session_upstream_bridge_send_failure_guard_compiled,
@@ -456,6 +461,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_upstream_connect_handoff_compiled,
         realtime_session_upstream_fetch_upgrade_adapter_compiled,
         realtime_session_upstream_bridge_lifecycle_compiled,
+        realtime_session_upstream_bridge_hibernation_fail_closed_compiled,
         realtime_session_upstream_bridge_frame_guard_compiled,
         realtime_session_upstream_bridge_close_mapping_compiled,
         realtime_session_upstream_bridge_send_failure_guard_compiled,
@@ -1810,6 +1816,7 @@ fn is_realtime_session_v1_cutover_ready(
     upstream_connect_handoff_compiled: bool,
     upstream_fetch_upgrade_adapter_compiled: bool,
     upstream_bridge_lifecycle_compiled: bool,
+    upstream_bridge_hibernation_fail_closed_compiled: bool,
     upstream_bridge_frame_guard_compiled: bool,
     upstream_bridge_close_mapping_compiled: bool,
     upstream_bridge_send_failure_guard_compiled: bool,
@@ -1845,6 +1852,7 @@ fn is_realtime_session_v1_cutover_ready(
         && upstream_connect_handoff_compiled
         && upstream_fetch_upgrade_adapter_compiled
         && upstream_bridge_lifecycle_compiled
+        && upstream_bridge_hibernation_fail_closed_compiled
         && upstream_bridge_frame_guard_compiled
         && upstream_bridge_close_mapping_compiled
         && upstream_bridge_send_failure_guard_compiled
@@ -2134,6 +2142,7 @@ mod tests {
         assert!(guards.contains(&"relay_rate_limits"));
         assert!(guards.contains(&"upstream_fetch_upgrade_adapter"));
         assert!(guards.contains(&"upstream_bridge_lifecycle"));
+        assert!(guards.contains(&"upstream_bridge_hibernation_fail_closed"));
         assert!(guards.contains(&"upstream_bridge_frame_guard"));
         assert!(guards.contains(&"upstream_bridge_close_mapping"));
         assert!(guards.contains(&"upstream_bridge_send_failure_guard"));
@@ -2253,10 +2262,10 @@ mod tests {
 
     #[test]
     fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
-        assert!(realtime_v1_ready_with_flags([true; 34]));
+        assert!(realtime_v1_ready_with_flags([true; 35]));
 
-        for false_gate in 0..34 {
-            let mut flags = [true; 34];
+        for false_gate in 0..35 {
+            let mut flags = [true; 35];
             flags[false_gate] = false;
             assert!(
                 !realtime_v1_ready_with_flags(flags),
@@ -2265,13 +2274,13 @@ mod tests {
         }
     }
 
-    fn realtime_v1_ready_with_flags(flags: [bool; 34]) -> bool {
+    fn realtime_v1_ready_with_flags(flags: [bool; 35]) -> bool {
         is_realtime_session_v1_cutover_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
             flags[16], flags[17], flags[18], flags[19], flags[20], flags[21], flags[22], flags[23],
             flags[24], flags[25], flags[26], flags[27], flags[28], flags[29], flags[30], flags[31],
-            flags[32], flags[33],
+            flags[32], flags[33], flags[34],
         )
     }
 

@@ -6862,6 +6862,90 @@ Remaining migration gaps:
   `realtime_session_billing_settlement_compiled`, or
   `realtime_session_v1_cutover_ready` can become true.
 
+### 22.144 2026-07-10 Deterministic P0 Source-to-D1 Reconciliation Gate
+
+The migration CLI now turns the data-plan acceptance criteria in section 8.5
+into an executable local hard gate rather than relying on row-count notes.
+
+Implemented locally:
+
+- `cinatoken-migrate reconcile` compares an authoritative source SQLite database
+  with a locally migrated D1-compatible SQLite target for `users`, `tokens`,
+  `channels`, `abilities`, and `options`.
+- The versioned v1 manifest records row counts, logical primary-key min/max,
+  full-table canonical SHA-256 values, and deterministic samples containing only
+  logical keys and row hashes. Raw rows, token keys, channel keys, password
+  hashes, and access tokens are never written to the manifest.
+- Canonical projection follows import semantics: `abilities.group` maps to
+  `group_name`, missing source columns use target defaults where applicable,
+  numeric affinities normalize, and only explicitly declared JSON configuration
+  columns ignore object-key order. Opaque credentials remain byte-exact.
+- Integrity checks reject duplicate/null logical keys and empty option keys;
+  relationship checks reject orphaned `tokens.user_id` and
+  `abilities.channel_id` references. Synthetic target ids for `abilities` and
+  `options` do not affect parity.
+- Core export order is now stable by logical key, and the ability importer
+  preserves the source `tag` field.
+
+Local evidence:
+
+- `cargo test -p cinatoken-migration`: 30 passed, including deterministic
+  manifests, canonical drift, orphan relations, secret-free artifacts, and
+  JSON-shaped opaque credential drift.
+- `bun run reconcile:migration -- --help` exposes the operator contract and
+  exits successfully.
+
+Production boundary:
+
+- No authoritative production source SQLite was available in this environment.
+  The production data blocker remains open until operators freeze the Go source,
+  build the complete local target from the exact migration/import chain, run the
+  gate, archive the manifest, repeat count/sample/relationship checks against
+  remote staging D1, and rehearse rollback.
+
+### 22.143 2026-07-10 Realtime Hibernation Bridge-Loss Fail-Closed Recovery
+
+Cloudflare can restore a hibernatable client WebSocket attachment after the
+Durable Object instance is reconstructed, but the request-scoped outbound
+provider WebSocket and its in-memory queue cannot be restored. Keeping that
+client open after `upstream_bridge_not_active` creates a false-live session that
+can never reach the provider.
+
+Implemented locally:
+
+- `RealtimeSession` distinguishes platform control-only sockets from sockets
+  that previously completed an upstream connect handoff. `ping` and `status`
+  remain available for diagnostics, while the first text or binary business
+  frame on a handed-off socket with no active runtime bridge is terminal.
+- The terminal path runs before explicit-response validation or a new quota
+  reservation. It sends the terminal event and closes the client before any D1
+  await, then best-effort refunds all session reservations except
+  settlement-retry-owned work. The existing reservation CAS and lease recovery
+  provide idempotency and transient D1 failure recovery.
+- The client receives a metadata-only `realtime_session_bridge_event` with
+  `upstream_unavailable`, direction, frame kind/byte count, and safe close
+  metadata. Request payloads, event ids, model input, and credentials are not
+  serialized. The socket closes with code 1011 and reason
+  `upstream_bridge_unavailable`.
+- `/api/platform/capabilities` and the Realtime smoke preflight now expose and
+  require `realtime_session_upstream_bridge_hibernation_fail_closed_compiled`;
+  the cutover guard list includes `upstream_bridge_hibernation_fail_closed`.
+
+Local evidence:
+
+- Focused Worker tests cover the restore decision, safe close mapping,
+  metadata-only terminal event, generated-close de-duplication, and compiled
+  capability contract.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes.
+
+Production boundary:
+
+- Local tests cannot force a deployed Durable Object eviction. Isolated staging
+  must archive connect, attachment restore with zero active outbound bridges,
+  diagnostic status, first-business-frame terminal event, one refund, duplicate
+  close/refund no-op, lease recovery during D1 failure, and fresh-client
+  reconnect before Realtime cutover readiness can advance.
+
 ### 22.142 2026-07-10 Realtime Reservation Lease Recovery
 
 This increment closes the local crash/hibernation gap left after the

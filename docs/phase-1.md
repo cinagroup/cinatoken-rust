@@ -479,7 +479,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `docs/cutover-rollback-runbook.md` as the production config and traffic
   cutover control documents before any customer canary.
 - Use `docs/data-migration-runbook.md` for production-shaped source inventory,
-  D1 import verification, row-count/sample-hash checks, and rollback evidence.
+  D1 import verification, deterministic P0 reconciliation, row-count/sample-hash
+  checks, and rollback evidence. The local `reconcile:migration` hard gate now
+  covers core counts, logical-key bounds, full canonical hashes, deterministic
+  samples, and relationships; it still needs the real frozen source and staging
+  target before production data readiness can advance.
 - Use `docs/billing-parity-runbook.md` for expression parity, shadow settlement
   thresholds, and paid settlement go/no-go evidence.
 - Use `docs/route-provider-parity-runbook.md` for G3 route/provider body
@@ -557,6 +561,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   no-double-charge paths before flipping
   `realtime_session_billing_settlement_compiled` or
   `realtime_session_v1_cutover_ready`.
+- Realtime attachment restoration now fails closed when a business text or
+  binary frame arrives after DO reconstruction but the request-scoped outbound
+  upstream bridge no longer exists. The DO emits a metadata-only
+  `upstream_unavailable` terminal event and closes the client with 1011 before
+  any D1 await, then best-effort refunds session reservations except retry-owned
+  work; `ping` and `status` remain available as diagnostic controls. Production
+  still needs a real eviction/restore replay
+  proving one terminal event, idempotent refund/lease handoff, no payload or
+  credential disclosure, and successful reconnect from a fresh client.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond OpenAI-compatible providers.

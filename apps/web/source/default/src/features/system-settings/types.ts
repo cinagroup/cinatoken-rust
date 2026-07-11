@@ -440,6 +440,7 @@ export type PlatformCapabilities = {
   realtime_session_upstream_connect_handoff_compiled: boolean
   realtime_session_upstream_fetch_upgrade_adapter_compiled: boolean
   realtime_session_upstream_bridge_lifecycle_compiled: boolean
+  realtime_session_upstream_bridge_hibernation_fail_closed_compiled: boolean
   realtime_session_upstream_bridge_frame_guard_compiled: boolean
   realtime_session_upstream_bridge_close_mapping_compiled: boolean
   realtime_session_upstream_bridge_send_failure_guard_compiled: boolean

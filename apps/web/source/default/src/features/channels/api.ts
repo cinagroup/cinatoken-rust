@@ -33,6 +33,7 @@ import type {
   GetChannelsResponse,
   MultiKeyManageParams,
   MultiKeyStatusResponse,
+  ProviderReadinessResponse,
   SearchChannelsParams,
   SearchChannelsResponse,
   TagOperationParams,
@@ -96,6 +97,11 @@ export async function searchChannels(
  */
 export async function getChannel(id: number): Promise<GetChannelResponse> {
   const res = await api.get(`/api/channel/${id}`)
+  return res.data
+}
+
+export async function getProviderReadiness(): Promise<ProviderReadinessResponse> {
+  const res = await api.get('/api/channel/provider-readiness')
   return res.data
 }
 

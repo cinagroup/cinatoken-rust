@@ -770,6 +770,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/channel/models_enabled", |req, ctx| async move {
             admin_channel::enabled_list_models(req, ctx.env).await
         })
+        .get_async("/api/channel/provider-readiness", |req, ctx| async move {
+            admin_channel::provider_readiness(req, ctx.env).await
+        })
         .get_async("/api/channel/update_balance/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_channel::update_channel_balance(req, ctx.env, id.as_ref()).await

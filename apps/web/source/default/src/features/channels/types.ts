@@ -139,6 +139,32 @@ export interface GetChannelResponse {
   data?: Channel
 }
 
+export type ProviderRelayReadiness = 'ready' | 'partial' | 'deferred'
+
+export interface ProviderReadinessRoute {
+  method: string
+  path: string
+}
+
+export interface ProviderReadinessEntry {
+  channel_type: number
+  name: string
+  adapter: string
+  readiness: ProviderRelayReadiness
+  routes: ProviderReadinessRoute[]
+  reason: string
+}
+
+export interface ProviderReadinessResponse {
+  success: boolean
+  message?: string
+  data?: {
+    scope: 'text_relay'
+    readiness_semantics: string
+    entries: ProviderReadinessEntry[]
+  }
+}
+
 export interface ChannelTestResponse {
   success: boolean
   message?: string

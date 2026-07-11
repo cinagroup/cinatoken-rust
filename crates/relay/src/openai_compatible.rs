@@ -25,29 +25,25 @@ pub const CHANNEL_TYPE_CLOUDFLARE: i32 = 39;
 pub const CHANNEL_TYPE_XAI: i32 = 48;
 pub const CHANNEL_TYPE_SUBMODEL: i32 = 53;
 
-// OpenAI-compatible providers speak the OpenAI Chat Completions / Embeddings /
-// Images / Audio speech wire format with `Authorization: Bearer <key>`. The
-// list mirrors the Go `relay/channel/<provider>` adaptors that ultimately
-// delegate to the OpenAI adaptor shape. Provider-specific usage fields (DeepSeek
-// cache hits, Zhipu v4 reasoning tokens, etc.) are handled by the shared
-// OpenAI usage parser for now; provider-specific usage extensions remain TODO.
+// Channel types that the Go source actually routes through its generic OpenAI
+// adaptor. Dedicated providers must not be added merely because their wire
+// format looks OpenAI-compatible; they require an explicit Rust capability and
+// adapter contract first.
 pub const OPENAI_COMPATIBLE_CHANNEL_TYPES: &[i32] = &[
-    CHANNEL_TYPE_OPENAI,      // 1  OpenAI
-    CHANNEL_TYPE_BAIDU,       // 15 Baidu (Qianfan v2 OpenAI-compatible endpoint)
-    CHANNEL_TYPE_ZHIPU,       // 16 Zhipu (GLM)
-    CHANNEL_TYPE_ALI,         // 17 Ali (DashScope compatible-mode)
-    CHANNEL_TYPE_OPENROUTER,  // 20 OpenRouter
-    CHANNEL_TYPE_MOONSHOT,    // 25 Moonshot (Kimi)
-    CHANNEL_TYPE_ZHIPU_V4,    // 26 Zhipu v4 (GLM-4v / coding-plan)
-    CHANNEL_TYPE_PERPLEXITY,  // 27 Perplexity
-    CHANNEL_TYPE_LINGYIWANWU, // 31 LingYiWanWu
-    CHANNEL_TYPE_SILICONFLOW, // 40 SiliconFlow
-    CHANNEL_TYPE_MISTRAL,     // 42 Mistral
-    CHANNEL_TYPE_DEEPSEEK,    // 43 DeepSeek
-    CHANNEL_TYPE_MOKAAI,      // 44 MokaAI
-    CHANNEL_TYPE_CLOUDFLARE,  // 39 Cloudflare Workers AI (REST/gateway/binding)
-    CHANNEL_TYPE_XAI,         // 48 xAI (Grok)
-    CHANNEL_TYPE_SUBMODEL,    // 53 Submodel
+    1,  // OpenAI
+    3,  // Azure
+    6,  // OpenAIMax
+    7,  // OhMyGPT
+    8,  // Custom
+    9,  // AILS
+    10, // AIProxy
+    12, // API2GPT
+    13, // AIGC2D
+    19, // 360
+    20, // OpenRouter (explicit Go mapping to generic OpenAI)
+    22, // FastGPT
+    31, // LingYiWanWu
+    47, // Xinference (explicit Go mapping to generic OpenAI)
 ];
 pub const CHANNEL_TYPE_COHERE: i32 = 34;
 pub const CHANNEL_TYPE_JINA: i32 = 38;
@@ -1305,8 +1301,8 @@ mod tests {
 
     #[test]
     fn cloudflare_workers_ai_channel_routes_like_go() {
-        // Type 39 is selectable as OpenAI-compatible.
-        assert!(OPENAI_COMPATIBLE_CHANNEL_TYPES.contains(&CHANNEL_TYPE_CLOUDFLARE));
+        // Type 39 is a dedicated adapter, not part of Go's generic OpenAI set.
+        assert!(!OPENAI_COMPATIBLE_CHANNEL_TYPES.contains(&CHANNEL_TYPE_CLOUDFLARE));
         // The account-scoped Workers AI REST root (channel base_url) builds
         // Go's `{base}/client/v4/accounts/{acct}/ai/v1/chat/completions`.
         assert_eq!(
@@ -1352,31 +1348,34 @@ mod tests {
     }
 
     #[test]
-    fn openai_compatible_channel_types_include_extended_providers() {
-        for channel_type in [
-            CHANNEL_TYPE_ZHIPU,
-            CHANNEL_TYPE_ZHIPU_V4,
+    fn openai_compatible_channel_types_match_go_generic_adapter() {
+        assert_eq!(
+            OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            &[1, 3, 6, 7, 8, 9, 10, 12, 13, 19, 20, 22, 31, 47]
+        );
+        for dedicated in [
+            CHANNEL_TYPE_ANTHROPIC,
             CHANNEL_TYPE_BAIDU,
+            CHANNEL_TYPE_ZHIPU,
             CHANNEL_TYPE_ALI,
+            CHANNEL_TYPE_GEMINI,
             CHANNEL_TYPE_MOONSHOT,
+            CHANNEL_TYPE_ZHIPU_V4,
             CHANNEL_TYPE_PERPLEXITY,
-            CHANNEL_TYPE_LINGYIWANWU,
+            CHANNEL_TYPE_CLOUDFLARE,
+            CHANNEL_TYPE_SILICONFLOW,
+            CHANNEL_TYPE_MISTRAL,
+            CHANNEL_TYPE_DEEPSEEK,
             CHANNEL_TYPE_MOKAAI,
+            CHANNEL_TYPE_XAI,
+            CHANNEL_TYPE_SUBMODEL,
+            CHANNEL_TYPE_COHERE,
+            CHANNEL_TYPE_JINA,
         ] {
-            assert!(
-                is_openai_compatible_channel_type(channel_type),
-                "channel type {channel_type} should be OpenAI-compatible"
-            );
-            assert!(channel_type_supported(
-                channel_type,
-                OPENAI_COMPATIBLE_CHANNEL_TYPES
-            ));
+            assert!(!is_openai_compatible_channel_type(dedicated));
         }
-        // Sanity check: native and rerank families are NOT OpenAI-compatible.
-        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_ANTHROPIC));
-        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_GEMINI));
-        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_COHERE));
-        assert!(!is_openai_compatible_channel_type(CHANNEL_TYPE_JINA));
+        assert!(is_openai_compatible_channel_type(CHANNEL_TYPE_LINGYIWANWU));
+        assert!(is_openai_compatible_channel_type(CHANNEL_TYPE_OPENROUTER));
     }
 
     #[test]

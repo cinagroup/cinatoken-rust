@@ -203,6 +203,8 @@ dependencies = [
  "async-trait",
  "cinatoken-core",
  "cinatoken-relay",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

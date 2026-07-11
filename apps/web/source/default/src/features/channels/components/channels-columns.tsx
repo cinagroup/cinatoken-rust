@@ -74,6 +74,7 @@ import {
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { useChannels } from './channels-provider'
+import { providerReadinessPresentation } from '../lib/channel-provider-readiness'
 import { DataTableRowActions } from './data-table-row-actions'
 import { DataTableTagRowActions } from './data-table-tag-row-actions'
 import {
@@ -425,6 +426,7 @@ function BalanceCell({ channel }: { channel: Channel }) {
  */
 export function useChannelsColumns(): ColumnDef<Channel>[] {
   const { t } = useTranslation()
+  const { readinessByType, providerReadinessUnavailable } = useChannels()
   return [
     // Checkbox column
     {
@@ -603,6 +605,10 @@ export function useChannelsColumns(): ColumnDef<Channel>[] {
         const type = row.getValue('type') as number
         const typeNameKey = getChannelTypeLabel(type)
         const typeName = t(typeNameKey)
+        const relayReadiness = readinessByType.get(type)
+        const relayReadinessPresentation = relayReadiness
+          ? providerReadinessPresentation(relayReadiness.readiness)
+          : null
         const iconName = getChannelTypeIcon(type)
         const channel = row.original as Channel
         const isMultiKey = isMultiKeyChannel(channel)
@@ -655,6 +661,50 @@ export function useChannelsColumns(): ColumnDef<Channel>[] {
                 <TooltipContent side='top'>{typeName}</TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            {(relayReadiness || providerReadinessUnavailable) && (
+              <TooltipProvider delay={150}>
+                <Tooltip>
+                  <TooltipTrigger render={<span className='shrink-0' />}>
+                    <StatusBadge
+                      label={
+                        relayReadinessPresentation
+                          ? t(relayReadinessPresentation.label)
+                          : t('Unavailable')
+                      }
+                      variant={
+                        relayReadinessPresentation?.variant ?? 'neutral'
+                      }
+                      size='sm'
+                      copyable={false}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent side='top' className='max-w-sm'>
+                    {relayReadiness ? (
+                      <div className='space-y-1.5'>
+                        <div className='font-medium'>
+                          {t('Relay implementation readiness')}
+                        </div>
+                        <div>{t(relayReadiness.reason)}</div>
+                        {relayReadiness.routes.length > 0 && (
+                          <div className='text-muted-foreground font-mono text-xs'>
+                            {relayReadiness.routes
+                              .map((route) => `${route.method} ${route.path}`)
+                              .join(', ')}
+                          </div>
+                        )}
+                        <div className='text-muted-foreground text-xs'>
+                          {t(
+                            'Implementation status only; not provider health or production readiness.'
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      t('Relay readiness metadata is unavailable.')
+                    )}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
             {isIonet && (
               <TooltipProvider delay={100}>
                 <Tooltip>

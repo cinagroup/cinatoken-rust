@@ -2905,6 +2905,25 @@ bun run check
 
 ## Still Pending
 
+### Provider relay capability authority and DeepSeek (2026-07-11)
+
+- `cargo test -p cinatoken-providers`: 25 passed, including exact coverage of
+  all 53 Go channel types, generic adapter parity, dedicated fail-closed route
+  sets, route-scoped cache families, and DeepSeek URL/request transforms.
+- `cargo test -p cinatoken-relay`: passed with the generic OpenAI channel set
+  corrected to Go's actual `openai.Adaptor` dispatch.
+- Focused Worker tests passed for DeepSeek route/provider selection, pre-reserve
+  candidate filtering, and the admin readiness contract.
+- Frontend readiness tests passed 2/2. `bun run check:web:routes` reports 217
+  Worker-facing calls, 312 Worker routes, and 0 missing calls after the reviewed
+  baseline update.
+- `bun run check` passed, including frontend type/build/quality checks,
+  workspace tests excluding Worker, Worker wasm32, and WFP tenant wasm32.
+- This is local implementation evidence. The earlier real DeepSeek smoke used
+  compatibility/native channel configurations; it does not replace a live
+  type-43 adapter fixture archive, deployed staging billing reconciliation,
+  provider error replay, or production canary/rollback evidence.
+
 - The frontend artifact and public HTTP contract still need deployed
   verification. Rendered browser smoke, authenticated session/role/CRUD/2FA
   flows, console inspection, and the 2026-07-03 backend route batch deployment

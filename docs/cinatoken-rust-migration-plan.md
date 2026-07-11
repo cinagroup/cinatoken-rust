@@ -9533,3 +9533,40 @@ survival across eviction/redeploy, cleanup timing, bucket throughput/latency,
 one provider call, one central reserve and settlement/refund, and secret-free
 traces. A fresh centrally signed request ID is a new envelope, so this guard is
 not a claim of exactly-once upstream execution across ambiguous retries.
+
+### 22.152 2026-07-11 Provider Relay Capability Authority And DeepSeek
+
+This increment replaces the over-broad channel classification in the relay
+with one route-level capability authority derived from the Go adapter dispatch.
+
+- `crates/providers/src/channel_capabilities.rs` now inventories all 53 real Go
+  channel types and assigns each type an adapter kind, one of `Ready`,
+  `Partial`, or `Deferred`, and an explicit set of supported relay routes.
+- Only Go's actual generic `openai.Adaptor` types use the generic Rust path:
+  1, 3, 6, 7, 8, 9, 10, 12, 13, 19, 20, 22, 31, and 47. Dedicated adapters no
+  longer become eligible merely because their wire shape resembles OpenAI.
+- Channel selection now uses the registry for the requested route and removes
+  unroutable or invalid candidates before billing-plan construction and quota
+  reservation. Missing keys, conflicting WFP plus AI Gateway transport,
+  unsupported WFP paths, and streaming Workers AI binding candidates also fail
+  closed at this boundary.
+- Channel cache keys are route-family scoped, preventing a channel cached for
+  one protocol from being reused for an incompatible endpoint.
+- DeepSeek type 43 has a dedicated Rust adapter for exactly the Go-supported
+  text routes: `/v1/chat/completions`, `/v1/completions` (upstream
+  `/beta/completions`), and `/v1/messages` (upstream
+  `/anthropic/v1/messages`). It preserves Bearer authentication and the
+  `deepseek-v4-*-none|max` thinking-suffix transformations. Responses,
+  embeddings, images, audio, rerank, Gemini-native, and Realtime remain
+  ineligible for this channel type.
+- Admin-only `GET /api/channel/provider-readiness` exposes the type-level
+  implementation contract. The channel list and editor show its state and
+  route evidence, explicitly labeled as implementation readiness rather than
+  provider health or production verification.
+
+Local evidence passed: provider tests 25/25, relay tests, focused Worker
+DeepSeek/pre-reserve/admin-contract tests, frontend readiness tests 2/2,
+frontend route audit with 0 missing calls, and the complete `bun run check`
+chain. Production status remains Partial. Each enabled provider/route still
+needs route-specific live upstream fixtures, usage/error reconciliation,
+staging billing evidence, and rollback proof before canary approval.

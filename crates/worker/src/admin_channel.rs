@@ -29,6 +29,65 @@ use crate::admin::{
 use crate::cache_invalidation::invalidate_channel_cache;
 use crate::d1_repositories::{self, ChannelFilter, ChannelRow, CreateChannel, UpdateChannel};
 
+#[derive(Serialize)]
+struct ProviderReadinessRoute {
+    method: &'static str,
+    path: &'static str,
+}
+
+#[derive(Serialize)]
+struct ProviderReadinessEntry {
+    channel_type: i32,
+    name: &'static str,
+    adapter: cinatoken_providers::ChannelAdapterKind,
+    readiness: cinatoken_providers::ChannelRelayReadiness,
+    routes: Vec<ProviderReadinessRoute>,
+    reason: &'static str,
+}
+
+#[derive(Serialize)]
+struct ProviderReadinessContract {
+    scope: &'static str,
+    readiness_semantics: &'static str,
+    entries: Vec<ProviderReadinessEntry>,
+}
+
+/// `GET /api/channel/provider-readiness`: type-level, D1-free relay
+/// implementation status. This is not provider health or production cutover
+/// evidence.
+pub async fn provider_readiness(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    envelope_ok_response(&provider_readiness_contract())
+}
+
+fn provider_readiness_contract() -> ProviderReadinessContract {
+    let entries = cinatoken_providers::channel_capabilities()
+        .iter()
+        .map(|capability| ProviderReadinessEntry {
+            channel_type: capability.channel_type,
+            name: capability.name,
+            adapter: capability.adapter,
+            readiness: capability.readiness,
+            routes: capability
+                .supported_routes
+                .iter()
+                .map(|route| ProviderReadinessRoute {
+                    method: route.method(),
+                    path: route.path(),
+                })
+                .collect(),
+            reason: capability.reason,
+        })
+        .collect();
+    ProviderReadinessContract {
+        scope: "text_relay",
+        readiness_semantics: "implementation_only_not_provider_health_or_production_readiness",
+        entries,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // List / search / get
 // ---------------------------------------------------------------------------
@@ -2543,5 +2602,30 @@ mod tests {
             7.25
         );
         assert!(required_number(&serde_json::json!({}), "/data/balance").is_err());
+    }
+
+    #[test]
+    fn provider_readiness_contract_is_type_level_and_route_explicit() {
+        let value = serde_json::to_value(provider_readiness_contract()).unwrap();
+        assert_eq!(value["scope"], "text_relay");
+        assert_eq!(
+            value["readiness_semantics"],
+            "implementation_only_not_provider_health_or_production_readiness"
+        );
+        let entries = value["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 53);
+        let deepseek = entries
+            .iter()
+            .find(|entry| entry["channel_type"] == 43)
+            .unwrap();
+        assert_eq!(deepseek["readiness"], "partial");
+        assert_eq!(
+            deepseek["routes"],
+            serde_json::json!([
+                {"method": "POST", "path": "/v1/chat/completions"},
+                {"method": "POST", "path": "/v1/completions"},
+                {"method": "POST", "path": "/v1/messages"}
+            ])
+        );
     }
 }

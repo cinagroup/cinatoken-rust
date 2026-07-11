@@ -100,6 +100,7 @@ import {
 } from '@/components/drawer-layout'
 import { JsonEditor } from '@/components/json-editor'
 import { MultiSelect } from '@/components/multi-select'
+import { StatusBadge } from '@/components/status-badge'
 import {
   SecureVerificationDialog,
   useSecureVerification,
@@ -145,6 +146,7 @@ import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from '../../lib/status-code-risk-guard'
+import { providerReadinessPresentation } from '../../lib/channel-provider-readiness'
 import type { Channel } from '../../types'
 import { useChannels } from '../channels-provider'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
@@ -276,7 +278,11 @@ export function ChannelMutateDrawer({
 }: ChannelMutateDrawerProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const { setOpen } = useChannels()
+  const {
+    setOpen,
+    readinessByType,
+    providerReadinessUnavailable,
+  } = useChannels()
   const [fetchModelsDialogOpen, setFetchModelsDialogOpen] = useState(false)
   const [channelKey, setChannelKey] = useState<string | null>(null)
   const [isChannelKeyLoading, setIsChannelKeyLoading] = useState(false)
@@ -366,6 +372,10 @@ export function ChannelMutateDrawer({
   const keyMode = form.watch('key_mode')
   const currentGroups = form.watch('group')
   const currentType = form.watch('type')
+  const currentRelayReadiness = readinessByType.get(currentType)
+  const currentRelayReadinessPresentation = currentRelayReadiness
+    ? providerReadinessPresentation(currentRelayReadiness.readiness)
+    : null
   const currentBaseUrl = form.watch('base_url')
   const currentModels = form.watch('models')
   const currentName = form.watch('name')
@@ -1202,6 +1212,66 @@ export function ChannelMutateDrawer({
 
                   {/* ── API Access ── */}
                   <ChannelApiAccessSection>
+                    {(currentRelayReadiness || providerReadinessUnavailable) && (
+                      <Alert>
+                        <AlertDescription>
+                          {currentRelayReadiness ? (
+                            <div className='space-y-2'>
+                              <div className='flex flex-wrap items-center gap-2'>
+                                <span className='font-medium'>
+                                  {t('Relay implementation readiness')}
+                                </span>
+                                <StatusBadge
+                                  label={t(
+                                    currentRelayReadinessPresentation?.label ??
+                                      'Unavailable'
+                                  )}
+                                  variant={
+                                    currentRelayReadinessPresentation?.variant ??
+                                    'neutral'
+                                  }
+                                  size='sm'
+                                  copyable={false}
+                                />
+                              </div>
+                              <div className='text-muted-foreground text-xs'>
+                                {t(currentRelayReadiness.reason)}
+                              </div>
+                              {currentRelayReadiness.routes.length > 0 && (
+                                <div className='flex flex-wrap gap-1.5'>
+                                  {currentRelayReadiness.routes.map((route) => (
+                                    <Badge
+                                      key={`${route.method}:${route.path}`}
+                                      variant='outline'
+                                      className='font-mono text-xs'
+                                    >
+                                      {route.method} {route.path}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              )}
+                              <div className='text-muted-foreground text-xs'>
+                                {t(
+                                  'Implementation status only; not provider health or production readiness.'
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className='flex items-center gap-2'>
+                              <StatusBadge
+                                label={t('Unavailable')}
+                                variant='neutral'
+                                size='sm'
+                                copyable={false}
+                              />
+                              <span className='text-muted-foreground text-xs'>
+                                {t('Relay readiness metadata is unavailable.')}
+                              </span>
+                            </div>
+                          )}
+                        </AlertDescription>
+                      </Alert>
+                    )}
                     {CHANNEL_TYPE_WARNINGS[currentType] && (
                       <Alert>
                         <AlertDescription>

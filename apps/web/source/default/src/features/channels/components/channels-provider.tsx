@@ -17,11 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@cinagroup.com
 */
 /* eslint-disable react-refresh/only-export-components */
-import React, { createContext, useContext, useState, useCallback } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useMemo,
+} from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getProviderReadiness } from '../api'
 import { useChannelUpstreamUpdates } from '../hooks/use-channel-upstream-updates'
 import { channelsQueryKeys } from '../lib'
-import type { Channel } from '../types'
+import { indexProviderReadiness } from '../lib/channel-provider-readiness'
+import type { Channel, ProviderReadinessEntry } from '../types'
 
 // ============================================================================
 // Types
@@ -54,6 +62,8 @@ type ChannelsContextType = {
   idSort: boolean
   setIdSort: (enabled: boolean) => void
   upstream: UpstreamUpdateState
+  readinessByType: ReadonlyMap<number, ProviderReadinessEntry>
+  providerReadinessUnavailable: boolean
 }
 
 // ============================================================================
@@ -80,6 +90,16 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   })
 
   const queryClient = useQueryClient()
+  const providerReadinessQuery = useQuery({
+    queryKey: channelsQueryKeys.providerReadiness(),
+    queryFn: getProviderReadiness,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  })
+  const readinessByType = useMemo(() => {
+    const entries = providerReadinessQuery.data?.data?.entries ?? []
+    return indexProviderReadiness(entries)
+  }, [providerReadinessQuery.data])
   const refreshChannels = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: channelsQueryKeys.all })
   }, [queryClient])
@@ -99,6 +119,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         idSort,
         setIdSort,
         upstream,
+        readinessByType,
+        providerReadinessUnavailable: providerReadinessQuery.isError,
       }}
     >
       {children}

@@ -19,7 +19,9 @@ use cinatoken_providers::{
         AiGatewayCutoverDecision, AiGatewayCutoverInput, AiGatewayCutoverPlan,
         AiGatewayModelAuthor,
     },
-    ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry,
+    channel_supports_relay_route, channel_types_for_relay_route,
+    deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
+    ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry, ProviderRelayRoute,
 };
 use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
@@ -27,8 +29,8 @@ use cinatoken_relay::{
     mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
     usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
-    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, GEMINI_CHANNEL_TYPES,
-    OPENAI_COMPATIBLE_CHANNEL_TYPES, RELAY_CACHE_SCHEMA_VERSION, RERANK_CHANNEL_TYPES,
+    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK,
+    RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -114,6 +116,8 @@ const MODEL_LIST_CACHE_MODEL_KEY: &str = "__model_list__";
 enum RelayProviderKind {
     OpenAiCompatible,
     AnthropicMessages,
+    DeepSeekOpenAi,
+    DeepSeekMessages,
     GeminiNative,
 }
 
@@ -163,12 +167,11 @@ impl RelayRequestBodyMode {
 
 struct RelayEndpoint {
     display_name: &'static str,
-    cache_family: &'static str,
+    route: ProviderRelayRoute,
     upstream_path: String,
     upstream_query: Option<String>,
     gemini_route: Option<GeminiNativePath>,
     provider: RelayProviderKind,
-    supported_channel_types: &'static [i32],
     supports_streaming: bool,
     force_streaming: bool,
     stream_not_implemented_feature: Option<&'static str>,
@@ -221,7 +224,7 @@ impl RelayEndpoint {
 
     fn try_upstream_url(&self, channel: &RelayChannel) -> worker::Result<String> {
         let route = ProviderRegistry::resolve(ProviderEndpoint {
-            provider: self.registry_provider_kind(),
+            provider: self.registry_provider_kind(channel.channel_type),
             channel_type: channel.channel_type,
             base_url: channel.base_url.as_deref(),
             endpoint_path: &self.upstream_path,
@@ -234,11 +237,32 @@ impl RelayEndpoint {
         Ok(route.upstream_url)
     }
 
-    fn registry_provider_kind(&self) -> RegistryProviderKind {
-        match self.provider {
+    fn effective_provider(&self, channel_type: i32) -> RelayProviderKind {
+        if channel_type == CHANNEL_TYPE_DEEPSEEK {
+            return match self.provider {
+                RelayProviderKind::OpenAiCompatible => RelayProviderKind::DeepSeekOpenAi,
+                RelayProviderKind::AnthropicMessages => RelayProviderKind::DeepSeekMessages,
+                provider => provider,
+            };
+        }
+        self.provider
+    }
+
+    fn registry_provider_kind(&self, channel_type: i32) -> RegistryProviderKind {
+        match self.effective_provider(channel_type) {
             RelayProviderKind::OpenAiCompatible => RegistryProviderKind::OpenAiCompatible,
             RelayProviderKind::AnthropicMessages => RegistryProviderKind::AnthropicMessages,
+            RelayProviderKind::DeepSeekOpenAi => RegistryProviderKind::DeepSeekOpenAi,
+            RelayProviderKind::DeepSeekMessages => RegistryProviderKind::DeepSeekMessages,
             RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
+        }
+    }
+
+    fn ai_gateway_provider_kind(&self, channel_type: i32) -> RegistryProviderKind {
+        match self.effective_provider(channel_type) {
+            RelayProviderKind::DeepSeekOpenAi => RegistryProviderKind::OpenAiCompatible,
+            RelayProviderKind::DeepSeekMessages => RegistryProviderKind::AnthropicMessages,
+            _ => self.registry_provider_kind(channel_type),
         }
     }
 
@@ -251,7 +275,9 @@ impl RelayEndpoint {
                 "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
                 _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
             },
-            RelayProviderKind::AnthropicMessages => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+            RelayProviderKind::AnthropicMessages
+            | RelayProviderKind::DeepSeekOpenAi
+            | RelayProviderKind::DeepSeekMessages => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
         }
     }
 }
@@ -469,12 +495,11 @@ pub async fn chat_completions(
         Some(context),
         RelayEndpoint {
             display_name: "chat completions",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ChatCompletions,
             upstream_path: "chat/completions".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -501,12 +526,11 @@ pub async fn playground_chat_completions(
         Some(context),
         RelayEndpoint {
             display_name: "playground chat completions",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ChatCompletions,
             upstream_path: "chat/completions".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -528,12 +552,11 @@ pub async fn embeddings(req: Request, env: Env, context: Context) -> worker::Res
         Some(context),
         RelayEndpoint {
             display_name: "embeddings",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Embeddings,
             upstream_path: "embeddings".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -567,12 +590,11 @@ pub async fn engine_embeddings(
         Some(context),
         RelayEndpoint {
             display_name: "engine embeddings",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Embeddings,
             upstream_path: "embeddings".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -593,12 +615,11 @@ pub async fn rerank(req: Request, env: Env, context: Context) -> worker::Result<
         Some(context),
         RelayEndpoint {
             display_name: "rerank",
-            cache_family: "rerank",
+            route: ProviderRelayRoute::Rerank,
             upstream_path: "rerank".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: RERANK_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming rerank relay"),
@@ -622,12 +643,11 @@ pub async fn image_generations(
         Some(context),
         RelayEndpoint {
             display_name: "image generations",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ImageGenerations,
             upstream_path: "images/generations".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -647,12 +667,11 @@ pub async fn audio_speech(req: Request, env: Env, context: Context) -> worker::R
         Some(context),
         RelayEndpoint {
             display_name: "audio speech",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::AudioSpeech,
             upstream_path: "audio/speech".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -676,12 +695,11 @@ pub async fn audio_transcriptions(
         Some(context),
         RelayEndpoint {
             display_name: "audio transcriptions",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::AudioTranscriptions,
             upstream_path: "audio/transcriptions".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -708,12 +726,11 @@ pub async fn audio_translations(
         Some(context),
         RelayEndpoint {
             display_name: "audio translations",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::AudioTranslations,
             upstream_path: "audio/translations".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -733,12 +750,11 @@ pub async fn image_edits(req: Request, env: Env, context: Context) -> worker::Re
         Some(context),
         RelayEndpoint {
             display_name: "image edits",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ImageEdits,
             upstream_path: "images/edits".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -760,12 +776,11 @@ pub async fn completions(req: Request, env: Env, context: Context) -> worker::Re
         Some(context),
         RelayEndpoint {
             display_name: "completions",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Completions,
             upstream_path: "completions".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -788,12 +803,11 @@ pub async fn moderations(req: Request, env: Env, context: Context) -> worker::Re
         Some(context),
         RelayEndpoint {
             display_name: "moderations",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Moderations,
             upstream_path: "moderations".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -814,12 +828,11 @@ pub async fn edits(req: Request, env: Env, context: Context) -> worker::Result<R
         Some(context),
         RelayEndpoint {
             display_name: "edits",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Edits,
             upstream_path: "edits".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -844,12 +857,11 @@ pub async fn responses_compact(
         Some(context),
         RelayEndpoint {
             display_name: "responses compact",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ResponsesCompact,
             upstream_path: "responses/compact".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -883,12 +895,11 @@ pub async fn responses(req: Request, env: Env, context: Context) -> worker::Resu
         Some(context),
         RelayEndpoint {
             display_name: "responses",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Responses,
             upstream_path: "responses".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -912,12 +923,11 @@ pub async fn anthropic_messages(
         Some(context),
         RelayEndpoint {
             display_name: "Anthropic messages",
-            cache_family: "anthropic",
+            route: ProviderRelayRoute::AnthropicMessages,
             upstream_path: "messages".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::AnthropicMessages,
-            supported_channel_types: ANTHROPIC_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -949,12 +959,11 @@ pub async fn gemini_native(
         Some(context),
         RelayEndpoint {
             display_name: "Gemini native",
-            cache_family: "gemini",
+            route: ProviderRelayRoute::GeminiNative,
             upstream_path: route.upstream_path(),
             upstream_query: query,
             gemini_route: Some(route.clone()),
             provider: RelayProviderKind::GeminiNative,
-            supported_channel_types: GEMINI_CHANNEL_TYPES,
             supports_streaming: route.is_stream_generate_content(),
             force_streaming: route.is_stream_generate_content(),
             stream_not_implemented_feature: Some("streaming Gemini native action"),
@@ -1141,20 +1150,23 @@ async fn relay_endpoint_with_auth(
     // Resolve the candidate pool(s). For an "auto" token group, walk the user's
     // auto groups (Go `CacheGetRandomSatisfiedChannel`); otherwise a single group.
     let is_auto = group == "auto";
-    let group_pools = match resolve_relay_group_pools(
+    let supported_channel_types = channel_types_for_relay_route(endpoint.route);
+    let mut group_pools = match resolve_relay_group_pools(
         &db,
         &env,
         &model,
         &group,
         &auth.user_group,
-        endpoint.cache_family,
-        endpoint.supported_channel_types,
+        endpoint.route.cache_family(),
+        &supported_channel_types,
     )
     .await
     {
         Ok(pools) => pools,
         Err(response) => return response,
     };
+    retain_route_capable_channels(&mut group_pools, Some(endpoint.route));
+    retain_pre_reserve_capable_channels(&mut group_pools, &endpoint, should_relay_stream);
 
     // Go applies the per-token cross-group switch only to `auto` tokens. Empty
     // groups can still be skipped during initial selection, but retry
@@ -1248,6 +1260,7 @@ async fn relay_endpoint_with_auth(
             group: selected_group,
             channel,
         } = plan;
+        let attempt_provider = endpoint.effective_provider(channel.channel_type);
 
         let upstream_key = match first_channel_key(&channel.key) {
             Some(key) => key,
@@ -1318,11 +1331,16 @@ async fn relay_endpoint_with_auth(
                     &endpoint.upstream_path,
                     &channel,
                 );
+                apply_provider_request_transform(&mut upstream_body, attempt_provider);
                 // Inject/strip `stream_options.include_usage` for OpenAI-compatible
                 // upstreams (Go parity) so supporting channels emit a real usage
                 // chunk instead of forcing the local estimate. Native Anthropic/
                 // Gemini providers carry usage natively and are left untouched.
-                if inject_stream_options && endpoint.provider == RelayProviderKind::OpenAiCompatible
+                if inject_stream_options
+                    && matches!(
+                        attempt_provider,
+                        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+                    )
                 {
                     cinatoken_relay::openai_compatible::apply_stream_options(
                         &mut upstream_body,
@@ -1388,7 +1406,7 @@ async fn relay_endpoint_with_auth(
                                                 );
                                                     forward_relay_request(
                                                         &env,
-                                                        endpoint.provider,
+                                                        attempt_provider,
                                                         &upstream_url,
                                                         &upstream_key,
                                                         &channel,
@@ -1423,7 +1441,7 @@ async fn relay_endpoint_with_auth(
                                             );
                                                 forward_relay_request(
                                                     &env,
-                                                    endpoint.provider,
+                                                    attempt_provider,
                                                     &upstream_url,
                                                     &upstream_key,
                                                     &channel,
@@ -1446,7 +1464,7 @@ async fn relay_endpoint_with_auth(
                                 Ok(None) => {
                                     forward_relay_request(
                                         &env,
-                                        endpoint.provider,
+                                        attempt_provider,
                                         &upstream_url,
                                         &upstream_key,
                                         &channel,
@@ -1465,7 +1483,7 @@ async fn relay_endpoint_with_auth(
                         None => {
                             forward_relay_request(
                                 &env,
-                                endpoint.provider,
+                                attempt_provider,
                                 &upstream_url,
                                 &upstream_key,
                                 &channel,
@@ -1630,14 +1648,20 @@ async fn relay_endpoint_with_auth(
                 fallback_model,
                 &group,
                 &auth.user_group,
-                endpoint.cache_family,
-                endpoint.supported_channel_types,
+                endpoint.route.cache_family(),
+                &supported_channel_types,
             )
             .await
             {
                 Ok(pools) => pools,
                 Err(response) => return response,
             };
+            retain_route_capable_channels(&mut fallback_group_pools, Some(endpoint.route));
+            retain_pre_reserve_capable_channels(
+                &mut fallback_group_pools,
+                &endpoint,
+                should_relay_stream,
+            );
             for (_, candidates) in &mut fallback_group_pools {
                 candidates.retain(RelayChannel::ai_gateway_opted_in);
             }
@@ -1867,6 +1891,7 @@ async fn relay_endpoint_with_auth(
             ),
         };
     };
+    let selected_provider = endpoint.effective_provider(channel.channel_type);
     model_route_audit.wfp_worker = channel.wfp_worker();
     if model_route_audit.wfp_worker.is_some() {
         strip_wfp_internal_response_headers(upstream_response.headers_mut())?;
@@ -1967,7 +1992,7 @@ async fn relay_endpoint_with_auth(
             served_model,
             selected_group,
             endpoint.upstream_path.clone(),
-            endpoint.provider,
+            selected_provider,
             audit,
         )
         .await;
@@ -1984,7 +2009,7 @@ async fn relay_endpoint_with_auth(
         served_model,
         selected_group,
         endpoint.upstream_path.clone(),
-        endpoint.provider,
+        selected_provider,
         endpoint.parse_non_stream_usage,
         max_json_response_bytes,
         audit,
@@ -2127,12 +2152,11 @@ pub(crate) fn relay_model_fallback_contract_compiled() -> bool {
         && RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV == "RELAY_MODEL_FALLBACK_STAGING_VERIFIED"
         && relay_model_fallback_supported(&RelayEndpoint {
             display_name: "contract",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ChatCompletions,
             upstream_path: "chat/completions".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -2269,6 +2293,45 @@ struct RelayAttemptPlan {
     channel: RelayChannel,
 }
 
+fn retain_route_capable_channels(
+    group_pools: &mut [(String, Vec<RelayChannel>)],
+    route: Option<ProviderRelayRoute>,
+) {
+    let Some(route) = route else {
+        for (_, channels) in group_pools {
+            channels.clear();
+        }
+        return;
+    };
+    for (_, channels) in group_pools {
+        channels.retain(|channel| channel_supports_relay_route(channel.channel_type, route));
+    }
+}
+
+fn retain_pre_reserve_capable_channels(
+    group_pools: &mut [(String, Vec<RelayChannel>)],
+    endpoint: &RelayEndpoint,
+    should_relay_stream: bool,
+) {
+    for (_, channels) in group_pools {
+        channels.retain(|channel| {
+            if first_channel_key(&channel.key).is_none() {
+                return false;
+            }
+            if channel.wfp_worker().is_some() && channel.ai_gateway_opted_in() {
+                return false;
+            }
+            if is_workers_ai_binding_channel(channel) && should_relay_stream {
+                return false;
+            }
+            let Ok(url) = endpoint.try_upstream_url(channel) else {
+                return false;
+            };
+            channel.wfp_worker().is_none() || wfp_relay_path(&url).is_ok()
+        });
+    }
+}
+
 struct RelayAttemptExecution {
     selected_attempt: Option<(RelayChannel, String, Response)>,
     last_failure: Option<RelayAttemptFailure>,
@@ -2300,6 +2363,7 @@ async fn execute_relay_attempt_plan(
             group: selected_group,
             channel,
         } = plan;
+        let attempt_provider = endpoint.effective_provider(channel.channel_type);
 
         let upstream_key = match first_channel_key(&channel.key) {
             Some(key) => key,
@@ -2369,7 +2433,12 @@ async fn execute_relay_attempt_plan(
                     &endpoint.upstream_path,
                     &channel,
                 );
-                if inject_stream_options && endpoint.provider == RelayProviderKind::OpenAiCompatible
+                apply_provider_request_transform(&mut upstream_body, attempt_provider);
+                if inject_stream_options
+                    && matches!(
+                        attempt_provider,
+                        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+                    )
                 {
                     cinatoken_relay::openai_compatible::apply_stream_options(
                         &mut upstream_body,
@@ -2430,7 +2499,7 @@ async fn execute_relay_attempt_plan(
                                                 );
                                                     forward_relay_request(
                                                         env,
-                                                        endpoint.provider,
+                                                        attempt_provider,
                                                         &upstream_url,
                                                         &upstream_key,
                                                         &channel,
@@ -2465,7 +2534,7 @@ async fn execute_relay_attempt_plan(
                                             );
                                                 forward_relay_request(
                                                     env,
-                                                    endpoint.provider,
+                                                    attempt_provider,
                                                     &upstream_url,
                                                     &upstream_key,
                                                     &channel,
@@ -3343,6 +3412,8 @@ pub(crate) async fn plan_realtime_upstream_channel(
     })?;
     let group = auth.effective_group().to_string();
     let is_auto = group == "auto";
+    let realtime_route = ProviderRelayRoute::Realtime;
+    let realtime_channel_types = channel_types_for_relay_route(realtime_route);
     let group_pools: Vec<(String, Vec<RelayChannel>)> = if is_auto {
         let auto_groups =
             match crate::d1_repositories::resolve_user_auto_groups(db, &auth.user_group).await {
@@ -3368,8 +3439,8 @@ pub(crate) async fn plan_realtime_upstream_channel(
                 env,
                 model,
                 &auto_group,
-                "openai_compatible",
-                OPENAI_COMPATIBLE_CHANNEL_TYPES,
+                realtime_route.cache_family(),
+                &realtime_channel_types,
             )
             .await?;
             pools.push((auto_group, candidates));
@@ -3381,8 +3452,8 @@ pub(crate) async fn plan_realtime_upstream_channel(
             env,
             model,
             &group,
-            "openai_compatible",
-            OPENAI_COMPATIBLE_CHANNEL_TYPES,
+            realtime_route.cache_family(),
+            &realtime_channel_types,
         )
         .await?;
         vec![(group.clone(), candidates)]
@@ -3799,7 +3870,7 @@ fn plan_relay_ai_gateway_attempt(
     let decision = plan_ai_gateway_cutover(AiGatewayCutoverInput {
         router_ready: true,
         channel_opted_in: channel.ai_gateway_opted_in(),
-        provider: endpoint.registry_provider_kind(),
+        provider: endpoint.ai_gateway_provider_kind(channel.channel_type),
         relay_path: &endpoint.upstream_path,
         model: upstream_model,
         channel_has_custom_base_url: channel
@@ -4735,12 +4806,17 @@ async fn select_channels(
     let cache_key = RelayCacheKeys::default().channel(cache_family, group, model);
 
     if let Ok(Some(cached)) = read_cached_relay_channel(&redis, &cache_key).await {
-        // Cache hit: return just the cached channel. We deliberately do not
-        // fall through to D1 for the rest of the rotation here; if that
-        // channel fails, the loop will still retry, but only with this single
-        // candidate. This mirrors the historical single-select behavior under
-        // cache and keeps the hot path at one D1 read.
-        return Ok(vec![cached]);
+        if supported_channel_types.contains(&cached.channel_type) {
+            // Cache hit: return just the cached channel. Route-scoped cache
+            // families prevent a channel selected for one protocol from being
+            // reused by another. A stale/incompatible legacy entry is treated
+            // as a miss and refreshed from D1 below.
+            return Ok(vec![cached]);
+        }
+        worker::console_warn!(
+            "ignoring incompatible relay channel cache entry for family {}",
+            cache_family
+        );
     }
 
     let candidates = select_channels_from_d1(db, model, group, supported_channel_types).await?;
@@ -4825,11 +4901,14 @@ async fn forward_relay_request(
         return forward_wfp_relay_transport(env, url, &worker_name, channel.id, body).await;
     }
     match provider {
-        RelayProviderKind::OpenAiCompatible => {
+        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi => {
             forward_openai_compatible(url, upstream_key, channel, body).await
         }
         RelayProviderKind::AnthropicMessages => {
             forward_anthropic_messages(url, upstream_key, body, provider_headers).await
+        }
+        RelayProviderKind::DeepSeekMessages => {
+            forward_openai_compatible(url, upstream_key, channel, body).await
         }
         RelayProviderKind::GeminiNative => forward_gemini_native(url, upstream_key, body).await,
     }
@@ -5657,7 +5736,10 @@ async fn response_usage_summary(
     // Missing-usage estimate fallback only applies to the OpenAI chat shape
     // (the body-text extraction is OpenAI-shaped); rerank carries its own usage.
     let estimate_applicable = estimate_enabled
-        && matches!(provider, RelayProviderKind::OpenAiCompatible)
+        && matches!(
+            provider,
+            RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+        )
         && endpoint_path != "rerank";
     let (usage, locally_estimated) = resolve_non_stream_usage(
         usage,
@@ -5686,8 +5768,12 @@ fn usage_summary_for_provider(
         RelayProviderKind::OpenAiCompatible if endpoint_path == "rerank" => {
             usage_summary_from_rerank_body(body)
         }
-        RelayProviderKind::OpenAiCompatible => usage_summary_from_body(body),
-        RelayProviderKind::AnthropicMessages => usage_summary_from_anthropic_body(body),
+        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi => {
+            usage_summary_from_body(body)
+        }
+        RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
+            usage_summary_from_anthropic_body(body)
+        }
         RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(body),
     }
 }
@@ -5779,8 +5865,12 @@ async fn streaming_usage_summary(
 ) -> worker::Result<(UsageSummary, bool)> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
-        RelayProviderKind::OpenAiCompatible => SseUsageAccumulator::default(),
-        RelayProviderKind::AnthropicMessages => SseUsageAccumulator::anthropic(),
+        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi => {
+            SseUsageAccumulator::default()
+        }
+        RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
+            SseUsageAccumulator::anthropic()
+        }
         RelayProviderKind::GeminiNative => SseUsageAccumulator::gemini(),
     };
 
@@ -5791,8 +5881,11 @@ async fn streaming_usage_summary(
     let (usage, response_text, tool_count) = accumulator.into_parts();
     // The streamed-text accumulation is OpenAI-shaped; only estimate for that
     // provider (Anthropic/Gemini emit reliable usage chunks).
-    let estimate_applicable =
-        estimate_enabled && matches!(provider, RelayProviderKind::OpenAiCompatible);
+    let estimate_applicable = estimate_enabled
+        && matches!(
+            provider,
+            RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+        );
     let (usage, locally_estimated) = resolve_stream_usage(
         usage,
         &response_text,
@@ -7080,6 +7173,20 @@ fn apply_endpoint_request_transform(body: &mut Value, endpoint_path: &str, chann
     }
 }
 
+fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKind) {
+    match provider {
+        RelayProviderKind::DeepSeekOpenAi => {
+            apply_deepseek_request(body, DeepSeekRequestFormat::OpenAi)
+        }
+        RelayProviderKind::DeepSeekMessages => {
+            apply_deepseek_request(body, DeepSeekRequestFormat::AnthropicMessages)
+        }
+        RelayProviderKind::OpenAiCompatible
+        | RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::GeminiNative => {}
+    }
+}
+
 fn should_transform_cohere_rerank_response(endpoint_path: &str, channel: &RelayChannel) -> bool {
     endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE
 }
@@ -8272,12 +8379,11 @@ mod tests {
     fn endpoint(supports_streaming: bool, feature: Option<&'static str>) -> RelayEndpoint {
         RelayEndpoint {
             display_name: "test",
-            cache_family: "test",
+            route: ProviderRelayRoute::ChatCompletions,
             upstream_path: "test".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming,
             force_streaming: false,
             stream_not_implemented_feature: feature,
@@ -8548,12 +8654,11 @@ mod tests {
     fn anthropic_messages_endpoint_allows_streaming() {
         let endpoint = RelayEndpoint {
             display_name: "Anthropic messages",
-            cache_family: "anthropic",
+            route: ProviderRelayRoute::AnthropicMessages,
             upstream_path: "messages".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::AnthropicMessages,
-            supported_channel_types: ANTHROPIC_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -8571,12 +8676,11 @@ mod tests {
     fn completions_endpoint_allows_streaming() {
         let endpoint = RelayEndpoint {
             display_name: "completions",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Completions,
             upstream_path: "completions".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -8594,12 +8698,11 @@ mod tests {
     fn responses_endpoint_allows_streaming() {
         let endpoint = RelayEndpoint {
             display_name: "responses",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::Responses,
             upstream_path: "responses".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -8617,12 +8720,11 @@ mod tests {
     fn image_generations_endpoint_allows_streaming() {
         let endpoint = RelayEndpoint {
             display_name: "image generations",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ImageGenerations,
             upstream_path: "images/generations".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -8657,12 +8759,11 @@ mod tests {
     fn audio_speech_endpoint_skips_non_stream_usage_parsing() {
         let endpoint = RelayEndpoint {
             display_name: "audio speech",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::AudioSpeech,
             upstream_path: "audio/speech".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -8703,12 +8804,11 @@ mod tests {
     fn rerank_endpoint_uses_rerank_channel_family() {
         let endpoint = RelayEndpoint {
             display_name: "rerank",
-            cache_family: "rerank",
+            route: ProviderRelayRoute::Rerank,
             upstream_path: "rerank".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: RERANK_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming rerank relay"),
@@ -8724,8 +8824,9 @@ mod tests {
             "return_documents": true
         });
 
-        assert_eq!(endpoint.cache_family, "rerank");
-        assert_eq!(endpoint.supported_channel_types, RERANK_CHANNEL_TYPES);
+        assert_eq!(endpoint.route, ProviderRelayRoute::Rerank);
+        assert_eq!(endpoint.route.cache_family(), "route:rerank");
+        assert_eq!(channel_types_for_relay_route(endpoint.route), vec![34, 38]);
         assert!(!endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
         assert!(endpoint.parse_non_stream_usage);
@@ -8908,12 +9009,11 @@ mod tests {
         };
         let endpoint = RelayEndpoint {
             display_name: "Gemini native generateContent",
-            cache_family: "gemini",
+            route: ProviderRelayRoute::GeminiNative,
             upstream_path: route.upstream_path(),
             upstream_query: None,
             gemini_route: Some(route),
             provider: RelayProviderKind::GeminiNative,
-            supported_channel_types: GEMINI_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: true,
             stream_not_implemented_feature: None,
@@ -8936,12 +9036,11 @@ mod tests {
         };
         let endpoint = RelayEndpoint {
             display_name: "Gemini native",
-            cache_family: "gemini",
+            route: ProviderRelayRoute::GeminiNative,
             upstream_path: route.upstream_path(),
             upstream_query: None,
             gemini_route: Some(route),
             provider: RelayProviderKind::GeminiNative,
-            supported_channel_types: GEMINI_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
@@ -8964,12 +9063,11 @@ mod tests {
         };
         let endpoint = RelayEndpoint {
             display_name: "Gemini native",
-            cache_family: "gemini",
+            route: ProviderRelayRoute::GeminiNative,
             upstream_path: route.upstream_path(),
             upstream_query: None,
             gemini_route: Some(route),
             provider: RelayProviderKind::GeminiNative,
-            supported_channel_types: GEMINI_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
@@ -8987,12 +9085,11 @@ mod tests {
     fn gemini_native_non_stream_action_rejects_stream_body_flag() {
         let endpoint = RelayEndpoint {
             display_name: "Gemini native",
-            cache_family: "gemini",
+            route: ProviderRelayRoute::GeminiNative,
             upstream_path: "v1beta/models/gemini-test:generateContent".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::GeminiNative,
-            supported_channel_types: GEMINI_CHANNEL_TYPES,
             supports_streaming: false,
             force_streaming: false,
             stream_not_implemented_feature: Some("streaming Gemini native action"),
@@ -9304,7 +9401,6 @@ mod tests {
         );
 
         endpoint.provider = RelayProviderKind::GeminiNative;
-        endpoint.cache_family = "gemini";
         assert_eq!(
             config.max_bytes_for(&endpoint),
             GEMINI_JSON_RESPONSE_LIMIT_BYTES
@@ -9715,12 +9811,11 @@ mod tests {
     fn ai_gateway_chat_endpoint_for_tests() -> RelayEndpoint {
         RelayEndpoint {
             display_name: "chat completions",
-            cache_family: "openai_compatible",
+            route: ProviderRelayRoute::ChatCompletions,
             upstream_path: "chat/completions".to_string(),
             upstream_query: None,
             gemini_route: None,
             provider: RelayProviderKind::OpenAiCompatible,
-            supported_channel_types: OPENAI_COMPATIBLE_CHANNEL_TYPES,
             supports_streaming: true,
             force_streaming: false,
             stream_not_implemented_feature: None,
@@ -9728,6 +9823,90 @@ mod tests {
             request_body_mode: RelayRequestBodyMode::Json,
             request_validator: None,
         }
+    }
+
+    #[test]
+    fn deepseek_uses_route_specific_provider_urls_and_request_suffixes() {
+        let mut channel = test_channel(43, 0, 1);
+        channel.channel_type = CHANNEL_TYPE_DEEPSEEK;
+        channel.base_url = Some("https://api.deepseek.com".to_string());
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert!(matches!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::DeepSeekOpenAi
+        ));
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+
+        let mut completions = endpoint(false, None);
+        completions.route = ProviderRelayRoute::Completions;
+        completions.upstream_path = "completions".to_string();
+        assert_eq!(
+            completions.upstream_url(&channel),
+            "https://api.deepseek.com/beta/completions"
+        );
+
+        let mut messages = endpoint(true, None);
+        messages.route = ProviderRelayRoute::AnthropicMessages;
+        messages.provider = RelayProviderKind::AnthropicMessages;
+        messages.upstream_path = "messages".to_string();
+        assert!(matches!(
+            messages.effective_provider(channel.channel_type),
+            RelayProviderKind::DeepSeekMessages
+        ));
+        assert_eq!(
+            messages.upstream_url(&channel),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+
+        let mut body = json!({"model": "deepseek-v4-preview-max"});
+        apply_provider_request_transform(&mut body, RelayProviderKind::DeepSeekOpenAi);
+        assert_eq!(body["model"], "deepseek-v4-preview");
+        assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn pre_reserve_filter_fails_closed_for_unroutable_channels() {
+        let endpoint = ai_gateway_chat_endpoint_for_tests();
+        let mut valid_deepseek = test_channel(43, 0, 1);
+        valid_deepseek.channel_type = CHANNEL_TYPE_DEEPSEEK;
+        valid_deepseek.base_url = Some("https://api.deepseek.com".to_string());
+
+        let mut dedicated_pending = test_channel(15, 0, 1);
+        dedicated_pending.channel_type = 15;
+        dedicated_pending.base_url = Some("https://example.com/v1".to_string());
+        let mut missing_key = test_channel(1, 0, 1);
+        missing_key.key.clear();
+        let mut conflicting_transport = test_channel(1, 0, 1);
+        conflicting_transport.other_info =
+            r#"{"ai_gateway":{"enabled":true},"wfp_worker":"tenant-a"}"#.to_string();
+        let mut streaming_workers_ai = test_channel(39, 0, 1);
+        streaming_workers_ai.channel_type =
+            cinatoken_relay::openai_compatible::CHANNEL_TYPE_CLOUDFLARE;
+        streaming_workers_ai.key = "internal".to_string();
+
+        let mut pools = vec![(
+            "default".to_string(),
+            vec![
+                valid_deepseek,
+                dedicated_pending,
+                missing_key,
+                conflicting_transport,
+                streaming_workers_ai,
+            ],
+        )];
+        retain_route_capable_channels(&mut pools, Some(endpoint.route));
+        retain_pre_reserve_capable_channels(&mut pools, &endpoint, true);
+
+        let remaining = pools[0]
+            .1
+            .iter()
+            .map(|channel| channel.channel_type)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec![43]);
     }
 
     #[test]

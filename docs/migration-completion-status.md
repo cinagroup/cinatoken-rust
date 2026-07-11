@@ -93,6 +93,23 @@ A full diff of every Go-registered route against the Rust worker closed these
 
 ## In Progress
 
+### Provider relay capability authority (2026-07-11)
+
+- All 53 real Go channel types now have one route-level Rust implementation
+  registry. Relay candidate selection consults it before billing-plan creation
+  and quota reservation; unsupported dedicated types fail closed.
+- The generic OpenAI set is corrected to the 14 channel types actually served
+  by Go's generic adapter. DeepSeek type 43 is implemented only for chat
+  completions, legacy completions, and Anthropic Messages, with route-specific
+  URLs and thinking suffix handling.
+- Admin `GET /api/channel/provider-readiness` and the channel UI expose
+  implementation readiness without claiming provider health or production
+  proof. Route cache keys are protocol scoped.
+- Local provider, relay, focused Worker, frontend, route-audit, wasm, and full
+  repository checks pass. Dedicated adapters other than DeepSeek, live
+  route/provider fixtures, staging billing reconciliation, and production
+  canary evidence remain pending.
+
 - Frontend staging deployment and browser/API contract smoke.
 - Model-list/retrieve owner metadata, billing-config visibility filtering, and
   live token smoke.

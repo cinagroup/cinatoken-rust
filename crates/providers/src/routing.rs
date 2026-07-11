@@ -10,6 +10,8 @@ use crate::ai_gateway::AiGatewayRouteKind;
 pub enum ProviderKind {
     OpenAiCompatible,
     AnthropicMessages,
+    DeepSeekOpenAi,
+    DeepSeekMessages,
     GeminiNative,
     CloudflareWorkersAi,
     AiGateway,
@@ -20,6 +22,8 @@ impl ProviderKind {
         match self {
             Self::OpenAiCompatible => Some(AiGatewayRouteKind::Compat),
             Self::AnthropicMessages => Some(AiGatewayRouteKind::Anthropic),
+            Self::DeepSeekOpenAi => Some(AiGatewayRouteKind::Compat),
+            Self::DeepSeekMessages => Some(AiGatewayRouteKind::Anthropic),
             Self::GeminiNative => Some(AiGatewayRouteKind::GoogleAiStudio),
             Self::CloudflareWorkersAi => Some(AiGatewayRouteKind::WorkersAi),
             Self::AiGateway => None,
@@ -49,6 +53,7 @@ pub enum ProviderRouteError {
     MissingGeminiRoute,
     BindingOnlyProvider,
     AiGatewayRequiresExplicitConfig,
+    UnsupportedProviderRoute,
 }
 
 impl fmt::Display for ProviderRouteError {
@@ -67,6 +72,7 @@ impl fmt::Display for ProviderRouteError {
                     "AI Gateway routing requires explicit account and gateway config"
                 )
             }
+            Self::UnsupportedProviderRoute => write!(f, "provider does not support this route"),
         }
     }
 }
@@ -85,6 +91,13 @@ impl ProviderRegistry {
                 endpoint.endpoint_path,
             ),
             ProviderKind::AnthropicMessages => upstream_anthropic_messages_url(endpoint.base_url),
+            ProviderKind::DeepSeekOpenAi => {
+                crate::deepseek::deepseek_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
+            ProviderKind::DeepSeekMessages => {
+                crate::deepseek::deepseek_messages_url(endpoint.base_url)
+            }
             ProviderKind::GeminiNative => upstream_gemini_native_url(
                 endpoint.base_url,
                 endpoint

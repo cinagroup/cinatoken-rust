@@ -162,3 +162,24 @@ Note: Family A intentionally splits OpenAI-shaped types that ride the generic
 `openai` adapter from dedicated adapters that merely look OpenAI-compatible.
 "Looks like OpenAI" is not "served by the OpenAI adapter"; only the latter can
 share the generic Rust OpenAI-compatible path without its own fixtures.
+
+## Rust Relay Capability Authority (2026-07-11)
+
+`crates/providers/src/channel_capabilities.rs` is now the runtime authority for
+text-relay eligibility. It covers all 53 real source channel types exactly once
+and records adapter kind, implementation readiness, and supported route set.
+The relay queries that registry before billing-plan construction and quota
+reservation; a dedicated channel type without an explicit Rust route fails
+closed instead of falling through to the generic OpenAI adapter.
+
+The generic set is locked to source adapter dispatch by tests: 1, 3, 6, 7, 8,
+9, 10, 12, 13, 19, 20, 22, 31, and 47. Type 21 remains Deferred because Go
+resolves no text adapter. Type 43 (DeepSeek) is Partial with only chat
+completions, legacy completions, and Anthropic Messages. Types 14/43 are the
+only native Messages candidates; types 34/38 are the rerank candidates; type
+24 is the native Gemini candidate. Async task/media routing remains a separate
+authority and is not implied by this text-relay registry.
+
+The admin API and frontend deliberately call this contract "Relay
+implementation readiness". It does not report credentials, reachability,
+provider health, staging smoke, billing parity, or production approval.

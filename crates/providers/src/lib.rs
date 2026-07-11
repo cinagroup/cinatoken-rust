@@ -3,8 +3,15 @@ use cinatoken_core::ApiResult;
 use cinatoken_relay::RelayContext;
 
 pub mod ai_gateway;
+pub mod channel_capabilities;
+pub mod deepseek;
 pub mod routing;
 
+pub use channel_capabilities::{
+    channel_capabilities, channel_capability, channel_supports_relay_route,
+    channel_types_for_relay_route, ChannelAdapterKind, ChannelRelayCapability,
+    ChannelRelayReadiness, ProviderRelayRoute,
+};
 pub use routing::{
     ProviderEndpoint, ProviderKind, ProviderRegistry, ProviderRoute, ProviderRouteError,
 };

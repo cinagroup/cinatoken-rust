@@ -107,6 +107,11 @@ maturity levels are used:
   is now compiled locally for fixed and `auto` groups, but staging Queue/D1
   replay of reservation, settlement, refund, and terminal audit remains P0
   before production cutover.
+- A default-off, admin-only Worker-binding smoke route now fixes three D1
+  scenarios for actual-group refund, fallback-plan replacement, and retry-
+  exhaustion refund. The companion CLI validates capabilities, plan evidence,
+  snapshots, and zero-residue cleanup. This is a staging proof mechanism, not
+  evidence that staging has already run.
 - M8's five tenant AI routes are transport substrate, not a paid relay entry.
   They bypass central relay-token policy, D1 channel selection, quota
   reserve/settlement, and relay audit when invoked through the admin dispatch

@@ -28,7 +28,7 @@ use cinatoken_relay::{
     usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
     ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, GEMINI_CHANNEL_TYPES,
-    OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
+    OPENAI_COMPATIBLE_CHANNEL_TYPES, RELAY_CACHE_SCHEMA_VERSION, RERANK_CHANNEL_TYPES,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use futures_util::StreamExt;
@@ -1152,10 +1152,10 @@ async fn relay_endpoint_with_auth(
         Err(response) => return response,
     };
 
-    // Plan the ordered (group, channel) attempts up front. `cross_group_retry`
-    // is not yet a ported per-token setting; auto tokens default to enabled so
-    // priority exhaustion advances to the next group (documented divergence).
-    let cross_group_retry = true;
+    // Go applies the per-token cross-group switch only to `auto` tokens. Empty
+    // groups can still be skipped during initial selection, but retry
+    // exhaustion must not advance to another non-empty group when disabled.
+    let cross_group_retry = auth.cross_group_retry_enabled();
     let attempt_plan = plan_relay_attempts(
         group_pools,
         is_auto,
@@ -1186,6 +1186,8 @@ async fn relay_endpoint_with_auth(
         .iter()
         .map(|plan| plan.group.clone())
         .collect::<Vec<_>>();
+    model_route_audit.cross_group_retry = cross_group_retry;
+    model_route_audit.primary_planned_group_count = unique_group_count(&billing_groups);
     let mut tiered_billing_group_plan = match prepare_tiered_billing_group_plan(
         &db,
         &model,
@@ -1653,6 +1655,8 @@ async fn relay_endpoint_with_auth(
                     .iter()
                     .map(|plan| plan.group.clone())
                     .collect::<Vec<_>>();
+                model_route_audit.fallback_planned_group_count =
+                    Some(unique_group_count(&fallback_billing_groups));
                 let mut fallback_request_body = json_body
                     .clone()
                     .unwrap_or_else(|| Value::Object(Default::default()));
@@ -2143,7 +2147,8 @@ pub(crate) fn relay_terminal_attempt_audit_contract_compiled() -> bool {
 }
 
 pub(crate) fn relay_actual_serving_group_billing_contract_compiled() -> bool {
-    TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY == "max_candidate_group"
+    RELAY_CACHE_SCHEMA_VERSION == 3
+        && TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY == "max_candidate_group"
         && TIERED_BILLING_SELECTED_GROUP_STRATEGY == "selected_group"
         && settle(Quota(20), Quota(10)).refund_quota == Quota(10)
         && settle(Quota(10), Quota(20)).additional_quota == Quota(10)
@@ -2158,6 +2163,9 @@ struct RelayModelRouteAudit {
     fallback_trigger: Option<String>,
     fallback_skip_reason: Option<String>,
     ai_gateway_direct_fallback: Option<String>,
+    cross_group_retry: bool,
+    primary_planned_group_count: usize,
+    fallback_planned_group_count: Option<usize>,
 }
 
 impl RelayModelRouteAudit {
@@ -2170,6 +2178,9 @@ impl RelayModelRouteAudit {
             fallback_trigger: None,
             fallback_skip_reason: None,
             ai_gateway_direct_fallback: None,
+            cross_group_retry: false,
+            primary_planned_group_count: 0,
+            fallback_planned_group_count: None,
         }
     }
 }
@@ -2593,6 +2604,16 @@ fn plan_relay_attempts(
         }
     }
     Ok(order)
+}
+
+fn unique_group_count(groups: &[String]) -> usize {
+    let mut unique = Vec::new();
+    for group in groups {
+        if !unique.iter().any(|existing| *existing == group) {
+            unique.push(group);
+        }
+    }
+    unique.len()
 }
 
 fn select_weighted_checked(
@@ -3302,7 +3323,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
         is_auto,
         retry_config.max_attempts(),
         retry_config.retry_times as i32,
-        true,
+        auth.cross_group_retry_enabled(),
         random_u64_below,
     )
     .map_err(worker_error_response)?;
@@ -4322,6 +4343,7 @@ async fn authenticate_playground_session(
         model_limits: String::new(),
         allow_ips: String::new(),
         token_group: group,
+        cross_group_retry: 0,
         username: user.username,
         user_status: user.status,
         user_quota: user.quota,
@@ -5674,6 +5696,9 @@ async fn record_relay_audit(
             "fallback_trigger": audit.model_route.fallback_trigger,
             "fallback_skip_reason": audit.model_route.fallback_skip_reason,
             "ai_gateway_direct_fallback": audit.model_route.ai_gateway_direct_fallback,
+            "cross_group_retry": audit.model_route.cross_group_retry,
+            "primary_planned_group_count": audit.model_route.primary_planned_group_count,
+            "fallback_planned_group_count": audit.model_route.fallback_planned_group_count,
         },
     });
     let mut admin_info = serde_json::Map::new();
@@ -6004,6 +6029,9 @@ fn terminal_relay_failure_event(
             "fallback_trigger": model_route.fallback_trigger,
             "fallback_skip_reason": model_route.fallback_skip_reason,
             "ai_gateway_direct_fallback": model_route.ai_gateway_direct_fallback,
+            "cross_group_retry": model_route.cross_group_retry,
+            "primary_planned_group_count": model_route.primary_planned_group_count,
+            "fallback_planned_group_count": model_route.fallback_planned_group_count,
         },
         "admin_info": {
             "attempt_count": attempts.total,
@@ -6053,6 +6081,25 @@ struct TieredBillingOutcome {
     final_quota: i64,
     snapshot: TieredBillingSnapshot,
     result: TieredBillingResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActualGroupBillingSmokeAction {
+    SettleSelectedGroup,
+    RefundExhaustedPlan,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActualGroupBillingSmokeEvidence {
+    pub candidate_group_count: usize,
+    pub reservation_strategy: &'static str,
+    pub reserved_quota: i64,
+    pub selected_group: Option<String>,
+    pub selected_group_ratio: Option<f64>,
+    pub selected_group_estimated_quota: Option<i64>,
+    pub final_quota: i64,
+    pub refund_quota: i64,
+    pub additional_quota: i64,
 }
 
 const TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY: &str = "max_candidate_group";
@@ -6164,6 +6211,115 @@ async fn prepare_tiered_billing_group_plan(
     tiered_billing_group_plan_from_base(base.snapshot, &unique_groups, &group_ratios)
         .map(Some)
         .map_err(worker::Error::RustError)
+}
+
+/// Execute one fixed staging-smoke billing plan through the same D1 reserve,
+/// selected-group settlement, and refund functions used by the relay. The
+/// caller owns fixture setup/cleanup and must gate this away from production.
+pub(crate) async fn execute_actual_group_billing_smoke_plan(
+    db: &D1Database,
+    auth: &AuthenticatedToken,
+    channel_id: i64,
+    model: &str,
+    groups: &[String],
+    selected_group: &str,
+    action: ActualGroupBillingSmokeAction,
+    now: i64,
+) -> worker::Result<ActualGroupBillingSmokeEvidence> {
+    let request_body = json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "word ".repeat(1_000)}],
+        "max_completion_tokens": 2_000
+    });
+    let request = RequestInput::from_json_body(request_body.clone());
+    let Some(mut plan) = prepare_tiered_billing_group_plan(
+        db,
+        model,
+        &auth.user_group,
+        groups,
+        &request_body,
+        &request,
+        true,
+        0,
+    )
+    .await?
+    else {
+        return Err(worker::Error::RustError(format!(
+            "actual-group billing smoke model {model} is not configured for tiered billing"
+        )));
+    };
+    let candidate_group_count = plan.snapshots.len();
+    let reservation_strategy = if candidate_group_count > 1 {
+        TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY
+    } else {
+        TIERED_BILLING_SELECTED_GROUP_STRATEGY
+    };
+    let reserved_quota = plan.reserved_quota;
+    reserve_tiered_billing_group_plan(db, auth, &mut plan, now).await?;
+
+    match action {
+        ActualGroupBillingSmokeAction::RefundExhaustedPlan => {
+            refund_tiered_billing_group_plan(db, auth, &plan, now).await?;
+            Ok(ActualGroupBillingSmokeEvidence {
+                candidate_group_count,
+                reservation_strategy,
+                reserved_quota,
+                selected_group: None,
+                selected_group_ratio: None,
+                selected_group_estimated_quota: None,
+                final_quota: 0,
+                refund_quota: reserved_quota,
+                additional_quota: 0,
+            })
+        }
+        ActualGroupBillingSmokeAction::SettleSelectedGroup => {
+            let Some(preflight) = plan.selected_preflight(selected_group) else {
+                let _ = refund_tiered_billing_group_plan(db, auth, &plan, now).await;
+                return Err(worker::Error::RustError(format!(
+                    "actual-group billing smoke snapshot missing for selected group {selected_group}"
+                )));
+            };
+            let selected_group_ratio = preflight.snapshot.group_ratio;
+            let selected_group_estimated_quota = preflight.snapshot.estimated_quota_after_group.0;
+            let usage = UsageSummary {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                ..UsageSummary::default()
+            };
+            let outcome = match tiered_billing_settlement(&preflight, &usage, &request) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    let _ = refund_tiered_billing_group_plan(db, auth, &plan, now).await;
+                    return Err(worker::Error::RustError(err));
+                }
+            };
+            if let Err(err) = crate::d1_repositories::settle_reserved_relay_quota_usage(
+                db,
+                auth.user_id,
+                auth.token_id,
+                channel_id,
+                preflight.pre_consumed_quota,
+                outcome.final_quota,
+                now,
+            )
+            .await
+            {
+                return Err(err);
+            }
+            Ok(ActualGroupBillingSmokeEvidence {
+                candidate_group_count,
+                reservation_strategy,
+                reserved_quota,
+                selected_group: Some(selected_group.to_string()),
+                selected_group_ratio: Some(selected_group_ratio),
+                selected_group_estimated_quota: Some(selected_group_estimated_quota),
+                final_quota: outcome.final_quota,
+                refund_quota: outcome.result.settlement.refund_quota.0,
+                additional_quota: outcome.result.settlement.additional_quota.0,
+            })
+        }
+    }
 }
 
 fn tiered_billing_group_plan_from_base(
@@ -7904,6 +8060,7 @@ mod tests {
             model_limits: String::new(),
             allow_ips: String::new(),
             token_group: "default".to_string(),
+            cross_group_retry: 0,
             username: "user".to_string(),
             user_status: 1,
             user_quota: 100,
@@ -9668,6 +9825,33 @@ mod tests {
             .map(|p| (p.group.as_str(), p.channel.id))
             .collect();
         assert_eq!(trace, vec![("g0", 1), ("g1", 2)]);
+    }
+
+    #[test]
+    fn plan_auto_stays_in_first_nonempty_group_when_cross_group_is_disabled() {
+        let pools = vec![
+            ("g0".to_string(), vec![test_channel(1, 0, 1)]),
+            ("g1".to_string(), vec![test_channel(2, 0, 1)]),
+        ];
+        let plan = plan_relay_attempts(pools, true, 1, 0, false, |_| Ok(0)).unwrap();
+        let trace = plan
+            .iter()
+            .map(|attempt| (attempt.group.as_str(), attempt.channel.id))
+            .collect::<Vec<_>>();
+
+        assert_eq!(trace, vec![("g0", 1)]);
+    }
+
+    #[test]
+    fn unique_group_count_ignores_retry_duplicates() {
+        assert_eq!(
+            unique_group_count(&[
+                "default".to_string(),
+                "default".to_string(),
+                "vip".to_string(),
+            ]),
+            2
+        );
     }
 
     #[test]

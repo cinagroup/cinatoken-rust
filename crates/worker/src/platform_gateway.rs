@@ -49,6 +49,7 @@ use crate::relay::{
     relay_model_fallback_runtime_status, relay_terminal_attempt_audit_contract_compiled,
     RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
 };
+use crate::relay_billing_smoke::{smoke_compiled, smoke_enabled, smoke_ready};
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
 use crate::task_repository::{
     task_refund_cas_batch_compiled, task_refund_replay_contract_compiled,
@@ -181,6 +182,9 @@ struct PlatformCapabilities {
     relay_ai_gateway_cross_model_fallback_config_valid: bool,
     relay_ai_gateway_cross_model_fallback_mapping_count: usize,
     relay_ai_gateway_cross_model_actual_group_billing_compiled: bool,
+    relay_ai_gateway_actual_group_billing_staging_smoke_compiled: bool,
+    relay_ai_gateway_actual_group_billing_staging_smoke_enabled: bool,
+    relay_ai_gateway_actual_group_billing_staging_smoke_ready: bool,
     relay_ai_gateway_cross_model_terminal_audit_compiled: bool,
     relay_ai_gateway_cross_model_fallback_ready: bool,
     relay_ai_gateway_cross_model_fallback_staging_verified: bool,
@@ -273,6 +277,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     }
 
     let d1_migration_status = load_d1_migration_status(&env).await;
+    let d1_migration_ready = d1_migration_status.ready();
     let ai_gateway_id_configured = runtime_value(&env, AI_GATEWAY_ID_ENV).is_some();
     let cloudflare_account_id_configured = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV).is_some();
     let cloudflare_ai_gateway_token_configured = cloudflare_ai_gateway_token_configured(&env);
@@ -286,6 +291,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let relay_ai_gateway_cross_model_fallback_compiled = relay_model_fallback_contract_compiled();
     let relay_ai_gateway_cross_model_actual_group_billing_compiled =
         relay_actual_serving_group_billing_contract_compiled();
+    let relay_ai_gateway_actual_group_billing_staging_smoke_compiled = smoke_compiled();
+    let relay_ai_gateway_actual_group_billing_staging_smoke_enabled = smoke_enabled(&env);
+    let relay_ai_gateway_actual_group_billing_staging_smoke_ready =
+        smoke_ready(&env, d1_migration_ready);
     let relay_ai_gateway_cross_model_terminal_audit_compiled =
         relay_terminal_attempt_audit_contract_compiled();
     let relay_model_fallback_runtime = relay_model_fallback_runtime_status(&env);
@@ -398,7 +407,6 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_platform_header_boundary_compiled();
     let realtime_session_upstream_bridge_compiled = false;
     let realtime_session_billing_settlement_compiled = false;
-    let d1_migration_ready = d1_migration_status.ready();
     let realtime_session_platform_smoke_ready = is_realtime_session_platform_smoke_ready(
         realtime_sessions_do_available,
         realtime_session_gateway_enabled,
@@ -496,6 +504,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_cross_model_fallback_mapping_count: relay_model_fallback_runtime
             .mapping_count,
         relay_ai_gateway_cross_model_actual_group_billing_compiled,
+        relay_ai_gateway_actual_group_billing_staging_smoke_compiled,
+        relay_ai_gateway_actual_group_billing_staging_smoke_enabled,
+        relay_ai_gateway_actual_group_billing_staging_smoke_ready,
         relay_ai_gateway_cross_model_terminal_audit_compiled,
         relay_ai_gateway_cross_model_fallback_ready,
         relay_ai_gateway_cross_model_fallback_staging_verified,
@@ -2153,6 +2164,7 @@ mod tests {
     fn relay_model_fallback_readiness_requires_every_runtime_and_replay_gate() {
         assert!(relay_model_fallback_contract_compiled());
         assert!(relay_actual_serving_group_billing_contract_compiled());
+        assert!(smoke_compiled());
         assert!(relay_terminal_attempt_audit_contract_compiled());
         assert!(is_relay_model_fallback_ready(
             true, true, true, true, true, true, true

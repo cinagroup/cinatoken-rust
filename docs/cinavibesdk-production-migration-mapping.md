@@ -528,6 +528,11 @@ The cinaVibeSDK patterns must not weaken cinatoken billing:
   the snapshot belonging to the actual serving group. A cross-model fallback
   refunds the primary plan and builds a new plan for the fallback model. This
   remains default-off until isolated staging D1 replay proves those invariants.
+- The per-token `cross_group_retry` switch is now loaded by D1 authentication and
+  propagated through ordinary REST, cross-model fallback, and Realtime attempt
+  planning. The default-off actual-group Worker-binding smoke exercises the same
+  authenticated value, but local self-test/dry-run output is not remote staging
+  evidence.
 - WFP tenant AI routes are currently a transport-only NO-GO for paid traffic:
   the admin dispatch entry bypasses central relay-token policy, channel
   selection, quota reserve/settlement, and relay audit. WFP must run only after

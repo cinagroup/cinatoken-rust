@@ -162,22 +162,23 @@ now planned up front by `plan_relay_attempts`, which produces the ordered
 inline `select_weighted` + pool-shrink behavior exactly (so non-auto traffic is
 unchanged), and the `is_auto` branch (triggered by `token_group == "auto"`)
 resolves the user's groups via `resolve_user_auto_groups`, fetches candidates
-**per group**, and drives `auto_group_retry_step`. Billing now resolves the
-group ratio from the **selected** group: the preflight uses the first planned
-attempt's group, and settlement uses the actual serving channel's group (passed
-into `complete_relay_response`/`complete_streaming_relay_response`). 4 planner
-unit tests; non-auto suite unchanged (129 worker tests).
+**per group**, and drives `auto_group_retry_step`. The D1 authentication query
+now loads `tokens.cross_group_retry` into `AuthenticatedToken`; the effective
+switch applies only to `auto` tokens. The same authenticated value drives the
+ordinary REST attempt plan, the cross-model fallback plan, and the Realtime
+channel plan. Audit metadata records the switch and primary/fallback planned
+group counts.
 
-Documented divergences / caveats (need **staging verification** — D1 reads + e2e
-cannot be tested locally):
-- `cross_group_retry` is not yet a ported per-token setting; auto tokens default
-  it to `true` (priority exhaustion advances to the next group). Port the token
-  field to honor per-token config.
-- The tiered-billing **frozen snapshot** uses the *first* planned attempt's
-  group ratio; if a cross-group retry lands on a different group, the tiered
-  charge still uses the first group's ratio (flat settlement uses the serving
-  group correctly). Fully faithful tiered+auto needs per-attempt reserve (Go
-  reserves per retry), a larger billing-flow change.
+Tiered billing now freezes one expression result, rebases a snapshot for every
+candidate serving group, reserves the maximum estimate once, and settles or
+refunds against the group that actually served the response. Cross-model
+fallback refunds the primary plan before building an independent fallback-model
+plan. These paths remain staging-gated despite being wired locally.
+
+Documented divergences / caveats (need **staging verification**):
+- The D1-authenticated `cross_group_retry` switch and actual-serving-group
+  reserve/settlement plan have local tests and a default-off Worker-binding smoke
+  route, but isolated staging D1 evidence has not been captured yet.
 - "auto groups is not enabled" (503) is returned when the *user-filtered* auto
   list is empty; Go returns that only for the *globally* empty case and otherwise
   falls through to a no-channel error. Same outcome (request fails), different
@@ -205,12 +206,12 @@ The selection-specific parity gaps to close before relay canary:
    weights, single candidate.
 2. **Retry->priority mapping** — fixture that retry 0..k walks priorities highest
    to lowest with clamping.
-3. **Auto cross-group retry** — DONE 2026-06-27: pure state machine
+3. **Auto cross-group retry** — DONE: pure state machine
    (`core::channel_select::auto_group_retry_step`) + config layer
    (`core::groups`, `d1_repositories::resolve_user_auto_groups`) + relay-loop
-   wiring (`relay.rs::plan_relay_attempts`, billing on the selected group). See
-   the status note above for the two staging-verification caveats (per-token
-   `cross_group_retry`; tiered+auto frozen-snapshot ratio).
+   wiring (`relay.rs::plan_relay_attempts`), D1-authenticated per-token
+   `cross_group_retry`, REST/fallback/Realtime propagation, and maximum-reserve
+   actual-serving-group settlement. Remote staging verification remains open.
 4. **Affinity layer** — **minimal version DONE 2026-06-27** (code-complete,
    off-by-default). A `ChannelAffinity` Durable Object (`crates/worker/src/affinity.rs`,
    per §21.2) holds one sticky preferred channel per `(user, model, group)` with

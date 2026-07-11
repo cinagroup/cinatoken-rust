@@ -31,6 +31,7 @@ mod d1_repositories;
 #[allow(dead_code)]
 mod flow_state;
 mod relay;
+mod relay_billing_smoke;
 // Provider-independent task lifecycle persistence + CAS settlement guard (item
 // 4.2). Foundation ahead of the task orchestration that consumes it; the module
 // allows dead_code internally until then.
@@ -136,6 +137,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             |req, ctx| async move {
                 platform_gateway::realtime_settlement_batch_smoke(req, ctx.env).await
             },
+        )
+        .post_async(
+            "/api/platform/relay/actual-group-billing/smoke",
+            |req, ctx| async move { relay_billing_smoke::handler(req, ctx.env).await },
         )
         .post_async(
             "/api/platform/wfp/tenant-script/plan",
@@ -1680,6 +1685,7 @@ mod tests {
             "/api/platform/dispatch/tenant-a",
             "/api/platform/realtime/session-a",
             "/api/platform/realtime/settlement-batch/smoke",
+            "/api/platform/relay/actual-group-billing/smoke",
             "/api/user/login",
             "/api/user/self",
             "/api/user/checkin",

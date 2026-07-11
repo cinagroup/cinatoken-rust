@@ -412,6 +412,9 @@ export type PlatformCapabilities = {
   relay_ai_gateway_same_channel_fallback_compiled: boolean
   relay_ai_gateway_cross_model_fallback_compiled: boolean
   relay_ai_gateway_cross_model_actual_group_billing_compiled: boolean
+  relay_ai_gateway_actual_group_billing_staging_smoke_compiled: boolean
+  relay_ai_gateway_actual_group_billing_staging_smoke_enabled: boolean
+  relay_ai_gateway_actual_group_billing_staging_smoke_ready: boolean
   relay_ai_gateway_cross_model_fallback_enabled: boolean
   relay_ai_gateway_cross_model_fallback_configured: boolean
   relay_ai_gateway_cross_model_fallback_config_valid: boolean

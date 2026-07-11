@@ -6,8 +6,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use worker::{D1Database, D1Result, D1Type};
 
-const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
-const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
+pub(crate) const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
+pub(crate) const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
 pub(crate) const GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_ratio";
 pub(crate) const LEGACY_GROUP_RATIO_OPTION_KEY: &str = "GroupRatio";
 pub(crate) const GROUP_GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_group_ratio";
@@ -161,6 +161,7 @@ pub async fn authenticate_token(
           t.model_limits AS model_limits,
           t.allow_ips AS allow_ips,
           t."group" AS token_group,
+          t.cross_group_retry AS cross_group_retry,
           u.username AS username,
           u.status AS user_status,
           u.quota AS user_quota,

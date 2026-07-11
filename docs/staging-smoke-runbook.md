@@ -516,6 +516,40 @@ terminal attempt ledger are locally compiled; remote D1/Queue delivery,
 refund-before-audit ordering, user-log redaction, and admin-log visibility
 remain production blockers.
 
+## Phase 3d: Actual-Serving-Group Worker-Binding Smoke
+
+Run the local contract and redacted plan first:
+
+```powershell
+bun run check:relay-actual-group-billing:contract
+bun run check:relay-actual-group-billing:smoke-plan
+```
+
+For an isolated staging D1 only, temporarily set
+`RELAY_ACTUAL_GROUP_BILLING_STAGING_SMOKE_ENABLED=true`, deploy the matching
+Worker commit, and verify the three staging-smoke capabilities are all true.
+Then run:
+
+```powershell
+$env:RELAY_ACTUAL_GROUP_BILLING_SMOKE_COOKIE = "session=<redacted admin session cookie>"
+bun run smoke:relay-actual-group-billing -- --url $env:STAGING_BASE_URL --cookie $env:RELAY_ACTUAL_GROUP_BILLING_SMOKE_COOKIE --scenario all --confirm-live --json
+```
+
+The CLI fails unless all three scenarios report `PASS`, prove the Worker binding
+path, reconcile maximum reserve with final/refund quota, match final and expected
+D1 snapshots, and return `cleanupVerified=true`. Archive capability JSON, all
+three reports, Worker logs, the git SHA, and the time the smoke flag was restored
+to `false`. Never treat self-test or dry-run output as staging execution.
+
+The route rejects `cleanup=false`. Before touching a fixed fixture row it also
+verifies that both the reserved ID and ownership marker belong to the smoke;
+collisions fail closed instead of deleting unrelated staging data.
+
+The fixture authenticates an `auto` token whose D1 `cross_group_retry` value is
+enabled. That value now reaches ordinary REST, fallback, and Realtime attempt
+planning; the smoke scenarios specifically prove actual-group refund, primary-
+to-fallback plan replacement, and full refund after retry exhaustion.
+
 ## Phase 4: SSE Relay Smoke
 
 Use `docs/route-provider-parity-runbook.md` for stream passthrough,

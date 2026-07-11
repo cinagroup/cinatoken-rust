@@ -35,6 +35,7 @@ export type PlatformReadinessSignalId =
   | 'realtime-runtime'
   | 'task-runner-runtime'
   | 'ai-gateway-canary'
+  | 'ai-gateway-actual-group-billing-smoke'
   | 'ai-gateway-fallback-replay'
   | 'wfp-tenant-smoke'
   | 'realtime-smoke'
@@ -60,6 +61,9 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_ai_gateway_same_channel_fallback_compiled'
   | 'relay_ai_gateway_cross_model_fallback_compiled'
   | 'relay_ai_gateway_cross_model_actual_group_billing_compiled'
+  | 'relay_ai_gateway_actual_group_billing_staging_smoke_compiled'
+  | 'relay_ai_gateway_actual_group_billing_staging_smoke_enabled'
+  | 'relay_ai_gateway_actual_group_billing_staging_smoke_ready'
   | 'relay_ai_gateway_cross_model_terminal_audit_compiled'
   | 'relay_ai_gateway_cross_model_fallback_ready'
   | 'relay_ai_gateway_cross_model_fallback_staging_verified'
@@ -127,6 +131,7 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_ai_gateway_same_channel_fallback_compiled,
     capabilities.relay_ai_gateway_cross_model_fallback_compiled,
     capabilities.relay_ai_gateway_cross_model_actual_group_billing_compiled,
+    capabilities.relay_ai_gateway_actual_group_billing_staging_smoke_compiled,
     capabilities.relay_ai_gateway_cross_model_terminal_audit_compiled
   )
   const wfpTenantImplementation = allReady(
@@ -210,6 +215,11 @@ export function buildPlatformReadinessSummary(
     verificationSignal(
       'ai-gateway-canary',
       capabilities.relay_ai_gateway_router_ready,
+      false
+    ),
+    verificationSignal(
+      'ai-gateway-actual-group-billing-smoke',
+      capabilities.relay_ai_gateway_actual_group_billing_staging_smoke_ready,
       false
     ),
     verificationSignal(

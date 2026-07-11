@@ -34,6 +34,9 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_ai_gateway_same_channel_fallback_compiled: false,
   relay_ai_gateway_cross_model_fallback_compiled: false,
   relay_ai_gateway_cross_model_actual_group_billing_compiled: false,
+  relay_ai_gateway_actual_group_billing_staging_smoke_compiled: false,
+  relay_ai_gateway_actual_group_billing_staging_smoke_enabled: false,
+  relay_ai_gateway_actual_group_billing_staging_smoke_ready: false,
   relay_ai_gateway_cross_model_terminal_audit_compiled: false,
   relay_ai_gateway_cross_model_fallback_ready: false,
   relay_ai_gateway_cross_model_fallback_staging_verified: false,
@@ -89,6 +92,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_ai_gateway_same_channel_fallback_compiled: true,
         relay_ai_gateway_cross_model_fallback_compiled: true,
         relay_ai_gateway_cross_model_actual_group_billing_compiled: true,
+        relay_ai_gateway_actual_group_billing_staging_smoke_compiled: true,
         relay_ai_gateway_cross_model_terminal_audit_compiled: true,
         wfp_dispatch_binding_available: true,
         wfp_tenant_supported_routes: ['/v1/responses'],
@@ -171,11 +175,35 @@ describe('Cloudflare platform readiness headline', () => {
       [
         'ready-to-verify',
         'blocked',
+        'blocked',
         'ready-to-verify',
         'ready-to-verify',
         'verified',
       ]
     )
+  })
+
+  test('keeps actual-group smoke readiness separate from verification and cutover', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_ai_gateway_actual_group_billing_staging_smoke_compiled: true,
+        relay_ai_gateway_actual_group_billing_staging_smoke_enabled: true,
+        relay_ai_gateway_actual_group_billing_staging_smoke_ready: true,
+      })
+    )
+    const smoke = getStage(summary, 'smoke')
+    const actualGroupSmoke = smoke.signals.find(
+      (signal) => signal.id === 'ai-gateway-actual-group-billing-smoke'
+    )
+
+    assert.equal(actualGroupSmoke?.status, 'ready-to-verify')
+    assert.equal(smoke.complete, false)
+    assert.equal(
+      smoke.signals.find((signal) => signal.id === 'ai-gateway-fallback-replay')
+        ?.status,
+      'blocked'
+    )
+    assert.equal(getStage(summary, 'cutover').complete, false)
   })
 
   test('uses only backend cutover readiness fields for cutover success', () => {

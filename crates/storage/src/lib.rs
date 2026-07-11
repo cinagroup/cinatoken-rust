@@ -21,6 +21,8 @@ pub struct AuthenticatedToken {
     pub model_limits: String,
     pub allow_ips: String,
     pub token_group: String,
+    #[serde(default)]
+    pub cross_group_retry: i32,
     pub username: String,
     pub user_status: i32,
     pub user_quota: i64,
@@ -42,6 +44,10 @@ impl AuthenticatedToken {
 
     pub fn has_model_limits(&self) -> bool {
         self.model_limits_enabled != 0
+    }
+
+    pub fn cross_group_retry_enabled(&self) -> bool {
+        self.effective_group() == "auto" && self.cross_group_retry != 0
     }
 }
 
@@ -266,6 +272,7 @@ mod tests {
             model_limits: String::new(),
             allow_ips: String::new(),
             token_group: token_group.to_string(),
+            cross_group_retry: 0,
             username: "dev".to_string(),
             user_status: 1,
             user_quota: 100,
@@ -289,6 +296,17 @@ mod tests {
         auth.model_limits_enabled = 1;
         assert!(auth.has_unlimited_quota());
         assert!(auth.has_model_limits());
+    }
+
+    #[test]
+    fn cross_group_retry_applies_only_to_auto_tokens() {
+        let mut auth = token("auto", "default");
+        assert!(!auth.cross_group_retry_enabled());
+        auth.cross_group_retry = 1;
+        assert!(auth.cross_group_retry_enabled());
+
+        auth.token_group = "vip".to_string();
+        assert!(!auth.cross_group_retry_enabled());
     }
 
     #[test]

@@ -2829,6 +2829,28 @@ bun run check
   exact refund delta, retry exhaustion, fallback-plan replacement, and rollback
   before the fallback gate or staging verification marker can be enabled.
 
+### Actual-group billing Worker-binding smoke CLI (2026-07-11)
+
+- Added `tools/smoke_relay_actual_group_billing.mjs` for the default-off,
+  admin-only `POST /api/platform/relay/actual-group-billing/smoke` route.
+- `--self-test` validates all three fixed scenarios, capability fail-closed
+  behavior, strict plan reconciliation, mandatory cleanup, and cookie redaction.
+  `--dry-run` prints the three request bodies and expected evidence without
+  network or D1 access. Live mode requires an admin cookie and
+  `--confirm-live`.
+- A live result is accepted only when the Worker reports `status=PASS`,
+  `bindingPath=worker_binding`, matching final/expected snapshots, valid maximum-
+  candidate-group reserve/refund evidence, and `cleanupVerified=true`.
+- The smoke also requires
+  `relay_ai_gateway_actual_group_billing_staging_smoke_compiled/enabled/ready`
+  to all be true. The enabled flag remains `false` by default.
+- The Worker rejects cleanup opt-out and verifies fixed fixture IDs plus their
+  ownership markers before conditional deletion, so a staging collision fails
+  closed.
+- D1 auth now carries `tokens.cross_group_retry` through ordinary REST,
+  cross-model fallback, and Realtime planning. This local CLI contract does not
+  claim that any deployed staging Worker or remote D1 has executed the smoke.
+
 ## Still Pending
 
 - The frontend artifact and public HTTP contract still need deployed

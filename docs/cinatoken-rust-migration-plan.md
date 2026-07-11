@@ -7006,6 +7006,34 @@ Still required before production cutover:
   that a production Worker has been deployed or that production cutover is
   approved.
 
+### 22.149 2026-07-11 Actual-Group Billing Worker-Binding Smoke Harness
+
+This increment adds the operator-side harness for the default-off, admin-only
+`POST /api/platform/relay/actual-group-billing/smoke` proof route. It does not
+change production traffic gates and does not claim a remote staging run.
+
+Implemented locally:
+
+- `tools/smoke_relay_actual_group_billing.mjs` has self-test, redacted dry-run,
+  and explicit `--confirm-live` modes. Live mode accepts only an admin cookie and
+  never prints it or accepts an API token.
+- The CLI preflights the compiled/enabled/ready capability triplet, then runs
+  `actual-group-refund`, `fallback-plan-replacement`, and
+  `retry-exhaustion-refund` with mandatory cleanup.
+- Reports fail closed unless status, Worker-binding identity, plan evidence,
+  final/expected snapshots, full-refund paths, and `cleanupVerified` all match.
+- Package scripts expose the live command plus contract and dry-run checks, and
+  the two non-network checks are part of the default workspace gate.
+- `tokens.cross_group_retry` is loaded by D1 authentication and now controls the
+  ordinary REST, fallback-model, and Realtime attempt planners instead of the
+  former unconditional auto-group default.
+
+Still required:
+
+- Execute all three cases against isolated staging D1, archive capability and
+  D1 evidence with the deployed SHA, restore the gate to `false`, and retain the
+  rollback timestamp. Until then this remains local proof infrastructure only.
+
 ### 22.145 2026-07-11 TaskRunner Recurring Alarm And Architecture Re-Audit
 
 This increment corrects the optional M5b fast path after a fresh audit of the

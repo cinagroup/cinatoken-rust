@@ -511,6 +511,41 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Actual-group billing binding smoke'),
+          description: t(
+            'Exposes the default-off staging probe that exercises maximum reservation, selected-group settlement, and exhausted-plan refund through the Worker D1 binding.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_actual_group_billing_staging_smoke_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Actual-group billing smoke gate'),
+          description: t(
+            'Requires the dedicated staging smoke flag before the probe can mutate isolated billing fixtures.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_actual_group_billing_staging_smoke_enabled,
+          readyLabel: t('Enabled'),
+          missingLabel: t('Disabled'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Actual-group billing smoke readiness'),
+          description: t(
+            'Ready means the compiled probe and staging gate can collect evidence; it does not mean the replay is verified or production cutover is approved.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_actual_group_billing_staging_smoke_ready,
+          readyLabel: t('Ready to verify'),
+          missingLabel: t('Blocked'),
+          missingVariant:
+            capabilities.relay_ai_gateway_actual_group_billing_staging_smoke_enabled
+              ? 'warning'
+              : 'neutral',
+        },
+        {
           label: t('Terminal attempt audit'),
           description: t(
             'Persists a Go-compatible error log with a bounded, secret-free channel-attempt ledger when no upstream response survives.'

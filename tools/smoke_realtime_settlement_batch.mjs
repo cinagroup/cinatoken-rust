@@ -81,6 +81,7 @@ function runSelfTest() {
     runCheck("response_reservation_lease_expiry_refunds_once", responseReservationLeaseExpiryRefundsOnce),
     runCheck("stale_lease_generation_does_not_refund_new_reservation", staleLeaseGenerationDoesNotRefundNewReservation),
     runCheck("parallel_responses_settle_by_response_identity", parallelResponsesSettleByResponseIdentity),
+    runCheck("bridge_segment_binding_and_refund_are_isolated", bridgeSegmentBindingAndRefundAreIsolated),
     runCheck("staging_plan_sql_artifacts_replay_locally", stagingPlanSqlArtifactsReplayLocally),
   ];
   const failed = checks.filter((check) => check.status !== "PASS");
@@ -181,6 +182,7 @@ function createSchema(db) {
     CREATE TABLE realtime_billing_reservations (
       reservation_key TEXT PRIMARY KEY,
       session TEXT NOT NULL,
+      bridge_segment TEXT NOT NULL DEFAULT '',
       client_event_id_hash TEXT NOT NULL DEFAULT '',
       reservation_sequence INTEGER NOT NULL DEFAULT 0,
       user_id INTEGER NOT NULL,
@@ -216,6 +218,8 @@ function createSchema(db) {
     CREATE INDEX idx_realtime_billing_reservations_lease
       ON realtime_billing_reservations(session, status, lease_expires_at, reservation_sequence)
       WHERE status = 'reserved' AND lease_expires_at > 0;
+    CREATE INDEX idx_realtime_billing_reservations_segment_status
+      ON realtime_billing_reservations(session, bridge_segment, status, reservation_sequence, reservation_key);
   `);
 }
 
@@ -476,7 +480,9 @@ function responseReservationSettlesOnce() {
     const second = runRealtimeSettlementBatch(db, record, auditLog(record));
     const snapshot = settlementSnapshot(db, record);
     const reservation = db
-      .prepare("SELECT status, final_quota, replay_key, request_json FROM realtime_billing_reservations WHERE reservation_key = ?1")
+      .prepare(
+        "SELECT status, final_quota, replay_key, request_json FROM realtime_billing_reservations WHERE reservation_key = ?1",
+      )
       .get(record.reservationKey);
 
     assert(reserve.outcome === "Applied", "response reservation should apply");
@@ -490,7 +496,12 @@ function responseReservationSettlesOnce() {
     assert(Number(reservation.final_quota) === 150, "reservation should persist final quota");
     assert(reservation.replay_key === record.replayKey, "reservation should persist replay identity");
     assert(reservation.request_json === "{}", "terminal settlement should clear private request input");
-    return { reserve: reserve.outcome, first: first.outcome, second: second.outcome, status: reservation.status };
+    return {
+      reserve: reserve.outcome,
+      first: first.outcome,
+      second: second.outcome,
+      status: reservation.status,
+    };
   });
 }
 
@@ -514,7 +525,11 @@ function responseReservationGuardRollsBack() {
     assert(snapshot.userQuota === 1_000, "failed token guard must roll back user debit");
     assert(snapshot.tokenRemainQuota === 50, "failed token guard must leave token quota unchanged");
     assert(Number(reservationRows.count) === 0, "failed reservation must roll back its marker");
-    return { outcome: result.outcome, userQuota: snapshot.userQuota, reservationRows: Number(reservationRows.count) };
+    return {
+      outcome: result.outcome,
+      userQuota: snapshot.userQuota,
+      reservationRows: Number(reservationRows.count),
+    };
   });
 }
 
@@ -527,7 +542,10 @@ function responseReservationRefundIsIdempotent() {
       tokenUsedQuota: 0,
       channelUsedQuota: 0,
     });
-    const record = settlementRecord({ reservationKey: "rtreserve-refund", preConsumedQuota: 100 });
+    const record = settlementRecord({
+      reservationKey: "rtreserve-refund",
+      preConsumedQuota: 100,
+    });
     const reserve = reserveRealtimeResponse(db, record);
     const first = refundRealtimeResponse(db, record);
     const second = refundRealtimeResponse(db, record);
@@ -541,7 +559,11 @@ function responseReservationRefundIsIdempotent() {
     assert(snapshot.userQuota === 1_000, "refund should restore user quota exactly once");
     assert(snapshot.tokenRemainQuota === 500, "refund should restore token quota exactly once");
     assert(reservation.request_json === "{}", "terminal refund should clear private request input");
-    return { reserve: reserve.outcome, first: first.outcome, second: second.outcome };
+    return {
+      reserve: reserve.outcome,
+      first: first.outcome,
+      second: second.outcome,
+    };
   });
 }
 
@@ -575,7 +597,12 @@ function responseReservationLeaseExpiryRefundsOnce() {
     assert(snapshot.tokenRemainQuota === 500, "expired lease should restore token quota");
     assert(reservation.status === "refunded", "expired lease should reach refunded terminal state");
     assert(reservation.request_json === "{}", "expired lease should clear private request input");
-    return { reserve: reserve.outcome, before: before.outcome, first: first.outcome, second: second.outcome };
+    return {
+      reserve: reserve.outcome,
+      before: before.outcome,
+      first: first.outcome,
+      second: second.outcome,
+    };
   });
 }
 
@@ -594,7 +621,11 @@ function staleLeaseGenerationDoesNotRefundNewReservation() {
       preConsumedQuota: 100,
       leaseExpiresAt: defaultNow + 600,
     });
-    const stale = { ...current, reservationSequence: 1, leaseExpiresAt: defaultNow + 30 };
+    const stale = {
+      ...current,
+      reservationSequence: 1,
+      leaseExpiresAt: defaultNow + 30,
+    };
     const reserve = reserveRealtimeResponse(db, current);
     const staleRefund = refundExpiredRealtimeResponse(db, stale, stale.leaseExpiresAt);
     const beforeCurrentExpiry = settlementSnapshot(db, current);
@@ -641,24 +672,110 @@ function parallelResponsesSettleByResponseIdentity() {
     });
     assert(reserveRealtimeResponse(db, first).outcome === "Applied", "first parallel reserve");
     assert(reserveRealtimeResponse(db, second).outcome === "Applied", "second parallel reserve");
-    assert(bindRealtimeResponse(db, first.session, first.responseIdHash).outcome === "Applied", "bind first response");
-    assert(bindRealtimeResponse(db, first.session, first.responseIdHash).outcome === "Duplicate", "duplicate first response binding");
-    assert(bindRealtimeResponse(db, second.session, second.responseIdHash).outcome === "Applied", "bind second response");
+    assert(
+      bindRealtimeResponse(db, first.session, first.bridgeSegment, first.responseIdHash).outcome === "Applied",
+      "bind first response",
+    );
+    assert(
+      bindRealtimeResponse(db, first.session, first.bridgeSegment, first.responseIdHash).outcome === "Duplicate",
+      "duplicate first response binding",
+    );
+    assert(
+      bindRealtimeResponse(db, second.session, second.bridgeSegment, second.responseIdHash).outcome === "Applied",
+      "bind second response",
+    );
 
     const secondResult = runRealtimeSettlementBatch(db, second, auditLog(second, { requestId: "req-parallel-2" }));
     const firstResult = runRealtimeSettlementBatch(db, first, auditLog(first, { requestId: "req-parallel-1" }));
     const rows = db
-      .query("SELECT reservation_key, upstream_response_id_hash, final_quota, status FROM realtime_billing_reservations ORDER BY reservation_sequence")
+      .query(
+        "SELECT reservation_key, upstream_response_id_hash, final_quota, status FROM realtime_billing_reservations ORDER BY reservation_sequence",
+      )
       .all();
     const snapshot = settlementSnapshot(db, first);
-    assert(secondResult.outcome === "Applied" && firstResult.outcome === "Applied", "out-of-order done events should settle");
-    assert(rows[0].reservation_key === first.reservationKey && Number(rows[0].final_quota) === 120, "first response identity should keep first quota");
-    assert(rows[1].reservation_key === second.reservationKey && Number(rows[1].final_quota) === 130, "second response identity should keep second quota");
-    assert(rows[0].upstream_response_id_hash === first.responseIdHash, "first response hash should remain bound to first reservation");
-    assert(rows[1].upstream_response_id_hash === second.responseIdHash, "duplicate binding must not consume the second reservation");
+    assert(
+      secondResult.outcome === "Applied" && firstResult.outcome === "Applied",
+      "out-of-order done events should settle",
+    );
+    assert(
+      rows[0].reservation_key === first.reservationKey && Number(rows[0].final_quota) === 120,
+      "first response identity should keep first quota",
+    );
+    assert(
+      rows[1].reservation_key === second.reservationKey && Number(rows[1].final_quota) === 130,
+      "second response identity should keep second quota",
+    );
+    assert(
+      rows[0].upstream_response_id_hash === first.responseIdHash,
+      "first response hash should remain bound to first reservation",
+    );
+    assert(
+      rows[1].upstream_response_id_hash === second.responseIdHash,
+      "duplicate binding must not consume the second reservation",
+    );
     assert(snapshot.userUsedQuota === 250, "parallel responses should record both final quotas");
     assert(snapshot.channelUsedQuota === 250, "parallel responses should charge channel by both finals");
-    return { secondDone: secondResult.outcome, firstDone: firstResult.outcome, finalQuotas: rows.map((row) => Number(row.final_quota)) };
+    return {
+      secondDone: secondResult.outcome,
+      firstDone: firstResult.outcome,
+      finalQuotas: rows.map((row) => Number(row.final_quota)),
+    };
+  });
+}
+
+function bridgeSegmentBindingAndRefundAreIsolated() {
+  return withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 500,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const oldSegment = settlementRecord({
+      reservationKey: "rtreserve-old-segment",
+      bridgeSegment: "rtsegment-old",
+      reservationSequence: 1,
+      preConsumedQuota: 100,
+    });
+    const newSegment = settlementRecord({
+      reservationKey: "rtreserve-new-segment",
+      bridgeSegment: "rtsegment-new",
+      reservationSequence: 2,
+      preConsumedQuota: 100,
+      responseIdHash: "response-new-segment",
+    });
+
+    assert(reserveRealtimeResponse(db, oldSegment).outcome === "Applied", "old segment reserve");
+    assert(reserveRealtimeResponse(db, newSegment).outcome === "Applied", "new segment reserve");
+    const binding = bindRealtimeResponse(db, newSegment.session, newSegment.bridgeSegment, newSegment.responseIdHash);
+    const refunded = refundRealtimeSegment(db, oldSegment.session, oldSegment.bridgeSegment, oldSegment.appliedAt);
+    const rows = db
+      .query(
+        "SELECT reservation_key, bridge_segment, status, upstream_response_id_hash FROM realtime_billing_reservations ORDER BY reservation_sequence",
+      )
+      .all();
+    const snapshot = settlementSnapshot(db, oldSegment);
+
+    assert(binding.outcome === "Applied", "new segment response should bind");
+    assert(binding.reservationKey === newSegment.reservationKey, "binding must not consume old segment reservation");
+    assert(refunded.length === 1 && refunded[0].outcome === "Applied", "old segment should refund once");
+    assert(rows[0].status === "refunded", "old segment should be terminal");
+    assert(rows[1].status === "reserved", "new segment must remain reserved");
+    assert(
+      rows[1].upstream_response_id_hash === newSegment.responseIdHash,
+      "new response identity must stay segment scoped",
+    );
+    assert(snapshot.userQuota === 900, "only the old segment quota should be restored");
+    assert(snapshot.tokenRemainQuota === 400, "new segment token reserve must remain charged");
+    return {
+      binding: binding.outcome,
+      refundedSegments: refunded.length,
+      oldStatus: rows[0].status,
+      newStatus: rows[1].status,
+      userQuota: snapshot.userQuota,
+      tokenRemainQuota: snapshot.tokenRemainQuota,
+    };
   });
 }
 
@@ -683,9 +800,7 @@ function normalizeStagingPlanOptions(args) {
 }
 
 function buildStagingPlan(options) {
-  const scenarios = stagingScenarioDefinitions().map((scenario) =>
-    buildStagingScenarioPlan(scenario, options),
-  );
+  const scenarios = stagingScenarioDefinitions().map((scenario) => buildStagingScenarioPlan(scenario, options));
   return {
     tool: "smoke_realtime_settlement_batch",
     mode: "staging-plan",
@@ -707,7 +822,7 @@ function buildStagingPlan(options) {
     },
     requiredBeforeRun: [
       "Confirm the target database is an isolated staging D1, not production.",
-      "Apply migrations through migrations/d1/0020_realtime_billing_reservation_leases.sql.",
+      "Apply migrations through migrations/d1/0021_realtime_billing_bridge_segments.sql.",
       "Write each sqlArtifacts[].sql body to its sqlArtifacts[].path exactly, then review it before running.",
       "Use Wrangler SQL artifacts only for setup, verification, and cleanup; do not treat multi-statement SQL files as D1Database.batch evidence.",
       "Apply the settlement through the deployed Worker binding path, then archive Wrangler stdout/stderr, Worker smoke output, D1 row snapshots, capabilities output, and the matching git commit SHA.",
@@ -783,7 +898,7 @@ function buildBindingSmokePlan(options) {
       "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
       "Keep ENVIRONMENT=staging; the Worker route rejects production.",
       "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
-      "Run against an isolated staging D1 database with migrations through 0020 applied.",
+      "Run against an isolated staging D1 database with migrations through 0021 applied.",
       "Archive /api/platform/capabilities before and after the smoke run.",
     ],
     requests: options.scenarios.map((scenario) => ({
@@ -796,11 +911,12 @@ function buildBindingSmokePlan(options) {
         cleanup: options.cleanup,
       },
       expectedStatus: "PASS",
-      expectedOutcomes: scenario.name === "duplicate-replay-noop"
-        ? ["Applied", "DuplicateReplay"]
-        : scenario.expectedApplyFailure
-          ? ["Error"]
-          : ["Applied"],
+      expectedOutcomes:
+        scenario.name === "duplicate-replay-noop"
+          ? ["Applied", "DuplicateReplay"]
+          : scenario.expectedApplyFailure
+            ? ["Error"]
+            : ["Applied"],
       expectedSnapshot: scenario.expectedSnapshot,
       bindingPath: "worker_binding",
     })),
@@ -840,7 +956,10 @@ async function runBindingSmoke(options) {
     try {
       body = text ? JSON.parse(text) : null;
     } catch {
-      body = { parse_error: "response body was not JSON", preview: text.slice(0, 500) };
+      body = {
+        parse_error: "response body was not JSON",
+        preview: text.slice(0, 500),
+      };
     }
     const data = body?.data ?? body;
     const status = response.ok && body?.success !== false && data?.status === "PASS" ? "PASS" : "FAIL";
@@ -1441,7 +1560,9 @@ function createStagingPlanSchema(db) {
 function assertStagingSetupRows(db, scenario) {
   const users = db.prepare("SELECT COUNT(1) AS count FROM users WHERE id = ?1").get(scenario.ids.userId);
   const channels = db.prepare("SELECT COUNT(1) AS count FROM channels WHERE id = ?1").get(scenario.ids.channelId);
-  const replays = db.prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1").get(scenario.replayKey);
+  const replays = db
+    .prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1")
+    .get(scenario.replayKey);
   const logs = db.prepare("SELECT COUNT(1) AS count FROM logs WHERE request_id = ?1").get(scenario.requestId);
   assert(Number(users.count) === 1, `${scenario.name} setup should insert one user`);
   assert(Number(channels.count) === 1, `${scenario.name} setup should insert one channel`);
@@ -1458,7 +1579,9 @@ function assertStagingCleanup(db, scenario) {
     db.prepare("SELECT COUNT(1) AS count FROM users WHERE id = ?1").get(scenario.ids.userId),
     db.prepare("SELECT COUNT(1) AS count FROM channels WHERE id = ?1").get(scenario.ids.channelId),
     db.prepare("SELECT COUNT(1) AS count FROM logs WHERE request_id = ?1").get(scenario.requestId),
-    db.prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1").get(scenario.replayKey),
+    db
+      .prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1")
+      .get(scenario.replayKey),
   ];
   if (scenario.ids.tokenId > 0) {
     counts.push(db.prepare("SELECT COUNT(1) AS count FROM tokens WHERE id = ?1").get(scenario.ids.tokenId));
@@ -1473,14 +1596,15 @@ function reserveRealtimeResponse(db, record) {
     db.transaction(() => {
       db.prepare(
         `INSERT INTO realtime_billing_reservations (
-          reservation_key, session, client_event_id_hash, reservation_sequence,
+          reservation_key, session, bridge_segment, client_event_id_hash, reservation_sequence,
           user_id, token_id, channel_id, selected_group, model_name,
           pre_consumed_quota, snapshot_json, request_json, status, created_at, updated_at,
           lease_expires_at
-        ) VALUES (?1, ?2, 'client-event-hash', ?3, ?4, ?5, ?6, 'default', ?7, ?8, '{"expr":"private"}', '{"prompt":"private"}', 'reserved', ?9, ?9, ?10)`,
+        ) VALUES (?1, ?2, ?3, 'client-event-hash', ?4, ?5, ?6, ?7, 'default', ?8, ?9, '{"expr":"private"}', '{"prompt":"private"}', 'reserved', ?10, ?10, ?11)`,
       ).run(
         record.reservationKey,
         record.session,
+        record.bridgeSegment,
         record.reservationSequence,
         record.userId,
         record.tokenId,
@@ -1492,12 +1616,7 @@ function reserveRealtimeResponse(db, record) {
       );
       if (record.preConsumedQuota > 0) {
         guardedChanges.push(
-          runReservationGuarded(
-            db,
-            reserveUserSql,
-            [record.preConsumedQuota, record.userId],
-            record.reservationKey,
-          ),
+          runReservationGuarded(db, reserveUserSql, [record.preConsumedQuota, record.userId], record.reservationKey),
         );
         if (record.tokenId > 0) {
           guardedChanges.push(
@@ -1524,51 +1643,73 @@ function reserveRealtimeResponse(db, record) {
   return { outcome: "Applied", guardedStatements: guardedChanges.length };
 }
 
-function bindRealtimeResponse(db, session, responseIdHash) {
+function bindRealtimeResponse(db, session, bridgeSegment, responseIdHash) {
   const existing = db
     .prepare(
       `SELECT reservation_key
        FROM realtime_billing_reservations
-       WHERE session = ?1 AND upstream_response_id_hash = ?2`,
+       WHERE session = ?1 AND bridge_segment = ?2 AND upstream_response_id_hash = ?3`,
     )
-    .get(session, responseIdHash);
+    .get(session, bridgeSegment, responseIdHash);
   if (existing) {
     return { outcome: "Duplicate", reservationKey: existing.reservation_key };
   }
   const result = db
     .prepare(
       `UPDATE realtime_billing_reservations
-       SET upstream_response_id_hash = ?2, updated_at = ?3
+       SET upstream_response_id_hash = ?3, updated_at = ?4
        WHERE reservation_key = (
          SELECT reservation_key
          FROM realtime_billing_reservations
          WHERE session = ?1
+           AND bridge_segment = ?2
            AND status = 'reserved'
            AND upstream_response_id_hash = ''
          ORDER BY reservation_sequence ASC, reservation_key ASC
          LIMIT 1
        )
          AND status = 'reserved'
+         AND bridge_segment = ?2
          AND upstream_response_id_hash = ''`,
     )
-    .run(session, responseIdHash, defaultNow);
+    .run(session, bridgeSegment, responseIdHash, defaultNow);
   return {
     outcome: result.changes === 1 ? "Applied" : "NotFound",
-    reservationKey: result.changes === 1
-      ? db
-          .prepare(
-            `SELECT reservation_key
+    reservationKey:
+      result.changes === 1
+        ? db
+            .prepare(
+              `SELECT reservation_key
              FROM realtime_billing_reservations
-             WHERE session = ?1 AND upstream_response_id_hash = ?2`,
-          )
-          .get(session, responseIdHash).reservation_key
-      : null,
+             WHERE session = ?1 AND bridge_segment = ?2 AND upstream_response_id_hash = ?3`,
+            )
+            .get(session, bridgeSegment, responseIdHash).reservation_key
+        : null,
   };
+}
+
+function refundRealtimeSegment(db, session, bridgeSegment, appliedAt) {
+  return db
+    .query(
+      `SELECT reservation_key
+       FROM realtime_billing_reservations
+       WHERE session = ?1 AND bridge_segment = ?2 AND status = 'reserved'
+       ORDER BY reservation_sequence, reservation_key`,
+    )
+    .all(session, bridgeSegment)
+    .map((row) =>
+      refundRealtimeResponse(db, {
+        reservationKey: row.reservation_key,
+        appliedAt,
+      }),
+    );
 }
 
 function refundRealtimeResponse(db, record) {
   const reservation = db
-    .prepare("SELECT status, pre_consumed_quota, user_id, token_id FROM realtime_billing_reservations WHERE reservation_key = ?1")
+    .prepare(
+      "SELECT status, pre_consumed_quota, user_id, token_id FROM realtime_billing_reservations WHERE reservation_key = ?1",
+    )
     .get(record.reservationKey);
   if (!reservation) {
     return { outcome: "NotFound" };
@@ -1601,14 +1742,19 @@ function refundRealtimeResponse(db, record) {
       }
     })();
   } catch (error) {
-    return { outcome: "Error", error: error instanceof Error ? error.message : String(error) };
+    return {
+      outcome: "Error",
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
   return { outcome: "Applied" };
 }
 
 function refundExpiredRealtimeResponse(db, record, now) {
   const reservation = db
-    .prepare("SELECT status, reservation_sequence, lease_expires_at FROM realtime_billing_reservations WHERE reservation_key = ?1")
+    .prepare(
+      "SELECT status, reservation_sequence, lease_expires_at FROM realtime_billing_reservations WHERE reservation_key = ?1",
+    )
     .get(record.reservationKey);
   if (!reservation) {
     return { outcome: "NotFound" };
@@ -1652,13 +1798,7 @@ function runRealtimeSettlementBatch(db, record, audit, options = {}) {
              WHERE reservation_key = ?1
                AND status = 'reserved'
                AND (upstream_response_id_hash = '' OR upstream_response_id_hash = ?2)`,
-            [
-              record.reservationKey,
-              record.responseIdHash,
-              record.replayKey,
-              record.finalQuota,
-              record.appliedAt,
-            ],
+            [record.reservationKey, record.responseIdHash, record.replayKey, record.finalQuota, record.appliedAt],
             record.reservationKey,
           ),
         );
@@ -1670,9 +1810,7 @@ function runRealtimeSettlementBatch(db, record, audit, options = {}) {
         } else if (delta < 0) {
           guardedChanges.push(runGuarded(db, creditUserSql, [Math.abs(delta), record.userId], record.replayKey));
         }
-        guardedChanges.push(
-          runGuarded(db, incrementUserUsedSql, [record.finalQuota, record.userId], record.replayKey),
-        );
+        guardedChanges.push(runGuarded(db, incrementUserUsedSql, [record.finalQuota, record.userId], record.replayKey));
         guardedChanges.push(
           runGuarded(db, incrementChannelUsedSql, [record.finalQuota, record.channelId], record.replayKey),
         );
@@ -1689,13 +1827,9 @@ function runRealtimeSettlementBatch(db, record, audit, options = {}) {
             runGuarded(db, creditTokenSql, [refund, record.appliedAt, record.tokenId], record.replayKey),
           );
         } else {
-          guardedChanges.push(
-            runGuarded(db, touchTokenSql, [record.appliedAt, record.tokenId], record.replayKey),
-          );
+          guardedChanges.push(runGuarded(db, touchTokenSql, [record.appliedAt, record.tokenId], record.replayKey));
         }
-        guardedChanges.push(
-          runGuarded(db, incrementUserUsedSql, [record.finalQuota, record.userId], record.replayKey),
-        );
+        guardedChanges.push(runGuarded(db, incrementUserUsedSql, [record.finalQuota, record.userId], record.replayKey));
         guardedChanges.push(
           runGuarded(db, incrementChannelUsedSql, [record.finalQuota, record.channelId], record.replayKey),
         );
@@ -1813,15 +1947,17 @@ function insertReplay(db, record) {
 }
 
 function replayApplied(db, replayKey) {
-  const row = db.prepare(
-    "SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1 AND status = 'applied'",
-  ).get(replayKey);
+  const row = db
+    .prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1 AND status = 'applied'")
+    .get(replayKey);
   return Number(row.count) > 0;
 }
 
 function seedSettlementFixture(db, fixture) {
-  db.prepare("INSERT INTO users (id, quota, used_quota, request_count) VALUES (1, ?1, ?2, 0)")
-    .run(fixture.userQuota, fixture.userUsedQuota);
+  db.prepare("INSERT INTO users (id, quota, used_quota, request_count) VALUES (1, ?1, ?2, 0)").run(
+    fixture.userQuota,
+    fixture.userUsedQuota,
+  );
   db.prepare(
     "INSERT INTO tokens (id, remain_quota, used_quota, accessed_time, unlimited_quota) VALUES (10, ?1, ?2, 0, 0)",
   ).run(fixture.tokenRemainQuota, fixture.tokenUsedQuota);
@@ -1835,6 +1971,7 @@ function settlementRecord(overrides = {}) {
     responseIdHash: overrides.responseIdHash ?? "response-hash",
     reservationSequence: overrides.reservationSequence ?? 1,
     session: overrides.session ?? "session-smoke",
+    bridgeSegment: overrides.bridgeSegment ?? "rtsegment-smoke",
     userId: overrides.userId ?? 1,
     tokenId: overrides.tokenId ?? 10,
     channelId: overrides.channelId ?? 100,
@@ -1864,15 +2001,17 @@ function auditLog(record, overrides = {}) {
     ip: overrides.ip ?? "203.0.113.10",
     requestId: overrides.requestId ?? "req-realtime-smoke",
     upstreamRequestId: overrides.upstreamRequestId ?? "",
-    other: overrides.other ?? JSON.stringify({
-      tiered_billing: {
-        final_quota: record.finalQuota,
-        pre_consumed_quota: record.preConsumedQuota,
-      },
-      realtime_billing: {
-        replay_recorded: true,
-      },
-    }),
+    other:
+      overrides.other ??
+      JSON.stringify({
+        tiered_billing: {
+          final_quota: record.finalQuota,
+          pre_consumed_quota: record.preConsumedQuota,
+        },
+        realtime_billing: {
+          replay_recorded: true,
+        },
+      }),
   };
 }
 
@@ -1913,9 +2052,10 @@ function auditArgs(record, audit) {
 
 function settlementSnapshot(db, record) {
   const user = db.prepare("SELECT quota, used_quota, request_count FROM users WHERE id = ?1").get(record.userId);
-  const token = record.tokenId > 0
-    ? db.prepare("SELECT remain_quota, used_quota, accessed_time FROM tokens WHERE id = ?1").get(record.tokenId)
-    : null;
+  const token =
+    record.tokenId > 0
+      ? db.prepare("SELECT remain_quota, used_quota, accessed_time FROM tokens WHERE id = ?1").get(record.tokenId)
+      : null;
   const channel = db.prepare("SELECT used_quota FROM channels WHERE id = ?1").get(record.channelId);
   const replayRows = db.prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays").get();
   const logRows = db.prepare("SELECT COUNT(1) AS count FROM logs").get();
@@ -2005,8 +2145,7 @@ function printResult(result, asJson) {
         ...result.scenarios.flatMap((scenario) => [
           `- ${scenario.name}: ${scenario.purpose}`,
           ...scenario.sqlArtifacts.map(
-            (artifact) =>
-              `  ${artifact.role} (${artifact.expectExit}): ${artifact.path}\n    ${artifact.command}`,
+            (artifact) => `  ${artifact.role} (${artifact.expectExit}): ${artifact.path}\n    ${artifact.command}`,
           ),
         ]),
         "archive_checklist:",
@@ -2028,8 +2167,7 @@ function printResult(result, asJson) {
         ...result.requiredBeforeRun.map((item) => `- ${item}`),
         "requests:",
         ...result.requests.map(
-          (request) =>
-            `- ${request.scenario}: ${request.method} ${request.url} expected ${request.expectedStatus}`,
+          (request) => `- ${request.scenario}: ${request.method} ${request.url} expected ${request.expectedStatus}`,
         ),
       ].join("\n"),
     );

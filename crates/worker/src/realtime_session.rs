@@ -63,6 +63,7 @@ pub const REALTIME_BILLING_SETTLEMENT_AUDIT_LOG_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_RETRY_COMPILED: bool = true;
 pub const REALTIME_BILLING_RESERVATION_LEASE_COMPILED: bool = true;
+pub const REALTIME_BILLING_BRIDGE_SEGMENT_COMPILED: bool = true;
 pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
     "REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED";
 pub const REALTIME_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
@@ -99,6 +100,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_settlement_retry",
     "billing_response_reservation",
     "billing_response_correlation",
+    "billing_bridge_segment_isolation",
     "billing_explicit_response_mode",
     "billing_reservation_lease_recovery",
     "d1_migration_ready",
@@ -168,6 +170,8 @@ const SESSION_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 struct SocketAttachment {
     session: String,
     connected_at_ms: f64,
+    #[serde(default)]
+    bridge_segment: String,
     protocol: Option<String>,
     entrypoint: String,
     model: Option<String>,
@@ -203,6 +207,7 @@ struct RealtimeSocketSummary {
     token_fingerprint: Option<String>,
     auth_state: String,
     connected_at_ms: f64,
+    bridge_segment: String,
     upstream: Option<RealtimeSelectedUpstreamPlan>,
     upstream_connect_handoff: bool,
     upstream_bridge_deadline_ms: Option<f64>,
@@ -784,6 +789,7 @@ impl DurableObject for RealtimeSession {
                     token_fingerprint: attachment.token_fingerprint,
                     auth_state: attachment.auth_state,
                     connected_at_ms: attachment.connected_at_ms,
+                    bridge_segment: attachment.bridge_segment,
                     upstream_bridge_deadline_ms,
                     upstream: attachment.upstream,
                     upstream_connect_handoff: attachment.upstream_connect_handoff,
@@ -1279,7 +1285,7 @@ impl DurableObject for RealtimeSession {
         if let Some(attachment) = attachment.as_ref() {
             self.close_upstream_bridge_for(attachment, action);
         }
-        self.refund_realtime_session_reservations_best_effort(&session)
+        self.refund_realtime_bridge_reservations_best_effort(attachment.as_ref())
             .await;
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_close(attachment.as_ref(), now_ms, code, &reason);
@@ -1314,7 +1320,7 @@ impl DurableObject for RealtimeSession {
         if let Some(attachment) = attachment.as_ref() {
             self.close_upstream_bridge_for(attachment, action);
         }
-        self.refund_realtime_session_reservations_best_effort(&session)
+        self.refund_realtime_bridge_reservations_best_effort(attachment.as_ref())
             .await;
         let mut metrics = self.load_metrics(&session, now_ms).await?;
         metrics.record_error(attachment.as_ref(), now_ms, &error.to_string());
@@ -1783,7 +1789,7 @@ impl RealtimeSession {
         let pair = WebSocketPair::new()?;
         let client = pair.client;
         let server = pair.server;
-        let attachment = socket_attachment_from_request(&req, session.clone());
+        let attachment = socket_attachment_from_request(&req, session.clone())?;
         let handoff = realtime_upstream_connect_handoff_from_request(&req);
         server.serialize_attachment(attachment.clone())?;
         let tag = format!("{SESSION_TAG_PREFIX}{session}");
@@ -1929,8 +1935,12 @@ impl RealtimeSession {
         let reservation_key = format!(
             "rtreserve-{}",
             realtime_billing_identity_hash(&format!(
-                "{}|{}|{}|{}",
-                attachment.session, client_event_id_hash, snapshot.model_name, snapshot.expr_hash
+                "{}|{}|{}|{}|{}",
+                attachment.session,
+                attachment.bridge_segment,
+                client_event_id_hash,
+                snapshot.model_name,
+                snapshot.expr_hash
             ))
         );
         let snapshot_json = serde_json::to_string(&snapshot)
@@ -1963,6 +1973,7 @@ impl RealtimeSession {
             crate::d1_repositories::RealtimeBillingReservationRecord {
                 reservation_key: &reservation_key,
                 session: &attachment.session,
+                bridge_segment: &attachment.bridge_segment,
                 client_event_id_hash: &client_event_id_hash,
                 reservation_sequence: sequence,
                 user_id: mutation_plan.user_id,
@@ -2140,9 +2151,6 @@ impl RealtimeSession {
     ) -> WorkerResult<()> {
         let now_ms = js_sys::Date::now();
         let action = realtime_bridge_close_action(cause);
-        let session = attachment
-            .map(|attachment| attachment.session.clone())
-            .unwrap_or_else(|| self.state.id().to_string());
         metrics.record_error(attachment, now_ms, reason);
         metrics.record_bridge_terminal_event(
             attachment,
@@ -2154,15 +2162,24 @@ impl RealtimeSession {
             self.close_upstream_bridge_for(attachment, action);
         }
         let _ = client.close(Some(action.client_code), Some(action.client_reason));
-        self.refund_realtime_session_reservations_best_effort(&session)
+        self.refund_realtime_bridge_reservations_best_effort(attachment)
             .await;
         self.store_metrics(metrics).await?;
         Ok(())
     }
 
-    async fn refund_realtime_session_reservations_best_effort(&self, session: &str) {
+    async fn refund_realtime_bridge_reservations_best_effort(
+        &self,
+        attachment: Option<&SocketAttachment>,
+    ) {
+        let Some(attachment) = attachment else {
+            worker::console_warn!(
+                "RealtimeSession skipped terminal refund without a socket attachment"
+            );
+            return;
+        };
         let mut storage = self.state.storage();
-        refund_realtime_session_reservations_best_effort(&self.env, &mut storage, session).await;
+        refund_realtime_bridge_reservations_best_effort(&self.env, &mut storage, attachment).await;
     }
 
     fn forward_text_to_upstream(
@@ -2306,11 +2323,17 @@ impl RealtimeSession {
     }
 }
 
-async fn refund_realtime_session_reservations_best_effort(
+async fn refund_realtime_bridge_reservations_best_effort(
     env: &Env,
     storage: &mut Storage,
-    session: &str,
+    attachment: &SocketAttachment,
 ) {
+    if attachment.bridge_segment.trim().is_empty() {
+        worker::console_warn!(
+            "RealtimeSession skipped terminal refund for a pre-segment socket attachment"
+        );
+        return;
+    }
     let Ok(db) = env.d1("DB") else {
         worker::console_warn!("RealtimeSession could not load DB during session refund");
         return;
@@ -2330,17 +2353,22 @@ async fn refund_realtime_session_reservations_best_effort(
             return;
         }
     };
-    let reservations =
-        match crate::d1_repositories::reserved_realtime_billing_for_session(&db, session).await {
-            Ok(reservations) => reservations,
-            Err(err) => {
-                worker::console_warn!(
-                    "RealtimeSession failed to list session reservations for refund: {}",
-                    err
-                );
-                return;
-            }
-        };
+    let reservations = match crate::d1_repositories::reserved_realtime_billing_for_segment(
+        &db,
+        &attachment.session,
+        &attachment.bridge_segment,
+    )
+    .await
+    {
+        Ok(reservations) => reservations,
+        Err(err) => {
+            worker::console_warn!(
+                "RealtimeSession failed to list session reservations for refund: {}",
+                err
+            );
+            return;
+        }
+    };
     let now = crate::admin::unix_timestamp();
     for reservation in reservations {
         if retry_reservations.contains(&reservation.reservation_key) {
@@ -3250,14 +3278,26 @@ async fn fetch_session_stub(req: Request, env: Env, session: String) -> WorkerRe
     stub.fetch_with_request(req).await
 }
 
-fn socket_attachment_from_request(req: &Request, session: String) -> SocketAttachment {
+fn socket_attachment_from_request(
+    req: &Request,
+    session: String,
+) -> WorkerResult<SocketAttachment> {
     let protocol = request_header(req, "sec-websocket-protocol")
         .as_deref()
         .and_then(redacted_realtime_protocols);
     let api_key = extract_realtime_api_key(req);
-    SocketAttachment {
+    let connected_at_ms = js_sys::Date::now();
+    let mut bridge_entropy = [0u8; 16];
+    getrandom::getrandom(&mut bridge_entropy).map_err(|err| {
+        worker::Error::RustError(format!(
+            "RealtimeSession bridge segment generation failed: {err}"
+        ))
+    })?;
+    let bridge_segment = realtime_bridge_segment_id(&session, connected_at_ms, &bridge_entropy);
+    Ok(SocketAttachment {
         session,
-        connected_at_ms: js_sys::Date::now(),
+        connected_at_ms,
+        bridge_segment,
         protocol,
         entrypoint: realtime_entrypoint(&req.path()).to_string(),
         model: realtime_model_from_request(req),
@@ -3266,13 +3306,14 @@ fn socket_attachment_from_request(req: &Request, session: String) -> SocketAttac
         auth_state: auth_state_for_path(&req.path()).to_string(),
         upstream: realtime_upstream_plan_from_request(req),
         upstream_connect_handoff: realtime_upstream_connect_handoff_from_request(req).is_some(),
-    }
+    })
 }
 
 fn attachment_context_json(attachment: Option<&SocketAttachment>) -> Value {
     match attachment {
         Some(attachment) => json!({
             "session": attachment.session,
+            "bridge_segment": attachment.bridge_segment,
             "entrypoint": attachment.entrypoint,
             "model": attachment.model,
             "token_source": attachment.token_source,
@@ -3289,6 +3330,20 @@ fn attachment_context_json(attachment: Option<&SocketAttachment>) -> Value {
 fn realtime_upstream_bridge_deadline_ms(attachment: &SocketAttachment) -> Option<f64> {
     attachment.upstream_connect_handoff.then_some(
         attachment.connected_at_ms + REALTIME_UPSTREAM_BRIDGE_MAX_LIFETIME_SECONDS as f64 * 1_000.0,
+    )
+}
+
+fn realtime_bridge_segment_id(session: &str, connected_at_ms: f64, entropy: &[u8]) -> String {
+    let entropy_hex = entropy
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(
+        "rtsegment-{}",
+        realtime_billing_identity_hash(&format!(
+            "{}|{connected_at_ms:.3}|{entropy_hex}",
+            session.trim()
+        ))
     )
 }
 
@@ -3522,6 +3577,7 @@ fn realtime_upstream_bridge_lifetime_boundary_compiled() -> bool {
     let attachment = SocketAttachment {
         session: "lifetime-boundary-smoke".to_string(),
         connected_at_ms: 1_000.0,
+        bridge_segment: "rtsegment-lifetime".to_string(),
         protocol: None,
         entrypoint: "v1".to_string(),
         model: None,
@@ -4060,6 +4116,7 @@ pub(crate) fn realtime_billing_settlement_handoff_compiled() -> bool {
     let attachment = SocketAttachment {
         session: "handoff-preview-smoke".to_string(),
         connected_at_ms: 1.0,
+        bridge_segment: "rtsegment-preview".to_string(),
         protocol: None,
         entrypoint: "v1".to_string(),
         model: Some("gpt-4o-realtime-preview".to_string()),
@@ -4171,6 +4228,7 @@ pub(crate) fn realtime_billing_settlement_mutation_plan_compiled() -> bool {
     let attachment = SocketAttachment {
         session: "handoff-mutation-smoke".to_string(),
         connected_at_ms: 1.0,
+        bridge_segment: "rtsegment-mutation".to_string(),
         protocol: None,
         entrypoint: "v1".to_string(),
         model: Some("gpt-4o-realtime-preview".to_string()),
@@ -4344,6 +4402,7 @@ pub(crate) fn realtime_billing_settlement_replay_marker_compiled() -> bool {
     let attachment = SocketAttachment {
         session: "rt-replay-marker-smoke".to_string(),
         connected_at_ms: 1.0,
+        bridge_segment: "rtsegment-replay".to_string(),
         protocol: None,
         entrypoint: "openai_realtime_v1".to_string(),
         model: Some("gpt-4o-realtime-preview".to_string()),
@@ -4443,6 +4502,7 @@ pub(crate) fn realtime_billing_settlement_audit_log_compiled() -> bool {
     let attachment = SocketAttachment {
         session: "rt-audit-log-smoke".to_string(),
         connected_at_ms: 1.0,
+        bridge_segment: "rtsegment-audit".to_string(),
         protocol: None,
         entrypoint: "openai_realtime_v1".to_string(),
         model: Some("gpt-4o-realtime-preview".to_string()),
@@ -4525,7 +4585,7 @@ pub(crate) fn realtime_billing_settlement_audit_log_compiled() -> bool {
 }
 
 pub(crate) fn realtime_billing_settlement_batch_compiled() -> bool {
-    if !REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED {
+    if !REALTIME_BILLING_SETTLEMENT_BATCH_COMPILED || !realtime_billing_bridge_segment_compiled() {
         return false;
     }
     let preview = RealtimeBillingSettlementPreviewMetadata {
@@ -4623,6 +4683,7 @@ pub(crate) fn realtime_billing_settlement_retry_compiled() -> bool {
 
 pub(crate) fn realtime_billing_reservation_lease_compiled() -> bool {
     REALTIME_BILLING_RESERVATION_LEASE_COMPILED
+        && realtime_billing_bridge_segment_compiled()
         && BILLING_RESERVATION_LEASE_MAX_RECORDS > BILLING_SETTLEMENT_RETRY_MAX_RECORDS
         && BILLING_RESERVATION_LEASE_MIN_SECONDS < BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
         && BILLING_RESERVATION_LEASE_DEFAULT_SECONDS < BILLING_RESERVATION_LEASE_MAX_SECONDS
@@ -4632,6 +4693,19 @@ pub(crate) fn realtime_billing_reservation_lease_compiled() -> bool {
         && normalize_realtime_billing_reservation_lease_seconds(Some("3600".to_string())) == 3_600
         && normalize_realtime_billing_reservation_lease_seconds(Some("0".to_string()))
             == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+}
+
+fn realtime_billing_bridge_segment_compiled() -> bool {
+    let first = realtime_bridge_segment_id("rt-segment-smoke", 1_000.0, &[1; 16]);
+    let second = realtime_bridge_segment_id("rt-segment-smoke", 1_000.0, &[2; 16]);
+    let reservation_seed =
+        realtime_billing_identity_hash(&format!("rt-segment-smoke|{first}|event|model|expr"));
+
+    REALTIME_BILLING_BRIDGE_SEGMENT_COMPILED
+        && first.starts_with("rtsegment-")
+        && first != second
+        && !first.contains("rt-segment-smoke")
+        && !reservation_seed.contains("rt-segment-smoke")
 }
 
 fn realtime_billing_settlement_preview(
@@ -5233,6 +5307,7 @@ async fn record_realtime_upstream_usage(
     if crate::d1_repositories::realtime_response_settlement_applied(
         &db,
         &attachment.session,
+        &attachment.bridge_segment,
         &response_identity_hash,
     )
     .await?
@@ -5255,6 +5330,7 @@ async fn record_realtime_upstream_usage(
         let mut reservation = crate::d1_repositories::realtime_billing_reservation_for_response(
             &db,
             &attachment.session,
+            &attachment.bridge_segment,
             &response_identity_hash,
         )
         .await?;
@@ -5262,6 +5338,7 @@ async fn record_realtime_upstream_usage(
             match crate::d1_repositories::bind_realtime_response_to_reservation(
                 &db,
                 &attachment.session,
+                &attachment.bridge_segment,
                 &response_identity_hash,
                 crate::admin::unix_timestamp(),
             )
@@ -5273,6 +5350,7 @@ async fn record_realtime_upstream_usage(
                         crate::d1_repositories::realtime_billing_reservation_for_response(
                             &db,
                             &attachment.session,
+                            &attachment.bridge_segment,
                             &response_identity_hash,
                         )
                         .await?;
@@ -5930,6 +6008,7 @@ fn spawn_realtime_upstream_event_pump(
                                     Ok(db) => crate::d1_repositories::bind_realtime_response_to_reservation(
                                         &db,
                                         &attachment.session,
+                                        &attachment.bridge_segment,
                                         &response_identity_hash,
                                         crate::admin::unix_timestamp(),
                                     )
@@ -6086,12 +6165,8 @@ fn spawn_realtime_upstream_lifetime_guard(
         let now_ms = js_sys::Date::now();
         send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
         let _ = client.close(Some(action.client_code), Some(action.client_reason));
-        refund_realtime_session_reservations_best_effort(
-            &env,
-            &mut metrics_storage,
-            &attachment.session,
-        )
-        .await;
+        refund_realtime_bridge_reservations_best_effort(&env, &mut metrics_storage, &attachment)
+            .await;
 
         match load_realtime_session_metrics(&metrics_storage, &attachment.session, now_ms).await {
             Ok(mut metrics) => {
@@ -6626,7 +6701,11 @@ fn realtime_bridge_backpressure_decision(
 }
 
 fn realtime_upstream_bridge_key(attachment: &SocketAttachment) -> String {
-    format!("{}:{:.3}", attachment.session, attachment.connected_at_ms)
+    if attachment.bridge_segment.trim().is_empty() {
+        format!("{}:{:.3}", attachment.session, attachment.connected_at_ms)
+    } else {
+        format!("{}:{}", attachment.session, attachment.bridge_segment)
+    }
 }
 
 fn realtime_client_message_bridge_status(
@@ -7161,6 +7240,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.0,
+            bridge_segment: "rtsegment-metrics".to_string(),
             protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
@@ -7516,6 +7596,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.1234,
+            bridge_segment: "rtsegment-key".to_string(),
             protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
@@ -7528,8 +7609,20 @@ mod tests {
 
         let key = realtime_upstream_bridge_key(&attachment);
 
-        assert_eq!(key, "rt-session:10.123");
+        assert_eq!(key, "rt-session:rtsegment-key");
         assert!(!key.contains("openai-insecure-api-key"));
+    }
+
+    #[test]
+    fn realtime_bridge_segments_are_stable_redacted_and_connection_scoped() {
+        let first = realtime_bridge_segment_id("rt-session", 10.0, &[1; 16]);
+        let same = realtime_bridge_segment_id("rt-session", 10.0, &[1; 16]);
+        let next = realtime_bridge_segment_id("rt-session", 10.0, &[2; 16]);
+
+        assert_eq!(first, same);
+        assert_ne!(first, next);
+        assert!(first.starts_with("rtsegment-"));
+        assert!(!first.contains("rt-session"));
     }
 
     #[test]
@@ -8362,6 +8455,7 @@ mod tests {
     #[test]
     fn realtime_billing_reservation_lease_contract_is_compiled_and_redacted() {
         assert!(realtime_billing_reservation_lease_compiled());
+        assert!(realtime_billing_bridge_segment_compiled());
         assert_eq!(
             normalize_realtime_billing_reservation_lease_seconds(None),
             BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
@@ -8470,6 +8564,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "retry-queue-session".to_string(),
             connected_at_ms: 1.0,
+            bridge_segment: "rtsegment-retry".to_string(),
             protocol: None,
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
@@ -8652,6 +8747,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.0,
+            bridge_segment: "rtsegment-settlement".to_string(),
             protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
@@ -8708,6 +8804,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.0,
+            bridge_segment: "rtsegment-settlement".to_string(),
             protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),

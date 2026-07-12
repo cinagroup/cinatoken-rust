@@ -134,11 +134,37 @@ Last checked: 2026-07-12
   artifact identity, separate least-privilege runtime credentials, and strict
   2xx canary evidence are proven.
 - `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json`: passed
-  13/13 checks. The parallel-response case binds two sequence-ordered
+  14/14 checks. The parallel-response case binds two sequence-ordered
   reservations to distinct hashed `response.created` identities, then settles
   their `response.done` events in reverse order without swapping final quota;
   the lease cases prove not-due, first-expiry refund, replay no-op, and
-  stale-generation protection.
+  stale-generation protection. The bridge-segment case proves that binding and
+  refund for one bridge cannot mutate a replacement bridge under the same
+  logical session.
+
+### 2026-07-12 Realtime bridge-segment isolation increment
+
+- `cargo test -p cinatoken-worker --lib`: passed 578/578 tests.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+- Focused Cloudflare Platform frontend readiness tests: passed 10/10; Realtime
+  implementation readiness now requires the compiled settlement-batch and
+  bridge-segment contract in addition to remote D1 readiness.
+- `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json`: passed
+  14/14, including same-session cross-segment response binding and refund
+  isolation.
+- `python tools/verify_sqlite.py`: passed with 21 migrations, 26 required
+  tables, 57 incremental columns, 15 key indexes, and both the 0020 active-row
+  and 0021 bridge-segment guards.
+- `bun tools/audit_d1_migration_config.mjs --json`: passed with a contiguous
+  21-file chain and latest migration
+  `0021_realtime_billing_bridge_segments.sql` aligned to the Worker constant.
+- The managed local Realtime runtime suite passed all six workerd/D1/DO/mock
+  upstream scenarios with fixture cleanup and billing-option restoration.
+  This is local implementation evidence only; authenticated remote migration,
+  provider, eviction, reconnect, concurrency, and rollback evidence remain
+  required.
+
+#### Historical 2026-07-10 D1 evidence
 
 - `bun run check:d1:migration-config`: passed on 2026-07-10. The audit found
   exactly the top-level, staging, and production D1 binding tables, each with

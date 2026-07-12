@@ -80,6 +80,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   realtime_session_upstream_bridge_hibernation_fail_closed_compiled: false,
   realtime_session_upstream_bridge_compiled: false,
   realtime_session_billing_settlement_compiled: false,
+  realtime_session_billing_settlement_batch_compiled: false,
   realtime_session_platform_smoke_ready: false,
   realtime_session_billing_settlement_staging_smoke_ready: false,
   realtime_session_v1_cutover_ready: false,
@@ -172,6 +173,7 @@ describe('Cloudflare platform readiness headline', () => {
         realtime_session_upstream_bridge_hibernation_fail_closed_compiled: true,
         realtime_session_upstream_bridge_compiled: true,
         realtime_session_billing_settlement_compiled: true,
+        realtime_session_billing_settlement_batch_compiled: true,
         task_runner_do_available: true,
         task_runner_do_foundation_compiled: true,
         task_runner_alarm_contract_compiled: true,
@@ -271,6 +273,29 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(
       implementation.signals.find(
         (signal) => signal.id === 'wfp-tenant-implementation'
+      )?.status,
+      'blocked'
+    )
+  })
+
+  test('requires bridge-segment billing isolation for Realtime implementation', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        do_websocket_hibernation_compiled: true,
+        realtime_session_auth_boundary_compiled: true,
+        realtime_session_metrics_persisted_compiled: true,
+        realtime_session_control_no_echo_compiled: true,
+        realtime_session_platform_header_boundary_compiled: true,
+        realtime_session_upstream_bridge_hibernation_fail_closed_compiled: true,
+        realtime_session_upstream_bridge_compiled: true,
+        realtime_session_billing_settlement_compiled: true,
+        realtime_session_billing_settlement_batch_compiled: false,
+      })
+    )
+
+    assert.equal(
+      getStage(summary, 'implementation').signals.find(
+        (signal) => signal.id === 'realtime-implementation'
       )?.status,
       'blocked'
     )

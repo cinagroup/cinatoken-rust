@@ -96,6 +96,7 @@ REQUIRED_COLUMNS = {
         "settled_at",
         "refunded_at",
         "lease_expires_at",
+        "bridge_segment",
     },
 }
 
@@ -119,6 +120,7 @@ REQUIRED_INDEXES = {
         "idx_realtime_billing_reservations_replay_key": True,
         "idx_realtime_billing_reservations_response": True,
         "idx_realtime_billing_reservations_lease": False,
+        "idx_realtime_billing_reservations_segment_status": False,
     },
 }
 
@@ -149,9 +151,12 @@ def main() -> int:
             raise SystemExit(f"schema file not found: {schema_path}")
 
     lease_guard_verified = False
+    segment_guard_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
+        verify_realtime_segment_migration_guard(schema_paths)
+        segment_guard_verified = True
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -198,6 +203,8 @@ def main() -> int:
     )
     if lease_guard_verified:
         message += " + 0020 active-reservation guard"
+    if segment_guard_verified:
+        message += " + 0021 bridge-segment guard"
 
     if args.seed:
         for value in args.seed:
@@ -269,6 +276,55 @@ def verify_realtime_lease_migration_guard(schema_paths: list[Path]) -> None:
             raise SystemExit("0020 migration guard table was not cleaned up")
         return
     raise SystemExit("0020 migration must reject unreconciled realtime reserved rows")
+
+
+def verify_realtime_segment_migration_guard(schema_paths: list[Path]) -> None:
+    segment_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0021_realtime_billing_bridge_segments.sql"
+        ),
+        None,
+    )
+    if segment_path is None:
+        raise SystemExit("0021 realtime bridge-segment migration not found")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == segment_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.execute(
+        """
+        INSERT INTO realtime_billing_reservations (
+          reservation_key, session, user_id, channel_id, model_name,
+          snapshot_json, request_json
+        ) VALUES ('segment-guard-reservation', 'segment-guard-session', 1, 1,
+                  'guard-model', '{}', '{}')
+        """
+    )
+    try:
+        conn.executescript(segment_path.read_text(encoding="utf-8"))
+    except sqlite3.IntegrityError:
+        conn.execute(
+            "UPDATE realtime_billing_reservations SET status = 'refunded' "
+            "WHERE reservation_key = 'segment-guard-reservation'"
+        )
+        conn.executescript(segment_path.read_text(encoding="utf-8"))
+        if "bridge_segment" not in table_columns(
+            conn, "realtime_billing_reservations"
+        ):
+            raise SystemExit("0021 migration did not succeed after reconciliation")
+        if table_exists(conn, "migration_0021_realtime_segment_guard"):
+            raise SystemExit("0021 migration guard table was not cleaned up")
+        segment_index = table_indexes(conn, "realtime_billing_reservations").get(
+            "idx_realtime_billing_reservations_segment_status"
+        )
+        if segment_index is not False:
+            raise SystemExit("0021 migration did not create the segment index")
+        return
+    raise SystemExit("0021 migration must reject unscoped realtime reserved rows")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

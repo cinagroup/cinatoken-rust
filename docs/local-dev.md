@@ -96,10 +96,10 @@ bun run check:d1:migration-config
 bun run verify:sqlite
 ```
 
-The expected 2026-07-10 result is three D1 binding tables using
-`migrations/d1`, 20 contiguous migrations from `0001_core.sql` through
-`0020_realtime_billing_reservation_leases.sql`, 26 required tables, 56 incremental key
-columns, and 14 key indexes. The SQLite verifier applies the full chain by
+The expected current result is three D1 binding tables using `migrations/d1`,
+21 contiguous migrations from `0001_core.sql` through
+`0021_realtime_billing_bridge_segments.sql`, 26 required tables, 57 incremental
+key columns, and 15 key indexes. The SQLite verifier applies the full chain by
 default; repeat `--schema` only when a deliberately scoped migration test is
 required.
 
@@ -117,10 +117,11 @@ wrangler d1 create cinatoken-rust-db
 wrangler d1 migrations apply cinatoken-rust-db --local
 ```
 
-The local Wrangler apply was exercised successfully for all 20 migrations on
-2026-07-10. This proves local Wrangler/workerd compatibility and ordered local
-D1 application only. It does not prove Cloudflare authentication, the remote
-staging database target, remote migration state, or a deployed Worker binding.
+The local Wrangler apply was exercised successfully through 0020 on 2026-07-10.
+That historical run must be refreshed through 0021. It proves local
+Wrangler/workerd compatibility and ordered local D1 application only; it does
+not prove Cloudflare authentication, the remote staging database target,
+remote migration state, or a deployed Worker binding.
 
 Generate local seed data for a dev user, dev token, and one OpenAI-compatible
 channel:

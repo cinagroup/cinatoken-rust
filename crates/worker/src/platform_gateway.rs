@@ -99,7 +99,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0020_realtime_billing_reservation_leases.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0021_realtime_billing_bridge_segments.sql";
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -121,6 +121,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0018_realtime_settlement_replays.sql",
     "0019_realtime_billing_reservations.sql",
     "0020_realtime_billing_reservation_leases.sql",
+    "0021_realtime_billing_bridge_segments.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -2729,11 +2730,11 @@ mod tests {
         assert!(!d1_migration_set_matches(&substituted));
 
         let mut extra = expected;
-        extra.push("0021_unexpected.sql".to_string());
+        extra.push("0022_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0020_realtime_billing_reservation_leases.sql"
+            "0021_realtime_billing_bridge_segments.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -2747,6 +2748,10 @@ mod tests {
             "../../../migrations/d1/0020_realtime_billing_reservation_leases.sql"
         )
         .contains("lease_expires_at"));
+        assert!(
+            include_str!("../../../migrations/d1/0021_realtime_billing_bridge_segments.sql")
+                .contains("bridge_segment")
+        );
     }
 
     #[test]

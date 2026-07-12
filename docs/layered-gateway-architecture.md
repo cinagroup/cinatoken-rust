@@ -477,6 +477,13 @@ by clearing the flag, no redeploy required.
   Refund failures remain durable and re-arm without a fixed retry cap; redacted
   status and the frontend capability panel expose only counts, deadlines,
   attempt totals, and the configured bounded lease duration.
+  Migration `0021_realtime_billing_bridge_segments.sql` adds connection-scoped
+  bridge ownership to every reservation. Response-created binding,
+  response-done settlement, terminal refund, and lease transfer all require the
+  same session plus bridge segment. A stale outbound close therefore cannot
+  mutate reservations created by a replacement bridge using the same logical
+  session; legacy attachments without segment metadata leave recovery to the
+  persisted lease instead of issuing a broad session refund.
   **Remaining:** production bridge hardening (archived local/staging
   queue/drain/fault proof and full live protocol replay evidence), remote
   Worker-binding settlement replay, lease-not-due/expiry/eviction/D1-outage

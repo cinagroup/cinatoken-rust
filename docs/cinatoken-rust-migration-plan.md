@@ -9959,3 +9959,56 @@ This closes the implementation decision gap, not the production evidence gap.
 Cutover still requires source count/hash capture, remote D1 import, target
 reconciliation, retained excluded-family manifests, post-import task/prefill
 workflow smoke, and rollback rehearsal.
+
+### 22.161 2026-07-12 Realtime Bridge-Segment Billing Isolation
+
+The renewed Durable Object audit found one remaining ownership ambiguity. A
+logical Realtime session can outlive an outbound bridge segment, especially on
+the platform route where callers can provide a stable session identifier. If an
+old bridge closes after a replacement bridge has reserved new work, a
+session-only cleanup or response-binding query could refund or bind the
+replacement bridge's reservation. That is unacceptable for paid traffic even
+though the public v1 route normally derives a connection-specific DO name.
+
+Implemented boundary:
+
+- Migration `0021_realtime_billing_bridge_segments.sql` adds a non-null
+  `bridge_segment` column and segment/status lookup index to the Realtime
+  reservation ledger. The migration fails closed while any reservation remains
+  `reserved`; active bridge ownership cannot be reconstructed safely after the
+  schema transition.
+- Every new socket attachment derives a redacted `rtsegment-*` identifier from
+  its logical session, connection time, and Worker CSPRNG entropy. Random-source
+  failure rejects the upgrade. Reservation keys, D1 rows, response
+  identity binding, settlement lookups, terminal refunds, and lease ownership
+  transfer all carry that segment.
+- Closing or failing an old bridge can mutate only rows owned by its segment.
+  Restored legacy attachments with no segment skip broad cleanup and leave the
+  persisted reservation lease as the recovery authority.
+- The Worker capability contract and v1 cutover predicate now require the
+  bridge-segment implementation. The frontend Cloudflare Platform panel shows a
+  distinct `Realtime bridge billing isolation` row, but labels this as compiled
+  readiness rather than remote proof.
+- The settlement replay adds a same-session, two-segment case: the new bridge's
+  response is bound and charged, refunding the old bridge leaves the new row
+  untouched, and no cross-segment reservation is selected.
+
+Local evidence passed:
+
+- Worker unit tests: 578/578.
+- Worker wasm32 check.
+- Frontend readiness tests: 10/10.
+- Realtime settlement batch replay: 14/14.
+- SQLite migration replay: 21 migrations, 26 tables, 57 incremental columns,
+  15 key indexes, plus the 0020 and 0021 active-reservation guards.
+- D1 migration-config audit: exact contiguous 21-file ledger, latest 0021.
+- Managed local workerd/D1/DO/mock-upstream suite: all six scenarios with fixture
+  cleanup and billing-option restoration.
+
+Production remains **NO-GO**. Before applying 0021, keep Realtime settlement
+writes disabled, reconcile and archive every active reservation to zero, then
+apply and verify the exact remote ledger with a rotated least-privilege
+credential. Staging must still prove same-session reconnect, old/new bridge
+close races, concurrent response settlement, lease expiry, alarm/eviction,
+14-minute bridge rollover, provider usage reconciliation, observability,
+capacity, and rollback. No exposed credential was used.

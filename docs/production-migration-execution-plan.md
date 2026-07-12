@@ -909,40 +909,44 @@ Before G8 cutover, the repository or deployment runbook must contain:
 Realtime is not covered by a generic WebSocket connectivity smoke. Before any
 paid `/v1/realtime` canary, all of the following evidence is required:
 
-1. D1 migrations are an exact 20-file set through
-   `0020_realtime_billing_reservation_leases.sql` in the target environment.
-   The pre-0020 reservation ledger was exported and reconciled with zero
-   remaining `reserved` rows before apply; 0020 fails closed if this invariant
-   is not met because a D1 migration cannot reconstruct DO alarm ownership.
-2. A single connection completes at least two independently reserved cycles,
+1. D1 migrations are an exact 21-file set through
+   `0021_realtime_billing_bridge_segments.sql` in the target environment. The
+   reservation ledger was exported and reconciled with zero remaining
+   `reserved` rows before both 0020 and 0021; each fails closed because active
+   DO alarm or bridge ownership cannot be reconstructed during migration.
+2. Reusing one logical session across an old and replacement bridge proves that
+   response binding, settlement, terminal refund, and lease handoff affect only
+   the owning bridge segment. A legacy attachment without segment metadata
+   leaves recovery to its durable lease instead of issuing a session-wide refund.
+3. A single connection completes at least two independently reserved cycles,
    binds distinct `response.created` identities, and settles their
    `response.done` events out of order with distinct correct audit rows.
-3. Replaying either client `event_id` or upstream response identity produces no
+4. Replaying either client `event_id` or upstream response identity produces no
    second debit, credit, request-count increment, channel increment, or log.
-4. Insufficient user quota, insufficient token quota, and a forced guarded D1
+5. Insufficient user quota, insufficient token quota, and a forced guarded D1
    failure leave no partial reservation or quota mutation and do not forward
    the client event upstream.
-5. Missing usage, local forward failure, disconnect, and upstream terminal
+6. Missing usage, local forward failure, disconnect, and upstream terminal
    failure each produce one documented refund outcome.
-6. Two simultaneous settlement failures persist as two records; alarm retry,
+7. Two simultaneous settlement failures persist as two records; alarm retry,
    alarm replacement, DO eviction, and restart recover both without overwrite;
    retry exhaustion refunds rather than stranding reserved quota.
-7. An active reservation lease is persisted before its D1 reservation becomes
+8. An active reservation lease is persisted before its D1 reservation becomes
    externally useful. A not-yet-due alarm leaves it reserved, while expiry
    after bridge loss, hibernation, eviction, or restart refunds it exactly once
    through D1 CAS. Forced D1 refund failures keep one redacted lease record and
    retry without a fixed attempt cap.
-8. The settlement retry queue and active lease queue have exclusive ownership:
+9. The settlement retry queue and active lease queue have exclusive ownership:
    moving work to settlement retry removes its lease, and retry exhaustion
    either refunds immediately or durably returns ownership to the lease queue.
    One alarm is always scheduled for the earliest deadline across both queues.
-9. `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` is derived from measured
+10. `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` is derived from measured
    staging response-duration p99 plus approved retry/clock-skew margin, remains
    within `30..3600`, and has an alert for repeated expiry-refund attempts.
-10. Public status, frontend capability output, Worker logs, and archived smoke
+11. Public status, frontend capability output, Worker logs, and archived smoke
    artifacts contain hashes/metadata only, never raw prompts, event IDs,
    billing expressions, token IDs, or credentials.
-11. Go/Rust reconciliation for the same frozen request inputs stays inside the
+12. Go/Rust reconciliation for the same frozen request inputs stays inside the
    approved quota-delta threshold, and rollback/refund ownership is named.
 
 Until every item is archived from isolated staging,

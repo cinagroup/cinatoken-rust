@@ -181,6 +181,21 @@ the production posture:
   residual smoke rows. This upgrades M6 settlement evidence from a local SQL
   shape to the real local Worker `DB` binding path.
 
+## Evidence Increment: 2026-07-12 Realtime Bridge Ownership
+
+- The current migration ledger contains 21 files through
+  `0021_realtime_billing_bridge_segments.sql`; local SQLite replay requires 26
+  tables, 57 incremental columns, and 15 key indexes.
+- Realtime reservation identity now carries a generated bridge segment.
+  Binding, settlement, terminal refund, and lease handoff require both logical
+  session and segment, matching cinaVibeSDK's connection-lifetime boundary and
+  preventing an old bridge from mutating replacement-bridge billing work.
+- Migration 0021 refuses to run while any reservation remains active. Legacy
+  attachments without segment metadata fail closed to durable lease recovery.
+- The frontend exposes this as implementation evidence only. WFP upload/readback,
+  remote D1 application, provider canary, eviction/reconnect, and rollback proof
+  remain separate production gates.
+
 How this maps to the cinaVibeSDK-derived layers:
 
 - **Rust scheduling gateway:** schema readiness and exact route ownership are

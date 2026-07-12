@@ -1406,6 +1406,17 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Realtime bridge billing isolation'),
+          description: t(
+            'Scopes reservation creation, response binding, settlement lookup, and terminal refund to one persisted bridge segment so concurrent or reconnected sockets in the same Durable Object cannot mutate each other.'
+          ),
+          ready:
+            capabilities.d1_migration_ready &&
+            capabilities.realtime_session_billing_settlement_batch_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Blocked'),
+        },
+        {
           label: t('Realtime reservation lease recovery'),
           description: t(
             'Persists active response reservations across Durable Object hibernation and refunds expired work after {{seconds}} seconds through the same single-alarm scheduler.',

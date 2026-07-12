@@ -55,10 +55,10 @@ bun run verify:sqlite
 
 The config audit requires the top-level, staging, and production D1 binding
 tables to set `migrations_dir = "migrations/d1"`; it also requires a contiguous
-20-file sequence from `0001_core.sql` through
-`0020_realtime_billing_reservation_leases.sql`. The SQLite verifier applies all 20
+21-file sequence from `0001_core.sql` through
+`0021_realtime_billing_bridge_segments.sql`. The SQLite verifier applies all 21
 migrations by default and requires 26 target tables. A real local Wrangler D1
-apply completed 20/20 on 2026-07-10.
+apply completed through 0020 on 2026-07-10 and must be refreshed through 0021.
 
 The audit also verifies `wrangler.d1-local.toml`, the narrow local management
 shape used by the managed Realtime suite. Wrangler 4.103 can leave a
@@ -185,12 +185,12 @@ field-level defects in `docs/source-d1-schema-parity.md`. In particular
 `abilities` must regain its `tag` column and `(group_name, model, channel_id)`
 uniqueness (verify dedup first), `users` needs its OAuth-id lookup indexes, and
 the `logs` admin-search index/strategy must be decided. The repository now
-carries migrations 0001-0020, including `0004_schema_parity.sql`,
+carries migrations 0001-0021, including `0004_schema_parity.sql`,
 `0008_model_meta.sql`, `0010_custom_oauth.sql`, and
-`0020_realtime_billing_reservation_leases.sql`. Apply the complete ordered
+`0021_realtime_billing_bridge_segments.sql`. Apply the complete ordered
 migration set to staging D1 and re-run the row/hash verification below before
 treating Wave 0 as passed. Local SQLite schema replay currently succeeds with
-all 20 migrations, 26 required tables, 56 incremental key columns, and 14 key
+all 21 migrations, 26 required tables, 57 incremental key columns, and 15 key
 indexes; that is not a substitute for source-row reconciliation or staging D1
 evidence.
 
@@ -202,6 +202,15 @@ reconcile each reservation and quota delta against Go/VPS, refund or settle it
 through an approved repair, verify the active count is zero, and archive the
 redacted reconciliation evidence. Do not change a row to terminal status
 without applying the matching quota correction.
+
+Migration 0021 has the same zero-active-reservation precondition. It introduces
+the bridge-segment ownership key used to prevent an old Realtime outbound bridge
+from binding, settling, or refunding a replacement bridge under the same logical
+session. Keep settlement writes disabled after the 0020 reconciliation, verify
+the active count is still zero immediately before 0021, apply the migration,
+and confirm the segment column/index plus exact migration ledger before
+re-enabling a controlled staging writer. Existing active rows cannot be assigned
+to a segment safely after the fact.
 
 ## Export And Convert
 

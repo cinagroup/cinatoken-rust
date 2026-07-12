@@ -108,6 +108,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'realtime_session_upstream_bridge_hibernation_fail_closed_compiled'
   | 'realtime_session_upstream_bridge_compiled'
   | 'realtime_session_billing_settlement_compiled'
+  | 'realtime_session_billing_settlement_batch_compiled'
   | 'realtime_session_platform_smoke_ready'
   | 'realtime_session_billing_settlement_staging_smoke_ready'
   | 'realtime_session_v1_cutover_ready'
@@ -210,7 +211,8 @@ export function buildPlatformReadinessSummary(
     capabilities.realtime_session_platform_header_boundary_compiled,
     capabilities.realtime_session_upstream_bridge_hibernation_fail_closed_compiled,
     capabilities.realtime_session_upstream_bridge_compiled,
-    capabilities.realtime_session_billing_settlement_compiled
+    capabilities.realtime_session_billing_settlement_compiled,
+    capabilities.realtime_session_billing_settlement_batch_compiled
   )
   const taskRunnerImplementation = allReady(
     capabilities.task_runner_do_foundation_compiled,

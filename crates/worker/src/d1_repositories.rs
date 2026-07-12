@@ -39,6 +39,7 @@ struct QuotaStateRow {
 pub struct RealtimeBillingReservationRecord<'a> {
     pub reservation_key: &'a str,
     pub session: &'a str,
+    pub bridge_segment: &'a str,
     pub client_event_id_hash: &'a str,
     pub reservation_sequence: i64,
     pub user_id: i64,
@@ -63,6 +64,7 @@ pub struct RealtimeBillingReservationRecord<'a> {
 pub struct RealtimeBillingReservation {
     pub reservation_key: String,
     pub session: String,
+    pub bridge_segment: String,
     pub client_event_id_hash: String,
     pub reservation_sequence: i64,
     pub user_id: i64,
@@ -812,6 +814,8 @@ pub async fn reserve_realtime_billing_quota(
 ) -> worker::Result<RealtimeBillingReservationWriteOutcome> {
     let reservation_key = non_empty_realtime_reservation_key(record.reservation_key)?;
     let session = non_empty_realtime_reservation_field(record.session, "session")?;
+    let bridge_segment =
+        non_empty_realtime_reservation_field(record.bridge_segment, "bridge segment")?;
     let model_name = non_empty_realtime_reservation_field(record.model_name, "model name")?;
     let snapshot_json =
         non_empty_realtime_reservation_field(record.snapshot_json, "snapshot JSON")?;
@@ -834,6 +838,7 @@ pub async fn reserve_realtime_billing_quota(
     let args = [
         D1Type::Text(reservation_key),
         D1Type::Text(session),
+        D1Type::Text(bridge_segment),
         D1Type::Text(record.client_event_id_hash.trim()),
         D1Type::Integer(d1_i32(record.reservation_sequence)),
         D1Type::Integer(d1_i32(record.user_id)),
@@ -857,14 +862,15 @@ pub async fn reserve_realtime_billing_quota(
         .prepare(
             r#"
             INSERT INTO realtime_billing_reservations (
-              reservation_key, session, client_event_id_hash, reservation_sequence,
+              reservation_key, session, bridge_segment,
+              client_event_id_hash, reservation_sequence,
               user_id, token_id, channel_id, selected_group, model_name,
               pre_consumed_quota, snapshot_json, request_json,
               username, token_name, client_ip, request_id, started_at,
               endpoint_path, status, created_at, updated_at, lease_expires_at
             ) VALUES (
               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-              ?12, ?13, ?14, ?15, ?16, ?17, ?18, 'reserved', ?19, ?19, ?20
+              ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'reserved', ?20, ?20, ?21
             )
             "#,
         )
@@ -922,23 +928,26 @@ pub async fn reserve_realtime_billing_quota(
     Ok(RealtimeBillingReservationWriteOutcome::Applied)
 }
 
-pub async fn reserved_realtime_billing_for_session(
+pub async fn reserved_realtime_billing_for_segment(
     db: &D1Database,
     session: &str,
+    bridge_segment: &str,
 ) -> worker::Result<Vec<RealtimeBillingReservation>> {
     let session = non_empty_realtime_reservation_field(session, "session")?;
-    let args = [D1Type::Text(session)];
+    let bridge_segment = non_empty_realtime_reservation_field(bridge_segment, "bridge segment")?;
+    let args = [D1Type::Text(session), D1Type::Text(bridge_segment)];
     db.prepare(
         r#"
         SELECT
-          reservation_key, session, client_event_id_hash, reservation_sequence,
+          reservation_key, session, bridge_segment,
+          client_event_id_hash, reservation_sequence,
           user_id, token_id, channel_id, selected_group, model_name,
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
           final_quota, created_at, updated_at, lease_expires_at
         FROM realtime_billing_reservations
-        WHERE session = ?1 AND status = 'reserved'
+        WHERE session = ?1 AND bridge_segment = ?2 AND status = 'reserved'
         ORDER BY reservation_sequence ASC, reservation_key ASC
         "#,
     )
@@ -951,28 +960,32 @@ pub async fn reserved_realtime_billing_for_session(
 pub async fn realtime_billing_reservation_for_response(
     db: &D1Database,
     session: &str,
+    bridge_segment: &str,
     upstream_response_id_hash: &str,
 ) -> worker::Result<Option<RealtimeBillingReservation>> {
     let session = non_empty_realtime_reservation_field(session, "session")?;
+    let bridge_segment = non_empty_realtime_reservation_field(bridge_segment, "bridge segment")?;
     let upstream_response_id_hash = non_empty_realtime_reservation_field(
         upstream_response_id_hash,
         "upstream response identity hash",
     )?;
     let args = [
         D1Type::Text(session),
+        D1Type::Text(bridge_segment),
         D1Type::Text(upstream_response_id_hash),
     ];
     db.prepare(
         r#"
         SELECT
-          reservation_key, session, client_event_id_hash, reservation_sequence,
+          reservation_key, session, bridge_segment,
+          client_event_id_hash, reservation_sequence,
           user_id, token_id, channel_id, selected_group, model_name,
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
           final_quota, created_at, updated_at, lease_expires_at
         FROM realtime_billing_reservations
-        WHERE session = ?1 AND upstream_response_id_hash = ?2
+        WHERE session = ?1 AND bridge_segment = ?2 AND upstream_response_id_hash = ?3
         LIMIT 1
         "#,
     )
@@ -984,22 +997,30 @@ pub async fn realtime_billing_reservation_for_response(
 pub async fn bind_realtime_response_to_reservation(
     db: &D1Database,
     session: &str,
+    bridge_segment: &str,
     upstream_response_id_hash: &str,
     updated_at: i64,
 ) -> worker::Result<RealtimeBillingResponseBindOutcome> {
     let session = non_empty_realtime_reservation_field(session, "session")?;
+    let bridge_segment = non_empty_realtime_reservation_field(bridge_segment, "bridge segment")?;
     let upstream_response_id_hash = non_empty_realtime_reservation_field(
         upstream_response_id_hash,
         "upstream response identity hash",
     )?;
-    if realtime_billing_reservation_for_response(db, session, upstream_response_id_hash)
-        .await?
-        .is_some()
+    if realtime_billing_reservation_for_response(
+        db,
+        session,
+        bridge_segment,
+        upstream_response_id_hash,
+    )
+    .await?
+    .is_some()
     {
         return Ok(RealtimeBillingResponseBindOutcome::Duplicate);
     }
     let args = [
         D1Type::Text(session),
+        D1Type::Text(bridge_segment),
         D1Type::Text(upstream_response_id_hash),
         D1Type::Integer(d1_i32(updated_at)),
     ];
@@ -1007,17 +1028,19 @@ pub async fn bind_realtime_response_to_reservation(
         .prepare(
             r#"
             UPDATE realtime_billing_reservations
-            SET upstream_response_id_hash = ?2, updated_at = ?3
+            SET upstream_response_id_hash = ?3, updated_at = ?4
             WHERE reservation_key = (
               SELECT reservation_key
               FROM realtime_billing_reservations
               WHERE session = ?1
+                AND bridge_segment = ?2
                 AND status = 'reserved'
                 AND upstream_response_id_hash = ''
               ORDER BY reservation_sequence ASC, reservation_key ASC
               LIMIT 1
             )
               AND status = 'reserved'
+              AND bridge_segment = ?2
               AND upstream_response_id_hash = ''
             "#,
         )
@@ -1034,9 +1057,14 @@ pub async fn bind_realtime_response_to_reservation(
             }
         }
         Err(err) => {
-            if realtime_billing_reservation_for_response(db, session, upstream_response_id_hash)
-                .await?
-                .is_some()
+            if realtime_billing_reservation_for_response(
+                db,
+                session,
+                bridge_segment,
+                upstream_response_id_hash,
+            )
+            .await?
+            .is_some()
             {
                 Ok(RealtimeBillingResponseBindOutcome::Duplicate)
             } else {
@@ -1049,15 +1077,18 @@ pub async fn bind_realtime_response_to_reservation(
 pub async fn realtime_response_settlement_applied(
     db: &D1Database,
     session: &str,
+    bridge_segment: &str,
     upstream_response_id_hash: &str,
 ) -> worker::Result<bool> {
     let session = non_empty_realtime_reservation_field(session, "session")?;
+    let bridge_segment = non_empty_realtime_reservation_field(bridge_segment, "bridge segment")?;
     let upstream_response_id_hash = non_empty_realtime_reservation_field(
         upstream_response_id_hash,
         "upstream response identity hash",
     )?;
     let args = [
         D1Type::Text(session),
+        D1Type::Text(bridge_segment),
         D1Type::Text(upstream_response_id_hash),
     ];
     let row = db
@@ -1066,7 +1097,8 @@ pub async fn realtime_response_settlement_applied(
             SELECT COUNT(1) AS count
             FROM realtime_billing_reservations
             WHERE session = ?1
-              AND upstream_response_id_hash = ?2
+              AND bridge_segment = ?2
+              AND upstream_response_id_hash = ?3
               AND status IN ('settled', 'refunded')
             "#,
         )
@@ -1281,7 +1313,8 @@ async fn realtime_billing_reservation(
     db.prepare(
         r#"
         SELECT
-          reservation_key, session, client_event_id_hash, reservation_sequence,
+          reservation_key, session, bridge_segment,
+          client_event_id_hash, reservation_sequence,
           user_id, token_id, channel_id, selected_group, model_name,
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
@@ -9565,6 +9598,8 @@ mod tests {
             include_str!("../../../migrations/d1/0019_realtime_billing_reservations.sql");
         let lease_migration =
             include_str!("../../../migrations/d1/0020_realtime_billing_reservation_leases.sql");
+        let segment_migration =
+            include_str!("../../../migrations/d1/0021_realtime_billing_bridge_segments.sql");
         assert!(migration.contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations"));
         assert!(migration.contains("CHECK (status IN ('reserved', 'settled', 'refunded'))"));
         assert!(migration.contains("reservation_sequence"));
@@ -9583,6 +9618,10 @@ mod tests {
         assert!(lease_migration.contains("ADD COLUMN lease_expires_at"));
         assert!(lease_migration.contains("idx_realtime_billing_reservations_lease"));
         assert!(lease_migration.contains("WHERE status = 'reserved' AND lease_expires_at > 0"));
+        assert!(segment_migration.contains("CHECK (active_count = 0)"));
+        assert!(segment_migration.contains("DROP TABLE migration_0021_realtime_segment_guard"));
+        assert!(segment_migration.contains("ADD COLUMN bridge_segment"));
+        assert!(segment_migration.contains("idx_realtime_billing_reservations_segment_status"));
     }
 
     #[test]

@@ -111,6 +111,17 @@ Result: local D1/config prerequisites pass, but G1 remains **NO-GO**. No local
 command or local Worker smoke substitutes for authenticated staging deploy,
 remote D1 migration output, `/api/status`, capabilities, logs, or traces.
 
+### 2026-07-12 Bridge-Segment Migration Update
+
+- The current compiled and SQLite-verified chain contains 21 migrations through
+  `0021_realtime_billing_bridge_segments.sql`, with 26 required tables, 57
+  incremental key columns, and 15 key indexes.
+- Migration 0021 fails closed while any Realtime billing reservation remains
+  `reserved`; disable Realtime settlement writes, reconcile the ledger to zero,
+  and archive redacted evidence before applying it.
+- The 2026-07-10 local Wrangler 20/20 apply remains historical evidence and
+  must be refreshed through 0021. No authenticated staging apply has occurred.
+
 ### 2026-07-12 Native Rate Limit Snapshot
 
 - Top-level, staging, and production each declare
@@ -541,14 +552,15 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-   `d1_migration_status_available=true`, applied count `20`, latest/expected
-   `0020_realtime_billing_reservation_leases.sql`, exact set match, and
+   `d1_migration_status_available=true`, applied count `21`, latest/expected
+   `0021_realtime_billing_bridge_segments.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0020 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0021 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
-   Before 0020, prove the 0019 reservation ledger has zero `reserved` rows; the
-   migration fails closed otherwise because D1 cannot reconstruct DO alarms.
+   Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
+   rows; both migrations fail closed because active ownership cannot be safely
+   reconstructed across the lease and bridge-segment schema transitions.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.

@@ -101,6 +101,18 @@ opening a production gate:
   with zero smoke rows after cleanup, after fixing generic Realtime route
   precedence so the settlement endpoint reaches its intended handler.
 
+### 2026-07-12 Realtime Ownership Addendum
+
+The current chain now contains 21 migrations through
+`0021_realtime_billing_bridge_segments.sql`. SQLite replay verifies 26 tables,
+57 incremental columns, 15 key indexes, and fail-closed guards before both the
+lease and bridge-segment transitions. Realtime reservations are connection-
+segment scoped for response binding, settlement, terminal refund, and lease
+handoff. The 14-case settlement replay proves that an old bridge cannot mutate
+a replacement bridge under the same logical session. This closes a local
+cross-bridge correctness gap but does not open G1, G2, G7, or production
+Realtime traffic.
+
 This closes local toolchain, schema-shape, route-reachability, and Worker D1
 binding risks only. Wrangler was not authenticated, so staging account/resource
 ownership, remote D1 migration state, deploy/startup, logs/traces, and remote

@@ -23,7 +23,7 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | Complete Go/VPS to Rust/Cloudflare migration | Rust owns the main route surface and the route audit reports zero explicit frontend gaps, but provider-specific, payment, async-task, data, and operational matrices still contain partial rows | Partial | Production SQLite-to-D1 reconciliation, all enabled provider/payment fixtures, capacity/security evidence, canary, rollback, and decommission proof |
 | Frontend migration | React/Bun source, strict lint, bundle redaction/budget, route audit, and production build pass locally | Locally wired | Deployed browser hard-refresh, session/role/CRUD/2FA/Passkey, callback, console, performance, and rollback evidence |
 | Rust scheduling gateway | `cinatoken-gateway` is the live versioned owner planner before Worker execution adapters | Locally wired | Main/API/static/tenant host matrix, negative dispatch, edge-auth parity, and rollback smoke on Cloudflare |
-| Rust Durable Objects | RealtimeSession now has a six-scenario local workerd/D1/mock-upstream runtime suite; TaskRunner, channel affinity, settlement/replay, Passkey ceremony, and WFP authority replay substrates compile with focused tests | Locally exercised substrate | Deployed eviction/alarm/reconnect/replay/load evidence; Realtime upstream and billing must complete without duplicate charge on Cloudflare staging |
+| Rust Durable Objects | RealtimeSession now has a six-scenario local workerd/D1/mock-upstream runtime suite; reservation binding, settlement, and refund are isolated by bridge segment; TaskRunner, channel affinity, Passkey ceremony, and WFP authority replay substrates compile with focused tests | Locally exercised substrate | Deployed eviction/alarm/reconnect/replay/load evidence; Realtime upstream and billing must complete without duplicate or cross-segment charge on Cloudflare staging |
 | WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, signed relay authority, and replay guard are present | Gated substrate | Real staging namespace upload/readback, missing-worker/resource-limit faults, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
 | `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
@@ -57,9 +57,9 @@ implementation readiness only for the covered behavior.
   verification, and live D1 role/status/group rechecks before
   session-authenticated privilege decisions.
 - Passkey route boundary: default-frontend status/delete and
-  register/login/verify begin/finish paths are Worker-owned; begin routes create
-  KV-backed WebAuthn challenges and finish routes fail closed until verifier
-  work lands.
+  register/login/verify begin/finish paths are Worker-owned; ceremonies use a
+  session-bound SQLite-backed Durable Object and finish routes run the
+  Worker-native WebAuthn verifier before D1/session mutation.
 - Core admin user/token/channel/log/option/model/vendor APIs with audit and cache
   invalidation. Generated user access tokens and affiliation codes now use
   Worker CSPRNG-backed base62 strings, and model metadata list/detail responses
@@ -245,6 +245,22 @@ A full diff of every Go-registered route against the Rust worker closed these
 - This closes the missing local runtime replay, not G7. Deployed provider,
   hibernation/eviction, reconnect, alarm/retry, concurrency, no-double-charge,
   observability, compatibility-date, and rollback proof remain open.
+
+### Realtime bridge-segment billing isolation (2026-07-12)
+
+- Migration `0021_realtime_billing_bridge_segments.sql` adds an explicit
+  `bridge_segment` owner to each Realtime reservation and a segment/status
+  lookup index. It fails closed while any reservation is still `reserved`.
+- Response identity binding, settlement lookup, terminal refund, and lease
+  handoff now require both session and bridge segment. Closing an old outbound
+  bridge cannot refund or bind work owned by a replacement bridge that reuses
+  the same logical session name.
+- Restored legacy attachments without a segment do not perform a broad session
+  refund; their durable reservation lease remains the recovery authority.
+- The admin frontend exposes this compiled isolation contract separately from
+  remote migration and runtime proof. Production remains blocked on applying
+  0021 to staging with zero active reservations and replaying reconnect,
+  eviction, concurrent-response, settlement, and rollback scenarios.
 
 ## Incomplete Product Families
 

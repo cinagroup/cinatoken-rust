@@ -553,7 +553,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   controlled staging replay.
 - Continue Realtime billing from the default-off D1 writer plus replay-marker,
   audit-log, and D1 batch/CAS foundation to production-safe settlement. The
-  real local Wrangler D1 now has 20/20 migrations and 26 business tables, and
+  prior real local Wrangler D1 evidence has 20/20 migrations and 26 business
+  tables, while the current SQLite chain has 21 migrations, and
   the local Worker-binding settlement smoke passes 6/6 with zero residual rows
   after cleanup. Migration 0019 and the Durable Object now reserve each
   explicit `response.create` atomically, bind hashed `response.created`
@@ -566,11 +567,16 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   contract, and write-gate state. Migration 0020 now persists a 600-second
   active-reservation lease before D1 reserve and shares the same alarm across
   lease refunds and settlement retries; transient refund failures remain
-  scheduled after settlement retry exhaustion. The 13-case settlement
-  self-test includes reverse completion, lease-expiry, and stale-generation
+  scheduled after settlement retry exhaustion. Migration 0021 scopes response
+  binding, settlement, terminal refund, and lease handoff to a generated bridge
+  segment, so an old outbound bridge cannot mutate a replacement bridge that
+  reuses the same logical session. Legacy attachments without a segment fail
+  closed to lease recovery. The 14-case settlement self-test includes reverse
+  completion, lease-expiry, stale-generation, and cross-segment isolation
   proofs. Production
   safety still requires
-  authenticating Wrangler, applying and verifying the same chain on an
+  authenticating Wrangler, refreshing local Wrangler through 0021, applying
+  and verifying the same chain on an
   isolated remote staging D1, and archiving staging evidence for
   multi-response, alarm/eviction, disconnect-refund, queue-capacity, and
   Go/Rust reconciliation, plus capability and Worker-binding proof for

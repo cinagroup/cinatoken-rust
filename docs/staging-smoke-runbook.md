@@ -40,8 +40,9 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 20 migrations, 26 required tables, 56
-  incremental key columns, and 14 key indexes.
+- `bun run verify:sqlite` reports 21 migrations, 26 required tables, 57
+  incremental key columns, and 15 key indexes, including the 0020 and 0021
+  active-reservation guards.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes.
@@ -136,9 +137,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0020 are
-  contiguous; the local SQLite verifier finds all 26 required tables, 56
-  incremental key columns, and 14 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0021 are
+  contiguous; the local SQLite verifier finds all 26 required tables, 57
+  incremental key columns, and 15 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -199,7 +200,7 @@ Deploy or update staging using the configured staging command.
 Before any remote command, confirm the operator has revoked/rotated every
 exposed token and authenticated Wrangler with a replacement credential. Record
 the account identity and token scope/owner/rotation time, never the token value.
-If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local 20/20
+If Wrangler is unauthenticated, stop here and mark Phase 1 blocked; local schema
 or localhost smoke output cannot be promoted into this phase.
 
 Record:
@@ -694,7 +695,8 @@ This is a G7-blocking isolated-staging drill. Until a dedicated harness
 automates it, execute the steps with the mock upstream and archive redacted
 HTTP/WS status plus D1 snapshots before and after every transition:
 
-1. Confirm exact D1 readiness through 0020 and zero pre-0020 `reserved` rows.
+1. Confirm exact D1 readiness through 0021 and zero `reserved` rows before both
+   0020 and 0021.
    Record the current capability value, deploy a temporary staging-only
    `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="30"`, and keep production
    unchanged.

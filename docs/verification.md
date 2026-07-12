@@ -1,6 +1,57 @@
 # Verification
 
-Last checked: 2026-07-11
+Last checked: 2026-07-12
+
+## Realtime Local Runtime Suite
+
+- `bun tools/smoke_realtime_local_suite.mjs --start-worker --confirm-local
+  --json` passed all six local runtime scenarios through the built Worker,
+  local Wrangler D1, `RealtimeSession` Durable Object, and Bun mock upstream:
+  normal upstream close, oversized upstream frame, startup queue/drain,
+  `response.created` plus `response.done` usage/settlement, event-stream
+  failure, and upstream accept failure.
+- The usage scenario exercised the real explicit-response sequence:
+  bootstrap `session.update`, client `response.create`, D1 reservation,
+  upstream response identity binding, usage capture, tiered settlement preview,
+  and normal close. It observed 1,200 prompt, 350 completion, 400 cached, 180
+  input-audio, and 90 output-audio tokens; pre-consumed quota was 8 and the
+  final/additional quota was 2,870/2,862 for the isolated expression. Runtime
+  metrics reported write count 1, applied count 1, replay marker recorded,
+  audit recorded, token/channel scoped mutation, and no retry scheduled.
+- Every scenario used a unique 920000-920005 user/token/channel fixture. The
+  suite snapshots and restores the two billing options and transactionally
+  removes abilities, reservations, settlement replays, logs, channels, tokens,
+  and users. Independent post-run D1 queries returned zero rows for all seven
+  fixture families.
+- Runtime replay found and fixed two evidence defects: Realtime plan/socket
+  metadata retained the `openai-insecure-api-key.` protocol marker after
+  redaction, and the usage fixture omitted the required response identity and
+  reservation lifecycle. Credential subprotocol metadata now becomes the
+  generic `<redacted-api-key-protocol>` placeholder; the mock now follows the
+  production response-create/created/done sequence.
+- Worker builds are now driven by `tools/build_worker.mjs`. It pins
+  `worker-build` 0.1.14 for `worker` 0.5, requires a wasm-bindgen CLI exactly
+  matching `Cargo.lock` (0.2.125 at this check), and reuses Bun-locked esbuild
+  on Windows through the supported binary override. A real optimized Worker
+  build and Wrangler dry-run passed; the upload shape was 8,363.79 KiB raw /
+  2,927.12 KiB gzip.
+- `wrangler.realtime-local.toml` is local-only and deliberately excludes AI,
+  Assets, routes, remote environments, and a custom build. Wrangler 4.103.0's
+  bundled workerd supports compatibility dates through 2026-06-24, so this
+  local file uses that date while staging/production remain on 2026-07-11 and
+  still require deployed runtime evidence.
+- This is E3 local runtime evidence, not staging or production approval. Remote
+  provider credentials, Cloudflare hibernation/eviction, reconnect, alarm
+  recovery, concurrent multi-response no-double-charge, deployed traces,
+  rollback, and the two remaining non-deterministic send/error faults are still
+  required before Realtime cutover.
+- Final repository gates passed after the runtime fixes: Worker library tests
+  571/571; frontend readiness 8/8; route audit 217 frontend calls / 313 Worker
+  routes / 0 missing; bundle redaction 0 findings; bundle budgets and zero-debt
+  lint passed; all 20 D1 migrations and SQLite invariants passed; complete
+  `bun run check`, Worker wasm32, WFP tenant wasm32, optimized main Worker
+  build, and optimized WFP tenant build passed. Only the two existing unused
+  topup repository warnings remain.
 
 ## WFP Authority Increment Boundary
 

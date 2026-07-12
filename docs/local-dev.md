@@ -7,7 +7,7 @@ Required tools:
 - Rust toolchain with `cargo` and `rustc`
 - Bun
 - Wrangler
-- `worker-build`
+- `worker-build` plus a `wasm-bindgen` CLI matching `Cargo.lock`
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64), required by
   Wrangler's local `workerd` process
 
@@ -16,6 +16,13 @@ Install the Worker build helper once:
 ```powershell
 bun run install:worker-build
 ```
+
+The installer pins the workers-rs-compatible `worker-build` version and derives
+the exact wasm-bindgen CLI version from `Cargo.lock`. On Windows without a
+native Rust linker, install `cargo-binstall` first so this command can use
+verified prebuilt binaries instead of compiling the tools from source. Normal
+builds then use `bun run build:worker` or `bun run build:wfp-tenant`; do not
+invoke an unversioned global `worker-build` directly.
 
 ## Windows Shared Drive Setup
 

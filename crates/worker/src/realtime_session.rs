@@ -6637,7 +6637,7 @@ fn realtime_upstream_protocols(upstream_api_key: &str) -> Vec<String> {
 
 fn redact_realtime_protocol_token(value: &str) -> String {
     if value.starts_with(OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX) {
-        format!("{OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX}<redacted>")
+        "<redacted-api-key-protocol>".to_string()
     } else {
         value.to_string()
     }
@@ -6799,7 +6799,7 @@ fn redacted_realtime_protocols(value: &str) -> Option<String> {
         .take(8)
         .map(|part| {
             if part.starts_with(OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX) {
-                format!("{OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX}<redacted>")
+                "<redacted-api-key-protocol>".to_string()
             } else {
                 truncate_protocol_token(part)
             }
@@ -6948,7 +6948,7 @@ mod tests {
                 "realtime, openai-insecure-api-key.sk-live, openai-beta.realtime-v1"
             )
             .as_deref(),
-            Some("realtime,openai-insecure-api-key.<redacted>,openai-beta.realtime-v1")
+            Some("realtime,<redacted-api-key-protocol>,openai-beta.realtime-v1")
         );
     }
 
@@ -6976,7 +6976,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.0,
-            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
             token_source: Some("authorization".to_string()),
@@ -7331,7 +7331,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.1234,
-            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
             token_source: Some("authorization".to_string()),
@@ -7707,7 +7707,7 @@ mod tests {
             plan.protocol_redacted,
             vec![
                 "realtime".to_string(),
-                "openai-insecure-api-key.<redacted>".to_string(),
+                "<redacted-api-key-protocol>".to_string(),
                 "openai-beta.realtime-v1".to_string(),
             ]
         );
@@ -7781,7 +7781,7 @@ mod tests {
         let raw = serde_json::to_string(&plan).unwrap();
         assert!(!raw.contains(secret));
         assert!(!raw.contains("Bearer sk-"));
-        assert!(raw.contains("openai-insecure-api-key.<redacted>"));
+        assert!(raw.contains("<redacted-api-key-protocol>"));
     }
 
     #[test]
@@ -7807,7 +7807,7 @@ mod tests {
             spec.redacted_plan.protocol_redacted,
             vec![
                 "realtime".to_string(),
-                "openai-insecure-api-key.<redacted>".to_string(),
+                "<redacted-api-key-protocol>".to_string(),
                 "openai-beta.realtime-v1".to_string(),
             ]
         );
@@ -7899,7 +7899,7 @@ mod tests {
         assert!(header.len() < MAX_UPSTREAM_PLAN_HEADER_CHARS);
         assert!(!raw.contains(secret));
         assert!(!raw.contains("Bearer sk-"));
-        assert!(raw.contains("openai-insecure-api-key.<redacted>"));
+        assert!(raw.contains("<redacted-api-key-protocol>"));
     }
 
     #[test]
@@ -8467,7 +8467,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.0,
-            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
             token_source: Some("authorization".to_string()),
@@ -8523,7 +8523,7 @@ mod tests {
         let attachment = SocketAttachment {
             session: "rt-session".to_string(),
             connected_at_ms: 10.0,
-            protocol: Some("realtime,openai-insecure-api-key.<redacted>".to_string()),
+            protocol: Some("realtime,<redacted-api-key-protocol>".to_string()),
             entrypoint: "openai_realtime_v1".to_string(),
             model: Some("gpt-4o-realtime-preview".to_string()),
             token_source: Some("authorization".to_string()),

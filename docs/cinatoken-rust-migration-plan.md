@@ -9691,3 +9691,51 @@ signature negatives, sequential and concurrent replay with exactly one winner,
 same-user multi-session isolation, signature-counter/clone-warning behavior,
 DO eviction/alarm cleanup, redacted logs, rollback, and capability readback.
 The exposed Cloudflare credential was not used and must be revoked/rotated.
+
+### 22.156 2026-07-12 Realtime Local Runtime Closure And Worker Build Reproducibility
+
+This increment closes the missing local end-to-end evidence for the OpenAI
+Realtime implementation while keeping remote G7 and production approval
+closed.
+
+- Added `tools/build_worker.mjs` as the single Worker build entry for Bun and
+  Wrangler. It pins `worker-build` 0.1.14 for the current `worker` 0.5 API,
+  reads the exact wasm-bindgen version from `Cargo.lock`, requires a matching
+  CLI, and uses the Bun-locked esbuild binary on Windows. This fixes cold-build
+  failures caused by an unbounded worker-build upgrade, bindgen schema drift,
+  and worker-build's Windows esbuild archive path assumption.
+- Added `wrangler.realtime-local.toml`, a local-only runtime shape with no
+  remote environments, routes, AI binding, Assets, or custom build. Realtime
+  gateway and settlement writes are enabled only in this isolated config.
+  Wrangler 4.103.0's workerd supports dates through 2026-06-24, so the local
+  smoke records that compatibility date gap rather than weakening the tracked
+  staging/production date of 2026-07-11.
+- Added `tools/smoke_realtime_local_suite.mjs`. It manages local workerd,
+  requires loopback plus explicit confirmation, invokes the locked Wrangler
+  CLI without a nested `bun x`, uses unique per-scenario D1 fixtures, writes
+  transactional temporary seed/cleanup files, snapshots/restores billing
+  options, and cleans reservation/replay/audit state even after failure.
+- Upgraded the usage mock from a body-only `response.done` fixture to the real
+  explicit-response protocol: bootstrap `session.update`, client
+  `response.create`, D1 reservation, upstream `response.created` identity bind,
+  matching `response.done`, usage capture, tiered settlement, and close.
+- Hardened Realtime metadata redaction. Both upstream plans and socket
+  attachments replace the complete key-bearing subprotocol with
+  `<redacted-api-key-protocol>` while retaining the separate non-secret
+  `auth_mode` field. Smoke leak errors now report only the sensitive category
+  and JSON path.
+
+Local evidence passed all six deterministic scenarios: normal upstream close,
+oversized upstream frame, startup queue/drain, response usage/settlement,
+event-stream failure, and accept failure. The usage scenario observed the
+expected 1,550 total tokens, a request-aware tiered settlement, one applied
+write, a replay marker, an audit row, and no scheduled retry. Independent D1
+readback returned zero fixture users, tokens, channels, abilities,
+reservations, replay markers, and logs. The optimized Worker build and local
+Wrangler module dry-run also passed.
+
+This is E3 local runtime evidence only. Remaining G7/production work includes
+real provider and Cloudflare staging traffic, long-session hibernation and
+eviction, reconnect, alarm/retry recovery, concurrent multi-response
+no-double-charge, upstream abort and client-send failure injection, deployed
+traces/SLOs, compatibility-date parity, canary, and rollback.

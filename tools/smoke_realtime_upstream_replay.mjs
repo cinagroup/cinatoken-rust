@@ -14,6 +14,8 @@ const openaiCompatibleChannelType = 1;
 const maxRealtimeBridgeTextFrameBytes = 1_048_576;
 const upstreamReplayProbePrefix = "cinatoken-upstream-live-frame-limit:";
 const usageReplayCloseProbe = "cinatoken realtime usage replay close";
+const explicitResponseBootstrapEventId = "cinatoken-explicit-response-mode";
+const mockResponseId = "resp_cinatoken_realtime_mock_usage";
 const billingModeOptionKey = "billing_setting.billing_mode";
 const billingExprOptionKey = "billing_setting.billing_expr";
 const realtimeBillingExpression =
@@ -30,6 +32,7 @@ const expectedResponseDoneUsage = {
 const responseDoneUsageFrame = JSON.stringify({
   type: "response.done",
   response: {
+    id: mockResponseId,
     usage: {
       input_tokens: expectedResponseDoneUsage.prompt_tokens,
       output_tokens: expectedResponseDoneUsage.completion_tokens,
@@ -43,6 +46,10 @@ const responseDoneUsageFrame = JSON.stringify({
       },
     },
   },
+});
+const responseCreatedFrame = JSON.stringify({
+  type: "response.created",
+  response: { id: mockResponseId, status: "in_progress" },
 });
 
 const scenarios = new Map(
@@ -366,7 +373,7 @@ async function runLiveReplay(options, plan) {
       ws.send(options.probe);
       statusFrame = await requestRuntimeStatus(ws, options);
     } else if (options.scenario.expectUsageCapture) {
-      ws.send(options.probe);
+      ws.send(realtimeResponseCreateProbe(options.probe));
       usageFrame = await waitForJsonMessage(
         ws,
         (message) => message.type === "response.done",
@@ -459,7 +466,7 @@ function startMockServer(options, stats) {
         if (options.scenario.mockAction !== "send_response_done_usage_after_first_client_frame") {
           ws.data.actionTaken = true;
         }
-        runMockAction(ws, options.scenario, stats, clientFrameCount);
+        runMockAction(ws, options.scenario, stats, clientFrameCount, message);
       },
       close(_ws, code, reason) {
         stats.closeEvents.push({
@@ -474,7 +481,7 @@ function startMockServer(options, stats) {
   });
 }
 
-function runMockAction(ws, scenario, stats, clientFrameCount) {
+function runMockAction(ws, scenario, stats, clientFrameCount, message) {
   if (scenario.mockAction === "close_after_first_client_frame") {
     queueMicrotask(() => {
       ws.close(scenario.closeCode, scenario.closeReason);
@@ -488,10 +495,20 @@ function runMockAction(ws, scenario, stats, clientFrameCount) {
     return;
   }
   if (scenario.mockAction === "send_response_done_usage_after_first_client_frame") {
-    if (clientFrameCount === 1) {
+    const text = typeof message === "string" ? message : new TextDecoder().decode(message);
+    let event = null;
+    try {
+      event = JSON.parse(text);
+    } catch {
+      // The close marker is intentionally plain text.
+    }
+    if (event?.event_id === explicitResponseBootstrapEventId) return;
+    if (event?.type === "response.create") {
+      stats.sentFrames.push(summarizeFrame(responseCreatedFrame));
+      ws.send(responseCreatedFrame);
       stats.sentFrames.push(summarizeFrame(responseDoneUsageFrame));
       ws.send(responseDoneUsageFrame);
-    } else if (scenario.closeAfterSecondClientFrame && clientFrameCount === 2) {
+    } else if (scenario.closeAfterSecondClientFrame && text === usageReplayCloseProbe) {
       queueMicrotask(() => {
         ws.close(scenario.closeCode, scenario.closeReason);
       });
@@ -657,20 +674,24 @@ function validateLiveReplayOutcome(outcome, stats, options, statusFrame = null, 
   ) {
     throw new Error("mock upstream did not receive the forwarded client frame");
   }
-  const firstFrame = stats.receivedFrames[0];
+  const expectedProbe = options.scenario.expectUsageCapture
+    ? realtimeResponseCreateProbe(options.probe)
+    : options.probe;
+  const probeFrameIndex = options.scenario.expectUsageCapture ? 1 : 0;
+  const firstFrame = stats.receivedFrames[probeFrameIndex];
   if (
     !options.externalMock &&
     options.scenario.expectForwardedClientFrame !== false &&
-    firstFrame.bytes !== byteLength(options.probe)
+    firstFrame.bytes !== byteLength(expectedProbe)
   ) {
-    throw new Error(`forwarded client frame bytes=${firstFrame.bytes}, expected ${byteLength(options.probe)}`);
+    throw new Error(`forwarded client frame bytes=${firstFrame.bytes}, expected ${byteLength(expectedProbe)}`);
   }
   if (!options.externalMock && options.scenario.expectUsageCapture) {
-    if (stats.sentFrames.length < 1) {
-      throw new Error("mock upstream did not send the response.done usage frame");
+    if (stats.sentFrames.length < 2) {
+      throw new Error("mock upstream did not send response.created and response.done frames");
     }
-    if (stats.receivedFrames.length < 2) {
-      throw new Error("mock upstream did not receive the usage replay close marker");
+    if (stats.receivedFrames.length < 3) {
+      throw new Error("mock upstream did not receive bootstrap, response.create, and close marker frames");
     }
   }
   if (outcome.bridgeEvent.context?.upstream_connect_handoff !== true) {
@@ -913,6 +934,50 @@ function validateBillingMetrics(metrics, options) {
   if (typeof preview.crossed_tier !== "boolean") {
     throw new Error(`${label} crossed_tier=${preview.crossed_tier}, expected boolean`);
   }
+  if (!Number.isInteger(metrics.billing_settlement_write_count) || metrics.billing_settlement_write_count < 1) {
+    throw new Error(`${label} billing_settlement_write_count=${metrics.billing_settlement_write_count}, expected >= 1`);
+  }
+  if (!Number.isInteger(metrics.billing_settlement_applied_count) || metrics.billing_settlement_applied_count < 1) {
+    throw new Error(`${label} billing_settlement_applied_count=${metrics.billing_settlement_applied_count}, expected >= 1`);
+  }
+  if (typeof metrics.last_billing_settlement_write_at_ms !== "number") {
+    throw new Error(`${label} missing numeric last_billing_settlement_write_at_ms`);
+  }
+  const write = metrics.last_billing_settlement_write;
+  if (!write || typeof write !== "object") {
+    throw new Error(`${label} missing last_billing_settlement_write`);
+  }
+  for (const field of [
+    "write_enabled",
+    "write_attempted",
+    "applied",
+    "replay_recorded",
+    "audit_plan_present",
+    "audit_attempted",
+    "audit_recorded",
+    "mutation_plan_present",
+    "mutation_token_scoped",
+    "mutation_channel_scoped",
+  ]) {
+    if (write[field] !== true) throw new Error(`${label} write.${field}=${write[field]}, expected true`);
+  }
+  for (const field of ["skipped_reason", "error", "audit_error"]) {
+    if (write[field] != null) throw new Error(`${label} write.${field} must be empty after apply`);
+  }
+  if (write.retry_scheduled !== false || write.retry_exhausted !== false) {
+    throw new Error(`${label} settlement unexpectedly entered retry state`);
+  }
+  for (const field of ["pre_consumed_quota", "final_quota", "refund_quota", "additional_quota"]) {
+    if (write[field] !== preview[field]) {
+      throw new Error(`${label} write.${field}=${write[field]}, expected ${preview[field]}`);
+    }
+  }
+  if (write.delta_quota !== preview.final_quota - preview.pre_consumed_quota) {
+    throw new Error(`${label} write.delta_quota does not match final minus pre-consumed quota`);
+  }
+  if (typeof write.replay_key_hash !== "string" || write.replay_key_hash.length < 8) {
+    throw new Error(`${label} write is missing a redacted replay-key hash`);
+  }
 }
 
 function dottedValue(value, path) {
@@ -948,19 +1013,38 @@ function validateBridgeEvent(frame, expected, scenarioName) {
 }
 
 function validateNoRawLeaks(value, options) {
-  const serialized = JSON.stringify(value);
-  for (const secret of [
-    options.apiKey,
-    options.probe,
-    upstreamReplayProbePrefix,
-    "openai-insecure-api-key.",
-    realtimeBillingExpression,
-    "p * 2 + c * 8 + ai * 3 + ao * 12",
-  ]) {
-    if (secret && serialized.includes(secret)) {
-      throw new Error("live replay result leaked raw probe or API-key material");
+  const sensitiveValues = [
+    [options.apiKey, "API key"],
+    [options.probe, "raw probe"],
+    [upstreamReplayProbePrefix, "frame-limit probe prefix"],
+    ["openai-insecure-api-key.", "Realtime API-key protocol marker"],
+    [realtimeBillingExpression, "billing expression"],
+    ["p * 2 + c * 8 + ai * 3 + ao * 12", "billing expression body"],
+  ];
+  for (const [secret, label] of sensitiveValues) {
+    const path = secret ? sensitiveStringPath(value, secret) : null;
+    if (path) {
+      throw new Error(`live replay result leaked ${label} at ${path}`);
     }
   }
+}
+
+function sensitiveStringPath(value, secret, path = "$") {
+  if (typeof value === "string") return value.includes(secret) ? path : null;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = sensitiveStringPath(value[index], secret, `${path}[${index}]`);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      const found = sensitiveStringPath(item, secret, `${path}.${key}`);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function runSelfTest() {
@@ -1033,7 +1117,7 @@ function runSelfTest() {
         { metrics: { last_billing_snapshot: { expr: realtimeBillingExpression } } },
         { apiKey: "secret", probe: defaultProbe },
       ),
-    "leaked raw probe",
+    "leaked billing expression",
   );
   return {
     ok: true,
@@ -1081,11 +1165,16 @@ function syntheticOutcome(scenario) {
 }
 
 function syntheticStats(probe, scenario) {
-  const receivedFrames = [{ kind: "text", bytes: byteLength(probe) }];
+  const receivedFrames = [];
   const sentFrames = [];
   if (scenario.expectUsageCapture) {
+    receivedFrames.push(summarizeFrame(realtimeExplicitResponseBootstrapEvent()));
+    receivedFrames.push(summarizeFrame(realtimeResponseCreateProbe(probe)));
     receivedFrames.push({ kind: "text", bytes: byteLength(usageReplayCloseProbe) });
+    sentFrames.push(summarizeFrame(responseCreatedFrame));
     sentFrames.push(summarizeFrame(responseDoneUsageFrame));
+  } else {
+    receivedFrames.push({ kind: "text", bytes: byteLength(probe) });
   }
   return {
     connections: 1,
@@ -1094,6 +1183,22 @@ function syntheticStats(probe, scenario) {
     closeEvents: [],
     errors: [],
   };
+}
+
+function realtimeResponseCreateProbe(probe) {
+  return JSON.stringify({
+    type: "response.create",
+    event_id: "cinatoken-realtime-mock-response-create",
+    response: { modalities: ["text"], instructions: probe },
+  });
+}
+
+function realtimeExplicitResponseBootstrapEvent() {
+  return JSON.stringify({
+    type: "session.update",
+    event_id: explicitResponseBootstrapEventId,
+    session: { turn_detection: null },
+  });
 }
 
 function syntheticRuntimeStatusFrame(scenario, probe) {
@@ -1133,6 +1238,10 @@ function syntheticBillingMetrics(scenario) {
       billing_settlement_preview_count: 0,
       last_billing_settlement_preview_at_ms: null,
       last_billing_settlement_preview: null,
+      billing_settlement_write_count: 0,
+      billing_settlement_applied_count: 0,
+      last_billing_settlement_write_at_ms: null,
+      last_billing_settlement_write: null,
     };
   }
   const snapshot = {
@@ -1171,6 +1280,35 @@ function syntheticBillingMetrics(scenario) {
       additional_quota: finalQuota,
       matched_tier: snapshot.estimated_tier,
       crossed_tier: false,
+    },
+    billing_settlement_write_count: 1,
+    billing_settlement_applied_count: 1,
+    last_billing_settlement_write_at_ms: 1_788_192_000_002,
+    last_billing_settlement_write: {
+      write_enabled: true,
+      write_attempted: true,
+      applied: true,
+      skipped_reason: null,
+      error: null,
+      pre_consumed_quota: 0,
+      final_quota: finalQuota,
+      refund_quota: 0,
+      additional_quota: finalQuota,
+      delta_quota: finalQuota,
+      replay_key_hash: "synthetic-replay-key-hash",
+      replay_recorded: true,
+      audit_plan_present: true,
+      audit_attempted: true,
+      audit_recorded: true,
+      audit_error: null,
+      mutation_plan_present: true,
+      mutation_token_scoped: true,
+      mutation_channel_scoped: true,
+      retry_scheduled: false,
+      retry_attempt: 0,
+      retry_max_attempts: 7,
+      retry_exhausted: false,
+      retry_next_at_ms: null,
     },
   };
 }
@@ -1380,6 +1518,8 @@ function summarizeRuntimeStatus(frame) {
     lastUsage: summarizeUsageMetadata(frame.metrics?.last_usage),
     billingSnapshotCount: frame.metrics?.billing_snapshot_count ?? null,
     billingSettlementPreviewCount: frame.metrics?.billing_settlement_preview_count ?? null,
+    billingSettlementWriteCount: frame.metrics?.billing_settlement_write_count ?? null,
+    billingSettlementAppliedCount: frame.metrics?.billing_settlement_applied_count ?? null,
   };
 }
 
@@ -1422,6 +1562,24 @@ function summarizeBillingSettlementPreview(metrics) {
           crossedTier: preview.crossed_tier,
         }
       : null,
+    write: summarizeBillingSettlementWrite(metrics?.last_billing_settlement_write),
+  };
+}
+
+function summarizeBillingSettlementWrite(write) {
+  if (!write) return null;
+  return {
+    writeEnabled: write.write_enabled,
+    writeAttempted: write.write_attempted,
+    applied: write.applied,
+    replayRecorded: write.replay_recorded,
+    auditRecorded: write.audit_recorded,
+    mutationTokenScoped: write.mutation_token_scoped,
+    mutationChannelScoped: write.mutation_channel_scoped,
+    preConsumedQuota: write.pre_consumed_quota,
+    finalQuota: write.final_quota,
+    deltaQuota: write.delta_quota,
+    retryScheduled: write.retry_scheduled,
   };
 }
 

@@ -1,0 +1,104 @@
+# Local-only Realtime runtime smoke configuration.
+# It intentionally has no remote environments, routes, AI binding, assets, or
+# custom build command. Build the shim first with `bun run build:worker`.
+name = "cinatoken-rust-realtime-local"
+main = "crates/worker/build/worker/shim.mjs"
+# Wrangler 4.103.0's bundled workerd currently supports dates through
+# 2026-06-24. Staging/production retain 2026-07-11 in wrangler.toml and must be
+# verified separately on Cloudflare's deployed runtime.
+compatibility_date = "2026-06-24"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+FRONTEND_BASE_URL = "http://localhost:3000"
+AI_GATEWAY_ID = ""
+CLOUDFLARE_ACCOUNT_ID = ""
+RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"
+RELAY_MODEL_FALLBACK_ENABLED = "false"
+RELAY_MODEL_FALLBACKS_JSON = "{}"
+RELAY_MODEL_FALLBACK_STAGING_VERIFIED = "false"
+RELAY_ACTUAL_GROUP_BILLING_STAGING_SMOKE_ENABLED = "false"
+WFP_DISPATCH_ENABLED = "false"
+WFP_INTERNAL_DISPATCH_ENABLED = "false"
+WFP_RELAY_TRANSPORT_ENABLED = "false"
+WFP_PREVIEW_HOST_SUFFIX = ""
+WFP_DISPATCH_WORKER_PREFIX = ""
+WFP_DISPATCH_NAMESPACE = ""
+WFP_TENANT_COMPATIBILITY_DATE = "2026-06-17"
+REALTIME_SESSION_GATEWAY_ENABLED = "true"
+REALTIME_SESSION_V1_ENABLED = "true"
+REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED = "true"
+REALTIME_BILLING_RESERVATION_LEASE_SECONDS = "600"
+REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED = "false"
+TASK_RUNNER_DO_ENABLED = "false"
+TASK_RUNNER_STAGING_REPLAY_VERIFIED = "false"
+TASK_RUNNER_MAX_ALARM_FIRES = "20"
+TASK_QUERY_LIMIT = "100"
+TASK_TIMEOUT_MINUTES = "1440"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cinatoken-rust-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations/d1"
+
+[[kv_namespaces]]
+binding = "CACHE_KV"
+id = "00000000000000000000000000000000"
+
+[[kv_namespaces]]
+binding = "CONFIG_KV"
+id = "00000000000000000000000000000000"
+
+[[r2_buckets]]
+binding = "FILE_BUCKET"
+bucket_name = "cinatoken-rust-files"
+
+[[queues.producers]]
+queue = "cinatoken-rust-log-events"
+binding = "LOG_QUEUE"
+
+[[queues.producers]]
+queue = "cinatoken-rust-task-events"
+binding = "TASK_QUEUE"
+
+[[durable_objects.bindings]]
+name = "CHANNEL_AFFINITY"
+class_name = "ChannelAffinity"
+
+[[durable_objects.bindings]]
+name = "REALTIME_SESSIONS"
+class_name = "RealtimeSession"
+
+[[durable_objects.bindings]]
+name = "TASK_RUNNER"
+class_name = "TaskRunner"
+
+[[durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+
+[[durable_objects.bindings]]
+name = "PASSKEY_CEREMONIES"
+class_name = "PasskeyCeremony"
+
+[[migrations]]
+tag = "v1-channel-affinity"
+new_sqlite_classes = ["ChannelAffinity"]
+
+[[migrations]]
+tag = "v2-realtime-session"
+new_sqlite_classes = ["RealtimeSession"]
+
+[[migrations]]
+tag = "v3-task-runner"
+new_sqlite_classes = ["TaskRunner"]
+
+[[migrations]]
+tag = "v4-wfp-authority-replay"
+new_sqlite_classes = ["WfpAuthorityReplay"]
+
+[[migrations]]
+tag = "v5-passkey-ceremony"
+new_sqlite_classes = ["PasskeyCeremony"]

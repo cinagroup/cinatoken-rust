@@ -28,7 +28,7 @@ enabled = true
 head_sampling_rate = 1
 
 [build]
-command = "cd crates/worker && worker-build --release"
+command = "bun tools/build_worker.mjs --release"
 
 # Static admin frontend. `directory` is populated by `bun run build:web`
 # (see apps/web/README.md). When the directory is absent (e.g. a fresh

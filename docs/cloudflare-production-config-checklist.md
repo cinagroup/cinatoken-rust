@@ -118,7 +118,7 @@ Current `wrangler.toml` is development-shaped:
 - Compatibility date: `2026-06-17`
 - Compatibility flags: `nodejs_compat`
 - Observability: enabled with full head sampling
-- Build command: `cd crates/worker && worker-build --release`
+- Build command: `bun tools/build_worker.mjs --release`
 - `ENVIRONMENT = "development"`
 - `FRONTEND_BASE_URL = "http://localhost:3000"`
 - `AI_GATEWAY_ID = ""`

@@ -630,6 +630,26 @@ bun run check:realtime-session:mock-upstream-usage-plan
 bun run check:realtime-session:mock-upstream-fault-plans
 ```
 
+After the contracts pass, run the managed local runtime suite from an isolated
+local Wrangler state. It builds the Worker, starts a local-only Worker without
+AI/Assets/remote bindings, applies each scenario through a temporary SQL file,
+executes the real `/v1/realtime` WebSocket path, restores the prior billing
+options, and removes all fixture rows:
+
+```powershell
+bun run smoke:realtime-local-suite --confirm-local --json
+```
+
+The suite refuses non-loopback Worker URLs and requires `--confirm-local`.
+Do not point it at staging or production. On Windows it invokes the locked
+Wrangler CLI directly rather than nesting `bun x`, because the nested process
+can retain handles after D1 execution. Its local configuration currently uses
+compatibility date `2026-06-24`, the maximum supported by Wrangler 4.103.0's
+bundled workerd; staging/production stay on `2026-07-11` and require separate
+deployed evidence. A pass must include all six scenarios and independent zero
+row readback for fixture users, tokens, channels, abilities, reservations,
+replays, and logs.
+
 Before promoting Realtime settlement beyond default-off code paths, run the
 local D1-shape settlement batch replay. It does not write Cloudflare D1; it
 proves the Worker batch contract locally for applied, duplicate,

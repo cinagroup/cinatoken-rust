@@ -23,7 +23,7 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | Complete Go/VPS to Rust/Cloudflare migration | Rust owns the main route surface and the route audit reports zero explicit frontend gaps, but provider-specific, payment, async-task, data, and operational matrices still contain partial rows | Partial | Production SQLite-to-D1 reconciliation, all enabled provider/payment fixtures, capacity/security evidence, canary, rollback, and decommission proof |
 | Frontend migration | React/Bun source, strict lint, bundle redaction/budget, route audit, and production build pass locally | Locally wired | Deployed browser hard-refresh, session/role/CRUD/2FA/Passkey, callback, console, performance, and rollback evidence |
 | Rust scheduling gateway | `cinatoken-gateway` is the live versioned owner planner before Worker execution adapters | Locally wired | Main/API/static/tenant host matrix, negative dispatch, edge-auth parity, and rollback smoke on Cloudflare |
-| Rust Durable Objects | RealtimeSession, TaskRunner, channel affinity, settlement/replay, and WFP authority replay DO substrates compile with focused tests | Gated substrate | Live eviction/alarm/reconnect/replay/load evidence; Realtime upstream and billing must complete without duplicate charge |
+| Rust Durable Objects | RealtimeSession now has a six-scenario local workerd/D1/mock-upstream runtime suite; TaskRunner, channel affinity, settlement/replay, Passkey ceremony, and WFP authority replay substrates compile with focused tests | Locally exercised substrate | Deployed eviction/alarm/reconnect/replay/load evidence; Realtime upstream and billing must complete without duplicate charge on Cloudflare staging |
 | WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, signed relay authority, and replay guard are present | Gated substrate | Real staging namespace upload/readback, missing-worker/resource-limit faults, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
 | `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
@@ -209,13 +209,34 @@ A full diff of every Go-registered route against the Rust worker closed these
   signature negatives, concurrent replay, session isolation, imported Go
   credential login, DO alarm/eviction, and rollback evidence.
 
+### OpenAI Realtime local runtime contract (2026-07-12)
+
+- A local-only Wrangler configuration and managed smoke suite now exercise the
+  built `/v1/realtime` Worker through token auth, D1 channel selection,
+  `RealtimeSession`, and a real mock upstream WebSocket.
+- All six deterministic scenarios pass: normal close, 1 MiB frame rejection,
+  startup queue/drain, response reservation/identity/usage/settlement, event
+  stream failure, and upstream accept failure. Evidence contains frame sizes,
+  close mappings, usage and billing metadata only.
+- Realtime credential subprotocol metadata now replaces the entire key-bearing
+  protocol with `<redacted-api-key-protocol>`. The suite also snapshots billing
+  options and confirms zero residual users, tokens, channels, abilities,
+  reservations, replay markers, and logs after cleanup.
+- This closes the missing local runtime replay, not G7. Deployed provider,
+  hibernation/eviction, reconnect, alarm/retry, concurrency, no-double-charge,
+  observability, compatibility-date, and rollback proof remain open.
+
 ## Incomplete Product Families
 
 - Multipart image/audio relay is no longer entirely absent, but production
   parity still needs real-file replay for non-WAV/WebM audio parsers, live
   upstream smoke, image-edit fixture coverage, and billing
   shadow/reconciliation evidence.
-- OpenAI Realtime WebSocket.
+- OpenAI Realtime WebSocket is locally implemented and has a six-scenario
+  workerd/D1/DO/mock-upstream replay. Production parity still needs deployed
+  Cloudflare/provider long-session, hibernation/eviction, reconnect,
+  alarm/retry, concurrent response, no-double-charge, trace, and rollback
+  evidence.
 - Subscription core, redemption, and check-in still need production/staging
   evidence for the full visible workflows, but their core Worker routes are no
   longer entirely absent.

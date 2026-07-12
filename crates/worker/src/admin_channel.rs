@@ -737,7 +737,8 @@ pub async fn reveal_channel_key(
         None => return Ok(envelope_error_response(400, "channel id is required")),
     };
     // Step-up gate: revealing a credential requires a fresh secure-verification.
-    if let Some(response) = crate::admin::require_secure_verification(&env, claims.id).await? {
+    if let Some(response) = crate::admin::require_secure_verification(&req, &env, claims.id).await?
+    {
         return Ok(response);
     }
     let db = env.d1("DB")?;

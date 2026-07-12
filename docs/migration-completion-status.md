@@ -189,6 +189,26 @@ A full diff of every Go-registered route against the Rust worker closed these
   route-specific chunks are split. Strict lint is now zero-debt gated and
   `check:web:quality` is green locally.
 
+### Passkey WebAuthn finish contract (2026-07-12)
+
+- Registration, discoverable login, and authenticated step-up finish handlers
+  now run a pure Rust/Wasm verifier for `none` attestation plus ES256/RS256
+  assertions before any D1, session, or step-up mutation.
+- Challenge state moved from eventually consistent KV to a per-ceremony
+  SQLite-backed `PasskeyCeremony` Durable Object with transactional one-winner
+  take and alarm cleanup. Authenticated ceremonies and secure-verification
+  markers are bound to the exact signed browser session by cookie hash.
+- D1 stores the Go-compatible standard-base64 credential representation.
+  Registration replaces one credential per user atomically; assertions update
+  flags, last-used time, clone warning, and sign count through CAS.
+- `/api/status` advertises `passkey_login` only when the option is enabled and
+  the DO/verifier runtime contract is present. Frontend payloads and login user
+  response shape remain unchanged.
+- This closes the missing local implementation, not the deployment gate.
+  Staging still needs real platform/cross-platform authenticators, origin and
+  signature negatives, concurrent replay, session isolation, imported Go
+  credential login, DO alarm/eviction, and rollback evidence.
+
 ## Incomplete Product Families
 
 - Multipart image/audio relay is no longer entirely absent, but production
@@ -199,9 +219,10 @@ A full diff of every Go-registered route against the Rust worker closed these
 - Subscription core, redemption, and check-in still need production/staging
   evidence for the full visible workflows, but their core Worker routes are no
   longer entirely absent.
-- Full Passkey register/login/step-up finish verification. The route boundary,
-  challenge generation, status/delete, email verification/reset/bind, WeChat
-  OAuth, and admin Passkey reset are Worker-owned;
+- Passkey register/login/step-up is locally implemented; production parity
+  still needs real-authenticator staging and imported-Go-credential evidence.
+  Email verification/reset/bind, WeChat OAuth, and admin Passkey reset are also
+  Worker-owned;
   WeChat production readiness still requires a real operator WeChat Server
   over public HTTPS plus QR/code smoke, and email production readiness still
   requires real Cloudflare Email Service binding smoke.
@@ -211,7 +232,7 @@ A full diff of every Go-registered route against the Rust worker closed these
   evidence rather than an absent default-frontend provider route.
 - Custom OAuth management and generic login/bind callbacks are Worker-owned;
   remaining OAuth work is real-provider staging replay, access-policy smoke,
-  replay/bind-conflict evidence, Passkey finish, and several provider-specific
+  replay/bind-conflict evidence and several provider-specific
   OAuth production proofs.
 - Long-tail provider/channel operations and performance/ratio-sync need more
   staging evidence.
@@ -229,8 +250,8 @@ A full diff of every Go-registered route against the Rust worker closed these
    visible workflows.
 4. Billing/payment production shadow and replay thresholds are not signed off.
 5. Capacity, cost, security, SLO, canary and rollback evidence are incomplete.
-6. Passkey WebAuthn finish verification must be implemented in a Worker-safe
-   verifier or kept disabled with a signed forced-reset/re-enroll policy.
+6. Passkey WebAuthn must pass deployed real-authenticator, imported-credential,
+   replay/session-isolation, alarm/eviction, observability, and rollback gates.
 7. Browser-session production approval now has local `session_epoch` /
    all-devices revocation support, but still needs D1 migration application
    through `0017` plus staging browser smoke for password-change and

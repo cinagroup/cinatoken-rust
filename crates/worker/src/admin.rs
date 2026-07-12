@@ -25,6 +25,7 @@ use cinatoken_session::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::d1_repositories::AdminAuditInfo;
@@ -59,6 +60,9 @@ pub(crate) fn session_claims_from_user(
 use crate::set_cors_headers;
 
 const SESSION_SECRET_ENV: &str = "SESSION_SECRET";
+pub(crate) const SECURE_VERIFICATION_METHOD_2FA: &str = "2fa";
+pub(crate) const SECURE_VERIFICATION_METHOD_PASSKEY: &str = "passkey";
+const SECURE_VERIFICATION_METHOD_PASSWORD: &str = "password";
 const SETUP_USERNAME_MAX_LEN: usize = 12;
 const SETUP_PASSWORD_MIN_LEN: usize = 8;
 const SETUP_DEFAULT_ROOT_QUOTA: i64 = 100_000_000;
@@ -429,8 +433,10 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
         Ok(body) => body,
         Err(response) => return Ok(response),
     };
-    // Step-up method: "2fa" (TOTP or backup code, Go's method) or "password"
-    // (the default re-auth). Both, on success, refresh the SecureVerify marker.
+    // Step-up method: "2fa" (TOTP or backup code), "passkey" (a marker created
+    // only after the WebAuthn finish handler succeeds), or "password" (the
+    // compatibility re-auth method). Passkey confirmation never refreshes the
+    // marker, so replaying this endpoint cannot extend a completed ceremony.
     let method = body
         .get("method")
         .and_then(|value| value.as_str())
@@ -446,8 +452,21 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
         return Ok(envelope_error_response(403, "user is disabled"));
     }
     let now = unix_timestamp();
+    if method == SECURE_VERIFICATION_METHOD_PASSKEY {
+        let Some(marker) = secure_verification_marker(&req, &env, claims.id).await? else {
+            return Ok(envelope_error_response(401, "secure verification failed"));
+        };
+        if marker.method != SECURE_VERIFICATION_METHOD_PASSKEY {
+            return Ok(envelope_error_response(401, "secure verification failed"));
+        }
+        let ttl = crate::flow_state::FlowKind::SecureVerify.default_ttl_secs() as i64;
+        return envelope_ok_response(&serde_json::json!({
+            "verified": true,
+            "expires_at": marker.verified_at.saturating_add(ttl),
+        }));
+    }
     let verified = match method {
-        "2fa" => {
+        SECURE_VERIFICATION_METHOD_2FA => {
             let code = body
                 .get("code")
                 .and_then(|value| value.as_str())
@@ -469,7 +488,7 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
                 _ => return Ok(envelope_error_response(400, "2FA is not enabled")),
             }
         }
-        _ => {
+        SECURE_VERIFICATION_METHOD_PASSWORD => {
             let password = body
                 .get("password")
                 .and_then(|value| value.as_str())
@@ -479,17 +498,17 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
             }
             verify_password(password, &user.password).unwrap_or(false)
         }
+        _ => {
+            return Ok(envelope_error_response(
+                400,
+                "unsupported verification method",
+            ))
+        }
     };
     if !verified {
         return Ok(envelope_error_response(401, "secure verification failed"));
     }
-    crate::flow_state::put(
-        &env,
-        crate::flow_state::FlowKind::SecureVerify,
-        &claims.id.to_string(),
-        &now.to_string(),
-    )
-    .await?;
+    mark_secure_verification(&req, &env, claims.id, method, now).await?;
     let ttl = crate::flow_state::FlowKind::SecureVerify.default_ttl_secs() as i64;
     envelope_ok_response(&serde_json::json!({
         "verified": true,
@@ -497,27 +516,129 @@ pub async fn secure_verify_handler(mut req: Request, env: Env) -> WorkerResult<R
     }))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SecureVerificationMarker {
+    method: String,
+    verified_at: i64,
+}
+
+pub(crate) async fn mark_secure_verification(
+    req: &Request,
+    env: &Env,
+    user_id: i64,
+    method: &str,
+    verified_at: i64,
+) -> WorkerResult<()> {
+    let marker = serde_json::to_string(&SecureVerificationMarker {
+        method: method.to_string(),
+        verified_at,
+    })
+    .map_err(|err| worker::Error::RustError(format!("encode secure verification: {err}")))?;
+    let storage_id = session_binding_id(req, user_id).ok_or_else(|| {
+        worker::Error::RustError("authenticated session cookie is unavailable".to_string())
+    })?;
+    crate::flow_state::put(
+        env,
+        crate::flow_state::FlowKind::SecureVerify,
+        &storage_id,
+        &marker,
+    )
+    .await
+}
+
+async fn secure_verification_marker(
+    req: &Request,
+    env: &Env,
+    user_id: i64,
+) -> WorkerResult<Option<SecureVerificationMarker>> {
+    let Some(storage_id) = session_binding_id(req, user_id) else {
+        return Ok(None);
+    };
+    let Some(value) =
+        crate::flow_state::get(env, crate::flow_state::FlowKind::SecureVerify, &storage_id).await?
+    else {
+        return Ok(None);
+    };
+    Ok(decode_secure_verification_marker(&value, unix_timestamp()))
+}
+
+pub(crate) fn session_binding_id(req: &Request, user_id: i64) -> Option<String> {
+    session_cookie(req)
+        .as_deref()
+        .map(|cookie| secure_verification_storage_id_for_cookie(user_id, cookie))
+}
+
+fn secure_verification_storage_id_for_cookie(user_id: i64, cookie: &str) -> String {
+    let digest = Sha256::digest(cookie.as_bytes());
+    let digest = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{user_id}:{digest}")
+}
+
+fn decode_secure_verification_marker(value: &str, now: i64) -> Option<SecureVerificationMarker> {
+    let marker = serde_json::from_str::<SecureVerificationMarker>(value)
+        .ok()
+        .or_else(|| {
+            // Accept an in-flight marker written by the previous Worker version
+            // for generic gates only. Method-specific gates intentionally reject it.
+            value
+                .parse::<i64>()
+                .ok()
+                .map(|verified_at| SecureVerificationMarker {
+                    method: "legacy".to_string(),
+                    verified_at,
+                })
+        });
+    let Some(marker) = marker else {
+        return None;
+    };
+    let ttl = crate::flow_state::FlowKind::SecureVerify.default_ttl_secs() as i64;
+    let age = now.saturating_sub(marker.verified_at);
+    if age < 0 || age >= ttl {
+        return None;
+    }
+    Some(marker)
+}
+
 /// Step-up gate (item 2.3): returns `Some(403)` when `user_id` has no fresh
 /// secure-verification marker, else `None`. The flow-state entry's 300s TTL IS
 /// the freshness window (Go's `SecureVerificationTimeout`), so mere presence
 /// means verified; `/api/verify` (re)sets it.
 pub async fn require_secure_verification(
+    req: &Request,
     env: &Env,
     user_id: i64,
 ) -> WorkerResult<Option<Response>> {
-    let verified = crate::flow_state::get(
-        env,
-        crate::flow_state::FlowKind::SecureVerify,
-        &user_id.to_string(),
-    )
-    .await?
-    .is_some();
+    let verified = secure_verification_marker(req, env, user_id)
+        .await?
+        .is_some();
     if verified {
         Ok(None)
     } else {
         Ok(Some(envelope_error_response(
             403,
             "secure verification required",
+        )))
+    }
+}
+
+pub(crate) async fn require_secure_verification_method(
+    req: &Request,
+    env: &Env,
+    user_id: i64,
+    method: &str,
+) -> WorkerResult<Option<Response>> {
+    let verified = secure_verification_marker(req, env, user_id)
+        .await?
+        .is_some_and(|marker| marker.method == method);
+    if verified {
+        Ok(None)
+    } else {
+        Ok(Some(envelope_error_response(
+            403,
+            "corresponding secure verification required",
         )))
     }
 }
@@ -959,6 +1080,7 @@ struct PublicRuntimeConfig {
     oidc_backend_configured: bool,
     turnstile_site_key: Option<String>,
     turnstile_check: bool,
+    passkey_ceremony: bool,
 }
 
 impl PublicRuntimeConfig {
@@ -990,6 +1112,9 @@ impl PublicRuntimeConfig {
             oidc_backend_configured,
             turnstile_site_key: runtime_value(env, "TURNSTILE_SITE_KEY"),
             turnstile_check: runtime_value(env, "TURNSTILE_SECRET").is_some(),
+            passkey_ceremony: crate::passkey_ceremony::binding_available(env)
+                && crate::passkey_ceremony::ceremony_contract_compiled()
+                && crate::admin_passkey::finish_contract_compiled(),
         }
     }
 }
@@ -1223,10 +1348,7 @@ fn build_frontend_status(
     );
     let system_name = option_string(options, "SystemName", "CinaToken");
     let passkey_configured = option_bool(options, "passkey.enabled", false);
-    // Do not expose the login button until attestation/assertion finish
-    // verification is implemented. Begin routes are Worker-owned, but finish
-    // handlers fail closed by design.
-    let passkey_login = false;
+    let passkey_login = passkey_configured && runtime.passkey_ceremony;
 
     let compatibility = serde_json::json!({
         "system_name": system_name.clone(),
@@ -1636,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn passkey_status_keeps_login_gated_until_finish_verifier_exists() {
+    fn passkey_status_requires_configuration_and_runtime_contract() {
         let mut options = HashMap::new();
         options.insert("SystemName".to_string(), "CinaToken Test".to_string());
         options.insert("passkey.enabled".to_string(), "true".to_string());
@@ -1646,7 +1768,20 @@ mod tests {
         );
         options.insert("passkey.rp_id".to_string(), "example.com".to_string());
 
-        let data = build_frontend_status(
+        let runtime = PublicRuntimeConfig {
+            passkey_ceremony: true,
+            ..PublicRuntimeConfig::default()
+        };
+        let data =
+            build_frontend_status(cinatoken_api::status("test"), &options, true, &runtime, &[])
+                .unwrap();
+
+        assert_eq!(data["passkey_configured"], true);
+        assert_eq!(data["passkey_display_name"], "CinaToken Passkey");
+        assert_eq!(data["passkey_rp_id"], "example.com");
+        assert_eq!(data["passkey_login"], true);
+
+        let unavailable = build_frontend_status(
             cinatoken_api::status("test"),
             &options,
             true,
@@ -1654,11 +1789,41 @@ mod tests {
             &[],
         )
         .unwrap();
+        assert_eq!(unavailable["passkey_login"], false);
+    }
 
-        assert_eq!(data["passkey_configured"], true);
-        assert_eq!(data["passkey_display_name"], "CinaToken Passkey");
-        assert_eq!(data["passkey_rp_id"], "example.com");
-        assert_eq!(data["passkey_login"], false);
+    #[test]
+    fn secure_verification_markers_preserve_method_and_expiry() {
+        let marker = SecureVerificationMarker {
+            method: SECURE_VERIFICATION_METHOD_PASSKEY.to_string(),
+            verified_at: 1_000,
+        };
+        let encoded = serde_json::to_string(&marker).unwrap();
+        assert_eq!(
+            decode_secure_verification_marker(&encoded, 1_299),
+            Some(marker)
+        );
+        assert!(decode_secure_verification_marker(&encoded, 1_300).is_none());
+        assert!(decode_secure_verification_marker(&encoded, 999).is_none());
+    }
+
+    #[test]
+    fn legacy_secure_verification_marker_is_generic_only() {
+        let marker = decode_secure_verification_marker("1000", 1_001).unwrap();
+        assert_eq!(marker.method, "legacy");
+        assert_eq!(marker.verified_at, 1_000);
+    }
+
+    #[test]
+    fn secure_verification_storage_is_bound_to_exact_session() {
+        let first = secure_verification_storage_id_for_cookie(42, "session-a");
+        let second = secure_verification_storage_id_for_cookie(42, "session-b");
+        let other_user = secure_verification_storage_id_for_cookie(43, "session-a");
+        assert_ne!(first, second);
+        assert_ne!(first, other_user);
+        assert!(first.starts_with("42:"));
+        assert!(!first.contains("session-a"));
+        assert_eq!(first.len(), "42:".len() + 64);
     }
 
     #[test]

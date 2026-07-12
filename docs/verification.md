@@ -2998,3 +2998,16 @@ bun run check
   Anthropic Messages ARE now live-verified via the DeepSeek smoke above).
 - No source SQLite file or SQL DSN is available in the current shell, so real
   source row counts have not been captured yet.
+
+- **Passkey WebAuthn finish and atomic challenge state - locally verified
+  (2026-07-12).** Registration, discoverable login, and authenticated step-up
+  now use a pure Rust ES256/RS256 verifier and the `PasskeyCeremony` Durable
+  Object instead of KV delete-on-read. D1 credential replacement is batched;
+  assertion state uses sign-count CAS; secure verification and authenticated
+  challenge keys are bound to the exact signed browser session. Local evidence:
+  `cargo test -p cinatoken-worker --lib` passed 571/571,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed, and
+  route audit reports 217 frontend calls / 313 Worker routes / 0 missing. The
+  complete `bun run check` repository/frontend/smoke/Wasm gate also passed. This
+  does not claim real-authenticator or deployed Durable Object evidence; use
+  the staging matrix in migration-plan section 22.155 before production.

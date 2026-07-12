@@ -45,6 +45,7 @@ mod task_runner;
 mod mj_repository;
 mod model_meta_api;
 mod operations;
+mod passkey_ceremony;
 mod platform_gateway;
 mod prefill_group_api;
 mod pricing_api;
@@ -52,6 +53,7 @@ mod rankings_api;
 mod ratio_sync;
 mod realtime_session;
 mod turnstile;
+mod webauthn;
 mod wfp_authority_replay;
 mod wfp_tenant;
 

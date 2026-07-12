@@ -3023,13 +3023,119 @@ pub async fn mark_backup_code_used(db: &D1Database, id: i64, now: i64) -> worker
 // Passkey credentials — schema in 0016_passkey_credentials.sql.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct PasskeyCredentialRow {
+    pub id: i64,
+    pub user_id: i64,
     pub credential_id: String,
-    pub transports: String,
-    pub last_used_at: Option<i64>,
+    pub public_key: String,
+    pub attestation_type: String,
+    pub aaguid: String,
+    pub sign_count: u32,
+    pub clone_warning: i32,
+    pub user_present: i32,
+    pub user_verified: i32,
     pub backup_eligible: i32,
     pub backup_state: i32,
+    pub transports: String,
+    pub attachment: String,
+    pub last_used_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub deleted_at: Option<i64>,
+}
+
+/// Validated Passkey credential values written after a registration ceremony.
+/// Binary WebAuthn values use the Go model's standard-base64 representation.
+#[derive(Debug, Clone, Copy)]
+pub struct PasskeyCredentialWrite<'a> {
+    pub user_id: i64,
+    pub credential_id: &'a str,
+    pub public_key: &'a str,
+    pub attestation_type: &'a str,
+    pub aaguid: &'a str,
+    pub sign_count: u32,
+    pub clone_warning: bool,
+    pub user_present: bool,
+    pub user_verified: bool,
+    pub backup_eligible: bool,
+    pub backup_state: bool,
+    pub transports: &'a str,
+    pub attachment: &'a str,
+    pub last_used_at: Option<i64>,
+}
+
+const FIND_PASSKEY_BY_USER_SQL: &str = r#"
+    SELECT id, user_id, credential_id, public_key, attestation_type, aaguid,
+           sign_count, clone_warning, user_present, user_verified,
+           backup_eligible, backup_state, transports, attachment, last_used_at,
+           created_at, updated_at, deleted_at
+    FROM passkey_credentials
+    WHERE user_id = ?1 AND deleted_at IS NULL
+    LIMIT 1
+"#;
+
+const FIND_PASSKEY_BY_CREDENTIAL_ID_SQL: &str = r#"
+    SELECT id, user_id, credential_id, public_key, attestation_type, aaguid,
+           sign_count, clone_warning, user_present, user_verified,
+           backup_eligible, backup_state, transports, attachment, last_used_at,
+           created_at, updated_at, deleted_at
+    FROM passkey_credentials
+    WHERE credential_id = ?1 AND deleted_at IS NULL
+    LIMIT 1
+"#;
+
+const INSERT_PASSKEY_CREDENTIAL_SQL: &str = r#"
+    INSERT INTO passkey_credentials (
+        user_id, credential_id, public_key, attestation_type, aaguid,
+        sign_count, clone_warning, user_present, user_verified,
+        backup_eligible, backup_state, transports, attachment, last_used_at,
+        created_at, updated_at, deleted_at
+    ) VALUES (
+        ?1, ?2, ?3, ?4, ?5,
+        ?6, ?7, ?8, ?9,
+        ?10, ?11, ?12, ?13, ?14,
+        ?15, ?15, NULL
+    )
+"#;
+
+const UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL: &str = r#"
+    UPDATE passkey_credentials
+    SET sign_count = ?1,
+        clone_warning = ?2,
+        user_present = ?3,
+        user_verified = ?4,
+        backup_eligible = ?5,
+        backup_state = ?6,
+        last_used_at = ?7,
+        updated_at = ?7
+    WHERE user_id = ?8
+      AND credential_id = ?9
+      AND sign_count = ?10
+      AND deleted_at IS NULL
+"#;
+
+fn d1_passkey_sign_count(value: u32) -> D1Type<'static> {
+    if value <= i32::MAX as u32 {
+        D1Type::Integer(value as i32)
+    } else {
+        // JavaScript numbers represent the full u32 range exactly.
+        D1Type::Real(value as f64)
+    }
+}
+
+fn d1_passkey_timestamp(value: i64) -> D1Type<'static> {
+    if let Ok(value) = i32::try_from(value) {
+        D1Type::Integer(value)
+    } else {
+        // Unix timestamps remain exactly representable as JavaScript numbers
+        // well beyond the lifetime of this schema.
+        D1Type::Real(value as f64)
+    }
+}
+
+fn d1_optional_timestamp(value: Option<i64>) -> D1Type<'static> {
+    value.map(d1_passkey_timestamp).unwrap_or(D1Type::Null)
 }
 
 /// Return whether the user has a non-deleted Passkey credential. Go reads via
@@ -3058,17 +3164,89 @@ pub async fn find_passkey_by_user(
     db: &D1Database,
     user_id: i64,
 ) -> worker::Result<Option<PasskeyCredentialRow>> {
-    db.prepare(
-        r#"
-        SELECT credential_id, transports, last_used_at, backup_eligible, backup_state
-        FROM passkey_credentials
-        WHERE user_id = ?1 AND deleted_at IS NULL
-        LIMIT 1
-        "#,
-    )
-    .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
-    .first::<PasskeyCredentialRow>(None)
-    .await
+    db.prepare(FIND_PASSKEY_BY_USER_SQL)
+        .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
+        .first::<PasskeyCredentialRow>(None)
+        .await
+}
+
+/// Return an active Passkey credential by its standard-base64 credential id.
+pub async fn find_passkey_by_credential_id(
+    db: &D1Database,
+    credential_id: &str,
+) -> worker::Result<Option<PasskeyCredentialRow>> {
+    db.prepare(FIND_PASSKEY_BY_CREDENTIAL_ID_SQL)
+        .bind_refs(&[D1Type::Text(credential_id)])?
+        .first::<PasskeyCredentialRow>(None)
+        .await
+}
+
+/// Atomically replace the user's single Passkey credential after registration.
+/// The plain insert intentionally fails on a credential id owned by another
+/// user; D1 rolls the preceding delete back with the rest of the batch.
+pub async fn replace_passkey_credential(
+    db: &D1Database,
+    credential: PasskeyCredentialWrite<'_>,
+    now: i64,
+) -> worker::Result<()> {
+    let delete = db
+        .prepare("DELETE FROM passkey_credentials WHERE user_id = ?1")
+        .bind_refs(&[D1Type::Integer(d1_i32(credential.user_id))])?;
+    let args = [
+        D1Type::Integer(d1_i32(credential.user_id)),
+        D1Type::Text(credential.credential_id),
+        D1Type::Text(credential.public_key),
+        D1Type::Text(credential.attestation_type),
+        D1Type::Text(credential.aaguid),
+        d1_passkey_sign_count(credential.sign_count),
+        D1Type::Boolean(credential.clone_warning),
+        D1Type::Boolean(credential.user_present),
+        D1Type::Boolean(credential.user_verified),
+        D1Type::Boolean(credential.backup_eligible),
+        D1Type::Boolean(credential.backup_state),
+        D1Type::Text(credential.transports),
+        D1Type::Text(credential.attachment),
+        d1_optional_timestamp(credential.last_used_at),
+        d1_passkey_timestamp(now),
+    ];
+    let insert = db.prepare(INSERT_PASSKEY_CREDENTIAL_SQL).bind_refs(&args)?;
+    let results = db.batch(vec![delete, insert]).await?;
+    require_batch_change(&results, 1, "passkey credential insert failed")
+}
+
+/// Persist authenticator state after a successful assertion. The previously
+/// read sign counter is an optimistic concurrency guard against stale writes.
+pub async fn update_passkey_after_authentication(
+    db: &D1Database,
+    user_id: i64,
+    credential_id: &str,
+    expected_sign_count: u32,
+    sign_count: u32,
+    clone_warning: bool,
+    user_present: bool,
+    user_verified: bool,
+    backup_eligible: bool,
+    backup_state: bool,
+    now: i64,
+) -> worker::Result<bool> {
+    let args = [
+        d1_passkey_sign_count(sign_count),
+        D1Type::Boolean(clone_warning),
+        D1Type::Boolean(user_present),
+        D1Type::Boolean(user_verified),
+        D1Type::Boolean(backup_eligible),
+        D1Type::Boolean(backup_state),
+        d1_passkey_timestamp(now),
+        D1Type::Integer(d1_i32(user_id)),
+        D1Type::Text(credential_id),
+        d1_passkey_sign_count(expected_sign_count),
+    ];
+    let result = db
+        .prepare(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL)
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
 }
 
 /// Hard-delete all Passkey credentials for the user, matching Go
@@ -9316,6 +9494,70 @@ pub async fn ranking_quota_buckets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passkey_migration_has_go_compatible_fields_and_uniqueness() {
+        let migration = include_str!("../../../migrations/d1/0016_passkey_credentials.sql");
+        for field in [
+            "user_id",
+            "credential_id",
+            "public_key",
+            "attestation_type",
+            "aaguid",
+            "sign_count",
+            "clone_warning",
+            "user_present",
+            "user_verified",
+            "backup_eligible",
+            "backup_state",
+            "transports",
+            "attachment",
+            "last_used_at",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+        ] {
+            assert!(migration.contains(field), "missing Passkey field {field}");
+        }
+        assert!(migration.contains("user_id INTEGER NOT NULL UNIQUE"));
+        assert!(migration.contains("credential_id TEXT NOT NULL UNIQUE"));
+    }
+
+    #[test]
+    fn passkey_queries_are_parameterized_and_ignore_soft_deleted_rows() {
+        assert!(FIND_PASSKEY_BY_USER_SQL.contains("user_id = ?1"));
+        assert!(FIND_PASSKEY_BY_CREDENTIAL_ID_SQL.contains("credential_id = ?1"));
+        assert!(FIND_PASSKEY_BY_USER_SQL.contains("deleted_at IS NULL"));
+        assert!(FIND_PASSKEY_BY_CREDENTIAL_ID_SQL.contains("deleted_at IS NULL"));
+        assert!(INSERT_PASSKEY_CREDENTIAL_SQL.contains("?15, ?15, NULL"));
+        assert!(!INSERT_PASSKEY_CREDENTIAL_SQL.contains("OR REPLACE"));
+    }
+
+    #[test]
+    fn passkey_authentication_update_uses_sign_count_cas() {
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("user_id = ?8"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("credential_id = ?9"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("sign_count = ?10"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("deleted_at IS NULL"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("last_used_at = ?7"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("updated_at = ?7"));
+    }
+
+    #[test]
+    fn passkey_sign_count_preserves_full_u32_range() {
+        assert!(matches!(
+            d1_passkey_sign_count(i32::MAX as u32),
+            D1Type::Integer(i32::MAX)
+        ));
+        assert!(matches!(
+            d1_passkey_sign_count(u32::MAX),
+            D1Type::Real(value) if value == u32::MAX as f64
+        ));
+        assert!(matches!(
+            d1_passkey_timestamp(i64::from(i32::MAX) + 1),
+            D1Type::Real(value) if value == (i64::from(i32::MAX) + 1) as f64
+        ));
+    }
 
     #[test]
     fn realtime_billing_reservation_migration_has_atomic_state_indexes() {

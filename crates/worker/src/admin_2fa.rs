@@ -117,7 +117,7 @@ pub async fn regenerate_backup_codes(req: Request, env: Env) -> WorkerResult<Res
         Ok(claims) => claims,
         Err(response) => return Ok(response),
     };
-    if let Some(response) = require_secure_verification(&env, claims.id).await? {
+    if let Some(response) = require_secure_verification(&req, &env, claims.id).await? {
         return Ok(response);
     }
     let db = env.d1("DB")?;
@@ -250,7 +250,7 @@ pub async fn disable(mut req: Request, env: Env) -> WorkerResult<Response> {
                 ));
             }
         }
-    } else if let Some(response) = require_secure_verification(&env, claims.id).await? {
+    } else if let Some(response) = require_secure_verification(&req, &env, claims.id).await? {
         return Ok(response);
     }
     d1_repositories::delete_two_fa(&db, claims.id).await?;

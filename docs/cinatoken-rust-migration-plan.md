@@ -9642,3 +9642,52 @@ the five-case smoke-contract self-test, missing-worker dry-run, and the complete
 missing binding/script, CPU/subrequest limit, synthetic tenant error,
 normal-relay missing worker, redacted traces, billing refund/audit, and rollback
 with a replacement least-privilege credential.
+
+### 22.155 2026-07-12 Worker-Native Passkey Finish And Atomic Ceremony State
+
+This increment closes the local Passkey/WebAuthn implementation gap while
+keeping production approval separate from compile/unit evidence.
+
+- Added a pure Rust/Wasm WebAuthn verifier for registration with `none`
+  attestation and assertion verification with ES256 (`-7`) and RS256 (`-257`)
+  COSE keys. It bounds every decoded field and validates canonical base64url,
+  client-data type/challenge/exact origin, `crossOrigin`/`topOrigin`, RP ID hash,
+  UP/required-UV, BE/BS invariants, complete CBOR consumption, credential ID,
+  assertion signature, user handle, and sign-counter rollback metadata.
+- Replaced eventually consistent KV challenge consumption with the
+  SQLite-backed `PasskeyCeremony` Durable Object. Each logical ceremony maps to
+  its own deterministic object and a transaction permits exactly one take;
+  expiry is checked synchronously and an alarm removes residual storage.
+  Default, staging, and production Wrangler environments add the
+  `PASSKEY_CEREMONIES` binding and `v5-passkey-ceremony` class migration.
+- Authenticated registration/verify ceremony keys and all secure-verification
+  markers are scoped to `user_id + SHA-256(exact signed session cookie)`.
+  Anonymous login uses the existing HttpOnly, Secure, SameSite=Strict opaque
+  flow cookie. A step-up in one browser therefore cannot unlock another Rust
+  session for the same account.
+- Expanded the D1 repository to the complete Go `passkey_credentials` shape.
+  Registration performs transactional delete+insert for the one-credential
+  model, while login/verify update flags, clone warning, last-used time, and
+  sign count with `user_id + credential_id + old sign_count` CAS.
+- Wired all finish routes. Registration persists the verified COSE key; login
+  checks the enabled live user, updates credential state, and issues the normal
+  Rust session response; verify updates credential state and writes a
+  method-bound Passkey step-up marker. Registration and deletion preserve Go's
+  corresponding-method rule when 2FA is enabled.
+- `/api/status.passkey_login` now requires both `passkey.enabled` and the
+  compiled/bound ceremony runtime. The existing React/Bun WebAuthn payload and
+  login/profile/secure-verification flows required no shape changes.
+
+Local evidence: WebAuthn ES256/RS256 positive vectors and negative
+challenge/origin/flags/CBOR/signature vectors pass; Passkey/DO/D1 focused tests
+pass; all 571 Worker library tests pass; Worker host and wasm32 checks pass;
+frontend route audit remains 217 calls / 313 Worker routes / 0 missing. The
+complete `bun run check` repository/frontend/smoke/Wasm gate also passes.
+
+Production remains Partial. Required staging proof includes real platform and
+cross-platform authenticators, registration/login/step-up/delete, imported Go
+credential login or an approved forced-reset policy, wrong origin/challenge/
+signature negatives, sequential and concurrent replay with exactly one winner,
+same-user multi-session isolation, signature-counter/clone-warning behavior,
+DO eviction/alarm cleanup, redacted logs, rollback, and capability readback.
+The exposed Cloudflare credential was not used and must be revoked/rotated.

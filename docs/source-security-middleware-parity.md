@@ -99,15 +99,18 @@ frontend cutover.
    The Rust session is a signed, immutable cookie set at login. So the
    **turnstile-passed flag and `secure_verified_at` timestamp must live in KV or
    a Durable Object** (short TTL: 300s for secure-verification), keyed by session
-   or user id — not the cookie. Alternatively re-issue the cookie via `Set-Cookie`
+   binding — not only user id. Alternatively re-issue the cookie via `Set-Cookie`
    on the response, but KV/DO is cleaner for short-TTL step-up state (§21.2).
    **Substrate DONE 2026-06-28 (item 2.1):** `crates/worker/src/flow_state.rs` is
    the `CACHE_KV`-backed store — namespaced keys (`flow:secure_verify:*`,
-   `flow:turnstile:*`, `flow:oauth_state:*`, `flow:passkey_challenge:*`,
-   `flow:2fa_pending:*`), per-kind TTLs (secure-verify/2fa/passkey 300s, oauth
+   `flow:turnstile:*`, `flow:oauth_state:*`, `flow:2fa_pending:*`), per-kind
+   TTLs (secure-verify/2fa 300s, oauth
    600s, turnstile 1800s), and `take()` delete-on-read for single-use tokens.
    Pure key/TTL logic is host-tested; consumers (secure-verify, Turnstile, 2FA)
-   wire in following increments.
+   wire in following increments. Passkey challenges moved to the dedicated
+   strongly consistent `PasskeyCeremony` DO on 2026-07-12; secure-verification
+   keys are now bound to `user_id + SHA-256(session cookie)` so one browser's
+   step-up cannot unlock another session for the same account.
 2. **Turnstile is once-per-session in Go.** Preserve the semantics: cache the
    passed flag (KV/DO) so a user isn't re-challenged every critical action within
    the session, or deliberately re-challenge per action and document the change.

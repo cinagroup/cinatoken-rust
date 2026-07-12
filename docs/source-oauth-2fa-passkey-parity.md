@@ -124,9 +124,8 @@ lock) / `reset_two_fa_attempts` on success, returning `Verified` / `Invalid` /
 `Locked{until}` (callers map Locked -> 429). `POST /api/user/2fa/backup-codes`
 regenerates the code set (secure-verify gated).
 
-**Remaining (follow-ups):** admin 2FA stats/disable; Passkey/WebAuthn finish
-verification (needs a WASM-compatible WebAuthn verifier or a service-binding /
-Container verifier).
+**Remaining (follow-ups):** admin 2FA stats/disable and deployed 2FA/Passkey
+browser evidence.
 
 ## Passkey / WebAuthn
 
@@ -143,15 +142,17 @@ Container verifier).
   (`requireSecureVerificationMethod` -> `docs/source-security-middleware-parity.md`).
 - Credentials persist in `passkey_credentials`.
 
-Migration: the **challenge/SessionData -> KV/DO short TTL**, single-use (pop =
-delete-on-read). Rust now uses `flow_state::PasskeyChallenge` for
-registration/verify and an HttpOnly short-TTL login flow cookie for anonymous
-login begin/finish correlation. The Go `go-webauthn` library has no direct WASM
-equivalent — use a WASM-compatible WebAuthn verify (assertion/attestation
-verification over Web Crypto) if one exists, **else run the WebAuthn ceremony in
-a Cloudflare Container or service binding (§21.4)** (migration-plan §7.12).
+Migration: every challenge is held by a per-ceremony `PasskeyCeremony` Durable
+Object with a 300-second TTL and transactional one-winner consumption. Logged-in
+register/verify keys are bound to a hash of the exact Rust session cookie;
+anonymous login uses an HttpOnly, Secure, SameSite=Strict correlation cookie.
+The Worker-native verifier accepts `none` attestation and validates ES256 or
+RS256 COSE keys, client type/challenge/origin, RP ID hash, UP/UV, backup flags,
+credential ID, assertion signature, user handle, and signature counter before
+D1/session/step-up mutation. D1 preserves the Go standard-base64 credential
+format and uses a sign-counter compare-and-swap on assertion updates.
 RPID/RPOrigins derive from `passkey.*` options, `ServerAddress`, or the deploy
-origin.
+origin, and each begin request must match the configured origin allowlist.
 
 ## The Recurring Finding (consolidated)
 
@@ -190,18 +191,17 @@ Per the matrices, OAuth/Passkey/2FA are `Partial`. Checklist:
    state, secret generation + persistence, single-use backup-code hashing
    (bcrypt via `crate::password`) + the `/user/login/2fa` flow + admin
    stats/disable with audit.
-3. Passkey: **route boundary + begin challenge DONE 2026-07-04** — status,
-   delete, register/login/verify begin, and fail-closed finish routes are
-   Worker-owned. Begin routes generate WebAuthn publicKey options, read RP
-   config from `passkey.*`, write short-TTL KV challenge state, and avoid global
-   request state. **Remaining**: choose and implement WASM WebAuthn vs
-   service-binding/Container verifier; finish routes must validate
-   attestation/assertion signatures, challenge, origin/RPID, credential id,
-   user handle, sign count, and credential import/update before any success.
+3. Passkey: **Worker-native finish implementation DONE 2026-07-12** — status,
+   delete, register/login/verify begin+finish, D1 credential replacement/CAS,
+   session issuance, and method-bound step-up are Worker-owned. Challenges use
+   the SQLite-backed `PasskeyCeremony` DO rather than eventually consistent KV.
+   ES256/RS256 host vectors and Worker/Wasm compilation are local evidence;
+   real platform/authenticator browser ceremonies remain a staging gate.
 4. Decide and document forced re-enroll vs credential import per credential type.
-5. Staging smoke: OAuth state replay rejection, 2FA login + backup code,
-   Passkey begin routes, finish fail-closed behavior before verifier, then full
-   Passkey register/login/verify and step-up gating after verifier lands.
+5. Staging smoke: OAuth state replay rejection, 2FA login + backup code, and
+   full Passkey registration/login/verify with platform and cross-platform
+   authenticators, wrong-origin/challenge/signature rejection, sequential and
+   concurrent challenge replay, session isolation, counter update, and rollback.
 
 ## Wire-In
 

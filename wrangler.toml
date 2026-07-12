@@ -141,6 +141,10 @@ class_name = "TaskRunner"
 name = "WFP_AUTHORITY_REPLAY"
 class_name = "WfpAuthorityReplay"
 
+[[durable_objects.bindings]]
+name = "PASSKEY_CEREMONIES"
+class_name = "PasskeyCeremony"
+
 [[migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -156,6 +160,10 @@ new_sqlite_classes = ["TaskRunner"]
 [[migrations]]
 tag = "v4-wfp-authority-replay"
 new_sqlite_classes = ["WfpAuthorityReplay"]
+
+[[migrations]]
+tag = "v5-passkey-ceremony"
+new_sqlite_classes = ["PasskeyCeremony"]
 
 # ---------------------------------------------------------------------------
 # Staging environment.
@@ -270,6 +278,10 @@ class_name = "TaskRunner"
 name = "WFP_AUTHORITY_REPLAY"
 class_name = "WfpAuthorityReplay"
 
+[[env.staging.durable_objects.bindings]]
+name = "PASSKEY_CEREMONIES"
+class_name = "PasskeyCeremony"
+
 [[env.staging.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -285,6 +297,10 @@ new_sqlite_classes = ["TaskRunner"]
 [[env.staging.migrations]]
 tag = "v4-wfp-authority-replay"
 new_sqlite_classes = ["WfpAuthorityReplay"]
+
+[[env.staging.migrations]]
+tag = "v5-passkey-ceremony"
+new_sqlite_classes = ["PasskeyCeremony"]
 
 # ---------------------------------------------------------------------------
 # Production environment.
@@ -401,6 +417,10 @@ class_name = "TaskRunner"
 name = "WFP_AUTHORITY_REPLAY"
 class_name = "WfpAuthorityReplay"
 
+[[env.production.durable_objects.bindings]]
+name = "PASSKEY_CEREMONIES"
+class_name = "PasskeyCeremony"
+
 [[env.production.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -416,3 +436,7 @@ new_sqlite_classes = ["TaskRunner"]
 [[env.production.migrations]]
 tag = "v4-wfp-authority-replay"
 new_sqlite_classes = ["WfpAuthorityReplay"]
+
+[[env.production.migrations]]
+tag = "v5-passkey-ceremony"
+new_sqlite_classes = ["PasskeyCeremony"]

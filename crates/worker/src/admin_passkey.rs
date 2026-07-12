@@ -1,24 +1,28 @@
 //! Passkey/WebAuthn route boundary.
 //!
-//! This module ports the frontend-visible route surface and the safe half of
-//! the WebAuthn ceremony to Workers: status, delete, and begin/challenge
-//! generation. The finish handlers deliberately fail closed until a Worker-safe
-//! verifier (or service binding/Container verifier) validates attestation and
-//! assertion signatures. Accepting finish payloads without cryptographic
-//! verification would be worse than leaving the route absent.
+//! Challenges are stored in a per-ceremony Durable Object for atomic one-time
+//! consumption. Finish handlers validate the complete WebAuthn ceremony before
+//! changing D1 credentials, issuing sessions, or granting step-up state.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
+use cinatoken_auth::USER_STATUS_ENABLED;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::admin::{
-    admin_audit_info, envelope_error_response, envelope_ok_response, read_json_body,
-    require_secure_verification, require_user_auth, unix_timestamp,
+    admin_audit_info, attach_session_cookie, envelope_error_response, envelope_ok_response,
+    mark_secure_verification, read_json_body, require_secure_verification_method,
+    require_user_auth, session_binding_id, session_claims_from_user, session_codec, unix_timestamp,
+    SECURE_VERIFICATION_METHOD_2FA, SECURE_VERIFICATION_METHOD_PASSKEY,
 };
-use crate::d1_repositories::{self, PasskeyCredentialRow};
-use crate::flow_state::{self, FlowKind};
+use crate::d1_repositories::{self, PasskeyCredentialRow, PasskeyCredentialWrite};
+use crate::passkey_ceremony::{self, PasskeyCeremonyError};
+use crate::webauthn::{
+    self, AssertionCredential, CeremonyExpectation, RegistrationCredential, StoredCredential,
+    VerifiedAssertion,
+};
 
 const PASSKEY_OPTION_KEYS: &[&str] = &[
     "passkey.enabled",
@@ -33,6 +37,7 @@ const PASSKEY_OPTION_KEYS: &[&str] = &[
 ];
 const PASSKEY_TIMEOUT_MS: u32 = 120_000;
 const PASSKEY_CHALLENGE_BYTES: usize = 32;
+const PASSKEY_CHALLENGE_TTL_SECONDS: u64 = 300;
 const PASSKEY_LOGIN_COOKIE: &str = "passkey_challenge";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -53,6 +58,7 @@ struct PasskeyChallengeState {
     challenge: String,
     rp_id: String,
     origin: String,
+    user_verification: String,
     issued_at: i64,
 }
 
@@ -89,7 +95,13 @@ pub async fn delete(req: Request, env: Env) -> WorkerResult<Response> {
             "this user has not bound Passkey",
         ));
     }
-    if let Some(response) = require_secure_verification(&env, claims.id).await? {
+    let verification_method = match d1_repositories::find_two_fa_by_user(&db, claims.id).await? {
+        Some(two_fa) if two_fa.is_enabled != 0 => SECURE_VERIFICATION_METHOD_2FA,
+        _ => SECURE_VERIFICATION_METHOD_PASSKEY,
+    };
+    if let Some(response) =
+        require_secure_verification_method(&req, &env, claims.id, verification_method).await?
+    {
         return Ok(response);
     }
     d1_repositories::delete_passkey_by_user(&db, claims.id).await?;
@@ -118,9 +130,20 @@ pub async fn register_begin(req: Request, env: Env) -> WorkerResult<Response> {
     if !settings.enabled {
         return Ok(passkey_disabled_response());
     }
+    let origin = match validated_ceremony_origin(&settings, &req) {
+        Ok(origin) => origin,
+        Err(response) => return Ok(response),
+    };
     if let Some(two_fa) = d1_repositories::find_two_fa_by_user(&db, claims.id).await? {
         if two_fa.is_enabled != 0 {
-            if let Some(response) = require_secure_verification(&env, claims.id).await? {
+            if let Some(response) = require_secure_verification_method(
+                &req,
+                &env,
+                claims.id,
+                SECURE_VERIFICATION_METHOD_2FA,
+            )
+            .await?
+            {
                 return Ok(response);
             }
         }
@@ -132,16 +155,23 @@ pub async fn register_begin(req: Request, env: Env) -> WorkerResult<Response> {
         ));
     };
     let existing = d1_repositories::find_passkey_by_user(&db, claims.id).await?;
+    let ceremony_key = match authenticated_challenge_key(&req, "register", claims.id) {
+        Ok(key) => key,
+        Err(response) => return Ok(response),
+    };
     let challenge = new_challenge()?;
     let state = PasskeyChallengeState {
         flow: "register".to_string(),
         user_id: Some(claims.id),
         challenge: challenge.clone(),
         rp_id: settings.rp_id.clone(),
-        origin: settings.primary_origin(),
+        origin,
+        user_verification: settings.user_verification.clone(),
         issued_at: unix_timestamp(),
     };
-    put_challenge(&env, &challenge_key("register", claims.id), &state).await?;
+    if let Err(response) = put_challenge(&env, &ceremony_key, &state).await {
+        return Ok(response);
+    }
     envelope_ok_response(&json!({
         "options": {
             "publicKey": creation_options(&settings, &user.username, &user.display_name, user.id, &challenge, existing.as_ref())
@@ -154,23 +184,104 @@ pub async fn register_finish(mut req: Request, env: Env) -> WorkerResult<Respons
         Ok(claims) => claims,
         Err(response) => return Ok(response),
     };
-    if let Err(response) = read_json_body(&mut req).await {
-        return Ok(response);
+    let db = env.d1("DB")?;
+    let ceremony_key = match authenticated_challenge_key(&req, "register", claims.id) {
+        Ok(key) => key,
+        Err(response) => return Ok(response),
+    };
+    let settings = passkey_settings(&db, &req).await?;
+    if !settings.enabled {
+        return Ok(passkey_disabled_response());
     }
-    if flow_state::take(
-        &env,
-        FlowKind::PasskeyChallenge,
-        &challenge_key("register", claims.id),
-    )
-    .await?
-    .is_none()
-    {
+    if let Some(two_fa) = d1_repositories::find_two_fa_by_user(&db, claims.id).await? {
+        if two_fa.is_enabled != 0 {
+            if let Some(response) = require_secure_verification_method(
+                &req,
+                &env,
+                claims.id,
+                SECURE_VERIFICATION_METHOD_2FA,
+            )
+            .await?
+            {
+                return Ok(response);
+            }
+        }
+    }
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let state = match take_challenge(&env, &ceremony_key).await {
+        Ok(state) => state,
+        Err(response) => return Ok(response),
+    };
+    if !valid_challenge_state(&state, "register", Some(claims.id)) {
         return Ok(envelope_error_response(
             400,
-            "Passkey registration challenge expired; start again",
+            "Passkey registration challenge is invalid; start again",
         ));
     }
-    Ok(passkey_finish_unavailable_response())
+    let credential: RegistrationCredential = match serde_json::from_value(body) {
+        Ok(credential) => credential,
+        Err(_) => {
+            return Ok(envelope_error_response(
+                400,
+                "invalid Passkey registration response",
+            ))
+        }
+    };
+    let verified = match webauthn::verify_registration(&credential, &ceremony_expectation(&state)) {
+        Ok(verified) => verified,
+        Err(err) => return Ok(webauthn_failure_response("registration", err)),
+    };
+    let credential_id = STANDARD.encode(&verified.credential_id);
+    let public_key = STANDARD.encode(&verified.public_key_cose);
+    let aaguid = STANDARD.encode(verified.aaguid);
+    let transports = serde_json::to_string(&verified.transports).map_err(|err| {
+        worker::Error::RustError(format!("failed to encode Passkey transports: {err}"))
+    })?;
+    let attachment = verified.authenticator_attachment.as_deref().unwrap_or("");
+    let now = unix_timestamp();
+    let write = PasskeyCredentialWrite {
+        user_id: claims.id,
+        credential_id: &credential_id,
+        public_key: &public_key,
+        attestation_type: verified.attestation_format,
+        aaguid: &aaguid,
+        sign_count: verified.sign_count,
+        clone_warning: false,
+        user_present: verified.user_present,
+        user_verified: verified.user_verified,
+        backup_eligible: verified.backup_eligible,
+        backup_state: verified.backup_state,
+        transports: &transports,
+        attachment,
+        last_used_at: None,
+    };
+    if let Err(err) = d1_repositories::replace_passkey_credential(&db, write, now).await {
+        worker::console_error!(
+            "failed to persist Passkey registration for user {}: {}",
+            claims.id,
+            err
+        );
+        return Ok(envelope_error_response(
+            500,
+            "failed to persist Passkey credential",
+        ));
+    }
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        Some(&claims.username),
+        &claims.username,
+        "user.passkey_register",
+        &format!("user {} registered a Passkey", claims.username),
+        &json!({"id": claims.id, "username": claims.username.clone()}),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+    envelope_ok_response(&json!({"registered": true}))
 }
 
 pub async fn login_begin(req: Request, env: Env) -> WorkerResult<Response> {
@@ -179,6 +290,10 @@ pub async fn login_begin(req: Request, env: Env) -> WorkerResult<Response> {
     if !settings.enabled {
         return Ok(passkey_disabled_response());
     }
+    let origin = match validated_ceremony_origin(&settings, &req) {
+        Ok(origin) => origin,
+        Err(response) => return Ok(response),
+    };
     let challenge = new_challenge()?;
     let Some(flow_id) = crate::admin_2fa::new_pending_token() else {
         return Ok(envelope_error_response(
@@ -191,10 +306,15 @@ pub async fn login_begin(req: Request, env: Env) -> WorkerResult<Response> {
         user_id: None,
         challenge: challenge.clone(),
         rp_id: settings.rp_id.clone(),
-        origin: settings.primary_origin(),
+        origin,
+        user_verification: settings.user_verification.clone(),
         issued_at: unix_timestamp(),
     };
-    put_challenge(&env, &challenge_key_by_flow_id("login", &flow_id), &state).await?;
+    if let Err(response) =
+        put_challenge(&env, &challenge_key_by_flow_id("login", &flow_id), &state).await
+    {
+        return Ok(response);
+    }
     let mut response = envelope_ok_response(&json!({
         "options": {
             "publicKey": request_options(&settings, &challenge, None)
@@ -204,41 +324,126 @@ pub async fn login_begin(req: Request, env: Env) -> WorkerResult<Response> {
         "Set-Cookie",
         &format!(
             "{PASSKEY_LOGIN_COOKIE}={flow_id}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict; Secure",
-            FlowKind::PasskeyChallenge.default_ttl_secs()
+            PASSKEY_CHALLENGE_TTL_SECONDS
         ),
     )?;
     Ok(response)
 }
 
 pub async fn login_finish(mut req: Request, env: Env) -> WorkerResult<Response> {
-    if let Err(response) = read_json_body(&mut req).await {
-        return Ok(response);
-    }
     let Some(flow_id) = passkey_login_cookie(&req) else {
         return Ok(envelope_error_response(
             400,
             "Passkey login challenge expired; start again",
         ));
     };
-    if flow_state::take(
-        &env,
-        FlowKind::PasskeyChallenge,
-        &challenge_key_by_flow_id("login", &flow_id),
-    )
-    .await?
-    .is_none()
-    {
-        return Ok(envelope_error_response(
+    let db = env.d1("DB")?;
+    let settings = passkey_settings(&db, &req).await?;
+    if !settings.enabled {
+        return clear_passkey_login_cookie(passkey_disabled_response());
+    }
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return clear_passkey_login_cookie(response),
+    };
+    let state = match take_challenge(&env, &challenge_key_by_flow_id("login", &flow_id)).await {
+        Ok(state) => state,
+        Err(response) => return clear_passkey_login_cookie(response),
+    };
+    if !valid_challenge_state(&state, "login", None) {
+        return clear_passkey_login_cookie(envelope_error_response(
             400,
-            "Passkey login challenge expired; start again",
+            "Passkey login challenge is invalid; start again",
         ));
     }
-    let mut response = passkey_finish_unavailable_response();
-    response.headers_mut().append(
-        "Set-Cookie",
-        &format!("{PASSKEY_LOGIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure"),
-    )?;
-    Ok(response)
+    let credential: AssertionCredential = match serde_json::from_value(body) {
+        Ok(credential) => credential,
+        Err(_) => {
+            return clear_passkey_login_cookie(envelope_error_response(
+                400,
+                "invalid Passkey authentication response",
+            ))
+        }
+    };
+    let Some((raw_credential_id, stored_credential_id)) = browser_credential_id(&credential.raw_id)
+    else {
+        return clear_passkey_login_cookie(envelope_error_response(
+            401,
+            "Passkey authentication failed",
+        ));
+    };
+    let Some(stored) =
+        d1_repositories::find_passkey_by_credential_id(&db, &stored_credential_id).await?
+    else {
+        return clear_passkey_login_cookie(envelope_error_response(
+            401,
+            "Passkey authentication failed",
+        ));
+    };
+    let Some(user) = d1_repositories::find_user_by_id(&db, stored.user_id).await? else {
+        return clear_passkey_login_cookie(envelope_error_response(
+            401,
+            "Passkey authentication failed",
+        ));
+    };
+    if user.status != USER_STATUS_ENABLED {
+        return clear_passkey_login_cookie(envelope_error_response(403, "user is disabled"));
+    }
+    let verified = match verify_assertion(&credential, &state, &stored, &raw_credential_id) {
+        Ok(verified) => verified,
+        Err(response) => return clear_passkey_login_cookie(response),
+    };
+    if verified
+        .user_handle
+        .as_deref()
+        .is_some_and(|handle| handle != user.id.to_string().as_bytes())
+    {
+        return clear_passkey_login_cookie(envelope_error_response(
+            401,
+            "Passkey authentication failed",
+        ));
+    }
+    let now = unix_timestamp();
+    if let Err(response) =
+        persist_assertion(&db, &stored, &verified, &stored.credential_id, now).await
+    {
+        return clear_passkey_login_cookie(response);
+    }
+    let codec = match session_codec(&env)? {
+        Ok(codec) => codec,
+        Err(response) => return clear_passkey_login_cookie(response),
+    };
+    let cookie_value = match codec.issue(session_claims_from_user(&user), now) {
+        Ok(value) => value,
+        Err(err) => {
+            worker::console_error!(
+                "failed to issue Passkey session for user {}: {}",
+                user.id,
+                err
+            );
+            return clear_passkey_login_cookie(envelope_error_response(
+                500,
+                "failed to issue session",
+            ));
+        }
+    };
+    if let Err(err) = d1_repositories::update_last_login_at(&db, user.id, now).await {
+        worker::console_warn!(
+            "failed to update Passkey last_login_at for user {}: {}",
+            user.id,
+            err
+        );
+    }
+    let mut response = envelope_ok_response(&json!({
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "role": user.role,
+        "status": user.status,
+        "group": user.group,
+    }))?;
+    attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
+    clear_passkey_login_cookie(response)
 }
 
 pub async fn verify_begin(req: Request, env: Env) -> WorkerResult<Response> {
@@ -251,11 +456,19 @@ pub async fn verify_begin(req: Request, env: Env) -> WorkerResult<Response> {
     if !settings.enabled {
         return Ok(passkey_disabled_response());
     }
+    let origin = match validated_ceremony_origin(&settings, &req) {
+        Ok(origin) => origin,
+        Err(response) => return Ok(response),
+    };
     let Some(credential) = d1_repositories::find_passkey_by_user(&db, claims.id).await? else {
         return Ok(envelope_error_response(
             200,
             "this user has not bound Passkey",
         ));
+    };
+    let ceremony_key = match authenticated_challenge_key(&req, "verify", claims.id) {
+        Ok(key) => key,
+        Err(response) => return Ok(response),
     };
     let challenge = new_challenge()?;
     let state = PasskeyChallengeState {
@@ -263,10 +476,13 @@ pub async fn verify_begin(req: Request, env: Env) -> WorkerResult<Response> {
         user_id: Some(claims.id),
         challenge: challenge.clone(),
         rp_id: settings.rp_id.clone(),
-        origin: settings.primary_origin(),
+        origin,
+        user_verification: settings.user_verification.clone(),
         issued_at: unix_timestamp(),
     };
-    put_challenge(&env, &challenge_key("verify", claims.id), &state).await?;
+    if let Err(response) = put_challenge(&env, &ceremony_key, &state).await {
+        return Ok(response);
+    }
     envelope_ok_response(&json!({
         "options": {
             "publicKey": request_options(&settings, &challenge, Some(&credential))
@@ -279,23 +495,85 @@ pub async fn verify_finish(mut req: Request, env: Env) -> WorkerResult<Response>
         Ok(claims) => claims,
         Err(response) => return Ok(response),
     };
-    if let Err(response) = read_json_body(&mut req).await {
-        return Ok(response);
+    let db = env.d1("DB")?;
+    let ceremony_key = match authenticated_challenge_key(&req, "verify", claims.id) {
+        Ok(key) => key,
+        Err(response) => return Ok(response),
+    };
+    let settings = passkey_settings(&db, &req).await?;
+    if !settings.enabled {
+        return Ok(passkey_disabled_response());
     }
-    if flow_state::take(
-        &env,
-        FlowKind::PasskeyChallenge,
-        &challenge_key("verify", claims.id),
-    )
-    .await?
-    .is_none()
-    {
+    let body = match read_json_body(&mut req).await {
+        Ok(body) => body,
+        Err(response) => return Ok(response),
+    };
+    let state = match take_challenge(&env, &ceremony_key).await {
+        Ok(state) => state,
+        Err(response) => return Ok(response),
+    };
+    if !valid_challenge_state(&state, "verify", Some(claims.id)) {
         return Ok(envelope_error_response(
             400,
-            "Passkey verification challenge expired; start again",
+            "Passkey verification challenge is invalid; start again",
         ));
     }
-    Ok(passkey_finish_unavailable_response())
+    let credential: AssertionCredential = match serde_json::from_value(body) {
+        Ok(credential) => credential,
+        Err(_) => {
+            return Ok(envelope_error_response(
+                400,
+                "invalid Passkey verification response",
+            ))
+        }
+    };
+    let Some(stored) = d1_repositories::find_passkey_by_user(&db, claims.id).await? else {
+        return Ok(envelope_error_response(
+            200,
+            "this user has not bound Passkey",
+        ));
+    };
+    let Some((raw_credential_id, _)) = browser_credential_id(&credential.raw_id) else {
+        return Ok(envelope_error_response(401, "Passkey verification failed"));
+    };
+    let verified = match verify_assertion(&credential, &state, &stored, &raw_credential_id) {
+        Ok(verified) => verified,
+        Err(response) => return Ok(response),
+    };
+    if verified
+        .user_handle
+        .as_deref()
+        .is_some_and(|handle| handle != claims.id.to_string().as_bytes())
+    {
+        return Ok(envelope_error_response(401, "Passkey verification failed"));
+    }
+    let now = unix_timestamp();
+    if let Err(response) =
+        persist_assertion(&db, &stored, &verified, &stored.credential_id, now).await
+    {
+        return Ok(response);
+    }
+    mark_secure_verification(
+        &req,
+        &env,
+        claims.id,
+        SECURE_VERIFICATION_METHOD_PASSKEY,
+        now,
+    )
+    .await?;
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        Some(claims.id),
+        Some(&claims.username),
+        &claims.username,
+        "user.passkey_verify",
+        &format!("user {} completed Passkey verification", claims.username),
+        &json!({"id": claims.id, "username": claims.username.clone()}),
+        &admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+    envelope_ok_response(&json!({"verified": true}))
 }
 
 fn status_from_credential(credential: Option<&PasskeyCredentialRow>) -> PasskeyStatusResponse {
@@ -412,7 +690,7 @@ fn resolve_origins(
     }
     origins
         .into_iter()
-        .filter(|origin| allow_insecure || !origin.to_ascii_lowercase().starts_with("http://"))
+        .filter_map(|origin| normalize_origin(&origin, allow_insecure))
         .collect()
 }
 
@@ -439,10 +717,55 @@ fn split_origins(raw: Option<&str>) -> Vec<String> {
 
 fn request_origin(req: &Request) -> Option<String> {
     if let Ok(Some(origin)) = req.headers().get("Origin") {
-        return Some(origin);
+        return normalize_origin(&origin, true);
     }
     let url = req.url().ok()?;
-    Some(format!("{}://{}", url.scheme(), url.host_str()?))
+    let origin = url.origin().ascii_serialization();
+    (origin != "null").then_some(origin)
+}
+
+fn normalize_origin(value: &str, allow_insecure: bool) -> Option<String> {
+    let parsed = url::Url::parse(value.trim()).ok()?;
+    let scheme_allowed =
+        parsed.scheme() == "https" || (allow_insecure && parsed.scheme() == "http");
+    if !scheme_allowed || parsed.host_str().is_none() {
+        return None;
+    }
+    let origin = parsed.origin().ascii_serialization();
+    (origin != "null").then_some(origin)
+}
+
+fn validated_ceremony_origin(
+    settings: &PasskeySettings,
+    req: &Request,
+) -> std::result::Result<String, Response> {
+    if settings.rp_id.trim().is_empty() || settings.origins.is_empty() {
+        return Err(envelope_error_response(
+            503,
+            "Passkey relying party configuration is incomplete",
+        ));
+    }
+    let Some(origin) = request_origin(req) else {
+        return Err(envelope_error_response(400, "request origin is invalid"));
+    };
+    if !settings.origins.iter().any(|allowed| allowed == &origin) {
+        return Err(envelope_error_response(
+            403,
+            "request origin is not allowed for Passkey",
+        ));
+    }
+    let origin_host = url::Url::parse(&origin)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
+        .unwrap_or_default();
+    let rp_id = settings.rp_id.trim().to_ascii_lowercase();
+    if origin_host != rp_id && !origin_host.ends_with(&format!(".{rp_id}")) {
+        return Err(envelope_error_response(
+            503,
+            "Passkey RP ID does not match the configured origin",
+        ));
+    }
+    Ok(origin)
 }
 
 fn creation_options(
@@ -518,22 +841,43 @@ fn credential_descriptor(credential: &PasskeyCredentialRow) -> Option<Value> {
 }
 
 fn split_transports(raw: &str) -> Vec<String> {
-    raw.split([',', ';', ' '])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect()
+    if let Ok(values) = serde_json::from_str::<Vec<String>>(raw) {
+        return normalize_stored_transports(values);
+    }
+    normalize_stored_transports(raw.split([',', ';', ' ']).map(str::to_string))
+}
+
+fn normalize_stored_transports(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut result = Vec::new();
+    for value in values {
+        let value = value.trim().to_string();
+        if value.is_empty()
+            || value.len() > 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            || result.contains(&value)
+        {
+            continue;
+        }
+        result.push(value);
+        if result.len() == 16 {
+            break;
+        }
+    }
+    result
 }
 
 fn credential_id_to_base64url(value: &str) -> Option<String> {
     let value = value.trim();
-    if value.is_empty() {
+    if value.is_empty() || value.len() > ((webauthn::MAX_CREDENTIAL_ID_BYTES + 2) / 3 * 4 + 2) {
         return None;
     }
     STANDARD
         .decode(value.as_bytes())
         .or_else(|_| URL_SAFE_NO_PAD.decode(value.as_bytes()))
         .ok()
+        .filter(|bytes| bytes.len() <= webauthn::MAX_CREDENTIAL_ID_BYTES)
         .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
 }
 
@@ -544,15 +888,215 @@ fn new_challenge() -> WorkerResult<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-async fn put_challenge(env: &Env, key: &str, state: &PasskeyChallengeState) -> WorkerResult<()> {
-    let payload = serde_json::to_string(state).map_err(|err| {
-        worker::Error::RustError(format!("failed to encode Passkey challenge: {err}"))
-    })?;
-    flow_state::put(env, FlowKind::PasskeyChallenge, key, &payload).await
+async fn put_challenge(
+    env: &Env,
+    key: &str,
+    state: &PasskeyChallengeState,
+) -> std::result::Result<(), Response> {
+    let payload = serde_json::to_string(state)
+        .map_err(|_| envelope_error_response(500, "failed to encode Passkey challenge"))?;
+    passkey_ceremony::put_json(env, key, &payload, PASSKEY_CHALLENGE_TTL_SECONDS)
+        .await
+        .map_err(challenge_error_response)
 }
 
-fn challenge_key(flow: &str, user_id: i64) -> String {
-    format!("{flow}:{user_id}")
+async fn take_challenge(
+    env: &Env,
+    key: &str,
+) -> std::result::Result<PasskeyChallengeState, Response> {
+    let payload = passkey_ceremony::take_json(env, key)
+        .await
+        .map_err(challenge_error_response)?;
+    serde_json::from_str(&payload)
+        .map_err(|_| envelope_error_response(400, "Passkey challenge state is invalid"))
+}
+
+fn challenge_error_response(error: PasskeyCeremonyError) -> Response {
+    match error {
+        PasskeyCeremonyError::ExpiredOrConsumed => envelope_error_response(
+            400,
+            "Passkey challenge expired or was already consumed; start again",
+        ),
+        PasskeyCeremonyError::BindingUnavailable => {
+            envelope_error_response(503, "Passkey ceremony service is not configured")
+        }
+        PasskeyCeremonyError::InvalidRequest(_) => {
+            worker::console_error!("invalid internal Passkey ceremony request");
+            envelope_error_response(500, "failed to process Passkey challenge")
+        }
+        PasskeyCeremonyError::Unavailable(_) => {
+            worker::console_error!("Passkey ceremony Durable Object is unavailable");
+            envelope_error_response(503, "Passkey ceremony service is unavailable")
+        }
+    }
+}
+
+fn valid_challenge_state(state: &PasskeyChallengeState, flow: &str, user_id: Option<i64>) -> bool {
+    valid_challenge_state_at(state, flow, user_id, unix_timestamp())
+}
+
+fn valid_challenge_state_at(
+    state: &PasskeyChallengeState,
+    flow: &str,
+    user_id: Option<i64>,
+    now: i64,
+) -> bool {
+    let age = now.saturating_sub(state.issued_at);
+    state.flow == flow
+        && state.user_id == user_id
+        && !state.challenge.is_empty()
+        && !state.rp_id.is_empty()
+        && !state.origin.is_empty()
+        && matches!(
+            state.user_verification.as_str(),
+            "required" | "preferred" | "discouraged"
+        )
+        && age >= 0
+        && age < PASSKEY_CHALLENGE_TTL_SECONDS as i64
+}
+
+fn ceremony_expectation(state: &PasskeyChallengeState) -> CeremonyExpectation<'_> {
+    CeremonyExpectation {
+        challenge: &state.challenge,
+        origin: &state.origin,
+        rp_id: &state.rp_id,
+        require_user_verification: state.user_verification == "required",
+    }
+}
+
+fn webauthn_failure_response(flow: &str, error: webauthn::WebauthnError) -> Response {
+    worker::console_warn!("Passkey {} verification rejected: {}", flow, error.code());
+    envelope_error_response(401, &format!("Passkey {flow} verification failed"))
+}
+
+fn browser_credential_id(value: &str) -> Option<(Vec<u8>, String)> {
+    if value.is_empty()
+        || value.len() > (webauthn::MAX_CREDENTIAL_ID_BYTES + 2) / 3 * 4
+        || value.contains('=')
+    {
+        return None;
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(value.as_bytes()).ok()?;
+    if bytes.is_empty()
+        || bytes.len() > webauthn::MAX_CREDENTIAL_ID_BYTES
+        || URL_SAFE_NO_PAD.encode(&bytes) != value
+    {
+        return None;
+    }
+    let standard = STANDARD.encode(&bytes);
+    Some((bytes, standard))
+}
+
+fn decode_stored_binary(value: &str, max_decoded_len: usize) -> Option<Vec<u8>> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > ((max_decoded_len + 2) / 3 * 4 + 2) {
+        return None;
+    }
+    let decoded = STANDARD
+        .decode(value.as_bytes())
+        .or_else(|_| URL_SAFE_NO_PAD.decode(value.as_bytes()))
+        .ok()?;
+    (decoded.len() <= max_decoded_len).then_some(decoded)
+}
+
+fn stored_bool(value: i32) -> Option<bool> {
+    match value {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
+fn verify_assertion(
+    credential: &AssertionCredential,
+    state: &PasskeyChallengeState,
+    stored: &PasskeyCredentialRow,
+    raw_credential_id: &[u8],
+) -> std::result::Result<VerifiedAssertion, Response> {
+    let stored_id = decode_stored_binary(&stored.credential_id, webauthn::MAX_CREDENTIAL_ID_BYTES)
+        .filter(|value| value.as_slice() == raw_credential_id)
+        .ok_or_else(|| envelope_error_response(401, "Passkey verification failed"))?;
+    let public_key = decode_stored_binary(&stored.public_key, webauthn::MAX_COSE_KEY_BYTES)
+        .ok_or_else(|| envelope_error_response(401, "Passkey verification failed"))?;
+    let sign_count = u32::try_from(stored.sign_count)
+        .map_err(|_| envelope_error_response(401, "Passkey verification failed"))?;
+    let backup_eligible = stored_bool(stored.backup_eligible)
+        .ok_or_else(|| envelope_error_response(401, "Passkey verification failed"))?;
+    let stored = StoredCredential {
+        credential_id: &stored_id,
+        public_key_cose: &public_key,
+        sign_count,
+        backup_eligible,
+    };
+    webauthn::verify_assertion(credential, &ceremony_expectation(state), &stored)
+        .map_err(|error| webauthn_failure_response("authentication", error))
+}
+
+async fn persist_assertion(
+    db: &worker::D1Database,
+    stored: &PasskeyCredentialRow,
+    verified: &VerifiedAssertion,
+    credential_id: &str,
+    now: i64,
+) -> std::result::Result<(), Response> {
+    let expected_sign_count = u32::try_from(stored.sign_count)
+        .map_err(|_| envelope_error_response(401, "Passkey verification failed"))?;
+    let clone_warning = stored_bool(stored.clone_warning)
+        .ok_or_else(|| envelope_error_response(401, "Passkey verification failed"))?
+        || verified.clone_warning;
+    if verified.clone_warning {
+        worker::console_warn!(
+            "Passkey signature counter rollback detected for user {}",
+            stored.user_id
+        );
+    }
+    let updated = d1_repositories::update_passkey_after_authentication(
+        db,
+        stored.user_id,
+        credential_id,
+        expected_sign_count,
+        verified.sign_count,
+        clone_warning,
+        verified.user_present,
+        verified.user_verified,
+        verified.backup_eligible,
+        verified.backup_state,
+        now,
+    )
+    .await
+    .map_err(|err| {
+        worker::console_error!(
+            "failed to persist Passkey assertion for user {}: {}",
+            stored.user_id,
+            err
+        );
+        envelope_error_response(500, "failed to update Passkey credential")
+    })?;
+    if !updated {
+        return Err(envelope_error_response(
+            409,
+            "Passkey credential state changed; start again",
+        ));
+    }
+    Ok(())
+}
+
+fn clear_passkey_login_cookie(mut response: Response) -> WorkerResult<Response> {
+    response.headers_mut().append(
+        "Set-Cookie",
+        &format!("{PASSKEY_LOGIN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure"),
+    )?;
+    Ok(response)
+}
+
+fn authenticated_challenge_key(
+    req: &Request,
+    flow: &str,
+    user_id: i64,
+) -> std::result::Result<String, Response> {
+    session_binding_id(req, user_id)
+        .map(|binding| format!("{flow}:{binding}"))
+        .ok_or_else(|| envelope_error_response(401, "authenticated session is unavailable"))
 }
 
 fn challenge_key_by_flow_id(flow: &str, flow_id: &str) -> String {
@@ -579,17 +1123,13 @@ fn passkey_disabled_response() -> Response {
     envelope_error_response(200, "administrator has not enabled Passkey login")
 }
 
-fn passkey_finish_unavailable_response() -> Response {
-    envelope_error_response(
-        501,
-        "Passkey WebAuthn finish verification is not available in this Worker build",
-    )
-}
-
-impl PasskeySettings {
-    fn primary_origin(&self) -> String {
-        self.origins.first().cloned().unwrap_or_default()
-    }
+pub(crate) fn finish_contract_compiled() -> bool {
+    passkey_ceremony::ceremony_contract_compiled()
+        && webauthn::CoseAlgorithm::Es256.cose_id() == -7
+        && webauthn::CoseAlgorithm::Rs256.cose_id() == -257
+        && webauthn::MAX_CREDENTIAL_ID_BYTES <= 1_024
+        && webauthn::MAX_ATTESTATION_OBJECT_BYTES <= 64 * 1_024
+        && PASSKEY_CHALLENGE_TTL_SECONDS <= 300
 }
 
 fn option_bool(value: Option<&str>, default: bool) -> bool {
@@ -664,9 +1204,70 @@ mod tests {
     }
 
     #[test]
+    fn origin_normalization_keeps_non_default_port_and_drops_paths() {
+        assert_eq!(
+            normalize_origin("https://example.test:8443/passkey", false).as_deref(),
+            Some("https://example.test:8443")
+        );
+        assert_eq!(normalize_origin("http://example.test", false), None);
+        assert_eq!(
+            normalize_origin("http://localhost:8787/path", true).as_deref(),
+            Some("http://localhost:8787")
+        );
+    }
+
+    #[test]
     fn credential_id_is_reencoded_to_base64url() {
         let standard = STANDARD.encode([1u8, 2, 3, 250]);
         assert_eq!(credential_id_to_base64url(&standard).unwrap(), "AQID-g");
+    }
+
+    #[test]
+    fn browser_credential_id_requires_canonical_base64url() {
+        let encoded = URL_SAFE_NO_PAD.encode([1u8, 2, 3, 250]);
+        let (bytes, standard) = browser_credential_id(&encoded).unwrap();
+        assert_eq!(bytes, [1u8, 2, 3, 250]);
+        assert_eq!(standard, STANDARD.encode([1u8, 2, 3, 250]));
+        assert!(browser_credential_id(&format!("{encoded}=")).is_none());
+    }
+
+    #[test]
+    fn challenge_state_is_bound_to_flow_user_and_ttl() {
+        let now = 1_700_000_000;
+        let state = PasskeyChallengeState {
+            flow: "verify".to_string(),
+            user_id: Some(42),
+            challenge: URL_SAFE_NO_PAD.encode([7u8; PASSKEY_CHALLENGE_BYTES]),
+            rp_id: "example.com".to_string(),
+            origin: "https://example.com".to_string(),
+            user_verification: "required".to_string(),
+            issued_at: now,
+        };
+        assert!(valid_challenge_state_at(&state, "verify", Some(42), now));
+        assert!(!valid_challenge_state_at(&state, "login", Some(42), now));
+        assert!(!valid_challenge_state_at(&state, "verify", Some(43), now));
+        let expired = PasskeyChallengeState {
+            issued_at: now - PASSKEY_CHALLENGE_TTL_SECONDS as i64,
+            ..state
+        };
+        assert!(!valid_challenge_state_at(&expired, "verify", Some(42), now));
+    }
+
+    #[test]
+    fn transport_storage_reads_go_json_and_legacy_csv() {
+        assert_eq!(
+            split_transports(r#"["internal","hybrid"]"#),
+            vec!["internal", "hybrid"]
+        );
+        assert_eq!(
+            split_transports("usb,nfc"),
+            vec!["usb".to_string(), "nfc".to_string()]
+        );
+    }
+
+    #[test]
+    fn finish_contract_covers_do_and_both_offered_algorithms() {
+        assert!(finish_contract_compiled());
     }
 
     #[test]
@@ -686,6 +1287,7 @@ mod tests {
             last_used_at: None,
             backup_eligible: 1,
             backup_state: 0,
+            ..PasskeyCredentialRow::default()
         };
         let options = creation_options(
             &settings,

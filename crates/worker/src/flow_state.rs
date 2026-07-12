@@ -3,7 +3,8 @@
 //! Go writes short-lived, single-use flow state into the server-side session
 //! mid-request (`session.Set` + `Save`): the Turnstile-passed flag, the
 //! `secure_verified_at` step-up timestamp, OAuth `state`, the Passkey
-//! challenge, and the 2FA-pending marker. The Rust session is a stateless,
+//! and the 2FA-pending marker. Passkey challenges use a dedicated strongly
+//! consistent Durable Object because KV delete-on-read is not atomic. The Rust session is a stateless,
 //! signed, immutable cookie issued at login, so that mutable state cannot live
 //! in the cookie. This module is the shared substrate: a `CACHE_KV`-backed
 //! store with namespaced keys, per-kind TTLs, and delete-on-read (single-use)
@@ -30,8 +31,6 @@ pub enum FlowKind {
     SecureVerify,
     /// OAuth `state` parameter pending the provider callback.
     OAuthState,
-    /// WebAuthn/passkey challenge pending the authenticator response.
-    PasskeyChallenge,
     /// 2FA pending after password but before the TOTP/backup code is presented.
     TwoFaPending,
     /// Email verification code pending registration or email binding.
@@ -47,7 +46,6 @@ impl FlowKind {
             FlowKind::Turnstile => "flow:turnstile",
             FlowKind::SecureVerify => "flow:secure_verify",
             FlowKind::OAuthState => "flow:oauth_state",
-            FlowKind::PasskeyChallenge => "flow:passkey_challenge",
             FlowKind::TwoFaPending => "flow:2fa_pending",
             FlowKind::EmailVerification => "flow:email_verification",
             FlowKind::PasswordReset => "flow:password_reset",
@@ -62,7 +60,6 @@ impl FlowKind {
             FlowKind::SecureVerify => 300,
             FlowKind::TwoFaPending => 300,
             FlowKind::OAuthState => 600,
-            FlowKind::PasskeyChallenge => 300,
             FlowKind::Turnstile => 1800,
             FlowKind::EmailVerification => 600,
             FlowKind::PasswordReset => 600,
@@ -158,10 +155,6 @@ mod tests {
             "flow:oauth_state:nonce"
         );
         assert_eq!(
-            flow_state_key(FlowKind::PasskeyChallenge, "7"),
-            "flow:passkey_challenge:7"
-        );
-        assert_eq!(
             flow_state_key(FlowKind::TwoFaPending, "7"),
             "flow:2fa_pending:7"
         );
@@ -184,7 +177,6 @@ mod tests {
     fn default_ttls_match_go_windows() {
         assert_eq!(FlowKind::SecureVerify.default_ttl_secs(), 300); // Go step-up window
         assert_eq!(FlowKind::TwoFaPending.default_ttl_secs(), 300);
-        assert_eq!(FlowKind::PasskeyChallenge.default_ttl_secs(), 300);
         assert_eq!(FlowKind::OAuthState.default_ttl_secs(), 600);
         assert_eq!(FlowKind::EmailVerification.default_ttl_secs(), 600);
         assert_eq!(FlowKind::PasswordReset.default_ttl_secs(), 600);

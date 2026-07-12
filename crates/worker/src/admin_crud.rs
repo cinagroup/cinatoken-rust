@@ -483,7 +483,8 @@ pub async fn reveal_token_key(
     };
     // Step-up gate (item 2.3): revealing a credential requires a fresh
     // secure-verification (POST /api/verify within the last 300s).
-    if let Some(response) = crate::admin::require_secure_verification(&env, claims.id).await? {
+    if let Some(response) = crate::admin::require_secure_verification(&req, &env, claims.id).await?
+    {
         return Ok(response);
     }
     let db = env.d1("DB")?;
@@ -536,7 +537,8 @@ pub async fn reveal_token_keys_batch(mut req: Request, env: Env) -> WorkerResult
     if let Some(message) = validate_token_batch_key_ids(&payload.ids) {
         return Ok(envelope_error_response(400, message));
     }
-    if let Some(response) = crate::admin::require_secure_verification(&env, claims.id).await? {
+    if let Some(response) = crate::admin::require_secure_verification(&req, &env, claims.id).await?
+    {
         return Ok(response);
     }
 

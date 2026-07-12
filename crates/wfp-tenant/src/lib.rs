@@ -10,6 +10,7 @@ use cinatoken_wfp_authority::{
     verify_authority_with_worker_key, AuthorityClaims, AuthorityExpectation, AUTHORITY_HEADER,
     AUTHORITY_REPLAY_BINDING, AUTHORITY_TENANT_KEY_ENV,
 };
+use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::json;
 use url::Url;
@@ -37,6 +38,8 @@ const AI_GATEWAY_COLLECT_LOG_ENV: &str = "AI_GATEWAY_COLLECT_LOG";
 const WFP_ROUTE_HEADER: &str = "x-cinatoken-wfp-route";
 const WFP_WORKER_HEADER: &str = "x-cinatoken-wfp-worker";
 const WFP_WORKER_NAME_ENV: &str = "CINATOKEN_WFP_WORKER_NAME";
+const WFP_OUTBOUND_AUTH_MODE_ENV: &str = "CINATOKEN_WFP_OUTBOUND_AUTH_MODE";
+const WFP_OUTBOUND_AUTH_MODE: &str = "platform-outbound-v1";
 const WFP_INTERNAL_ROUTE: &str = "internal-path";
 const WFP_RELAY_AUTHORITY_ROUTE: &str = "relay-authority";
 const STATUS_CONTROL_AUTHORITY_MODES: &[&str] = &[WFP_INTERNAL_ROUTE, WFP_RELAY_AUTHORITY_ROUTE];
@@ -168,6 +171,9 @@ struct TenantStatus {
     paid_ai_authority_verifier: &'static str,
     paid_ai_replay_guard: &'static str,
     authority_replay_binding_configured: bool,
+    outbound_auth_mode: String,
+    outbound_auth_configured: bool,
+    tenant_cloudflare_token_bound: bool,
     paid_ai_capable: bool,
     inbound_dispatch_route: Option<String>,
     inbound_dispatch_worker: Option<String>,
@@ -210,6 +216,7 @@ enum AiGatewayPolicyValidator {
 enum VerifiedJsonBodyError {
     TooLarge,
     InvalidJson,
+    Read,
 }
 
 #[event(fetch)]
@@ -252,11 +259,14 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
             .any(|route| route.gateway_id_configured);
     let inbound_sensitive_headers = inbound_sensitive_header_names(req.headers());
     let authority_replay_binding_configured = env.durable_object(AUTHORITY_REPLAY_BINDING).is_ok();
+    let outbound_auth_mode = runtime_value(env, WFP_OUTBOUND_AUTH_MODE_ENV).unwrap_or_default();
+    let tenant_cloudflare_token_bound = secret_or_var(env, "CF_API_TOKEN").is_some();
     let paid_ai_capable = paid_ai_runtime_configured(
         secret_or_var(env, AUTHORITY_TENANT_KEY_ENV).as_deref(),
         runtime_value(env, WFP_WORKER_NAME_ENV).as_deref(),
         runtime_value(env, "CF_ACCOUNT_ID").as_deref(),
-        secret_or_var(env, "CF_API_TOKEN").as_deref(),
+        Some(outbound_auth_mode.as_str()),
+        tenant_cloudflare_token_bound,
         authority_replay_binding_configured,
     );
     let status = TenantStatus {
@@ -274,6 +284,9 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
         paid_ai_authority_verifier: PAID_AI_AUTHORITY_VERIFIER,
         paid_ai_replay_guard: PAID_AI_REPLAY_GUARD,
         authority_replay_binding_configured,
+        outbound_auth_configured: outbound_auth_mode == WFP_OUTBOUND_AUTH_MODE,
+        outbound_auth_mode,
+        tenant_cloudflare_token_bound,
         paid_ai_capable,
         inbound_dispatch_route: request_header(req, WFP_ROUTE_HEADER),
         inbound_dispatch_worker: request_header(req, WFP_WORKER_HEADER),
@@ -340,9 +353,8 @@ async fn forward_ai_gateway(
             "tenant AI request body exceeds 4 MiB",
         );
     }
-    let body = req.bytes().await?;
-    match validate_verified_json_body(&body) {
-        Ok(()) => {}
+    let body = match read_verified_json_body(&mut req).await {
+        Ok(body) => body,
         Err(VerifiedJsonBodyError::TooLarge) => {
             return tenant_error(
                 413,
@@ -357,7 +369,14 @@ async fn forward_ai_gateway(
                 "tenant AI request body must be valid JSON",
             );
         }
-    }
+        Err(VerifiedJsonBodyError::Read) => {
+            return tenant_error(
+                400,
+                "tenant_request_body_unreadable",
+                "tenant AI request body could not be read",
+            );
+        }
+    };
 
     let claims = decode_worker_key(&authority_key).and_then(|worker_key| {
         verify_authority_with_worker_key(
@@ -414,16 +433,23 @@ async fn forward_ai_gateway(
             "CF_ACCOUNT_ID must be bound",
         );
     };
-    let Some(api_token) = secret_or_var(&env, "CF_API_TOKEN") else {
+    if runtime_value(&env, WFP_OUTBOUND_AUTH_MODE_ENV).as_deref() != Some(WFP_OUTBOUND_AUTH_MODE) {
         return tenant_error(
             500,
             "tenant_gateway_not_configured",
-            "CF_API_TOKEN must be bound",
+            "platform outbound authentication must be configured",
         );
-    };
+    }
+    if secret_or_var(&env, "CF_API_TOKEN").is_some() {
+        return tenant_error(
+            500,
+            "tenant_cloudflare_token_forbidden",
+            "tenant Workers must not receive a Cloudflare bearer token",
+        );
+    }
 
     let target = ai_gateway_url(&account_id, route.upstream_path)?;
-    let headers = upstream_headers(&req, &env, &api_token, route)?;
+    let headers = upstream_headers(&req, &env, route)?;
 
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
@@ -466,16 +492,10 @@ fn ai_gateway_url(account_id: &str, upstream_path: &str) -> WorkerResult<Url> {
     .map_err(|err| worker::Error::RustError(format!("failed to build AI Gateway URL: {err}")))
 }
 
-fn upstream_headers(
-    req: &Request,
-    env: &Env,
-    api_token: &str,
-    route: TenantRoute,
-) -> WorkerResult<Headers> {
+fn upstream_headers(req: &Request, env: &Env, route: TenantRoute) -> WorkerResult<Headers> {
     let mut headers = Headers::new();
     copy_header(req, &mut headers, "content-type")?;
     copy_header(req, &mut headers, "accept")?;
-    headers.set("authorization", &format!("Bearer {api_token}"))?;
     if let Some(gateway_id) = gateway_id_for_route(env, route) {
         headers.set("cf-aig-gateway-id", &gateway_id)?;
     }
@@ -673,12 +693,14 @@ fn paid_ai_runtime_configured(
     authority_key: Option<&str>,
     worker_name: Option<&str>,
     account_id: Option<&str>,
-    tenant_api_token: Option<&str>,
+    outbound_auth_mode: Option<&str>,
+    tenant_cloudflare_token_bound: bool,
     authority_replay_binding_configured: bool,
 ) -> bool {
     authority_bindings_configured(authority_key, worker_name)
         && account_id.is_some_and(|value| !value.trim().is_empty())
-        && tenant_api_token.is_some_and(|value| !value.trim().is_empty())
+        && outbound_auth_mode.is_some_and(|value| value.trim() == WFP_OUTBOUND_AUTH_MODE)
+        && !tenant_cloudflare_token_bound
         && authority_replay_binding_configured
 }
 
@@ -734,6 +756,29 @@ fn validate_verified_json_body(body: &[u8]) -> Result<(), VerifiedJsonBodyError>
     serde_json::from_slice::<serde_json::Value>(body)
         .map(|_| ())
         .map_err(|_| VerifiedJsonBodyError::InvalidJson)
+}
+
+async fn read_verified_json_body(req: &mut Request) -> Result<Vec<u8>, VerifiedJsonBodyError> {
+    let mut stream = req.stream().map_err(|_| VerifiedJsonBodyError::Read)?;
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| VerifiedJsonBodyError::Read)?;
+        append_verified_json_chunk(&mut body, &chunk, MAX_VERIFIED_JSON_BODY_BYTES)?;
+    }
+    validate_verified_json_body(&body)?;
+    Ok(body)
+}
+
+fn append_verified_json_chunk(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> Result<(), VerifiedJsonBodyError> {
+    if body.len().saturating_add(chunk.len()) > limit {
+        return Err(VerifiedJsonBodyError::TooLarge);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn unix_timestamp() -> i64 {
@@ -1094,21 +1139,23 @@ mod tests {
     }
 
     #[test]
-    fn paid_ai_capability_requires_authority_account_and_tenant_token() {
+    fn paid_ai_capability_requires_outbound_auth_and_forbids_tenant_token() {
         let secret = Some("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY");
         let worker = Some("tenant-a");
         assert!(paid_ai_runtime_configured(
             secret,
             worker,
             Some("account-a"),
-            Some("tenant-api-token"),
+            Some(WFP_OUTBOUND_AUTH_MODE),
+            false,
             true
         ));
         assert!(!paid_ai_runtime_configured(
             secret,
             worker,
             None,
-            Some("tenant-api-token"),
+            Some(WFP_OUTBOUND_AUTH_MODE),
+            false,
             true
         ));
         assert!(!paid_ai_runtime_configured(
@@ -1116,21 +1163,32 @@ mod tests {
             worker,
             Some("account-a"),
             None,
+            false,
             true
         ));
         assert!(!paid_ai_runtime_configured(
             secret,
             worker,
             Some("  "),
-            Some("tenant-api-token"),
+            Some(WFP_OUTBOUND_AUTH_MODE),
+            false,
             true
         ));
         assert!(!paid_ai_runtime_configured(
             secret,
             worker,
             Some("account-a"),
-            Some("tenant-api-token"),
+            Some(WFP_OUTBOUND_AUTH_MODE),
+            false,
             false
+        ));
+        assert!(!paid_ai_runtime_configured(
+            secret,
+            worker,
+            Some("account-a"),
+            Some(WFP_OUTBOUND_AUTH_MODE),
+            true,
+            true
         ));
     }
 
@@ -1153,6 +1211,14 @@ mod tests {
         );
         assert_eq!(
             validate_verified_json_body(&vec![b' '; MAX_VERIFIED_JSON_BODY_BYTES + 1]),
+            Err(VerifiedJsonBodyError::TooLarge)
+        );
+
+        let mut body = b"123".to_vec();
+        assert_eq!(append_verified_json_chunk(&mut body, b"45", 5), Ok(()));
+        assert_eq!(body, b"12345");
+        assert_eq!(
+            append_verified_json_chunk(&mut body, b"6", 5),
             Err(VerifiedJsonBodyError::TooLarge)
         );
     }

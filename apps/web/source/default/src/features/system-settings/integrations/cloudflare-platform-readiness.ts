@@ -93,6 +93,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'wfp_tenant_relay_authority_verifier_compiled'
   | 'wfp_tenant_response_header_guard_compiled'
   | 'wfp_tenant_ai_gateway_policy_compiled'
+  | 'wfp_outbound_egress_policy_compiled'
   | 'wfp_relay_authority_transport_compiled'
   | 'wfp_relay_authority_transport_ready'
   | 'wfp_tenant_smoke_ready'
@@ -199,6 +200,7 @@ export function buildPlatformReadinessSummary(
     capabilities.wfp_tenant_relay_authority_verifier_compiled,
     capabilities.wfp_tenant_response_header_guard_compiled,
     capabilities.wfp_tenant_ai_gateway_policy_compiled,
+    capabilities.wfp_outbound_egress_policy_compiled,
     capabilities.wfp_authority_replay_do_compiled,
     capabilities.wfp_relay_authority_transport_compiled,
     capabilities.wfp_dispatch_failure_contract_compiled

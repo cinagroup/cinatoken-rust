@@ -247,7 +247,7 @@ correction supersedes stale settlement-completion wording in that row; all live
 multi-response, alarm/eviction/outage, rollback, and no-double-charge evidence
 remains G7-blocking.
 
-WFP correction (2026-07-11): WFP is now a default-off post-admission transport,
+WFP outbound correction (2026-07-12): WFP is a default-off post-admission transport,
 not an admin/public paid entry point. The central relay authenticates the token,
 selects the D1 channel, reserves quota, and reads
 `channels.other_info.wfp_worker` before dispatch. It signs a 30-second
@@ -256,6 +256,18 @@ HMAC-SHA256 authority, using a per-worker key derived from the platform-only
 and request ID. The uploader binds only `WFP_RELAY_AUTHORITY_KEY` into that
 tenant; the tenant never receives the platform master. The response returns
 through central settlement/refund and audit.
+The dispatch namespace must attach outbound service `cinatoken-wfp-outbound`.
+That service alone owns `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` and injects the
+Cloudflare bearer. For outbound auth the tenant receives only
+`CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1`; any tenant
+`CF_API_TOKEN` or other Cloudflare bearer is forbidden. The outbound Worker
+allows only `POST application/json`, valid JSON up to 4 MiB, and the exact
+account-scoped `/ai/run`, `/ai/v1/chat/completions`, `/ai/v1/responses`, and
+`/ai/v1/messages` HTTPS URLs. It rebuilds request/response header allowlists and
+blocks redirects. See Cloudflare's
+[Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+and [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/)
+documentation.
 `WFP_RELAY_TRANSPORT_ENABLED` remains false in all
 tracked environments. Admin dispatch is status-only; JS fallback AI deploy is
 disabled; `/v1/embeddings` has been removed from the tenant route set. This is
@@ -264,6 +276,9 @@ authority once through the platform-owned `WfpAuthorityReplay` DO with
 canonical shard validation and fail-closed outcomes. Signed-authority billing,
 live sequential/concurrent replay, eviction/cleanup/load, and real Rust/Wasm
 upload plus external-binding readback evidence remain G7 blockers.
+Remote outbound-service attachment, outbound-only secret ownership, bearer-free
+tenant readback, and live positive/negative egress evidence are also unverified.
+Production remains **NO-GO**.
 
 | Route Family | Source Evidence | Rust Status | Body/Stream Mode | Gate | Next Evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -447,7 +462,7 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | `compatibility_date` | `2026-07-11` in the main config; isolated local workerd configs use `2026-06-24` | Keep current; review periodically and prove deployed parity | Date review plus local/deployed runtime evidence. |
 | `compatibility_flags` | `nodejs_compat` enabled | Keep enabled | `wrangler types` generated Env after binding changes. |
 | Observability | Enabled with `head_sampling_rate = 1` | Staging/prod sampling policy documented | Logs/traces visible in staging. |
-| `DB` D1 | Local placeholder; staging ID is present but unauthenticated/unverified; production placeholder remains. All three binding tables set `migrations_dir = "migrations/d1"`. | Separate verified staging/prod D1 IDs | `bun run check:d1:migration-config`; authenticated staging `wrangler d1 info`; remote migrations 0001-0020 applied; `/api/status` D1 true. |
+| `DB` D1 | Local placeholder; staging ID is present but unauthenticated/unverified; production placeholder remains. All three binding tables set `migrations_dir = "migrations/d1"`. | Separate verified staging/prod D1 IDs | `bun run check:d1:migration-config`; authenticated staging `wrangler d1 info`; remote migrations 0001-0021 applied; `/api/status` D1 true. |
 | `CACHE_KV`, `CONFIG_KV` | Local/prod placeholders; staging IDs are present but unauthenticated/unverified | Real verified namespaces or remove unused bindings | Authenticated binding checklist and code usage decision. |
 | `FILE_BUCKET` | Named bucket, no code usage | Real R2 bucket plus retention policy | R2 smoke for upload/read/delete if enabled. |
 | `LOG_QUEUE`, `TASK_QUEUE` | `LOG_QUEUE` producer and consumer are implemented for async relay audit insertion with synchronous D1 fallback and DLQ config; `TASK_QUEUE` remains declared/planned | Real queues with consumers/DLQ when async moves | Queue producer/consumer smoke, DLQ alert, and task-queue ownership decision. |
@@ -456,12 +471,14 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | Provider API keys | D1 channel keys | Encrypted/redacted storage policy | Admin key reveal audit and redaction tests. |
 | Payment/OAuth/Turnstile/JWT/session secrets | Go/VPS-owned today | Cloudflare secrets or forced re-auth/defer plan | Secret inventory without values. |
 | AI Gateway IDs and request policy | Empty default `AI_GATEWAY_ID`; the Rust/Wasm WFP tenant supports route-specific gateway overrides for chat, responses, Anthropic Messages, and `/ai/run`, plus tenant-bound `cf-aig-*` timeout/retry/cache/logging policy. Main-relay AI Gateway routing and cross-model fallback remain independently gated. | Real default/route IDs or a documented direct-provider policy | Live logs for only the four retained WFP routes; no embeddings tenant route. Main-relay canary evidence must separately prove channel opt-in, provider policy, billing, terminal audit, and fallback replay. |
-| `DISPATCHER` WFP namespace | Commented binding; central relay transport selection exists behind `WFP_RELAY_TRANSPORT_ENABLED=false` and requires `channels.other_info.wfp_worker` after token auth, D1 selection, and reserve. Admin dispatch is status-only and preview-host AI is rejected. A local post-upload verifier now checks uploader, details/settings/content hashes/bindings, and live dispatch evidence as one fail-closed artifact. | Real staging namespace and binding, with transport gate enabled only for canary | Run the verifier against real staging captures, then archive admin status/public-AI rejection and signed-authority central relay canary proving reserve, exactly-one settlement/refund, and audit. |
+| `DISPATCHER` WFP namespace | Commented binding; central relay transport selection exists behind `WFP_RELAY_TRANSPORT_ENABLED=false` and requires `channels.other_info.wfp_worker` after token auth, D1 selection, and reserve. The config shape names outbound service `cinatoken-wfp-outbound`, but remote attachment is unverified. Admin dispatch is status-only and preview-host AI is rejected. | Real staging namespace and binding with the outbound service attached; transport gate enabled only for canary | Archive namespace/service attachment, then run the verifier against real staging captures and prove admin status/public-AI rejection plus signed-authority central reserve, exactly-one settlement/refund, and audit. |
 | `WFP_AUTHORITY_REPLAY` / `WfpAuthorityReplay` | Platform-owned Rust DO, canonical worker/time-bucket shard, atomic digest consumption, alarm cleanup, and fail-closed tenant call are locally compiled. `v4-wfp-authority-replay` is declared in all env scopes. | Main Worker DO deployed; each strict tenant upload binds the expected environment script/class | Multipart binding readback; one winner for sequential and concurrent duplicate envelopes; wrong shard rejected; eviction/redeploy and cleanup proof; latency/throughput/storage evidence; exactly one provider call. Local tests are not staging verification. |
-| `cinatoken-wfp-tenant` Rust/Wasm runtime | Local HMAC authority verification, replay-DO consumption, and the four retained routes are implemented. Generated JS fallback is status-only; Worker-side fallback deploy is disabled. | Strict Rust/Wasm artifact uploaded and read back from staging with external replay DO binding | Dry-run manifest, REST PUT/GET hash and binding match, Rust/Wasm status, authority tamper/expiry/duplicate rejection, route/header guard, central billing canary, and replay evidence. No live upload is currently claimed. |
+| `cinatoken-wfp-tenant` Rust/Wasm runtime | Local HMAC authority verification, replay-DO consumption, the four retained routes, required outbound auth marker, and fail-closed rejection of a tenant Cloudflare token are implemented. Generated JS fallback is status-only; Worker-side fallback deploy is disabled. | Strict Rust/Wasm artifact uploaded and read back from staging with external replay DO binding and no Cloudflare bearer | Dry-run manifest, REST PUT/GET hash and binding match, exact `platform-outbound-v1` marker, bearer absence, Rust/Wasm status, authority tamper/expiry/duplicate rejection, route/header guard, central billing canary, and replay evidence. No live upload is currently claimed. |
+| `cinatoken-wfp-outbound` Rust/Wasm service | Local source enforces exact account/host/path, POST, JSON, 4 MiB, header allowlists, token injection, and redirect rejection | Deployed service attached to each intended dispatch namespace; `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` exists only there | Remote service/namespace readback, secret-ownership inventory, four-route positive smoke, method/content/body/URL/header/redirect negatives, Gateway logs, redaction, and rollback. No remote attachment or live egress is currently claimed. |
 | `CLOUDFLARE_ACCOUNT_ID`, `WFP_DISPATCH_NAMESPACE`, `WFP_TENANT_COMPATIBILITY_DATE` | Empty/default vars | Real account/namespace/date in staging/prod | Redacted plan response shows deployable metadata. |
 | `CLOUDFLARE_API_TOKEN` | Secret-only; not in config | Scoped dispatch script deploy/readback token | Secret inventory, least-privilege scope, redacted PUT/GET evidence, rotation owner. |
-| `WFP_TENANT_CF_API_TOKEN` / `CLOUDFLARE_AI_GATEWAY_TOKEN` | Secret-only tenant runtime credential | Required runtime AI credential, distinct from deploy token | Uploader rejection on token reuse plus secret inventory and rotation owner. |
+| `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` | Secret owned only by `cinatoken-wfp-outbound` | Outbound Worker AI REST authentication | Secret inventory/readback proving it is absent from tenant and dispatch Worker bindings, least privilege, rotation owner, and no value in evidence. |
+| `CINATOKEN_WFP_OUTBOUND_AUTH_MODE` | Tenant plain-text marker | Must be exactly `platform-outbound-v1` | Upload/readback proves the marker exists and every Cloudflare bearer binding is absent. |
 | `WFP_RELAY_AUTHORITY_SECRET` | Platform Worker secret only | Central signer master; never a tenant binding | Minimum 32 bytes, platform-side provisioning evidence, rotation plan, and no value in logs/manifests/tenant metadata. |
 | `WFP_RELAY_AUTHORITY_KEY` | Per-worker tenant secret derived by the artifact uploader | Rust/Wasm tenant verifier for exactly one named worker | Readback proves the derived key binding exists without exposing its value and proves the platform master is absent from the tenant binding set. |
 

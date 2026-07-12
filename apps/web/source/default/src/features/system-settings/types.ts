@@ -454,6 +454,7 @@ export type PlatformCapabilities = {
   wfp_tenant_relay_authority_verifier_compiled: boolean
   wfp_tenant_response_header_guard_compiled: boolean
   wfp_tenant_ai_gateway_policy_compiled: boolean
+  wfp_outbound_egress_policy_compiled: boolean
   wfp_relay_authority_transport_compiled: boolean
   wfp_relay_authority_transport_ready: boolean
   wfp_tenant_smoke_ready: boolean

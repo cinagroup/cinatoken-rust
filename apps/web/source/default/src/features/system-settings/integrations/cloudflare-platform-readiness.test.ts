@@ -65,6 +65,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   wfp_tenant_relay_authority_verifier_compiled: false,
   wfp_tenant_response_header_guard_compiled: false,
   wfp_tenant_ai_gateway_policy_compiled: false,
+  wfp_outbound_egress_policy_compiled: false,
   wfp_relay_authority_transport_compiled: false,
   wfp_relay_authority_transport_ready: false,
   wfp_tenant_smoke_ready: false,
@@ -161,6 +162,7 @@ describe('Cloudflare platform readiness headline', () => {
         wfp_tenant_relay_authority_verifier_compiled: true,
         wfp_tenant_response_header_guard_compiled: true,
         wfp_tenant_ai_gateway_policy_compiled: true,
+        wfp_outbound_egress_policy_compiled: true,
         wfp_authority_replay_do_compiled: true,
         wfp_relay_authority_transport_compiled: true,
         wfp_dispatch_failure_contract_compiled: true,
@@ -275,6 +277,50 @@ describe('Cloudflare platform readiness headline', () => {
         (signal) => signal.id === 'wfp-tenant-implementation'
       )?.status,
       'blocked'
+    )
+  })
+
+  test('requires the outbound egress policy for WFP implementation readiness', () => {
+    const wfpImplementationCapabilities = {
+      wfp_tenant_supported_routes: ['/v1/responses'],
+      wfp_tenant_cutover_guards: ['outbound-worker-egress-policy'],
+      wfp_tenant_script_plan_compiled: true,
+      wfp_tenant_rust_wasm_runtime_compiled: true,
+      wfp_tenant_route_manifest_compiled: true,
+      wfp_tenant_internal_dispatch_required_compiled: true,
+      wfp_tenant_relay_authority_verifier_compiled: true,
+      wfp_tenant_response_header_guard_compiled: true,
+      wfp_tenant_ai_gateway_policy_compiled: true,
+      wfp_authority_replay_do_compiled: true,
+      wfp_relay_authority_transport_compiled: true,
+      wfp_dispatch_failure_contract_compiled: true,
+    }
+    const getWfpImplementationStatus = (
+      capabilities: PlatformReadinessCapabilities
+    ) =>
+      getStage(
+        buildPlatformReadinessSummary(capabilities),
+        'implementation'
+      ).signals.find((signal) => signal.id === 'wfp-tenant-implementation')
+        ?.status
+
+    assert.equal(
+      getWfpImplementationStatus(
+        makeCapabilities({
+          ...wfpImplementationCapabilities,
+          wfp_outbound_egress_policy_compiled: false,
+        })
+      ),
+      'blocked'
+    )
+    assert.equal(
+      getWfpImplementationStatus(
+        makeCapabilities({
+          ...wfpImplementationCapabilities,
+          wfp_outbound_egress_policy_compiled: true,
+        })
+      ),
+      'ready'
     )
   })
 

@@ -330,7 +330,9 @@ async function runDispatchErrorContractSelfTest() {
     mismatchRejected = true;
   }
   if (!mismatchRejected) {
-    throw new Error("dispatch error self-test did not reject a status mismatch");
+    throw new Error(
+      "dispatch error self-test did not reject a status mismatch",
+    );
   }
 
   return {
@@ -635,6 +637,8 @@ function summarizeCapabilities(data) {
       data.wfp_tenant_response_header_guard_compiled === true,
     wfp_tenant_ai_gateway_policy_compiled:
       data.wfp_tenant_ai_gateway_policy_compiled === true,
+    wfp_outbound_egress_policy_compiled:
+      data.wfp_outbound_egress_policy_compiled === true,
     wfp_tenant_smoke_ready: data.wfp_tenant_smoke_ready === true,
   };
 }
@@ -693,6 +697,7 @@ function expectedWfpCapabilityBooleans() {
     "wfp_authority_replay_do_compiled",
     "wfp_tenant_response_header_guard_compiled",
     "wfp_tenant_ai_gateway_policy_compiled",
+    "wfp_outbound_egress_policy_compiled",
     "wfp_tenant_smoke_ready",
   ];
 }
@@ -712,7 +717,9 @@ function expectedWfpCutoverGuards() {
     "signed_body_bound_authority",
     "authority_replay_do",
     "tenant_scoped_authority_key",
-    "separate_runtime_token",
+    "outbound_worker_egress_policy",
+    "outbound_worker_token_injection",
+    "no_tenant_cloudflare_token",
     "tenant_script_plan",
     "rust_wasm_runtime",
     "rust_wasm_artifact_validation",
@@ -1295,7 +1302,9 @@ function runRouteContractSelfTest() {
     "signed_body_bound_authority",
     "authority_replay_do",
     "tenant_scoped_authority_key",
-    "separate_runtime_token",
+    "outbound_worker_egress_policy",
+    "outbound_worker_token_injection",
+    "no_tenant_cloudflare_token",
     "rust_wasm_artifact_validation",
     "central_billing_settlement",
     "relay_authority_staging_replay",

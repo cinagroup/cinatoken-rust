@@ -1,0 +1,19 @@
+name = "cinatoken-wfp-outbound"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-07-11"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "bun ../../tools/build_worker.mjs --crate wfp-outbound --release"
+cwd = "crates/wfp-outbound"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[vars]
+CLOUDFLARE_ACCOUNT_ID = ""
+
+# This secret belongs only to the outbound Worker. It must never be attached to
+# a WFP tenant script or reused as the namespace deployment credential.
+# wrangler secret put CINATOKEN_WFP_OUTBOUND_AI_TOKEN --config crates/wfp-outbound/wrangler.toml

@@ -1121,14 +1121,22 @@ function selfTestFixture() {
   const settingsEnvelope = envelope({
     ...compatibility,
     bindings: [
-      { name: "CF_API_TOKEN", type: "secret_text", text: secretValue },
+      {
+        name: "WFP_RELAY_AUTHORITY_KEY",
+        type: "secret_text",
+        text: secretValue,
+      },
     ],
   });
   const metadataObject = {
     main_module: "shim.mjs",
     ...compatibility,
     bindings: [
-      { name: "CF_API_TOKEN", type: "secret_text", text: secretValue },
+      {
+        name: "WFP_RELAY_AUTHORITY_KEY",
+        type: "secret_text",
+        text: secretValue,
+      },
     ],
   };
   const metadata = JSON.stringify(metadataObject);

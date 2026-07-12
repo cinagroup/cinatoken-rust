@@ -143,6 +143,25 @@ A full diff of every Go-registered route against the Rust worker closed these
   resource-limited, and deliberately failing tenant scripts plus relay billing
   and rollback proof.
 
+### WFP outbound authentication boundary (2026-07-12)
+
+- The new Rust service `cinatoken-wfp-outbound` is the dispatch namespace
+  outbound Worker. It alone owns `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` and injects
+  Cloudflare authentication; a tenant receives only
+  `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` for outbound auth and
+  must never receive `CF_API_TOKEN` or another Cloudflare bearer.
+- Its local policy permits only `POST application/json` with valid JSON up to
+  4 MiB to exact account-scoped Cloudflare AI REST URLs ending in `/ai/run`,
+  `/ai/v1/chat/completions`, `/ai/v1/responses`, or `/ai/v1/messages`. It
+  rebuilds request/response headers from allowlists and blocks redirects. This
+  follows Cloudflare's
+  [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+  model and documented
+  [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/).
+- Remote namespace attachment, outbound-only secret ownership, bearer-free
+  tenant readback, live route/negative egress evidence, billing, and rollback
+  are unverified. WFP production remains **NO-GO**.
+
 ### Rust scheduling gateway ownership (2026-07-11)
 
 - `cinatoken-gateway` is now the live owner planner used before Worker binding
@@ -198,13 +217,15 @@ A full diff of every Go-registered route against the Rust worker closed these
   selection, and reserve, the Rust/Wasm tenant verifies the 30-second
   worker/method/path/body/channel/request-id HMAC and atomically consumes its
   request ID in the platform-owned `WfpAuthorityReplay` Durable Object before
-  AI Gateway egress. Duplicate, invalid, and unavailable replay checks fail
-  closed. The master stays platform-side; the tenant receives a derived key and
-  an external DO binding. Production still needs strict Rust/Wasm upload and
-  binding readback plus sequential/concurrent duplicate, eviction, cleanup,
-  throughput, provider-call, billing, audit, and redaction evidence. This is
-  exact-envelope replay protection, not exactly-once upstream execution for a
-  newly signed retry.
+  AI Gateway egress through `cinatoken-wfp-outbound`. Duplicate, invalid, and
+  unavailable replay checks fail closed. The authority master and Cloudflare AI
+  bearer stay platform-side; the tenant receives a derived authority key, an
+  external DO binding, and only the outbound auth marker for outbound
+  authentication. Production still needs strict Rust/Wasm upload and binding
+  readback, remote outbound attachment/secret isolation, plus sequential/
+  concurrent duplicate, eviction, cleanup, throughput, provider-call, billing,
+  audit, and redaction evidence. This is exact-envelope replay protection, not
+  exactly-once upstream execution for a newly signed retry.
 - Frontend bundle-size reduction and budget ratchet tightening after heavy
   route-specific chunks are split. Strict lint is now zero-debt gated and
   `check:web:quality` is green locally.
@@ -321,13 +342,17 @@ A full diff of every Go-registered route against the Rust worker closed these
    `WFP_INTERNAL_DISPATCH_ENABLED`, and `WFP_RELAY_TRANSPORT_ENABLED`
    constrained to explicit staging canaries until their billing, authority,
    fallback-policy, upload/readback, and durable audit gates close. Admin WFP
-   dispatch is status-only and must never be used for a paid route canary.
+   dispatch is status-only and must never be used for a paid route canary. WFP
+   also requires verified `cinatoken-wfp-outbound` namespace attachment,
+   outbound-only `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` ownership, bearer-free tenant
+   readback, and live positive/negative egress evidence.
 
 ## Current Safe Statement
 
 The current system can support staged and scoped Rust/Cloudflare validation.
 It cannot yet be described as a complete replacement for the Go/VPS deployment,
 and the Go deployment must remain available for rollback until the production
-gates close. No WFP tenant deployment, external replay binding readback,
-signed-authority billing canary, or live replay-race evidence is claimed by
-this status document.
+gates close. No WFP tenant deployment, outbound-service namespace attachment,
+outbound-secret ownership readback, external replay binding readback,
+signed-authority billing canary, live AI egress, or live replay-race evidence is
+claimed by this status document. Production remains **NO-GO**.

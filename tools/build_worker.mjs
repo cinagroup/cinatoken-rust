@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const workerBuildVersion = "0.1.14";
+const supportedCrates = ["worker", "wfp-tenant", "wfp-outbound"];
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const cargoLockPath = join(root, "Cargo.lock");
 
@@ -59,14 +60,14 @@ function parseBuildTarget(args) {
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--crate") {
       const value = args[++index];
-      if (!value) throw new Error("--crate requires worker or wfp-tenant");
+      if (!value) throw new Error(`--crate requires one of: ${supportedCrates.join(", ")}`);
       crate = value;
     } else {
       remaining.push(args[index]);
     }
   }
-  if (!["worker", "wfp-tenant"].includes(crate)) {
-    throw new Error("--crate requires worker or wfp-tenant");
+  if (!supportedCrates.includes(crate)) {
+    throw new Error(`--crate requires one of: ${supportedCrates.join(", ")}`);
   }
   return { crate, args: remaining };
 }
@@ -207,6 +208,10 @@ function runSelfTest() {
   const target = parseBuildTarget(["--crate", "wfp-tenant", "--release"]);
   if (target.crate !== "wfp-tenant" || target.args.join(" ") !== "--release") {
     throw new Error("worker build self-test failed to parse crate target");
+  }
+  const outboundTarget = parseBuildTarget(["--crate", "wfp-outbound", "--release"]);
+  if (outboundTarget.crate !== "wfp-outbound" || outboundTarget.args.join(" ") !== "--release") {
+    throw new Error("worker build self-test failed to parse outbound crate target");
   }
   for (const invalid of ["", "wasm-bindgen 0.2", "wasm-bindgen-cli 0.2.125"]) {
     try {

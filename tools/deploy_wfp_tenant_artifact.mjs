@@ -18,6 +18,7 @@ const defaultCompatibilityDate = "2026-07-11";
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
 const wasmMagic = Uint8Array.from([0x00, 0x61, 0x73, 0x6d]);
 const authorityKeyDomain = Buffer.from("cinatoken-wfp-authority-key:v1\0", "utf8");
+const outboundAuthMode = "platform-outbound-v1";
 const routeGatewayBindings = [
   {
     key: "openaiChat",
@@ -134,7 +135,6 @@ async function main(options) {
   const routeAiGatewayIds = validateRouteGatewayIds(options.routeAiGatewayIds);
   const aiGatewayPolicy = validateAiGatewayPolicy(options.aiGatewayPolicy);
   const apiToken = required(options.apiToken, "api-token");
-  const tenantApiToken = resolveTenantApiToken(options, apiToken);
   const authoritySecret = resolveAuthoritySecret(options.authoritySecret);
   const authorityKey = deriveTenantAuthorityKey(authoritySecret, publicScriptName);
   const authorityReplayScript = normalizeWorkerName(
@@ -153,7 +153,6 @@ async function main(options) {
     aiGatewayId,
     routeAiGatewayIds,
     aiGatewayPolicy,
-    tenantApiToken,
     authorityKey,
     authorityReplayScript,
   });
@@ -184,7 +183,7 @@ async function main(options) {
         contentType: module.contentType,
       })),
       metadata: redactMetadata(metadata),
-      warnings: artifactWarnings(options),
+      warnings: artifactWarnings(),
     };
   }
 
@@ -233,7 +232,7 @@ async function main(options) {
     ok: response.ok,
     cloudflareResponsePreview: preview.slice(0, 32768),
     cloudflareResponseJson: parsed,
-    warnings: artifactWarnings(options),
+    warnings: artifactWarnings(),
   };
 }
 
@@ -254,9 +253,11 @@ function parseArgs(argv) {
       flags.add(arg.slice(2));
       continue;
     }
-    if (arg === "--no-attach-gateway-token") {
-      flags.add("no-attach-gateway-token");
-      continue;
+    if (arg === "--no-attach-gateway-token" || arg === "--tenant-api-token") {
+      usage(
+        2,
+        `${arg} is retired; Cloudflare AI authentication belongs to the WFP outbound Worker`,
+      );
     }
     if (arg === "--manifest-only") {
       usage(
@@ -288,9 +289,6 @@ function normalizeOptions(args) {
     namespace: value("namespace", "WFP_DISPATCH_NAMESPACE"),
     accountId: value("account-id", "CLOUDFLARE_ACCOUNT_ID"),
     apiToken: value("api-token", "CLOUDFLARE_API_TOKEN"),
-    tenantApiToken:
-      value("tenant-api-token", "WFP_TENANT_CF_API_TOKEN") ||
-      value("tenant-api-token", "CLOUDFLARE_AI_GATEWAY_TOKEN"),
     authoritySecret: value(
       "authority-secret",
       "WFP_RELAY_AUTHORITY_SECRET",
@@ -318,7 +316,6 @@ function normalizeOptions(args) {
     workerPrefix: value("worker-prefix", "WFP_DISPATCH_WORKER_PREFIX") || "",
     artifactDir,
     mainModule: args.values.get("main-module") || defaultMainModule,
-    attachGatewayToken: !args.flags.has("no-attach-gateway-token"),
     dryRun: args.flags.has("dry-run"),
     json: args.flags.has("json"),
   };
@@ -335,14 +332,11 @@ function usage(exitCode, error) {
       "Required for deploy:",
       "  --account-id <id>      or CLOUDFLARE_ACCOUNT_ID",
       "  --api-token <token>    or CLOUDFLARE_API_TOKEN",
-      "  --tenant-api-token <token> or WFP_TENANT_CF_API_TOKEN / CLOUDFLARE_AI_GATEWAY_TOKEN",
-      "    unless --no-attach-gateway-token is explicitly set",
       "  --authority-secret <secret> or WFP_RELAY_AUTHORITY_SECRET (minimum 32 bytes)",
       "  --authority-replay-script <name> or WFP_AUTHORITY_REPLAY_SCRIPT_NAME",
       "",
       "Options:",
       "  --tenant-id <id>",
-      "  --tenant-api-token <token>  or WFP_TENANT_CF_API_TOKEN / CLOUDFLARE_AI_GATEWAY_TOKEN",
       "  --ai-gateway-id <id>        or AI_GATEWAY_ID",
       "  --ai-gateway-id-openai-chat <id>        or AI_GATEWAY_ID_OPENAI_CHAT",
       "  --ai-gateway-id-openai-responses <id>   or AI_GATEWAY_ID_OPENAI_RESPONSES",
@@ -363,7 +357,7 @@ function usage(exitCode, error) {
       "  --self-test-artifact-manifest  validate strict Rust/Wasm artifacts without network",
       "  --self-test-deploy-plan        validate fail-closed token handling without network",
       "  --json",
-      "  --no-attach-gateway-token   omit CF_API_TOKEN binding from tenant metadata",
+      "  Cloudflare AI bearer injection is owned by cinatoken-wfp-outbound; tenant token flags are rejected.",
     ].join("\n"),
   );
   process.exit(exitCode);
@@ -460,7 +454,6 @@ function uploadMetadata({
   aiGatewayId,
   routeAiGatewayIds,
   aiGatewayPolicy,
-  tenantApiToken,
   authorityKey,
   authorityReplayScript,
 }) {
@@ -479,6 +472,11 @@ function uploadMetadata({
       name: "CINATOKEN_WFP_WORKER_NAME",
       type: "plain_text",
       text: workerName,
+    },
+    {
+      name: "CINATOKEN_WFP_OUTBOUND_AUTH_MODE",
+      type: "plain_text",
+      text: outboundAuthMode,
     },
   ];
   if (aiGatewayId) {
@@ -507,13 +505,6 @@ function uploadMetadata({
         text: value,
       });
     }
-  }
-  if (tenantApiToken) {
-    bindings.push({
-      name: "CF_API_TOKEN",
-      type: "secret_text",
-      text: tenantApiToken,
-    });
   }
   bindings.push({
     name: "WFP_RELAY_AUTHORITY_KEY",
@@ -607,25 +598,6 @@ function redactMetadata(metadata) {
   };
 }
 
-function resolveTenantApiToken(options, apiToken) {
-  if (!options.attachGatewayToken) return null;
-  if (!options.tenantApiToken) {
-    throw new Error(
-      "tenant-api-token is required when attaching CF_API_TOKEN; set --tenant-api-token, WFP_TENANT_CF_API_TOKEN, or CLOUDFLARE_AI_GATEWAY_TOKEN, or explicitly use --no-attach-gateway-token",
-    );
-  }
-  const tenantApiToken = validatePlainValue(
-    options.tenantApiToken,
-    "tenant-api-token",
-  );
-  if (tenantApiToken === apiToken) {
-    throw new Error(
-      "deployment token and tenant runtime token must be different values",
-    );
-  }
-  return tenantApiToken;
-}
-
 function resolveAuthoritySecret(value) {
   const secret = required(value, "authority-secret").trim();
   if (new TextEncoder().encode(secret).length < 32) {
@@ -645,14 +617,8 @@ function deriveTenantAuthorityKey(authoritySecret, workerName) {
     .digest("base64url");
 }
 
-function artifactWarnings(options) {
-  const warnings = [];
-  if (!options.attachGatewayToken) {
-    warnings.push(
-      "tenant CF_API_TOKEN binding omitted; runtime will fail closed until attached",
-    );
-  }
-  return warnings;
+function artifactWarnings() {
+  return [];
 }
 
 function artifactManifest(options, modules) {
@@ -770,55 +736,23 @@ function expectArtifactValidationFailure(name, modules, expected, cases) {
 
 function runDeployPlanSelfTest() {
   const cases = [];
-  expectTokenResolutionFailure(
-    "missing-runtime-token",
-    { attachGatewayToken: true, tenantApiToken: null },
-    "deploy-token",
-    /tenant-api-token is required/,
-    cases,
-  );
-  expectTokenResolutionFailure(
-    "equal-runtime-token",
-    { attachGatewayToken: true, tenantApiToken: "deploy-token" },
-    "deploy-token",
-    /must be different values/,
-    cases,
-  );
-  const separate = resolveTenantApiToken(
-    { attachGatewayToken: true, tenantApiToken: "runtime-token" },
-    "deploy-token",
-  );
-  if (separate !== "runtime-token") {
-    throw new Error("separate runtime token was not preserved");
-  }
-  const separateMetadata = selfTestUploadMetadata(separate);
-  const separateBinding = separateMetadata.bindings.find(
-    (binding) => binding.name === "CF_API_TOKEN",
-  );
+  const outboundMetadata = selfTestUploadMetadata();
   if (
-    separateBinding?.text !== "runtime-token" ||
-    separateMetadata.bindings.some((binding) => binding.text === "deploy-token")
-  ) {
-    throw new Error("deployment metadata did not preserve token separation");
-  }
-  cases.push({ name: "separate-runtime-token", passed: true });
-  const omitted = resolveTenantApiToken(
-    { attachGatewayToken: false, tenantApiToken: null },
-    "deploy-token",
-  );
-  if (omitted !== null) {
-    throw new Error("explicit no-attach mode did not omit the runtime token");
-  }
-  if (
-    selfTestUploadMetadata(omitted).bindings.some(
+    outboundMetadata.bindings.some(
       (binding) => binding.name === "CF_API_TOKEN",
+    ) ||
+    !outboundMetadata.bindings.some(
+      (binding) =>
+        binding.name === "CINATOKEN_WFP_OUTBOUND_AUTH_MODE" &&
+        binding.type === "plain_text" &&
+        binding.text === outboundAuthMode,
     )
   ) {
     throw new Error(
-      "explicit no-attach mode still produced a CF_API_TOKEN binding",
+      "tenant metadata did not enforce platform outbound authentication",
     );
   }
-  cases.push({ name: "explicit-no-attach", passed: true });
+  cases.push({ name: "outbound-auth-without-tenant-token", passed: true });
   expectAuthorityResolutionFailure(
     "missing-authority-secret",
     null,
@@ -835,10 +769,7 @@ function runDeployPlanSelfTest() {
     "0123456789abcdef0123456789abcdef",
   );
   const authorityKey = deriveTenantAuthorityKey(authoritySecret, "tenant-smoke");
-  const authorityMetadata = selfTestUploadMetadata(
-    "runtime-token",
-    authorityKey,
-  );
+  const authorityMetadata = selfTestUploadMetadata(authorityKey);
   const authorityBinding = authorityMetadata.bindings.find(
     (binding) => binding.name === "WFP_RELAY_AUTHORITY_KEY",
   );
@@ -869,7 +800,6 @@ function runDeployPlanSelfTest() {
 }
 
 function selfTestUploadMetadata(
-  tenantApiToken,
   authorityKey = deriveTenantAuthorityKey(
     "0123456789abcdef0123456789abcdef",
     "tenant-smoke",
@@ -884,7 +814,6 @@ function selfTestUploadMetadata(
     aiGatewayId: null,
     routeAiGatewayIds: {},
     aiGatewayPolicy: {},
-    tenantApiToken,
     authorityKey,
     authorityReplayScript: "cinatoken-rust-api-staging",
   });
@@ -902,26 +831,6 @@ function expectAuthorityResolutionFailure(name, value, expected, cases) {
     return;
   }
   throw new Error(`${name} unexpectedly passed authority validation`);
-}
-
-function expectTokenResolutionFailure(
-  name,
-  options,
-  apiToken,
-  expected,
-  cases,
-) {
-  try {
-    resolveTenantApiToken(options, apiToken);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!expected.test(message)) {
-      throw new Error(`${name} failed with unexpected error: ${message}`);
-    }
-    cases.push({ name, passed: true });
-    return;
-  }
-  throw new Error(`${name} unexpectedly passed token validation`);
 }
 
 function sha256Hex(bytes) {

@@ -32,6 +32,8 @@ const AI_GATEWAY_BACKOFF_ENV: &str = "AI_GATEWAY_BACKOFF";
 const AI_GATEWAY_CACHE_TTL_SECONDS_ENV: &str = "AI_GATEWAY_CACHE_TTL_SECONDS";
 const AI_GATEWAY_SKIP_CACHE_ENV: &str = "AI_GATEWAY_SKIP_CACHE";
 const AI_GATEWAY_COLLECT_LOG_ENV: &str = "AI_GATEWAY_COLLECT_LOG";
+const WFP_OUTBOUND_AUTH_MODE_ENV: &str = "CINATOKEN_WFP_OUTBOUND_AUTH_MODE";
+const WFP_OUTBOUND_AUTH_MODE: &str = "platform-outbound-v1";
 const TENANT_MODULE_NAME: &str = "tenant.mjs";
 const CONTROL_PLANE_DEPLOYMENT_RUNTIME: &str = "js-fallback";
 const CONTROL_PLANE_ARTIFACT_UPLOAD_REQUIRED: bool = true;
@@ -66,7 +68,9 @@ pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
     "signed_body_bound_authority",
     "authority_replay_do",
     "tenant_scoped_authority_key",
-    "separate_runtime_token",
+    "outbound_worker_egress_policy",
+    "outbound_worker_token_injection",
+    "no_tenant_cloudflare_token",
     "tenant_script_plan",
     "rust_wasm_runtime",
     "rust_wasm_artifact_validation",
@@ -98,7 +102,6 @@ struct TenantScriptRequest {
     ai_gateway_skip_cache: Option<String>,
     ai_gateway_collect_log: Option<String>,
     compatibility_date: Option<String>,
-    attach_gateway_token: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -138,7 +141,8 @@ struct TenantScriptPlanResponse {
     ai_gateway_id_configured: bool,
     route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
     ai_gateway_request_policy_configured: GatewayRequestPolicyConfigured,
-    attach_gateway_token: bool,
+    outbound_auth_mode: &'static str,
+    tenant_cloudflare_token_attached: bool,
     artifact_upload_required: bool,
     js_fallback_ai_capable: bool,
     deployable: bool,
@@ -405,7 +409,6 @@ fn build_tenant_script_plan(
         .transpose()?
         .or_else(|| runtime_value(env, WFP_TENANT_COMPATIBILITY_DATE_ENV))
         .unwrap_or_else(|| DEFAULT_COMPATIBILITY_DATE.to_string());
-    let attach_gateway_token = request.attach_gateway_token.unwrap_or(true);
     let script = tenant_worker_script();
 
     let mut missing = Vec::new();
@@ -432,18 +435,12 @@ fn build_tenant_script_plan(
         ai_gateway_id.as_deref(),
         &route_ai_gateway_ids,
         &ai_gateway_request_policy,
-        attach_gateway_token.then_some(Some("<redacted>")).flatten(),
-        true,
     );
-    let mut warnings = vec![
+    let warnings = vec![
         "The generated JS fallback is status-only and cannot serve paid AI traffic.".to_string(),
         "Rust/Wasm artifact upload is required; use bun run deploy:wfp-tenant instead of the control-plane deploy endpoint.".to_string(),
+        "Cloudflare AI authentication must be injected by the dispatch namespace outbound Worker; tenant scripts never receive CF_API_TOKEN.".to_string(),
     ];
-    if !attach_gateway_token {
-        warnings.push(
-            "attach_gateway_token=false omits CF_API_TOKEN from plan metadata; control-plane deploy remains disabled and the Rust/Wasm artifact upload path owns runtime secret binding.".to_string(),
-        );
-    }
 
     Ok(TenantScriptPlanResponseInternal {
         plan: TenantScriptPlan {
@@ -462,13 +459,11 @@ fn build_tenant_script_plan(
             missing,
             warnings,
         },
-        attach_gateway_token,
     })
 }
 
 struct TenantScriptPlanResponseInternal {
     plan: TenantScriptPlan,
-    attach_gateway_token: bool,
 }
 
 impl std::ops::Deref for TenantScriptPlanResponseInternal {
@@ -493,7 +488,8 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
             || plan.route_ai_gateway_ids.any_configured(),
         route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
         ai_gateway_request_policy_configured: plan.ai_gateway_request_policy.configured(),
-        attach_gateway_token: plan.attach_gateway_token,
+        outbound_auth_mode: WFP_OUTBOUND_AUTH_MODE,
+        tenant_cloudflare_token_attached: false,
         artifact_upload_required: CONTROL_PLANE_ARTIFACT_UPLOAD_REQUIRED,
         js_fallback_ai_capable: JS_FALLBACK_AI_CAPABLE,
         deployable: false,
@@ -518,8 +514,6 @@ fn upload_metadata(
     ai_gateway_id: Option<&str>,
     route_ai_gateway_ids: &RouteGatewayIds,
     ai_gateway_request_policy: &GatewayRequestPolicy,
-    api_token: Option<&str>,
-    redacted: bool,
 ) -> Value {
     let mut bindings = vec![json!({
         "name": "CINATOKEN_TENANT_ID",
@@ -533,6 +527,11 @@ fn upload_metadata(
             "text": account_id
         }));
     }
+    bindings.push(json!({
+        "name": WFP_OUTBOUND_AUTH_MODE_ENV,
+        "type": "plain_text",
+        "text": WFP_OUTBOUND_AUTH_MODE
+    }));
     if let Some(ai_gateway_id) = ai_gateway_id {
         bindings.push(json!({
             "name": "AI_GATEWAY_ID",
@@ -557,13 +556,6 @@ fn upload_metadata(
                 "text": value
             }));
         }
-    }
-    if let Some(api_token) = api_token {
-        bindings.push(json!({
-            "name": "CF_API_TOKEN",
-            "type": "secret_text",
-            "text": if redacted { "<redacted>" } else { api_token }
-        }));
     }
     json!({
         "main_module": TENANT_MODULE_NAME,
@@ -644,9 +636,24 @@ pub(crate) fn wfp_tenant_rust_wasm_runtime_compiled() -> bool {
         && deploy_tool.contains("wasmMagic")
         && deploy_tool.contains("WFP_RELAY_AUTHORITY_KEY")
         && deploy_tool.contains("WFP_AUTHORITY_REPLAY")
+        && deploy_tool.contains("CINATOKEN_WFP_OUTBOUND_AUTH_MODE")
+        && !deploy_tool.contains("name: \"CF_API_TOKEN\"")
         && deploy_tool.contains("durable_object_namespace")
-        && deploy_tool.contains("deployment token and tenant runtime token must be different")
         && deploy_tool.contains("--manifest-only is no longer supported")
+}
+
+pub(crate) fn wfp_outbound_egress_policy_compiled() -> bool {
+    let source = include_str!("../../wfp-outbound/src/lib.rs");
+    source.contains("CINATOKEN_WFP_OUTBOUND_AI_TOKEN")
+        && source.contains("ALLOWED_AI_PATHS")
+        && source.contains("/ai/v1/chat/completions")
+        && source.contains("/ai/v1/responses")
+        && source.contains("/ai/v1/messages")
+        && source.contains("/ai/run")
+        && source.contains("RequestRedirect::Error")
+        && source.contains("FORWARDED_REQUEST_HEADERS")
+        && source.contains("FORWARDED_RESPONSE_HEADERS")
+        && !source.contains("passThroughOnException")
 }
 
 pub(crate) fn wfp_tenant_route_manifest_compiled() -> bool {
@@ -1037,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_metadata_never_exposes_api_token() {
+    fn upload_metadata_requires_outbound_auth_and_never_attaches_cloudflare_token() {
         let metadata = upload_metadata(
             "2026-06-17",
             "tenant-a",
@@ -1045,12 +1052,11 @@ mod tests {
             Some("gateway"),
             &RouteGatewayIds::default(),
             &GatewayRequestPolicy::default(),
-            Some("secret-token"),
-            true,
         );
         let raw = metadata.to_string();
-        assert!(raw.contains("<redacted>"));
-        assert!(!raw.contains("secret-token"));
+        assert!(raw.contains(WFP_OUTBOUND_AUTH_MODE_ENV));
+        assert!(raw.contains(WFP_OUTBOUND_AUTH_MODE));
+        assert!(!raw.contains("CF_API_TOKEN"));
     }
 
     #[test]
@@ -1068,8 +1074,6 @@ mod tests {
             Some("gateway-default"),
             &route_gateway_ids,
             &GatewayRequestPolicy::default(),
-            None,
-            false,
         );
         let raw = metadata.to_string();
         assert!(raw.contains("\"name\":\"AI_GATEWAY_ID\""));
@@ -1101,8 +1105,6 @@ mod tests {
             Some("gateway-default"),
             &RouteGatewayIds::default(),
             &policy,
-            None,
-            false,
         );
         let raw = metadata.to_string();
         assert!(raw.contains("\"name\":\"AI_GATEWAY_REQUEST_TIMEOUT_MS\""));

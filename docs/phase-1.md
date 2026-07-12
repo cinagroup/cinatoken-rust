@@ -599,11 +599,23 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Add provider-specific adapters beyond the currently implemented OpenAI,
   Anthropic, DeepSeek, Gemini-native, Workers AI, and rerank surfaces. A
   Cloudflare Gateway prefix does not make its same-channel Rust adapter ready.
-- Run the strict WFP upload against replacement credentials, capture the
-  official details/settings/content APIs plus a positive internal dispatch,
-  and feed all artifacts to `tools/verify_wfp_post_upload.mjs`. Keep dispatch
-  and paid relay gates off until the result reports `verified=true` and the
-  authority replay/billing race evidence is archived.
+- Deploy and attach the Rust outbound service `cinatoken-wfp-outbound` to the
+  staging dispatch namespace. Store `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on
+  that service; the tenant must receive only
+  `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` for outbound auth and
+  no Cloudflare bearer. Then run the strict WFP upload against replacement
+  credentials, capture the official details/settings/content APIs plus a
+  positive internal dispatch, and feed all artifacts to
+  `tools/verify_wfp_post_upload.mjs`. Archive outbound-policy proof for only
+  `POST application/json`, valid JSON up to 4 MiB, the exact account-scoped
+  `/ai/run`, `/ai/v1/chat/completions`, `/ai/v1/responses`, and
+  `/ai/v1/messages` URLs, header stripping/auth injection, and redirect
+  rejection. See Cloudflare's
+  [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+  and [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/)
+  docs. Keep dispatch and paid relay gates off until remote attachment,
+  bearer-free tenant readback, live egress, `verified=true`, and authority
+  replay/billing race evidence are archived. Production remains **NO-GO**.
 - Capture staging distribution/route evidence for relay weighted channel
   selection, including retry, auto-group, affinity, and provider-family filters.
 - Capture provider-specific staging replay/reconciliation evidence before

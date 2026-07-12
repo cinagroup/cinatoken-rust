@@ -1,5 +1,5 @@
 [package]
-name = "cinatoken-wfp-tenant"
+name = "cinatoken-wfp-outbound"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,15 +7,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-cinatoken-wfp-authority = { path = "../wfp-authority" }
 console_error_panic_hook = "0.1"
 futures-util = { version = "0.3", default-features = false }
 js-sys = "0.3"
-serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
 wasm-bindgen = "0.2"
-worker = { workspace = true }
+worker.workspace = true

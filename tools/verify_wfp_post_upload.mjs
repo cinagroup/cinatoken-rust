@@ -6,6 +6,7 @@ import path from "node:path";
 
 const schemaVersion = 1;
 const expectedRuntime = "rust-wasm";
+const expectedOutboundAuthMode = "platform-outbound-v1";
 const expectedRoutes = [
   "/__cinatoken/tenant/status",
   "/v1/chat/completions",
@@ -17,9 +18,14 @@ const requiredBindings = new Map([
   ["CINATOKEN_TENANT_ID", "plain_text"],
   ["CF_ACCOUNT_ID", "plain_text"],
   ["CINATOKEN_WFP_WORKER_NAME", "plain_text"],
-  ["CF_API_TOKEN", "secret_text"],
+  ["CINATOKEN_WFP_OUTBOUND_AUTH_MODE", "plain_text"],
   ["WFP_RELAY_AUTHORITY_KEY", "secret_text"],
   ["WFP_AUTHORITY_REPLAY", "durable_object_namespace"],
+]);
+const forbiddenTenantBindings = new Set([
+  "CF_API_TOKEN",
+  "CLOUDFLARE_AI_GATEWAY_TOKEN",
+  "CINATOKEN_WFP_OUTBOUND_AI_TOKEN",
 ]);
 
 try {
@@ -220,6 +226,13 @@ function validateDeployEvidence(value, { allowDryRun }) {
     label: "[binding] upload metadata",
     expected: true,
   });
+  for (const binding of bindings) {
+    if (forbiddenTenantBindings.has(binding.name)) {
+      throw new Error(
+        `[binding] tenant-visible ${binding.name} binding is forbidden`,
+      );
+    }
+  }
   for (const [name, type] of requiredBindings) {
     const binding = bindings.find((item) => item.name === name);
     if (!binding || binding.type !== type) {
@@ -228,6 +241,11 @@ function validateDeployEvidence(value, { allowDryRun }) {
   }
   assertPlainBinding(bindings, "CINATOKEN_TENANT_ID", tenantId);
   assertPlainBinding(bindings, "CINATOKEN_WFP_WORKER_NAME", publicScriptName);
+  assertPlainBinding(
+    bindings,
+    "CINATOKEN_WFP_OUTBOUND_AUTH_MODE",
+    expectedOutboundAuthMode,
+  );
   if (Array.isArray(deploy.warnings) && deploy.warnings.length > 0 && !allowDryRun) {
     throw new Error("[upload] production upload evidence contains warnings");
   }
@@ -731,6 +749,32 @@ async function runSelfTest() {
     cases,
   );
   await expectFailure(
+    "outbound-auth-mode-mismatch",
+    fixture,
+    (copy) => {
+      copy.deploy.metadata.bindings.find(
+        (item) => item.name === "CINATOKEN_WFP_OUTBOUND_AUTH_MODE",
+      ).text = "tenant-token";
+    },
+    /\[binding\].*CINATOKEN_WFP_OUTBOUND_AUTH_MODE.*deployment identity/,
+    cases,
+  );
+  for (const name of forbiddenTenantBindings) {
+    await expectFailure(
+      `tenant-visible-${name.toLowerCase()}-rejected`,
+      fixture,
+      (copy) => {
+        copy.deploy.metadata.bindings.push({
+          name,
+          type: "secret_text",
+          text: "<redacted>",
+        });
+      },
+      new RegExp(`\\[binding\\].*${name}.*forbidden`),
+      cases,
+    );
+  }
+  await expectFailure(
     "hash-mismatch",
     fixture,
     (copy) => {
@@ -780,6 +824,7 @@ async function runSelfTest() {
       "script",
       "module",
       "binding",
+      "forbidden-binding",
       "hash",
       "readback",
       "dispatch",
@@ -816,7 +861,11 @@ function selfTestFixture() {
     { name: "CINATOKEN_TENANT_ID", type: "plain_text", text: "tenant-smoke" },
     { name: "CF_ACCOUNT_ID", type: "plain_text", text: "00000000000000000000000000000000" },
     { name: "CINATOKEN_WFP_WORKER_NAME", type: "plain_text", text: "tenant-smoke" },
-    { name: "CF_API_TOKEN", type: "secret_text", text: "<redacted>" },
+    {
+      name: "CINATOKEN_WFP_OUTBOUND_AUTH_MODE",
+      type: "plain_text",
+      text: expectedOutboundAuthMode,
+    },
     { name: "WFP_RELAY_AUTHORITY_KEY", type: "secret_text", text: "<redacted>" },
     {
       name: "WFP_AUTHORITY_REPLAY",

@@ -332,6 +332,18 @@ cinaVibeSDK pattern:
   It is independent of preview-host and admin status dispatch.
 - The tenant runtime target is Rust/Wasm through the `cinatoken-wfp-tenant`
   crate, not a JS fallback for production.
+- The dispatch namespace attaches outbound service `cinatoken-wfp-outbound`.
+  The outbound Worker, not the tenant, owns
+  `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` and injects the Cloudflare bearer. For
+  outbound authentication the tenant receives only the non-secret marker
+  `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1`; `CF_API_TOKEN` and
+  every other Cloudflare bearer are forbidden tenant bindings.
+- Outbound egress is fail-closed: only `POST application/json` requests with a
+  valid JSON body up to 4 MiB may target the exact account-scoped Cloudflare AI
+  REST URLs ending in `/ai/run`, `/ai/v1/chat/completions`,
+  `/ai/v1/responses`, or `/ai/v1/messages`. The outbound Worker strips
+  sensitive request/response headers by rebuilding allowlists and blocks
+  redirects.
 - Before WFP dispatch, the central relay creates an
   `x-cinatoken-wfp-authority` envelope. It is HMAC-SHA256 signed with a
   per-worker key derived from the platform-only
@@ -372,15 +384,23 @@ Current mapped status from existing docs:
 - The Cloudflare Platform frontend panel now shows WFP tenant route/guard and
   smoke-readiness signals from `/api/platform/capabilities`; those signals do
   not replace archived staging smoke.
-- The artifact uploader requires a tenant runtime token and rejects reuse of the
-  Cloudflare deploy token. The runtime token is attached to the tenant Worker;
-  the deploy token is used only for dispatch-namespace script administration.
-- No deployment is claimed. Production proof still needs a real Rust/Wasm
-  upload plus REST readback, an archived manifest with per-module SHA-256
-  hashes, and a staging signed-authority billing canary proving one central
-  reserve followed by exactly one settlement or refund and one audit outcome.
-  Replay-resistance evidence is separate and remains pending; short lifetime and
-  body binding are not described as replay-proof.
+- The artifact uploader rejects tenant token flags and binds the outbound auth
+  marker instead. The Cloudflare deploy token is used only for dispatch-
+  namespace script administration and is never attached to the tenant or the
+  outbound Worker.
+- No remote outbound-service attachment, tenant binding readback, or live AI
+  request is claimed. Production proof still needs a real Rust/Wasm upload plus
+  REST readback, an archived manifest with per-module SHA-256 hashes, proof that
+  `cinatoken-wfp-outbound` alone owns its AI token, and a staging signed-
+  authority billing canary proving one central reserve followed by exactly one
+  settlement or refund and one audit outcome. Replay-resistance evidence is
+  separate and remains pending; short lifetime and body binding are not
+  described as replay-proof. Production remains **NO-GO**.
+
+Cloudflare documents the platform egress interception model in
+[Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+and the four allowed upstream shapes in the
+[AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/).
 
 Production rule:
 
@@ -546,11 +566,15 @@ available.
 Required evidence:
 
 - Real `DISPATCHER` binding and dispatch namespace.
+- Deployed `cinatoken-wfp-outbound` service attached as that namespace's
+  outbound Worker, with `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` present only on the
+  service.
 - Uploaded `cinatoken-wfp-tenant` Rust/Wasm artifact.
 - Redacted artifact manifest from
   `tools/deploy_wfp_tenant_artifact.mjs --dry-run --json`, proving
   `runtime: "rust-wasm"`, main module presence, Wasm module presence, module
-  byte counts, content types, and per-module SHA-256 values.
+  byte counts, content types, per-module SHA-256 values, the exact outbound auth
+  marker, and absence of every Cloudflare bearer binding.
 - Internal dispatch status smoke shows `runtime: "rust-wasm"`,
   `x-cinatoken-wfp-runtime: rust-wasm`, empty inbound sensitive headers,
   controlled route markers, and matching worker identity.
@@ -570,6 +594,12 @@ Required evidence:
 - Route-specific Gateway ID or documented default Gateway selection.
 - Valid tenant-controlled request policy headers, such as timeout, retry, cache,
   and log collection controls.
+- Live negative egress proof for non-POST methods, non-JSON or invalid JSON,
+  bodies over 4 MiB, wrong scheme/host/account/path, query/fragment variants,
+  sensitive caller headers, and redirects.
+- Live positive egress proof for each of the four exact Cloudflare AI REST URLs,
+  showing outbound-owned authentication without exposing a bearer to tenant
+  bindings, logs, responses, or evidence artifacts.
 - Gateway logs contain tenant metadata without raw credentials.
 - Response headers exclude auth, cookies, `cf-aig-*`, transfer, and platform
   internal headers.
@@ -682,7 +712,7 @@ Before enabling production traffic:
 
 ## Current Production Blockers
 
-As of 2026-07-11, including the scheduling-gateway and local D1 evidence above:
+As of 2026-07-12, including the scheduling-gateway and local D1 evidence above:
 
 - Main relay AI Gateway forwarding is wired as gated substrate, but still needs
   live staging canary evidence and billing log comparison before cutover.
@@ -717,9 +747,13 @@ As of 2026-07-11, including the scheduling-gateway and local D1 evidence above:
   production `/v1/realtime`.
 - WFP dispatch now also has a platform-owned one-time authority Durable Object,
   canonical shard enforcement, fail-closed tenant consumption, and external DO
-  upload metadata. It still needs a real paid-plan `DISPATCHER` binding, strict
-  Rust/Wasm artifact plus replay binding readback, and deployed sequential and
-  concurrent replay proof before any paid canary.
+  upload metadata. The new Rust outbound Worker locally defines the required
+  bearer-free tenant boundary and four-route egress allowlist. It still needs a
+  real paid-plan `DISPATCHER` binding with `cinatoken-wfp-outbound` attached,
+  outbound-only secret readback, strict Rust/Wasm artifact plus replay binding
+  readback, and deployed sequential/concurrent replay and egress proof before
+  any paid canary. Remote attachment and live evidence are unverified, so WFP
+  production remains **NO-GO**.
 - The first production cutover should not depend on WFP. Keep WFP as a later
   multi-tenant extension.
 

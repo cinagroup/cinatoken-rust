@@ -69,11 +69,11 @@ use crate::task_runner::{
 };
 use crate::wfp_authority_replay::replay_contract_compiled as wfp_authority_replay_contract_compiled;
 use crate::wfp_tenant::{
-    wfp_tenant_ai_gateway_policy_compiled, wfp_tenant_cutover_guards,
-    wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_relay_authority_verifier_compiled,
-    wfp_tenant_response_header_guard_compiled, wfp_tenant_route_manifest_compiled,
-    wfp_tenant_rust_wasm_runtime_compiled, wfp_tenant_script_plan_compiled,
-    wfp_tenant_supported_routes,
+    wfp_outbound_egress_policy_compiled, wfp_tenant_ai_gateway_policy_compiled,
+    wfp_tenant_cutover_guards, wfp_tenant_internal_dispatch_required_compiled,
+    wfp_tenant_relay_authority_verifier_compiled, wfp_tenant_response_header_guard_compiled,
+    wfp_tenant_route_manifest_compiled, wfp_tenant_rust_wasm_runtime_compiled,
+    wfp_tenant_script_plan_compiled, wfp_tenant_supported_routes,
 };
 
 pub const WFP_DISPATCH_BINDING: &str = "DISPATCHER";
@@ -257,6 +257,7 @@ struct PlatformCapabilities {
     wfp_tenant_relay_authority_verifier_compiled: bool,
     wfp_tenant_response_header_guard_compiled: bool,
     wfp_tenant_ai_gateway_policy_compiled: bool,
+    wfp_outbound_egress_policy_compiled: bool,
     wfp_relay_authority_transport_compiled: bool,
     wfp_relay_authority_transport_ready: bool,
     wfp_tenant_smoke_ready: bool,
@@ -389,6 +390,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_relay_authority_verifier_compiled();
     let wfp_tenant_response_header_guard_compiled = wfp_tenant_response_header_guard_compiled();
     let wfp_tenant_ai_gateway_policy_compiled = wfp_tenant_ai_gateway_policy_compiled();
+    let wfp_outbound_egress_policy_compiled = wfp_outbound_egress_policy_compiled();
     let wfp_relay_authority_transport_compiled = relay_wfp_authority_transport_contract_compiled();
     let wfp_relay_authority_transport_ready = is_wfp_relay_authority_transport_ready(
         wfp_dispatch_binding_available,
@@ -402,6 +404,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_route_manifest_compiled,
         wfp_tenant_relay_authority_verifier_compiled,
         wfp_tenant_response_header_guard_compiled,
+        wfp_outbound_egress_policy_compiled,
     );
     let wfp_tenant_smoke_ready = is_wfp_tenant_smoke_ready(
         wfp_dispatch_binding_available,
@@ -414,6 +417,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_internal_dispatch_required_compiled,
         wfp_tenant_response_header_guard_compiled,
         wfp_tenant_ai_gateway_policy_compiled,
+        wfp_outbound_egress_policy_compiled,
     );
     let realtime_session_gateway_enabled = env_flag(&env, REALTIME_SESSION_GATEWAY_ENABLED_ENV);
     let realtime_session_v1_enabled = env_flag(&env, REALTIME_SESSION_V1_ENABLED_ENV);
@@ -628,6 +632,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_relay_authority_verifier_compiled,
         wfp_tenant_response_header_guard_compiled,
         wfp_tenant_ai_gateway_policy_compiled,
+        wfp_outbound_egress_policy_compiled,
         wfp_relay_authority_transport_compiled,
         wfp_relay_authority_transport_ready,
         wfp_tenant_smoke_ready,
@@ -2066,6 +2071,7 @@ fn is_wfp_tenant_smoke_ready(
     relay_authority_verifier_compiled: bool,
     response_header_guard_compiled: bool,
     ai_gateway_policy_compiled: bool,
+    outbound_egress_policy_compiled: bool,
 ) -> bool {
     dispatcher_bound
         && dispatch_enabled
@@ -2077,6 +2083,7 @@ fn is_wfp_tenant_smoke_ready(
         && relay_authority_verifier_compiled
         && response_header_guard_compiled
         && ai_gateway_policy_compiled
+        && outbound_egress_policy_compiled
 }
 
 fn is_wfp_relay_authority_transport_ready(
@@ -2091,6 +2098,7 @@ fn is_wfp_relay_authority_transport_ready(
     route_manifest_compiled: bool,
     relay_authority_verifier_compiled: bool,
     response_header_guard_compiled: bool,
+    outbound_egress_policy_compiled: bool,
 ) -> bool {
     dispatcher_bound
         && dispatch_enabled
@@ -2103,6 +2111,7 @@ fn is_wfp_relay_authority_transport_ready(
         && route_manifest_compiled
         && relay_authority_verifier_compiled
         && response_header_guard_compiled
+        && outbound_egress_policy_compiled
 }
 
 fn is_realtime_session_platform_smoke_ready(
@@ -2561,7 +2570,9 @@ mod tests {
             "signed_body_bound_authority",
             "authority_replay_do",
             "tenant_scoped_authority_key",
-            "separate_runtime_token",
+            "outbound_worker_egress_policy",
+            "outbound_worker_token_injection",
+            "no_tenant_cloudflare_token",
             "tenant_script_plan",
             "rust_wasm_runtime",
             "rust_wasm_artifact_validation",
@@ -2585,14 +2596,15 @@ mod tests {
         assert!(wfp_authority_replay_contract_compiled());
         assert!(wfp_tenant_response_header_guard_compiled());
         assert!(wfp_tenant_ai_gateway_policy_compiled());
+        assert!(wfp_outbound_egress_policy_compiled());
     }
 
     #[test]
     fn wfp_tenant_smoke_ready_requires_binding_gate_and_contracts() {
-        assert!(wfp_tenant_smoke_ready_with_flags([true; 10]));
+        assert!(wfp_tenant_smoke_ready_with_flags([true; 11]));
 
-        for false_gate in 0..10 {
-            let mut flags = [true; 10];
+        for false_gate in 0..11 {
+            let mut flags = [true; 11];
             flags[false_gate] = false;
             assert!(
                 !wfp_tenant_smoke_ready_with_flags(flags),
@@ -2604,9 +2616,9 @@ mod tests {
     #[test]
     fn wfp_relay_authority_readiness_requires_every_transport_boundary() {
         assert!(relay_wfp_authority_transport_contract_compiled());
-        assert!(wfp_relay_authority_ready_with_flags([true; 11]));
-        for false_gate in 0..11 {
-            let mut flags = [true; 11];
+        assert!(wfp_relay_authority_ready_with_flags([true; 12]));
+        for false_gate in 0..12 {
+            let mut flags = [true; 12];
             flags[false_gate] = false;
             assert!(
                 !wfp_relay_authority_ready_with_flags(flags),
@@ -2800,17 +2812,17 @@ mod tests {
         )
     }
 
-    fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 10]) -> bool {
+    fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 11]) -> bool {
         is_wfp_tenant_smoke_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-            flags[8], flags[9],
+            flags[8], flags[9], flags[10],
         )
     }
 
-    fn wfp_relay_authority_ready_with_flags(flags: [bool; 11]) -> bool {
+    fn wfp_relay_authority_ready_with_flags(flags: [bool; 12]) -> bool {
         is_wfp_relay_authority_transport_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-            flags[8], flags[9], flags[10],
+            flags[8], flags[9], flags[10], flags[11],
         )
     }
 }

@@ -10012,3 +10012,56 @@ credential. Staging must still prove same-session reconnect, old/new bridge
 close races, concurrent response settlement, lease expiry, alarm/eviction,
 14-minute bridge rollover, provider usage reconciliation, observability,
 capacity, and rollback. No exposed credential was used.
+
+### 22.162 2026-07-12 WFP Outbound Worker Authentication Boundary
+
+This section supersedes the current operator meaning of earlier WFP migration
+entries that required a tenant runtime Cloudflare token. Those dated entries
+remain unchanged as historical implementation logs; they must not be used as
+production provisioning instructions.
+
+Authoritative architecture:
+
+- The Workers for Platforms dispatch namespace attaches outbound service
+  `cinatoken-wfp-outbound`. Cloudflare documents this interception and
+  credential-injection pattern in
+  [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/).
+- `cinatoken-wfp-outbound` alone owns the secret
+  `CINATOKEN_WFP_OUTBOUND_AI_TOKEN`. The dispatch deploy/readback token,
+  authority master, and outbound AI token remain separate platform credentials;
+  none is attached to a tenant.
+- For outbound authentication the tenant receives only the non-secret binding
+  `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1`. A tenant must never
+  receive `CF_API_TOKEN`, `WFP_TENANT_CF_API_TOKEN`,
+  `CLOUDFLARE_AI_GATEWAY_TOKEN`, or any other Cloudflare bearer. The strict
+  uploader rejects retired tenant-token flags.
+- The outbound Worker accepts only `POST` requests whose media type is
+  `application/json`, validates the JSON body, and enforces a 4 MiB maximum
+  after any `Content-Length` precheck.
+- Egress is limited to the exact URLs
+  `https://api.cloudflare.com/client/v4/accounts/{account}/ai/run`,
+  `https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/chat/completions`,
+  `https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/responses`,
+  and
+  `https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/messages`.
+  Cloudflare's [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/)
+  documents these four endpoint shapes.
+- The outbound Worker rejects wrong scheme, host, account, port, path, URL
+  credentials, query, and fragment. It rebuilds request and response headers
+  from narrow allowlists, injects its own `Authorization: Bearer ...`, and
+  rejects redirects.
+
+Production evidence boundary:
+
+- Local source, unit tests, Wasm checks, dry-run upload manifests, and commented
+  Wrangler outbound configuration are contract evidence only.
+- Still required are remote service deployment, dispatch-namespace outbound
+  attachment readback, proof that `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` exists only
+  on the outbound service, bearer-free tenant binding readback, positive live
+  smoke for all four exact routes, negative method/content/body/URL/header/
+  redirect cases, Gateway log reconciliation, signed-authority replay and
+  exactly-one provider-call evidence, central billing/audit reconciliation, and
+  rollback.
+- No remote outbound attachment or live AI evidence is verified by this
+  increment. Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; WFP production remains
+  **NO-GO**.

@@ -870,6 +870,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Outbound AI REST egress'),
+          description: t(
+            'Keeps the Cloudflare AI token in the outbound Worker and permits only exact Cloudflare AI REST routes.'
+          ),
+          ready: capabilities.wfp_outbound_egress_policy_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Tenant smoke readiness'),
           description: t(
             'Requires DISPATCHER, dispatch gates, route manifest, internal dispatch checks, response-header guard, and AI Gateway policy contract.'

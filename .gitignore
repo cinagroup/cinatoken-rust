@@ -3,6 +3,7 @@
 /dist/
 /build/
 /crates/*/build/
+/crates/*/.wrangler/
 /.wrangler/
 /.dev.vars
 /exports/

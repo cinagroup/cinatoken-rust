@@ -17,6 +17,7 @@ members = [
   "crates/tasks",
   "crates/tokenizer",
   "crates/worker",
+  "crates/wfp-outbound",
   "crates/wfp-tenant",
   "crates/wfp-authority",
   "crates/xtask",

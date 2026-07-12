@@ -391,14 +391,15 @@ captured.
 | `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` | Permits Realtime D1 quota/replay/audit settlement and allows the public v1 route to proceed past its billing interlock | Isolated staging D1 only until idempotent pre-reserve/refund, per-response replay identity, two-response settlement, bounded alarm retry, rollback, and no-double-charge evidence pass; explicitly false in default/staging/production config |
 | `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` | Plain non-secret var that bounds how long a newly created per-response reservation may remain unsettled before the Durable Object's shared alarm attempts an idempotent D1 refund | Default `600`; accepted range `30..3600`; missing, unparsable, or out-of-range values fall back to `600`. Changes do not rewrite persisted deadlines. Set from measured staging response-duration p99 plus retry/clock-skew margin, archive the capability value before/after a temporary override, prove a not-yet-due lease is untouched and an expired lease refunds once after eviction/restart, and alert on repeated refund attempts before production canary. Expiry refunds continue when the settlement write gate is off |
 
-### WFP tenant artifact and relay authority
+### WFP tenant artifact, relay authority, and outbound service
 
 The root-only plan route may report redacted artifact requirements, but the
 Worker-side deploy route is disabled. The generated JavaScript fallback is
 status-only and is not a production AI runtime. Build `crates/wfp-tenant` with
 `bun run build:wfp-tenant`, then use only the strict Rust/Wasm artifact uploader
 behind `bun run deploy:wfp-tenant`. It rejects a missing/empty main shim, a
-missing or invalid Wasm module, an incomplete import graph, and token reuse.
+missing or invalid Wasm module, an incomplete import graph, and any retired
+tenant Cloudflare-token flag.
 
 The official Workers for Platforms Scripts REST API documents the dispatch
 namespace script upload and readback endpoints:
@@ -406,13 +407,25 @@ namespace script upload and readback endpoints:
 Cloudflare's Worker guidance also recommends explicit secret handling and
 request-boundary validation:
 <https://developers.cloudflare.com/workers/best-practices/workers-best-practices/>.
+The authoritative egress and upstream route references are Cloudflare's
+[Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+configuration and
+[AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/).
+
+The dispatch namespace must attach service `cinatoken-wfp-outbound` as its
+outbound Worker. That service permits only `POST application/json` with valid
+JSON up to 4 MiB to the exact account-scoped `/ai/run`,
+`/ai/v1/chat/completions`, `/ai/v1/responses`, and `/ai/v1/messages` URLs. It
+injects authentication, rebuilds request/response headers from allowlists, and
+blocks redirects.
 
 | Var/secret | Kind | Required for | Notes |
 | --- | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | var | Tenant script plan/deploy URL and runtime AI Gateway calls | Plain account identifier; may be left empty until WFP staging |
 | `CLOUDFLARE_API_TOKEN` | secret | Dispatch namespace Rust/Wasm script upload/readback only | Never commit; use a least-privilege deploy token and do not attach it to the tenant runtime |
 | `CLOUDFLARE_AI_GATEWAY_TOKEN` | secret | Preferred main-relay AI Gateway REST runtime token once the router is canaried | Prefer this narrower runtime secret over reusing the WFP dispatch deploy token |
-| `WFP_TENANT_CF_API_TOKEN` or `CLOUDFLARE_AI_GATEWAY_TOKEN` | local secret/env for artifact uploader | Required tenant runtime `CF_API_TOKEN` binding for real upload | Must be non-empty and distinct from `CLOUDFLARE_API_TOKEN`; least privilege for runtime AI Gateway/Workers AI calls only |
+| `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` | outbound Worker secret | AI Gateway REST authentication for `cinatoken-wfp-outbound` | Required only on the outbound service; never attach to a tenant, dispatch Worker, upload manifest, log, or evidence artifact; do not reuse the dispatch deploy token |
+| `CINATOKEN_WFP_OUTBOUND_AUTH_MODE` | tenant plain-text var | Declares platform-owned outbound auth | Must equal `platform-outbound-v1`; this marker replaces tenant runtime Cloudflare tokens and carries no credential |
 | `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central authority signing only | Master secret, minimum 32 bytes; retained only by the platform Worker and local artifact uploader context; never bind it into a tenant Worker or expose it in manifests/logs |
 | `WFP_RELAY_AUTHORITY_KEY` | tenant Worker secret | Verification for one named tenant Worker | The artifact uploader derives this per-worker HMAC key from the platform master and worker name, then binds only this key into that tenant; it must not equal or reveal the platform master |
 | `WFP_AUTHORITY_REPLAY_SCRIPT_NAME` | uploader-only var | External tenant DO binding | Exact environment-specific main Worker script that owns `WfpAuthorityReplay`; pass as `--authority-replay-script`; never point staging tenants at production or vice versa |
@@ -440,15 +453,22 @@ request-boundary validation:
 Smoke order:
 
 1. Keep `WFP_RELAY_TRANSPORT_ENABLED=false`. Provision the platform-only
-   `WFP_RELAY_AUTHORITY_SECRET` and prepare separate least-privilege deploy and
-   tenant runtime tokens. Never bind the master secret into a tenant Worker.
+   `WFP_RELAY_AUTHORITY_SECRET`, a least-privilege dispatch deploy/readback
+   token, and `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on service
+   `cinatoken-wfp-outbound`. Never bind either platform secret or any Cloudflare
+   bearer into a tenant Worker.
 2. Run the WFP tenant checks and `bun run build:wfp-tenant`; archive the strict
    dry-run manifest from `tools/deploy_wfp_tenant_artifact.mjs`, including every
-   module hash and the validated Wasm import graph.
-3. Against staging only, run the strict uploader with the deploy token, distinct
-   runtime token, and platform master available only to the uploader process.
-   Verify it derives and binds `WFP_RELAY_AUTHORITY_KEY` for the named worker,
-   not `WFP_RELAY_AUTHORITY_SECRET`. Pass the staging main Worker script with
+   module hash and the validated Wasm import graph. Verify the manifest binds
+   `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` and contains neither
+   `CF_API_TOKEN` nor any equivalent Cloudflare bearer.
+3. Build and deploy `cinatoken-wfp-outbound`, attach it to the staging dispatch
+   namespace, and archive configuration/readback proving the service name,
+   account ID, and outbound-only secret ownership without exposing the value.
+   Then run the strict tenant uploader with the deploy token and platform master
+   available only to the uploader process. Verify it derives and binds
+   `WFP_RELAY_AUTHORITY_KEY` for the named worker, not
+   `WFP_RELAY_AUTHORITY_SECRET`. Pass the staging main Worker script with
    `--authority-replay-script`; readback must show `WFP_AUTHORITY_REPLAY` as an
    external `durable_object_namespace` for class `WfpAuthorityReplay` on that
    exact script. Archive the redacted PUT result and a GET content/metadata
@@ -474,7 +494,8 @@ Smoke order:
 4. Enable only the gates needed for an admin-authenticated status probe. Confirm
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` reaches the
    Rust/Wasm runtime, while every admin AI path, preview-host AI path, and
-   `/v1/embeddings` attempt is rejected.
+   `/v1/embeddings` attempt is rejected. Status/readback must report the exact
+   outbound auth mode and no tenant Cloudflare token.
 5. Seed an isolated staging channel with
    `channels.other_info.wfp_worker=<worker>`, enable
    `WFP_RELAY_TRANSPORT_ENABLED` for the canary, and call one retained AI route
@@ -488,11 +509,17 @@ Smoke order:
    and alarm cleanup. For the accepted request, prove one provider call, one D1
    channel selection and reserve, then exactly one central settlement or refund
    and the matching audit record. Disable the transport gate after smoke.
+7. Archive outbound-policy negatives for non-POST, non-JSON/invalid JSON, body
+   over 4 MiB, wrong scheme/host/account/path, query/fragment, caller auth/cookie
+   headers, and redirects. Archive one positive request for each exact allowed
+   AI REST route and prove only the outbound Worker injected authorization.
 
-No staging upload, binding readback, signed-authority billing canary, or live
-replay race is claimed by this checklist; those are still required production
-evidence. The post-upload verifier proves evidence consistency only when fed
-real remote captures; its self-test proves only the contract shape.
+No staging upload, outbound-service attachment, tenant binding readback,
+signed-authority billing canary, live egress request, or live replay race is
+claimed by this checklist; those are still required production evidence. The
+post-upload verifier proves evidence consistency only when fed real remote
+captures; its self-test proves only the contract shape. Production is
+**NO-GO**.
 
 ### Migration prerequisite
 

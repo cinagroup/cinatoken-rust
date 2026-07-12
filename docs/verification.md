@@ -53,7 +53,7 @@ Last checked: 2026-07-12
   build, and optimized WFP tenant build passed. Only the two existing unused
   topup repository warnings remain.
 
-## WFP Authority Increment Boundary
+## WFP Authority And Outbound Boundary
 
 - Current source inspection shows a default-off post-admission WFP transport:
   relay-token authentication, D1 channel selection, and quota reserve occur
@@ -67,21 +67,36 @@ Last checked: 2026-07-12
   channel ID, and request ID.
 - Admin dispatch is status-only, generated JavaScript fallback AI deploy is
   disabled, and the strict production artifact path is the Rust/Wasm uploader.
-  A tenant runtime token is required for real upload and must differ from the
-  deploy token.
+  The dispatch namespace must attach outbound service `cinatoken-wfp-outbound`.
+  That service alone owns secret `CINATOKEN_WFP_OUTBOUND_AI_TOKEN`; the tenant
+  receives `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` for outbound
+  authentication and must never receive `CF_API_TOKEN` or any other Cloudflare
+  bearer. The deploy/readback token also remains outside the tenant.
 - The retained WFP tenant routes are `/v1/chat/completions`, `/v1/responses`,
   `/v1/messages`, and `/ai/run`. `/v1/embeddings` is removed from this tenant
   transport contract.
+- The outbound Worker accepts only `POST` with `application/json` and a valid
+  JSON body no larger than 4 MiB. It permits only the exact account-scoped URLs
+  `https://api.cloudflare.com/client/v4/accounts/{account}/ai/run`,
+  `/ai/v1/chat/completions`, `/ai/v1/responses`, and `/ai/v1/messages`; it
+  injects its own bearer, rebuilds request/response headers from allowlists, and
+  rejects redirects. This follows Cloudflare's
+  [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+  architecture and the documented
+  [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/).
 - This section supersedes historical 2026-07-05 WFP entries below that describe
-  admin AI dispatch, generated fallback AI parity/deploy, or embeddings support.
-  Those entries remain only as an implementation history.
-- No deployment is verified here. A real dispatch-namespace Rust/Wasm upload
-  and REST readback plus a staging signed-authority billing canary and
-  live replay evidence are still pending. The local tenant now consumes each
-  envelope once through `WfpAuthorityReplay`, but sequential/concurrent races,
-  external binding identity, eviction/redeploy persistence, cleanup, load, and
-  one-provider-call behavior are not deployed evidence. Do not treat local
-  compile/tests, dry-run manifests, or capability fields as production proof.
+  admin AI dispatch, generated fallback AI parity/deploy, embeddings support,
+  or tenant-owned Cloudflare tokens. Those entries remain only as an
+  implementation history.
+- No remote outbound-service attachment, tenant binding readback, or live AI
+  request is verified here. A real dispatch-namespace Rust/Wasm upload/readback,
+  outbound service and secret attachment proof, staging signed-authority billing
+  canary, and live replay evidence are still pending. The local tenant now
+  consumes each envelope once through `WfpAuthorityReplay`, but sequential/
+  concurrent races, external binding identity, eviction/redeploy persistence,
+  cleanup, load, and one-provider-call behavior are not deployed evidence. Do
+  not treat local compile/tests, dry-run manifests, or capability fields as
+  production proof. WFP production remains **NO-GO**.
 
 ## Passed
 
@@ -131,8 +146,9 @@ Last checked: 2026-07-12
   alarm/eviction, disconnect-refund, D1 rollback, and Go/Rust reconciliation
   evidence is still missing. WFP tenant AI forwarding also remains NO-GO for
   paid traffic until central auth/provider/billing authority, real Rust/Wasm
-  artifact identity, separate least-privilege runtime credentials, and strict
-  2xx canary evidence are proven.
+  artifact identity, outbound-service secret isolation and namespace
+  attachment, bearer-free tenant readback, and strict 2xx canary evidence are
+  proven.
 - `bun tools/smoke_realtime_settlement_batch.mjs --self-test --json`: passed
   14/14 checks. The parallel-response case binds two sequence-ordered
   reservations to distinct hashed `response.created` identities, then settles

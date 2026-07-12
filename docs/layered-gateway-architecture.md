@@ -571,18 +571,25 @@ by clearing the flag, no redeploy required.
 
 ### M8 — WFP dispatch namespace (2 wk, multi-tenant only) — Paradigm B
 
-**2026-07-11 superseding status:** the older design notes in this subsection are
+**2026-07-12 superseding status:** the older design notes in this subsection are
 retained as history and must not be used as an operator procedure. Current M8 is
 the authority-guarded table row above: central token auth, D1 selection, and
 reserve precede `channels.other_info.wfp_worker`; the relay signs the 30-second
 HMAC authority using a key derived from the platform-only master; the uploader
 binds only `WFP_RELAY_AUTHORITY_KEY` into the tenant. The tenant verifies and
-forwards only chat/responses/messages/ai-run; central settlement/refund and
-audit follow. Admin dispatch is
+forwards only chat/responses/messages/ai-run through the dispatch namespace's
+`cinatoken-wfp-outbound` service; central settlement/refund and audit follow.
+That outbound Worker alone owns `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` and injects
+the Cloudflare bearer. The tenant receives
+`CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` for outbound auth and
+must never receive `CF_API_TOKEN` or any Cloudflare bearer. Admin dispatch is
 status-only, JS fallback AI deploy is disabled, and
 `WFP_RELAY_TRANSPORT_ENABLED` remains false pending strict Rust/Wasm
-upload/readback, exact replay binding readback, and staging billing plus live
-replay-race evidence. The local DO contract is not a cutover marker.
+upload/readback, outbound service attachment and secret isolation readback,
+exact replay binding readback, and staging billing plus live replay-race and
+egress-policy evidence. Remote attachment/live evidence is unverified;
+production remains **NO-GO**. The local DO and outbound contracts are not
+cutover markers.
 - **Status (2026-07-06): Gated substrate, binding still commented.** Dispatch routing
   (`dispatch_target_for_request`/`dispatch_request` over `dynamic_dispatcher().get().fetch_request`),
   credential/`x-cinatoken-*` header stripping, worker-name sanitization, preview-host +
@@ -654,7 +661,7 @@ shipping a silent correctness gap.
 | `TaskRunner` DO | `TASK_RUNNER` | **Alarm poll + status probe compiled, default-off** (`TASK_RUNNER_DO_ENABLED=false`; staging replay, rollback, and no-double-poll evidence pending) |
 | `RealtimeSession` DO | `REALTIME_SESSIONS` | **Substrate live, gated** (binding + `new_sqlite_classes` active; `REALTIME_SESSION_V1_ENABLED=false`) |
 | AI Gateway routing | `AI_GATEWAY_ID` var | **Forwarder wired, gated** (`RELAY_AI_GATEWAY_ROUTER_ENABLED=false`; channel opt-in required) |
-| WFP dispatch namespace | `DISPATCHER` | **Dispatch code live, gated, capability-guarded**; tenant route/guard readiness is visible in `/api/platform/capabilities`, but `[[dispatch_namespaces]]` binding is still commented and paid-plan gated |
+| WFP dispatch namespace | `DISPATCHER` + outbound service `cinatoken-wfp-outbound` | **Dispatch and Rust outbound policy code present, gated, capability-guarded**; tenant route/guard readiness is visible in `/api/platform/capabilities`, but `[[dispatch_namespaces]]` remains commented, remote outbound attachment is unverified, and the paid-plan gate remains |
 
 Each new DO adds a `[[durable_objects.bindings]]` + `[[migrations]] new_sqlite_classes`
 entry in **all three** env scopes (dev/staging/prod), matching the affinity
@@ -747,3 +754,32 @@ binding that selects the DO shard internally. The current guard prevents reuse
 of one signed envelope; it does not deduplicate a relay retry that deliberately
 creates a fresh signed request ID. The worker/minute shard also needs staging
 load evidence before its throughput assumptions are accepted.
+
+## 11. WFP outbound authentication boundary (2026-07-12)
+
+Cloudflare's [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+model places platform egress policy between user Workers and the public
+Internet. For this migration the dispatch namespace must name service
+`cinatoken-wfp-outbound` as its outbound Worker.
+
+1. `cinatoken-wfp-outbound` alone owns secret
+   `CINATOKEN_WFP_OUTBOUND_AI_TOKEN`. Deployment/readback credentials remain a
+   separate operator concern and are never runtime tenant bindings.
+2. The Rust/Wasm tenant receives the non-secret marker
+   `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` for outbound auth and
+   no Cloudflare bearer. A discovered `CF_API_TOKEN` or equivalent bearer makes
+   the tenant not paid-AI-capable.
+3. The outbound Worker accepts only `POST application/json`, validates JSON,
+   and caps the body at 4 MiB. It permits no URL credentials, custom port,
+   query, or fragment.
+4. The only allowed targets are the exact account-scoped HTTPS URLs ending in
+   `/ai/run`, `/ai/v1/chat/completions`, `/ai/v1/responses`, and
+   `/ai/v1/messages`, matching Cloudflare's
+   [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/).
+5. The outbound Worker rebuilds request and response headers from allowlists,
+   injects its own `Authorization: Bearer ...`, and rejects redirects.
+
+The source contract is not remote proof. Attachment of the outbound service to
+the real dispatch namespace, outbound-only secret ownership, bearer-free tenant
+readback, all four positive routes, negative egress cases, Gateway logs, billing,
+replay, and rollback remain unverified. WFP production is **NO-GO**.

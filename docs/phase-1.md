@@ -616,6 +616,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   docs. Keep dispatch and paid relay gates off until remote attachment,
   bearer-free tenant readback, live egress, `verified=true`, and authority
   replay/billing race evidence are archived. Production remains **NO-GO**.
+  The local read-only attachment collector is now available as
+  `bun run check:wfp-outbound:readback-collector` and
+  `bun run collect:wfp-outbound:readback`. After credential rotation, run the
+  latter with explicit account, namespace, dispatcher, and outbound identities
+  plus both confirmation flags. Archive its redacted `verified=true` output
+  before any live egress smoke; it fails closed on trusted namespaces, identity
+  drift, wrong/missing outbound attachment, account-var mismatch, outbound-token
+  ownership drift, forbidden deploy/readback bearers, redirects, malformed API
+  envelopes, and oversized responses.
 - Capture staging distribution/route evidence for relay weighted channel
   selection, including retry, auto-group, affinity, and provider-family filters.
 - Capture provider-specific staging replay/reconciliation evidence before

@@ -10065,3 +10065,48 @@ Production evidence boundary:
 - No remote outbound attachment or live AI evidence is verified by this
   increment. Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; WFP production remains
   **NO-GO**.
+
+### 22.163 2026-07-12 WFP Outbound Attachment Readback Evidence
+
+This increment turns the outbound architecture requirement into a bounded,
+credential-safe remote evidence contract without claiming a deployment.
+
+- Added `tools/collect_wfp_outbound_readback.mjs` and root package commands
+  `check:wfp-outbound:readback-collector` and
+  `collect:wfp-outbound:readback`. The self-test passes 21 positive and negative
+  cases and the contract is part of `bun run check`.
+- Live collection performs six read-only Cloudflare requests: dispatch namespace
+  before/after, dispatcher settings/secrets, and outbound settings/secrets. It
+  rejects redirects, non-2xx responses, malformed envelopes, non-JSON or
+  oversized bodies, namespace identity drift, and any trusted namespace.
+- The exact named dispatcher binding must be a `dispatch_namespace` for the
+  requested namespace. Its outbound worker must be exactly
+  `cinatoken-wfp-outbound`, with no parameter, environment, or entrypoint drift.
+- The outbound Worker must expose the exact `CLOUDFLARE_ACCOUNT_ID` plain-text
+  binding and the `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` secret in both settings and
+  secret inventory. The dispatcher must not own the outbound token, and neither
+  Worker may own deploy/readback or retired tenant bearer names.
+- The collector accepts no token CLI argument, uses only the rotated
+  `CINATOKEN_WFP_READBACK_TOKEN` after explicit readback and replacement-token
+  confirmations, writes no files, redacts the account identifier, emits secret
+  names rather than values, and rejects direct/base64 collector-token echoes.
+- Cloudflare's official API documents the
+  [namespace GET](https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/),
+  [script settings GET](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/script_and_version_settings/),
+  and [script secrets GET](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/)
+  shapes used here. Its
+  [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
+  guidance defines the attached interception and hidden-authentication model.
+
+Evidence boundary:
+
+- `verified=true` from this tool proves remote attachment and secret ownership
+  only when collected against staging after the exposed credential has been
+  revoked and replaced. It does not prove token validity, tenant artifact
+  identity, a provider call, egress policy, billing, or replay behavior.
+- No Cloudflare credential or remote endpoint was used in this increment. The
+  next gated operation is rotated-credential staging deployment/readback,
+  followed by strict tenant readback, all four positive egress routes, the full
+  negative matrix, Gateway/audit/billing reconciliation, replay races, and
+  rollback. Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; production remains
+  **NO-GO**.

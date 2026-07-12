@@ -3209,3 +3209,27 @@ rollback. No exposed Cloudflare token was used.
 - No production SQLite source or remote D1 was used. Production verification
   must still archive source counts/hashes, import SQL application, target
   reconciliation, explicit exclusion manifests, workflow smoke, and rollback.
+
+### WFP Outbound Attachment Readback Contract (2026-07-12)
+
+- `bun run check:wfp-outbound:readback-collector` passed 21/21 cases. The
+  read-only collector uses the official dispatch namespace, Worker settings,
+  and Worker secrets GET endpoints with bounded JSON, a 30-second timeout,
+  manual redirect rejection, strict Cloudflare envelopes, and before/after
+  namespace identity comparison.
+- Positive evidence requires an untrusted namespace; one exact `DISPATCHER`
+  binding to the requested namespace and `cinatoken-wfp-outbound`; no outbound
+  parameters, environment, or entrypoint override; the exact plain-text account
+  binding; and `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` in outbound settings and secret
+  inventory but not on the dispatcher. Known deploy, readback, and retired
+  tenant bearer names fail closed.
+- The collector accepts no token argument. Live mode reads only a rotated
+  `CINATOKEN_WFP_READBACK_TOKEN` after both confirmation flags. Dry-run reads no
+  credential and performs no network or file write. Output contains normalized
+  binding metadata and secret names only, with the account identifier redacted;
+  token-value and base64-token echoes fail closed.
+- This is local contract evidence, not a remote Cloudflare capture. No exposed
+  credential was used. Remote staging must still archive `verified=true`, then
+  prove bearer-free tenant readback, four-route live egress, negative policy,
+  Gateway logs, authority replay, exactly-one provider call, central billing,
+  audit, and rollback. WFP production remains **NO-GO**.

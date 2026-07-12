@@ -485,6 +485,26 @@ Smoke order:
    The collector rejects redirects, deployment drift, malformed or oversized
    multipart content, and credential echoes. It does not accept a token on the
    command line and does not read legacy/general Cloudflare token variables.
+   Before the tenant verifier, run the independent outbound-attachment
+   collector self-test and capture the dispatch namespace plus both platform
+   Workers through Cloudflare's official namespace, script settings, and script
+   secrets read APIs: [dispatch namespaces](https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/),
+   [script settings](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/script_and_version_settings/),
+   and [script secrets](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/).
+
+   ```powershell
+   bun run check:wfp-outbound:readback-collector
+   bun run collect:wfp-outbound:readback -- --account-id <account> --namespace <namespace> --dispatcher-script <main-worker> --outbound-script cinatoken-wfp-outbound --confirm-readback --confirm-replacement-token > wfp-outbound-readback.json
+   ```
+
+   The command reads only the rotated `CINATOKEN_WFP_READBACK_TOKEN`; it accepts
+   no credential argument and writes no files itself. A successful
+   `verified=true` document proves the namespace stayed untrusted and stable,
+   the exact `DISPATCHER` binding points to the requested namespace and
+   `cinatoken-wfp-outbound`, the outbound service has the exact account var and
+   expected secret binding, and deploy/readback bearers are absent. It emits
+   secret names, never values. This is attachment and ownership evidence only;
+   it does not exercise tenant egress or prove that an AI bearer is valid.
    Feed the uploader JSON, Cloudflare details/settings/content capture, and live
    dispatch JSON into `bun tools/verify_wfp_post_upload.mjs`. Archive a single
    `verified=true` result; the verifier recomputes module hashes and rejects
@@ -514,7 +534,7 @@ Smoke order:
    headers, and redirects. Archive one positive request for each exact allowed
    AI REST route and prove only the outbound Worker injected authorization.
 
-No staging upload, outbound-service attachment, tenant binding readback,
+No staging upload, outbound-service attachment capture, tenant binding readback,
 signed-authority billing canary, live egress request, or live replay race is
 claimed by this checklist; those are still required production evidence. The
 post-upload verifier proves evidence consistency only when fed real remote

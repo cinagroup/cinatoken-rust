@@ -71,10 +71,10 @@ import {
   isTagAggregateRow,
   type TagRow,
 } from '../lib'
+import { providerReadinessPresentation } from '../lib/channel-provider-readiness'
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { useChannels } from './channels-provider'
-import { providerReadinessPresentation } from '../lib/channel-provider-readiness'
 import { DataTableRowActions } from './data-table-row-actions'
 import { DataTableTagRowActions } from './data-table-tag-row-actions'
 import {
@@ -671,9 +671,7 @@ export function useChannelsColumns(): ColumnDef<Channel>[] {
                           ? t(relayReadinessPresentation.label)
                           : t('Unavailable')
                       }
-                      variant={
-                        relayReadinessPresentation?.variant ?? 'neutral'
-                      }
+                      variant={relayReadinessPresentation?.variant ?? 'neutral'}
                       size='sm'
                       copyable={false}
                     />

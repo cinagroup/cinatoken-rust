@@ -32,6 +32,8 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   d1_migration_ready: false,
   relay_ai_gateway_router_ready: false,
   relay_ai_gateway_rest_routes: [],
+  relay_ai_gateway_model_prefixes: [],
+  relay_ai_gateway_direct_fallback_prefixes: [],
   relay_ai_gateway_cutover_guards: [],
   relay_ai_gateway_channel_opt_in_supported: false,
   relay_ai_gateway_rest_forwarder_compiled: false,
@@ -102,6 +104,8 @@ describe('Cloudflare platform readiness headline', () => {
         scheduling_gateway_preview_fail_closed_compiled: true,
         d1_migration_ready: true,
         relay_ai_gateway_rest_routes: ['/v1/chat/completions'],
+        relay_ai_gateway_model_prefixes: ['openai/', 'deepseek/'],
+        relay_ai_gateway_direct_fallback_prefixes: ['openai/', 'deepseek/'],
         relay_ai_gateway_cutover_guards: ['channel-opt-in'],
         relay_ai_gateway_channel_opt_in_supported: true,
         relay_ai_gateway_rest_forwarder_compiled: true,
@@ -157,6 +161,8 @@ describe('Cloudflare platform readiness headline', () => {
       buildPlatformReadinessSummary(
         makeCapabilities({
           relay_ai_gateway_rest_routes: ['/v1/chat/completions'],
+          relay_ai_gateway_model_prefixes: ['openai/'],
+          relay_ai_gateway_direct_fallback_prefixes: ['openai/'],
           relay_ai_gateway_cutover_guards: ['actual-serving-group-billing'],
           relay_ai_gateway_channel_opt_in_supported: true,
           relay_ai_gateway_rest_forwarder_compiled: true,

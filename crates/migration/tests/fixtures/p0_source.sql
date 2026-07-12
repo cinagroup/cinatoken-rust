@@ -63,6 +63,50 @@ CREATE TABLE top_ups (
   status TEXT NOT NULL DEFAULT 'pending'
 );
 
+CREATE TABLE passkey_credentials (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL UNIQUE,
+  credential_id TEXT NOT NULL UNIQUE,
+  public_key TEXT NOT NULL,
+  attestation_type TEXT NOT NULL DEFAULT '',
+  aaguid TEXT NOT NULL DEFAULT '',
+  sign_count INTEGER NOT NULL DEFAULT 0,
+  clone_warning INTEGER NOT NULL DEFAULT 0,
+  user_present INTEGER NOT NULL DEFAULT 0,
+  user_verified INTEGER NOT NULL DEFAULT 0,
+  backup_eligible INTEGER NOT NULL DEFAULT 0,
+  backup_state INTEGER NOT NULL DEFAULT 0,
+  transports TEXT NOT NULL DEFAULT '',
+  attachment TEXT NOT NULL DEFAULT '',
+  last_used_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE two_fas (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL UNIQUE,
+  secret TEXT NOT NULL,
+  is_enabled INTEGER NOT NULL DEFAULT 0,
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until TEXT,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE two_fa_backup_codes (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  code_hash TEXT NOT NULL,
+  is_used INTEGER NOT NULL DEFAULT 0,
+  used_at TEXT,
+  created_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
 INSERT INTO users (
   id, username, password, display_name, status, "group", aff_code, quota, setting
 ) VALUES (
@@ -101,3 +145,30 @@ INSERT INTO top_ups (
   (102, 1, 2000, 20.0, 'topup-success', 'stripe', 'stripe', 1710000100, 1710000110, 'success'),
   (103, 1, 3000, 30.0, 'topup-failed', 'creem', 'creem', 1710000200, 1710000210, 'failed'),
   (104, 1, 4000, 40.0, 'topup-expired', 'wxpay', 'epay', 1710000300, 1710000310, 'expired');
+
+INSERT INTO passkey_credentials (
+  id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count,
+  clone_warning, user_present, user_verified, backup_eligible, backup_state,
+  transports, attachment, last_used_at, created_at, updated_at, deleted_at
+) VALUES (
+  201, 1, 'cred-{"a":1}', 'pk\raw''quote', 'none', 'aaguid-base64==', 42,
+  0, 1, 1, 1, 0, '["internal","hybrid"]', 'platform',
+  '2024-03-09T17:00:00.999+01:00', '2024-03-09 16:00:00+00:00',
+  '2024-03-09 16:00:10Z', NULL
+);
+
+INSERT INTO two_fas (
+  id, user_id, secret, is_enabled, failed_attempts, locked_until, last_used_at,
+  created_at, updated_at, deleted_at
+) VALUES (
+  301, 1, 'JBSWY3DPEHPK3PXP', 1, 2, '2024-03-09 16:01:00+00:00',
+  '2024-03-09 16:00:20+00:00', '2024-03-09 16:00:00+00:00',
+  '2024-03-09 16:00:20+00:00', NULL
+);
+
+INSERT INTO two_fa_backup_codes (
+  id, user_id, code_hash, is_used, used_at, created_at, deleted_at
+) VALUES
+  (401, 1, '$2a$10$opaque/hash''one', 0, NULL, '2024-03-09 16:00:00+00:00', NULL),
+  (402, 1, '$2a$10$opaque/hash-two', 1, '2024-03-09 16:00:30+00:00', '2024-03-09 16:00:00+00:00', NULL),
+  (403, 1, '$2a$10$soft-deleted', 0, NULL, '2024-03-09 16:00:00+00:00', '2024-03-09 16:02:00+00:00');

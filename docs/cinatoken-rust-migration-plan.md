@@ -9803,8 +9803,76 @@ Topup data continuity:
 Audit result after this increment remains **NO-GO for full production**. The
 default frontend has 217 calls and zero missing Worker routes, but that metric
 does not prove provider semantics, imported data, or deployed browser flows.
-Highest remaining gaps are 33 deferred provider channel types, eight other
-source table families without complete import paths, provider-specific paid
+Highest remaining gaps are 33 deferred provider channel types, five other
+source table families without complete import paths (`quota_data`,
+`midjourneys`, `prefill_groups`, `setups`, and `perf_metrics`), provider-specific paid
 callback replay, Realtime eviction/reconnect evidence, WFP upload/readback,
 capacity/SLO/security drills, canary, rollback, and `cinatoken.com` cutover.
+The exposed Cloudflare credential was not used and must be revoked/rotated.
+
+### 22.158 2026-07-12 Auth Data, AI Provider Registry, WFP Readback, And Frontend State
+
+This increment advances four independent production boundaries found by the
+renewed Go/Rust, cinaVibeSDK, and frontend audit. It remains local evidence and
+does not enable any deployment gate.
+
+Auth/security data continuity:
+
+- The migration CLI now imports Go `passkey_credentials`, `two_fas`, and
+  `two_fa_backup_codes` into their D1 counterparts with explicit columns and
+  `ON CONFLICT DO NOTHING`. Existing D1 credentials are never overwritten.
+- Passkey credential/public-key material, TOTP secrets, and backup-code hashes
+  remain byte-exact. Go SQLite timestamps are strictly converted to Unix
+  seconds; booleans, sign counts, lockout counts, empty credentials, and
+  malformed times fail closed.
+- Soft-deleted 2FA and backup-code rows are not revived. Reconciliation now
+  checks canonical hashes, deterministic redacted samples, uniqueness, field
+  domains, user ownership, and backup-code-to-2FA ownership without placing raw
+  sensitive values in reports.
+
+AI Gateway multi-model routing:
+
+- `crates/providers/src/ai_gateway.rs` now owns one table-driven model provider
+  registry. It covers Cloudflare's documented OpenAI-compatible REST providers
+  and canonical prefixes, including `google-ai-studio/`, `deepseek/`, Groq,
+  Mistral, Cohere, Perplexity, Google Vertex AI, Cerebras, Baseten, Parallel,
+  and Workers AI `@cf/`. The undocumented `cloudflare/` alias fails closed.
+- Gateway eligibility and same-channel direct fallback are separate facts.
+  Only OpenAI, Anthropic, and DeepSeek currently have a Rust channel adapter
+  that proves the provider-native body rewrite for an implemented route. All
+  other registered prefixes remain Gateway-only until their deferred adapters
+  and provider smokes close.
+- `/api/platform/capabilities`, the default frontend readiness panel, and the
+  AI Gateway smoke contract expose and validate both prefix sets. The smoke
+  rejects a Gateway-only provider appearing in the direct-fallback set.
+
+WFP deployment evidence:
+
+- `tools/verify_wfp_post_upload.mjs` consumes uploader, Cloudflare Worker
+  details/settings/content, and live dispatch JSON. It verifies exact script,
+  namespace, compatibility settings, secret/binding shape, Rust/Wasm module
+  list, recomputed module SHA-256 values, tenant/runtime/route identity, and the
+  response-header guard.
+- The verifier is evidence-only and accepts no token. Missing readback or
+  dispatch evidence and every script/module/binding/hash mismatch fail closed.
+  Its self-test is part of the root `bun run check` chain; a production pass
+  still requires real staging captures.
+
+Frontend contract:
+
+- The wallet Topup type and status renderer now cover all Worker states:
+  pending, success, failed, and expired. Failed payments no longer silently
+  render as pending, and a focused test locks the four-state mapping.
+
+Local evidence passed: migration 40/40, provider 26/26, focused Worker AI
+Gateway/platform 11/11, frontend readiness plus wallet 13/13, AI Gateway smoke
+self-test, WFP post-upload verifier 8/8, Worker 577/577, and the complete
+`bun run check` frontend/build/quality/bundle/route/smoke/workspace/wasm gate.
+
+Production remains **NO-GO**. Required next evidence includes a replacement-
+credential staging deploy, real WFP REST readback fed into the verifier,
+provider-by-provider AI Gateway canaries and direct-fallback faults, production
+auth source count/hash and remote D1 import, imported Passkey/TOTP/backup-code
+login, remaining `midjourneys` and `prefill_groups` imports, rendered browser
+workflows, capacity/SLO/security drills, canary, rollback, and domain cutover.
 The exposed Cloudflare credential was not used and must be revoked/rotated.

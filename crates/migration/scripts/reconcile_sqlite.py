@@ -5,6 +5,7 @@ import json
 import math
 import sqlite3
 import sys
+from datetime import datetime, timezone
 
 
 MANIFEST_FORMAT = "cinatoken-source-to-d1-reconciliation-v1"
@@ -160,6 +161,85 @@ TABLE_SPECS = (
         ),
         "computed_source_columns": ("payment_provider", "status", "credited"),
     },
+    {
+        "name": "passkey_credentials",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "boolean_columns": (
+            "clone_warning",
+            "user_present",
+            "user_verified",
+            "backup_eligible",
+            "backup_state",
+        ),
+        "timestamp_columns": (
+            "last_used_at",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+        ),
+        "columns": (
+            "id",
+            "user_id",
+            "credential_id",
+            "public_key",
+            "attestation_type",
+            "aaguid",
+            "sign_count",
+            "clone_warning",
+            "user_present",
+            "user_verified",
+            "backup_eligible",
+            "backup_state",
+            "transports",
+            "attachment",
+            "last_used_at",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+        ),
+    },
+    {
+        "name": "two_fa",
+        "source_name": "two_fas",
+        "source_where": "deleted_at IS NULL",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "boolean_columns": ("is_enabled",),
+        "timestamp_columns": (
+            "locked_until",
+            "last_used_at",
+            "created_at",
+            "updated_at",
+        ),
+        "columns": (
+            "id",
+            "user_id",
+            "secret",
+            "is_enabled",
+            "failed_attempts",
+            "locked_until",
+            "last_used_at",
+            "created_at",
+            "updated_at",
+        ),
+    },
+    {
+        "name": "two_fa_backup_codes",
+        "source_where": "deleted_at IS NULL",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "boolean_columns": ("is_used",),
+        "timestamp_columns": ("used_at", "created_at"),
+        "columns": (
+            "id",
+            "user_id",
+            "code_hash",
+            "is_used",
+            "used_at",
+            "created_at",
+        ),
+    },
 )
 
 TOPUP_PAYMENT_PROVIDERS = (
@@ -291,6 +371,51 @@ def map_topup_provider(row):
     return provider
 
 
+def normalize_boolean(value, table, column):
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int) and value in (0, 1):
+        return value
+    raise ValueError(f"{table}.{column} must be boolean or 0/1")
+
+
+def normalize_timestamp(value, table, column):
+    if isinstance(value, bool):
+        raise ValueError(f"{table}.{column} must not be boolean")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"{table}.{column} must be an integer Unix timestamp or supported Go SQLite datetime"
+        )
+
+    raw = value.strip()
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(
+            f"{table}.{column} has unsupported Go SQLite datetime {value!r}"
+        ) from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    utc = parsed.astimezone(timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    delta = utc - epoch
+    return delta.days * 86400 + delta.seconds
+
+
+def role_where(spec, role):
+    if role == "source":
+        return spec.get("source_where")
+    return spec.get("target_where")
+
+
 def row_query(conn, spec, role, schema):
     if role == "source":
         selected = []
@@ -312,9 +437,11 @@ def row_query(conn, spec, role, schema):
 
     select_sql = ", ".join(quote_ident(name) for name in selected)
     order_sql = ", ".join(quote_ident(name) for name in order_columns)
+    where = role_where(spec, role)
+    where_sql = f" WHERE {where}" if where else ""
     cursor = conn.execute(
-        f"SELECT {select_sql} FROM {quote_ident(table_name(spec, role))} "
-        f"ORDER BY {order_sql}"
+        f"SELECT {select_sql} FROM {quote_ident(table_name(spec, role))}"
+        f"{where_sql} ORDER BY {order_sql}"
     )
     names = [description[0] for description in cursor.description]
     return cursor, names
@@ -324,11 +451,7 @@ def project_row(spec, role, names, raw_row, target_schema):
     row = dict(zip(names, raw_row))
     projected = {}
     for target_column in spec["columns"]:
-        if role == "target":
-            projected[target_column] = row[target_column]
-            continue
-
-        if spec["name"] == "topups":
+        if role == "source" and spec["name"] == "topups":
             if target_column == "status":
                 projected[target_column] = map_topup_status(row.get("status"))
                 continue
@@ -341,9 +464,13 @@ def project_row(spec, role, names, raw_row, target_schema):
                 )
                 continue
 
-        name = source_column(spec, target_column)
+        name = source_column(spec, target_column) if role == "source" else target_column
         value = row.get(name)
         if name in row and value is not None:
+            if target_column in spec.get("boolean_columns", ()):
+                value = normalize_boolean(value, spec["name"], target_column)
+            elif target_column in spec.get("timestamp_columns", ()):
+                value = normalize_timestamp(value, spec["name"], target_column)
             projected[target_column] = value
             continue
 
@@ -446,10 +573,21 @@ def count_query(conn, sql):
     return int(conn.execute(sql).fetchone()[0])
 
 
+def condition_count(conn, table, role_filter, condition):
+    where = f"({role_filter}) AND ({condition})" if role_filter else condition
+    return count_query(
+        conn,
+        f"SELECT COUNT(*) FROM {quote_ident(table)} WHERE {where}",
+    )
+
+
 def logical_key_checks(conn, role):
     checks = {}
     for spec in TABLE_SPECS:
         table = table_name(spec, role)
+        role_filter = role_where(spec, role)
+        where_sql = f" WHERE {role_filter}" if role_filter else ""
+        conjunction = " AND " if role_filter else " WHERE "
         keys = [
             source_column(spec, name) if role == "source" else name
             for name in spec["logical_pk"]
@@ -459,12 +597,14 @@ def logical_key_checks(conn, role):
         duplicate_groups = count_query(
             conn,
             f"SELECT COUNT(*) FROM ("
-            f"SELECT 1 FROM {quote_ident(table)} GROUP BY {key_sql} HAVING COUNT(*) > 1"
+            f"SELECT 1 FROM {quote_ident(table)}{where_sql} "
+            f"GROUP BY {key_sql} HAVING COUNT(*) > 1"
             f")",
         )
         null_keys = count_query(
             conn,
-            f"SELECT COUNT(*) FROM {quote_ident(table)} WHERE {null_sql}",
+            f"SELECT COUNT(*) FROM {quote_ident(table)}{where_sql}"
+            f"{conjunction}({null_sql})",
         )
         checks[f"{spec['name']}.logical_primary_key"] = {
             "kind": "logical_primary_key",
@@ -532,11 +672,88 @@ def logical_key_checks(conn, role):
         "kind": "domain_integrity",
         "violations": credited_violations,
     }
+
+    passkey_table = "passkey_credentials"
+    checks["passkey_credentials.user_id_unique"] = {
+        "kind": "unique_key",
+        "violations": count_query(
+            conn,
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {quote_ident(passkey_table)} "
+            "GROUP BY user_id HAVING COUNT(*) > 1)",
+        ),
+    }
+    checks["passkey_credentials.credential_id_unique"] = {
+        "kind": "unique_key",
+        "violations": count_query(
+            conn,
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {quote_ident(passkey_table)} "
+            "GROUP BY credential_id HAVING COUNT(*) > 1)",
+        ),
+    }
+    checks["passkey_credentials.security_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            passkey_table,
+            None,
+            "credential_id IS NULL OR credential_id = '' "
+            "OR public_key IS NULL OR public_key = '' "
+            "OR sign_count IS NULL OR sign_count < 0 OR sign_count > 4294967295 "
+            "OR clone_warning IS NULL OR clone_warning NOT IN (0, 1) "
+            "OR user_present IS NULL OR user_present NOT IN (0, 1) "
+            "OR user_verified IS NULL OR user_verified NOT IN (0, 1) "
+            "OR backup_eligible IS NULL OR backup_eligible NOT IN (0, 1) "
+            "OR backup_state IS NULL OR backup_state NOT IN (0, 1)",
+        ),
+    }
+
+    two_fa_spec = next(spec for spec in TABLE_SPECS if spec["name"] == "two_fa")
+    two_fa_table = table_name(two_fa_spec, role)
+    two_fa_filter = role_where(two_fa_spec, role)
+    checks["two_fa.user_id_unique"] = {
+        "kind": "unique_key",
+        "violations": count_query(
+            conn,
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {quote_ident(two_fa_table)}"
+            + (f" WHERE {two_fa_filter}" if two_fa_filter else "")
+            + " GROUP BY user_id HAVING COUNT(*) > 1)",
+        ),
+    }
+    checks["two_fa.security_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            two_fa_table,
+            two_fa_filter,
+            "secret IS NULL OR secret = '' OR is_enabled IS NULL OR is_enabled NOT IN (0, 1) "
+            "OR failed_attempts IS NULL OR failed_attempts < 0",
+        ),
+    }
+
+    backup_spec = next(
+        spec for spec in TABLE_SPECS if spec["name"] == "two_fa_backup_codes"
+    )
+    backup_table = table_name(backup_spec, role)
+    backup_filter = role_where(backup_spec, role)
+    checks["two_fa_backup_codes.security_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            backup_table,
+            backup_filter,
+            "code_hash IS NULL OR code_hash = '' OR is_used IS NULL OR is_used NOT IN (0, 1) "
+            "OR (is_used = 1 AND used_at IS NULL)",
+        ),
+    }
     return checks
 
 
 def relationship_checks(conn, role):
     topups_table = "top_ups" if role == "source" else "topups"
+    two_fa_table = "two_fas" if role == "source" else "two_fa"
+    active_two_fa_child = "child.deleted_at IS NULL AND " if role == "source" else ""
+    active_backup_child = "child.deleted_at IS NULL AND " if role == "source" else ""
+    active_two_fa_parent = " AND parent.deleted_at IS NULL" if role == "source" else ""
     return {
         "tokens.user_id->users.id": {
             "kind": "foreign_key",
@@ -563,6 +780,43 @@ def relationship_checks(conn, role):
                 f"SELECT COUNT(*) FROM {quote_ident(topups_table)} child "
                 "LEFT JOIN users parent ON child.user_id = parent.id "
                 "WHERE parent.id IS NULL",
+            ),
+        },
+        "passkey_credentials.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM passkey_credentials child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "two_fa.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                f"SELECT COUNT(*) FROM {quote_ident(two_fa_table)} child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                f"WHERE {active_two_fa_child}parent.id IS NULL",
+            ),
+        },
+        "two_fa_backup_codes.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM two_fa_backup_codes child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                f"WHERE {active_backup_child}parent.id IS NULL",
+            ),
+        },
+        "two_fa_backup_codes.user_id->two_fa.user_id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM two_fa_backup_codes child "
+                f"LEFT JOIN {quote_ident(two_fa_table)} parent "
+                f"ON child.user_id = parent.user_id{active_two_fa_parent} "
+                f"WHERE {active_backup_child}parent.id IS NULL",
             ),
         },
     }

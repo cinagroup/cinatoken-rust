@@ -3095,3 +3095,37 @@ This remains local evidence. Required remote evidence is authenticated staging
 binding readback, route-family 429 telemetry/load behavior, production-source
 topup count/hash, remote D1 import, provider callback replay, no-double-credit,
 paid reconciliation, and rollback. No exposed Cloudflare token was used.
+
+### Auth Data, AI Provider Registry, WFP Readback, And Wallet State (2026-07-12)
+
+- `cargo test -p cinatoken-migration` passed 40/40. The new auth fixtures prove
+  byte-exact Passkey/TOTP/backup-code material, strict timestamp and field
+  validation, skipped soft-deleted 2FA rows, idempotent no-overwrite imports,
+  redacted drift reporting, and auth ownership relationships.
+- `cargo test -p cinatoken-providers` passed 26/26. The AI Gateway registry
+  recognizes the documented REST prefix set; invalid/empty/undocumented
+  prefixes fail closed. Direct fallback is restricted to provider-matched
+  OpenAI, Anthropic, and DeepSeek channels.
+- `cargo test -p cinatoken-worker --lib relay_ai_gateway -- --nocapture`
+  passed 11/11. Capabilities expose REST routes, model prefixes, and the smaller
+  direct-fallback prefix set; mismatched channels do not receive a rewritten
+  provider-direct request.
+- The AI Gateway smoke self-test passed nine cases, including route drift,
+  unsafe direct-prefix, unsafe cutover, missing terminal audit, and missing
+  actual-serving-group billing rejection.
+- `bun run check:wfp-tenant:post-upload-verifier` passed 8/8. Script, module,
+  binding, hash, readback, and dispatch mismatches were rejected, and the dry
+  run remained credential-free. This does not claim a Cloudflare upload.
+- Frontend wallet and platform readiness tests passed 13/13. The wallet now
+  renders failed topups as Failed/danger rather than Pending, while the platform
+  panel distinguishes Gateway-routable prefixes from safe direct fallbacks.
+- `cargo test -p cinatoken-worker --lib` passed 577/577. The complete
+  `bun run check` also passed frontend type/build/quality, bundle redaction and
+  budget, route audit (217 frontend calls / 313 Worker routes / 0 missing),
+  WFP/Realtime/AI Gateway contracts, workspace tests, and Worker/WFP wasm32.
+
+Remote staging and production remain unverified for this increment. Required
+evidence is a real WFP details/settings/content capture plus positive dispatch,
+provider-route AI Gateway logs/faults and billing reconciliation, production
+auth source/import hashes, imported-credential browser authentication, and
+rollback. No exposed Cloudflare token was used.

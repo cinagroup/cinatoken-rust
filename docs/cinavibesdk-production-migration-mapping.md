@@ -398,7 +398,16 @@ cinaVibeSDK pattern:
   direct rather than through the shared platform Gateway, even when a user
   credential is present.
 - On retryable AI Gateway failure, fall back through the same selected provider
-  channel before cross-channel retry logic sees the result.
+  channel before cross-channel retry logic sees the result, but only when the
+  model-prefix registry proves that the selected Rust channel adapter belongs
+  to that provider. OpenAI, Anthropic, and DeepSeek currently satisfy this
+  direct-fallback contract. Other documented REST providers remain
+  Gateway-only until their dedicated Rust adapters are no longer deferred.
+- The registry now covers the documented OpenAI-compatible REST provider set,
+  including `google-ai-studio/`, `deepseek/`, Groq, Mistral, Cohere,
+  Perplexity, Google Vertex AI, Cerebras, Baseten, Parallel, and `@cf/`.
+  Undocumented `cloudflare/` aliases fail closed; Workers AI uses `@cf/` and
+  never attempts provider-direct fallback.
 - Billing and usage parsing remain the main relay's responsibility. AI Gateway
   is transport and observability, not a billing replacement.
 - The current same-channel direct path is transport failover only; it does not

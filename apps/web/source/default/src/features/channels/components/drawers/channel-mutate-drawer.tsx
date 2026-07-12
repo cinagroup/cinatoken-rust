@@ -142,11 +142,11 @@ import {
   validateModelMappingJson,
   hasAdvancedSettingsErrors,
 } from '../../lib'
+import { providerReadinessPresentation } from '../../lib/channel-provider-readiness'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from '../../lib/status-code-risk-guard'
-import { providerReadinessPresentation } from '../../lib/channel-provider-readiness'
 import type { Channel } from '../../types'
 import { useChannels } from '../channels-provider'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
@@ -278,11 +278,8 @@ export function ChannelMutateDrawer({
 }: ChannelMutateDrawerProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const {
-    setOpen,
-    readinessByType,
-    providerReadinessUnavailable,
-  } = useChannels()
+  const { setOpen, readinessByType, providerReadinessUnavailable } =
+    useChannels()
   const [fetchModelsDialogOpen, setFetchModelsDialogOpen] = useState(false)
   const [channelKey, setChannelKey] = useState<string | null>(null)
   const [isChannelKeyLoading, setIsChannelKeyLoading] = useState(false)
@@ -1212,7 +1209,8 @@ export function ChannelMutateDrawer({
 
                   {/* ── API Access ── */}
                   <ChannelApiAccessSection>
-                    {(currentRelayReadiness || providerReadinessUnavailable) && (
+                    {(currentRelayReadiness ||
+                      providerReadinessUnavailable) && (
                       <Alert>
                         <AlertDescription>
                           {currentRelayReadiness ? (

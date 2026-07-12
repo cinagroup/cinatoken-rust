@@ -10,7 +10,8 @@ use cinatoken_gateway::{
     SCHEDULING_GATEWAY_ROUTE_PRECEDENCE,
 };
 use cinatoken_providers::ai_gateway::{
-    MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS, MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS,
+    AiGatewayDirectModelPolicy, AI_GATEWAY_MODEL_PROVIDERS, MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS,
+    MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS,
 };
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 use cinatoken_storage::RelayAuditLog;
@@ -212,6 +213,8 @@ struct PlatformCapabilities {
     relay_ai_gateway_router_enabled: bool,
     relay_ai_gateway_router_ready: bool,
     relay_ai_gateway_rest_routes: Vec<&'static str>,
+    relay_ai_gateway_model_prefixes: Vec<&'static str>,
+    relay_ai_gateway_direct_fallback_prefixes: Vec<&'static str>,
     relay_ai_gateway_cutover_guards: Vec<&'static str>,
     relay_ai_gateway_channel_opt_in_supported: bool,
     relay_ai_gateway_rest_forwarder_compiled: bool,
@@ -577,6 +580,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_router_enabled,
         relay_ai_gateway_router_ready,
         relay_ai_gateway_rest_routes: relay_ai_gateway_rest_routes(),
+        relay_ai_gateway_model_prefixes: relay_ai_gateway_model_prefixes(),
+        relay_ai_gateway_direct_fallback_prefixes: relay_ai_gateway_direct_fallback_prefixes(),
         relay_ai_gateway_cutover_guards: relay_ai_gateway_cutover_guards(),
         relay_ai_gateway_channel_opt_in_supported: true,
         relay_ai_gateway_rest_forwarder_compiled: true,
@@ -1995,6 +2000,24 @@ fn relay_ai_gateway_cutover_guards() -> Vec<&'static str> {
     MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS.to_vec()
 }
 
+fn relay_ai_gateway_model_prefixes() -> Vec<&'static str> {
+    AI_GATEWAY_MODEL_PROVIDERS
+        .iter()
+        .map(|provider| provider.prefix)
+        .collect()
+}
+
+fn relay_ai_gateway_direct_fallback_prefixes() -> Vec<&'static str> {
+    AI_GATEWAY_MODEL_PROVIDERS
+        .iter()
+        .filter(|provider| {
+            provider.direct_model_policy == AiGatewayDirectModelPolicy::StripPrefix
+                && !provider.direct_channel_types.is_empty()
+        })
+        .map(|provider| provider.prefix)
+        .collect()
+}
+
 fn realtime_session_cutover_guards() -> Vec<&'static str> {
     REALTIME_SESSION_CUTOVER_GUARDS.to_vec()
 }
@@ -2447,6 +2470,19 @@ mod tests {
         assert!(relay_ai_gateway_cutover_guards().contains(&"channel_opted_in"));
         assert!(relay_ai_gateway_cutover_guards().contains(&"direct_provider_fallback"));
         assert!(relay_ai_gateway_cutover_guards().contains(&"billing_settlement_invariant"));
+    }
+
+    #[test]
+    fn relay_ai_gateway_model_registry_is_operator_visible() {
+        let prefixes = relay_ai_gateway_model_prefixes();
+        assert!(prefixes.contains(&"google-ai-studio/"));
+        assert!(prefixes.contains(&"deepseek/"));
+        assert!(prefixes.contains(&"@cf/"));
+
+        let direct = relay_ai_gateway_direct_fallback_prefixes();
+        assert!(direct.contains(&"deepseek/"));
+        assert!(!direct.contains(&"@cf/"));
+        assert!(!direct.contains(&"cloudflare/"));
     }
 
     #[test]

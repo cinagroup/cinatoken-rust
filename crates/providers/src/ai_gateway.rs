@@ -1,5 +1,10 @@
 use std::fmt;
 
+use cinatoken_relay::{
+    openai_compatible::{CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_OPENAI},
+    CHANNEL_TYPE_DEEPSEEK,
+};
+
 use crate::routing::ProviderKind;
 
 const PROVIDER_GATEWAY_HOST: &str = "https://gateway.ai.cloudflare.com/v1";
@@ -125,7 +130,17 @@ pub enum AiGatewayModelAuthor {
     OpenAi,
     Anthropic,
     Google,
+    GoogleAiStudio,
     Xai,
+    DeepSeek,
+    Cohere,
+    Groq,
+    Mistral,
+    Perplexity,
+    GoogleVertexAi,
+    Cerebras,
+    Baseten,
+    Parallel,
     WorkersAi,
     Unknown,
 }
@@ -135,6 +150,137 @@ impl AiGatewayModelAuthor {
         self == Self::WorkersAi
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiGatewayDirectModelPolicy {
+    StripPrefix,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AiGatewayModelProvider {
+    pub author: AiGatewayModelAuthor,
+    pub prefix: &'static str,
+    pub direct_model_policy: AiGatewayDirectModelPolicy,
+    pub direct_channel_types: &'static [i32],
+    pub messages_schema_supported: bool,
+}
+
+const OPENAI_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_OPENAI];
+const ANTHROPIC_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_ANTHROPIC];
+const DEEPSEEK_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_DEEPSEEK];
+const NO_DIRECT_CHANNEL_TYPES: &[i32] = &[];
+
+// Keep this table as the single authority for REST model prefixes and safe
+// same-channel fallback. Provider-native support alone is not enough to prove
+// that a selected channel accepts a model after its Gateway prefix is removed.
+pub const AI_GATEWAY_MODEL_PROVIDERS: &[AiGatewayModelProvider] = &[
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::OpenAi,
+        prefix: "openai/",
+        direct_model_policy: AiGatewayDirectModelPolicy::StripPrefix,
+        direct_channel_types: OPENAI_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Anthropic,
+        prefix: "anthropic/",
+        direct_model_policy: AiGatewayDirectModelPolicy::StripPrefix,
+        direct_channel_types: ANTHROPIC_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::GoogleAiStudio,
+        prefix: "google-ai-studio/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Google,
+        prefix: "google/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Xai,
+        prefix: "xai/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::DeepSeek,
+        prefix: "deepseek/",
+        direct_model_policy: AiGatewayDirectModelPolicy::StripPrefix,
+        direct_channel_types: DEEPSEEK_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Cohere,
+        prefix: "cohere/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Groq,
+        prefix: "groq/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Mistral,
+        prefix: "mistral/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Perplexity,
+        prefix: "perplexity/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::GoogleVertexAi,
+        prefix: "google-vertex-ai/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Cerebras,
+        prefix: "cerebras/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Baseten,
+        prefix: "baseten/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::Parallel,
+        prefix: "parallel/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: true,
+    },
+    AiGatewayModelProvider {
+        author: AiGatewayModelAuthor::WorkersAi,
+        prefix: "@cf/",
+        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
+        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        messages_schema_supported: false,
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AiGatewayCutoverInput<'a> {
@@ -231,7 +377,8 @@ pub fn plan_ai_gateway_cutover(input: AiGatewayCutoverInput<'_>) -> AiGatewayCut
     }
 
     if endpoint == AiGatewayRestEndpoint::Messages
-        && model_author == AiGatewayModelAuthor::WorkersAi
+        && !ai_gateway_model_provider(input.model)
+            .is_some_and(|provider| provider.messages_schema_supported)
     {
         return AiGatewayCutoverDecision::UseDirect {
             reason: AiGatewayCutoverBlockReason::ModelEndpointSchemaMismatch,
@@ -272,24 +419,45 @@ pub fn rest_endpoint_for_relay_route(
 }
 
 pub fn classify_ai_gateway_model_author(model: &str) -> AiGatewayModelAuthor {
-    let model = model.trim().to_ascii_lowercase();
-    if model.starts_with("openai/") {
-        AiGatewayModelAuthor::OpenAi
-    } else if model.starts_with("anthropic/") {
-        AiGatewayModelAuthor::Anthropic
-    } else if model.starts_with("google/") {
-        AiGatewayModelAuthor::Google
-    } else if model.starts_with("xai/") {
-        AiGatewayModelAuthor::Xai
-    } else if model.starts_with("@cf/") || model.starts_with("cloudflare/") {
-        AiGatewayModelAuthor::WorkersAi
-    } else {
-        AiGatewayModelAuthor::Unknown
-    }
+    ai_gateway_model_provider(model)
+        .map(|provider| provider.author)
+        .unwrap_or(AiGatewayModelAuthor::Unknown)
 }
 
 pub fn has_ai_gateway_provider_prefix(model: &str) -> bool {
-    classify_ai_gateway_model_author(model) != AiGatewayModelAuthor::Unknown
+    ai_gateway_model_provider(model).is_some()
+}
+
+pub fn ai_gateway_model_provider(model: &str) -> Option<&'static AiGatewayModelProvider> {
+    let model = model.trim();
+    AI_GATEWAY_MODEL_PROVIDERS.iter().find(|provider| {
+        model.len() > provider.prefix.len()
+            && model
+                .get(..provider.prefix.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(provider.prefix))
+            && model
+                .get(provider.prefix.len()..)
+                .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+pub fn direct_provider_model_for_channel(
+    model: &str,
+    author: AiGatewayModelAuthor,
+    channel_type: i32,
+) -> Option<&str> {
+    let model = model.trim();
+    let provider = ai_gateway_model_provider(model)?;
+    if provider.author != author || !provider.direct_channel_types.contains(&channel_type) {
+        return None;
+    }
+    match provider.direct_model_policy {
+        AiGatewayDirectModelPolicy::StripPrefix => model
+            .get(provider.prefix.len()..)
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        AiGatewayDirectModelPolicy::Unsupported => None,
+    }
 }
 
 fn normalize_relay_path(value: &str) -> String {
@@ -540,8 +708,16 @@ mod tests {
             AiGatewayModelAuthor::Google
         );
         assert_eq!(
+            classify_ai_gateway_model_author("google-ai-studio/gemini-2.5-flash"),
+            AiGatewayModelAuthor::GoogleAiStudio
+        );
+        assert_eq!(
             classify_ai_gateway_model_author("xai/grok-3"),
             AiGatewayModelAuthor::Xai
+        );
+        assert_eq!(
+            classify_ai_gateway_model_author("deepseek/deepseek-chat"),
+            AiGatewayModelAuthor::DeepSeek
         );
         assert_eq!(
             classify_ai_gateway_model_author("@cf/meta/llama-3.1-8b-instruct"),
@@ -549,6 +725,52 @@ mod tests {
         );
         assert!(has_ai_gateway_provider_prefix("openai/gpt-4o-mini"));
         assert!(!has_ai_gateway_provider_prefix("gpt-4o-mini"));
+        assert!(!has_ai_gateway_provider_prefix("deepseek/"));
+        assert!(!has_ai_gateway_provider_prefix("cloudflare/meta/llama"));
+    }
+
+    #[test]
+    fn direct_fallback_requires_a_matching_provider_channel() {
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "openai/gpt-4.1",
+                AiGatewayModelAuthor::OpenAi,
+                CHANNEL_TYPE_OPENAI
+            ),
+            Some("gpt-4.1")
+        );
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "deepseek/deepseek-chat",
+                AiGatewayModelAuthor::DeepSeek,
+                CHANNEL_TYPE_DEEPSEEK
+            ),
+            Some("deepseek-chat")
+        );
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "google-ai-studio/gemini-2.5-flash",
+                AiGatewayModelAuthor::GoogleAiStudio,
+                24
+            ),
+            None
+        );
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "deepseek/deepseek-chat",
+                AiGatewayModelAuthor::DeepSeek,
+                CHANNEL_TYPE_OPENAI
+            ),
+            None
+        );
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "@cf/meta/llama-3.1-8b-instruct",
+                AiGatewayModelAuthor::WorkersAi,
+                39
+            ),
+            None
+        );
     }
 
     #[test]
@@ -583,6 +805,23 @@ mod tests {
             AiGatewayCutoverDecision::UseGateway(AiGatewayCutoverPlan {
                 endpoint: AiGatewayRestEndpoint::Responses,
                 model_author: AiGatewayModelAuthor::Xai,
+                requires_gateway_id_header: false,
+            })
+        );
+
+        assert_eq!(
+            plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::OpenAiCompatible,
+                relay_path: "chat/completions",
+                model: "deepseek/deepseek-chat",
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            }),
+            AiGatewayCutoverDecision::UseGateway(AiGatewayCutoverPlan {
+                endpoint: AiGatewayRestEndpoint::ChatCompletions,
+                model_author: AiGatewayModelAuthor::DeepSeek,
                 requires_gateway_id_header: false,
             })
         );

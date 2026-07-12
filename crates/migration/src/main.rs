@@ -703,6 +703,9 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "models",
     "custom_oauth_providers",
     "user_oauth_bindings",
+    "passkey_credentials",
+    "two_fa",
+    "two_fa_backup_codes",
 ];
 
 const D1_CORE_IMPORT_TABLES: &[&str] = &["users", "tokens", "channels", "abilities", "options"];
@@ -713,6 +716,9 @@ const D1_RECONCILE_TABLES: &[&str] = &[
     "abilities",
     "options",
     "topups",
+    "passkey_credentials",
+    "two_fa",
+    "two_fa_backup_codes",
 ];
 
 const RECONCILIATION_RESULT_FORMAT: &str = "cinatoken-source-to-d1-reconciliation-result-v1";
@@ -1061,6 +1067,48 @@ const USER_OAUTH_BINDINGS_D1_COLUMNS: &[&str] = &[
     "created_at",
 ];
 
+const PASSKEY_CREDENTIALS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "credential_id",
+    "public_key",
+    "attestation_type",
+    "aaguid",
+    "sign_count",
+    "clone_warning",
+    "user_present",
+    "user_verified",
+    "backup_eligible",
+    "backup_state",
+    "transports",
+    "attachment",
+    "last_used_at",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+];
+
+const TWO_FA_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "secret",
+    "is_enabled",
+    "failed_attempts",
+    "locked_until",
+    "last_used_at",
+    "created_at",
+    "updated_at",
+];
+
+const TWO_FA_BACKUP_CODES_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "code_hash",
+    "is_used",
+    "used_at",
+    "created_at",
+];
+
 impl DevSeedConfig {
     fn from_args(args: Vec<String>) -> Result<Self, String> {
         Self::from_args_with_env(args, env::var("CINATOKEN_DEV_UPSTREAM_KEY").ok())
@@ -1340,12 +1388,19 @@ fn verify_export_bundle(bundle: &str) -> Result<String, String> {
             if !row.is_object() {
                 return Err(format!("table {name} row {} is not an object", index + 1));
             }
-            if name == "top_ups" {
-                project_d1_row(
-                    d1_table_spec("topups")?,
-                    row.as_object().expect("row object was checked above"),
-                    index,
-                )?;
+            let import_table = match name.as_str() {
+                "top_ups" => Some("topups"),
+                "passkey_credentials" => Some("passkey_credentials"),
+                "two_fas" => Some("two_fa"),
+                "two_fa_backup_codes" => Some("two_fa_backup_codes"),
+                _ => None,
+            };
+            if let Some(import_table) = import_table {
+                let spec = d1_table_spec(import_table)?;
+                let row = row.as_object().expect("row object was checked above");
+                if !skips_soft_deleted_source_row(spec, row) {
+                    project_d1_row(spec, row, index)?;
+                }
             }
         }
         summary.push_str(&format!("  {name}: {} rows\n", rows.len()));
@@ -1434,14 +1489,32 @@ for table in tables:
 }
 
 fn reconcile_sqlite_databases(config: &ReconcileConfig) -> Result<Value, String> {
-    let output = Command::new("python")
-        .arg("-c")
-        .arg(RECONCILE_SQLITE_SCRIPT)
+    let mut child = Command::new("python")
+        .arg("-")
         .arg(&config.source)
         .arg(&config.target)
         .arg(config.sample_size.to_string())
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|err| format!("failed to run Python reconciliation engine: {err}"))?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open Python reconciliation stdin".to_string())
+        .and_then(|mut stdin| {
+            std::io::Write::write_all(&mut stdin, RECONCILE_SQLITE_SCRIPT.as_bytes())
+                .map_err(|err| format!("failed to stream Python reconciliation engine: {err}"))
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("failed to wait for Python reconciliation engine: {err}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1669,6 +1742,14 @@ fn render_d1_import_sql(bundle: &str, tables: &[String], truncate: bool) -> Resu
             let row = row
                 .as_object()
                 .ok_or_else(|| format!("source table {} has a non-object row", spec.source_name))?;
+            if skips_soft_deleted_source_row(spec, row) {
+                sql.push_str(&format!(
+                    "-- Skipped soft-deleted row {} from source table {}.\n",
+                    index + 1,
+                    spec.source_name
+                ));
+                continue;
+            }
             let projected = project_d1_row(spec, row, index)?;
             if projected.is_empty() {
                 sql.push_str(&format!(
@@ -1689,7 +1770,7 @@ fn render_d1_import_sql(bundle: &str, tables: &[String], truncate: bool) -> Resu
                 .map(|(_, value)| sql_literal(value))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let statement = if spec.target_name == "topups" {
+            let statement = if preserves_existing_row_on_conflict(spec.target_name) {
                 format!(
                     "INSERT INTO {} ({columns}) VALUES ({values}) ON CONFLICT DO NOTHING;\n",
                     quote_ident(spec.target_name)
@@ -1846,8 +1927,41 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             column_map: &[],
             generate_missing_id: true,
         }),
+        "passkey_credentials" => Ok(D1TableSpec {
+            source_name: "passkey_credentials",
+            target_name: "passkey_credentials",
+            target_columns: PASSKEY_CREDENTIALS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
+        "two_fa" => Ok(D1TableSpec {
+            source_name: "two_fas",
+            target_name: "two_fa",
+            target_columns: TWO_FA_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
+        "two_fa_backup_codes" => Ok(D1TableSpec {
+            source_name: "two_fa_backup_codes",
+            target_name: "two_fa_backup_codes",
+            target_columns: TWO_FA_BACKUP_CODES_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
         _ => Err(format!("unsupported D1 import table: {table}")),
     }
+}
+
+fn preserves_existing_row_on_conflict(table: &str) -> bool {
+    matches!(
+        table,
+        "topups" | "passkey_credentials" | "two_fa" | "two_fa_backup_codes"
+    )
+}
+
+fn skips_soft_deleted_source_row(spec: D1TableSpec, row: &Map<String, Value>) -> bool {
+    matches!(spec.target_name, "two_fa" | "two_fa_backup_codes")
+        && matches!(row.get("deleted_at"), Some(value) if !value.is_null())
 }
 
 fn project_d1_row(
@@ -1855,16 +1969,16 @@ fn project_d1_row(
     row: &Map<String, Value>,
     row_index: usize,
 ) -> Result<Vec<(String, Value)>, String> {
-    if spec.target_name == "topups" {
-        for source_column in TOPUPS_REQUIRED_SOURCE_COLUMNS {
-            if !matches!(row.get(*source_column), Some(value) if !value.is_null()) {
-                return Err(format!(
-                    "source table top_ups row {} is missing required field {source_column}",
-                    row_index + 1
-                ));
-            }
+    for source_column in required_source_columns(spec.target_name) {
+        if !matches!(row.get(*source_column), Some(value) if !value.is_null()) {
+            return Err(format!(
+                "source table {} row {} is missing required field {source_column}",
+                spec.source_name,
+                row_index + 1
+            ));
         }
     }
+    validate_security_source_row(spec, row, row_index)?;
 
     let mut projected = Vec::new();
     for target_column in spec.target_columns {
@@ -1922,9 +2036,311 @@ fn project_d1_row(
         if value.is_null() {
             continue;
         }
-        projected.push(((*target_column).to_string(), value.clone()));
+        projected.push((
+            (*target_column).to_string(),
+            normalize_projected_value(spec, target_column, value, row_index)?,
+        ));
     }
     Ok(projected)
+}
+
+fn required_source_columns(table: &str) -> &'static [&'static str] {
+    match table {
+        "topups" => TOPUPS_REQUIRED_SOURCE_COLUMNS,
+        "passkey_credentials" => &[
+            "id",
+            "user_id",
+            "credential_id",
+            "public_key",
+            "sign_count",
+            "clone_warning",
+            "user_present",
+            "user_verified",
+            "backup_eligible",
+            "backup_state",
+            "created_at",
+            "updated_at",
+        ],
+        "two_fa" => &[
+            "id",
+            "user_id",
+            "secret",
+            "is_enabled",
+            "failed_attempts",
+            "created_at",
+            "updated_at",
+        ],
+        "two_fa_backup_codes" => &["id", "user_id", "code_hash", "is_used", "created_at"],
+        _ => &[],
+    }
+}
+
+fn validate_security_source_row(
+    spec: D1TableSpec,
+    row: &Map<String, Value>,
+    row_index: usize,
+) -> Result<(), String> {
+    match spec.target_name {
+        "passkey_credentials" => {
+            require_non_empty_string(spec, row, "credential_id", row_index)?;
+            require_non_empty_string(spec, row, "public_key", row_index)?;
+            require_integer_range(spec, row, "sign_count", row_index, 0, u32::MAX as i64)?;
+        }
+        "two_fa" => {
+            require_non_empty_string(spec, row, "secret", row_index)?;
+            require_integer_range(spec, row, "failed_attempts", row_index, 0, i32::MAX as i64)?;
+        }
+        "two_fa_backup_codes" => {
+            require_non_empty_string(spec, row, "code_hash", row_index)?;
+        }
+        _ => return Ok(()),
+    }
+
+    for column in security_boolean_columns(spec.target_name) {
+        normalize_boolean(
+            row.get(*column)
+                .expect("required boolean column was checked"),
+            spec,
+            column,
+            row_index,
+        )?;
+    }
+    Ok(())
+}
+
+fn require_non_empty_string(
+    spec: D1TableSpec,
+    row: &Map<String, Value>,
+    column: &str,
+    row_index: usize,
+) -> Result<(), String> {
+    if matches!(row.get(column).and_then(Value::as_str), Some(value) if !value.is_empty()) {
+        return Ok(());
+    }
+    Err(format!(
+        "source table {} row {} field {column} must be a non-empty string",
+        spec.source_name,
+        row_index + 1
+    ))
+}
+
+fn require_integer_range(
+    spec: D1TableSpec,
+    row: &Map<String, Value>,
+    column: &str,
+    row_index: usize,
+    minimum: i64,
+    maximum: i64,
+) -> Result<(), String> {
+    let value = row.get(column).and_then(json_integer);
+    if matches!(value, Some(value) if (minimum..=maximum).contains(&value)) {
+        return Ok(());
+    }
+    Err(format!(
+        "source table {} row {} field {column} must be an integer in {minimum}..={maximum}",
+        spec.source_name,
+        row_index + 1
+    ))
+}
+
+fn json_integer(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+}
+
+fn security_boolean_columns(table: &str) -> &'static [&'static str] {
+    match table {
+        "passkey_credentials" => &[
+            "clone_warning",
+            "user_present",
+            "user_verified",
+            "backup_eligible",
+            "backup_state",
+        ],
+        "two_fa" => &["is_enabled"],
+        "two_fa_backup_codes" => &["is_used"],
+        _ => &[],
+    }
+}
+
+fn security_timestamp_columns(table: &str) -> &'static [&'static str] {
+    match table {
+        "passkey_credentials" => &["last_used_at", "created_at", "updated_at", "deleted_at"],
+        "two_fa" => &["locked_until", "last_used_at", "created_at", "updated_at"],
+        "two_fa_backup_codes" => &["used_at", "created_at"],
+        _ => &[],
+    }
+}
+
+fn normalize_projected_value(
+    spec: D1TableSpec,
+    target_column: &str,
+    value: &Value,
+    row_index: usize,
+) -> Result<Value, String> {
+    if security_boolean_columns(spec.target_name).contains(&target_column) {
+        return normalize_boolean(value, spec, target_column, row_index);
+    }
+    if security_timestamp_columns(spec.target_name).contains(&target_column) {
+        return normalize_timestamp(value, spec, target_column, row_index);
+    }
+    Ok(value.clone())
+}
+
+fn normalize_boolean(
+    value: &Value,
+    spec: D1TableSpec,
+    column: &str,
+    row_index: usize,
+) -> Result<Value, String> {
+    let normalized = match value {
+        Value::Bool(value) => i64::from(*value),
+        _ => match json_integer(value) {
+            Some(value @ (0 | 1)) => value,
+            _ => {
+                return Err(format!(
+                    "source table {} row {} field {column} must be boolean or 0/1",
+                    spec.source_name,
+                    row_index + 1
+                ));
+            }
+        },
+    };
+    Ok(Value::Number(Number::from(normalized)))
+}
+
+fn normalize_timestamp(
+    value: &Value,
+    spec: D1TableSpec,
+    column: &str,
+    row_index: usize,
+) -> Result<Value, String> {
+    let timestamp = match value {
+        Value::Number(_) => json_integer(value),
+        Value::String(value) => parse_go_sqlite_timestamp(value),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        format!(
+            "source table {} row {} field {column} must be an integer Unix timestamp or supported Go SQLite datetime",
+            spec.source_name,
+            row_index + 1
+        )
+    })?;
+    Ok(Value::Number(Number::from(timestamp)))
+}
+
+fn parse_go_sqlite_timestamp(value: &str) -> Option<i64> {
+    let value = value.trim();
+    if let Ok(timestamp) = value.parse::<i64>() {
+        return Some(timestamp);
+    }
+    if !value.is_ascii() || value.len() < 19 {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !matches!(bytes[10], b'T' | b' ')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+
+    let year = parse_ascii_u32(&value[0..4])? as i64;
+    let month = parse_ascii_u32(&value[5..7])? as i64;
+    let day = parse_ascii_u32(&value[8..10])? as i64;
+    let hour = parse_ascii_u32(&value[11..13])? as i64;
+    let minute = parse_ascii_u32(&value[14..16])? as i64;
+    let second = parse_ascii_u32(&value[17..19])? as i64;
+    if year == 0
+        || !(1..=12).contains(&month)
+        || day < 1
+        || day > days_in_month(year, month)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+
+    let mut suffix_at = 19;
+    if bytes.get(suffix_at) == Some(&b'.') {
+        suffix_at += 1;
+        let fraction_start = suffix_at;
+        while bytes.get(suffix_at).is_some_and(u8::is_ascii_digit) {
+            suffix_at += 1;
+        }
+        if suffix_at == fraction_start {
+            return None;
+        }
+    }
+    let offset_seconds = parse_timestamp_offset(&value[suffix_at..])?;
+    let days = days_since_unix_epoch(year, month, day)?;
+    days.checked_mul(86_400)?
+        .checked_add(hour * 3_600 + minute * 60 + second)?
+        .checked_sub(offset_seconds)
+}
+
+fn parse_ascii_u32(value: &str) -> Option<u32> {
+    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value.parse().ok())
+        .flatten()
+}
+
+fn parse_timestamp_offset(value: &str) -> Option<i64> {
+    if value.is_empty() || value == "Z" || value == "z" {
+        return Some(0);
+    }
+    let bytes = value.as_bytes();
+    let sign = match bytes.first()? {
+        b'+' => 1_i64,
+        b'-' => -1_i64,
+        _ => return None,
+    };
+    let (hours, minutes) = match value.len() {
+        6 if bytes[3] == b':' => (
+            parse_ascii_u32(&value[1..3])?,
+            parse_ascii_u32(&value[4..6])?,
+        ),
+        5 => (
+            parse_ascii_u32(&value[1..3])?,
+            parse_ascii_u32(&value[3..5])?,
+        ),
+        _ => return None,
+    };
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    Some(sign * i64::from(hours * 3_600 + minutes * 60))
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn days_since_unix_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
+    let adjusted_year = year.checked_sub(i64::from(month <= 2))?;
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era.checked_mul(146_097)?
+        .checked_add(day_of_era)?
+        .checked_sub(719_468)
 }
 
 fn map_topup_status(value: Option<&Value>, row_index: usize) -> Result<i64, String> {
@@ -2020,6 +2436,9 @@ mod tests {
         include_str!("../../../migrations/d1/0005_topups_credited.sql");
     const D1_TOPUPS_PAYMENT_PROVIDER: &str =
         include_str!("../../../migrations/d1/0015_topups_payment_provider.sql");
+    const D1_TWO_FA_SCHEMA: &str = include_str!("../../../migrations/d1/0006_two_fa.sql");
+    const D1_PASSKEY_SCHEMA: &str =
+        include_str!("../../../migrations/d1/0016_passkey_credentials.sql");
 
     #[test]
     fn sql_string_escapes_single_quotes() {
@@ -2328,6 +2747,34 @@ mod tests {
     }
 
     #[test]
+    fn import_config_accepts_auth_security_tables() {
+        let temp = unique_temp_dir("import-auth-security");
+        let input = temp.join("auth.cinatoken-export.json");
+        let output = temp.join("auth.d1.sql");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(&input, auth_security_export_bundle()).unwrap();
+
+        let config = ImportConfig::from_args(vec![
+            "--input".to_string(),
+            input.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--table".to_string(),
+            "passkey_credentials".to_string(),
+            "--table".to_string(),
+            "two_fa".to_string(),
+            "--table".to_string(),
+            "two_fa_backup_codes".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            config.tables,
+            vec!["passkey_credentials", "two_fa", "two_fa_backup_codes"]
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn verify_config_requires_input_or_sql() {
         let err = VerifyConfig::from_args(vec![]).unwrap_err();
         assert!(err.contains("verify requires"));
@@ -2457,6 +2904,9 @@ mod tests {
         assert_eq!(manifest["tables"]["users"]["count"], 1);
         assert_eq!(manifest["tables"]["options"]["count"], 2);
         assert_eq!(manifest["tables"]["topups"]["count"], 4);
+        assert_eq!(manifest["tables"]["passkey_credentials"]["count"], 1);
+        assert_eq!(manifest["tables"]["two_fa"]["count"], 1);
+        assert_eq!(manifest["tables"]["two_fa_backup_codes"]["count"], 2);
         assert_eq!(
             manifest["tables"]["users"]["pk_min"],
             serde_json::json!([["number", "1"]])
@@ -2482,6 +2932,14 @@ mod tests {
         );
         assert_eq!(
             manifest["relationships"]["topups.user_id->users.id"]["violations"],
+            0
+        );
+        assert_eq!(
+            manifest["relationships"]["passkey_credentials.user_id->users.id"]["violations"],
+            0
+        );
+        assert_eq!(
+            manifest["relationships"]["two_fa_backup_codes.user_id->two_fa.user_id"]["violations"],
             0
         );
         assert_eq!(
@@ -2516,6 +2974,9 @@ mod tests {
         assert!(manifest.contains("sha256-smallest-logical-pk-v1"));
         assert!(!manifest.contains("source-token-secret"));
         assert!(!manifest.contains("source-channel-secret"));
+        assert!(!manifest.contains("JBSWY3DPEHPK3PXP"));
+        assert!(!manifest.contains("pk\\raw'quote"));
+        assert!(!manifest.contains("$2a$10$opaque/hash"));
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -2789,6 +3250,130 @@ mod tests {
     }
 
     #[test]
+    fn auth_security_import_preserves_credentials_and_is_idempotent() {
+        let temp = unique_temp_dir("auth-security-import");
+        let database = temp.join("auth.db");
+        fs::create_dir_all(&temp).unwrap();
+        execute_sqlite(
+            &database,
+            &format!("{D1_TWO_FA_SCHEMA}\n{D1_PASSKEY_SCHEMA}"),
+        );
+        let tables = vec![
+            "passkey_credentials".to_string(),
+            "two_fa".to_string(),
+            "two_fa_backup_codes".to_string(),
+        ];
+        let sql = render_d1_import_sql(auth_security_export_bundle(), &tables, false).unwrap();
+        assert_eq!(sql.matches("ON CONFLICT DO NOTHING").count(), 4);
+        assert!(sql.contains("Skipped soft-deleted row 2 from source table two_fas"));
+        assert!(sql.contains("Skipped soft-deleted row 3 from source table two_fa_backup_codes"));
+        execute_sqlite(&database, &sql);
+
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT public_key FROM passkey_credentials"),
+            "pk\\raw'quote"
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT credential_id FROM passkey_credentials"),
+            "cred-{\"a\":1}"
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT secret FROM two_fa"),
+            "JBSWY3DPEHPK3PXP"
+        );
+        assert_eq!(
+            sqlite_scalar(
+                &database,
+                "SELECT code_hash FROM two_fa_backup_codes WHERE id = 401"
+            ),
+            "$2a$10$opaque/hash'one"
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT last_used_at FROM passkey_credentials"),
+            "1710000000"
+        );
+        assert_eq!(sqlite_scalar(&database, "SELECT COUNT(*) FROM two_fa"), "1");
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT COUNT(*) FROM two_fa_backup_codes"),
+            "2"
+        );
+
+        let changed = auth_security_export_bundle()
+            .replace("pk\\\\raw'quote", "changed-public-key")
+            .replace("JBSWY3DPEHPK3PXP", "CHANGEDSECRET");
+        execute_sqlite(
+            &database,
+            &render_d1_import_sql(&changed, &tables, false).unwrap(),
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT public_key FROM passkey_credentials"),
+            "pk\\raw'quote"
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT secret FROM two_fa"),
+            "JBSWY3DPEHPK3PXP"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn auth_security_import_fails_closed_on_invalid_values() {
+        let tables = vec![
+            "passkey_credentials".to_string(),
+            "two_fa".to_string(),
+            "two_fa_backup_codes".to_string(),
+        ];
+        let invalid_sign_count =
+            auth_security_export_bundle().replace("\"sign_count\": 42", "\"sign_count\": -1");
+        assert!(render_d1_import_sql(&invalid_sign_count, &tables, false)
+            .unwrap_err()
+            .contains("sign_count must be an integer in 0..=4294967295"));
+
+        let invalid_boolean =
+            auth_security_export_bundle().replace("\"is_enabled\": 1", "\"is_enabled\": 2");
+        assert!(render_d1_import_sql(&invalid_boolean, &tables, false)
+            .unwrap_err()
+            .contains("is_enabled must be boolean or 0/1"));
+
+        let invalid_timestamp =
+            auth_security_export_bundle().replace("2024-03-09 16:00:10Z", "not-a-datetime");
+        assert!(render_d1_import_sql(&invalid_timestamp, &tables, false)
+            .unwrap_err()
+            .contains("supported Go SQLite datetime"));
+
+        let empty_hash = auth_security_export_bundle().replace("$2a$10$opaque/hash'one", "");
+        assert!(render_d1_import_sql(&empty_hash, &tables, false)
+            .unwrap_err()
+            .contains("code_hash must be a non-empty string"));
+    }
+
+    #[test]
+    fn reconcile_detects_auth_security_secret_drift_without_disclosure() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-auth-security-drift");
+        execute_sqlite(
+            &config.target,
+            "UPDATE passkey_credentials SET public_key = 'different-public-key';\n\
+             UPDATE two_fa SET secret = 'DIFFERENTSECRET';",
+        );
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let differences = result["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(differences.contains("table passkey_credentials: canonical SHA-256 differs"));
+        assert!(differences.contains("table two_fa: canonical SHA-256 differs"));
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains("pk\\\\raw'quote"));
+        assert!(!serialized.contains("different-public-key"));
+        assert!(!serialized.contains("JBSWY3DPEHPK3PXP"));
+        assert!(!serialized.contains("DIFFERENTSECRET"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn verify_export_bundle_reports_rows_and_core_presence() {
         let bundle = r#"{
           "format": "cinatoken-sqlite-export-v1",
@@ -2875,6 +3460,111 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
         assert_eq!(sql_literal(&Value::Bool(false)), "0");
         let object = serde_json::json!({"nested": "yes"});
         assert_eq!(sql_literal(&object), "'{\"nested\":\"yes\"}'");
+    }
+
+    fn auth_security_export_bundle() -> &'static str {
+        r#"{
+          "format": "cinatoken-sqlite-export-v1",
+          "tables": {
+            "passkey_credentials": {
+              "missing": false,
+              "columns": [
+                "id", "user_id", "credential_id", "public_key", "attestation_type",
+                "aaguid", "sign_count", "clone_warning", "user_present",
+                "user_verified", "backup_eligible", "backup_state", "transports",
+                "attachment", "last_used_at", "created_at", "updated_at", "deleted_at"
+              ],
+              "rows": [{
+                "id": 201,
+                "user_id": 1,
+                "credential_id": "cred-{\"a\":1}",
+                "public_key": "pk\\raw'quote",
+                "attestation_type": "none",
+                "aaguid": "aaguid-base64==",
+                "sign_count": 42,
+                "clone_warning": false,
+                "user_present": 1,
+                "user_verified": true,
+                "backup_eligible": 1,
+                "backup_state": 0,
+                "transports": "[\"internal\",\"hybrid\"]",
+                "attachment": "platform",
+                "last_used_at": "2024-03-09T17:00:00.999+01:00",
+                "created_at": "2024-03-09 16:00:00+00:00",
+                "updated_at": "2024-03-09 16:00:10Z",
+                "deleted_at": null
+              }]
+            },
+            "two_fas": {
+              "missing": false,
+              "columns": [
+                "id", "user_id", "secret", "is_enabled", "failed_attempts",
+                "locked_until", "last_used_at", "created_at", "updated_at", "deleted_at"
+              ],
+              "rows": [
+                {
+                  "id": 301,
+                  "user_id": 1,
+                  "secret": "JBSWY3DPEHPK3PXP",
+                  "is_enabled": 1,
+                  "failed_attempts": 2,
+                  "locked_until": "2024-03-09 16:01:00+00:00",
+                  "last_used_at": "2024-03-09 16:00:20+00:00",
+                  "created_at": "2024-03-09 16:00:00+00:00",
+                  "updated_at": "2024-03-09 16:00:20+00:00",
+                  "deleted_at": null
+                },
+                {
+                  "id": 302,
+                  "user_id": 9,
+                  "secret": "SOFTDELETEDSECRET",
+                  "is_enabled": 0,
+                  "failed_attempts": 0,
+                  "locked_until": null,
+                  "last_used_at": null,
+                  "created_at": "2024-03-09 16:00:00+00:00",
+                  "updated_at": "2024-03-09 16:00:00+00:00",
+                  "deleted_at": "2024-03-09 16:02:00+00:00"
+                }
+              ]
+            },
+            "two_fa_backup_codes": {
+              "missing": false,
+              "columns": [
+                "id", "user_id", "code_hash", "is_used", "used_at", "created_at", "deleted_at"
+              ],
+              "rows": [
+                {
+                  "id": 401,
+                  "user_id": 1,
+                  "code_hash": "$2a$10$opaque/hash'one",
+                  "is_used": 0,
+                  "used_at": null,
+                  "created_at": "2024-03-09 16:00:00+00:00",
+                  "deleted_at": null
+                },
+                {
+                  "id": 402,
+                  "user_id": 1,
+                  "code_hash": "$2a$10$opaque/hash-two",
+                  "is_used": true,
+                  "used_at": "2024-03-09 16:00:30+00:00",
+                  "created_at": "2024-03-09 16:00:00+00:00",
+                  "deleted_at": null
+                },
+                {
+                  "id": 403,
+                  "user_id": 1,
+                  "code_hash": "$2a$10$soft-deleted",
+                  "is_used": 0,
+                  "used_at": null,
+                  "created_at": "2024-03-09 16:00:00+00:00",
+                  "deleted_at": "2024-03-09 16:02:00+00:00"
+                }
+              ]
+            }
+          }
+        }"#
     }
 
     fn topups_export_bundle() -> &'static str {
@@ -2964,7 +3654,8 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
             &target,
             &format!(
                 "{D1_CORE_SCHEMA}\n{D1_TOPUPS_SCHEMA}\n{D1_SCHEMA_PARITY}\n\
-                 {D1_TOPUPS_CREDITED}\n{D1_TOPUPS_PAYMENT_PROVIDER}\n{P0_TARGET_ROWS_FIXTURE}"
+                 {D1_TOPUPS_CREDITED}\n{D1_TWO_FA_SCHEMA}\n{D1_TOPUPS_PAYMENT_PROVIDER}\n\
+                 {D1_PASSKEY_SCHEMA}\n{P0_TARGET_ROWS_FIXTURE}"
             ),
         );
         let config = ReconcileConfig {

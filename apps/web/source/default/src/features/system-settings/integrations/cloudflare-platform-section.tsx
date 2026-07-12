@@ -349,6 +349,11 @@ function buildCapabilityGroups(
 ): CapabilityGroup[] {
   const relayAiGatewayRoutes =
     capabilities.relay_ai_gateway_rest_routes.join(', ') || t('No routes')
+  const relayAiGatewayModelPrefixes =
+    capabilities.relay_ai_gateway_model_prefixes.join(', ') || t('No prefixes')
+  const relayAiGatewayDirectFallbackPrefixes =
+    capabilities.relay_ai_gateway_direct_fallback_prefixes.join(', ') ||
+    t('No prefixes')
   const relayAiGatewayGuards =
     capabilities.relay_ai_gateway_cutover_guards.join(', ') || t('No guards')
   const relayModelFallbackGuards =
@@ -493,6 +498,17 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Model provider registry'),
+          description: t('Accepted REST model prefixes: {{prefixes}}', {
+            prefixes: relayAiGatewayModelPrefixes,
+          }),
+          ready: capabilities.relay_ai_gateway_model_prefixes.length > 0,
+          readyLabel: t('{{count}} prefixes', {
+            count: capabilities.relay_ai_gateway_model_prefixes.length,
+          }),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Cutover guard policy'),
           description: t('Compiled guards: {{guards}}', {
             guards: relayAiGatewayGuards,
@@ -524,7 +540,8 @@ function buildCapabilityGroups(
         {
           label: t('Same-channel direct fallback'),
           description: t(
-            'Retries through the original provider channel with a provider-native model only for Gateway server failures or fetch errors; auth and rate-limit responses fail closed.'
+            'Retries only when the selected channel matches a registered provider prefix: {{prefixes}}. Gateway auth and rate-limit responses fail closed.',
+            { prefixes: relayAiGatewayDirectFallbackPrefixes }
           ),
           ready: capabilities.relay_ai_gateway_same_channel_fallback_compiled,
           readyLabel: t('Compiled'),

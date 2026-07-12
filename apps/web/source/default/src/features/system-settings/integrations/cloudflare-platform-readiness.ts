@@ -61,6 +61,8 @@ export type PlatformReadinessCapabilities = Pick<
   | 'd1_migration_ready'
   | 'relay_ai_gateway_router_ready'
   | 'relay_ai_gateway_rest_routes'
+  | 'relay_ai_gateway_model_prefixes'
+  | 'relay_ai_gateway_direct_fallback_prefixes'
   | 'relay_ai_gateway_cutover_guards'
   | 'relay_ai_gateway_channel_opt_in_supported'
   | 'relay_ai_gateway_rest_forwarder_compiled'
@@ -145,6 +147,8 @@ export function buildPlatformReadinessSummary(
   )
   const aiGatewayImplementation = allReady(
     capabilities.relay_ai_gateway_rest_routes.length > 0,
+    capabilities.relay_ai_gateway_model_prefixes.length > 0,
+    capabilities.relay_ai_gateway_direct_fallback_prefixes.length > 0,
     capabilities.relay_ai_gateway_cutover_guards.length > 0,
     capabilities.relay_ai_gateway_channel_opt_in_supported,
     capabilities.relay_ai_gateway_rest_forwarder_compiled,

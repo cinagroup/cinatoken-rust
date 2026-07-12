@@ -1,7 +1,4 @@
-import type {
-  ProviderReadinessEntry,
-  ProviderRelayReadiness,
-} from '../types'
+import type { ProviderReadinessEntry, ProviderRelayReadiness } from '../types'
 
 export type ProviderReadinessVariant = 'success' | 'warning' | 'neutral'
 
@@ -13,7 +10,10 @@ export function indexProviderReadiness(
 
 export function providerReadinessPresentation(
   readiness: ProviderRelayReadiness
-): { label: 'Ready' | 'Partial' | 'Deferred'; variant: ProviderReadinessVariant } {
+): {
+  label: 'Ready' | 'Partial' | 'Deferred'
+  variant: ProviderReadinessVariant
+} {
   switch (readiness) {
     case 'ready':
       return { label: 'Ready', variant: 'success' }

@@ -80,6 +80,21 @@ implementation readiness only for the covered behavior.
 - Source `top_ups` to D1 `topups` conversion and P0 reconciliation, including
   all four Go statuses, provider validation, credited backfill, duplicate-import
   preservation, canonical hashes, and user relationship checks.
+- Source Passkey, TOTP 2FA, and backup-code credential import/reconciliation,
+  including byte-exact sensitive values, strict Go SQLite timestamp conversion,
+  soft-delete filtering, no-overwrite idempotency, domain/uniqueness checks,
+  and user/2FA relationships. Production-source and real-login proof remain
+  pending.
+- AI Gateway model-prefix registration now distinguishes all documented REST
+  prefixes from the smaller safe same-channel fallback set. The admin frontend
+  exposes both lists, and the smoke contract rejects Gateway-only providers in
+  the direct-fallback list.
+- A credential-free WFP post-upload verifier now reconciles uploader manifests,
+  Cloudflare details/settings/content readback, recomputed module hashes, exact
+  bindings, and a live positive dispatch result. No remote evidence has yet
+  been supplied to it.
+- The default wallet now preserves all four topup states; failed orders are no
+  longer presented as pending.
 - Tracked React/Bun source plus a successful production typecheck/build.
 
 Evidence is mixed E2-E4 depending on subsystem; see the audit before relying on

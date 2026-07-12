@@ -510,6 +510,12 @@ function summarizeCapabilities(data) {
     relay_ai_gateway_router_enabled: data.relay_ai_gateway_router_enabled === true,
     relay_ai_gateway_router_ready: data.relay_ai_gateway_router_ready === true,
     relay_ai_gateway_rest_routes: arrayOfStrings(data.relay_ai_gateway_rest_routes),
+    relay_ai_gateway_model_prefixes: arrayOfStrings(
+      data.relay_ai_gateway_model_prefixes,
+    ),
+    relay_ai_gateway_direct_fallback_prefixes: arrayOfStrings(
+      data.relay_ai_gateway_direct_fallback_prefixes,
+    ),
     relay_ai_gateway_cutover_guards: arrayOfStrings(data.relay_ai_gateway_cutover_guards),
     relay_ai_gateway_channel_opt_in_supported:
       data.relay_ai_gateway_channel_opt_in_supported === true,
@@ -562,6 +568,49 @@ function validateCapabilities(capabilities, options) {
   for (const route of ["chat/completions", "responses", "messages"]) {
     if (!capabilities.relay_ai_gateway_rest_routes.includes(route)) {
       throw new Error(`platform capabilities missing AI Gateway REST route ${route}`);
+    }
+  }
+  for (const prefix of [
+    "openai/",
+    "anthropic/",
+    "google-ai-studio/",
+    "deepseek/",
+    "cohere/",
+    "groq/",
+    "mistral/",
+    "perplexity/",
+    "google-vertex-ai/",
+    "cerebras/",
+    "baseten/",
+    "parallel/",
+    "@cf/",
+  ]) {
+    if (!capabilities.relay_ai_gateway_model_prefixes.includes(prefix)) {
+      throw new Error(`platform capabilities missing AI Gateway model prefix ${prefix}`);
+    }
+  }
+  for (const prefix of ["openai/", "anthropic/", "deepseek/"]) {
+    if (!capabilities.relay_ai_gateway_direct_fallback_prefixes.includes(prefix)) {
+      throw new Error(`platform capabilities missing direct fallback prefix ${prefix}`);
+    }
+  }
+  for (const prefix of [
+    "google-ai-studio/",
+    "google/",
+    "xai/",
+    "cohere/",
+    "groq/",
+    "mistral/",
+    "perplexity/",
+    "google-vertex-ai/",
+    "cerebras/",
+    "baseten/",
+    "parallel/",
+    "@cf/",
+    "cloudflare/",
+  ]) {
+    if (capabilities.relay_ai_gateway_direct_fallback_prefixes.includes(prefix)) {
+      throw new Error(`platform capabilities exposed unsafe direct fallback prefix ${prefix}`);
     }
   }
   for (const guard of [
@@ -745,6 +794,28 @@ function runSelfTest() {
     relay_ai_gateway_router_enabled: false,
     relay_ai_gateway_router_ready: false,
     relay_ai_gateway_rest_routes: ["chat/completions", "responses", "messages"],
+    relay_ai_gateway_model_prefixes: [
+      "openai/",
+      "anthropic/",
+      "google-ai-studio/",
+      "google/",
+      "xai/",
+      "deepseek/",
+      "cohere/",
+      "groq/",
+      "mistral/",
+      "perplexity/",
+      "google-vertex-ai/",
+      "cerebras/",
+      "baseten/",
+      "parallel/",
+      "@cf/",
+    ],
+    relay_ai_gateway_direct_fallback_prefixes: [
+      "openai/",
+      "anthropic/",
+      "deepseek/",
+    ],
     relay_ai_gateway_cutover_guards: [
       "router_ready",
       "channel_opted_in",
@@ -799,6 +870,18 @@ function runSelfTest() {
           "/ai/v1/chat/completions",
           "/ai/v1/responses",
           "/ai/v1/messages",
+        ],
+      }),
+      options,
+    ),
+  );
+  const unsafeDirectPrefixRejected = expectFailure(() =>
+    validateCapabilities(
+      summarizeCapabilities({
+        ...raw,
+        relay_ai_gateway_direct_fallback_prefixes: [
+          ...raw.relay_ai_gateway_direct_fallback_prefixes,
+          "google-ai-studio/",
         ],
       }),
       options,
@@ -875,6 +958,7 @@ function runSelfTest() {
   return {
     ok:
       routeDriftRejected &&
+      unsafeDirectPrefixRejected &&
       unsafeCutoverRejected &&
       missingTerminalAuditRejected &&
       missingActualGroupBillingRejected &&
@@ -885,6 +969,10 @@ function runSelfTest() {
     cases: [
       { name: "canonical-capability-contract", ok: true },
       { name: "route-drift-rejected", ok: routeDriftRejected },
+      {
+        name: "unsafe-direct-prefix-rejected",
+        ok: unsafeDirectPrefixRejected,
+      },
       { name: "unsafe-cutover-rejected", ok: unsafeCutoverRejected },
       {
         name: "missing-terminal-audit-rejected",

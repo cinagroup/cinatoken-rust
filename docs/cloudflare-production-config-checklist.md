@@ -443,6 +443,12 @@ Smoke order:
    exact script. Archive the redacted PUT result and a GET content/metadata
    readback that matches the dry-run artifact hashes. Do not use
    `/api/platform/wfp/tenant-script/deploy`; it is intentionally disabled.
+   Feed the uploader JSON, Cloudflare details/settings/content capture, and live
+   dispatch JSON into `bun tools/verify_wfp_post_upload.mjs`. Archive a single
+   `verified=true` result; the verifier recomputes module hashes and rejects
+   script, module, binding, compatibility, readback, or dispatch drift. Run
+   `bun run check:wfp-tenant:post-upload-verifier` locally before collecting
+   remote evidence.
 4. Enable only the gates needed for an admin-authenticated status probe. Confirm
    `/api/platform/dispatch/:worker/__cinatoken/tenant/status` reaches the
    Rust/Wasm runtime, while every admin AI path, preview-host AI path, and
@@ -463,7 +469,8 @@ Smoke order:
 
 No staging upload, binding readback, signed-authority billing canary, or live
 replay race is claimed by this checklist; those are still required production
-evidence. Local compilation proves only the contract shape.
+evidence. The post-upload verifier proves evidence consistency only when fed
+real remote captures; its self-test proves only the contract shape.
 
 ### Migration prerequisite
 

@@ -411,6 +411,8 @@ export type PlatformCapabilities = {
   relay_ai_gateway_router_enabled: boolean
   relay_ai_gateway_router_ready: boolean
   relay_ai_gateway_rest_routes: string[]
+  relay_ai_gateway_model_prefixes: string[]
+  relay_ai_gateway_direct_fallback_prefixes: string[]
   relay_ai_gateway_cutover_guards: string[]
   relay_ai_gateway_channel_opt_in_supported: boolean
   relay_ai_gateway_rest_forwarder_compiled: boolean

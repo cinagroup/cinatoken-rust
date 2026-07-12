@@ -532,8 +532,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   Keep `RELAY_MODEL_FALLBACK_ENABLED=false` and
   `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until isolated staging proves
   all status/fetch/refund/settlement/audit/stream/rollback cases. Before auto
-  tokens are admitted, fix the existing first-planned-group versus
-  actual-serving-group billing snapshot. The all-fetch-failed path now emits a
+  tokens are admitted, prove the locally implemented maximum-candidate reserve
+  and actual-serving-group settlement against staging D1. The model-prefix
+  registry now covers the documented Cloudflare REST provider set, while safe
+  same-channel direct fallback is deliberately limited to OpenAI, Anthropic,
+  and DeepSeek until other dedicated adapters land. The all-fetch-failed path emits a
   bounded, secret-free Go-compatible type-5 attempt ledger through
   `LOG_QUEUE`/D1; prove queue delivery, synchronous fallback, refund ordering,
   and admin-log visibility in staging before production cutover.
@@ -587,7 +590,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   credential disclosure, and successful reconnect from a fresh client.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
-- Add provider-specific adapters beyond OpenAI-compatible providers.
+- Add provider-specific adapters beyond the currently implemented OpenAI,
+  Anthropic, DeepSeek, Gemini-native, Workers AI, and rerank surfaces. A
+  Cloudflare Gateway prefix does not make its same-channel Rust adapter ready.
+- Run the strict WFP upload against replacement credentials, capture the
+  official details/settings/content APIs plus a positive internal dispatch,
+  and feed all artifacts to `tools/verify_wfp_post_upload.mjs`. Keep dispatch
+  and paid relay gates off until the result reports `verified=true` and the
+  authority replay/billing race evidence is archived.
 - Capture staging distribution/route evidence for relay weighted channel
   selection, including retry, auto-group, affinity, and provider-family filters.
 - Capture provider-specific staging replay/reconciliation evidence before
@@ -595,10 +605,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Capture io.net deployment staging evidence with real credentials: settings
   save/connection test, catalog reads, price estimation, list/detail/log smoke,
   one reversible mutation smoke, and rollback notes.
-- Continue Passkey hardening. The default-frontend Passkey route boundary is
-  now Worker-owned and route-debt is zero, but register/login/step-up finish
-  handlers deliberately fail closed until a Worker-safe WebAuthn verifier or
-  service-binding/Container verifier is selected and tested.
+- Continue Passkey hardening from the Worker-native ES256/RS256 verifier and
+  SQLite Durable Object ceremony state. Go Passkey, TOTP, and backup-code rows
+  now have byte-exact local import/reconciliation; next capture a production
+  source count/hash, remote D1 import, real imported-authenticator login,
+  TOTP/backup-code verification, replay/session-isolation, eviction/alarm,
+  forced-reset fallback, and rollback evidence.
 - Capture logged-in playground chat completion staging evidence for
   `POST /pg/chat/completions`: non-stream and stream success, group
   override allow/deny, user quota debit, channel quota/audit rows, token-table

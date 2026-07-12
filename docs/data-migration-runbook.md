@@ -161,7 +161,7 @@ Minimum table-family inventory:
 | `Redemption` | Wave 2/3 | D1 schema/import support exists in `0012_redemptions.sql` for admin code management; public paid redemption/top-up traffic is still blocked until payment idempotency and reconciliation are proven. |
 | `TopUp` | Wave 3 | `top_ups -> topups` import and P0 reconciliation are implemented for pending/success/failed/expired, provider mapping, credited backfill, idempotent duplicate import, and user relationships. Production source snapshot, remote D1 import, webhook replay, and paid reconciliation remain blocking. |
 | `SubscriptionPlan`, `SubscriptionOrder`, `UserSubscription`, `SubscriptionPreConsumeRecord` | Wave 3 | Blocked until billing/payment ownership is approved. |
-| `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | Wave 4 | Migrate only with secure hash/secret handling; otherwise force re-auth/reset. |
+| `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | Wave 4 | Local import/reconciliation is implemented with byte-exact credential/secret/hash preservation, strict datetime/boolean/count validation, soft-delete filtering for 2FA rows, and idempotent no-overwrite behavior. Production source snapshot, remote import, real-authenticator/TOTP/backup-code login, and rollback or forced-reset policy remain blocking. |
 | `CustomOAuthProvider`, `UserOAuthBinding` | Wave 4 | D1 schema/import support exists in migration 0010; production traffic still requires provider secret policy evidence, redirect/SSRF checks, callback state replay checks, and account-binding smoke. |
 | `Checkin` | Wave 4 | D1 schema/import support exists in `0011_checkins.sql`; decide import versus reset, preserve/verify quota awards, and smoke duplicate-submit idempotency. |
 | `Midjourney`, `Task` | Wave 5 | Requires Queue/R2 task and artifact retention plan. |
@@ -177,7 +177,7 @@ Use waves so production traffic can move before long-tail tables are complete.
 | 1: Relay beta | Wave 0 plus recent logs needed for operator traceability | Billing shadow fixtures and provider smoke plan | Relay JSON/SSE smoke, quota reserve/refund smoke, cache/rate-limit smoke |
 | 2: Admin core | Models, vendors, prefill groups, setup, logs, quota data | Admin API/schema and redaction tests | Operator CRUD smoke and audit log smoke |
 | 3: Billing/payment | Topups, redemptions, subscriptions, pre-consume records, payment events | Billing parity runbook pass and webhook idempotency (order model + two-layer idempotency in `docs/source-payment-idempotency-parity.md`) | Paid canary with strict abort triggers |
-| 4: Auth/security | Passkey, OAuth, 2FA, checkin | Forced re-auth decision or secure migration plan (flow detail + forced re-enroll policy in `docs/source-oauth-2fa-passkey-parity.md`) | Auth/session smoke and support rollback plan |
+| 4: Auth/security | Passkey, OAuth, 2FA, checkin | Byte-exact credential import/reconciliation plus an approved fallback forced re-auth/re-enroll policy (flow detail in `docs/source-oauth-2fa-passkey-parity.md`) | Imported Passkey/TOTP/backup-code auth smoke, session isolation, and support rollback plan |
 | 5: Async/media | Task, Midjourney, media artifacts, perf history | Queue/R2 design, retention, DLQ, replay tests (lifecycle + CAS idempotency in `docs/source-task-lifecycle-parity.md`) | Async provider smoke and artifact cleanup evidence |
 
 Schema parity prerequisite (2026-06-25): before Wave 0 import, resolve the
@@ -259,7 +259,8 @@ bun run reconcile:migration -- `
 ```
 
 `reconcile:migration` is a hard gate for `users`, `tokens`, `channels`,
-`abilities`, `options`, and `topups`. The versioned
+`abilities`, `options`, `topups`, `passkey_credentials`, `two_fa`, and
+`two_fa_backup_codes`. The versioned
 `cinatoken-source-to-d1-reconciliation-v1` manifest records, per table:
 
 - row count and logical primary-key minimum/maximum;
@@ -271,6 +272,10 @@ bun run reconcile:migration -- `
 - `top_ups` string status to D1 integer mapping (`pending=0`, `success=1`,
   `failed=2`, `expired=3`), provider-domain validation, success-only
   `credited=1`, and `topups.user_id -> users.id` checks.
+- Passkey credential/public-key/sign-counter/flag domains, TOTP secret and
+  lockout domains, backup-code hash/used-at consistency, unique user and
+  credential IDs, and all auth-table user/2FA relationships. Sensitive values
+  affect canonical hashes but never appear in samples or difference output.
 
 The canonical projection mirrors import semantics: `abilities.group` maps to
 `group_name`, source null/missing values use target D1 defaults where the

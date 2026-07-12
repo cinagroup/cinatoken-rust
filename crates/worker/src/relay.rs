@@ -15,9 +15,9 @@ use cinatoken_core::{
 };
 use cinatoken_providers::{
     ai_gateway::{
-        has_ai_gateway_provider_prefix, plan_ai_gateway_cutover, rest_gateway_endpoint_url,
-        AiGatewayCutoverDecision, AiGatewayCutoverInput, AiGatewayCutoverPlan,
-        AiGatewayModelAuthor,
+        direct_provider_model_for_channel, has_ai_gateway_provider_prefix, plan_ai_gateway_cutover,
+        rest_gateway_endpoint_url, AiGatewayCutoverDecision, AiGatewayCutoverInput,
+        AiGatewayCutoverPlan, AiGatewayModelAuthor,
     },
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
@@ -2188,8 +2188,14 @@ pub(crate) fn relay_ai_gateway_direct_fallback_contract_compiled() -> bool {
         && !should_ai_gateway_direct_fallback(403)
         && !should_ai_gateway_direct_fallback(429)
         && should_ai_gateway_direct_fallback(500)
-        && direct_provider_model("openai/gpt-4.1", AiGatewayModelAuthor::OpenAi) == Some("gpt-4.1")
-        && direct_provider_model("@cf/meta/llama", AiGatewayModelAuthor::WorkersAi).is_none()
+        && direct_provider_model_for_channel("openai/gpt-4.1", AiGatewayModelAuthor::OpenAi, 1)
+            == Some("gpt-4.1")
+        && direct_provider_model_for_channel(
+            "deepseek/deepseek-chat",
+            AiGatewayModelAuthor::DeepSeek,
+            1,
+        )
+        .is_none()
 }
 
 pub(crate) fn relay_terminal_attempt_audit_contract_compiled() -> bool {
@@ -4059,6 +4065,7 @@ impl RelayAiGatewayRuntime {
 struct RelayAiGatewayAttempt {
     url: String,
     plan: AiGatewayCutoverPlan,
+    direct_channel_type: i32,
 }
 
 fn plan_relay_ai_gateway_attempt(
@@ -4092,25 +4099,15 @@ fn plan_relay_ai_gateway_attempt(
         rest_gateway_endpoint_url(&runtime.account_id, plan.endpoint, None).map_err(|err| {
             worker::Error::RustError(format!("failed to build AI Gateway REST URL: {err}"))
         })?;
-    Ok(Some(RelayAiGatewayAttempt { url, plan }))
+    Ok(Some(RelayAiGatewayAttempt {
+        url,
+        plan,
+        direct_channel_type: channel.channel_type,
+    }))
 }
 
 fn should_ai_gateway_direct_fallback(status: u16) -> bool {
     matches!(status, 500..=503 | 505..=523 | 525..=599)
-}
-
-fn direct_provider_model(model: &str, author: AiGatewayModelAuthor) -> Option<&str> {
-    let model = model.trim();
-    let prefix = match author {
-        AiGatewayModelAuthor::OpenAi => "openai/",
-        AiGatewayModelAuthor::Anthropic => "anthropic/",
-        AiGatewayModelAuthor::Google => "google/",
-        AiGatewayModelAuthor::Xai => "xai/",
-        AiGatewayModelAuthor::WorkersAi | AiGatewayModelAuthor::Unknown => return None,
-    };
-    model.get(prefix.len()..).filter(|value| {
-        model[..prefix.len()].eq_ignore_ascii_case(prefix) && !value.trim().is_empty()
-    })
 }
 
 fn prepare_ai_gateway_direct_fallback_body(
@@ -4118,7 +4115,11 @@ fn prepare_ai_gateway_direct_fallback_body(
     attempt: &RelayAiGatewayAttempt,
 ) -> Option<Value> {
     let gateway_model = body.get("model")?.as_str()?;
-    let direct_model = direct_provider_model(gateway_model, attempt.plan.model_author)?;
+    let direct_model = direct_provider_model_for_channel(
+        gateway_model,
+        attempt.plan.model_author,
+        attempt.direct_channel_type,
+    )?;
     let mut direct_body = body.clone();
     direct_body
         .as_object_mut()?
@@ -10316,12 +10317,47 @@ mod tests {
         assert_eq!(body["model"], "openai/gpt-4.1");
 
         assert_eq!(
-            direct_provider_model("anthropic/claude-sonnet-4", AiGatewayModelAuthor::Anthropic),
+            direct_provider_model_for_channel(
+                "anthropic/claude-sonnet-4",
+                AiGatewayModelAuthor::Anthropic,
+                14
+            ),
             Some("claude-sonnet-4")
         );
         assert_eq!(
-            direct_provider_model("@cf/meta/llama", AiGatewayModelAuthor::WorkersAi),
+            direct_provider_model_for_channel(
+                "@cf/meta/llama",
+                AiGatewayModelAuthor::WorkersAi,
+                39
+            ),
             None
+        );
+
+        let mut mismatched_channel = channel.clone();
+        mismatched_channel.channel_type = CHANNEL_TYPE_DEEPSEEK;
+        let mismatched_attempt = plan_relay_ai_gateway_attempt(
+            &runtime,
+            &endpoint,
+            &mismatched_channel,
+            "openai/gpt-4.1",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(prepare_ai_gateway_direct_fallback_body(&body, &mismatched_attempt).is_none());
+
+        let deepseek_body = json!({"model": "deepseek/deepseek-chat", "messages": []});
+        let deepseek_attempt = plan_relay_ai_gateway_attempt(
+            &runtime,
+            &endpoint,
+            &mismatched_channel,
+            "deepseek/deepseek-chat",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            prepare_ai_gateway_direct_fallback_body(&deepseek_body, &deepseek_attempt).unwrap()
+                ["model"],
+            "deepseek-chat"
         );
 
         // `worker::Response` headers call wasm-bindgen imports and cannot be

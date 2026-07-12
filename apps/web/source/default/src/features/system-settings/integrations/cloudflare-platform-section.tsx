@@ -807,6 +807,23 @@ function buildCapabilityGroups(
           missingVariant: 'neutral',
         },
         {
+          label: t('WFP canary relay retries'),
+          description: t(
+            'Paid WFP smoke requires RELAY_RETRY_TIMES=0 so one CLI invocation cannot fan out to multiple provider calls.'
+          ),
+          ready: capabilities.relay_retry_times === 0,
+          readyLabel: t('0 retries'),
+          missingLabel:
+            capabilities.relay_retry_times === null
+              ? t('Invalid')
+              : t('{{count}} retries', {
+                  count: capabilities.relay_retry_times,
+                }),
+          missingVariant: capabilities.wfp_relay_transport_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
           label: t('WFP authority secret'),
           description: t(
             'Keeps the WFP_RELAY_AUTHORITY_SECRET master only in the main Worker and uploader; each tenant receives a derived worker-scoped key.'

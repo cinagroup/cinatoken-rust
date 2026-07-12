@@ -10110,3 +10110,54 @@ Evidence boundary:
   negative matrix, Gateway/audit/billing reconciliation, replay races, and
   rollback. Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; production remains
   **NO-GO**.
+
+### 22.164 2026-07-12 WFP Paid Egress And Billing Evidence Harness
+
+- Added `tools/smoke_wfp_outbound_egress.mjs` plus root self-test, dry-run, and
+  live commands. The 17-case contract includes a mock end-to-end capabilities,
+  public relay, and success-audit chain; header, route, worker, channel, pending
+  billing, secret marker, credential echo, multi-route live, and byte-limit
+  failures are rejected.
+- Positive requests now have an executable path through the real authority:
+  relay token authentication -> D1 model/group/channel selection -> central
+  billing preparation -> body-bound WFP authority -> replay DO -> Rust tenant ->
+  Rust outbound Worker -> Cloudflare AI REST -> central settlement/audit.
+  Admin dispatch remains status-only.
+- Live safety is deliberately narrower than dry-run planning. One process may
+  call only one of chat, responses, messages, or ai-run. It uses the reviewed
+  staging origin, fixed code-reviewed provider/model and sub-2-KiB low-token
+  body, no streaming, no custom URL/model/body/header, and environment-only
+  short-lived credentials. Four-route evidence requires four separately
+  reviewed executions.
+- Added `relay_retry_times` to platform capabilities and the frontend. WFP paid
+  smoke stays blocked unless central retries are zero and cross-model fallback
+  is disabled. Operators must separately prove the fixed token group has one
+  WFP channel and tenant artifact readback sets `AI_GATEWAY_MAX_ATTEMPTS=1`.
+- The tool validates one exact final type-2 row, expected WFP worker/channel/
+  model/group, resolved billing metadata, and public response-header stripping.
+  It outputs normalized identifiers and usage metadata only, never response
+  bodies, raw headers, Cookie, relay token, authority, or outbound token.
+- Fixed a real audit-state defect in the central relay: successful flat billing
+  now changes `billing_pending` to false. The focused Rust test proves the
+  applied quota metadata and resolved state are emitted together.
+- Tightened `verify_wfp_post_upload.mjs` evidence semantics. Compatibility
+  `verified=true` now carries scope `wfp-tenant-artifact-and-status` with
+  `paidEgressVerified=false` and `productionVerified=false`, so status-only
+  artifact proof cannot be mistaken for a paid provider/billing pass.
+- A fresh cinaVibeSDK audit at `918e97480ee4` confirmed that the reference owns
+  inbound dynamic dispatch and a platform AI proxy but does not implement an
+  outbound service binding. `cinatoken-wfp-outbound` is therefore a deliberate
+  Cloudflare-native security improvement while preserving the reference's
+  dispatch isolation, provider/model registry, credential-owner coupling, and
+  response allowlist ideas.
+
+Evidence boundary:
+
+- Local self-tests, frontend visibility, and Rust audit correction are
+  implementation evidence only. No live staging, Gateway log, provider call,
+  quota snapshot, replay race, or rollback was executed, and no exposed token
+  was used.
+- After credential rotation, archive attachment and strict tenant readbacks,
+  run one route at a time, reconcile one provider call and one audit/settlement,
+  execute the isolated negative/replay matrix, then return
+  `WFP_RELAY_TRANSPORT_ENABLED=false`. Production remains **NO-GO**.

@@ -2050,6 +2050,12 @@ impl RelayRetryConfig {
     }
 }
 
+pub(crate) fn relay_retry_times_from_env(env: &Env) -> Option<u32> {
+    RelayRetryConfig::from_env(env)
+        .ok()
+        .map(|config| config.retry_times)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RelayModelFallbackConfig {
     mappings: HashMap<String, String>,
@@ -6366,21 +6372,7 @@ async fn record_relay_audit(
                 quota = flat_result.quota;
                 billing_applied = true;
                 billing_resolved = true;
-                set_json_value(
-                    &mut other,
-                    "flat_billing",
-                    serde_json::json!({
-                        "quota": flat_result.quota,
-                        "mode": match flat_result.mode {
-                            FlatBillingMode::FixedPrice => "fixed_price",
-                            FlatBillingMode::PerToken => "per_token",
-                        },
-                        "model_ratio": flat_result.model_ratio,
-                        "completion_ratio": flat_result.completion_ratio,
-                        "group_ratio": flat_result.group_ratio,
-                        "cache_ratio": flat_result.cache_ratio,
-                    }),
-                );
+                apply_flat_billing_audit(&mut other, &flat_result);
             }
             Ok(None) => {
                 // Config loaded but no model entry; treat as unbilled.
@@ -6455,6 +6447,25 @@ fn should_apply_flat_billing(
     usage_present: bool,
 ) -> bool {
     !has_tiered_preflight && !billing_applied && upstream_status < 400 && usage_present
+}
+
+fn apply_flat_billing_audit(other: &mut Value, result: &FlatQuotaResult) {
+    set_json_bool(other, "billing_pending", false);
+    set_json_value(
+        other,
+        "flat_billing",
+        serde_json::json!({
+            "quota": result.quota,
+            "mode": match result.mode {
+                FlatBillingMode::FixedPrice => "fixed_price",
+                FlatBillingMode::PerToken => "per_token",
+            },
+            "model_ratio": result.model_ratio,
+            "completion_ratio": result.completion_ratio,
+            "group_ratio": result.group_ratio,
+            "cache_ratio": result.cache_ratio,
+        }),
+    );
 }
 
 async fn persist_audit_log_event(
@@ -10947,6 +10958,29 @@ mod tests {
         assert!(!should_apply_flat_billing(false, true, 200, true));
         assert!(!should_apply_flat_billing(false, false, 500, true));
         assert!(!should_apply_flat_billing(false, false, 200, false));
+    }
+
+    #[test]
+    fn flat_billing_audit_marks_successfully_applied_quota_resolved() {
+        let config = PricingConfig::new();
+        let result = compute_flat_quota(
+            &FlatUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                ..FlatUsage::default()
+            },
+            "gpt-4o",
+            "default",
+            &config,
+        );
+        let mut other = json!({ "billing_pending": true });
+
+        apply_flat_billing_audit(&mut other, &result);
+
+        assert_eq!(other["billing_pending"], false);
+        assert_eq!(other["flat_billing"]["quota"], result.quota);
+        assert_eq!(other["flat_billing"]["mode"], "per_token");
     }
 
     #[test]

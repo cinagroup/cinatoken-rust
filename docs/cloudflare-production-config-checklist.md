@@ -507,8 +507,11 @@ Smoke order:
    it does not exercise tenant egress or prove that an AI bearer is valid.
    Feed the uploader JSON, Cloudflare details/settings/content capture, and live
    dispatch JSON into `bun tools/verify_wfp_post_upload.mjs`. Archive a single
-   `verified=true` result; the verifier recomputes module hashes and rejects
-   script, module, binding, compatibility, readback, or dispatch drift. Run
+   `verified=true` result with
+   `verificationScope=wfp-tenant-artifact-and-status`,
+   `paidEgressVerified=false`, and `productionVerified=false`; the verifier
+   recomputes module hashes and rejects script, module, binding, compatibility,
+   readback, or status-dispatch drift. Run
    `bun run check:wfp-tenant:post-upload-verifier` locally before collecting
    remote evidence.
 4. Enable only the gates needed for an admin-authenticated status probe. Confirm
@@ -520,7 +523,15 @@ Smoke order:
    `channels.other_info.wfp_worker=<worker>`, enable
    `WFP_RELAY_TRANSPORT_ENABLED` for the canary, and call one retained AI route
    through the normal public relay token boundary. Do not call a tenant AI route
-   through the admin dispatch endpoint.
+   through the admin dispatch endpoint. Before enabling the gate, require a
+   fixed non-`auto` group with one candidate channel, `RELAY_RETRY_TIMES=0`,
+   cross-model fallback disabled, tenant `AI_GATEWAY_MAX_ATTEMPTS=1`, and both
+   outbound attachment and tenant artifact/status readbacks. Run
+   `check:wfp-outbound:egress-contract` and `check:wfp-outbound:egress-plan`,
+   then execute `smoke:wfp-outbound-egress` once per route. Live mode uses the
+   reviewed staging host and fixed models/bodies; it accepts credentials only
+   from `CINATOKEN_WFP_EGRESS_SMOKE_TOKEN` and
+   `CINATOKEN_WFP_EGRESS_SMOKE_ADMIN_COOKIE`.
 6. Archive authority rejection cases for wrong worker/method/path/body/channel,
    stale/expired time, tampering, and non-canonical replay-object selection.
    Submit the same otherwise-valid envelope sequentially and concurrently;

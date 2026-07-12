@@ -82,7 +82,8 @@ function usage(exitCode, error) {
       "  bun tools/verify_wfp_post_upload.mjs --self-test [--json]",
       "",
       "The verifier is evidence-only: it never accepts, reads, or prints Cloudflare tokens.",
-      "A production pass requires a successful uploader result, Cloudflare details/settings/content readback, and a live dispatch smoke result.",
+      "An artifact/status pass requires a successful uploader result, Cloudflare details/settings/content readback, and a live status dispatch result.",
+      "It does not verify paid egress, provider calls, billing, replay races, or production cutover.",
       "Content readback modules must include base64 bytes or a file path relative to the readback evidence file so hashes are recomputed.",
     ].join("\n"),
   );
@@ -118,6 +119,9 @@ async function verifyFromFiles(args) {
     schemaVersion,
     dryRun: false,
     verified: true,
+    verificationScope: "wfp-tenant-artifact-and-status",
+    paidEgressVerified: false,
+    productionVerified: false,
     scriptName: expected.scriptName,
     publicScriptName: expected.publicScriptName,
     namespace: expected.namespace,
@@ -593,6 +597,9 @@ function buildDryRunPlan(expected) {
     schemaVersion,
     dryRun: true,
     verified: false,
+    verificationScope: "wfp-tenant-artifact-and-status-plan",
+    paidEgressVerified: false,
+    productionVerified: false,
     credentialsRequired: false,
     scriptName: expected.scriptName,
     publicScriptName: expected.publicScriptName,
@@ -611,7 +618,7 @@ function buildDryRunPlan(expected) {
       "Cloudflare Worker Details GET envelope",
       "Cloudflare script Settings GET envelope with exact bindings",
       "Cloudflare multipart Content GET metadata and raw module bytes",
-      "successful live positive WFP dispatch smoke JSON",
+      "successful live WFP tenant status dispatch JSON",
     ],
   };
 }
@@ -718,7 +725,7 @@ async function runSelfTest() {
   await validateReadbackEvidence(fixture.readback, expected, process.cwd());
   validateDispatchEvidence(fixture.dispatch, expected);
 
-  const cases = [{ name: "valid-production-evidence", passed: true }];
+  const cases = [{ name: "valid-artifact-status-evidence", passed: true }];
   await expectFailure(
     "script-mismatch",
     fixture,

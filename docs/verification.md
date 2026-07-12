@@ -3233,3 +3233,40 @@ rollback. No exposed Cloudflare token was used.
   prove bearer-free tenant readback, four-route live egress, negative policy,
   Gateway logs, authority replay, exactly-one provider call, central billing,
   audit, and rollback. WFP production remains **NO-GO**.
+
+### WFP Paid Egress Smoke Contract (2026-07-12)
+
+- `bun run check:wfp-outbound:egress-contract` passed 17/17 cases, including a
+  complete mock capabilities -> public relay -> exact type-2 audit chain and a
+  streamed response-limit rejection. The four-route dry-run is credential-free,
+  performs no network or file writes, and uses fixed non-streaming payloads of
+  130-154 bytes with an eight-token output cap.
+- Live mode permits one route per process and pins the reviewed staging origin,
+  route-specific model, body, 2 KiB request limit, 16 KiB relay response limit,
+  and 30-second request timeout. It accepts no live URL/model/body/header or
+  credential argument. Dedicated relay-token and admin-session credentials are
+  read only from `CINATOKEN_WFP_EGRESS_SMOKE_TOKEN` and
+  `CINATOKEN_WFP_EGRESS_SMOKE_ADMIN_COOKIE`; raw, base64, base64url, and
+  percent-encoded echoes fail closed.
+- Capabilities now expose parsed `relay_retry_times`; smoke refuses unless it is
+  zero, all WFP authority/runtime/egress guards are true, the four-route manifest
+  excludes embeddings, and cross-model fallback is disabled. The frontend WFP
+  paid-smoke readiness signal applies the same central single-attempt rule.
+- Each successful live route must return JSON 2xx with no auth/cookie,
+  `cf-aig-*`, `x-cinatoken-wfp-*`, or other internal header. The admin audit poll
+  then requires exactly one type-2 row with the generated request ID, expected
+  channel/model/group and WFP worker, nonnegative quota, `billing_pending=false`,
+  resolved tiered/flat/refund metadata, and no billing-error or secret markers.
+- Fixed `AI_GATEWAY_MAX_ATTEMPTS=1` and a single candidate WFP channel remain
+  deployment/readback prerequisites because they are tenant/channel state, not
+  central capabilities. Gateway/provider logs and before/after quota snapshots
+  remain external evidence. No live request or exposed credential was used;
+  WFP production remains **NO-GO**.
+- Flat billing audit correctness was tightened: a successful flat quota
+  mutation now sets `billing_pending=false`, with a focused Rust test. This
+  makes the new audit gate distinguish resolved flat billing from an actual
+  pending mutation.
+- The post-upload verifier now states its evidence scope explicitly as
+  `wfp-tenant-artifact-and-status` and always emits
+  `paidEgressVerified=false` and `productionVerified=false`. Its compatibility
+  `verified=true` cannot be used as paid-path or cutover evidence.

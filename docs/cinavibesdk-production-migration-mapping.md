@@ -319,6 +319,14 @@ cinaVibeSDK pattern:
 - The platform checks `DISPATCHER` availability and then invokes
   `DISPATCHER.get(appName).fetch(request)`.
 - Dispatch is a deployment/runtime boundary for user-generated applications.
+- Current reference commit `918e97480ee4` implements inbound dynamic dispatch
+  and a platform AI proxy, but its dispatch binding has no `outbound.service`
+  and the repository contains no Outbound Worker implementation. Therefore the
+  outbound interception and hidden credential injection below are an intentional
+  Cloudflare-native hardening beyond the reference, not a copied cinaVibeSDK
+  feature. The reusable reference ideas are the inbound dispatch boundary,
+  provider/model registry, credential-owner coupling, and response-header
+  allowlist.
 
 `cinatoken-rust` mapping:
 
@@ -370,6 +378,10 @@ cinaVibeSDK pattern:
   requirement, response-header guard, AI Gateway request policy contract, and
   `wfp_tenant_smoke_ready` so the admin frontend can distinguish compiled
   substrate from live dispatch readiness.
+- Capabilities also expose parsed `relay_retry_times`. The frontend requires
+  zero central retries and disabled cross-model fallback before marking the
+  paid WFP relay smoke ready to verify, preventing one smoke process from
+  silently fanning out to multiple providers.
 - Dispatch smoke must enforce that allowlist on both tenant status and opt-in
   AI route responses, failing on auth/cookie, `cf-aig-*`, and non-WFP
   `x-cinatoken-*` leakage while recording Cloudflare edge envelope headers

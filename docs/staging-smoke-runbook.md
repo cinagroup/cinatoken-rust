@@ -308,6 +308,33 @@ staging relay token:
 Do not send the paid canary through `/api/platform/dispatch/:worker/...`.
 `POST /v1/embeddings` is not a WFP tenant route and must be rejected.
 
+Before any paid request, run `bun run check:wfp-outbound:egress-contract` and
+archive `bun run check:wfp-outbound:egress-plan`. The isolated canary must use a
+fixed non-`auto` token group with exactly one enabled WFP channel, set central
+`RELAY_RETRY_TIMES=0`, keep cross-model fallback disabled, and prove tenant
+`AI_GATEWAY_MAX_ATTEMPTS=1` in artifact readback. The capabilities endpoint now
+reports `relay_retry_times`; the frontend keeps WFP paid smoke blocked unless it
+is exactly zero.
+
+Live mode is deliberately one paid route per process. It accepts no URL, model,
+body, API-key, or Cookie override; the reviewed staging origin and low-token
+payloads are fixed in source, while credentials come only from dedicated
+environment variables:
+
+```powershell
+$env:CINATOKEN_WFP_EGRESS_SMOKE_TOKEN = '<short-lived fixed-group relay token>'
+$env:CINATOKEN_WFP_EGRESS_SMOKE_ADMIN_COOKIE = '<short-lived admin session cookie>'
+
+bun run smoke:wfp-outbound-egress -- --target staging --scenario chat --worker tenant-smoke --channel-id <channel-id> --group <fixed-group> --confirm-live --confirm-isolated-staging --confirm-single-channel --confirm-retry-disabled --confirm-tenant-attempts-one > .wrangler/evidence/wfp-egress-chat.json
+```
+
+Repeat as separate reviewed invocations for `responses`, `messages`, and
+`ai-run`, inspecting billing/audit and Gateway evidence after each call. The
+tool rejects a multi-route live invocation, a production/custom origin, model
+overrides, streaming, pending billing, the wrong worker/channel/group, duplicate
+type-2 audit rows, and sensitive/internal response headers. It bounds request,
+response, and admin evidence bytes and emits no response body or raw headers.
+
 Record:
 
 - Capability output showing the dispatch binding, transport gate, authority
@@ -336,7 +363,9 @@ Pass criteria:
 
 - Readback proves the uploaded runtime is exactly the reviewed Rust/Wasm module
   graph; no JavaScript AI fallback is present.
-- The tenant runtime token is present and distinct from the deploy token.
+- The tenant has `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1`, no
+  Cloudflare bearer, and a tenant-scoped authority verification key distinct
+  from the platform master and deploy/readback credentials.
 - Admin dispatch reaches status only. No public preview or admin dispatch route
   can invoke tenant AI.
 - Accepted tenant AI traffic has a valid HMAC-SHA256 authority with a 30-second

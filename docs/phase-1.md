@@ -625,6 +625,17 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   drift, wrong/missing outbound attachment, account-var mismatch, outbound-token
   ownership drift, forbidden deploy/readback bearers, redirects, malformed API
   envelopes, and oversized responses.
+  The paid-path preflight is now executable through
+  `check:wfp-outbound:egress-contract`, `check:wfp-outbound:egress-plan`, and
+  `smoke:wfp-outbound-egress`. Live mode is staging-host-pinned and executes one
+  fixed, non-streaming, low-token route per invocation through the normal relay
+  token boundary. It requires a fixed non-`auto` group, one WFP channel,
+  capabilities `relay_retry_times=0`, cross-model fallback off, and readback
+  proof that tenant Gateway attempts equal one. It then requires one exact
+  type-2 audit row with the requested worker/channel, resolved billing or
+  refund, and no internal/sensitive response headers. Four-route local planning
+  is not remote evidence; execute and reconcile each route separately after
+  credential rotation.
 - Capture staging distribution/route evidence for relay weighted channel
   selection, including retry, auto-group, affinity, and provider-family filters.
 - Capture provider-specific staging replay/reconciliation evidence before

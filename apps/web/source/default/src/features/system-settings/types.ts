@@ -431,6 +431,7 @@ export type PlatformCapabilities = {
   relay_ai_gateway_cross_model_fallback_staging_verified: boolean
   relay_ai_gateway_cross_model_fallback_cutover_ready: boolean
   relay_ai_gateway_cross_model_fallback_cutover_guards: string[]
+  relay_retry_times: number | null
   channel_affinity_do_available: boolean
   realtime_sessions_do_available: boolean
   wfp_dispatch_binding_available: boolean

@@ -76,6 +76,8 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_ai_gateway_cross_model_fallback_ready'
   | 'relay_ai_gateway_cross_model_fallback_staging_verified'
   | 'relay_ai_gateway_cross_model_fallback_cutover_ready'
+  | 'relay_ai_gateway_cross_model_fallback_enabled'
+  | 'relay_retry_times'
   | 'wfp_dispatch_binding_available'
   | 'wfp_dispatch_enabled'
   | 'wfp_internal_dispatch_enabled'
@@ -300,7 +302,11 @@ export function buildPlatformReadinessSummary(
     ),
     verificationSignal(
       'wfp-relay-authority-smoke',
-      capabilities.wfp_relay_authority_transport_ready,
+      allReady(
+        capabilities.wfp_relay_authority_transport_ready,
+        capabilities.relay_retry_times === 0,
+        !capabilities.relay_ai_gateway_cross_model_fallback_enabled
+      ),
       false
     ),
     verificationSignal(

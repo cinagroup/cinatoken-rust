@@ -48,6 +48,8 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_ai_gateway_cross_model_fallback_ready: false,
   relay_ai_gateway_cross_model_fallback_staging_verified: false,
   relay_ai_gateway_cross_model_fallback_cutover_ready: false,
+  relay_ai_gateway_cross_model_fallback_enabled: false,
+  relay_retry_times: null,
   wfp_dispatch_binding_available: false,
   wfp_dispatch_enabled: false,
   wfp_internal_dispatch_enabled: false,
@@ -386,6 +388,7 @@ describe('Cloudflare platform readiness headline', () => {
         wfp_relay_authority_secret_configured: true,
         wfp_relay_authority_transport_compiled: true,
         wfp_relay_authority_transport_ready: true,
+        relay_retry_times: 0,
       })
     )
     const signal = getStage(summary, 'smoke').signals.find(
@@ -395,6 +398,20 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(signal?.status, 'ready-to-verify')
     assert.equal(getStage(summary, 'smoke').complete, false)
     assert.equal(getStage(summary, 'cutover').complete, false)
+  })
+
+  test('keeps WFP paid smoke blocked while central retries are enabled', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        wfp_relay_authority_transport_ready: true,
+        relay_retry_times: 1,
+      })
+    )
+    const signal = getStage(summary, 'smoke').signals.find(
+      (item) => item.id === 'wfp-relay-authority-smoke'
+    )
+
+    assert.equal(signal?.status, 'blocked')
   })
 
   test('keeps actual-group smoke readiness separate from verification and cutover', () => {

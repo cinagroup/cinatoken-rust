@@ -51,7 +51,8 @@ use crate::realtime_session::{
 use crate::relay::{
     relay_actual_serving_group_billing_contract_compiled,
     relay_ai_gateway_direct_fallback_contract_compiled, relay_model_fallback_contract_compiled,
-    relay_model_fallback_runtime_status, relay_terminal_attempt_audit_contract_compiled,
+    relay_model_fallback_runtime_status, relay_retry_times_from_env,
+    relay_terminal_attempt_audit_contract_compiled,
     relay_wfp_authority_transport_contract_compiled, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
 };
 use crate::relay_billing_smoke::{smoke_compiled, smoke_enabled, smoke_ready};
@@ -234,6 +235,7 @@ struct PlatformCapabilities {
     relay_ai_gateway_cross_model_fallback_staging_verified: bool,
     relay_ai_gateway_cross_model_fallback_cutover_ready: bool,
     relay_ai_gateway_cross_model_fallback_cutover_guards: Vec<&'static str>,
+    relay_retry_times: Option<u32>,
     channel_affinity_do_available: bool,
     realtime_sessions_do_available: bool,
     wfp_dispatch_binding_available: bool,
@@ -608,6 +610,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_cross_model_fallback_cutover_ready,
         relay_ai_gateway_cross_model_fallback_cutover_guards: RELAY_MODEL_FALLBACK_CUTOVER_GUARDS
             .to_vec(),
+        relay_retry_times: relay_retry_times_from_env(&env),
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
         realtime_sessions_do_available,
         wfp_dispatch_binding_available,

@@ -20,6 +20,7 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import {
   buildPlatformReadinessSummary,
+  getPlatformReadinessSignalLabel,
   type PlatformReadinessCapabilities,
   type PlatformReadinessStageId,
 } from './cloudflare-platform-readiness'
@@ -95,6 +96,41 @@ const baseCapabilities: PlatformReadinessCapabilities = {
 }
 
 describe('Cloudflare platform readiness headline', () => {
+  test('provides a concrete label for every Worker readiness signal', () => {
+    const labels = Object.fromEntries(
+      buildPlatformReadinessSummary(baseCapabilities)
+        .flatMap((stage) => stage.signals)
+        .map((signal) => [
+          signal.id,
+          getPlatformReadinessSignalLabel(signal.id),
+        ])
+    )
+
+    assert.deepEqual(labels, {
+      'scheduling-gateway-implementation': 'Scheduling gateway',
+      'ai-gateway-implementation': 'AI Gateway',
+      'wfp-tenant-implementation': 'WFP tenant',
+      'realtime-implementation': 'Realtime',
+      'task-runner-implementation': 'TaskRunner',
+      'ai-gateway-runtime': 'AI Gateway',
+      'ai-gateway-fallback-runtime': 'AI Gateway fallback',
+      'wfp-tenant-runtime': 'WFP tenant',
+      'realtime-runtime': 'Realtime',
+      'task-runner-runtime': 'TaskRunner',
+      'ai-gateway-canary': 'AI Gateway canary',
+      'ai-gateway-actual-group-billing-smoke':
+        'AI Gateway actual-group billing smoke',
+      'ai-gateway-fallback-replay': 'AI Gateway fallback replay',
+      'wfp-tenant-smoke': 'WFP tenant smoke',
+      'wfp-relay-authority-smoke': 'WFP relay authority smoke',
+      'realtime-smoke': 'Realtime smoke',
+      'task-runner-replay': 'TaskRunner replay',
+      'ai-gateway-fallback-cutover': 'AI Gateway fallback',
+      'task-runner-cutover': 'TaskRunner',
+      'realtime-v1-cutover': 'Realtime v1',
+    })
+  })
+
   test('does not report every stage complete from compiled and bound state', () => {
     const summary = buildPlatformReadinessSummary(
       makeCapabilities({

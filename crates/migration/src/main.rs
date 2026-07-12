@@ -15,6 +15,7 @@ fn main() {
         "import" => import_d1_sql(args.collect()),
         "verify" => verify_migration(args.collect()),
         "reconcile" => reconcile_migration(args.collect()),
+        "data-families" => print_data_family_decisions(args.collect()),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -40,6 +41,7 @@ fn print_help() {
     println!("  cinatoken-migrate import --input <path> --output <path> [options]");
     println!("  cinatoken-migrate verify [options]");
     println!("  cinatoken-migrate reconcile --source <path> --target <path> [options]");
+    println!("  cinatoken-migrate data-families");
     println!();
     println!("dev-seed options:");
     println!("  --upstream-key <key>       upstream provider key, or CINATOKEN_DEV_UPSTREAM_KEY");
@@ -77,6 +79,21 @@ fn print_help() {
     println!("  --target <path>            locally migrated D1-compatible SQLite database");
     println!("  --manifest-output <path>   write the deterministic v1 source manifest");
     println!("  --sample-size <number>     maximum samples per P0 table, default 1000");
+    println!();
+    println!("data-families:");
+    println!("  print the versioned import/exclusion decisions for audited source families");
+}
+
+fn print_data_family_decisions(args: Vec<String>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("data-families does not accept options".to_string());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&data_family_decisions_value())
+            .map_err(|err| format!("failed to encode data-family decisions: {err}"))?
+    );
+    Ok(())
 }
 
 fn print_dev_seed(args: Vec<String>) -> Result<(), String> {
@@ -237,6 +254,37 @@ fn reconcile_migration(args: Vec<String>) -> Result<(), String> {
             .and_then(Value::as_str)
             .ok_or_else(|| format!("reconciliation manifest table {table} has no SHA-256"))?;
         println!("  {table}: {count} rows, sha256={sha256}");
+    }
+    let excluded = manifest
+        .get("excluded_source_families")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "reconciliation manifest is missing excluded_source_families".to_string())?;
+    println!("Explicitly excluded source families:");
+    for decision in DATA_FAMILY_DECISIONS
+        .iter()
+        .filter(|decision| matches!(decision.disposition, DataFamilyDisposition::Exclude { .. }))
+    {
+        let audit = excluded
+            .get(decision.source)
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                format!(
+                    "reconciliation manifest is missing excluded family {}",
+                    decision.source
+                )
+            })?;
+        let row_count = audit
+            .get("row_count")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("excluded family {} has no row_count", decision.source))?;
+        let missing = audit
+            .get("missing")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| format!("excluded family {} has no missing flag", decision.source))?;
+        println!(
+            "  {}: {} rows, source_missing={missing}, decision=exclude",
+            decision.source, row_count
+        );
     }
     println!("Relationship and integrity checks: passed");
     if let Some(output) = config.manifest_output.as_deref() {
@@ -672,6 +720,96 @@ const SOURCE_TABLES: &[&str] = &[
     "perf_metrics",
 ];
 
+const DATA_FAMILY_DECISION_FORMAT: &str = "cinatoken-data-family-decisions-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataFamilyDisposition {
+    Import {
+        target: &'static str,
+    },
+    Exclude {
+        reason: &'static str,
+        replacement: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DataFamilyDecision {
+    source: &'static str,
+    disposition: DataFamilyDisposition,
+}
+
+const DATA_FAMILY_DECISIONS: &[DataFamilyDecision] = &[
+    DataFamilyDecision {
+        source: "midjourneys",
+        disposition: DataFamilyDisposition::Import {
+            target: "midjourneys",
+        },
+    },
+    DataFamilyDecision {
+        source: "prefill_groups",
+        disposition: DataFamilyDisposition::Import {
+            target: "prefill_groups",
+        },
+    },
+    DataFamilyDecision {
+        source: "quota_data",
+        disposition: DataFamilyDisposition::Exclude {
+            reason: "derived hourly usage aggregates have no lossless D1 target and importing them would double count migrated logs",
+            replacement: "rebuild usage and ranking views from the migrated D1 logs table",
+        },
+    },
+    DataFamilyDecision {
+        source: "setups",
+        disposition: DataFamilyDisposition::Exclude {
+            reason: "the Go installation marker describes the retired VPS deployment rather than tenant business state",
+            replacement: "derive Worker readiness from applied D1 migrations and Cloudflare bindings",
+        },
+    },
+    DataFamilyDecision {
+        source: "perf_metrics",
+        disposition: DataFamilyDisposition::Exclude {
+            reason: "rolling observability aggregates have no parity D1 table and are safe to rewarm after cutover",
+            replacement: "rebuild operational metrics from new relay traffic and retained D1 logs",
+        },
+    },
+];
+
+fn data_family_decisions_value() -> Value {
+    let families = DATA_FAMILY_DECISIONS
+        .iter()
+        .map(|decision| match decision.disposition {
+            DataFamilyDisposition::Import { target } => serde_json::json!({
+                "source": decision.source,
+                "decision": "import",
+                "target": target,
+                "conflict_policy": "preserve-target-on-conflict",
+                "reconciliation": "canonical-sha256-and-deterministic-samples",
+            }),
+            DataFamilyDisposition::Exclude {
+                reason,
+                replacement,
+            } => serde_json::json!({
+                "source": decision.source,
+                "decision": "exclude",
+                "reason": reason,
+                "replacement": replacement,
+            }),
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "format": DATA_FAMILY_DECISION_FORMAT,
+        "families": families,
+    })
+}
+
+fn data_family_decision(source: &str) -> Option<DataFamilyDecision> {
+    DATA_FAMILY_DECISIONS
+        .iter()
+        .copied()
+        .find(|decision| decision.source == source)
+}
+
 const CORE_EXPORT_TABLES: &[&str] = &[
     "users",
     "tokens",
@@ -706,6 +844,8 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "passkey_credentials",
     "two_fa",
     "two_fa_backup_codes",
+    "midjourneys",
+    "prefill_groups",
 ];
 
 const D1_CORE_IMPORT_TABLES: &[&str] = &["users", "tokens", "channels", "abilities", "options"];
@@ -719,6 +859,8 @@ const D1_RECONCILE_TABLES: &[&str] = &[
     "passkey_credentials",
     "two_fa",
     "two_fa_backup_codes",
+    "midjourneys",
+    "prefill_groups",
 ];
 
 const RECONCILIATION_RESULT_FORMAT: &str = "cinatoken-source-to-d1-reconciliation-result-v1";
@@ -1109,6 +1251,42 @@ const TWO_FA_BACKUP_CODES_D1_COLUMNS: &[&str] = &[
     "created_at",
 ];
 
+const MIDJOURNEYS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "code",
+    "user_id",
+    "action",
+    "mj_id",
+    "prompt",
+    "prompt_en",
+    "description",
+    "state",
+    "submit_time",
+    "start_time",
+    "finish_time",
+    "image_url",
+    "video_url",
+    "video_urls",
+    "status",
+    "progress",
+    "fail_reason",
+    "channel_id",
+    "quota",
+    "buttons",
+    "properties",
+];
+
+const PREFILL_GROUPS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "name",
+    "type",
+    "items",
+    "description",
+    "created_time",
+    "updated_time",
+    "deleted_at",
+];
+
 impl DevSeedConfig {
     fn from_args(args: Vec<String>) -> Result<Self, String> {
         Self::from_args_with_env(args, env::var("CINATOKEN_DEV_UPSTREAM_KEY").ok())
@@ -1262,8 +1440,8 @@ fn source_marker_statuses(repo: &Path) -> Vec<SourceMarkerStatus> {
     SOURCE_MARKERS
         .iter()
         .map(|(label, relative_path)| SourceMarkerStatus {
-            label: *label,
-            relative_path: *relative_path,
+            label,
+            relative_path,
             exists: repo.join(*relative_path).exists(),
         })
         .collect()
@@ -1388,13 +1566,7 @@ fn verify_export_bundle(bundle: &str) -> Result<String, String> {
             if !row.is_object() {
                 return Err(format!("table {name} row {} is not an object", index + 1));
             }
-            let import_table = match name.as_str() {
-                "top_ups" => Some("topups"),
-                "passkey_credentials" => Some("passkey_credentials"),
-                "two_fas" => Some("two_fa"),
-                "two_fa_backup_codes" => Some("two_fa_backup_codes"),
-                _ => None,
-            };
+            let import_table = d1_import_target_for_source(name);
             if let Some(import_table) = import_table {
                 let spec = d1_table_spec(import_table)?;
                 let row = row.as_object().expect("row object was checked above");
@@ -1426,6 +1598,35 @@ fn verify_export_bundle(bundle: &str) -> Result<String, String> {
         D1_CORE_IMPORT_TABLES.len()
     ));
     Ok(summary.trim_end().to_string())
+}
+
+fn d1_import_target_for_source(source: &str) -> Option<&str> {
+    match source {
+        "top_ups" => Some("topups"),
+        "two_fas" => Some("two_fa"),
+        "users"
+        | "tokens"
+        | "channels"
+        | "abilities"
+        | "options"
+        | "logs"
+        | "tasks"
+        | "checkins"
+        | "redemptions"
+        | "subscription_plans"
+        | "subscription_orders"
+        | "user_subscriptions"
+        | "subscription_pre_consume_records"
+        | "vendors"
+        | "models"
+        | "custom_oauth_providers"
+        | "user_oauth_bindings"
+        | "passkey_credentials"
+        | "two_fa_backup_codes"
+        | "midjourneys"
+        | "prefill_groups" => Some(source),
+        _ => None,
+    }
 }
 
 fn verify_d1_sql_with_sqlite(schema: &Path, sql: &Path) -> Result<String, String> {
@@ -1565,6 +1766,19 @@ fn validate_import_tables(tables: Vec<String>) -> Result<Vec<String>, String> {
             return Err("--table cannot be empty".to_string());
         }
         if !D1_IMPORT_TABLES.contains(&table.as_str()) {
+            if let Some(DataFamilyDecision {
+                disposition:
+                    DataFamilyDisposition::Exclude {
+                        reason,
+                        replacement,
+                    },
+                ..
+            }) = data_family_decision(&table)
+            {
+                return Err(format!(
+                    "source data family {table} is intentionally excluded: {reason}; {replacement}"
+                ));
+            }
             return Err(format!("unsupported D1 import table: {table}"));
         }
         if !validated.contains(&table) {
@@ -1948,6 +2162,20 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             column_map: &[],
             generate_missing_id: false,
         }),
+        "midjourneys" => Ok(D1TableSpec {
+            source_name: "midjourneys",
+            target_name: "midjourneys",
+            target_columns: MIDJOURNEYS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
+        "prefill_groups" => Ok(D1TableSpec {
+            source_name: "prefill_groups",
+            target_name: "prefill_groups",
+            target_columns: PREFILL_GROUPS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
         _ => Err(format!("unsupported D1 import table: {table}")),
     }
 }
@@ -1955,7 +2183,12 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
 fn preserves_existing_row_on_conflict(table: &str) -> bool {
     matches!(
         table,
-        "topups" | "passkey_credentials" | "two_fa" | "two_fa_backup_codes"
+        "topups"
+            | "passkey_credentials"
+            | "two_fa"
+            | "two_fa_backup_codes"
+            | "midjourneys"
+            | "prefill_groups"
     )
 }
 
@@ -1979,6 +2212,7 @@ fn project_d1_row(
         }
     }
     validate_security_source_row(spec, row, row_index)?;
+    validate_data_family_source_row(spec, row, row_index)?;
 
     let mut projected = Vec::new();
     for target_column in spec.target_columns {
@@ -2030,6 +2264,20 @@ fn project_d1_row(
             }
         }
 
+        if spec.target_name == "prefill_groups" && *target_column == "items" {
+            let Some(value) = row.get(source_column) else {
+                continue;
+            };
+            if value.is_null() {
+                continue;
+            }
+            projected.push((
+                (*target_column).to_string(),
+                Value::String(prefill_items_text(value, spec, row_index)?),
+            ));
+            continue;
+        }
+
         let Some(value) = row.get(source_column) else {
             continue;
         };
@@ -2071,7 +2319,193 @@ fn required_source_columns(table: &str) -> &'static [&'static str] {
             "updated_at",
         ],
         "two_fa_backup_codes" => &["id", "user_id", "code_hash", "is_used", "created_at"],
+        "midjourneys" => MIDJOURNEYS_D1_COLUMNS,
+        "prefill_groups" => &[
+            "id",
+            "name",
+            "type",
+            "description",
+            "created_time",
+            "updated_time",
+        ],
         _ => &[],
+    }
+}
+
+fn validate_data_family_source_row(
+    spec: D1TableSpec,
+    row: &Map<String, Value>,
+    row_index: usize,
+) -> Result<(), String> {
+    match spec.target_name {
+        "midjourneys" => {
+            for column in [
+                "id",
+                "code",
+                "user_id",
+                "submit_time",
+                "start_time",
+                "finish_time",
+                "channel_id",
+                "quota",
+            ] {
+                require_integer_range(spec, row, column, row_index, 0, i64::MAX)?;
+            }
+            if row.get("id").and_then(json_integer) == Some(0) {
+                return Err(format!(
+                    "source table {} row {} field id must be greater than zero",
+                    spec.source_name,
+                    row_index + 1
+                ));
+            }
+            for column in MIDJOURNEYS_D1_COLUMNS.iter().copied().filter(|column| {
+                !matches!(
+                    *column,
+                    "id" | "code"
+                        | "user_id"
+                        | "submit_time"
+                        | "start_time"
+                        | "finish_time"
+                        | "channel_id"
+                        | "quota"
+                )
+            }) {
+                require_string(spec, row, column, row_index)?;
+            }
+        }
+        "prefill_groups" => {
+            require_integer_range(spec, row, "id", row_index, 1, i64::MAX)?;
+            require_non_empty_string(spec, row, "name", row_index)?;
+            require_non_empty_string(spec, row, "type", row_index)?;
+            require_string(spec, row, "description", row_index)?;
+            require_integer_range(spec, row, "created_time", row_index, 0, i64::MAX)?;
+            require_integer_range(spec, row, "updated_time", row_index, 0, i64::MAX)?;
+            for nullable in ["items", "deleted_at"] {
+                if !row.contains_key(nullable) {
+                    return Err(format!(
+                        "source table {} row {} is missing field {nullable}",
+                        spec.source_name,
+                        row_index + 1
+                    ));
+                }
+            }
+            if let Some(items) = row.get("items").filter(|value| !value.is_null()) {
+                prefill_items_text(items, spec, row_index)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn require_string(
+    spec: D1TableSpec,
+    row: &Map<String, Value>,
+    column: &str,
+    row_index: usize,
+) -> Result<(), String> {
+    if row.get(column).is_some_and(Value::is_string) {
+        return Ok(());
+    }
+    Err(format!(
+        "source table {} row {} field {column} must be a string",
+        spec.source_name,
+        row_index + 1
+    ))
+}
+
+fn prefill_items_text(
+    value: &Value,
+    spec: D1TableSpec,
+    row_index: usize,
+) -> Result<String, String> {
+    let text = match value {
+        Value::String(value) => value.clone(),
+        Value::Object(object) if object.len() == 1 && object.contains_key("__blob_base64") => {
+            let encoded = object
+                .get("__blob_base64")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    format!(
+                        "source table {} row {} field items has an invalid blob envelope",
+                        spec.source_name,
+                        row_index + 1
+                    )
+                })?;
+            let bytes = decode_standard_base64(encoded).ok_or_else(|| {
+                format!(
+                    "source table {} row {} field items has invalid base64",
+                    spec.source_name,
+                    row_index + 1
+                )
+            })?;
+            String::from_utf8(bytes).map_err(|_| {
+                format!(
+                    "source table {} row {} field items must contain UTF-8 JSON",
+                    spec.source_name,
+                    row_index + 1
+                )
+            })?
+        }
+        _ => {
+            return Err(format!(
+                "source table {} row {} field items must be JSON text or an exported SQLite blob",
+                spec.source_name,
+                row_index + 1
+            ));
+        }
+    };
+    serde_json::from_str::<Value>(&text).map_err(|_| {
+        format!(
+            "source table {} row {} field items must contain valid JSON",
+            spec.source_name,
+            row_index + 1
+        )
+    })?;
+    Ok(text)
+}
+
+fn decode_standard_base64(encoded: &str) -> Option<Vec<u8>> {
+    let bytes = encoded.as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
+    let chunk_count = bytes.len() / 4;
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let last = index + 1 == chunk_count;
+        let a = base64_value(chunk[0])?;
+        let b = base64_value(chunk[1])?;
+        decoded.push((a << 2) | (b >> 4));
+
+        if chunk[2] == b'=' {
+            if !last || chunk[3] != b'=' || b & 0x0f != 0 {
+                return None;
+            }
+            continue;
+        }
+        let c = base64_value(chunk[2])?;
+        decoded.push((b << 4) | (c >> 2));
+
+        if chunk[3] == b'=' {
+            if !last || c & 0x03 != 0 {
+                return None;
+            }
+            continue;
+        }
+        decoded.push((c << 6) | base64_value(chunk[3])?);
+    }
+    Some(decoded)
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
     }
 }
 
@@ -2169,6 +2603,7 @@ fn security_timestamp_columns(table: &str) -> &'static [&'static str] {
         "passkey_credentials" => &["last_used_at", "created_at", "updated_at", "deleted_at"],
         "two_fa" => &["locked_until", "last_used_at", "created_at", "updated_at"],
         "two_fa_backup_codes" => &["used_at", "created_at"],
+        "prefill_groups" => &["deleted_at"],
         _ => &[],
     }
 }
@@ -2439,6 +2874,9 @@ mod tests {
     const D1_TWO_FA_SCHEMA: &str = include_str!("../../../migrations/d1/0006_two_fa.sql");
     const D1_PASSKEY_SCHEMA: &str =
         include_str!("../../../migrations/d1/0016_passkey_credentials.sql");
+    const D1_MIDJOURNEYS_SCHEMA: &str = include_str!("../../../migrations/d1/0007_midjourneys.sql");
+    const D1_PREFILL_GROUPS_SCHEMA: &str =
+        include_str!("../../../migrations/d1/0009_prefill_groups.sql");
 
     #[test]
     fn sql_string_escapes_single_quotes() {
@@ -2653,8 +3091,8 @@ mod tests {
     }
 
     #[test]
-    fn import_config_rejects_unsupported_table() {
-        let temp = unique_temp_dir("import-unsupported-table");
+    fn import_config_reports_intentional_exclusions() {
+        let temp = unique_temp_dir("import-excluded-table");
         let input = temp.join("core.cinatoken-export.json");
         let output = temp.join("core.d1.sql");
         fs::create_dir_all(&temp).unwrap();
@@ -2666,13 +3104,70 @@ mod tests {
             "--output".to_string(),
             output.display().to_string(),
             "--table".to_string(),
-            // midjourneys is in the export list but intentionally not in the
-            // D1 import list yet (async task tables land with G7).
-            "midjourneys".to_string(),
+            "quota_data".to_string(),
         ])
         .unwrap_err();
 
-        assert!(err.contains("unsupported D1 import table"));
+        assert!(err.contains("intentionally excluded"));
+        assert!(err.contains("rebuild usage and ranking views"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn audited_data_family_decisions_are_complete_and_versioned() {
+        let value = data_family_decisions_value();
+        assert_eq!(value["format"], DATA_FAMILY_DECISION_FORMAT);
+        let families = value["families"].as_array().unwrap();
+        assert_eq!(families.len(), 5);
+        assert_eq!(
+            families
+                .iter()
+                .filter(|family| family["decision"] == "import")
+                .count(),
+            2
+        );
+        assert_eq!(
+            families
+                .iter()
+                .filter(|family| family["decision"] == "exclude")
+                .count(),
+            3
+        );
+        for source in [
+            "quota_data",
+            "midjourneys",
+            "prefill_groups",
+            "setups",
+            "perf_metrics",
+        ] {
+            assert!(families.iter().any(|family| family["source"] == source));
+        }
+        for target in ["midjourneys", "prefill_groups"] {
+            assert!(D1_IMPORT_TABLES.contains(&target));
+            assert!(D1_RECONCILE_TABLES.contains(&target));
+        }
+    }
+
+    #[test]
+    fn import_config_accepts_midjourneys_and_prefill_groups() {
+        let temp = unique_temp_dir("import-audited-families");
+        let input = temp.join("families.cinatoken-export.json");
+        let output = temp.join("families.d1.sql");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(&input, migrated_data_families_export_bundle()).unwrap();
+
+        let config = ImportConfig::from_args(vec![
+            "--input".to_string(),
+            input.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--table".to_string(),
+            "midjourneys".to_string(),
+            "--table".to_string(),
+            "prefill_groups".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(config.tables, vec!["midjourneys", "prefill_groups"]);
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -2907,6 +3402,8 @@ mod tests {
         assert_eq!(manifest["tables"]["passkey_credentials"]["count"], 1);
         assert_eq!(manifest["tables"]["two_fa"]["count"], 1);
         assert_eq!(manifest["tables"]["two_fa_backup_codes"]["count"], 2);
+        assert_eq!(manifest["tables"]["midjourneys"]["count"], 1);
+        assert_eq!(manifest["tables"]["prefill_groups"]["count"], 2);
         assert_eq!(
             manifest["tables"]["users"]["pk_min"],
             serde_json::json!([["number", "1"]])
@@ -2943,11 +3440,32 @@ mod tests {
             0
         );
         assert_eq!(
+            manifest["relationships"]["midjourneys.user_id->users.id"]["violations"],
+            0
+        );
+        assert_eq!(
+            manifest["relationships"]["midjourneys.channel_id->channels.id"]["violations"],
+            0
+        );
+        assert_eq!(
             manifest["integrity_checks"]["topups.credited_matches_status"]["violations"],
             0
         );
         let options_samples = manifest["tables"]["options"]["samples"].as_array().unwrap();
         assert_eq!(options_samples.len(), 2);
+
+        let excluded = manifest["excluded_source_families"].as_object().unwrap();
+        assert_eq!(excluded.len(), 3);
+        assert_eq!(excluded["quota_data"]["row_count"], 1);
+        assert_eq!(excluded["setups"]["row_count"], 1);
+        assert_eq!(excluded["perf_metrics"]["row_count"], 1);
+        for family in ["quota_data", "setups", "perf_metrics"] {
+            assert_eq!(excluded[family]["decision"], "exclude");
+            assert_eq!(
+                excluded[family]["schema_sha256"].as_str().unwrap().len(),
+                64
+            );
+        }
 
         fs::remove_dir_all(temp).unwrap();
     }
@@ -2977,6 +3495,32 @@ mod tests {
         assert!(!manifest.contains("JBSWY3DPEHPK3PXP"));
         assert!(!manifest.contains("pk\\raw'quote"));
         assert!(!manifest.contains("$2a$10$opaque/hash"));
+        assert!(!manifest.contains("go-vps-legacy"));
+        assert!(!manifest.contains("gpt-test', 'default"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reconcile_detects_midjourney_and_prefill_drift() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-audited-family-drift");
+        execute_sqlite(
+            &config.target,
+            "UPDATE midjourneys SET prompt = 'changed' WHERE id = 501;\n\
+             UPDATE prefill_groups SET items = '[\"changed\"]' WHERE id = 601;",
+        );
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let differences = result["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(differences.contains("table midjourneys: canonical SHA-256 differs"));
+        assert!(differences.contains("table prefill_groups: canonical SHA-256 differs"));
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains("a 'quoted' prompt"));
+        assert!(!serialized.contains("[\"changed\"]"));
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3189,6 +3733,84 @@ mod tests {
         assert!(sql.contains("'fresh-code'"));
         assert!(sql.contains("'used', 100, 1710000000, 1710000010, 2, 0, 1)"));
         assert!(sql.contains("'fresh', 100, 1710000000, 0, 0, 0, 0)"));
+    }
+
+    #[test]
+    fn migrated_data_family_import_is_exact_and_idempotent() {
+        let temp = unique_temp_dir("audited-family-import");
+        let database = temp.join("families.db");
+        fs::create_dir_all(&temp).unwrap();
+        execute_sqlite(
+            &database,
+            &format!("{D1_MIDJOURNEYS_SCHEMA}\n{D1_PREFILL_GROUPS_SCHEMA}"),
+        );
+        let tables = vec!["midjourneys".to_string(), "prefill_groups".to_string()];
+        let sql =
+            render_d1_import_sql(migrated_data_families_export_bundle(), &tables, false).unwrap();
+        assert_eq!(sql.matches("ON CONFLICT DO NOTHING").count(), 3);
+        assert!(sql.contains("a ''quoted'' prompt"));
+        execute_sqlite(&database, &sql);
+
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT prompt FROM midjourneys WHERE id = 501"),
+            "a 'quoted' prompt"
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT items FROM prefill_groups WHERE id = 601"),
+            "[\"gpt-test\",\"gpt-other\"]"
+        );
+        assert_eq!(
+            sqlite_scalar(
+                &database,
+                "SELECT deleted_at FROM prefill_groups WHERE id = 602"
+            ),
+            "1710000600"
+        );
+
+        let changed = migrated_data_families_export_bundle()
+            .replace("a 'quoted' prompt", "changed prompt")
+            .replace("models-primary", "changed-name");
+        execute_sqlite(
+            &database,
+            &render_d1_import_sql(&changed, &tables, false).unwrap(),
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT prompt FROM midjourneys WHERE id = 501"),
+            "a 'quoted' prompt"
+        );
+        assert_eq!(
+            sqlite_scalar(&database, "SELECT name FROM prefill_groups WHERE id = 601"),
+            "models-primary"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn migrated_data_family_import_fails_closed_on_invalid_rows() {
+        let tables = vec!["midjourneys".to_string(), "prefill_groups".to_string()];
+        let non_integer =
+            migrated_data_families_export_bundle().replace("\"code\": 1", "\"code\": 1.5");
+        assert!(render_d1_import_sql(&non_integer, &tables, false)
+            .unwrap_err()
+            .contains("code must be an integer"));
+
+        let invalid_json = migrated_data_families_export_bundle()
+            .replace("WyJncHQtdGVzdCIsImdwdC1vdGhlciJd", "bm90LWpzb24=");
+        assert!(render_d1_import_sql(&invalid_json, &tables, false)
+            .unwrap_err()
+            .contains("items must contain valid JSON"));
+
+        let invalid_timestamp = migrated_data_families_export_bundle()
+            .replace("2024-03-09 16:10:00+00:00", "not-a-datetime");
+        assert!(render_d1_import_sql(&invalid_timestamp, &tables, false)
+            .unwrap_err()
+            .contains("supported Go SQLite datetime"));
+
+        let empty_name = migrated_data_families_export_bundle()
+            .replace("\"name\": \"models-primary\"", "\"name\": \"\"");
+        assert!(render_d1_import_sql(&empty_name, &tables, false)
+            .unwrap_err()
+            .contains("name must be a non-empty string"));
     }
 
     #[test]
@@ -3462,6 +4084,76 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
         assert_eq!(sql_literal(&object), "'{\"nested\":\"yes\"}'");
     }
 
+    fn migrated_data_families_export_bundle() -> &'static str {
+        r#"{
+          "format": "cinatoken-sqlite-export-v1",
+          "tables": {
+            "midjourneys": {
+              "missing": false,
+              "columns": [
+                "id", "code", "user_id", "action", "mj_id", "prompt", "prompt_en",
+                "description", "state", "submit_time", "start_time", "finish_time",
+                "image_url", "video_url", "video_urls", "status", "progress",
+                "fail_reason", "channel_id", "quota", "buttons", "properties"
+              ],
+              "rows": [{
+                "id": 501,
+                "code": 1,
+                "user_id": 1,
+                "action": "IMAGINE",
+                "mj_id": "mj-source-501",
+                "prompt": "a 'quoted' prompt",
+                "prompt_en": "translated prompt",
+                "description": "finished task",
+                "state": "state-opaque",
+                "submit_time": 1710001000000,
+                "start_time": 1710001001000,
+                "finish_time": 1710001009000,
+                "image_url": "https://example.test/image.png",
+                "video_url": "",
+                "video_urls": "[\"https://example.test/video.mp4\"]",
+                "status": "SUCCESS",
+                "progress": "100%",
+                "fail_reason": "",
+                "channel_id": 20,
+                "quota": 125,
+                "buttons": "[{\"label\":\"U1\"}]",
+                "properties": "{\"seed\":42}"
+              }]
+            },
+            "prefill_groups": {
+              "missing": false,
+              "columns": [
+                "id", "name", "type", "items", "description", "created_time",
+                "updated_time", "deleted_at"
+              ],
+              "rows": [
+                {
+                  "id": 601,
+                  "name": "models-primary",
+                  "type": "model",
+                  "items": {"__blob_base64": "WyJncHQtdGVzdCIsImdwdC1vdGhlciJd"},
+                  "description": "primary models",
+                  "created_time": 1710002000,
+                  "updated_time": 1710002010,
+                  "deleted_at": null
+                },
+                {
+                  "id": 602,
+                  "name": "retired-endpoints",
+                  "type": "endpoint",
+                  "items": "{\"old\":\"https://old.example.test\"}",
+                  "description": "soft deleted",
+                  "created_time": 1710002100,
+                  "updated_time": 1710002110,
+                  "deleted_at": "2024-03-09 16:10:00+00:00"
+                }
+              ]
+            }
+          }
+        }"#
+    }
+
     fn auth_security_export_bundle() -> &'static str {
         r#"{
           "format": "cinatoken-sqlite-export-v1",
@@ -3655,7 +4347,8 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
             &format!(
                 "{D1_CORE_SCHEMA}\n{D1_TOPUPS_SCHEMA}\n{D1_SCHEMA_PARITY}\n\
                  {D1_TOPUPS_CREDITED}\n{D1_TWO_FA_SCHEMA}\n{D1_TOPUPS_PAYMENT_PROVIDER}\n\
-                 {D1_PASSKEY_SCHEMA}\n{P0_TARGET_ROWS_FIXTURE}"
+                 {D1_PASSKEY_SCHEMA}\n{D1_MIDJOURNEYS_SCHEMA}\n\
+                 {D1_PREFILL_GROUPS_SCHEMA}\n{P0_TARGET_ROWS_FIXTURE}"
             ),
         );
         let config = ReconcileConfig {

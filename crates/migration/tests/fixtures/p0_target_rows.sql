@@ -60,3 +60,22 @@ INSERT INTO two_fa_backup_codes (
 ) VALUES
   (401, 1, '$2a$10$opaque/hash''one', 0, NULL, 1710000000),
   (402, 1, '$2a$10$opaque/hash-two', 1, 1710000030, 1710000000);
+
+INSERT INTO midjourneys (
+  id, code, user_id, action, mj_id, prompt, prompt_en, description, state,
+  submit_time, start_time, finish_time, image_url, video_url, video_urls,
+  status, progress, fail_reason, channel_id, quota, buttons, properties
+) VALUES (
+  501, 1, 1, 'IMAGINE', 'mj-source-501', 'a ''quoted'' prompt', 'translated prompt',
+  'finished task', 'state-opaque', 1710001000000, 1710001001000, 1710001009000,
+  'https://example.test/image.png', '', '["https://example.test/video.mp4"]',
+  'SUCCESS', '100%', '', 20, 125, '[{"label":"U1"}]', '{"seed":42}'
+);
+
+INSERT INTO prefill_groups (
+  id, name, type, items, description, created_time, updated_time, deleted_at
+) VALUES
+  (601, 'models-primary', 'model', '["gpt-test","gpt-other"]',
+   'primary models', 1710002000, 1710002010, NULL),
+  (602, 'retired-endpoints', 'endpoint', '{"old":"https://old.example.test"}',
+   'soft deleted', 1710002100, 1710002110, 1710000600);

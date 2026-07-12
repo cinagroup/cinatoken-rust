@@ -3116,6 +3116,10 @@ paid reconciliation, and rollback. No exposed Cloudflare token was used.
 - `bun run check:wfp-tenant:post-upload-verifier` passed 8/8. Script, module,
   binding, hash, readback, and dispatch mismatches were rejected, and the dry
   run remained credential-free. This does not claim a Cloudflare upload.
+- `bun run check:wfp-tenant:readback-collector` passed 15/15. Redirects,
+  malformed envelopes/multipart, response/module/part limits, deployment and
+  compatibility drift, credential echoes, and module credential leakage fail
+  closed. The dry-run performs no network request and reads no credential.
 - Frontend wallet and platform readiness tests passed 13/13. The wallet now
   renders failed topups as Failed/danger rather than Pending, while the platform
   panel distinguishes Gateway-routable prefixes from safe direct fallbacks.
@@ -3129,3 +3133,37 @@ evidence is a real WFP details/settings/content capture plus positive dispatch,
 provider-route AI Gateway logs/faults and billing reconciliation, production
 auth source/import hashes, imported-credential browser authentication, and
 rollback. No exposed Cloudflare token was used.
+
+### Realtime Outbound Bridge Lifetime Boundary (2026-07-12)
+
+- `cargo test -p cinatoken-worker --lib` covers the compiled lifecycle contract,
+  including the 840-second deadline, exact expiry comparison, close code/reason,
+  and metadata-only terminal event.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` verifies the
+  DO-local delayed lifetime guard, upstream event-pump stop check, pre-reserve
+  text/binary expiry checks, D1 refund helper reuse, lease cleanup, and
+  persisted terminal metrics compile for Workers.
+- Status attachments expose only `upstream_bridge_deadline_ms`; raw upstream
+  credentials and bridge payloads remain absent.
+- This local gate does not prove Cloudflare timing, eviction, reconnect, or
+  exactly-once billing behavior. Staging evidence must hold a real bridge until
+  the 14-minute boundary, verify both sockets close with
+  `upstream_bridge_lifetime_exceeded`, reconnect into a fresh segment, and
+  reconcile reservations, retries, audit rows, and user quota without duplicate
+  charge or refund.
+
+### Remaining Source Data Families (2026-07-12)
+
+- `cargo test -p cinatoken-migration` passed 45/45 after adding full
+  `midjourneys` and `prefill_groups` import/reconciliation coverage plus explicit
+  `quota_data`, `setups`, and `perf_metrics` exclusion manifests.
+- `cargo clippy -p cinatoken-migration --no-deps -- -D warnings` passed.
+- `cinatoken-migrate data-families` emits the versioned import/exclusion
+  registry; unknown options fail closed.
+- Fixture reconciliation proves deterministic table hashes and samples,
+  relationships, active prefill-name uniqueness, JSON/BLOB preservation,
+  no-overwrite idempotency, canonical drift detection, excluded-family row
+  counts, and audited schema hashes.
+- No production SQLite source or remote D1 was used. Production verification
+  must still archive source counts/hashes, import SQL application, target
+  reconciliation, explicit exclusion manifests, workflow smoke, and rollback.

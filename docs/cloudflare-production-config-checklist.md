@@ -443,6 +443,17 @@ Smoke order:
    exact script. Archive the redacted PUT result and a GET content/metadata
    readback that matches the dry-run artifact hashes. Do not use
    `/api/platform/wfp/tenant-script/deploy`; it is intentionally disabled.
+   Run `bun run check:wfp-tenant:readback-collector`, then set only a rotated,
+   read-scoped `CINATOKEN_WFP_READBACK_TOKEN` and collect the official Details,
+   Settings, and Content APIs with both confirmations:
+
+   ```powershell
+   bun run collect:wfp-tenant:readback -- --account-id <account> --namespace <namespace> --script-name <worker> --confirm-readback --confirm-replacement-token > wfp-readback.json
+   ```
+
+   The collector rejects redirects, deployment drift, malformed or oversized
+   multipart content, and credential echoes. It does not accept a token on the
+   command line and does not read legacy/general Cloudflare token variables.
    Feed the uploader JSON, Cloudflare details/settings/content capture, and live
    dispatch JSON into `bun tools/verify_wfp_post_upload.mjs`. Archive a single
    `verified=true` result; the verifier recomputes module hashes and rejects

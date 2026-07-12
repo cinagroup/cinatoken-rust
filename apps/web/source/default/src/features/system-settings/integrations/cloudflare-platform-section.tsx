@@ -29,6 +29,7 @@ import { SettingsSection } from '../components/settings-section'
 import type { PlatformCapabilities, TaskRunnerStatusProbe } from '../types'
 import {
   buildPlatformReadinessSummary,
+  getPlatformReadinessSignalLabel,
   type PlatformReadinessSignal,
   type PlatformReadinessStage,
 } from './cloudflare-platform-readiness'
@@ -234,7 +235,7 @@ function PlatformReadinessHeadline(props: {
                 className='flex min-w-0 items-center justify-between gap-2 text-xs'
               >
                 <span className='text-muted-foreground min-w-0 truncate'>
-                  {getReadinessSignalLabel(signal, t)}
+                  {t(getPlatformReadinessSignalLabel(signal.id))}
                 </span>
                 <StatusBadge
                   type='text'
@@ -283,40 +284,6 @@ function getReadinessStageCount(
     ready: stage.readyCount,
     total: stage.signals.length,
   })
-}
-
-function getReadinessSignalLabel(
-  signal: PlatformReadinessSignal,
-  t: (key: string) => string
-) {
-  switch (signal.id) {
-    case 'scheduling-gateway-implementation':
-      return t('Scheduling gateway')
-    case 'ai-gateway-implementation':
-    case 'ai-gateway-runtime':
-      return t('AI Gateway')
-    case 'wfp-tenant-implementation':
-    case 'wfp-tenant-runtime':
-      return t('WFP tenant')
-    case 'realtime-implementation':
-    case 'realtime-runtime':
-      return t('Realtime')
-    case 'task-runner-implementation':
-    case 'task-runner-runtime':
-      return t('TaskRunner')
-    case 'ai-gateway-canary':
-      return t('AI Gateway canary')
-    case 'wfp-tenant-smoke':
-      return t('WFP tenant smoke')
-    case 'realtime-smoke':
-      return t('Realtime smoke')
-    case 'task-runner-replay':
-      return t('TaskRunner replay')
-    case 'task-runner-cutover':
-      return t('TaskRunner')
-    case 'realtime-v1-cutover':
-      return t('Realtime v1')
-  }
 }
 
 function getReadinessSignalStatus(

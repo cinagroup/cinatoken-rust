@@ -9803,14 +9803,59 @@ Topup data continuity:
 Audit result after this increment remains **NO-GO for full production**. The
 default frontend has 217 calls and zero missing Worker routes, but that metric
 does not prove provider semantics, imported data, or deployed browser flows.
-Highest remaining gaps are 33 deferred provider channel types, five other
-source table families without complete import paths (`quota_data`,
-`midjourneys`, `prefill_groups`, `setups`, and `perf_metrics`), provider-specific paid
-callback replay, Realtime eviction/reconnect evidence, WFP upload/readback,
+Highest remaining gaps are 33 deferred provider channel types, production
+source/import/reconciliation evidence for the newly audited data-family
+decisions, provider-specific paid callback replay, Realtime eviction/reconnect
+evidence, WFP upload/readback,
 capacity/SLO/security drills, canary, rollback, and `cinatoken.com` cutover.
 The exposed Cloudflare credential was not used and must be revoked/rotated.
 
-### 22.158 2026-07-12 Auth Data, AI Provider Registry, WFP Readback, And Frontend State
+### 22.158 2026-07-12 Realtime Outbound Bridge Lifetime Boundary
+
+Cloudflare Durable Object WebSocket hibernation applies to inbound client
+sockets, not the outbound upstream WebSocket used by the Realtime relay. An
+outbound WebSocket keeps an object resident for at most 15 minutes; after that
+the connection no longer prevents eviction. The production contract must
+therefore treat a long-lived upstream bridge as a bounded relay segment rather
+than an indefinitely hibernatable connection.
+
+This increment adds an explicit 14-minute safety boundary in
+`crates/worker/src/realtime_session.rs`:
+
+- Every upstream-backed socket derives a redacted
+  `upstream_bridge_deadline_ms` from its persisted connection timestamp. HTTP
+  and WebSocket status output can expose the deadline without exposing any
+  upstream credential or payload.
+- A DO-local lifetime guard closes both sides with the deterministic
+  `upstream_bridge_lifetime_exceeded` reason before Cloudflare's 15-minute
+  residency limit. The event pump stops consuming frames after another path
+  has closed the bridge.
+- Client text and binary business frames check the same deadline before quota
+  reservation. An expired segment cannot start another billable response.
+- The winning terminal path emits metadata-only bridge evidence, refunds all
+  non-settlement-retry-owned reservations through the existing idempotent D1
+  refund operation, clears their durable leases, and persists the terminal
+  metric. Settlement-retry-owned work remains with the durable retry queue so
+  a timeout cannot race it into a second refund.
+- The existing restored-attachment fail-closed path remains authoritative if
+  the object is evicted before the guard runs: the next business frame closes
+  as upstream unavailable and uses the same idempotent reservation cleanup.
+
+The lifecycle compiled signal now includes a pure contract check for the
+840-second limit, exact deadline boundary, safe close mapping, and sanitized
+terminal event. Local Worker unit tests and wasm32 compilation are required in
+the verification gate.
+
+This is still **NO-GO for Realtime production cutover**. Staging must archive a
+real 14-minute close, client reconnect/new segment behavior, upstream close,
+exactly-once refund and settlement rows, alarm/retry ownership, DO eviction
+near the boundary, and reconnect load before `REALTIME_SESSION_V1_ENABLED` can
+leave its controlled canary. See Cloudflare's
+[Durable Objects WebSocket hibernation](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)
+and [lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)
+documentation for the platform constraint.
+
+### 22.159 2026-07-12 Auth Data, AI Provider Registry, WFP Readback, And Frontend State
 
 This increment advances four independent production boundaries found by the
 renewed Go/Rust, cinaVibeSDK, and frontend audit. It remains local evidence and
@@ -9848,6 +9893,12 @@ AI Gateway multi-model routing:
 
 WFP deployment evidence:
 
+- `tools/collect_wfp_post_upload_readback.mjs` now reads the official
+  Workers-for-Platforms Details, Settings, and Content endpoints into the
+  verifier's readback shape. It requires a rotated, dedicated
+  `CINATOKEN_WFP_READBACK_TOKEN`, two explicit live confirmations, bounded
+  binary-safe multipart parsing, before/after deployment identity checks, and
+  credential redaction; it accepts no command-line token and writes no files.
 - `tools/verify_wfp_post_upload.mjs` consumes uploader, Cloudflare Worker
   details/settings/content, and live dispatch JSON. It verifies exact script,
   namespace, compatibility settings, secret/binding shape, Rust/Wasm module
@@ -9866,13 +9917,45 @@ Frontend contract:
 
 Local evidence passed: migration 40/40, provider 26/26, focused Worker AI
 Gateway/platform 11/11, frontend readiness plus wallet 13/13, AI Gateway smoke
-self-test, WFP post-upload verifier 8/8, Worker 577/577, and the complete
+self-test, WFP readback collector 15/15, WFP post-upload verifier 8/8, Worker
+577/577, and the complete
 `bun run check` frontend/build/quality/bundle/route/smoke/workspace/wasm gate.
 
 Production remains **NO-GO**. Required next evidence includes a replacement-
 credential staging deploy, real WFP REST readback fed into the verifier,
 provider-by-provider AI Gateway canaries and direct-fallback faults, production
 auth source count/hash and remote D1 import, imported Passkey/TOTP/backup-code
-login, remaining `midjourneys` and `prefill_groups` imports, rendered browser
+login, production `midjourneys`/`prefill_groups` import reconciliation and
+excluded-family audit manifests, rendered browser
 workflows, capacity/SLO/security drills, canary, rollback, and domain cutover.
 The exposed Cloudflare credential was not used and must be revoked/rotated.
+
+### 22.160 2026-07-12 Remaining Source Data-Family Decisions
+
+The final five previously unresolved Go source table families now have an
+explicit, versioned migration disposition instead of remaining implicit gaps:
+
+- `midjourneys` imports all 22 D1 columns with strict integer/text validation,
+  preserve-target conflict handling, deterministic canonical SHA-256 and sample
+  reconciliation, and user/channel relationship checks.
+- `prefill_groups` imports all D1 columns, converts soft-delete timestamps,
+  preserves SQLite BLOB-backed UTF-8 JSON as D1 text, validates JSON and active
+  name uniqueness, and uses the same no-overwrite reconciliation contract.
+- `quota_data` is excluded because it is a derived hourly aggregate that would
+  double count migrated `logs`; usage/ranking views must be rebuilt from D1
+  logs after cutover.
+- `setups` is excluded because it records retired VPS installation state;
+  Cloudflare binding and D1 migration readiness replace it.
+- `perf_metrics` is excluded because it is rolling, rewarmable observability
+  state with no parity D1 table.
+
+`cinatoken-migrate data-families` emits the versioned JSON decision registry.
+The reconciliation manifest records excluded-family row counts and schema
+SHA-256 values without raw rows, while missing or drifted audited columns fail
+closed. Local migration tests pass 45/45 and Clippy passes with warnings denied
+for the migration crate.
+
+This closes the implementation decision gap, not the production evidence gap.
+Cutover still requires source count/hash capture, remote D1 import, target
+reconciliation, retained excluded-family manifests, post-import task/prefill
+workflow smoke, and rollback rehearsal.

@@ -128,6 +128,36 @@ export type PlatformReadinessSignal = {
   status: PlatformReadinessSignalStatus
 }
 
+const PLATFORM_READINESS_SIGNAL_LABELS = {
+  'scheduling-gateway-implementation': 'Scheduling gateway',
+  'ai-gateway-implementation': 'AI Gateway',
+  'wfp-tenant-implementation': 'WFP tenant',
+  'realtime-implementation': 'Realtime',
+  'task-runner-implementation': 'TaskRunner',
+  'ai-gateway-runtime': 'AI Gateway',
+  'ai-gateway-fallback-runtime': 'AI Gateway fallback',
+  'wfp-tenant-runtime': 'WFP tenant',
+  'realtime-runtime': 'Realtime',
+  'task-runner-runtime': 'TaskRunner',
+  'ai-gateway-canary': 'AI Gateway canary',
+  'ai-gateway-actual-group-billing-smoke':
+    'AI Gateway actual-group billing smoke',
+  'ai-gateway-fallback-replay': 'AI Gateway fallback replay',
+  'wfp-tenant-smoke': 'WFP tenant smoke',
+  'wfp-relay-authority-smoke': 'WFP relay authority smoke',
+  'realtime-smoke': 'Realtime smoke',
+  'task-runner-replay': 'TaskRunner replay',
+  'task-runner-cutover': 'TaskRunner',
+  'ai-gateway-fallback-cutover': 'AI Gateway fallback',
+  'realtime-v1-cutover': 'Realtime v1',
+} satisfies Record<PlatformReadinessSignalId, string>
+
+export function getPlatformReadinessSignalLabel(
+  id: PlatformReadinessSignalId
+): string {
+  return PLATFORM_READINESS_SIGNAL_LABELS[id]
+}
+
 export type PlatformReadinessStage = {
   id: PlatformReadinessStageId
   signals: PlatformReadinessSignal[]

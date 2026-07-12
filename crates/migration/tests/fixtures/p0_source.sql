@@ -107,6 +107,73 @@ CREATE TABLE two_fa_backup_codes (
   deleted_at TEXT
 );
 
+CREATE TABLE midjourneys (
+  id INTEGER PRIMARY KEY,
+  code INTEGER NOT NULL DEFAULT 0,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  action TEXT NOT NULL DEFAULT '',
+  mj_id TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  prompt_en TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  submit_time INTEGER NOT NULL DEFAULT 0,
+  start_time INTEGER NOT NULL DEFAULT 0,
+  finish_time INTEGER NOT NULL DEFAULT 0,
+  image_url TEXT NOT NULL DEFAULT '',
+  video_url TEXT NOT NULL DEFAULT '',
+  video_urls TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  progress TEXT NOT NULL DEFAULT '',
+  fail_reason TEXT NOT NULL DEFAULT '',
+  channel_id INTEGER NOT NULL DEFAULT 0,
+  quota INTEGER NOT NULL DEFAULT 0,
+  buttons TEXT NOT NULL DEFAULT '',
+  properties TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE prefill_groups (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  items BLOB,
+  description TEXT NOT NULL DEFAULT '',
+  created_time INTEGER NOT NULL DEFAULT 0,
+  updated_time INTEGER NOT NULL DEFAULT 0,
+  deleted_at TEXT
+);
+
+CREATE TABLE quota_data (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER,
+  username TEXT,
+  model_name TEXT,
+  created_at INTEGER,
+  token_used INTEGER,
+  count INTEGER,
+  quota INTEGER
+);
+
+CREATE TABLE setups (
+  id INTEGER PRIMARY KEY,
+  version TEXT NOT NULL,
+  initialized_at INTEGER NOT NULL
+);
+
+CREATE TABLE perf_metrics (
+  id INTEGER PRIMARY KEY,
+  model_name TEXT,
+  "group" TEXT,
+  bucket_ts INTEGER,
+  request_count INTEGER,
+  success_count INTEGER,
+  total_latency_ms INTEGER,
+  ttft_sum_ms INTEGER,
+  ttft_count INTEGER,
+  output_tokens INTEGER,
+  generation_ms INTEGER
+);
+
 INSERT INTO users (
   id, username, password, display_name, status, "group", aff_code, quota, setting
 ) VALUES (
@@ -172,3 +239,34 @@ INSERT INTO two_fa_backup_codes (
   (401, 1, '$2a$10$opaque/hash''one', 0, NULL, '2024-03-09 16:00:00+00:00', NULL),
   (402, 1, '$2a$10$opaque/hash-two', 1, '2024-03-09 16:00:30+00:00', '2024-03-09 16:00:00+00:00', NULL),
   (403, 1, '$2a$10$soft-deleted', 0, NULL, '2024-03-09 16:00:00+00:00', '2024-03-09 16:02:00+00:00');
+
+INSERT INTO midjourneys (
+  id, code, user_id, action, mj_id, prompt, prompt_en, description, state,
+  submit_time, start_time, finish_time, image_url, video_url, video_urls,
+  status, progress, fail_reason, channel_id, quota, buttons, properties
+) VALUES (
+  501, 1, 1, 'IMAGINE', 'mj-source-501', 'a ''quoted'' prompt', 'translated prompt',
+  'finished task', 'state-opaque', 1710001000000, 1710001001000, 1710001009000,
+  'https://example.test/image.png', '', '["https://example.test/video.mp4"]',
+  'SUCCESS', '100%', '', 20, 125, '[{"label":"U1"}]', '{"seed":42}'
+);
+
+INSERT INTO prefill_groups (
+  id, name, type, items, description, created_time, updated_time, deleted_at
+) VALUES
+  (601, 'models-primary', 'model', CAST('["gpt-test","gpt-other"]' AS BLOB),
+   'primary models', 1710002000, 1710002010, NULL),
+  (602, 'retired-endpoints', 'endpoint', CAST('{"old":"https://old.example.test"}' AS BLOB),
+   'soft deleted', 1710002100, 1710002110, '2024-03-09 16:10:00+00:00');
+
+INSERT INTO quota_data (
+  id, user_id, username, model_name, created_at, token_used, count, quota
+) VALUES (701, 1, 'alice', 'gpt-test', 1710000000, 321, 2, 640);
+
+INSERT INTO setups (id, version, initialized_at)
+VALUES (801, 'go-vps-legacy', 1700000000);
+
+INSERT INTO perf_metrics (
+  id, model_name, "group", bucket_ts, request_count, success_count,
+  total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms
+) VALUES (901, 'gpt-test', 'default', 1710000000, 2, 2, 850, 220, 2, 321, 700);

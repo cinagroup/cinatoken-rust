@@ -44,6 +44,7 @@ pub const REALTIME_UPSTREAM_BRIDGE_CONNECT_CONTRACT_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_CONNECT_HANDOFF_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_FETCH_UPGRADE_ADAPTER_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED: bool = true;
+pub const REALTIME_UPSTREAM_BRIDGE_LIFETIME_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_FRAME_GUARD_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_CLOSE_MAPPING_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_BRIDGE_SEND_FAILURE_GUARD_COMPILED: bool = true;
@@ -143,6 +144,7 @@ const MAX_REALTIME_BRIDGE_TEXT_FRAME_BYTES: usize = 1_048_576;
 const MAX_REALTIME_BRIDGE_BINARY_FRAME_BYTES: usize = 1_048_576;
 const MAX_REALTIME_BRIDGE_PENDING_FRAMES: usize = 32;
 const MAX_REALTIME_BRIDGE_PENDING_BYTES: usize = 4 * 1_048_576;
+const REALTIME_UPSTREAM_BRIDGE_MAX_LIFETIME_SECONDS: u64 = 14 * 60;
 const REALTIME_BRIDGE_MESSAGE_TOO_BIG_CLOSE_CODE: u16 = 1009;
 const REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE: u16 = 1011;
 const REALTIME_BRIDGE_NORMAL_CLOSE_CODE: u16 = 1000;
@@ -155,6 +157,7 @@ const REALTIME_BRIDGE_REASON_FRAME_TOO_LARGE: &str = "upstream_bridge_frame_too_
 const REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED: &str = "upstream_bridge_closed";
 const REALTIME_BRIDGE_REASON_UPSTREAM_ERROR: &str = "upstream_bridge_error";
 const REALTIME_BRIDGE_REASON_UPSTREAM_UNAVAILABLE: &str = "upstream_bridge_unavailable";
+const REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED: &str = "upstream_bridge_lifetime_exceeded";
 const REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED: &str = "upstream_bridge_forward_failed";
 const REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED: &str = "client_bridge_forward_failed";
 const REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW: &str = "upstream_bridge_backpressure_overflow";
@@ -202,6 +205,7 @@ struct RealtimeSocketSummary {
     connected_at_ms: f64,
     upstream: Option<RealtimeSelectedUpstreamPlan>,
     upstream_connect_handoff: bool,
+    upstream_bridge_deadline_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -447,6 +451,7 @@ enum RealtimeBridgeCloseCause {
     UpstreamClosed(u16),
     UpstreamError,
     UpstreamUnavailable,
+    UpstreamLifetimeExceeded,
     ClientToUpstreamSendFailed,
     UpstreamToClientSendFailed,
     BackpressureOverflow,
@@ -769,16 +774,20 @@ impl DurableObject for RealtimeSession {
                     .ok()
                     .flatten()
             })
-            .map(|attachment| RealtimeSocketSummary {
-                session: attachment.session,
-                entrypoint: attachment.entrypoint,
-                model: attachment.model,
-                token_source: attachment.token_source,
-                token_fingerprint: attachment.token_fingerprint,
-                auth_state: attachment.auth_state,
-                connected_at_ms: attachment.connected_at_ms,
-                upstream: attachment.upstream,
-                upstream_connect_handoff: attachment.upstream_connect_handoff,
+            .map(|attachment| {
+                let upstream_bridge_deadline_ms = realtime_upstream_bridge_deadline_ms(&attachment);
+                RealtimeSocketSummary {
+                    session: attachment.session,
+                    entrypoint: attachment.entrypoint,
+                    model: attachment.model,
+                    token_source: attachment.token_source,
+                    token_fingerprint: attachment.token_fingerprint,
+                    auth_state: attachment.auth_state,
+                    connected_at_ms: attachment.connected_at_ms,
+                    upstream_bridge_deadline_ms,
+                    upstream: attachment.upstream,
+                    upstream_connect_handoff: attachment.upstream_connect_handoff,
+                }
             })
             .collect::<Vec<_>>();
         let restored_attachments = attachments.len();
@@ -890,13 +899,32 @@ impl DurableObject for RealtimeSession {
                     return Ok(());
                 }
                 self.drop_closed_upstream_bridges();
-                if self.upstream_bridge_requires_terminal(attachment.as_ref()) {
+                if realtime_upstream_bridge_lifetime_expired(attachment.as_ref(), now_ms) {
                     return self
-                        .terminate_unavailable_upstream_bridge(
+                        .terminate_upstream_bridge(
                             &ws,
                             attachment.as_ref(),
                             &context,
                             &mut metrics,
+                            RealtimeBridgeCloseCause::UpstreamLifetimeExceeded,
+                            REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED,
+                            Some(RealtimeBridgeFrameMetadata {
+                                kind: RealtimeBridgeFrameKind::Text,
+                                bytes: summary.text_bytes,
+                                max_bytes: None,
+                            }),
+                        )
+                        .await;
+                }
+                if self.upstream_bridge_requires_terminal(attachment.as_ref()) {
+                    return self
+                        .terminate_upstream_bridge(
+                            &ws,
+                            attachment.as_ref(),
+                            &context,
+                            &mut metrics,
+                            RealtimeBridgeCloseCause::UpstreamUnavailable,
+                            REALTIME_BRIDGE_REASON_UPSTREAM_UNAVAILABLE,
                             Some(RealtimeBridgeFrameMetadata {
                                 kind: RealtimeBridgeFrameKind::Text,
                                 bytes: summary.text_bytes,
@@ -1092,13 +1120,32 @@ impl DurableObject for RealtimeSession {
                 }
                 let binary_bytes = bytes.len();
                 self.drop_closed_upstream_bridges();
-                if self.upstream_bridge_requires_terminal(attachment.as_ref()) {
+                if realtime_upstream_bridge_lifetime_expired(attachment.as_ref(), now_ms) {
                     return self
-                        .terminate_unavailable_upstream_bridge(
+                        .terminate_upstream_bridge(
                             &ws,
                             attachment.as_ref(),
                             &context,
                             &mut metrics,
+                            RealtimeBridgeCloseCause::UpstreamLifetimeExceeded,
+                            REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED,
+                            Some(RealtimeBridgeFrameMetadata {
+                                kind: RealtimeBridgeFrameKind::Binary,
+                                bytes: binary_bytes,
+                                max_bytes: None,
+                            }),
+                        )
+                        .await;
+                }
+                if self.upstream_bridge_requires_terminal(attachment.as_ref()) {
+                    return self
+                        .terminate_upstream_bridge(
+                            &ws,
+                            attachment.as_ref(),
+                            &context,
+                            &mut metrics,
+                            RealtimeBridgeCloseCause::UpstreamUnavailable,
+                            REALTIME_BRIDGE_REASON_UPSTREAM_UNAVAILABLE,
                             Some(RealtimeBridgeFrameMetadata {
                                 kind: RealtimeBridgeFrameKind::Binary,
                                 bytes: binary_bytes,
@@ -1801,10 +1848,18 @@ impl RealtimeSession {
             attachment.clone(),
             self.env.clone(),
             self.state.storage(),
-            context,
+            context.clone(),
             handoff.startup_queue_probe_delay_ms,
             handoff.mock_upstream_fault,
             handoff.billing_settlement.clone(),
+        );
+        spawn_realtime_upstream_lifetime_guard(
+            runtime.state.clone(),
+            client.clone(),
+            attachment.clone(),
+            self.env.clone(),
+            self.state.storage(),
+            context,
         );
         self.upstream_bridges.insert(bridge_key, runtime);
         Ok(())
@@ -2073,31 +2128,31 @@ impl RealtimeSession {
         )
     }
 
-    async fn terminate_unavailable_upstream_bridge(
-        &self,
+    async fn terminate_upstream_bridge(
+        &mut self,
         client: &WebSocket,
         attachment: Option<&SocketAttachment>,
         context: &Value,
         metrics: &mut RealtimeSessionMetrics,
+        cause: RealtimeBridgeCloseCause,
+        reason: &str,
         frame: Option<RealtimeBridgeFrameMetadata>,
     ) -> WorkerResult<()> {
         let now_ms = js_sys::Date::now();
-        let cause = RealtimeBridgeCloseCause::UpstreamUnavailable;
         let action = realtime_bridge_close_action(cause);
         let session = attachment
             .map(|attachment| attachment.session.clone())
             .unwrap_or_else(|| self.state.id().to_string());
-        metrics.record_error(
-            attachment,
-            now_ms,
-            REALTIME_BRIDGE_REASON_UPSTREAM_UNAVAILABLE,
-        );
+        metrics.record_error(attachment, now_ms, reason);
         metrics.record_bridge_terminal_event(
             attachment,
             now_ms,
             realtime_bridge_terminal_event(cause, action, now_ms, frame),
         );
         send_realtime_bridge_terminal_event(client, context, cause, action, frame);
+        if let Some(attachment) = attachment {
+            self.close_upstream_bridge_for(attachment, action);
+        }
         let _ = client.close(Some(action.client_code), Some(action.client_reason));
         self.refund_realtime_session_reservations_best_effort(&session)
             .await;
@@ -2106,74 +2161,8 @@ impl RealtimeSession {
     }
 
     async fn refund_realtime_session_reservations_best_effort(&self, session: &str) {
-        let Ok(db) = self.env.d1("DB") else {
-            worker::console_warn!("RealtimeSession could not load DB during session refund");
-            return;
-        };
-        let retry_reservations = match load_realtime_billing_settlement_retry(&self.state.storage())
-            .await
-        {
-            Ok(Some(queue)) => queue
-                .records
-                .into_iter()
-                .map(|record| record.reservation_key)
-                .collect::<Vec<_>>(),
-            Ok(None) => Vec::new(),
-            Err(err) => {
-                worker::console_warn!(
-                    "RealtimeSession could not load settlement retry ownership during session refund: {}",
-                    err
-                );
-                return;
-            }
-        };
-        let reservations =
-            match crate::d1_repositories::reserved_realtime_billing_for_session(&db, session).await
-            {
-                Ok(reservations) => reservations,
-                Err(err) => {
-                    worker::console_warn!(
-                        "RealtimeSession failed to list session reservations for refund: {}",
-                        err
-                    );
-                    return;
-                }
-            };
-        let now = crate::admin::unix_timestamp();
-        for reservation in reservations {
-            if retry_reservations.contains(&reservation.reservation_key) {
-                continue;
-            }
-            match crate::d1_repositories::refund_realtime_billing_reservation(
-                &db,
-                &reservation.reservation_key,
-                now,
-            )
-            .await
-            {
-                Ok(_) => {
-                    let mut storage = self.state.storage();
-                    if let Err(err) = clear_realtime_billing_reservation_lease(
-                        &mut storage,
-                        &reservation.reservation_key,
-                        js_sys::Date::now(),
-                    )
-                    .await
-                    {
-                        worker::console_warn!(
-                            "RealtimeSession failed to clear terminal reservation lease {}: {}",
-                            reservation.reservation_key,
-                            err
-                        );
-                    }
-                }
-                Err(err) => worker::console_warn!(
-                    "RealtimeSession failed to refund terminal reservation {}: {}",
-                    reservation.reservation_key,
-                    err
-                ),
-            }
-        }
+        let mut storage = self.state.storage();
+        refund_realtime_session_reservations_best_effort(&self.env, &mut storage, session).await;
     }
 
     fn forward_text_to_upstream(
@@ -2314,6 +2303,77 @@ impl RealtimeSession {
             }
         }
         store_realtime_billing_settlement_retry_queue(&mut storage, &queue, now_ms).await
+    }
+}
+
+async fn refund_realtime_session_reservations_best_effort(
+    env: &Env,
+    storage: &mut Storage,
+    session: &str,
+) {
+    let Ok(db) = env.d1("DB") else {
+        worker::console_warn!("RealtimeSession could not load DB during session refund");
+        return;
+    };
+    let retry_reservations = match load_realtime_billing_settlement_retry(storage).await {
+        Ok(Some(queue)) => queue
+            .records
+            .into_iter()
+            .map(|record| record.reservation_key)
+            .collect::<Vec<_>>(),
+        Ok(None) => Vec::new(),
+        Err(err) => {
+            worker::console_warn!(
+                "RealtimeSession could not load settlement retry ownership during session refund: {}",
+                err
+            );
+            return;
+        }
+    };
+    let reservations =
+        match crate::d1_repositories::reserved_realtime_billing_for_session(&db, session).await {
+            Ok(reservations) => reservations,
+            Err(err) => {
+                worker::console_warn!(
+                    "RealtimeSession failed to list session reservations for refund: {}",
+                    err
+                );
+                return;
+            }
+        };
+    let now = crate::admin::unix_timestamp();
+    for reservation in reservations {
+        if retry_reservations.contains(&reservation.reservation_key) {
+            continue;
+        }
+        match crate::d1_repositories::refund_realtime_billing_reservation(
+            &db,
+            &reservation.reservation_key,
+            now,
+        )
+        .await
+        {
+            Ok(_) => {
+                if let Err(err) = clear_realtime_billing_reservation_lease(
+                    storage,
+                    &reservation.reservation_key,
+                    js_sys::Date::now(),
+                )
+                .await
+                {
+                    worker::console_warn!(
+                        "RealtimeSession failed to clear terminal reservation lease {}: {}",
+                        reservation.reservation_key,
+                        err
+                    );
+                }
+            }
+            Err(err) => worker::console_warn!(
+                "RealtimeSession failed to refund terminal reservation {}: {}",
+                reservation.reservation_key,
+                err
+            ),
+        }
     }
 }
 
@@ -3219,10 +3279,26 @@ fn attachment_context_json(attachment: Option<&SocketAttachment>) -> Value {
             "token_fingerprint": attachment.token_fingerprint,
             "auth_state": attachment.auth_state,
             "upstream": attachment.upstream,
-            "upstream_connect_handoff": attachment.upstream_connect_handoff
+            "upstream_connect_handoff": attachment.upstream_connect_handoff,
+            "upstream_bridge_deadline_ms": realtime_upstream_bridge_deadline_ms(attachment)
         }),
         None => Value::Null,
     }
+}
+
+fn realtime_upstream_bridge_deadline_ms(attachment: &SocketAttachment) -> Option<f64> {
+    attachment.upstream_connect_handoff.then_some(
+        attachment.connected_at_ms + REALTIME_UPSTREAM_BRIDGE_MAX_LIFETIME_SECONDS as f64 * 1_000.0,
+    )
+}
+
+fn realtime_upstream_bridge_lifetime_expired(
+    attachment: Option<&SocketAttachment>,
+    now_ms: f64,
+) -> bool {
+    attachment
+        .and_then(realtime_upstream_bridge_deadline_ms)
+        .is_some_and(|deadline_ms| now_ms >= deadline_ms)
 }
 
 fn realtime_text_control_summary(message: &str) -> RealtimeTextControlSummary {
@@ -3433,12 +3509,47 @@ pub(crate) fn realtime_upstream_fetch_upgrade_adapter_compiled() -> bool {
 
 pub(crate) fn realtime_upstream_bridge_lifecycle_compiled() -> bool {
     REALTIME_UPSTREAM_BRIDGE_LIFECYCLE_COMPILED
+        && realtime_upstream_bridge_lifetime_boundary_compiled()
         && realtime_client_message_bridge_status(false, false) == "upstream_bridge_not_wired"
         && realtime_client_message_bridge_status(true, false) == "upstream_bridge_not_active"
         && realtime_client_message_bridge_status(true, true) == "upstream_bridge_active"
         && realtime_client_close_code_from_upstream(1000) == 1000
         && realtime_client_close_code_from_upstream(1005) == 1011
         && realtime_client_close_code_from_upstream(4000) == 4000
+}
+
+fn realtime_upstream_bridge_lifetime_boundary_compiled() -> bool {
+    let attachment = SocketAttachment {
+        session: "lifetime-boundary-smoke".to_string(),
+        connected_at_ms: 1_000.0,
+        protocol: None,
+        entrypoint: "v1".to_string(),
+        model: None,
+        token_source: None,
+        token_fingerprint: None,
+        auth_state: "authenticated".to_string(),
+        upstream: None,
+        upstream_connect_handoff: true,
+    };
+    let deadline_ms = 1_000.0 + REALTIME_UPSTREAM_BRIDGE_MAX_LIFETIME_SECONDS as f64 * 1_000.0;
+    let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamLifetimeExceeded);
+    let event = realtime_bridge_terminal_event(
+        RealtimeBridgeCloseCause::UpstreamLifetimeExceeded,
+        action,
+        deadline_ms,
+        None,
+    );
+
+    REALTIME_UPSTREAM_BRIDGE_LIFETIME_BOUNDARY_COMPILED
+        && REALTIME_UPSTREAM_BRIDGE_MAX_LIFETIME_SECONDS == 840
+        && realtime_upstream_bridge_deadline_ms(&attachment) == Some(deadline_ms)
+        && !realtime_upstream_bridge_lifetime_expired(Some(&attachment), deadline_ms - 1.0)
+        && realtime_upstream_bridge_lifetime_expired(Some(&attachment), deadline_ms)
+        && action.client_code == REALTIME_BRIDGE_NORMAL_CLOSE_CODE
+        && action.client_reason == REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED
+        && action.upstream_code == Some(REALTIME_BRIDGE_NORMAL_CLOSE_CODE)
+        && event.event == "upstream_lifetime_exceeded"
+        && event.direction == "bridge"
 }
 
 pub(crate) fn realtime_upstream_bridge_hibernation_fail_closed_compiled() -> bool {
@@ -5788,6 +5899,9 @@ fn spawn_realtime_upstream_event_pump(
         }
 
         while let Some(event) = events.next().await {
+            if runtime_state.borrow().closed {
+                break;
+            }
             match event {
                 Ok(WebsocketEvent::Message(message)) => {
                     if let Some(text) = message.text() {
@@ -5949,6 +6063,65 @@ fn spawn_realtime_upstream_event_pump(
     });
 }
 
+fn spawn_realtime_upstream_lifetime_guard(
+    runtime_state: Rc<RefCell<RealtimeUpstreamBridgeState>>,
+    client: WebSocket,
+    attachment: SocketAttachment,
+    env: Env,
+    mut metrics_storage: Storage,
+    context: Value,
+) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(deadline_ms) = realtime_upstream_bridge_deadline_ms(&attachment) else {
+            return;
+        };
+        let remaining_ms = (deadline_ms - js_sys::Date::now()).max(0.0).ceil() as u64;
+        Delay::from(Duration::from_millis(remaining_ms)).await;
+
+        let cause = RealtimeBridgeCloseCause::UpstreamLifetimeExceeded;
+        let action = realtime_bridge_close_action(cause);
+        if !close_realtime_upstream_runtime(&runtime_state, action) {
+            return;
+        }
+        let now_ms = js_sys::Date::now();
+        send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
+        let _ = client.close(Some(action.client_code), Some(action.client_reason));
+        refund_realtime_session_reservations_best_effort(
+            &env,
+            &mut metrics_storage,
+            &attachment.session,
+        )
+        .await;
+
+        match load_realtime_session_metrics(&metrics_storage, &attachment.session, now_ms).await {
+            Ok(mut metrics) => {
+                metrics.record_error(
+                    Some(&attachment),
+                    now_ms,
+                    REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED,
+                );
+                metrics.record_bridge_terminal_event(
+                    Some(&attachment),
+                    now_ms,
+                    realtime_bridge_terminal_event(cause, action, now_ms, None),
+                );
+                if let Err(err) =
+                    store_realtime_session_metrics(&mut metrics_storage, &metrics).await
+                {
+                    worker::console_warn!(
+                        "RealtimeSession failed to persist lifetime terminal metrics: {}",
+                        err
+                    );
+                }
+            }
+            Err(err) => worker::console_warn!(
+                "RealtimeSession failed to load lifetime terminal metrics: {}",
+                err
+            ),
+        }
+    });
+}
+
 fn mark_realtime_upstream_runtime_closed(runtime_state: &Rc<RefCell<RealtimeUpstreamBridgeState>>) {
     let mut state = runtime_state.borrow_mut();
     state.closed = true;
@@ -5959,10 +6132,10 @@ fn mark_realtime_upstream_runtime_closed(runtime_state: &Rc<RefCell<RealtimeUpst
 fn close_realtime_upstream_runtime(
     runtime_state: &Rc<RefCell<RealtimeUpstreamBridgeState>>,
     action: RealtimeBridgeCloseAction,
-) {
+) -> bool {
     let mut state = runtime_state.borrow_mut();
     if state.closed {
-        return;
+        return false;
     }
     state.closed = true;
     state.upstream_ready = false;
@@ -5970,6 +6143,7 @@ fn close_realtime_upstream_runtime(
     if let (Some(code), Some(reason)) = (action.upstream_code, action.upstream_reason) {
         let _ = state.upstream.close(Some(code), Some(reason));
     }
+    true
 }
 
 fn send_realtime_bridge_terminal_event(
@@ -6181,6 +6355,9 @@ fn realtime_bridge_terminal_event_labels(
         RealtimeBridgeCloseCause::UpstreamUnavailable => {
             ("upstream_unavailable", "upstream_to_client", None)
         }
+        RealtimeBridgeCloseCause::UpstreamLifetimeExceeded => {
+            ("upstream_lifetime_exceeded", "bridge", None)
+        }
         RealtimeBridgeCloseCause::ClientToUpstreamSendFailed => {
             ("client_to_upstream_send_failed", "client_to_upstream", None)
         }
@@ -6201,6 +6378,7 @@ fn realtime_bridge_generated_close_reason(reason: &str) -> bool {
             | REALTIME_BRIDGE_REASON_UPSTREAM_CLOSED
             | REALTIME_BRIDGE_REASON_UPSTREAM_ERROR
             | REALTIME_BRIDGE_REASON_UPSTREAM_UNAVAILABLE
+            | REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED
             | REALTIME_BRIDGE_REASON_UPSTREAM_FORWARD_FAILED
             | REALTIME_BRIDGE_REASON_CLIENT_FORWARD_FAILED
             | REALTIME_BRIDGE_REASON_BACKPRESSURE_OVERFLOW
@@ -6386,6 +6564,12 @@ fn realtime_bridge_close_action(cause: RealtimeBridgeCloseCause) -> RealtimeBrid
             client_reason: REALTIME_BRIDGE_REASON_UPSTREAM_UNAVAILABLE,
             upstream_code: None,
             upstream_reason: None,
+        },
+        RealtimeBridgeCloseCause::UpstreamLifetimeExceeded => RealtimeBridgeCloseAction {
+            client_code: REALTIME_BRIDGE_NORMAL_CLOSE_CODE,
+            client_reason: REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED,
+            upstream_code: Some(REALTIME_BRIDGE_NORMAL_CLOSE_CODE),
+            upstream_reason: Some(REALTIME_BRIDGE_REASON_LIFETIME_EXCEEDED),
         },
         RealtimeBridgeCloseCause::ClientToUpstreamSendFailed => RealtimeBridgeCloseAction {
             client_code: REALTIME_BRIDGE_INTERNAL_ERROR_CLOSE_CODE,

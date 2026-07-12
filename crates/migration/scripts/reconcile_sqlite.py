@@ -240,6 +240,108 @@ TABLE_SPECS = (
             "created_at",
         ),
     },
+    {
+        "name": "midjourneys",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "integer_columns": (
+            "id",
+            "code",
+            "user_id",
+            "submit_time",
+            "start_time",
+            "finish_time",
+            "channel_id",
+            "quota",
+        ),
+        "columns": (
+            "id",
+            "code",
+            "user_id",
+            "action",
+            "mj_id",
+            "prompt",
+            "prompt_en",
+            "description",
+            "state",
+            "submit_time",
+            "start_time",
+            "finish_time",
+            "image_url",
+            "video_url",
+            "video_urls",
+            "status",
+            "progress",
+            "fail_reason",
+            "channel_id",
+            "quota",
+            "buttons",
+            "properties",
+        ),
+    },
+    {
+        "name": "prefill_groups",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "integer_columns": ("id", "created_time", "updated_time"),
+        "timestamp_columns": ("deleted_at",),
+        "json_text_columns": ("items",),
+        "columns": (
+            "id",
+            "name",
+            "type",
+            "items",
+            "description",
+            "created_time",
+            "updated_time",
+            "deleted_at",
+        ),
+    },
+)
+
+EXCLUDED_SOURCE_FAMILIES = (
+    {
+        "source": "quota_data",
+        "decision": "exclude",
+        "reason": "derived hourly usage aggregates have no lossless D1 target and importing them would double count migrated logs",
+        "replacement": "rebuild usage and ranking views from the migrated D1 logs table",
+        "columns": (
+            "id",
+            "user_id",
+            "username",
+            "model_name",
+            "created_at",
+            "token_used",
+            "count",
+            "quota",
+        ),
+    },
+    {
+        "source": "setups",
+        "decision": "exclude",
+        "reason": "the Go installation marker describes the retired VPS deployment rather than tenant business state",
+        "replacement": "derive Worker readiness from applied D1 migrations and Cloudflare bindings",
+        "columns": ("id", "version", "initialized_at"),
+    },
+    {
+        "source": "perf_metrics",
+        "decision": "exclude",
+        "reason": "rolling observability aggregates have no parity D1 table and are safe to rewarm after cutover",
+        "replacement": "rebuild operational metrics from new relay traffic and retained D1 logs",
+        "columns": (
+            "id",
+            "model_name",
+            "group",
+            "bucket_ts",
+            "request_count",
+            "success_count",
+            "total_latency_ms",
+            "ttft_sum_ms",
+            "ttft_count",
+            "output_tokens",
+            "generation_ms",
+        ),
+    },
 )
 
 TOPUP_PAYMENT_PROVIDERS = (
@@ -410,6 +512,27 @@ def normalize_timestamp(value, table, column):
     return delta.days * 86400 + delta.seconds
 
 
+def normalize_integer(value, table, column):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{table}.{column} must be an integer")
+    return value
+
+
+def normalize_json_text(value, table, column):
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"{table}.{column} must contain UTF-8 JSON") from error
+    if not isinstance(value, str):
+        raise ValueError(f"{table}.{column} must be JSON text")
+    try:
+        json.loads(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{table}.{column} must contain valid JSON") from error
+    return value
+
+
 def role_where(spec, role):
     if role == "source":
         return spec.get("source_where")
@@ -471,6 +594,10 @@ def project_row(spec, role, names, raw_row, target_schema):
                 value = normalize_boolean(value, spec["name"], target_column)
             elif target_column in spec.get("timestamp_columns", ()):
                 value = normalize_timestamp(value, spec["name"], target_column)
+            elif target_column in spec.get("integer_columns", ()):
+                value = normalize_integer(value, spec["name"], target_column)
+            elif target_column in spec.get("json_text_columns", ()):
+                value = normalize_json_text(value, spec["name"], target_column)
             projected[target_column] = value
             continue
 
@@ -745,6 +872,53 @@ def logical_key_checks(conn, role):
             "OR (is_used = 1 AND used_at IS NULL)",
         ),
     }
+
+    midjourneys = "midjourneys"
+    checks["midjourneys.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            midjourneys,
+            None,
+            "id <= 0 OR code < 0 OR user_id < 0 OR submit_time < 0 "
+            "OR start_time < 0 OR finish_time < 0 OR channel_id < 0 OR quota < 0 "
+            "OR action IS NULL OR mj_id IS NULL OR prompt IS NULL OR prompt_en IS NULL "
+            "OR description IS NULL OR state IS NULL OR image_url IS NULL "
+            "OR video_url IS NULL OR video_urls IS NULL OR status IS NULL "
+            "OR progress IS NULL OR fail_reason IS NULL OR buttons IS NULL "
+            "OR properties IS NULL",
+        ),
+    }
+
+    prefill = "prefill_groups"
+    checks["prefill_groups.active_name_unique"] = {
+        "kind": "unique_key",
+        "violations": count_query(
+            conn,
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {quote_ident(prefill)} "
+            "WHERE deleted_at IS NULL GROUP BY name HAVING COUNT(*) > 1)",
+        ),
+    }
+    invalid_prefill_items = 0
+    for (items,) in conn.execute(
+        f"SELECT items FROM {quote_ident(prefill)} WHERE items IS NOT NULL"
+    ):
+        try:
+            normalize_json_text(items, prefill, "items")
+        except ValueError:
+            invalid_prefill_items += 1
+    checks["prefill_groups.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            prefill,
+            None,
+            "id <= 0 OR name IS NULL OR TRIM(name) = '' OR type IS NULL "
+            "OR TRIM(type) = '' OR description IS NULL OR created_time < 0 "
+            "OR updated_time < 0",
+        )
+        + invalid_prefill_items,
+    }
     return checks
 
 
@@ -819,7 +993,75 @@ def relationship_checks(conn, role):
                 f"WHERE {active_backup_child}parent.id IS NULL",
             ),
         },
+        "midjourneys.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM midjourneys child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "midjourneys.channel_id->channels.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM midjourneys child "
+                "LEFT JOIN channels parent ON child.channel_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
     }
+
+
+def excluded_source_family_manifest(conn):
+    existing = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    manifest = {}
+    for decision in EXCLUDED_SOURCE_FAMILIES:
+        table = decision["source"]
+        base = {
+            "decision": decision["decision"],
+            "reason": decision["reason"],
+            "replacement": decision["replacement"],
+            "expected_columns": list(decision["columns"]),
+        }
+        if table not in existing:
+            manifest[table] = {
+                **base,
+                "missing": True,
+                "row_count": 0,
+                "schema_sha256": None,
+            }
+            continue
+
+        schema = table_schema(conn, table)
+        missing = [column for column in decision["columns"] if column not in schema]
+        if missing:
+            raise ValueError(
+                f"excluded source family {table} is missing audited columns: "
+                + ", ".join(missing)
+            )
+        schema_signature = [
+            {
+                "name": column,
+                "type": schema[column]["type"],
+                "not_null": schema[column]["not_null"],
+                "primary_key": schema[column]["primary_key"],
+            }
+            for column in decision["columns"]
+        ]
+        manifest[table] = {
+            **base,
+            "missing": False,
+            "row_count": count_query(conn, f"SELECT COUNT(*) FROM {quote_ident(table)}"),
+            "schema_sha256": hashlib.sha256(
+                canonical_bytes(schema_signature)
+            ).hexdigest(),
+        }
+    return manifest
 
 
 def build_manifest(conn, role, target_schemas, sample_size):
@@ -853,7 +1095,7 @@ def build_manifest(conn, role, target_schemas, sample_size):
             sample_size,
         )
 
-    return {
+    manifest = {
         "format": MANIFEST_FORMAT,
         "canonical_serialization": SERIALIZATION,
         "sample_algorithm": SAMPLE_ALGORITHM,
@@ -863,6 +1105,9 @@ def build_manifest(conn, role, target_schemas, sample_size):
         "relationships": relationship_checks(conn, role),
         "integrity_checks": logical_key_checks(conn, role),
     }
+    if role == "source":
+        manifest["excluded_source_families"] = excluded_source_family_manifest(conn)
+    return manifest
 
 
 def compare_manifests(source, target):

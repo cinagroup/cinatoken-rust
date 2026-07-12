@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerPath = path.join(repoRoot, "wrangler.toml");
+const localD1WranglerPath = path.join(repoRoot, "wrangler.d1-local.toml");
 const migrationsDir = path.join(repoRoot, "migrations", "d1");
 const platformGatewayPath = path.join(
   repoRoot,
@@ -37,6 +38,20 @@ const unexpectedTables = bindings
 assert(
   unexpectedTables.length === 0,
   `unexpected D1 binding tables: ${unexpectedTables.join(", ")}`,
+);
+
+const localD1Config = await readFile(localD1WranglerPath, "utf8");
+const localD1Bindings = parseD1Bindings(localD1Config);
+assert(localD1Bindings.length === 1, "wrangler.d1-local.toml must contain exactly one D1 binding");
+assert(localD1Bindings[0].table === "d1_databases", "local D1 binding must be top-level");
+assert(localD1Bindings[0].values.binding === "DB", "local D1 config must expose binding DB");
+assert(
+  localD1Bindings[0].values.database_name === "cinatoken-rust-db",
+  "local D1 config must share the runtime smoke database name",
+);
+assert(
+  localD1Bindings[0].values.migrations_dir === "migrations/d1",
+  "local D1 config must set migrations_dir to migrations/d1",
 );
 
 const migrationFiles = (await readdir(migrationsDir, { withFileTypes: true }))
@@ -82,6 +97,7 @@ assert(
 const report = {
   ok: true,
   wranglerConfig: path.relative(repoRoot, wranglerPath).replaceAll("\\", "/"),
+  localD1WranglerConfig: path.relative(repoRoot, localD1WranglerPath).replaceAll("\\", "/"),
   migrationsDir: "migrations/d1",
   bindingTables: expectedTables,
   migrationCount: migrationFiles.length,

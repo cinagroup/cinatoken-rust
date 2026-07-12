@@ -382,7 +382,7 @@ index, user OAuth/admin lookup indexes, and token name lookup. The `group` to
 | `Log` | P0/P1 | Partial relay audit logs | Recent queryable D1 logs plus Queue/R2 archive plan, request/upstream ID preservation. `0002_admin_tables.sql` and `0004_schema_parity.sql` cover the Go search indexes tracked for P0 parity; heavy log search may still move to Analytics Engine/R2 for write-amplification and retention. `channel_id` serializes as JSON `channel`. See `docs/source-d1-schema-parity.md`. |
 | `QuotaData` | P1 | Planned | Aggregation import or recomputation strategy, dashboard parity. |
 | `Model`, `Vendor`, `PrefillGroup`, `Setup` | P1 | Export-supported, D1/API incomplete | Admin schema, import, operator smoke, frontend display parity. |
-| `TopUp`, `Redemption` | P1 | Planned | Payment/accounting import, idempotency, double-credit prevention, refund/replay tests. |
+| `TopUp`, `Redemption` | P1 | Partial: redemption import is present; `top_ups -> topups` import maps pending/success/failed/expired to 0/1/2/3, validates/derives provider ownership, marks only success as credited, preserves existing D1 orders with `ON CONFLICT DO NOTHING`, and participates in canonical hash/domain/user-relationship reconciliation | Real source row count/hash, remote D1 import, provider callback replay, no-double-credit, refund, and paid reconciliation evidence. |
 | `SubscriptionPlan`, `SubscriptionOrder`, `UserSubscription`, `SubscriptionPreConsumeRecord` | P1 | Partial billing foundation, schema incomplete | Plan/order/subscription import, settlement ownership decision, shadow billing report. |
 | `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | P1/P2 | Partial | `TwoFA`/backup-code and Passkey register/login/step-up flows are locally implemented. Passkey retains Go-compatible credential encoding and D1 fields; production still requires imported-credential or forced-reset evidence plus real-authenticator replay/session-isolation smoke. |
 | `CustomOAuthProvider`, `UserOAuthBinding` | P1/P2 | Partial: D1 schema/import and root-admin provider config CRUD/discovery implemented | Provider secret migration evidence, login/bind state replay protections, callback origin checks, account-binding smoke, forced rebind option. |
@@ -435,14 +435,15 @@ real IDs, deliberate environments, generated types, and out-of-band secrets.
 | Binding/Config | Current State | Production Target | Evidence |
 | --- | --- | --- | --- |
 | Config format | `wrangler.toml` | Prefer `wrangler.jsonc` or documented TOML exception | Config migration PR or exception note. |
-| `compatibility_date` | `2026-06-17` | Keep current; review periodically | Date review recorded before deploy. |
+| `compatibility_date` | `2026-07-11` in the main config; isolated local workerd configs use `2026-06-24` | Keep current; review periodically and prove deployed parity | Date review plus local/deployed runtime evidence. |
 | `compatibility_flags` | `nodejs_compat` enabled | Keep enabled | `wrangler types` generated Env after binding changes. |
 | Observability | Enabled with `head_sampling_rate = 1` | Staging/prod sampling policy documented | Logs/traces visible in staging. |
 | `DB` D1 | Local placeholder; staging ID is present but unauthenticated/unverified; production placeholder remains. All three binding tables set `migrations_dir = "migrations/d1"`. | Separate verified staging/prod D1 IDs | `bun run check:d1:migration-config`; authenticated staging `wrangler d1 info`; remote migrations 0001-0020 applied; `/api/status` D1 true. |
 | `CACHE_KV`, `CONFIG_KV` | Local/prod placeholders; staging IDs are present but unauthenticated/unverified | Real verified namespaces or remove unused bindings | Authenticated binding checklist and code usage decision. |
 | `FILE_BUCKET` | Named bucket, no code usage | Real R2 bucket plus retention policy | R2 smoke for upload/read/delete if enabled. |
 | `LOG_QUEUE`, `TASK_QUEUE` | `LOG_QUEUE` producer and consumer are implemented for async relay audit insertion with synchronous D1 fallback and DLQ config; `TASK_QUEUE` remains declared/planned | Real queues with consumers/DLQ when async moves | Queue producer/consumer smoke, DLQ alert, and task-queue ownership decision. |
-| Upstash vars/secrets | Runtime env driven | Separate staging/prod credentials | Secret names, no values, rotation owner. |
+| Native Rate Limiting | Two bindings per environment; 120 token and 600 IP requests per 60s, route-family keys, separate numeric namespaces | Authenticated staging readback and 429 telemetry before relay canary | `bun run check:cf:native-rate-limits`; local six-scenario Realtime replay; staging load/log evidence pending. |
+| Upstash vars/secrets | Optional runtime env for read-through cache and explicit legacy mode | Separate staging/prod credentials or documented removal | Secret names, no values, rotation owner. Not a native relay-admission prerequisite. |
 | Provider API keys | D1 channel keys | Encrypted/redacted storage policy | Admin key reveal audit and redaction tests. |
 | Payment/OAuth/Turnstile/JWT/session secrets | Go/VPS-owned today | Cloudflare secrets or forced re-auth/defer plan | Secret inventory without values. |
 | AI Gateway IDs and request policy | Empty default `AI_GATEWAY_ID`; the Rust/Wasm WFP tenant supports route-specific gateway overrides for chat, responses, Anthropic Messages, and `/ai/run`, plus tenant-bound `cf-aig-*` timeout/retry/cache/logging policy. Main-relay AI Gateway routing and cross-model fallback remain independently gated. | Real default/route IDs or a documented direct-provider policy | Live logs for only the four retained WFP routes; no embeddings tenant route. Main-relay canary evidence must separately prove channel opt-in, provider policy, billing, terminal audit, and fallback replay. |
@@ -516,7 +517,8 @@ and G9 decisions.
 | Mixed relay load | 500-concurrency or agreed production-shaped equivalent with JSON and SSE route families | Planned |
 | Worker resource limits | CPU, wall time, memory/resource-limit errors, subrequests, and outgoing connection evidence | Planned |
 | D1 capacity | Query duration, rows read/written, overloaded/query errors, index coverage, and hot-path row-read bounds | Planned |
-| Upstash capacity | Command count, latency, error rate, cache hit ratio, rate-limit denials, and failure-mode behavior | Planned |
+| Native rate-limit capacity | Route-family 429 distribution, location-local permissive behavior, logs/Analytics Engine, false-positive review, and binding failure drill | Local runtime passed; staging load evidence planned |
+| Upstash capacity | Optional cache command count, latency, error rate, hit ratio, and fail-open cache behavior | Planned only if retained |
 | Queue/R2 capacity | Queue backlog, retry/DLQ count, batch size, R2 operation count, artifact size, and retention policy | Planned |
 | Log/analytics cost | Workers Logs sampling, Logpush/Analytics Engine decision, retention path, and estimated monthly volume | Planned |
 | Cost forecast | Approved current, 2x, 5x, and incident-spike forecast across Worker, D1, Upstash, logs, Queue, R2, and providers | Planned |

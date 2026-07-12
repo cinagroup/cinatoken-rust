@@ -1,6 +1,6 @@
 # Migration Completion Status
 
-Date: 2026-07-11
+Date: 2026-07-12
 
 This is the short status page. The evidence-based audit is
 `docs/migration-progress-audit-2026-07-02.md`; the canonical Go route list is
@@ -16,7 +16,7 @@ Do not interpret code presence, passing unit tests, or a subsystem staging smoke
 as production completion. Production requires data reconciliation, frontend
 runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 
-## Objective Re-Audit (2026-07-11)
+## Objective Re-Audit (2026-07-12)
 
 | Objective requirement | Current authoritative evidence | Status | Evidence still required |
 | --- | --- | --- | --- |
@@ -41,6 +41,8 @@ implementation readiness only for the covered behavior.
   by D1 abilities and token model limits.
 - Token authentication, channel selection/retry, model mapping, cache, rate
   limits, audit logging, reserve/settle/refund and tiered billing expressions.
+  Tracked environments use Workers-native token/IP/route-family Rate Limiting
+  bindings; Upstash is no longer the default admission hop.
   Relay weighted channel selection now uses Worker CSPRNG-backed bounded draws
   while preserving the deterministic Go-compatible selector core.
 - Multipart upload relay is now Worker-owned for `/v1/audio/transcriptions`,
@@ -75,6 +77,9 @@ implementation readiness only for the covered behavior.
   provider-aware credited-anchor settlement. Subscription balance-pay order
   suffixes now preserve the Go-visible shape while using CSPRNG digits.
 - Public redemption-code topup and daily check-in core routes.
+- Source `top_ups` to D1 `topups` conversion and P0 reconciliation, including
+  all four Go statuses, provider validation, credited backfill, duplicate-import
+  preservation, canonical hashes, and user relationship checks.
 - Tracked React/Bun source plus a successful production typecheck/build.
 
 Evidence is mixed E2-E4 depending on subsystem; see the audit before relying on

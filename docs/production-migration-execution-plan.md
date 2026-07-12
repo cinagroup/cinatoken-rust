@@ -1,6 +1,6 @@
 # Production Migration Execution Plan
 
-Date: 2026-07-11
+Date: 2026-07-12
 
 Status: production execution source of truth. Update this file whenever a gate,
 workstream status, or rollout decision changes.
@@ -94,8 +94,8 @@ Completed or substantially implemented:
 
 - Rust workspace and Cloudflare Worker MVP.
 - D1 core schema, migration CLI, repository boundary, token auth, channel
-  selection, model mapping, audit logging, Upstash-backed rate limiting, and
-  read-through token/channel cache.
+  selection, model mapping, audit logging, Workers-native Rate Limiting
+  bindings, and optional Upstash read-through token/channel cache.
 - OpenAI-compatible JSON relay families for chat/completions/responses,
   completions, embeddings, image generations, audio speech, Jina/Cohere rerank,
   native Anthropic Messages, and native Gemini generate/embed/count-token
@@ -152,6 +152,37 @@ Gate interpretation:
   no-double-charge and protocol evidence.
 - The exposed token must not be used. Revoke/rotate it and authenticate with a
   replacement least-privilege credential before remote execution.
+
+### 2026-07-12 Native Admission And Topup Migration Increment
+
+Completed local evidence:
+
+- All tracked development, staging, and production shapes now declare distinct
+  token and IP Rate Limiting namespaces and explicitly select the native
+  backend. Keys are route-family scoped; IP values are SHA-256 fingerprints.
+  Missing/malformed native bindings fail closed. Legacy Upstash counters remain
+  an explicit compatibility mode only.
+- `bun run check:cf:native-rate-limits` verifies six environment-scoped
+  namespaces plus the isolated Realtime runtime shape. The full six-scenario
+  local Realtime workerd/D1 suite passed through the native binding adapter.
+- The migration CLI now imports source `top_ups` into D1 `topups` without
+  replacing existing orders. It maps pending/success/failed/expired to
+  0/1/2/3, validates provider ownership, marks only successful history as
+  credited, and includes topups in canonical reconciliation and user
+  relationship checks.
+- Platform capabilities now report Realtime bridge and settlement as compiled
+  implementation. Cutover readiness remains false unless DO, D1, environment,
+  settlement-write, and staging evidence gates all pass.
+
+Gate interpretation:
+
+- This closes the local Upstash hot-path dependency for relay admission and the
+  missing topup conversion/reconciliation implementation. It does not prove
+  Cloudflare's location-local limit behavior under staging load or any real
+  source data import.
+- G1 still requires authenticated binding readback and 429 telemetry. G2/G4/G7
+  still require production-source topup counts/hashes, remote import, callback
+  replay, no-double-credit, and paid reconciliation evidence.
 
 ### 2026-07-11 Layered Architecture Re-Audit
 

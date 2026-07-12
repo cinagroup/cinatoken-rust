@@ -140,6 +140,35 @@ TABLE_SPECS = (
         "json_columns": ("value",),
         "columns": ("key", "value"),
     },
+    {
+        "name": "topups",
+        "source_name": "top_ups",
+        "logical_pk": ("trade_no",),
+        "json_columns": (),
+        "columns": (
+            "id",
+            "user_id",
+            "amount",
+            "money",
+            "trade_no",
+            "payment_method",
+            "payment_provider",
+            "status",
+            "create_time",
+            "complete_time",
+            "credited",
+        ),
+        "computed_source_columns": ("payment_provider", "status", "credited"),
+    },
+)
+
+TOPUP_PAYMENT_PROVIDERS = (
+    "epay",
+    "stripe",
+    "creem",
+    "waffo",
+    "waffo_pancake",
+    "balance",
 )
 
 
@@ -234,6 +263,34 @@ def source_column(spec, target_column):
     return spec.get("source_columns", {}).get(target_column, target_column)
 
 
+def table_name(spec, role):
+    if role == "source":
+        return spec.get("source_name", spec["name"])
+    return spec["name"]
+
+
+def map_topup_status(value):
+    statuses = {"pending": 0, "success": 1, "failed": 2, "expired": 3}
+    if value not in statuses:
+        raise ValueError(f"unsupported source top_ups status: {value!r}")
+    return statuses[value]
+
+
+def map_topup_provider(row):
+    payment_method = row.get("payment_method")
+    if not isinstance(payment_method, str) or not payment_method:
+        raise ValueError("source top_ups payment_method must be a non-empty string")
+
+    provider = row.get("payment_provider")
+    if provider is None or provider == "":
+        return payment_method if payment_method in TOPUP_PAYMENT_PROVIDERS else "epay"
+    if not isinstance(provider, str):
+        raise ValueError("source top_ups payment_provider must be a string")
+    if provider not in TOPUP_PAYMENT_PROVIDERS:
+        raise ValueError(f"unsupported source top_ups payment_provider: {provider!r}")
+    return provider
+
+
 def row_query(conn, spec, role, schema):
     if role == "source":
         selected = []
@@ -256,7 +313,8 @@ def row_query(conn, spec, role, schema):
     select_sql = ", ".join(quote_ident(name) for name in selected)
     order_sql = ", ".join(quote_ident(name) for name in order_columns)
     cursor = conn.execute(
-        f"SELECT {select_sql} FROM {quote_ident(spec['name'])} ORDER BY {order_sql}"
+        f"SELECT {select_sql} FROM {quote_ident(table_name(spec, role))} "
+        f"ORDER BY {order_sql}"
     )
     names = [description[0] for description in cursor.description]
     return cursor, names
@@ -269,6 +327,19 @@ def project_row(spec, role, names, raw_row, target_schema):
         if role == "target":
             projected[target_column] = row[target_column]
             continue
+
+        if spec["name"] == "topups":
+            if target_column == "status":
+                projected[target_column] = map_topup_status(row.get("status"))
+                continue
+            if target_column == "payment_provider":
+                projected[target_column] = map_topup_provider(row)
+                continue
+            if target_column == "credited":
+                projected[target_column] = int(
+                    map_topup_status(row.get("status")) == 1
+                )
+                continue
 
         name = source_column(spec, target_column)
         value = row.get(name)
@@ -313,6 +384,7 @@ def table_manifest(conn, spec, role, schema, target_schema, sample_size):
             target_column
             for target_column in spec["columns"]
             if source_column(spec, target_column) not in schema
+            and target_column not in spec.get("computed_source_columns", ())
         )
 
     for raw_row in cursor:
@@ -377,7 +449,7 @@ def count_query(conn, sql):
 def logical_key_checks(conn, role):
     checks = {}
     for spec in TABLE_SPECS:
-        table = spec["name"]
+        table = table_name(spec, role)
         keys = [
             source_column(spec, name) if role == "source" else name
             for name in spec["logical_pk"]
@@ -394,7 +466,7 @@ def logical_key_checks(conn, role):
             conn,
             f"SELECT COUNT(*) FROM {quote_ident(table)} WHERE {null_sql}",
         )
-        checks[f"{table}.logical_primary_key"] = {
+        checks[f"{spec['name']}.logical_primary_key"] = {
             "kind": "logical_primary_key",
             "duplicate_key_groups": duplicate_groups,
             "null_key_rows": null_keys,
@@ -410,10 +482,61 @@ def logical_key_checks(conn, role):
             f"WHERE TRIM({option_key}) = ''",
         ),
     }
+
+
+    topups_table = "top_ups" if role == "source" else "topups"
+    if role == "source":
+        status_condition = (
+            '"status" IS NULL OR "status" NOT IN '
+            "('pending', 'success', 'failed', 'expired')"
+        )
+        topups_schema = table_schema(conn, topups_table)
+        if "payment_provider" in topups_schema:
+            provider_condition = (
+                '("payment_provider" IS NOT NULL AND "payment_provider" <> \'\' '
+                "AND \"payment_provider\" NOT IN ('epay', 'stripe', 'creem', "
+                "'waffo', 'waffo_pancake', 'balance')) OR "
+                "((\"payment_provider\" IS NULL OR \"payment_provider\" = '') "
+                "AND (\"payment_method\" IS NULL OR \"payment_method\" = ''))"
+            )
+        else:
+            provider_condition = '"payment_method" IS NULL OR "payment_method" = \'\''
+        credited_violations = 0
+    else:
+        status_condition = '"status" IS NULL OR "status" NOT IN (0, 1, 2, 3)'
+        provider_condition = (
+            '"payment_provider" IS NULL OR "payment_provider" NOT IN '
+            "('epay', 'stripe', 'creem', 'waffo', 'waffo_pancake', 'balance')"
+        )
+        credited_violations = count_query(
+            conn,
+            f"SELECT COUNT(*) FROM {quote_ident(topups_table)} "
+            "WHERE credited IS NULL OR credited NOT IN (0, 1) "
+            "OR credited <> CASE WHEN status = 1 THEN 1 ELSE 0 END",
+        )
+    checks["topups.status_domain"] = {
+        "kind": "domain_integrity",
+        "violations": count_query(
+            conn,
+            f"SELECT COUNT(*) FROM {quote_ident(topups_table)} WHERE {status_condition}",
+        ),
+    }
+    checks["topups.payment_provider_domain"] = {
+        "kind": "domain_integrity",
+        "violations": count_query(
+            conn,
+            f"SELECT COUNT(*) FROM {quote_ident(topups_table)} WHERE {provider_condition}",
+        ),
+    }
+    checks["topups.credited_matches_status"] = {
+        "kind": "domain_integrity",
+        "violations": credited_violations,
+    }
     return checks
 
 
-def relationship_checks(conn):
+def relationship_checks(conn, role):
+    topups_table = "top_ups" if role == "source" else "topups"
     return {
         "tokens.user_id->users.id": {
             "kind": "foreign_key",
@@ -433,11 +556,23 @@ def relationship_checks(conn):
                 "WHERE parent.id IS NULL",
             ),
         },
+        "topups.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                f"SELECT COUNT(*) FROM {quote_ident(topups_table)} child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
     }
 
 
 def build_manifest(conn, role, target_schemas, sample_size):
-    schemas = {spec["name"]: table_schema(conn, spec["name"]) for spec in TABLE_SPECS}
+    schemas = {
+        spec["name"]: table_schema(conn, table_name(spec, role))
+        for spec in TABLE_SPECS
+    }
     tables = {}
     for spec in TABLE_SPECS:
         table = spec["name"]
@@ -471,7 +606,7 @@ def build_manifest(conn, role, target_schemas, sample_size):
         "sample_size_limit": sample_size,
         "scope": [spec["name"] for spec in TABLE_SPECS],
         "tables": tables,
-        "relationships": relationship_checks(conn),
+        "relationships": relationship_checks(conn, role),
         "integrity_checks": logical_key_checks(conn, role),
     }
 

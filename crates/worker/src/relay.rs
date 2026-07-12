@@ -37,10 +37,13 @@ use cinatoken_wfp_authority::{
     sign_authority, verify_authority, AuthorityExpectation, AuthorityInput, AUTHORITY_SECRET_ENV,
 };
 use futures_util::StreamExt;
+use js_sys::{Function, Object, Promise, Reflect};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use url::Url;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
 use worker::{
     Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response, ResponseBody,
 };
@@ -53,9 +56,12 @@ const LOG_TYPE_CONSUME: i32 = 2;
 const LOG_TYPE_ERROR: i32 = 5;
 const RELAY_ATTEMPT_AUDIT_MAX_ENTRIES: usize = 32;
 const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u32 = 60;
+const RATE_LIMIT_BACKEND_ENV: &str = "RELAY_RATE_LIMIT_BACKEND";
 const TOKEN_RATE_LIMIT_ENV: &str = "RELAY_TOKEN_RATE_LIMIT_PER_WINDOW";
 const IP_RATE_LIMIT_ENV: &str = "RELAY_IP_RATE_LIMIT_PER_WINDOW";
 const RATE_LIMIT_WINDOW_ENV: &str = "RELAY_RATE_LIMIT_WINDOW_SECONDS";
+const NATIVE_TOKEN_RATE_LIMIT_BINDING: &str = "RELAY_TOKEN_RATE_LIMITER";
+const NATIVE_IP_RATE_LIMIT_BINDING: &str = "RELAY_IP_RATE_LIMITER";
 const RELAY_CACHE_TTL_ENV: &str = "RELAY_CACHE_TTL_SECONDS";
 const RELAY_JSON_BODY_LIMIT_ENV: &str = "RELAY_JSON_BODY_LIMIT_BYTES";
 const RELAY_JSON_RESPONSE_LIMIT_ENV: &str = "RELAY_JSON_RESPONSE_LIMIT_BYTES";
@@ -1120,7 +1126,14 @@ async fn relay_endpoint_with_auth(
     };
     let group = auth.effective_group().to_string();
 
-    if let Err(response) = enforce_relay_rate_limits(&env, &auth, client_ip.as_deref()).await {
+    if let Err(response) = enforce_relay_rate_limits(
+        &env,
+        &auth,
+        client_ip.as_deref(),
+        endpoint.route.cache_family(),
+    )
+    .await
+    {
         return response;
     }
 
@@ -3320,10 +3333,19 @@ fn multipart_extra_prompt_tokens(
 }
 
 pub(crate) fn relay_rate_limit_configured(env: &Env) -> bool {
-    let Ok(config) = RelayRateLimitConfig::from_env(env) else {
+    let Ok(config) = RelayRateLimitRuntimeConfig::from_env(env) else {
         return false;
     };
-    config.enabled() && crate::cache::upstash_redis_configured(env)
+    match config.backend {
+        RelayRateLimitBackend::Disabled => false,
+        RelayRateLimitBackend::Native => {
+            native_rate_limit_binding_available(env, NATIVE_TOKEN_RATE_LIMIT_BINDING)
+                && native_rate_limit_binding_available(env, NATIVE_IP_RATE_LIMIT_BINDING)
+        }
+        RelayRateLimitBackend::Upstash => {
+            config.legacy.enabled() && crate::cache::upstash_redis_configured(env)
+        }
+    }
 }
 
 pub(crate) fn relay_read_cache_configured(env: &Env) -> bool {
@@ -3337,17 +3359,151 @@ pub(crate) async fn enforce_relay_rate_limits(
     env: &Env,
     auth: &AuthenticatedToken,
     client_ip: Option<&str>,
+    route_family: &str,
 ) -> Result<(), worker::Result<Response>> {
-    let config = RelayRateLimitConfig::from_env(env).map_err(|err| {
+    let config = RelayRateLimitRuntimeConfig::from_env(env).map_err(|err| {
         openai_error_response(
             format!("invalid relay rate limit configuration: {err}"),
             500,
         )
     })?;
-    if !config.enabled() {
-        return Ok(());
+
+    match config.backend {
+        RelayRateLimitBackend::Disabled => Ok(()),
+        RelayRateLimitBackend::Native => {
+            enforce_native_relay_rate_limits(env, auth, client_ip, route_family).await
+        }
+        RelayRateLimitBackend::Upstash => {
+            enforce_upstash_relay_rate_limits(env, auth, client_ip, route_family, config.legacy)
+                .await
+        }
+    }
+}
+
+async fn enforce_native_relay_rate_limits(
+    env: &Env,
+    auth: &AuthenticatedToken,
+    client_ip: Option<&str>,
+    route_family: &str,
+) -> Result<(), worker::Result<Response>> {
+    let token_allowed = call_native_rate_limit(
+        env,
+        NATIVE_TOKEN_RATE_LIMIT_BINDING,
+        relay_token_rate_limit_key(auth, route_family),
+    )
+    .await
+    .map_err(|err| rate_limit_failure_response(err.to_string()))?;
+    if !token_allowed {
+        return Err(rate_limited_response(
+            "token rate limit exceeded",
+            DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+        ));
     }
 
+    if let Some(ip) = client_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
+        let ip_allowed = call_native_rate_limit(
+            env,
+            NATIVE_IP_RATE_LIMIT_BINDING,
+            relay_ip_rate_limit_key(ip, route_family),
+        )
+        .await
+        .map_err(|err| rate_limit_failure_response(err.to_string()))?;
+        if !ip_allowed {
+            return Err(rate_limited_response(
+                "IP rate limit exceeded",
+                DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn native_rate_limit_binding_available(env: &Env, name: &str) -> bool {
+    native_rate_limit_binding(env, name).is_ok()
+}
+
+fn native_rate_limit_binding(env: &Env, name: &str) -> worker::Result<(JsValue, Function)> {
+    // workers-rs 0.5 expects the constructor name `RateLimiter`, while the
+    // current runtime exposes `Ratelimit`. Validate the platform method at this
+    // narrow boundary instead of accepting an unchecked class-name cast.
+    let binding = Reflect::get(env.as_ref(), &JsValue::from_str(name)).map_err(|error| {
+        worker::Error::JsError(format!(
+            "failed to read native rate limit binding {name}: {error:?}"
+        ))
+    })?;
+    if binding.is_null() || binding.is_undefined() {
+        return Err(worker::Error::JsError(format!(
+            "native rate limit binding {name} is unavailable"
+        )));
+    }
+    let limit = Reflect::get(&binding, &JsValue::from_str("limit"))
+        .map_err(|error| {
+            worker::Error::JsError(format!(
+                "failed to read {name}.limit from native rate limit binding: {error:?}"
+            ))
+        })?
+        .dyn_into::<Function>()
+        .map_err(|_| {
+            worker::Error::JsError(format!(
+                "native rate limit binding {name} does not expose limit()"
+            ))
+        })?;
+    Ok((binding, limit))
+}
+
+async fn call_native_rate_limit(env: &Env, name: &str, key: String) -> worker::Result<bool> {
+    let (binding, limit) = native_rate_limit_binding(env, name)?;
+    let options = Object::new();
+    Reflect::set(
+        &options,
+        &JsValue::from_str("key"),
+        &JsValue::from_str(&key),
+    )
+    .map_err(|error| {
+        worker::Error::JsError(format!(
+            "failed to construct native rate limit input for {name}: {error:?}"
+        ))
+    })?;
+    let promise = limit
+        .call1(&binding, &options)
+        .map_err(|error| {
+            worker::Error::JsError(format!(
+                "native rate limit binding {name} rejected limit(): {error:?}"
+            ))
+        })?
+        .dyn_into::<Promise>()
+        .map_err(|_| {
+            worker::Error::JsError(format!(
+                "native rate limit binding {name} returned a non-Promise"
+            ))
+        })?;
+    let outcome = JsFuture::from(promise).await.map_err(|error| {
+        worker::Error::JsError(format!(
+            "native rate limit binding {name} failed: {error:?}"
+        ))
+    })?;
+    Reflect::get(&outcome, &JsValue::from_str("success"))
+        .map_err(|error| {
+            worker::Error::JsError(format!(
+                "native rate limit binding {name} outcome is unreadable: {error:?}"
+            ))
+        })?
+        .as_bool()
+        .ok_or_else(|| {
+            worker::Error::JsError(format!(
+                "native rate limit binding {name} outcome is missing boolean success"
+            ))
+        })
+}
+
+async fn enforce_upstash_relay_rate_limits(
+    env: &Env,
+    auth: &AuthenticatedToken,
+    client_ip: Option<&str>,
+    route_family: &str,
+    config: RelayRateLimitConfig,
+) -> Result<(), worker::Result<Response>> {
     let redis = match crate::cache::upstash_redis_from_env(env) {
         Ok(Some(redis)) => redis,
         Ok(None) => {
@@ -3366,7 +3522,7 @@ pub(crate) async fn enforce_relay_rate_limits(
 
     let limiter = ExpiringCounterRateLimiter::new(redis, "relay:rate");
     if let Some(limit) = config.token_limit_per_window {
-        let key = relay_token_rate_limit_key(auth);
+        let key = relay_token_rate_limit_key(auth, route_family);
         let allowed = limiter
             .check(&key, limit, config.window_seconds)
             .await
@@ -3382,7 +3538,7 @@ pub(crate) async fn enforce_relay_rate_limits(
     if let (Some(limit), Some(ip)) = (config.ip_limit_per_window, client_ip) {
         let ip = ip.trim();
         if !ip.is_empty() {
-            let key = format!("ip:{ip}");
+            let key = relay_ip_rate_limit_key(ip, route_family);
             let allowed = limiter
                 .check(&key, limit, config.window_seconds)
                 .await
@@ -3652,11 +3808,68 @@ fn realtime_mock_upstream_fault(
     }
 }
 
-fn relay_token_rate_limit_key(auth: &AuthenticatedToken) -> String {
-    if auth.token_id > 0 {
+fn relay_token_rate_limit_key(auth: &AuthenticatedToken, route_family: &str) -> String {
+    let actor = if auth.token_id > 0 {
         format!("token:{}", auth.token_id)
     } else {
         format!("playground-user:{}", auth.user_id)
+    };
+    format!("{actor}:family:{route_family}")
+}
+
+fn relay_ip_rate_limit_key(ip: &str, route_family: &str) -> String {
+    let digest = Sha256::digest(ip.trim().as_bytes());
+    format!("ip-sha256:{digest:x}:family:{route_family}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayRateLimitBackend {
+    Disabled,
+    Native,
+    Upstash,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelayRateLimitRuntimeConfig {
+    backend: RelayRateLimitBackend,
+    legacy: RelayRateLimitConfig,
+}
+
+impl RelayRateLimitRuntimeConfig {
+    fn from_env(env: &Env) -> Result<Self, String> {
+        Self::from_raw(
+            optional_env_var(env, RATE_LIMIT_BACKEND_ENV),
+            optional_env_var(env, TOKEN_RATE_LIMIT_ENV),
+            optional_env_var(env, IP_RATE_LIMIT_ENV),
+            optional_env_var(env, RATE_LIMIT_WINDOW_ENV),
+        )
+    }
+
+    fn from_raw(
+        backend: Option<String>,
+        token_limit: Option<String>,
+        ip_limit: Option<String>,
+        window_seconds: Option<String>,
+    ) -> Result<Self, String> {
+        let legacy = RelayRateLimitConfig::from_raw(token_limit, ip_limit, window_seconds)?;
+        let backend = match backend.as_deref().map(str::trim) {
+            Some("") | None if legacy.enabled() => RelayRateLimitBackend::Upstash,
+            Some("") | None => RelayRateLimitBackend::Disabled,
+            Some("disabled") => RelayRateLimitBackend::Disabled,
+            Some("native") => RelayRateLimitBackend::Native,
+            Some("upstash") if legacy.enabled() => RelayRateLimitBackend::Upstash,
+            Some("upstash") => {
+                return Err(format!(
+                    "{RATE_LIMIT_BACKEND_ENV}=upstash requires {TOKEN_RATE_LIMIT_ENV} or {IP_RATE_LIMIT_ENV}"
+                ));
+            }
+            Some(other) => {
+                return Err(format!(
+                    "{RATE_LIMIT_BACKEND_ENV} must be disabled, native, or upstash; got {other}"
+                ));
+            }
+        };
+        Ok(Self { backend, legacy })
     }
 }
 
@@ -3668,14 +3881,6 @@ struct RelayRateLimitConfig {
 }
 
 impl RelayRateLimitConfig {
-    fn from_env(env: &Env) -> Result<Self, String> {
-        Self::from_raw(
-            optional_env_var(env, TOKEN_RATE_LIMIT_ENV),
-            optional_env_var(env, IP_RATE_LIMIT_ENV),
-            optional_env_var(env, RATE_LIMIT_WINDOW_ENV),
-        )
-    }
-
     fn from_raw(
         token_limit: Option<String>,
         ip_limit: Option<String>,
@@ -8369,11 +8574,22 @@ mod tests {
 
     #[test]
     fn relay_token_rate_limit_key_scopes_playground_by_user() {
-        assert_eq!(relay_token_rate_limit_key(&test_auth(42, 7)), "token:42");
         assert_eq!(
-            relay_token_rate_limit_key(&test_auth(0, 7)),
-            "playground-user:7"
+            relay_token_rate_limit_key(&test_auth(42, 7), "route:chat"),
+            "token:42:family:route:chat"
         );
+        assert_eq!(
+            relay_token_rate_limit_key(&test_auth(0, 7), "route:responses"),
+            "playground-user:7:family:route:responses"
+        );
+    }
+
+    #[test]
+    fn relay_ip_rate_limit_key_hashes_personal_data_and_scopes_route() {
+        let key = relay_ip_rate_limit_key("203.0.113.9", "route:chat");
+        assert!(key.starts_with("ip-sha256:"));
+        assert!(key.ends_with(":family:route:chat"));
+        assert!(!key.contains("203.0.113.9"));
     }
 
     fn endpoint(supports_streaming: bool, feature: Option<&'static str>) -> RelayEndpoint {
@@ -9114,6 +9330,44 @@ mod tests {
         let config = RelayRateLimitConfig::from_raw(None, None, None).unwrap();
         assert!(!config.enabled());
         assert_eq!(config.window_seconds, DEFAULT_RATE_LIMIT_WINDOW_SECONDS);
+    }
+
+    #[test]
+    fn rate_limit_runtime_config_selects_native_without_legacy_limits() {
+        let config =
+            RelayRateLimitRuntimeConfig::from_raw(Some("native".to_string()), None, None, None)
+                .unwrap();
+        assert_eq!(config.backend, RelayRateLimitBackend::Native);
+        assert!(!config.legacy.enabled());
+    }
+
+    #[test]
+    fn rate_limit_runtime_config_preserves_legacy_auto_detection() {
+        let config = RelayRateLimitRuntimeConfig::from_raw(
+            None,
+            Some("120".to_string()),
+            None,
+            Some("60".to_string()),
+        )
+        .unwrap();
+        assert_eq!(config.backend, RelayRateLimitBackend::Upstash);
+        assert!(config.legacy.enabled());
+    }
+
+    #[test]
+    fn rate_limit_runtime_config_rejects_unconfigured_upstash() {
+        let error =
+            RelayRateLimitRuntimeConfig::from_raw(Some("upstash".to_string()), None, None, None)
+                .unwrap_err();
+        assert!(error.contains(TOKEN_RATE_LIMIT_ENV));
+    }
+
+    #[test]
+    fn rate_limit_runtime_config_rejects_unknown_backend() {
+        let error =
+            RelayRateLimitRuntimeConfig::from_raw(Some("external".to_string()), None, None, None)
+                .unwrap_err();
+        assert!(error.contains(RATE_LIMIT_BACKEND_ENV));
     }
 
     #[test]

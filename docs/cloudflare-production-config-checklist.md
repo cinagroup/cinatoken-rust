@@ -1,6 +1,6 @@
 # Cloudflare Production Config Checklist
 
-Date: 2026-07-10
+Date: 2026-07-12
 
 Status: production configuration checklist for G1, G5, and G6 in
 `docs/production-migration-execution-plan.md`.
@@ -111,6 +111,19 @@ Result: local D1/config prerequisites pass, but G1 remains **NO-GO**. No local
 command or local Worker smoke substitutes for authenticated staging deploy,
 remote D1 migration output, `/api/status`, capabilities, logs, or traces.
 
+### 2026-07-12 Native Rate Limit Snapshot
+
+- Top-level, staging, and production each declare
+  `RELAY_TOKEN_RATE_LIMITER` (120/60s) and `RELAY_IP_RATE_LIMITER` (600/60s)
+  with separate account-local numeric namespace IDs.
+- Every environment explicitly sets `RELAY_RATE_LIMIT_BACKEND = "native"`.
+  Binding settings, not legacy vars, are the limit authority.
+- `bun run check:cf:native-rate-limits` verifies named-environment coverage,
+  namespace separation, limits, periods, and the isolated Realtime local shape.
+- Local workerd passed the six-scenario Realtime suite through these bindings.
+  Cloudflare staging still needs 429, route-family isolation, locality/load,
+  logs/Analytics Engine, and rollback evidence.
+
 Current `wrangler.toml` is development-shaped:
 
 - Worker name: `cinatoken-rust-api`
@@ -121,6 +134,7 @@ Current `wrangler.toml` is development-shaped:
 - Build command: `bun tools/build_worker.mjs --release`
 - `ENVIRONMENT = "development"`
 - `FRONTEND_BASE_URL = "http://localhost:3000"`
+- `RELAY_RATE_LIMIT_BACKEND = "native"`
 - `AI_GATEWAY_ID = ""`
 - `RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"`
 - `RELAY_MODEL_FALLBACK_ENABLED = "false"`
@@ -250,7 +264,7 @@ These must be true for every deployable environment:
 | `REALTIME_SESSIONS` Durable Object | Optional | Required before realtime/session cutover | Same | Platform/Relay | Migration entry, `bun run smoke:realtime-session` hibernation WebSocket smoke, restored attachment + persisted metrics smoke, unsupported-control no-echo probe, protocol bridge smoke |
 | `WFP_AUTHORITY_REPLAY` Durable Object | Optional until WFP canary | Required before any paid WFP tenant route | Required before WFP cutover | Platform/Security | `v4-wfp-authority-replay` migration, main script/class binding, tenant external-binding readback, sequential/concurrent duplicate rejection, eviction and cleanup smoke |
 | `DISPATCHER` WFP dispatch namespace | Optional | Required before tenant/preview WFP traffic | Required before WFP cutover | Platform | Namespace created, binding uncommented, tenant script plan/deploy smoke, admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` status/route smoke |
-| Rate Limiting binding | Optional | Required once relay rate limits move off Upstash | Required before relay canary | Platform/Security | 429 telemetry via Analytics Engine, limit smoke |
+| `RELAY_TOKEN_RATE_LIMITER`, `RELAY_IP_RATE_LIMITER` | Declared and locally replayed | Declared; authenticated runtime verification required | Declared; G8 deploy still blocked | Platform/Security | `bun run check:cf:native-rate-limits`, `/api/status`, route-family 429 and Analytics Engine/log evidence |
 | Workflows | Optional | Required before multi-step async cutover | Required before multi-step async cutover | Platform/Tasks | Workflow smoke and retry test |
 | Containers | Optional | Required before any WASM-incompatible/long-running fallback path | Same | Platform | Container build, Worker->Container smoke |
 | Secrets Store | Optional | Recommended for shared provider/payment secrets | Recommended | Security/Platform | Store binding, rotation audit |
@@ -289,7 +303,7 @@ Track names, not values.
 
 | Secret Group | Example Secret Names | Required For | Rotation Evidence |
 | --- | --- | --- | --- |
-| Upstash | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Cache/rate limit | Staging/prod secret dates |
+| Upstash | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Optional read-through cache and legacy compatibility only | Staging/prod secret dates or explicit removal decision |
 | Provider smoke | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, provider-specific names | Live relay smoke | Low-risk key policy |
 | Payment | Stripe/Creem/Waffo/Epay webhook and API secret names | Payment cutover | Webhook replay test |
 | OAuth | GitHub/Discord/OIDC/custom provider secret names | Auth cutover | State/replay test |

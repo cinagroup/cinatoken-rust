@@ -1,12 +1,11 @@
 # cinaVibeSDK Production Migration Mapping
 
-Date: 2026-07-06
+Date: 2026-07-12
 
 Latest evidence increment: 2026-07-11
 
 Status: production migration mapping for applying cinaVibeSDK architecture
-patterns to `cinatoken-rust`. This is a docs-only supplement. It does not
-change Rust or TypeScript code.
+patterns to `cinatoken-rust`.
 
 ## Scope
 
@@ -48,6 +47,14 @@ Readable cinaVibeSDK references:
 - `C:\cinagroup\cinavibesdk\worker\agents\inferutils\core.ts`
 - `C:\cinagroup\cinavibesdk\worker\services\aigateway-proxy\controller.ts`
 
+Architecture provenance correction (2026-07-12): the reviewed cinaVibeSDK
+commit `918e974` contains no Rust crate or Cargo manifest. Its authoritative
+implementation is TypeScript Workers plus the Agents SDK. `cinatoken-rust`
+reuses the routing, hibernation, dispatch-namespace, and AI Gateway topology,
+then implements that topology with a Rust scheduling planner, Rust Durable
+Objects, and a Rust/Wasm WFP tenant. Do not describe those Rust components as
+source copied from cinaVibeSDK.
+
 ## Target Production Shape
 
 `cinatoken-rust` should use cinaVibeSDK's topology as a pattern, translated to
@@ -88,7 +95,9 @@ Persistent state remains split by responsibility:
 
 - D1 remains the production source of truth for users, tokens, channels,
   options, logs, billing rows, and task rows until a specific row is migrated.
-- KV and Upstash remain cache, rate-limit, and short-lived coordination layers.
+- Workers Rate Limiting bindings own relay admission. KV and optional Upstash
+  remain cache and short-lived coordination layers; Upstash is not a required
+  rate-limit hop on the tracked hot path.
 - Durable Objects own session-local or concurrency-sensitive state only.
 - Queues and R2 remain audit/log/artifact escape hatches for large or async
   writes.

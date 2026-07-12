@@ -223,7 +223,7 @@ fn reconcile_migration(args: Vec<String>) -> Result<(), String> {
     println!("P0 source-to-D1 reconciliation passed");
     println!("Manifest: cinatoken-source-to-d1-reconciliation-v1");
     println!("Tables:");
-    for table in D1_CORE_IMPORT_TABLES {
+    for table in D1_RECONCILE_TABLES {
         let table_manifest = tables
             .get(*table)
             .and_then(Value::as_object)
@@ -694,6 +694,7 @@ const D1_IMPORT_TABLES: &[&str] = &[
     "tasks",
     "checkins",
     "redemptions",
+    "topups",
     "subscription_plans",
     "subscription_orders",
     "user_subscriptions",
@@ -705,6 +706,14 @@ const D1_IMPORT_TABLES: &[&str] = &[
 ];
 
 const D1_CORE_IMPORT_TABLES: &[&str] = &["users", "tokens", "channels", "abilities", "options"];
+const D1_RECONCILE_TABLES: &[&str] = &[
+    "users",
+    "tokens",
+    "channels",
+    "abilities",
+    "options",
+    "topups",
+];
 
 const RECONCILIATION_RESULT_FORMAT: &str = "cinatoken-source-to-d1-reconciliation-result-v1";
 const RECONCILE_SQLITE_SCRIPT: &str = include_str!("../scripts/reconcile_sqlite.py");
@@ -875,6 +884,41 @@ const REDEMPTIONS_D1_COLUMNS: &[&str] = &[
     "expired_time",
     "deleted_at",
     "credited",
+];
+
+const TOPUPS_D1_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "amount",
+    "money",
+    "trade_no",
+    "payment_method",
+    "payment_provider",
+    "status",
+    "create_time",
+    "complete_time",
+    "credited",
+];
+
+const TOPUPS_REQUIRED_SOURCE_COLUMNS: &[&str] = &[
+    "id",
+    "user_id",
+    "amount",
+    "money",
+    "trade_no",
+    "payment_method",
+    "status",
+    "create_time",
+    "complete_time",
+];
+
+const TOPUP_PAYMENT_PROVIDERS: &[&str] = &[
+    "epay",
+    "stripe",
+    "creem",
+    "waffo",
+    "waffo_pancake",
+    "balance",
 ];
 
 const SUBSCRIPTION_PLANS_D1_COLUMNS: &[&str] = &[
@@ -1296,6 +1340,13 @@ fn verify_export_bundle(bundle: &str) -> Result<String, String> {
             if !row.is_object() {
                 return Err(format!("table {name} row {} is not an object", index + 1));
             }
+            if name == "top_ups" {
+                project_d1_row(
+                    d1_table_spec("topups")?,
+                    row.as_object().expect("row object was checked above"),
+                    index,
+                )?;
+            }
         }
         summary.push_str(&format!("  {name}: {} rows\n", rows.len()));
     }
@@ -1638,10 +1689,18 @@ fn render_d1_import_sql(bundle: &str, tables: &[String], truncate: bool) -> Resu
                 .map(|(_, value)| sql_literal(value))
                 .collect::<Vec<_>>()
                 .join(", ");
-            sql.push_str(&format!(
-                "INSERT OR REPLACE INTO {} ({columns}) VALUES ({values});\n",
-                quote_ident(spec.target_name)
-            ));
+            let statement = if spec.target_name == "topups" {
+                format!(
+                    "INSERT INTO {} ({columns}) VALUES ({values}) ON CONFLICT DO NOTHING;\n",
+                    quote_ident(spec.target_name)
+                )
+            } else {
+                format!(
+                    "INSERT OR REPLACE INTO {} ({columns}) VALUES ({values});\n",
+                    quote_ident(spec.target_name)
+                )
+            };
+            sql.push_str(&statement);
         }
         sql.push('\n');
     }
@@ -1724,6 +1783,13 @@ fn d1_table_spec(table: &str) -> Result<D1TableSpec, String> {
             column_map: &[],
             generate_missing_id: false,
         }),
+        "topups" => Ok(D1TableSpec {
+            source_name: "top_ups",
+            target_name: "topups",
+            target_columns: TOPUPS_D1_COLUMNS,
+            column_map: &[],
+            generate_missing_id: false,
+        }),
         "subscription_plans" => Ok(D1TableSpec {
             source_name: "subscription_plans",
             target_name: "subscription_plans",
@@ -1789,6 +1855,17 @@ fn project_d1_row(
     row: &Map<String, Value>,
     row_index: usize,
 ) -> Result<Vec<(String, Value)>, String> {
+    if spec.target_name == "topups" {
+        for source_column in TOPUPS_REQUIRED_SOURCE_COLUMNS {
+            if !matches!(row.get(*source_column), Some(value) if !value.is_null()) {
+                return Err(format!(
+                    "source table top_ups row {} is missing required field {source_column}",
+                    row_index + 1
+                ));
+            }
+        }
+    }
+
     let mut projected = Vec::new();
     for target_column in spec.target_columns {
         let source_column = spec
@@ -1817,6 +1894,28 @@ fn project_d1_row(
             continue;
         }
 
+        if spec.target_name == "topups" {
+            let mapped = match *target_column {
+                "payment_provider" => Some(Value::String(map_topup_provider(row, row_index)?)),
+                "status" => Some(Value::Number(Number::from(map_topup_status(
+                    row.get("status"),
+                    row_index,
+                )?))),
+                "credited" => Some(Value::Number(Number::from(
+                    if map_topup_status(row.get("status"), row_index)? == 1 {
+                        1
+                    } else {
+                        0
+                    },
+                ))),
+                _ => None,
+            };
+            if let Some(value) = mapped {
+                projected.push(((*target_column).to_string(), value));
+                continue;
+            }
+        }
+
         let Some(value) = row.get(source_column) else {
             continue;
         };
@@ -1826,6 +1925,62 @@ fn project_d1_row(
         projected.push(((*target_column).to_string(), value.clone()));
     }
     Ok(projected)
+}
+
+fn map_topup_status(value: Option<&Value>, row_index: usize) -> Result<i64, String> {
+    match value.and_then(Value::as_str) {
+        Some("pending") => Ok(0),
+        Some("success") => Ok(1),
+        Some("failed") => Ok(2),
+        Some("expired") => Ok(3),
+        Some(status) => Err(format!(
+            "source table top_ups row {} has unsupported status {status:?}",
+            row_index + 1
+        )),
+        None => Err(format!(
+            "source table top_ups row {} status must be a string",
+            row_index + 1
+        )),
+    }
+}
+
+fn map_topup_provider(row: &Map<String, Value>, row_index: usize) -> Result<String, String> {
+    let payment_method = row
+        .get("payment_method")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "source table top_ups row {} payment_method must be a non-empty string",
+                row_index + 1
+            )
+        })?;
+
+    let provider = match row.get("payment_provider") {
+        None | Some(Value::Null) => "",
+        Some(Value::String(value)) => value.as_str(),
+        Some(_) => {
+            return Err(format!(
+                "source table top_ups row {} payment_provider must be a string",
+                row_index + 1
+            ));
+        }
+    };
+
+    if provider.is_empty() {
+        return Ok(if TOPUP_PAYMENT_PROVIDERS.contains(&payment_method) {
+            payment_method.to_string()
+        } else {
+            "epay".to_string()
+        });
+    }
+    if TOPUP_PAYMENT_PROVIDERS.contains(&provider) {
+        return Ok(provider.to_string());
+    }
+    Err(format!(
+        "source table top_ups row {} has unsupported payment_provider {provider:?}",
+        row_index + 1
+    ))
 }
 
 fn quote_ident(identifier: &str) -> String {
@@ -1859,7 +2014,12 @@ mod tests {
     const P0_SOURCE_FIXTURE: &str = include_str!("../tests/fixtures/p0_source.sql");
     const P0_TARGET_ROWS_FIXTURE: &str = include_str!("../tests/fixtures/p0_target_rows.sql");
     const D1_CORE_SCHEMA: &str = include_str!("../../../migrations/d1/0001_core.sql");
+    const D1_TOPUPS_SCHEMA: &str = include_str!("../../../migrations/d1/0003_topups.sql");
     const D1_SCHEMA_PARITY: &str = include_str!("../../../migrations/d1/0004_schema_parity.sql");
+    const D1_TOPUPS_CREDITED: &str =
+        include_str!("../../../migrations/d1/0005_topups_credited.sql");
+    const D1_TOPUPS_PAYMENT_PROVIDER: &str =
+        include_str!("../../../migrations/d1/0015_topups_payment_provider.sql");
 
     #[test]
     fn sql_string_escapes_single_quotes() {
@@ -2147,6 +2307,27 @@ mod tests {
     }
 
     #[test]
+    fn import_config_accepts_topups() {
+        let temp = unique_temp_dir("import-topups");
+        let input = temp.join("topups.cinatoken-export.json");
+        let output = temp.join("topups.d1.sql");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(&input, "{}").unwrap();
+
+        let config = ImportConfig::from_args(vec![
+            "--input".to_string(),
+            input.display().to_string(),
+            "--output".to_string(),
+            output.display().to_string(),
+            "--table".to_string(),
+            "topups".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(config.tables, vec!["topups"]);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn verify_config_requires_input_or_sql() {
         let err = VerifyConfig::from_args(vec![]).unwrap_err();
         assert!(err.contains("verify requires"));
@@ -2275,6 +2456,7 @@ mod tests {
         );
         assert_eq!(manifest["tables"]["users"]["count"], 1);
         assert_eq!(manifest["tables"]["options"]["count"], 2);
+        assert_eq!(manifest["tables"]["topups"]["count"], 4);
         assert_eq!(
             manifest["tables"]["users"]["pk_min"],
             serde_json::json!([["number", "1"]])
@@ -2296,6 +2478,14 @@ mod tests {
         );
         assert_eq!(
             manifest["relationships"]["abilities.channel_id->channels.id"]["violations"],
+            0
+        );
+        assert_eq!(
+            manifest["relationships"]["topups.user_id->users.id"]["violations"],
+            0
+        );
+        assert_eq!(
+            manifest["integrity_checks"]["topups.credited_matches_status"]["violations"],
             0
         );
         let options_samples = manifest["tables"]["options"]["samples"].as_array().unwrap();
@@ -2413,6 +2603,28 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_detects_topup_status_and_credited_drift() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-topup-drift");
+        execute_sqlite(
+            &config.target,
+            "UPDATE topups SET status = 2, credited = 1 WHERE trade_no = 'topup-success';",
+        );
+
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let differences = result["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(differences.contains("table topups: canonical SHA-256 differs"));
+        assert!(differences
+            .contains("target integrity_check topups.credited_matches_status: 1 violation(s)"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn render_import_sql_maps_subscription_order_compat_columns() {
         let bundle = r#"{
           "format": "cinatoken-sqlite-export-v1",
@@ -2519,6 +2731,64 @@ mod tests {
     }
 
     #[test]
+    fn render_import_sql_maps_topup_status_provider_and_credited() {
+        let sql =
+            render_d1_import_sql(topups_export_bundle(), &["topups".to_string()], false).unwrap();
+
+        assert!(sql.contains("INSERT INTO \"topups\""));
+        assert!(sql.contains("ON CONFLICT DO NOTHING"));
+        assert!(sql.contains("'topup-pending', 'alipay', 'epay', 0, 1710000000, 0, 0)"));
+        assert!(sql.contains("'topup-success', 'stripe', 'stripe', 1, 1710000100, 1710000110, 1)"));
+        assert!(sql.contains("'topup-failed', 'creem', 'creem', 2, 1710000200, 1710000210, 0)"));
+        assert!(sql.contains("'topup-expired', 'wxpay', 'epay', 3, 1710000300, 1710000310, 0)"));
+    }
+
+    #[test]
+    fn render_import_sql_rejects_unknown_topup_status_and_provider() {
+        let invalid_status = topups_export_bundle().replace("\"pending\"", "\"refunded\"");
+        let status_error =
+            render_d1_import_sql(&invalid_status, &["topups".to_string()], false).unwrap_err();
+        assert!(status_error.contains("unsupported status \"refunded\""));
+
+        let invalid_provider = topups_export_bundle().replace(
+            "\"payment_provider\": \"creem\"",
+            "\"payment_provider\": \"unknown\"",
+        );
+        let provider_error =
+            render_d1_import_sql(&invalid_provider, &["topups".to_string()], false).unwrap_err();
+        assert!(provider_error.contains("unsupported payment_provider \"unknown\""));
+    }
+
+    #[test]
+    fn topup_import_is_idempotent_without_overwriting_existing_rows() {
+        let temp = unique_temp_dir("topups-duplicate-import");
+        let database = temp.join("topups.db");
+        fs::create_dir_all(&temp).unwrap();
+        execute_sqlite(
+            &database,
+            &format!("{D1_TOPUPS_SCHEMA}\n{D1_TOPUPS_CREDITED}\n{D1_TOPUPS_PAYMENT_PROVIDER}"),
+        );
+        let sql =
+            render_d1_import_sql(topups_export_bundle(), &["topups".to_string()], false).unwrap();
+        execute_sqlite(&database, &sql);
+
+        let changed_bundle = topups_export_bundle().replace("\"amount\": 1000", "\"amount\": 9999");
+        let duplicate_sql =
+            render_d1_import_sql(&changed_bundle, &["topups".to_string()], false).unwrap();
+        execute_sqlite(&database, &duplicate_sql);
+
+        assert_eq!(sqlite_scalar(&database, "SELECT COUNT(*) FROM topups"), "4");
+        assert_eq!(
+            sqlite_scalar(
+                &database,
+                "SELECT amount FROM topups WHERE trade_no = 'topup-pending'"
+            ),
+            "1000"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn verify_export_bundle_reports_rows_and_core_presence() {
         let bundle = r#"{
           "format": "cinatoken-sqlite-export-v1",
@@ -2560,6 +2830,16 @@ mod tests {
     }
 
     #[test]
+    fn verify_export_bundle_applies_topup_mapping_validation() {
+        let summary = verify_export_bundle(topups_export_bundle()).unwrap();
+        assert!(summary.contains("top_ups: 4 rows"));
+
+        let invalid = topups_export_bundle().replace("\"pending\"", "\"refunded\"");
+        let err = verify_export_bundle(&invalid).unwrap_err();
+        assert!(err.contains("unsupported status \"refunded\""));
+    }
+
+    #[test]
     fn verify_d1_sql_executes_schema_and_sql() {
         let temp = unique_temp_dir("verify-d1-sql");
         let schema = temp.join("schema.sql");
@@ -2597,6 +2877,72 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
         assert_eq!(sql_literal(&object), "'{\"nested\":\"yes\"}'");
     }
 
+    fn topups_export_bundle() -> &'static str {
+        r#"{
+          "format": "cinatoken-sqlite-export-v1",
+          "tables": {
+            "top_ups": {
+              "missing": false,
+              "columns": [
+                "id", "user_id", "amount", "money", "trade_no",
+                "payment_method", "payment_provider", "create_time",
+                "complete_time", "status"
+              ],
+              "rows": [
+                {
+                  "id": 101,
+                  "user_id": 1,
+                  "amount": 1000,
+                  "money": 10.0,
+                  "trade_no": "topup-pending",
+                  "payment_method": "alipay",
+                  "payment_provider": "",
+                  "create_time": 1710000000,
+                  "complete_time": 0,
+                  "status": "pending"
+                },
+                {
+                  "id": 102,
+                  "user_id": 1,
+                  "amount": 2000,
+                  "money": 20.0,
+                  "trade_no": "topup-success",
+                  "payment_method": "stripe",
+                  "payment_provider": "stripe",
+                  "create_time": 1710000100,
+                  "complete_time": 1710000110,
+                  "status": "success"
+                },
+                {
+                  "id": 103,
+                  "user_id": 1,
+                  "amount": 3000,
+                  "money": 30.0,
+                  "trade_no": "topup-failed",
+                  "payment_method": "creem",
+                  "payment_provider": "creem",
+                  "create_time": 1710000200,
+                  "complete_time": 1710000210,
+                  "status": "failed"
+                },
+                {
+                  "id": 104,
+                  "user_id": 1,
+                  "amount": 4000,
+                  "money": 40.0,
+                  "trade_no": "topup-expired",
+                  "payment_method": "wxpay",
+                  "payment_provider": "epay",
+                  "create_time": 1710000300,
+                  "complete_time": 1710000310,
+                  "status": "expired"
+                }
+              ]
+            }
+          }
+        }"#
+    }
+
     fn unique_temp_dir(name: &str) -> PathBuf {
         env::temp_dir().join(format!(
             "cinatoken-migration-{name}-{}-{}",
@@ -2616,7 +2962,10 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
         execute_sqlite(&source, P0_SOURCE_FIXTURE);
         execute_sqlite(
             &target,
-            &format!("{D1_CORE_SCHEMA}\n{D1_SCHEMA_PARITY}\n{P0_TARGET_ROWS_FIXTURE}"),
+            &format!(
+                "{D1_CORE_SCHEMA}\n{D1_TOPUPS_SCHEMA}\n{D1_SCHEMA_PARITY}\n\
+                 {D1_TOPUPS_CREDITED}\n{D1_TOPUPS_PAYMENT_PROVIDER}\n{P0_TARGET_ROWS_FIXTURE}"
+            ),
         );
         let config = ReconcileConfig {
             source,
@@ -2653,5 +3002,26 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn sqlite_scalar(path: &Path, sql: &str) -> String {
+        let output = Command::new("python")
+            .arg("-c")
+            .arg(
+                "import sqlite3, sys; connection = sqlite3.connect(sys.argv[1]); \
+                 value = connection.execute(sys.argv[2]).fetchone()[0]; \
+                 connection.close(); print(value)",
+            )
+            .arg(path)
+            .arg(sql)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "SQLite query failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 }

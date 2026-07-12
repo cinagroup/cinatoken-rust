@@ -1,6 +1,6 @@
 # Data Migration Runbook
 
-Date: 2026-07-10
+Date: 2026-07-12
 
 Status: production data migration control document for moving authoritative
 state from the Go/VPS deployment to D1-backed Rust/Cloudflare deployment.
@@ -59,6 +59,12 @@ tables to set `migrations_dir = "migrations/d1"`; it also requires a contiguous
 `0020_realtime_billing_reservation_leases.sql`. The SQLite verifier applies all 20
 migrations by default and requires 26 target tables. A real local Wrangler D1
 apply completed 20/20 on 2026-07-10.
+
+The audit also verifies `wrangler.d1-local.toml`, the narrow local management
+shape used by the managed Realtime suite. Wrangler 4.103 can leave a
+multi-statement non-JSON `d1 execute` process alive; fixture commands therefore
+use `--json`, require every result to report success, and run only while the
+managed workerd process is stopped.
 
 This evidence is local only. Wrangler was not authenticated for remote work in
 this validation window, so no remote staging migration state, database target,
@@ -153,7 +159,7 @@ Minimum table-family inventory:
 | `Model`, `Vendor`, `PrefillGroup`, `Setup` | Wave 0/2 | Required before Rust admin can own model/vendor/operator views. |
 | `Log`, `QuotaData` | Wave 1/2 | Import only recent queryable windows unless archive strategy is ready. |
 | `Redemption` | Wave 2/3 | D1 schema/import support exists in `0012_redemptions.sql` for admin code management; public paid redemption/top-up traffic is still blocked until payment idempotency and reconciliation are proven. |
-| `TopUp` | Wave 3 | Blocked until payment idempotency and reconciliation are proven. |
+| `TopUp` | Wave 3 | `top_ups -> topups` import and P0 reconciliation are implemented for pending/success/failed/expired, provider mapping, credited backfill, idempotent duplicate import, and user relationships. Production source snapshot, remote D1 import, webhook replay, and paid reconciliation remain blocking. |
 | `SubscriptionPlan`, `SubscriptionOrder`, `UserSubscription`, `SubscriptionPreConsumeRecord` | Wave 3 | Blocked until billing/payment ownership is approved. |
 | `PasskeyCredential`, `TwoFA`, `TwoFABackupCode` | Wave 4 | Migrate only with secure hash/secret handling; otherwise force re-auth/reset. |
 | `CustomOAuthProvider`, `UserOAuthBinding` | Wave 4 | D1 schema/import support exists in migration 0010; production traffic still requires provider secret policy evidence, redirect/SSRF checks, callback state replay checks, and account-binding smoke. |
@@ -253,7 +259,7 @@ bun run reconcile:migration -- `
 ```
 
 `reconcile:migration` is a hard gate for `users`, `tokens`, `channels`,
-`abilities`, and `options`. The versioned
+`abilities`, `options`, and `topups`. The versioned
 `cinatoken-source-to-d1-reconciliation-v1` manifest records, per table:
 
 - row count and logical primary-key minimum/maximum;
@@ -261,7 +267,10 @@ bun run reconcile:migration -- `
 - up to 1,000 deterministic samples selected by a SHA-256 of the logical key;
 - logical-key uniqueness/null checks and non-empty option keys;
 - `tokens.user_id -> users.id` and
-  `abilities.channel_id -> channels.id` relationship checks.
+  `abilities.channel_id -> channels.id` relationship checks;
+- `top_ups` string status to D1 integer mapping (`pending=0`, `success=1`,
+  `failed=2`, `expired=3`), provider-domain validation, success-only
+  `credited=1`, and `topups.user_id -> users.id` checks.
 
 The canonical projection mirrors import semantics: `abilities.group` maps to
 `group_name`, source null/missing values use target D1 defaults where the
@@ -276,6 +285,12 @@ returns a non-zero process exit and must block staging/cutover.
 
 Review the SQL before applying it to D1. Use `--truncate` only for a fresh
 target or a deliberate overwrite with documented rollback approval.
+
+Topup imports use `ON CONFLICT DO NOTHING` rather than replacing existing D1
+orders. This protects any order already created or settled by the Rust payment
+path. A conflict is not reconciliation success by itself: row counts, canonical
+hashes, credited/status integrity, and webhook replay must still pass before
+paid traffic moves.
 
 ## Apply To D1
 

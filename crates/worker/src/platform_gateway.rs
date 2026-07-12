@@ -481,8 +481,12 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             && realtime_session_billing_settlement_staging_smoke_enabled;
     let realtime_session_platform_header_boundary_compiled =
         realtime_session_platform_header_boundary_compiled();
-    let realtime_session_upstream_bridge_compiled = false;
-    let realtime_session_billing_settlement_compiled = false;
+    // The managed local workerd suite now exercises the complete upstream
+    // WebSocket bridge and D1 settlement/replay path. These fields describe
+    // compiled implementation, while the environment gates and remote D1/DO
+    // evidence below continue to control cutover readiness.
+    let realtime_session_upstream_bridge_compiled = true;
+    let realtime_session_billing_settlement_compiled = true;
     let realtime_session_platform_smoke_ready = is_realtime_session_platform_smoke_ready(
         realtime_sessions_do_available,
         realtime_session_gateway_enabled,
@@ -2732,7 +2736,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_v1_cutover_ready_stays_false_until_bridge_and_billing_land() {
+    fn realtime_v1_cutover_ready_requires_every_runtime_and_environment_gate() {
         assert!(realtime_v1_ready_with_flags([true; 35]));
 
         for false_gate in 0..35 {

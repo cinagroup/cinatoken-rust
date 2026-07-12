@@ -181,7 +181,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Cache traits for string KV, expiring counters, and rate limiting.
 - Upstash Redis REST client abstraction with Worker fetch transport.
 - Runtime status feature detection for D1 and Upstash Redis configuration.
-- Optional Upstash-backed relay token/IP rate limiting.
+- Workers-native token/IP/route-family admission through environment-scoped
+  Rate Limiting bindings, with an explicit legacy Upstash compatibility mode.
 - Relay cache key helpers, versioned token/channel cache record wrappers, and
   Upstash-backed read-through caching.
 - Relay channel cache keys include endpoint provider family to avoid

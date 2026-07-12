@@ -3148,7 +3148,8 @@ async fn handle_openai_realtime_gateway(req: Request, env: Env) -> WorkerResult<
             Err(response) => return response,
         };
     if let Err(response) =
-        crate::relay::enforce_relay_rate_limits(&env, &auth, client_ip.as_deref()).await
+        crate::relay::enforce_relay_rate_limits(&env, &auth, client_ip.as_deref(), "route:realtime")
+            .await
     {
         return response;
     }

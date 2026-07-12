@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const replayTool = join(root, "tools", "smoke_realtime_upstream_replay.mjs");
 const localWranglerConfig = join(root, "wrangler.realtime-local.toml");
+const localD1WranglerConfig = join(root, "wrangler.d1-local.toml");
 const localWranglerCli = join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const nodeBinary = Bun.which("node") || process.execPath;
 const defaultDatabase = "cinatoken-rust-db";
@@ -67,6 +68,11 @@ function parseArgs(argv) {
   if (!selfTest && !flags.has("confirm-local")) {
     throw new Error("local Realtime suite requires --confirm-local");
   }
+  if (!selfTest && !flags.has("start-worker")) {
+    throw new Error(
+      "local Realtime suite requires --start-worker so D1 fixtures are changed only while workerd is stopped",
+    );
+  }
   return {
     url,
     database,
@@ -83,7 +89,6 @@ async function runSuite(options) {
   let worker = null;
   const results = [];
   try {
-    worker = options.startWorker ? await startLocalWorker(options.url) : null;
     const optionSnapshot = await readOptionSnapshot(options.database, tempDir);
     for (let index = 0; index < options.scenarios.length; index += 1) {
       const scenario = options.scenarios[index];
@@ -97,8 +102,14 @@ async function runSuite(options) {
       await Bun.write(cleanupFile, cleanupSql(fixtureId, optionSnapshot));
       try {
         await executeD1File(options.database, seedFile);
+        worker = await startLocalWorker(options.url);
         results.push(await runReplay(options.url, scenario, fixtureId, tokenKey));
       } finally {
+        if (worker) {
+          worker.kill();
+          await worker.exited;
+          worker = null;
+        }
         await executeD1File(options.database, cleanupFile);
       }
     }
@@ -117,7 +128,7 @@ async function runSuite(options) {
     scenarios: results,
     fixtureCleanup: true,
     billingOptionsRestored: true,
-    managedWorker: Boolean(worker),
+    managedWorker: true,
   };
 }
 
@@ -257,15 +268,22 @@ function transactionalSql(statements) {
 }
 
 async function executeD1File(database, file) {
-  await run(nodeBinary, [
+  const result = await runJson(nodeBinary, [
     localWranglerCli,
     "d1",
     "execute",
     database,
+    "--config",
+    localD1WranglerConfig,
     "--local",
+    "--json",
     "--file",
     file,
   ]);
+  const entries = Array.isArray(result) ? result : [result];
+  if (entries.length === 0 || entries.some((entry) => entry.success !== true)) {
+    throw new Error(`local D1 file execution failed for ${file}`);
+  }
 }
 
 async function executeD1JsonFile(database, file) {
@@ -274,6 +292,8 @@ async function executeD1JsonFile(database, file) {
     "d1",
     "execute",
     database,
+    "--config",
+    localD1WranglerConfig,
     "--local",
     "--json",
     "--file",
@@ -281,17 +301,6 @@ async function executeD1JsonFile(database, file) {
   ]);
   const entries = Array.isArray(result) ? result : [result];
   return entries.flatMap((entry) => (Array.isArray(entry.results) ? entry.results : []));
-}
-
-async function run(command, args) {
-  const child = Bun.spawn([command, ...args], {
-    cwd: root,
-    stdin: "ignore",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const exitCode = await child.exited;
-  if (exitCode !== 0) throw new Error(`${command} ${args.join(" ")} failed with exit code ${exitCode}`);
 }
 
 async function runJson(command, args) {

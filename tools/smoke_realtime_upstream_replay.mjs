@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+
 const defaultModel = "gpt-4o-realtime-preview";
 const defaultProbe = "cinatoken realtime upstream replay probe";
 const defaultTimeoutMs = 10_000;
@@ -363,7 +366,19 @@ async function runLiveReplay(options, plan) {
   };
   const server = options.externalMock ? null : startMockServer(options, stats);
   try {
-    const ws = await openWebSocket(plan.workerRealtimeUrl, plan.protocols, options.timeoutMs);
+    let ws;
+    try {
+      ws = await openWebSocket(plan.workerRealtimeUrl, plan.protocols, options.timeoutMs);
+    } catch (error) {
+      const diagnosis = await diagnoseHandshake(
+        plan.workerRealtimeUrl,
+        options.apiKey,
+        plan.protocols,
+      );
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; handshake diagnosis: ${diagnosis}`,
+      );
+    }
     const outcomePromise = waitForBridgeEventAndClose(ws, options.timeoutMs);
     let statusFrame = null;
     let usageFrame = null;
@@ -413,6 +428,50 @@ async function runLiveReplay(options, plan) {
       server.stop(true);
     }
   }
+}
+
+async function diagnoseHandshake(url, apiKey, protocols) {
+  const diagnosticUrl = new URL(url);
+  diagnosticUrl.protocol = diagnosticUrl.protocol === "wss:" ? "https:" : "http:";
+  const requestFn = diagnosticUrl.protocol === "https:" ? httpsRequest : httpRequest;
+  return new Promise((resolve) => {
+    const request = requestFn(diagnosticUrl, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "Y2luYXRva2VuLXByb2JlIQ==",
+        "Sec-WebSocket-Protocol": protocols.join(", "),
+      },
+    });
+    request.on("upgrade", (response, socket) => {
+      socket.destroy();
+      resolve(`HTTP ${response.statusCode ?? 101} upgraded during diagnostic retry`);
+    });
+    request.on("response", (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        if (body.length < 2_048) body += chunk;
+      });
+      response.on("end", () => {
+        resolve(
+          `HTTP ${response.statusCode ?? 0} ${redactSensitiveText(body.slice(0, 2_048), [apiKey])}`.trim(),
+        );
+      });
+    });
+    request.on("error", (error) => resolve(`diagnostic request failed: ${error.message}`));
+    request.end();
+  });
+}
+
+function redactSensitiveText(value, secrets) {
+  let redacted = String(value);
+  for (const secret of secrets) {
+    if (secret) redacted = redacted.replaceAll(secret, "<redacted>");
+  }
+  return redacted;
 }
 
 async function requestRuntimeStatus(ws, options) {

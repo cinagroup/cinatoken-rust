@@ -46,9 +46,29 @@ not_found_handling = "single-page-application"
 [ai]
 binding = "AI"
 
+# Relay admission limits use Cloudflare's in-process Rate Limiting binding.
+# Namespace IDs are account-local numeric identifiers, not credentials or
+# provisioned resource IDs. Keep each environment/scope pair distinct.
+[[ratelimits]]
+name = "RELAY_TOKEN_RATE_LIMITER"
+namespace_id = "5100101"
+
+[ratelimits.simple]
+limit = 120
+period = 60
+
+[[ratelimits]]
+name = "RELAY_IP_RATE_LIMITER"
+namespace_id = "5100102"
+
+[ratelimits.simple]
+limit = 600
+period = 60
+
 [vars]
 ENVIRONMENT = "development"
 FRONTEND_BASE_URL = "http://localhost:3000"
+RELAY_RATE_LIMIT_BACKEND = "native"
 AI_GATEWAY_ID = ""
 CLOUDFLARE_ACCOUNT_ID = ""
 RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"
@@ -184,9 +204,26 @@ not_found_handling = "single-page-application"
 [env.staging.ai]
 binding = "AI"
 
+[[env.staging.ratelimits]]
+name = "RELAY_TOKEN_RATE_LIMITER"
+namespace_id = "5100201"
+
+[env.staging.ratelimits.simple]
+limit = 120
+period = 60
+
+[[env.staging.ratelimits]]
+name = "RELAY_IP_RATE_LIMITER"
+namespace_id = "5100202"
+
+[env.staging.ratelimits.simple]
+limit = 600
+period = 60
+
 [env.staging.vars]
 ENVIRONMENT = "staging"
 FRONTEND_BASE_URL = ""
+RELAY_RATE_LIMIT_BACKEND = "native"
 AI_GATEWAY_ID = ""
 CLOUDFLARE_ACCOUNT_ID = ""
 RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"
@@ -322,9 +359,26 @@ not_found_handling = "single-page-application"
 [env.production.ai]
 binding = "AI"
 
+[[env.production.ratelimits]]
+name = "RELAY_TOKEN_RATE_LIMITER"
+namespace_id = "5100301"
+
+[env.production.ratelimits.simple]
+limit = 120
+period = 60
+
+[[env.production.ratelimits]]
+name = "RELAY_IP_RATE_LIMITER"
+namespace_id = "5100302"
+
+[env.production.ratelimits.simple]
+limit = 600
+period = 60
+
 [env.production.vars]
 ENVIRONMENT = "production"
 FRONTEND_BASE_URL = ""
+RELAY_RATE_LIMIT_BACKEND = "native"
 AI_GATEWAY_ID = ""
 CLOUDFLARE_ACCOUNT_ID = ""
 RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"

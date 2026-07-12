@@ -1,0 +1,15 @@
+# Local-only D1 management configuration.
+#
+# Wrangler 4.103 keeps `d1 execute` alive after completing SQL when the active
+# config also declares Rate Limiting bindings. Runtime smoke still uses
+# wrangler.realtime-local.toml; this narrow config keeps schema/fixture commands
+# deterministic without changing the database identity or remote environments.
+name = "cinatoken-rust-d1-local"
+main = "crates/worker/build/worker/shim.mjs"
+compatibility_date = "2026-06-24"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cinatoken-rust-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations/d1"

@@ -9739,3 +9739,72 @@ real provider and Cloudflare staging traffic, long-session hibernation and
 eviction, reconnect, alarm/retry recovery, concurrent multi-response
 no-double-charge, upstream abort and client-send failure injection, deployed
 traces/SLOs, compatibility-date parity, canary, and rollback.
+
+### 22.157 2026-07-12 Native Relay Admission And Topup Data Continuity
+
+This increment closes two implementation gaps found by a fresh Go/Rust,
+cinaVibeSDK, and frontend audit. It does not close remote production gates.
+
+Workers-native relay admission:
+
+- `RELAY_RATE_LIMIT_BACKEND=native` is explicit in development, staging,
+  production, and the isolated Realtime runtime config. Each environment has
+  distinct token and IP namespace IDs with 120/minute and 600/minute limits.
+- The Worker calls the binding after token authentication and before channel
+  selection. Keys use internal token/user IDs plus route family; IP keys store
+  a SHA-256 fingerprint rather than the raw address. Missing bindings,
+  malformed methods, rejected Promises, and malformed outcomes fail closed.
+- `worker` 0.5 expects a `RateLimiter` constructor while current workerd exposes
+  `Ratelimit`. A narrow runtime adapter validates and calls `limit()` without an
+  unchecked class-name cast. The rest of the relay remains strongly typed.
+- Legacy Upstash counter limits remain only for an explicit `upstash` backend
+  or old deployments with legacy limit vars and no backend. New tracked
+  environments have no Upstash rate-limit network hop.
+- `tools/audit_native_rate_limit_config.mjs` proves environment coverage,
+  namespace separation, limit/period values, and explicit backend selection.
+- `tools/verify_wrangler_dry_run.mjs` requires Wrangler's completion marker and
+  exact native binding/backend evidence. It also contains Wrangler 4.103.0's
+  known post-completion handle leak without treating pre-completion hangs as a
+  success. The real dry-run passed with an 8,360.58 KiB raw / 2,928.06 KiB
+  gzip upload and both expected limits.
+
+Runtime evidence:
+
+- The managed Realtime suite now changes D1 fixtures only while workerd is
+  stopped. Every scenario follows seed -> cold Worker start -> replay -> Worker
+  stop -> cleanup. D1 commands use JSON mode and require all result entries to
+  succeed; `wrangler.d1-local.toml` keeps management bindings isolated.
+- WebSocket failures now run a credential-redacted upgrade diagnostic, which
+  exposed the workers-rs constructor mismatch instead of reporting only a
+  generic open failure.
+- All six scenarios passed again through native token/IP admission. The usage
+  scenario still recorded exactly one settlement write, replay marker, and
+  audit outcome with final quota 2,870 and delta 2,862.
+- Platform capabilities now report upstream bridge and billing settlement as
+  compiled. `realtime_session_v1_cutover_ready` remains environment-, D1-, DO-,
+  and settlement-write-gated; compiled does not mean production-approved.
+
+Topup data continuity:
+
+- The migration CLI accepts `topups` and maps source `top_ups` into D1
+  `topups`. It covers all Go statuses: pending=0, success=1, failed=2,
+  expired=3. Only success imports with `credited=1`.
+- Provider values are validated against epay, stripe, creem, waffo,
+  waffo_pancake, and balance. Old empty-provider rows derive a known provider
+  from the payment method or use epay for Epay-specific methods such as alipay
+  and wxpay.
+- Imports use `ON CONFLICT DO NOTHING`; an existing Rust order is never
+  overwritten by history. Canonical reconciliation now includes topup count,
+  logical key/hash, status/provider/credited domains, and user relationships.
+- Migration tests cover four statuses, invalid status/provider rejection,
+  duplicate import preservation, canonical drift, credited drift, and bundle
+  validation. The final migration suite passed 36/36.
+
+Audit result after this increment remains **NO-GO for full production**. The
+default frontend has 217 calls and zero missing Worker routes, but that metric
+does not prove provider semantics, imported data, or deployed browser flows.
+Highest remaining gaps are 33 deferred provider channel types, eight other
+source table families without complete import paths, provider-specific paid
+callback replay, Realtime eviction/reconnect evidence, WFP upload/readback,
+capacity/SLO/security drills, canary, rollback, and `cinatoken.com` cutover.
+The exposed Cloudflare credential was not used and must be revoked/rotated.

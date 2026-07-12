@@ -9,9 +9,26 @@ main = "crates/worker/build/worker/shim.mjs"
 compatibility_date = "2026-06-24"
 compatibility_flags = ["nodejs_compat"]
 
+[[ratelimits]]
+name = "RELAY_TOKEN_RATE_LIMITER"
+namespace_id = "5100101"
+
+[ratelimits.simple]
+limit = 120
+period = 60
+
+[[ratelimits]]
+name = "RELAY_IP_RATE_LIMITER"
+namespace_id = "5100102"
+
+[ratelimits.simple]
+limit = 600
+period = 60
+
 [vars]
 ENVIRONMENT = "development"
 FRONTEND_BASE_URL = "http://localhost:3000"
+RELAY_RATE_LIMIT_BACKEND = "native"
 AI_GATEWAY_ID = ""
 CLOUDFLARE_ACCOUNT_ID = ""
 RELAY_AI_GATEWAY_ROUTER_ENABLED = "false"

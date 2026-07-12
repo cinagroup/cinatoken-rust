@@ -3062,3 +3062,36 @@ bun run check
   complete `bun run check` repository/frontend/smoke/Wasm gate also passed. This
   does not claim real-authenticator or deployed Durable Object evidence; use
   the staging matrix in migration-plan section 22.155 before production.
+
+### Native Rate Limit And Topup Migration Evidence (2026-07-12)
+
+- `bun run check:cf:native-rate-limits` passed: six distinct namespace IDs
+  across development/staging/production, two bindings per environment, native
+  backend in every vars table, and matching isolated Realtime bindings.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed after
+  adding the runtime `Ratelimit.limit()` adapter. Only the two existing D1
+  repository dead-code warnings remain.
+- `bun run build:worker` passed with worker-build 0.1.14, wasm-bindgen 0.2.125,
+  and Bun-locked esbuild 0.28.1.
+- `bun tools/smoke_realtime_local_suite.mjs --start-worker --confirm-local
+  --json --base-id 920300` passed all six scenarios through native token/IP
+  admission. The managed suite cold-started workerd per scenario and restored
+  billing options and fixture rows after each stop.
+- The response usage scenario observed prompt/completion/total
+  1,200/350/1,550, cached/audio input/audio output 400/180/90, one settlement
+  write, one applied mutation, replay and audit recorded, final quota 2,870,
+  delta 2,862, and no retry.
+- `cargo test -p cinatoken-migration` passed 36/36 after the expired-status
+  correction. The implementation covers pending, success, failed, and expired
+  status, idempotent duplicate imports, invalid domains, canonical/credited
+  drift, and topup-user relationships.
+- `bun run check:cf:dry-run` passed against Wrangler 4.103.0. The reviewed
+  manifest reported an 8,360.58 KiB raw / 2,928.06 KiB gzip upload, token and
+  IP bindings at 120/60s and 600/60s, and the native backend. The wrapper
+  accepted success only after Wrangler's completion marker and terminated the
+  known post-completion residual process handles.
+
+This remains local evidence. Required remote evidence is authenticated staging
+binding readback, route-family 429 telemetry/load behavior, production-source
+topup count/hash, remote D1 import, provider callback replay, no-double-credit,
+paid reconciliation, and rollback. No exposed Cloudflare token was used.

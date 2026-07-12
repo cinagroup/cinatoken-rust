@@ -27,3 +27,12 @@ INSERT INTO abilities (
 INSERT INTO options (id, "key", value) VALUES
   (89, 'SystemName', 'CinaToken'),
   (88, 'ModelRatio', '{"gpt-other":2,"gpt-test":1}');
+
+INSERT INTO topups (
+  id, user_id, amount, money, trade_no, payment_method, payment_provider,
+  status, create_time, complete_time, credited
+) VALUES
+  (101, 1, 1000, 10.0, 'topup-pending', 'alipay', 'epay', 0, 1710000000, 0, 0),
+  (102, 1, 2000, 20.0, 'topup-success', 'stripe', 'stripe', 1, 1710000100, 1710000110, 1),
+  (103, 1, 3000, 30.0, 'topup-failed', 'creem', 'creem', 2, 1710000200, 1710000210, 0),
+  (104, 1, 4000, 40.0, 'topup-expired', 'wxpay', 'epay', 3, 1710000300, 1710000310, 0);

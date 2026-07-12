@@ -1,5 +1,13 @@
 # Layered Gateway Architecture — Implementation Scheme
 
+Reference provenance update (2026-07-12): cinaVibeSDK commit `918e974` is a
+TypeScript Workers and Agents SDK implementation; it has no Rust crate. The
+Rust gateway, Durable Objects, and WFP tenant in this repository are a
+language/runtime translation of its topology, with cinatoken-specific auth,
+billing, replay, and redaction invariants. Dynamic Dispatch and an external
+Durable Object namespace are bindings, but they are not ordinary Worker
+service bindings.
+
 > **Status:** Partially implemented · updated 2026-07-11 — the provider registry
 > (wired), the AI-Gateway cutover planner, the RealtimeSession DO substrate, and
 > the WFP dispatch layer have all landed behind env gates. See the **Status
@@ -21,6 +29,12 @@
 ---
 
 ## 0. TL;DR
+
+Relay admission is now native in every tracked environment. Separate Workers
+Rate Limiting namespaces enforce token and IP limits with route-family keys and
+hashed IP values. The legacy Upstash counter is an explicit compatibility
+backend, not a default hot-path dependency. Cloudflare staging still must prove
+429 telemetry, location-local/load behavior, and rollback.
 
 The 2026-07-04 draft proposed the right shape but was written against a stale
 tree and an assumed SDK surface. Re-grounded against the current repo, the plan

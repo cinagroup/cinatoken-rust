@@ -423,6 +423,8 @@ Minimum first-canary cases:
 | RELAY-JSON-006 | SiliconFlow chat/completions and FIM | SiliconFlow(40) | Direct `.cn`/configured root, model preserved, FIM empty message, usage settled |
 | RELAY-JSON-007 | SiliconFlow embeddings and rerank | SiliconFlow(40) | Batch response bounded; legacy/current rerank token envelope normalized and settled |
 | RELAY-JSON-008 | SiliconFlow image generations | SiliconFlow(40) | JSON response, non-empty images, minimum usage, effective `batch_size`/`n` fixed-price multiplier, no SSE |
+| RELAY-JSON-009 | Moonshot chat, completions, embeddings, rerank | Moonshot(25) | Direct provider root, mapped model preserved, Kimi K2.6 explicit temperature normalized, standard/nested cache usage settled |
+| RELAY-JSON-010 | Moonshot Messages and coding-plan chat/Messages | Moonshot(25) | Bearer-authenticated Claude wire shape, exact sentinel root, usage settled; embeddings/rerank sentinel fallthrough rejected before reserve |
 
 Pass criteria:
 
@@ -612,6 +614,8 @@ Minimum first-canary cases:
 | RELAY-SSE-004 | `POST /v1/messages` streaming | Anthropic usage events merged |
 | RELAY-SSE-005 | `POST /v1beta/models/{model}:streamGenerateContent` | Gemini latest usage metadata captured |
 | RELAY-SSE-006 | SiliconFlow chat and legacy completions | Direct-only SSE, final usage or documented estimate/refund, opaque model preserved |
+| RELAY-SSE-007 | Moonshot chat and legacy completions | Direct-only SSE; final OpenAI usage merges an earlier `choices[].usage.cached_tokens` event without losing cache settlement |
+| RELAY-SSE-008 | Moonshot Messages | Direct-only Anthropic SSE usage events merge under Anthropic cache semantics |
 
 Pass criteria:
 
@@ -1207,7 +1211,7 @@ Frontend cases:
 | FRONTEND-002 | Hard-refresh SPA routes | `/dashboard`, `/channels`, `/keys`, `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`, and `/profile` route fallback works |
 | FRONTEND-003 | API base URL/CORS policy | Same-origin or approved cross-origin credential policy works |
 | FRONTEND-004 | Bundle redaction scan | No secret values in static assets; public config allowlist documented |
-| FRONTEND-005 | Provider readiness on `/channels` | SiliconFlow type 40 shows Partial with exactly five routes; MokaAI type 44 remains Deferred with zero routes; API and UI agree |
+| FRONTEND-005 | Provider readiness on `/channels` | Moonshot type 25 shows Partial with chat, completions, embeddings, rerank, and Messages; SiliconFlow type 40 shows Partial with exactly five routes; MokaAI type 44 remains Deferred with zero routes; API and UI agree |
 
 Admin/auth cases:
 

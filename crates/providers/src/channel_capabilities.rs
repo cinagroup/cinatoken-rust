@@ -10,6 +10,7 @@ pub enum ChannelAdapterKind {
     CloudflareWorkersAi,
     DeepSeek,
     MistralOpenAi,
+    Moonshot,
     PerplexityOpenAi,
     SiliconFlowOpenAi,
     SubmodelOpenAi,
@@ -131,6 +132,13 @@ const DEEPSEEK_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::AnthropicMessages,
 ];
 const MISTRAL_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
+const MOONSHOT_ROUTES: &[ProviderRelayRoute] = &[
+    ProviderRelayRoute::ChatCompletions,
+    ProviderRelayRoute::Completions,
+    ProviderRelayRoute::Embeddings,
+    ProviderRelayRoute::Rerank,
+    ProviderRelayRoute::AnthropicMessages,
+];
 const PERPLEXITY_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
 const SILICONFLOW_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ChatCompletions,
@@ -360,10 +368,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         25,
         "Moonshot",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dual OpenAI and Claude adapter is not migrated"
+        Moonshot,
+        Partial,
+        MOONSHOT_ROUTES,
+        "direct-only OpenAI and Claude bridge is implemented"
     ),
     capability!(
         26,
@@ -727,7 +735,7 @@ mod tests {
         ));
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::AnthropicMessages),
-            vec![14, 43]
+            vec![14, 25, 43]
         );
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::Realtime),
@@ -739,8 +747,15 @@ mod tests {
     fn dedicated_route_sets_are_explicit() {
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::Rerank),
-            vec![34, 38, 40]
+            vec![25, 34, 38, 40]
         );
+        for route in MOONSHOT_ROUTES {
+            assert!(channel_supports_relay_route(25, *route));
+        }
+        assert!(!channel_supports_relay_route(
+            25,
+            ProviderRelayRoute::Responses
+        ));
         for route in SILICONFLOW_ROUTES {
             assert!(channel_supports_relay_route(40, *route));
         }

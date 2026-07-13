@@ -23,6 +23,7 @@ use cinatoken_providers::{
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
     mistral::apply_mistral_chat_request,
+    moonshot::{apply_moonshot_request, is_coding_plan_base, MoonshotRequestFormat},
     perplexity::apply_perplexity_chat_request,
     siliconflow::{
         apply_siliconflow_request, siliconflow_image_response_usage,
@@ -35,9 +36,10 @@ use cinatoken_relay::{
     apply_gemini_native_model_mapping, apply_model_mapping, clamp_i64_to_i32, csv_contains,
     first_channel_key, ip_allowlist_matches, is_auto_disable_status, is_retryable_status,
     mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
-    usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
-    CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
-    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL,
+    usage_summary_from_gemini_body, usage_summary_from_moonshot_body,
+    usage_summary_from_rerank_body, CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath,
+    RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES,
+    CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT,
     CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI,
     RELAY_CACHE_SCHEMA_VERSION,
 };
@@ -134,6 +136,8 @@ enum RelayProviderKind {
     DeepSeekOpenAi,
     DeepSeekMessages,
     MistralOpenAi,
+    MoonshotOpenAi,
+    MoonshotMessages,
     PerplexityOpenAi,
     SiliconFlowOpenAi,
     SubmodelOpenAi,
@@ -268,6 +272,13 @@ impl RelayEndpoint {
         {
             return RelayProviderKind::PerplexityOpenAi;
         }
+        if channel_type == CHANNEL_TYPE_MOONSHOT {
+            return match self.provider {
+                RelayProviderKind::OpenAiCompatible => RelayProviderKind::MoonshotOpenAi,
+                RelayProviderKind::AnthropicMessages => RelayProviderKind::MoonshotMessages,
+                provider => provider,
+            };
+        }
         if channel_type == CHANNEL_TYPE_SILICONFLOW
             && self.provider == RelayProviderKind::OpenAiCompatible
         {
@@ -299,6 +310,8 @@ impl RelayEndpoint {
             RelayProviderKind::DeepSeekOpenAi => RegistryProviderKind::DeepSeekOpenAi,
             RelayProviderKind::DeepSeekMessages => RegistryProviderKind::DeepSeekMessages,
             RelayProviderKind::MistralOpenAi => RegistryProviderKind::MistralOpenAi,
+            RelayProviderKind::MoonshotOpenAi => RegistryProviderKind::MoonshotOpenAi,
+            RelayProviderKind::MoonshotMessages => RegistryProviderKind::MoonshotMessages,
             RelayProviderKind::PerplexityOpenAi => RegistryProviderKind::PerplexityOpenAi,
             RelayProviderKind::SiliconFlowOpenAi => RegistryProviderKind::SiliconFlowOpenAi,
             RelayProviderKind::SubmodelOpenAi => RegistryProviderKind::SubmodelOpenAi,
@@ -330,6 +343,8 @@ impl RelayEndpoint {
             | RelayProviderKind::DeepSeekOpenAi
             | RelayProviderKind::DeepSeekMessages
             | RelayProviderKind::MistralOpenAi
+            | RelayProviderKind::MoonshotOpenAi
+            | RelayProviderKind::MoonshotMessages
             | RelayProviderKind::PerplexityOpenAi
             | RelayProviderKind::SubmodelOpenAi
             | RelayProviderKind::XaiOpenAi => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
@@ -1423,6 +1438,7 @@ async fn relay_endpoint_with_auth(
                         attempt_provider,
                         RelayProviderKind::OpenAiCompatible
                             | RelayProviderKind::DeepSeekOpenAi
+                            | RelayProviderKind::MoonshotOpenAi
                             | RelayProviderKind::SubmodelOpenAi
                             | RelayProviderKind::XaiOpenAi
                     )
@@ -2496,14 +2512,55 @@ fn channel_accepts_endpoint_request_shape(
     if channel.channel_type == CHANNEL_TYPE_SILICONFLOW {
         return request_body.is_some_and(|body| siliconflow_accepts_request_shape(endpoint, body));
     }
+    if channel.channel_type == CHANNEL_TYPE_MOONSHOT {
+        return request_body
+            .is_some_and(|body| moonshot_accepts_request_shape(endpoint, channel, body));
+    }
     true
 }
 
 fn is_direct_only_provider_channel(channel: &RelayChannel) -> bool {
     matches!(
         channel.channel_type,
-        CHANNEL_TYPE_SILICONFLOW | CHANNEL_TYPE_SUBMODEL
+        CHANNEL_TYPE_MOONSHOT | CHANNEL_TYPE_SILICONFLOW | CHANNEL_TYPE_SUBMODEL
     )
+}
+
+fn moonshot_accepts_request_shape(
+    endpoint: &RelayEndpoint,
+    channel: &RelayChannel,
+    body: &Value,
+) -> bool {
+    let has_model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(|model| !model.trim().is_empty());
+    let temperature_is_valid = body.get("temperature").map_or(true, |temperature| {
+        temperature.is_null() || temperature.as_f64().is_some()
+    });
+    if !has_model || !temperature_is_valid {
+        return false;
+    }
+    if is_coding_plan_base(channel.base_url.as_deref())
+        && !matches!(
+            endpoint.route,
+            ProviderRelayRoute::ChatCompletions | ProviderRelayRoute::AnthropicMessages
+        )
+    {
+        return false;
+    }
+    match endpoint.route {
+        ProviderRelayRoute::ChatCompletions | ProviderRelayRoute::AnthropicMessages => true,
+        ProviderRelayRoute::Completions => body.get("prompt").is_some_and(|prompt| {
+            prompt.is_string() || prompt.as_array().is_some_and(|prompts| !prompts.is_empty())
+        }),
+        ProviderRelayRoute::Embeddings => body.get("input").is_some_and(|input| !input.is_null()),
+        ProviderRelayRoute::Rerank => body
+            .get("documents")
+            .and_then(Value::as_array)
+            .is_some_and(|documents| !documents.is_empty()),
+        _ => false,
+    }
 }
 
 fn siliconflow_accepts_request_shape(endpoint: &RelayEndpoint, body: &Value) -> bool {
@@ -2708,6 +2765,7 @@ async fn execute_relay_attempt_plan(
                         attempt_provider,
                         RelayProviderKind::OpenAiCompatible
                             | RelayProviderKind::DeepSeekOpenAi
+                            | RelayProviderKind::MoonshotOpenAi
                             | RelayProviderKind::SubmodelOpenAi
                             | RelayProviderKind::XaiOpenAi
                     )
@@ -4396,7 +4454,7 @@ fn prepare_same_channel_direct_body(
     // `openai/gpt-oss-120b` are model names, not AI Gateway routing prefixes.
     if matches!(
         channel_type,
-        CHANNEL_TYPE_SILICONFLOW | CHANNEL_TYPE_SUBMODEL
+        CHANNEL_TYPE_MOONSHOT | CHANNEL_TYPE_SILICONFLOW | CHANNEL_TYPE_SUBMODEL
     ) {
         return Ok(None);
     }
@@ -5414,6 +5472,7 @@ async fn forward_relay_request(
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
+        | RelayProviderKind::MoonshotOpenAi
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
@@ -5424,6 +5483,9 @@ async fn forward_relay_request(
             forward_anthropic_messages(url, upstream_key, body, provider_headers).await
         }
         RelayProviderKind::DeepSeekMessages => {
+            forward_openai_compatible(url, upstream_key, channel, body).await
+        }
+        RelayProviderKind::MoonshotMessages => {
             forward_openai_compatible(url, upstream_key, channel, body).await
         }
         RelayProviderKind::GeminiNative => forward_gemini_native(url, upstream_key, body).await,
@@ -6432,6 +6494,7 @@ async fn response_usage_summary(
             RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
+                | RelayProviderKind::MoonshotOpenAi
                 | RelayProviderKind::PerplexityOpenAi
                 | RelayProviderKind::SiliconFlowOpenAi
                 | RelayProviderKind::SubmodelOpenAi
@@ -6465,6 +6528,10 @@ fn usage_summary_for_provider(
         RelayProviderKind::OpenAiCompatible if endpoint_path == "rerank" => {
             usage_summary_from_rerank_body(body)
         }
+        RelayProviderKind::MoonshotOpenAi if endpoint_path == "rerank" => {
+            usage_summary_from_rerank_body(body)
+        }
+        RelayProviderKind::MoonshotOpenAi => usage_summary_from_moonshot_body(body),
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
@@ -6472,9 +6539,9 @@ fn usage_summary_for_provider(
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => usage_summary_from_body(body),
-        RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
-            usage_summary_from_anthropic_body(body)
-        }
+        RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::DeepSeekMessages
+        | RelayProviderKind::MoonshotMessages => usage_summary_from_anthropic_body(body),
         RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(body),
     }
 }
@@ -6573,9 +6640,10 @@ async fn streaming_usage_summary(
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => SseUsageAccumulator::default(),
-        RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
-            SseUsageAccumulator::anthropic()
-        }
+        RelayProviderKind::MoonshotOpenAi => SseUsageAccumulator::moonshot(),
+        RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::DeepSeekMessages
+        | RelayProviderKind::MoonshotMessages => SseUsageAccumulator::anthropic(),
         RelayProviderKind::GeminiNative => SseUsageAccumulator::gemini(),
     };
 
@@ -6592,6 +6660,7 @@ async fn streaming_usage_summary(
             RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
+                | RelayProviderKind::MoonshotOpenAi
                 | RelayProviderKind::PerplexityOpenAi
                 | RelayProviderKind::SiliconFlowOpenAi
                 | RelayProviderKind::SubmodelOpenAi
@@ -8085,6 +8154,12 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         }
         RelayProviderKind::DeepSeekMessages => {
             apply_deepseek_request(body, DeepSeekRequestFormat::AnthropicMessages)
+        }
+        RelayProviderKind::MoonshotOpenAi => {
+            apply_moonshot_request(body, MoonshotRequestFormat::OpenAi)
+        }
+        RelayProviderKind::MoonshotMessages => {
+            apply_moonshot_request(body, MoonshotRequestFormat::AnthropicMessages)
         }
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::AnthropicMessages
@@ -9815,7 +9890,7 @@ mod tests {
         assert_eq!(endpoint.route.cache_family(), "route:rerank");
         assert_eq!(
             channel_types_for_relay_route(endpoint.route),
-            vec![34, 38, 40]
+            vec![25, 34, 38, 40]
         );
         assert!(!endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
@@ -11032,6 +11107,166 @@ mod tests {
             CHANNEL_TYPE_PERPLEXITY,
             ProviderRelayRoute::Embeddings
         ));
+    }
+
+    #[test]
+    fn moonshot_is_a_direct_only_dual_format_provider() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_MOONSHOT), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_MOONSHOT;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::MoonshotOpenAi
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::MoonshotOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://api.moonshot.cn/v1/chat/completions"
+        );
+
+        let mut messages = endpoint(true, None);
+        messages.route = ProviderRelayRoute::AnthropicMessages;
+        messages.provider = RelayProviderKind::AnthropicMessages;
+        messages.upstream_path = "messages".to_string();
+        assert_eq!(
+            messages.effective_provider(channel.channel_type),
+            RelayProviderKind::MoonshotMessages
+        );
+        assert_eq!(
+            messages.upstream_url(&channel),
+            "https://api.moonshot.cn/anthropic/v1/messages"
+        );
+
+        let mut body = json!({
+            "model": "kimi-k2.6",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0.2,
+            "stream": true
+        });
+        apply_provider_request_transform(&mut body, RelayProviderKind::MoonshotOpenAi);
+        assert_eq!(body["temperature"], 1.0);
+        cinatoken_relay::openai_compatible::apply_stream_options(
+            &mut body,
+            channel.channel_type,
+            true,
+        );
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert!(
+            prepare_same_channel_direct_body(&body, channel.channel_type, "chat/completions")
+                .unwrap()
+                .is_none()
+        );
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "kimi-k2.6"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("direct-only provider"));
+
+        for route in [
+            ProviderRelayRoute::ChatCompletions,
+            ProviderRelayRoute::Completions,
+            ProviderRelayRoute::Embeddings,
+            ProviderRelayRoute::Rerank,
+            ProviderRelayRoute::AnthropicMessages,
+        ] {
+            assert!(channel_supports_relay_route(CHANNEL_TYPE_MOONSHOT, route));
+        }
+        for route in [
+            ProviderRelayRoute::Responses,
+            ProviderRelayRoute::ImageGenerations,
+            ProviderRelayRoute::AudioSpeech,
+        ] {
+            assert!(!channel_supports_relay_route(CHANNEL_TYPE_MOONSHOT, route));
+        }
+    }
+
+    #[test]
+    fn moonshot_shape_and_coding_plan_guards_run_before_reserve() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_MOONSHOT), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_MOONSHOT;
+        let chat = ai_gateway_chat_endpoint_for_tests();
+
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&json!({
+                "model": "kimi-k2.6",
+                "messages": [{"role": "user", "content": "hello"}],
+                "temperature": 1
+            }))
+        ));
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&json!({
+                "model": "kimi-k2.6",
+                "messages": [{"role": "user", "content": "hello"}],
+                "temperature": "hot"
+            }))
+        ));
+
+        channel.base_url = Some("kimi-coding-plan".to_string());
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://api.kimi.com/coding/v1/chat/completions"
+        );
+        let mut embeddings = ai_gateway_chat_endpoint_for_tests();
+        embeddings.route = ProviderRelayRoute::Embeddings;
+        embeddings.upstream_path = "embeddings".to_string();
+        let embedding_body = json!({"model": "kimi-embedding", "input": "hello"});
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &embeddings,
+            Some(&embedding_body)
+        ));
+        assert!(embeddings.try_upstream_url(&channel).is_err());
+    }
+
+    #[test]
+    fn moonshot_usage_parser_handles_non_stream_and_nested_stream_cache_tokens() {
+        assert_eq!(
+            usage_summary_for_provider(
+                r#"{"usage":{"prompt_tokens":13,"completion_tokens":2,"total_tokens":15},"choices":[{"usage":{"cached_tokens":8}}]}"#,
+                RelayProviderKind::MoonshotOpenAi,
+                "chat/completions"
+            ),
+            UsageSummary {
+                prompt_tokens: 13,
+                completion_tokens: 2,
+                total_tokens: 15,
+                cached_tokens: 8,
+                ..UsageSummary::default()
+            }
+        );
+        let mut accumulator = SseUsageAccumulator::moonshot();
+        accumulator.push_chunk(
+            b"data: {\"choices\":[{\"usage\":{\"cached_tokens\":21}}]}\n\ndata: {\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"total_tokens\":12}}\n\n",
+        );
+        let usage = accumulator.finish();
+        assert_eq!(usage.total_tokens, 12);
+        assert_eq!(usage.cached_tokens, 21);
+        assert_eq!(
+            usage_summary_for_provider(
+                r#"{"usage":{"total_tokens":19}}"#,
+                RelayProviderKind::MoonshotOpenAi,
+                "rerank"
+            ),
+            UsageSummary {
+                prompt_tokens: 19,
+                total_tokens: 19,
+                ..UsageSummary::default()
+            }
+        );
     }
 
     #[test]

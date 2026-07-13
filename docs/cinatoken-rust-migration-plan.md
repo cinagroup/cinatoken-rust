@@ -10510,3 +10510,44 @@ Cloudflare credential and archive direct chat/completions JSON/SSE, FIM,
 embeddings batch/limits, both rerank token envelopes, image JSON and effective
 batch settlement, 4xx/429/5xx/timeout/malformed-body refunds, D1 audit
 correlation, frontend readiness, disable/rollback, and Go fallback evidence.
+
+### 22.171 2026-07-13 Dedicated Moonshot Dual-Format Adapter
+
+This increment migrates Moonshot channel type 25 without admitting it to the
+generic OpenAI adapter or claiming that Workers AI Kimi is the same credential
+and provider contract.
+
+Implemented locally:
+
+- A dedicated direct-only registry supports chat completions, legacy
+  completions, embeddings, rerank, and Anthropic Messages. Responses, images,
+  audio, Gemini-native, realtime, AI Gateway, and WFP fail before quota reserve.
+- Standard Moonshot roots use `/v1/...` for OpenAI shapes and
+  `/anthropic/v1/messages` for Messages; both forward the channel bearer key.
+  The four source coding-plan sentinels are limited to chat and Messages. Rust
+  deliberately does not copy the Go fallthrough that sends unsupported
+  embeddings/rerank or image requests to chat-completions URLs.
+- The request transform preserves mapped models and normalizes only an explicit
+  non-one `temperature` for `kimi-k2.6`. Moonshot Messages also applies the Go
+  default `max_tokens=8192` and the Kimi `-thinking` suffix contract.
+- Non-stream and SSE usage preserve the source-specific cached-token priority,
+  including an early `choices[].usage.cached_tokens` event followed by final
+  top-level usage. Rerank maps `usage.total_tokens` into prompt usage before
+  settlement. Messages retain Anthropic cache semantics.
+- Backend and frontend readiness expose type 25 as Partial with exactly five
+  routes. The capability registry now reports 16 Ready, 10 Partial, and 27
+  Deferred channel types.
+
+Parallel architecture/frontend audit refined the next local priorities. First,
+add a real Workerd `RealtimeSession` eviction/attachment-restoration lifecycle
+test that proves one fail-closed terminal event, idempotent refund/lease
+handoff, no replacement provider call, and a clean new bridge segment after
+reconnect. Second, repair Channel Test so endpoint and stream controls cannot
+claim tests the Worker currently ignores; make the probe capability-driven or
+label and constrain it to chat until the backend consumes the full contract.
+Neither local improvement may set remote Realtime or provider canary fields.
+
+Production remains **NO-GO**. A rotated Moonshot credential must be exercised
+in staging across both wire formats, JSON/SSE, coding-plan roots, nested cached
+usage, bounded embeddings/rerank, malformed/error/refund paths, audit and
+billing reconciliation, unsupported-route rejection, disable, and Go rollback.

@@ -434,6 +434,13 @@ pub fn usage_summary_from_anthropic_body(body: &str) -> UsageSummary {
         .unwrap_or_default()
 }
 
+pub fn usage_summary_from_moonshot_body(body: &str) -> UsageSummary {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return UsageSummary::default();
+    };
+    usage_summary_from_moonshot_value(&value).unwrap_or_default()
+}
+
 pub fn usage_summary_from_sse_stream(body: &str) -> UsageSummary {
     let mut accumulator = SseUsageAccumulator::default();
     accumulator.push_chunk(body.as_bytes());
@@ -442,6 +449,12 @@ pub fn usage_summary_from_sse_stream(body: &str) -> UsageSummary {
 
 pub fn usage_summary_from_anthropic_sse_stream(body: &str) -> UsageSummary {
     let mut accumulator = SseUsageAccumulator::anthropic();
+    accumulator.push_chunk(body.as_bytes());
+    accumulator.finish()
+}
+
+pub fn usage_summary_from_moonshot_sse_stream(body: &str) -> UsageSummary {
+    let mut accumulator = SseUsageAccumulator::moonshot();
     accumulator.push_chunk(body.as_bytes());
     accumulator.finish()
 }
@@ -486,6 +499,13 @@ impl SseUsageAccumulator {
     pub fn gemini() -> Self {
         Self {
             mode: SseUsageMode::Gemini,
+            ..Self::default()
+        }
+    }
+
+    pub fn moonshot() -> Self {
+        Self {
+            mode: SseUsageMode::Moonshot,
             ..Self::default()
         }
     }
@@ -551,6 +571,17 @@ impl SseUsageAccumulator {
                     self.latest = merge_anthropic_stream_usage(self.latest, summary);
                 }
             }
+            SseUsageMode::Moonshot => {
+                if let Some(summary) = usage_summary_from_moonshot_sse_data_lines(&self.data_lines)
+                {
+                    self.latest = merge_moonshot_stream_usage(self.latest, summary);
+                }
+                accumulate_openai_stream_text(
+                    &self.data_lines,
+                    &mut self.response_text,
+                    &mut self.tool_count,
+                );
+            }
             SseUsageMode::Gemini => {
                 if let Some(summary) = usage_summary_from_gemini_sse_data_lines(&self.data_lines) {
                     self.latest = summary;
@@ -566,6 +597,7 @@ enum SseUsageMode {
     #[default]
     OpenAi,
     Anthropic,
+    Moonshot,
     Gemini,
 }
 
@@ -665,6 +697,39 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         audio_output_tokens,
         is_anthropic_usage_semantic,
     })
+}
+
+fn usage_summary_from_moonshot_value(value: &Value) -> Option<UsageSummary> {
+    let mut summary = usage_summary_from_value(value).unwrap_or_default();
+    let top_level_usage = value.get("usage");
+    let cached_tokens = first_non_zero_i32(&[
+        top_level_usage
+            .map(|usage| nested_i32_field(usage, &["prompt_tokens_details"], &["cached_tokens"]))
+            .unwrap_or_default(),
+        top_level_usage
+            .map(|usage| nested_i32_field(usage, &["input_tokens_details"], &["cached_tokens"]))
+            .unwrap_or_default(),
+        value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| {
+                choices.iter().find_map(|choice| {
+                    choice
+                        .get("usage")
+                        .map(|usage| first_i32_field(usage, &["cached_tokens"]))
+                        .filter(|tokens| *tokens > 0)
+                })
+            })
+            .unwrap_or_default(),
+        top_level_usage
+            .map(|usage| first_i32_field(usage, &["cached_tokens"]))
+            .unwrap_or_default(),
+        top_level_usage
+            .map(|usage| first_i32_field(usage, &["prompt_cache_hit_tokens"]))
+            .unwrap_or_default(),
+    ]);
+    summary.cached_tokens = cached_tokens;
+    (summary != UsageSummary::default()).then_some(summary)
 }
 
 fn usage_summary_from_jina_rerank_value(value: &Value) -> Option<UsageSummary> {
@@ -796,6 +861,54 @@ fn usage_summary_from_sse_data_lines(
     } else {
         usage
     })
+}
+
+fn usage_summary_from_moonshot_sse_data_lines(data_lines: &[String]) -> Option<UsageSummary> {
+    if data_lines.is_empty() {
+        return None;
+    }
+    let payload = data_lines.join("\n");
+    let payload = payload.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    usage_summary_from_moonshot_value(&value)
+}
+
+fn merge_moonshot_stream_usage(previous: UsageSummary, current: UsageSummary) -> UsageSummary {
+    UsageSummary {
+        prompt_tokens: non_zero_or(current.prompt_tokens, previous.prompt_tokens),
+        completion_tokens: non_zero_or(current.completion_tokens, previous.completion_tokens),
+        total_tokens: non_zero_or(current.total_tokens, previous.total_tokens),
+        cached_tokens: non_zero_or(current.cached_tokens, previous.cached_tokens),
+        cache_creation_tokens: non_zero_or(
+            current.cache_creation_tokens,
+            previous.cache_creation_tokens,
+        ),
+        claude_cache_creation_5m_tokens: non_zero_or(
+            current.claude_cache_creation_5m_tokens,
+            previous.claude_cache_creation_5m_tokens,
+        ),
+        claude_cache_creation_1h_tokens: non_zero_or(
+            current.claude_cache_creation_1h_tokens,
+            previous.claude_cache_creation_1h_tokens,
+        ),
+        image_input_tokens: non_zero_or(current.image_input_tokens, previous.image_input_tokens),
+        image_output_tokens: non_zero_or(current.image_output_tokens, previous.image_output_tokens),
+        audio_input_tokens: non_zero_or(current.audio_input_tokens, previous.audio_input_tokens),
+        audio_output_tokens: non_zero_or(current.audio_output_tokens, previous.audio_output_tokens),
+        is_anthropic_usage_semantic: current.is_anthropic_usage_semantic
+            || previous.is_anthropic_usage_semantic,
+    }
+}
+
+fn non_zero_or(current: i32, previous: i32) -> i32 {
+    if current > 0 {
+        current
+    } else {
+        previous
+    }
 }
 
 /// Accumulate the streamed completion text and running tool-call count from one
@@ -1648,6 +1761,35 @@ mod tests {
     }
 
     #[test]
+    fn moonshot_usage_preserves_source_cached_token_precedence() {
+        let usage = usage_summary_from_moonshot_body(
+            r#"{
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 5,
+                    "total_tokens": 25,
+                    "input_tokens_details": {"cached_tokens": 9},
+                    "prompt_tokens_details": {"cached_tokens": 7},
+                    "prompt_cache_hit_tokens": 3
+                },
+                "choices": [{"usage": {"cached_tokens": 8}}]
+            }"#,
+        );
+        assert_eq!(usage.prompt_tokens, 20);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 25);
+        assert_eq!(usage.cached_tokens, 7);
+
+        let nested =
+            usage_summary_from_moonshot_body(r#"{"choices":[{"usage":{"cached_tokens":11}}]}"#);
+        assert_eq!(nested.cached_tokens, 11);
+
+        let top_level =
+            usage_summary_from_moonshot_body(r#"{"usage":{"prompt_tokens":5,"cached_tokens":4}}"#);
+        assert_eq!(top_level.cached_tokens, 4);
+    }
+
+    #[test]
     fn usage_summary_from_body_extracts_image_generation_usage() {
         assert_eq!(
             usage_summary_from_body(
@@ -2007,6 +2149,27 @@ mod tests {
                 ..UsageSummary::default()
             }
         );
+    }
+
+    #[test]
+    fn moonshot_sse_merges_nested_cache_event_with_final_usage_across_chunks() {
+        let stream = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"usage\":{\"cached_tokens\":111}}]}\n\n",
+            "data: {\"usage\":{\"prompt_tokens\":17,\"completion_tokens\":4,\"total_tokens\":21}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut accumulator = SseUsageAccumulator::moonshot();
+        for chunk in stream.as_bytes().chunks(13) {
+            accumulator.push_chunk(chunk);
+        }
+        let (usage, text, tools) = accumulator.into_parts();
+        assert_eq!(usage.prompt_tokens, 17);
+        assert_eq!(usage.completion_tokens, 4);
+        assert_eq!(usage.total_tokens, 21);
+        assert_eq!(usage.cached_tokens, 111);
+        assert_eq!(text, "hello");
+        assert_eq!(tools, 0);
+        assert_eq!(usage_summary_from_moonshot_sse_stream(stream), usage);
     }
 
     #[test]

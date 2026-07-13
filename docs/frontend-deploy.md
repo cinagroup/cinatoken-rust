@@ -247,10 +247,12 @@ Before marking frontend hosting complete:
    implemented routes.
 5. Scan the deployed artifact for secrets and localhost/cross-origin API URLs.
 6. Record desktop/mobile console errors and basic loading/performance evidence.
-7. On authenticated `/channels`, capture `SiliconFlow` as Partial with exactly
-   chat/completions, completions, embeddings, rerank, and image-generation
-   routes, while `MokaAI` remains Deferred with no routes. Correlate the view
-   with `GET /api/channel/provider-readiness` from the same deployment.
+7. On authenticated `/channels`, capture `Moonshot` as Partial with exactly
+   chat/completions, completions, embeddings, rerank, and Messages; capture
+   `SiliconFlow` as Partial with exactly chat/completions, completions,
+   embeddings, rerank, and image-generation routes; and keep `MokaAI` Deferred
+   with no routes. Correlate the view with
+   `GET /api/channel/provider-readiness` from the same deployment.
 
 The HTTP-only portions of items 1-2 have staging evidence. Rendered browser
 behavior and items 3-7 remain open because the current staging database is

@@ -847,7 +847,9 @@ provider path is outside the reviewed WFP path allowlist continue to fail before
 quota reserve.
 
 The safe same-channel Gateway-direct provider set is now OpenAI, Anthropic,
-DeepSeek, Mistral, Perplexity, and xAI. The explicit Deferred count is now 28.
+DeepSeek, Mistral, Perplexity, and xAI. The explicit Deferred count is now 27.
 SiliconFlow is implemented as a direct-only five-route adapter and does not
 enter this Gateway-direct set; existing WFP tenants also reject it before
-reserve. MokaAI remains Deferred pending hosted API evidence.
+reserve. Moonshot is likewise direct-only for its five audited OpenAI/Claude
+routes; its provider-native/coding-plan model IDs never enter Gateway prefix
+classification. MokaAI remains Deferred pending hosted API evidence.

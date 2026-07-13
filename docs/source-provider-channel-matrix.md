@@ -105,7 +105,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 22 | FastGPT | fastgpt.run/api/openapi | OpenAI (fallback) | openai | OpenAI-adaptor | C: app (OpenAI-shaped) |
 | 23 | Tencent | hunyuan.tencentcloudapi.com | Tencent | tencent | Dedicated (regional) | B: regional |
 | 24 | Gemini | generativelanguage.googleapis.com | Gemini | gemini | Dedicated (native) | A: Gemini native |
-| 25 | Moonshot | api.moonshot.cn | Moonshot | moonshot | Dedicated (Claude+OpenAI bridge) | B: dual-protocol |
+| 25 | Moonshot | api.moonshot.cn | Moonshot | moonshot | Dedicated Partial (direct Claude+OpenAI bridge) | Implemented locally: chat/completions, completions, embeddings, rerank, Messages; staging evidence open |
 | 26 | ZhipuV4 | open.bigmodel.cn | ZhipuV4 | zhipu_4v | Dedicated (regional) | B: regional |
 | 27 | Perplexity | api.perplexity.ai | Perplexity | perplexity | Dedicated (Sonar chat) | B: chat whitelist + token normalization |
 | 31 | LingYiWanWu | api.lingyiwanwu.com | OpenAI (fallback) | openai | OpenAI-adaptor | A: OpenAI core |
@@ -135,7 +135,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 56 | Replicate | api.replicate.com | Replicate | replicate | Dedicated (text+media) | D: media + text |
 | 57 | Codex | chatgpt.com | Codex | codex | Dedicated (subscription) | E: subscription credential |
 
-Rust implementation note (2026-07-13): channels 27, 42, 48, and 53 now have
+Rust implementation note (2026-07-13): channels 25, 27, 42, 48, and 53 now have
 dedicated, route-explicit adapters and remain outside the generic
 OpenAI-compatible set. Perplexity(27) exposes only Sonar chat completions with
 the Go field whitelist and token normalization; Agent Responses remains a
@@ -154,6 +154,17 @@ not yet manage an AI Gateway custom-provider contract, so Gateway/WFP transport
 is rejected before reserve. MokaAI(44) remains Deferred until an official or
 staging-verifiable hosted API contract exists. This is local implementation
 evidence only; live staging and billing evidence remain open under G3.
+
+Moonshot(25) is a direct-only dual-format adapter: OpenAI-shaped chat,
+completions, embeddings, and rerank use the provider `/v1` root, while
+Anthropic Messages uses `/anthropic/v1/messages`; both authenticate with the
+channel bearer key. The four source coding-plan sentinels are supported only
+for chat and Messages. Their source fallthrough of embeddings/rerank to chat is
+treated as a defect and fails closed, as does the source image URL fallthrough.
+The `kimi-k2.6` explicit non-one temperature normalization and nonstandard
+`choices[].usage.cached_tokens` stream envelope are fixture-tested. Existing AI
+Gateway/WFP paths do not own Moonshot provider configuration or credentials, so
+both transports are rejected before reserve.
 
 Channel type 0 (`Unknown`) and the trailing `Dummy` sentinel are counters, not
 real providers.
@@ -194,9 +205,9 @@ closed instead of falling through to the generic OpenAI adapter.
 
 The generic set is locked to source adapter dispatch by tests: 1, 3, 6, 7, 8,
 9, 10, 12, 13, 19, 20, 22, 31, and 47. Type 21 remains Deferred because Go
-resolves no text adapter. Types 27, 42, 43, 48, and 53 are Partial only for
+resolves no text adapter. Types 25, 27, 42, 43, 48, and 53 are Partial only for
 their explicit routes; unsupported routes fail before quota reserve. Types
-14/43 are the only native Messages candidates; types 34/38 are the rerank
+14/25/43 are the Messages candidates; types 25/34/38/40 are the rerank
 candidates; type 24 is the native Gemini candidate. Async task/media routing
 remains a separate authority and is not implied by this text-relay registry.
 

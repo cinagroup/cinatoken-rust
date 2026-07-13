@@ -630,14 +630,21 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond the currently implemented OpenAI,
-  Anthropic, Perplexity Sonar chat, direct-only SiliconFlow, Mistral, DeepSeek,
-  xAI, direct-only Submodel, Gemini-native, Workers AI, and rerank surfaces.
+  Anthropic, direct-only Moonshot OpenAI/Claude bridge, Perplexity Sonar chat,
+  direct-only SiliconFlow, Mistral, DeepSeek, xAI, direct-only Submodel,
+  Gemini-native, Workers AI, and rerank surfaces.
   SiliconFlow now has local FIM, completions, embeddings, rerank, image,
   response-bound, usage, and fixed-price image-count fixtures; close its G3
   staging evidence before canary. Keep MokaAI Deferred until an official or
   staging-verifiable hosted embeddings contract exists. A Cloudflare Gateway
   prefix or custom-provider possibility does not make a same-channel adapter
   ready without an explicit managed contract.
+- Close Moonshot G3 evidence for chat/completions JSON/SSE, embeddings, rerank,
+  Anthropic Messages JSON/SSE, coding-plan chat/Messages, Kimi K2.6 temperature
+  normalization, nested cached-token usage, unsupported image/fallthrough
+  rejection, billing/refunds, disable, and Go rollback. Keep type 25 off AI
+  Gateway and WFP until this repository owns an explicit managed provider
+  contract and credential lifecycle.
 - Deploy and attach the Rust outbound service `cinatoken-wfp-outbound` to the
   staging dispatch namespace. Store `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on
   that service; the tenant must receive only

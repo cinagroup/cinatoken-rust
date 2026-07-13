@@ -77,7 +77,22 @@ describe('channel provider relay readiness', () => {
       routes: [],
       reason: 'hosted provider contract remains unverified',
     }
+    const moonshot = {
+      channel_type: 25,
+      name: 'Moonshot',
+      adapter: 'moonshot',
+      readiness: 'partial' as const,
+      routes: [
+        { method: 'POST', path: '/v1/chat/completions' },
+        { method: 'POST', path: '/v1/completions' },
+        { method: 'POST', path: '/v1/embeddings' },
+        { method: 'POST', path: '/v1/rerank' },
+        { method: 'POST', path: '/v1/messages' },
+      ],
+      reason: 'direct-only dual-format implementation',
+    }
     const index = indexProviderReadiness([
+      moonshot,
       perplexity,
       siliconflow,
       mistral,
@@ -86,6 +101,17 @@ describe('channel provider relay readiness', () => {
       xai,
       submodel,
     ])
+    assert.equal(index.get(25), moonshot)
+    assert.deepEqual(
+      index.get(25)?.routes.map((route) => route.path),
+      [
+        '/v1/chat/completions',
+        '/v1/completions',
+        '/v1/embeddings',
+        '/v1/rerank',
+        '/v1/messages',
+      ]
+    )
     assert.equal(index.get(27), perplexity)
     assert.deepEqual(index.get(27)?.routes, [
       { method: 'POST', path: '/v1/chat/completions' },

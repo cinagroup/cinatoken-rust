@@ -3457,5 +3457,35 @@ rollback. No exposed Cloudflare token was used.
   implementation worktree based on `632311891f7a78d8768ec23a210d7cd93dd903b5`.
 - The capability registry now reports 28 Deferred channel types. No live
   SiliconFlow or Cloudflare credential was used; production remains **NO-GO**
-  pending credential rotation and archived provider-specific staging, billing,
-  authenticated frontend, and rollback evidence.
+pending credential rotation and archived provider-specific staging, billing,
+authenticated frontend, and rollback evidence.
+
+## 2026-07-13 Dedicated Moonshot Dual-Format Verification
+
+- The Go Moonshot, Claude helper, cached-token post-processing, rerank usage,
+  and coding-plan URL contracts were audited before finalizing type 25. Rust
+  exposes only chat completions, legacy completions, embeddings, rerank, and
+  Anthropic Messages; all other routes and existing AI Gateway/WFP transports
+  fail before quota reserve.
+- Provider 57/57 and relay 73/73 tests passed. Fixtures cover normal and
+  coding-plan URLs, unsupported-route rejection, Kimi K2.6 temperature,
+  Messages default max tokens and `-thinking`, exact cached-token precedence,
+  cross-event SSE cache preservation, rerank prompt usage, and direct-only
+  routing.
+- `cargo test -p cinatoken-worker --lib`: 599/599 passed. Worker tests cover
+  both provider kinds, Bearer forwarding selection, pre-reserve request shape,
+  special-plan rejection, route capability authority, Gateway/WFP exclusion,
+  stream options, non-stream usage, nested stream cache, and rerank usage.
+- Frontend channel/platform readiness passed 18/18. Type 25 is Partial with
+  exactly five routes; the registry reports 16 Ready, 10 Partial, and 27
+  Deferred channel types.
+- The complete `bun run check` gate passed, including three release Worker
+  builds, multi-service Workerd 7/7, frontend build/redaction/budget/lint/route
+  audits, 21-file D1 replay, workspace tests, and main/tenant/outbound wasm32
+  checks. `bun audit --json` returned an empty finding set.
+- Evidence anchor: full gate completed at `2026-07-13T05:14:43Z` against the
+  implementation worktree based on `cbded1f239f21be25284159186a7f43d8f116199`.
+  Only the two existing `d1_repositories.rs` dead-code warnings remained.
+- No live Moonshot or Cloudflare credential was used. Production remains
+  **NO-GO** pending credential rotation and archived dual-format staging,
+  billing, error/refund, authenticated frontend, disable, and rollback evidence.

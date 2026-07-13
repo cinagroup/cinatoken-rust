@@ -13,6 +13,8 @@ pub enum ProviderKind {
     DeepSeekOpenAi,
     DeepSeekMessages,
     MistralOpenAi,
+    MoonshotOpenAi,
+    MoonshotMessages,
     PerplexityOpenAi,
     SiliconFlowOpenAi,
     SubmodelOpenAi,
@@ -30,6 +32,7 @@ impl ProviderKind {
             Self::DeepSeekOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::DeepSeekMessages => Some(AiGatewayRouteKind::Anthropic),
             Self::MistralOpenAi => Some(AiGatewayRouteKind::Compat),
+            Self::MoonshotOpenAi | Self::MoonshotMessages => None,
             Self::PerplexityOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::SiliconFlowOpenAi => None,
             Self::SubmodelOpenAi => None,
@@ -110,6 +113,13 @@ impl ProviderRegistry {
             }
             ProviderKind::MistralOpenAi => {
                 crate::mistral::mistral_openai_url(endpoint.base_url, endpoint.endpoint_path)
+            }
+            ProviderKind::MoonshotOpenAi => {
+                crate::moonshot::moonshot_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
+            ProviderKind::MoonshotMessages => {
+                crate::moonshot::moonshot_messages_url(endpoint.base_url)
             }
             ProviderKind::PerplexityOpenAi => {
                 crate::perplexity::perplexity_openai_url(endpoint.base_url, endpoint.endpoint_path)
@@ -346,6 +356,49 @@ mod tests {
                 channel_type: 40,
                 base_url: None,
                 endpoint_path: "responses",
+                upstream_query: None,
+                gemini_route: None,
+            })
+            .unwrap_err(),
+            ProviderRouteError::UnsupportedProviderRoute
+        );
+    }
+
+    #[test]
+    fn registry_resolves_direct_only_moonshot_dual_format_routes() {
+        let openai = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::MoonshotOpenAi,
+            channel_type: 25,
+            base_url: None,
+            endpoint_path: "embeddings",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(openai.upstream_url, "https://api.moonshot.cn/v1/embeddings");
+        assert_eq!(openai.ai_gateway_route, None);
+
+        let messages = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::MoonshotMessages,
+            channel_type: 25,
+            base_url: Some("kimi-coding-plan"),
+            endpoint_path: "messages",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(
+            messages.upstream_url,
+            "https://api.kimi.com/coding/v1/messages"
+        );
+        assert_eq!(messages.ai_gateway_route, None);
+
+        assert_eq!(
+            ProviderRegistry::resolve(ProviderEndpoint {
+                provider: ProviderKind::MoonshotOpenAi,
+                channel_type: 25,
+                base_url: None,
+                endpoint_path: "images/generations",
                 upstream_query: None,
                 gemini_route: None,
             })

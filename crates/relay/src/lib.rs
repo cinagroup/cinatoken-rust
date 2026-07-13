@@ -20,11 +20,13 @@ pub use openai_compatible::{
     upstream_gemini_native_url, upstream_v1_url, usage_summary_from_anthropic_body,
     usage_summary_from_anthropic_sse_stream, usage_summary_from_body,
     usage_summary_from_gemini_body, usage_summary_from_gemini_sse_stream,
+    usage_summary_from_moonshot_body, usage_summary_from_moonshot_sse_stream,
     usage_summary_from_rerank_body, usage_summary_from_sse_stream, GeminiNativePath,
     SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ANTHROPIC,
     CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA,
-    CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL,
-    CHANNEL_TYPE_XAI, GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES, RERANK_CHANNEL_TYPES,
+    CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
+    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI, GEMINI_CHANNEL_TYPES, OPENAI_COMPATIBLE_CHANNEL_TYPES,
+    RERANK_CHANNEL_TYPES,
 };
 pub use retry::{
     is_auto_disable_status, is_retryable_status, parse_retry_times_env, RetryConfig,

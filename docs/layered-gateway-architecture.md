@@ -854,8 +854,10 @@ per request. Its target ownership is:
 3. D1 is the reservation and terminal financial CAS authority. A dedicated
    billing Queue carries bounded frozen-decision finalization events. The local
    consumer is idempotent, queue-name/payload-family checked per message, and
-   configured with environment-specific DLQs. The operator reconcile/DLQ replay
-   path is not implemented and remains a production gate.
+   configured with environment-specific DLQ/parking queues. D1 migration 0025
+   owns replayable/invalid incidents and generation leases. The operator route
+   only authorizes and requeues one stored event after root step-up; the primary
+   Queue consumer remains the only financial executor.
 4. Realtime Durable Objects remain scoped to long-lived WebSocket session
    coordination and hibernation. Their lease/retry collections are not a generic
    HTTP settlement service.
@@ -865,5 +867,26 @@ reservation-backed terminal decisions can now cross the dedicated default-off
 Queue. Producer failure uses the same idempotent D1 finalizer. This closes local
 consumer/replay mechanics, not response-lifetime proof: pre-bind ownership,
 client cancellation, buffered parse failure, remote Queue/DLQ readback, retry
-exhaustion, and reconcile remain open. Platform capabilities keep HTTP recovery
+exhaustion, parking retention alerts, and deployed reconcile proof remain open.
+Platform capabilities keep HTTP recovery
 cutover false until every runtime and evidence gate is approved.
+
+### Reconcile command flow
+
+```text
+environment DLQ
+  -> Rust DLQ consumer
+  -> D1 incident (valid frozen event or invalid digest only)
+  -> admin metadata list
+  -> root + fresh step-up + one incident claim
+  -> BILLING_QUEUE binding
+  -> primary Rust billing consumer
+  -> D1 financial CAS + audit
+  -> D1 incident resolution
+```
+
+This is a persisted command workflow, not a new global Billing Durable Object.
+It follows the cinaVibeSDK lesson that hibernation-safe coordination keeps
+durable state outside transient memory and uses internal bindings rather than a
+public HTTP loop. WFP tenant/outbound code never sees the incident ledger or
+acquires replay/settlement authority.

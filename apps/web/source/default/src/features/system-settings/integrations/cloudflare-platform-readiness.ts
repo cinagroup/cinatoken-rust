@@ -76,8 +76,11 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_billing_finalization_queue_available'
   | 'relay_billing_finalization_consumer_compiled'
   | 'relay_billing_finalization_dlq_contract_compiled'
+  | 'relay_billing_finalization_dlq_consumer_compiled'
   | 'relay_billing_finalization_replay_compiled'
   | 'relay_billing_finalization_reconcile_compiled'
+  | 'relay_billing_finalization_reconcile_enabled'
+  | 'relay_billing_finalization_reconcile_ready'
   | 'relay_billing_finalization_runtime_ready'
   | 'relay_billing_finalization_replay_staging_verified'
   | 'relay_billing_orphan_recovery_ready'
@@ -265,6 +268,7 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_billing_stream_error_usage_recovery_compiled,
     capabilities.relay_billing_finalization_consumer_compiled,
     capabilities.relay_billing_finalization_dlq_contract_compiled,
+    capabilities.relay_billing_finalization_dlq_consumer_compiled,
     capabilities.relay_billing_finalization_replay_compiled,
     capabilities.relay_billing_finalization_reconcile_compiled,
     capabilities.relay_billing_stream_lease_heartbeat_valid
@@ -388,7 +392,11 @@ export function buildPlatformReadinessSummary(
     ),
     verificationSignal(
       'relay-billing-finalization-replay',
-      capabilities.relay_billing_finalization_runtime_ready,
+      allReady(
+        capabilities.relay_billing_finalization_runtime_ready,
+        capabilities.relay_billing_finalization_reconcile_enabled,
+        capabilities.relay_billing_finalization_reconcile_ready
+      ),
       capabilities.relay_billing_finalization_replay_staging_verified
     ),
     verificationSignal(

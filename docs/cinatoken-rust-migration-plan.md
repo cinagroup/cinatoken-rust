@@ -11517,3 +11517,83 @@ DLQ retention/alerting, D1 ambiguity, client cancellation, settlement/recovery
 races, provider/accounting reconciliation, credential rotation, canary, and
 rollback evidence remain required. This is local E3/E4 evidence only;
 production remains **NO-GO**.
+
+### 22.188 2026-07-14 Billing Finalization DLQ Quarantine And Controlled Replay
+
+This increment closes the local operator-reconciliation implementation gap
+left by 22.187 while preserving one financial writer. It follows the
+cinaVibeSDK-derived ownership split: durable command state survives runtime
+hibernation in storage, internal work crosses Cloudflare bindings, and the HTTP
+control plane never becomes a second settlement engine.
+
+Implemented locally:
+
+- Migration `0025_relay_billing_finalization_incidents.sql` adds a D1 incident
+  ledger with immutable event identity, payload SHA-256, delivery count,
+  replay generation, bounded lease, attempts, terminal resolution, and error
+  code. The exact local chain is 25 contiguous migrations, 30 required tables,
+  123 explicitly checked incremental columns, and 23 key indexes.
+- The environment-specific DLQ consumer validates each message independently.
+  A valid frozen event is stored canonically as `replayable`; an invalid event
+  stores only a deterministic incident ID, payload digest, and classification.
+  Raw invalid payloads are not persisted. A duplicate event ID with a different
+  frozen payload is an identity conflict and is retried rather than replacing
+  the first event.
+- `GET /api/platform/relay/billing-finalization/incidents` is admin-only,
+  `no-store`, bounded to 50 rows, and omits event ID, reservation key, and
+  frozen payload. It exposes incident ID, event fingerprint, classification,
+  lifecycle counters, and bounded error/disposition metadata.
+- `POST .../:incident_id/replay` requires root role, a fresh secure-
+  verification marker, the explicit default-off reconcile gate, migration
+  readiness, `BILLING_QUEUE`, one exact lowercase 64-hex incident ID, and only
+  `{ "confirm_replay": true }`. It claims one D1 generation/lease, records a
+  redacted manage audit, sends the stored event through the Queue binding, and
+  returns `202 queued`. It accepts no event body, usage, quota, price, billing
+  expression, model, channel, or replacement routing input.
+- The primary billing consumer remains the only financial executor. It applies
+  the immutable event through existing D1 CAS/audit idempotency and then closes
+  the incident as `applied` or `idempotent_replay`. Completion failure retries
+  the Queue message; a repeated admin replay after resolution returns 409.
+- Every tracked environment keeps both
+  `RELAY_BILLING_FINALIZATION_QUEUE_ENABLED=false` and
+  `RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED=false`. Wrangler declares a
+  DLQ consumer and separate parking queue, while the config audit enforces exact
+  environment ownership and default-off posture.
+- Platform capabilities and the React/Bun operations panel now separate DLQ
+  consumer implementation, reconcile implementation, reconcile enablement,
+  runtime readiness, and staging proof. A local compiled bit or proof flag
+  cannot make runtime readiness true while configuration or D1 is absent.
+- The smoke tool now requires an explicit incident ID and a pre-verified root
+  session, caps each invocation to one event, emits no Cookie value, and expects
+  the asynchronous `202 queued` contract. It never accepts a frozen payload or
+  charge-affecting input.
+
+Local evidence:
+
+- Focused Rust billing tests pass 23/23, including stored-event digest and
+  incident-identity integrity checks before Queue replay.
+- Workerd proves valid/invalid DLQ quarantine, invalid-payload redaction,
+  unchanged accounting before replay, sanitized admin listing, root step-up,
+  one queue-mediated refund, one billing audit, one manage audit, terminal
+  incident resolution, and duplicate admin replay rejection.
+- Reconcile self-test passes 7/7; config, D1-chain, and SQLite replay audits
+  pass with the exact 0025 schema counts. Frontend readiness and production
+  build are covered by the broad release gate.
+- The complete `bun run check` gate passes: release main/tenant/outbound
+  Rust/Wasm builds, Workerd 19/19, Playground 1/1, frontend readiness 26/26,
+  bundle redaction/budget/lint/route audits (217 frontend calls, 322 Worker
+  routes, zero missing), Queue and D1 audits, local smoke contracts, workspace
+  tests, and all three wasm32 checks.
+
+Production acceptance remains separate from implementation. Cloudflare Queues
+provide at-least-once delivery, so duplicate convergence is mandatory and an
+ACK is not exactly-once proof. DLQ messages are retained for four days; the
+parking queue therefore needs authenticated readback, oldest-message/lag
+alerts, an owner response inside that window, and an external evidence archive.
+Staging must also prove retry exhaustion, D1 unavailability, event-identity
+conflict, lease expiry/concurrent operator claims, Queue send failure,
+completion ambiguity, settlement/recovery overlap, disable-first rollback, and
+complete provider/accounting reconciliation. No remote Queue, DLQ, parking
+queue, migration, credential, paid provider request, or deployment was used.
+Credential rotation and all existing G1-G8 gates remain mandatory; production
+remains **NO-GO**.

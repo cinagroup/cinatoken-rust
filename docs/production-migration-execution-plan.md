@@ -1068,9 +1068,33 @@ are archived, HTTP orphan recovery and production remain **NO-GO**.
 
 Implementation status on 2026-07-14: step 4's bounded frozen-decision event and
 step 5's default-off producer, per-message consumer, D1 CAS replay, unique audit
-marker, retry policy, and environment-specific DLQ contract are locally
+marker, retry policy, environment-specific DLQ/parking queues, migration-0025
+incident ledger, and root + step-up single-event reconcile command are locally
 implemented. Workerd proves matching duplicate ACK/no-double-mutation,
-cross-queue retry, and poison-message isolation. Step 5 remains Partial because
-the admin reconcile/DLQ replay workflow and remote lag/alert evidence are absent;
-the runtime/cutover predicate therefore stays false. Steps 1-3 and the deployed
-fault matrix in steps 6-7 also remain open.
+cross-queue retry, poison isolation, valid/invalid DLQ quarantine, redaction,
+authorization, queue-mediated replay, incident completion, and duplicate admin
+replay rejection. Step 5 remains Partial because authenticated remote resource
+readback, retry exhaustion, four-day-retention alerts, and the deployed fault
+drill are absent; both Queue and reconcile gates remain false and the runtime/
+cutover predicate stays false. Steps 1-3 and the deployed matrix in steps 6-7
+also remain open.
+
+### Step 5a: Staging Reconcile Promotion Order
+
+1. Rotate the exposed credential and verify the target account without storing
+   the replacement value. Apply migration 0025 while Queue and reconcile gates
+   remain false.
+2. Create and authenticate-read back the producer, primary consumer, DLQ,
+   DLQ consumer, and environment-specific parking queue. Archive batch, retry,
+   and dead-letter ownership without message payloads.
+3. Attach lag, oldest-message, DLQ-ingress, and reconcile-failure alerts. Name
+   an operator response that acts before Cloudflare's four-day retention.
+4. Enable Queue only for an isolated fixture. Prove normal, duplicate, retry-
+   exhaustion, D1 unavailable, and identity-conflict paths before enabling the
+   reconcile endpoint.
+5. Enable reconcile for one explicit incident. Require root plus fresh step-up,
+   `202 queued`, one manage audit, one financial CAS, terminal resolution, and
+   duplicate rejection. Disable reconcile immediately after the drill.
+6. Reconcile provider calls, user/token/channel quota, request count, ledger,
+   billing audit, manage audit, Queue attempts, incident state, and cleanup.
+   Any unexplained delta or raw payload/secret leakage is an immediate abort.

@@ -5818,8 +5818,23 @@ pub(crate) fn relay_billing_finalization_dlq_contract_compiled() -> bool {
     true
 }
 
+pub(crate) fn relay_billing_finalization_dlq_consumer_compiled() -> bool {
+    crate::relay_billing_queue::relay_billing_finalization_dlq_consumer_compiled()
+}
+
 pub(crate) fn relay_billing_finalization_reconcile_compiled() -> bool {
-    false
+    crate::relay_billing_reconcile::relay_billing_finalization_reconcile_compiled()
+}
+
+pub(crate) fn relay_billing_finalization_reconcile_enabled(env: &Env) -> bool {
+    crate::relay_billing_queue::relay_billing_finalization_reconcile_enabled(env)
+}
+
+pub(crate) fn relay_billing_finalization_reconcile_ready(env: &Env, d1_ready: bool) -> bool {
+    relay_billing_finalization_dlq_consumer_compiled()
+        && relay_billing_finalization_reconcile_compiled()
+        && relay_billing_finalization_reconcile_enabled(env)
+        && d1_ready
 }
 
 pub(crate) fn relay_billing_finalization_queue_enabled(env: &Env) -> bool {
@@ -5834,7 +5849,8 @@ pub(crate) fn relay_billing_finalization_runtime_ready(env: &Env, d1_ready: bool
         relay_billing_finalization_consumer_compiled(),
         relay_billing_finalization_dlq_contract_compiled(),
         relay_billing_finalization_replay_compiled(),
-        relay_billing_finalization_reconcile_compiled(),
+        relay_billing_finalization_dlq_consumer_compiled(),
+        relay_billing_finalization_reconcile_ready(env, d1_ready),
         d1_ready,
     )
 }
@@ -5846,7 +5862,8 @@ pub(crate) fn relay_billing_finalization_runtime_contract_ready(
     consumer_compiled: bool,
     dlq_contract_compiled: bool,
     replay_compiled: bool,
-    reconcile_compiled: bool,
+    dlq_consumer_compiled: bool,
+    reconcile_ready: bool,
     d1_ready: bool,
 ) -> bool {
     enabled
@@ -5854,7 +5871,8 @@ pub(crate) fn relay_billing_finalization_runtime_contract_ready(
         && consumer_compiled
         && dlq_contract_compiled
         && replay_compiled
-        && reconcile_compiled
+        && dlq_consumer_compiled
+        && reconcile_ready
         && d1_ready
 }
 

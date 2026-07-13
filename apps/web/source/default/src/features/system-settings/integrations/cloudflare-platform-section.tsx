@@ -472,13 +472,22 @@ function buildCapabilityGroups(
             : 'grey',
         },
         {
-          label: t('Relay billing Queue consumer and DLQ'),
+          label: t('Relay billing Queue consumer and DLQ contract'),
           description: t(
             'The consumer validates queue ownership per message, retries failures individually, and routes exhausted delivery attempts to an environment-specific dead-letter Queue.'
           ),
           ready:
             capabilities.relay_billing_finalization_consumer_compiled &&
             capabilities.relay_billing_finalization_dlq_contract_compiled,
+          readyLabel: t('Implemented'),
+          missingLabel: t('Not implemented'),
+        },
+        {
+          label: t('Relay billing DLQ consumer'),
+          description: t(
+            'Compiles the dedicated dead-letter Queue consumer used by reconciliation; runtime enablement and readiness remain separate.'
+          ),
+          ready: capabilities.relay_billing_finalization_dlq_consumer_compiled,
           readyLabel: t('Implemented'),
           missingLabel: t('Not implemented'),
         },
@@ -501,17 +510,42 @@ function buildCapabilityGroups(
           missingLabel: t('Not implemented'),
         },
         {
+          label: t('Relay billing reconciliation readiness'),
+          description: t(
+            'Ready only when the operator reconciliation gate is enabled and its runtime dependencies are available; staging replay proof is tracked separately.'
+          ),
+          ready:
+            capabilities.relay_billing_finalization_reconcile_enabled &&
+            capabilities.relay_billing_finalization_reconcile_ready,
+          readyLabel: t('Ready to verify'),
+          missingLabel:
+            capabilities.relay_billing_finalization_reconcile_enabled
+              ? t('Blocked')
+              : t('Disabled'),
+          missingVariant:
+            capabilities.relay_billing_finalization_reconcile_enabled
+              ? 'red'
+              : 'grey',
+        },
+        {
           label: t('Relay billing finalization replay proof'),
           description: t(
             'Requires the complete runtime contract and deployed duplicate-delivery, poison-message, and recovery-race evidence.'
           ),
           ready:
             capabilities.relay_billing_finalization_runtime_ready &&
+            capabilities.relay_billing_finalization_reconcile_enabled &&
+            capabilities.relay_billing_finalization_reconcile_ready &&
             capabilities.relay_billing_finalization_replay_staging_verified,
           readyLabel: t('Staging verified'),
-          missingLabel: !capabilities.relay_billing_finalization_runtime_ready
-            ? t('Runtime blocked')
-            : t('Awaiting staging proof'),
+          missingLabel:
+            !capabilities.relay_billing_finalization_reconcile_enabled
+              ? t('Reconciliation disabled')
+              : !capabilities.relay_billing_finalization_reconcile_ready
+                ? t('Reconciliation blocked')
+                : !capabilities.relay_billing_finalization_runtime_ready
+                  ? t('Runtime blocked')
+                  : t('Awaiting staging proof'),
         },
         {
           label: t('Relay billing orphan recovery'),

@@ -3960,3 +3960,61 @@ authenticated frontend, and rollback evidence.
   HTTP orphan recovery, and cutover remain false. No remote migration, Queue,
   DLQ, credential, provider request, or deployment was used. Production remains
   **NO-GO**.
+
+## 2026-07-14 Billing Finalization DLQ Reconcile Verification
+
+Scope: local implementation evidence for migration 0025, DLQ quarantine, D1
+incident claims, root step-up, single-event Queue replay, incident completion,
+capability/frontend readiness, and configuration auditing. No remote Cloudflare
+resource or credential was used.
+
+Commands and results:
+
+```powershell
+cargo test -p cinatoken-worker --lib relay_billing --quiet
+# 23 passed
+
+bun run check:relay-billing-finalization:reconcile-contract
+# 7 self-test checks passed
+
+bun run check:cf:billing-queue
+bun run check:d1:migration-config
+python tools/verify_sqlite.py
+# PASS; 25 migrations, 30 tables, 123 incremental columns, 23 key indexes
+
+bunx vitest run --config vitest.do.config.mjs `
+  -t "quarantines and queue-replays one billing DLQ incident under root step-up"
+# 1 passed
+```
+
+Observed contracts:
+
+- The runtime DLQ consumer ACKed one valid and one invalid message. The valid
+  frozen event was canonicalized into a replayable incident; the invalid event
+  retained no raw payload and only a SHA-256 fingerprint/classification.
+- User/token/request accounting remained unchanged while the incident was only
+  quarantined. The admin list returned bounded metadata without event ID,
+  reservation key, or payload.
+- Root replay without secure verification returned 403. Password step-up then
+  permitted exactly one `{ "confirm_replay": true }` command and returned
+  `202 queued` with replay generation 1.
+- The main billing Queue consumer applied the frozen refund exactly once,
+  inserted one billing audit, closed the incident as `resolved/applied`, and
+  preserved one redacted manage audit. A second admin replay returned 409.
+- The focused smoke client requires an explicit 64-hex incident ID, a pre-
+  verified root Cookie, and `--confirm-live`; it caps the run at one incident,
+  never prints the Cookie, and accepts no payload or pricing inputs.
+
+Evidence classification: local E3/E4 only. Queue and reconcile gates are false
+in every tracked environment. Authenticated remote migration 0025 application,
+Queue/DLQ/parking readback, retry exhaustion, D1/Queue fault injection,
+four-day-retention alert drill, provider/accounting reconciliation, credential
+rotation, canary, and rollback remain required. Production remains **NO-GO**.
+
+The complete `bun run check` release gate also passed after the integrity
+hardening: release main/tenant/outbound Rust/Wasm builds; Workerd 19/19;
+Playground 1/1; frontend build/readiness 26/26 plus redaction, budget, lint, and
+route audits (217 frontend calls / 322 Worker routes / zero missing); Queue and
+D1 checks; all local smoke contracts; workspace tests; and all three wasm32
+targets. The Worker library contains 647 tests; the focused billing subset is
+23/23. Only the two pre-existing unused topup repository warnings remain.

@@ -34,6 +34,7 @@ REQUIRED_TABLES = [
     "realtime_billing_recovery_state",
     "relay_billing_reservations",
     "relay_billing_recovery_state",
+    "relay_billing_finalization_incidents",
 ]
 
 REQUIRED_COLUMNS = {
@@ -156,6 +157,25 @@ REQUIRED_COLUMNS = {
         "last_deferred",
         "updated_at",
     },
+    "relay_billing_finalization_incidents": {
+        "incident_id",
+        "event_id",
+        "queue_message_id",
+        "payload_sha256",
+        "payload_json",
+        "classification",
+        "status",
+        "delivery_count",
+        "first_seen_at",
+        "last_seen_at",
+        "replay_generation",
+        "replay_attempt_count",
+        "replay_lease_expires_at",
+        "last_replay_at",
+        "resolved_at",
+        "resolution",
+        "last_error",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -187,6 +207,10 @@ REQUIRED_INDEXES = {
         "idx_relay_billing_reservations_global_lease": False,
         "idx_relay_billing_reservations_recent_outcome": False,
         "idx_relay_billing_reservations_recovery_required": False,
+    },
+    "relay_billing_finalization_incidents": {
+        "idx_relay_billing_finalization_incidents_event": True,
+        "idx_relay_billing_finalization_incidents_status": False,
     },
 }
 

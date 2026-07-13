@@ -34,6 +34,7 @@ export default defineConfig({
         modulesRules: compiledWasmModules,
         bindings: {
           WFP_RELAY_AUTHORITY_SECRET: authoritySecret,
+          SESSION_SECRET: "runtime-session-secret-0123456789abcdef",
           TASK_RUNNER_DO_ENABLED: "false",
           REALTIME_SESSION_V1_ENABLED: "true",
           REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED: "true",
@@ -45,10 +46,12 @@ export default defineConfig({
           RELAY_BILLING_RESERVATION_LEASE_SECONDS: "300",
           RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS: "5",
           RELAY_BILLING_FINALIZATION_QUEUE_ENABLED: "true",
+          RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED: "true",
           RELAY_MISSING_USAGE_ESTIMATE_ENABLED: "true",
           TEST_D1_MIGRATIONS: d1Migrations,
         },
         d1Databases: { DB: "do-runtime-test" },
+        kvNamespaces: ["CACHE_KV"],
         queueProducers: {
           BILLING_QUEUE: "cinatoken-rust-billing-finalization-runtime",
         },
@@ -58,6 +61,12 @@ export default defineConfig({
             maxBatchTimeout: 0,
             maxRetries: 3,
             deadLetterQueue: "cinatoken-rust-billing-finalization-runtime-dlq",
+          },
+          "cinatoken-rust-billing-finalization-runtime-dlq": {
+            maxBatchSize: 1,
+            maxBatchTimeout: 0,
+            maxRetries: 3,
+            deadLetterQueue: "cinatoken-rust-billing-finalization-runtime-parking",
           },
         },
         outboundService: "realtime-provider-mock",

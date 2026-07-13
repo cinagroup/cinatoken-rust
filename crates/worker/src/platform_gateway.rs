@@ -55,9 +55,11 @@ use crate::realtime_session::{
 use crate::relay::{
     relay_actual_serving_group_billing_contract_compiled,
     relay_ai_gateway_direct_fallback_contract_compiled,
-    relay_billing_finalization_consumer_compiled, relay_billing_finalization_dlq_contract_compiled,
-    relay_billing_finalization_queue_enabled, relay_billing_finalization_reconcile_compiled,
-    relay_billing_finalization_replay_compiled, relay_billing_finalization_runtime_contract_ready,
+    relay_billing_finalization_consumer_compiled, relay_billing_finalization_dlq_consumer_compiled,
+    relay_billing_finalization_dlq_contract_compiled, relay_billing_finalization_queue_enabled,
+    relay_billing_finalization_reconcile_compiled, relay_billing_finalization_reconcile_enabled,
+    relay_billing_finalization_reconcile_ready, relay_billing_finalization_replay_compiled,
+    relay_billing_finalization_runtime_contract_ready,
     relay_billing_missing_usage_estimate_enabled, relay_billing_orphan_recovery_enabled,
     relay_billing_orphan_sweep_limit, relay_billing_reservation_lease_seconds,
     relay_billing_reservation_ledger_compiled, relay_billing_stream_error_usage_recovery_compiled,
@@ -133,7 +135,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0024_relay_billing_finalization_events.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0025_relay_billing_finalization_incidents.sql";
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -159,6 +161,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0022_realtime_billing_global_recovery.sql",
     "0023_relay_billing_reservations.sql",
     "0024_relay_billing_finalization_events.sql",
+    "0025_relay_billing_finalization_incidents.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -324,7 +327,10 @@ struct PlatformCapabilities {
     relay_billing_finalization_consumer_compiled: bool,
     relay_billing_finalization_dlq_contract_compiled: bool,
     relay_billing_finalization_replay_compiled: bool,
+    relay_billing_finalization_dlq_consumer_compiled: bool,
     relay_billing_finalization_reconcile_compiled: bool,
+    relay_billing_finalization_reconcile_enabled: bool,
+    relay_billing_finalization_reconcile_ready: bool,
     relay_billing_finalization_runtime_ready: bool,
     relay_billing_finalization_replay_staging_verified: bool,
     relay_billing_orphan_recovery_enabled: bool,
@@ -598,8 +604,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let relay_billing_finalization_dlq_contract_compiled =
         relay_billing_finalization_dlq_contract_compiled();
     let relay_billing_finalization_replay_compiled = relay_billing_finalization_replay_compiled();
+    let relay_billing_finalization_dlq_consumer_compiled =
+        relay_billing_finalization_dlq_consumer_compiled();
     let relay_billing_finalization_reconcile_compiled =
         relay_billing_finalization_reconcile_compiled();
+    let relay_billing_finalization_reconcile_enabled =
+        relay_billing_finalization_reconcile_enabled(&env);
+    let relay_billing_finalization_reconcile_ready =
+        relay_billing_finalization_reconcile_ready(&env, d1_migration_ready);
     let relay_billing_finalization_runtime_ready =
         relay_billing_finalization_runtime_contract_ready(
             relay_billing_finalization_queue_enabled,
@@ -607,7 +619,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             relay_billing_finalization_consumer_compiled,
             relay_billing_finalization_dlq_contract_compiled,
             relay_billing_finalization_replay_compiled,
-            relay_billing_finalization_reconcile_compiled,
+            relay_billing_finalization_dlq_consumer_compiled,
+            relay_billing_finalization_reconcile_ready,
             d1_migration_ready,
         );
     let relay_billing_finalization_replay_staging_verified =
@@ -950,7 +963,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_billing_finalization_consumer_compiled,
         relay_billing_finalization_dlq_contract_compiled,
         relay_billing_finalization_replay_compiled,
+        relay_billing_finalization_dlq_consumer_compiled,
         relay_billing_finalization_reconcile_compiled,
+        relay_billing_finalization_reconcile_enabled,
+        relay_billing_finalization_reconcile_ready,
         relay_billing_finalization_runtime_ready,
         relay_billing_finalization_replay_staging_verified,
         relay_billing_orphan_recovery_enabled,
@@ -3252,14 +3268,14 @@ mod tests {
     #[test]
     fn relay_billing_finalization_runtime_requires_every_durable_boundary() {
         assert!(relay_billing_finalization_runtime_contract_ready(
-            true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true
         ));
-        for false_gate in 0..7 {
-            let mut flags = [true; 7];
+        for false_gate in 0..8 {
+            let mut flags = [true; 8];
             flags[false_gate] = false;
             assert!(
                 !relay_billing_finalization_runtime_contract_ready(
-                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6]
+                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7]
                 ),
                 "expected billing finalization runtime to wait on gate index {false_gate}"
             );
@@ -3267,7 +3283,8 @@ mod tests {
         assert!(relay_billing_finalization_consumer_compiled());
         assert!(relay_billing_finalization_dlq_contract_compiled());
         assert!(relay_billing_finalization_replay_compiled());
-        assert!(!relay_billing_finalization_reconcile_compiled());
+        assert!(relay_billing_finalization_dlq_consumer_compiled());
+        assert!(relay_billing_finalization_reconcile_compiled());
     }
 
     #[test]
@@ -3552,7 +3569,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0024_relay_billing_finalization_events.sql"
+            "0025_relay_billing_finalization_incidents.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -3584,6 +3601,11 @@ mod tests {
             include_str!("../../../migrations/d1/0024_relay_billing_finalization_events.sql");
         assert!(relay_finalization.contains("billing_finalization_event_id"));
         assert!(relay_finalization.contains("CREATE UNIQUE INDEX"));
+        let relay_incidents =
+            include_str!("../../../migrations/d1/0025_relay_billing_finalization_incidents.sql");
+        assert!(relay_incidents.contains("CREATE TABLE relay_billing_finalization_incidents"));
+        assert!(relay_incidents.contains("replay_generation"));
+        assert!(relay_incidents.contains("idx_relay_billing_finalization_incidents_event"));
     }
 
     #[test]

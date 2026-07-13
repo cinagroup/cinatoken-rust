@@ -651,11 +651,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `24`, latest/expected
-    `0024_relay_billing_finalization_events.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `25`, latest/expected
+    `0025_relay_billing_finalization_incidents.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0024 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0025 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
@@ -706,7 +706,12 @@ armed only when:
   `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` can become true.
 - Local consumer/DLQ/CAS code is not resource evidence. Require authenticated
   Queue/consumer/DLQ readback and a successful operator reconcile/DLQ replay
-  drill; the checked-in capability currently reports reconcile false.
+  drill. The checked-in capability reports the DLQ consumer and reconcile code
+  compiled, but `RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED=false` keeps
+  reconcile readiness false in every tracked environment.
+- Read back the DLQ consumer's environment-specific parking queue and attach an
+  alert/runbook that acts before Cloudflare's four-day DLQ retention expires.
+  An unconsumed parking queue without this evidence is not a durable archive.
 - Request abort signaling and a bounded idle-timeout policy are explicitly
   configured and live-smoked. The current checked-in Worker does not yet expose
   these capabilities, so production HTTP stream billing remains NO-GO.

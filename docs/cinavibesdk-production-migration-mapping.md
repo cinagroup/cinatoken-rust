@@ -961,3 +961,29 @@ The cinaVibeSDK reference still supplies architectural guidance, not deployed
 proof. Production requires rotated credentials, staging route fixtures,
 provider/Gateway/WFP traces where applicable, billing/audit reconciliation,
 fault evidence, and rollback. Production remains **NO-GO**.
+
+## 2026-07-14 Durable Billing Command Application
+
+The billing-finalization reconcile increment applies three cinaVibeSDK design
+principles without copying its application-specific Agent runtime:
+
+1. Hibernation-safe work is persisted. DLQ incident identity, replay generation,
+   lease, attempts, and outcome live in D1; no operator lock or pending replay
+   depends on Worker memory or a resident Durable Object.
+2. Internal work crosses bindings. The root management route sends the stored
+   frozen event through `BILLING_QUEUE`; it does not call a public Worker URL or
+   execute settlement itself.
+3. Control, transport, and finance stay separate. The HTTP route authorizes one
+   command, Queue transports it, the central Rust consumer owns financial CAS,
+   and WFP tenant/outbound Workers retain transport-only authority.
+
+Adding a singleton billing DO would create an unnecessary global serialization
+point and would not replace D1 financial idempotency. The chosen design instead
+uses the existing D1 owner and Queue at-least-once semantics, with a generation
+lease only for the human control-plane claim.
+
+Local Workerd evidence proves the command flow across quarantine, root step-up,
+Queue replay, financial CAS, audit, and resolution. It does not prove remote
+Queue attachment, retry exhaustion, DLQ/parking retention response, D1 outage,
+or paid-provider reconciliation. Those remain staging gates, and production is
+**NO-GO**.

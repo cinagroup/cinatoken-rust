@@ -32,6 +32,7 @@ mod d1_repositories;
 mod flow_state;
 mod relay;
 mod relay_billing_queue;
+mod relay_billing_reconcile;
 mod relay_billing_smoke;
 // Provider-independent task lifecycle persistence + CAS settlement guard (item
 // 4.2). Foundation ahead of the task orchestration that consumes it; the module
@@ -182,6 +183,17 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/platform/capabilities", |req, ctx| async move {
             platform_gateway::capabilities(req, ctx.env).await
         })
+        .get_async(
+            "/api/platform/relay/billing-finalization/incidents",
+            |req, ctx| async move { relay_billing_reconcile::list_incidents(req, ctx.env).await },
+        )
+        .post_async(
+            "/api/platform/relay/billing-finalization/incidents/:incident_id/replay",
+            |req, ctx| async move {
+                let incident_id = ctx.param("incident_id").cloned();
+                relay_billing_reconcile::replay_incident(req, ctx.env, incident_id).await
+            },
+        )
         .get_async(
             "/api/platform/realtime-billing/ledger/status",
             |req, ctx| async move {
@@ -1604,6 +1616,33 @@ pub async fn queue(
 
     let mut audit_messages = Vec::new();
     for message in &messages {
+        if queue_kind == relay_billing_queue::WorkerQueueKind::RelayBillingFinalizationDeadLetter {
+            match relay_billing_queue::quarantine_relay_billing_finalization_dead_letter(
+                &db,
+                &message.id(),
+                message.body(),
+                crate::admin::unix_timestamp(),
+            )
+            .await
+            {
+                Ok(disposition) => {
+                    worker::console_log!(
+                        "BILLING_QUEUE DLQ: quarantined {} as {:?}",
+                        message.id(),
+                        disposition
+                    );
+                    message.ack();
+                }
+                Err(err) => {
+                    worker::console_error!(
+                        "BILLING_QUEUE DLQ: failed to quarantine {}: {err}",
+                        message.id()
+                    );
+                    message.retry();
+                }
+            }
+            continue;
+        }
         let event = match serde_json::from_value::<relay_billing_queue::WorkerQueueEvent>(
             message.body().clone(),
         ) {
@@ -1622,6 +1661,29 @@ pub async fn queue(
                 match relay_billing_queue::apply_relay_billing_finalization_event(&db, &event).await
                 {
                     Ok(outcome) => {
+                        let resolution = match outcome {
+                            relay_billing_queue::RelayBillingFinalizationApplyOutcome::Applied => {
+                                "applied"
+                            }
+                            relay_billing_queue::RelayBillingFinalizationApplyOutcome::Replay => {
+                                "idempotent_replay"
+                            }
+                        };
+                        if let Err(err) = crate::d1_repositories::resolve_relay_billing_finalization_incident_for_event(
+                            &db,
+                            &event.event_id,
+                            resolution,
+                            crate::admin::unix_timestamp(),
+                        )
+                        .await
+                        {
+                            worker::console_error!(
+                                "BILLING_QUEUE: incident completion for {} failed: {err}",
+                                event.event_id
+                            );
+                            message.retry();
+                            continue;
+                        }
                         worker::console_log!(
                             "BILLING_QUEUE: processed {} as {:?}",
                             event.event_id,

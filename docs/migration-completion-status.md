@@ -503,3 +503,32 @@ readiness, scheduled HTTP orphan recovery, and cutover stay false. Remote
 migration/Queue/DLQ readback, retry exhaustion, alerting, client cancellation,
 D1 ambiguity and recovery-race accounting, credential rotation, canary, and
 rollback remain blockers. Production remains **NO-GO**.
+
+## 2026-07-14 Billing Finalization DLQ Reconcile Status
+
+Migration 0025 now gives exhausted billing-finalization delivery a durable D1
+incident owner. Valid frozen events retain an immutable canonical replay body;
+invalid messages retain only a digest and classification. Replay state uses a
+generation plus lease so it survives Worker replacement without relying on a
+global Durable Object or in-memory operator lock.
+
+The control plane is locally implemented but deliberately gated. Admins may
+list sanitized incident metadata; only root with fresh secure verification can
+claim one exact incident and requeue its stored event. The endpoint never runs
+the financial finalizer and never accepts payload, pricing, quota, usage, or
+expression input. The main Queue consumer remains the sole settlement/refund
+writer and closes the incident after idempotent D1 CAS.
+
+Local Workerd and contract tests cover valid/invalid quarantine, poison-payload
+redaction, pre-replay no-mutation, step-up denial, one queue-mediated refund,
+one billing and one manage audit, resolution, and duplicate replay rejection.
+The local chain verifies as 25 migrations, 30 tables, 123 incremental columns,
+and 23 key indexes. The frontend exposes compiled, configured, ready, and proof
+states separately.
+
+This closes the local missing-workflow blocker from the previous status; it does
+not close production readiness. Queue and reconcile gates remain false. Remote
+0025 application, Queue/DLQ/parking readback, four-day-retention alerting,
+retry/D1/identity/race fault drills, provider/accounting reconciliation,
+credential rotation, canary, and rollback remain blockers. Production remains
+**NO-GO**.

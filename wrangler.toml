@@ -82,6 +82,7 @@ RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
+RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
 WFP_DISPATCH_ENABLED = "false"
@@ -165,6 +166,13 @@ max_batch_size = 10
 max_batch_timeout = 1
 max_retries = 10
 dead_letter_queue = "cinatoken-rust-billing-finalization-dlq"
+
+[[queues.consumers]]
+queue = "cinatoken-rust-billing-finalization-dlq"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 10
+dead_letter_queue = "cinatoken-rust-billing-finalization-parking"
 
 # Channel-affinity (sticky-routing) Durable Object. Inert at runtime unless
 # RELAY_CHANNEL_AFFINITY_ENABLED is set, so deploying the binding alone changes
@@ -261,6 +269,7 @@ RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
+RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
 WFP_DISPATCH_ENABLED = "false"
@@ -347,6 +356,13 @@ max_batch_size = 10
 max_batch_timeout = 1
 max_retries = 10
 dead_letter_queue = "cinatoken-rust-billing-finalization-dlq-staging"
+
+[[env.staging.queues.consumers]]
+queue = "cinatoken-rust-billing-finalization-dlq-staging"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 10
+dead_letter_queue = "cinatoken-rust-billing-finalization-parking-staging"
 
 [[env.staging.durable_objects.bindings]]
 name = "CHANNEL_AFFINITY"
@@ -441,6 +457,7 @@ RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
+RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
 WFP_DISPATCH_ENABLED = "false"
@@ -528,6 +545,13 @@ max_batch_size = 10
 max_batch_timeout = 1
 max_retries = 10
 dead_letter_queue = "cinatoken-rust-billing-finalization-dlq"
+
+[[env.production.queues.consumers]]
+queue = "cinatoken-rust-billing-finalization-dlq"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 10
+dead_letter_queue = "cinatoken-rust-billing-finalization-parking"
 
 [[env.production.durable_objects.bindings]]
 name = "CHANNEL_AFFINITY"

@@ -478,8 +478,11 @@ export type PlatformCapabilities = {
   relay_billing_finalization_queue_available: boolean
   relay_billing_finalization_consumer_compiled: boolean
   relay_billing_finalization_dlq_contract_compiled: boolean
+  relay_billing_finalization_dlq_consumer_compiled: boolean
   relay_billing_finalization_replay_compiled: boolean
   relay_billing_finalization_reconcile_compiled: boolean
+  relay_billing_finalization_reconcile_enabled: boolean
+  relay_billing_finalization_reconcile_ready: boolean
   relay_billing_finalization_runtime_ready: boolean
   relay_billing_finalization_replay_staging_verified: boolean
   relay_billing_orphan_recovery_enabled: boolean

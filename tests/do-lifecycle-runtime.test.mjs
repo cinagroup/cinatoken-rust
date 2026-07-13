@@ -496,6 +496,136 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   });
 
+  it("quarantines and queue-replays one billing DLQ incident under root step-up", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount();
+    const now = Math.floor(Date.now() / 1000);
+    const reservationKey = "relayreserve-runtime-dlq-reconcile";
+    const poisonMarker = "poison-payload-must-not-be-persisted";
+    await seedRelayBillingReservation({
+      reservationKey,
+      leaseExpiresAt: now + 300,
+      bound: true,
+    });
+    const event = relayBillingRefundEvent(reservationKey, now);
+
+    const deadLetters = await deliverQueueMessages(
+      "cinatoken-rust-billing-finalization-runtime-dlq",
+      [
+        { id: "replayable-dead-letter", body: event },
+        {
+          id: "invalid-dead-letter",
+          body: { event_type: "unsupported", marker: poisonMarker },
+        },
+      ],
+    );
+    expect(deadLetters.explicitAcks).toEqual([
+      "replayable-dead-letter",
+      "invalid-dead-letter",
+    ]);
+    expect(deadLetters.retryMessages).toEqual([]);
+
+    const replayable = await env.DB.prepare(
+      `SELECT incident_id, event_id, payload_sha256, payload_json,
+              classification, status, delivery_count
+       FROM relay_billing_finalization_incidents
+       WHERE classification = 'replayable'`,
+    ).first();
+    const invalid = await env.DB.prepare(
+      `SELECT event_id, payload_sha256, payload_json, classification, status
+       FROM relay_billing_finalization_incidents
+       WHERE classification = 'invalid'`,
+    ).first();
+    expect(replayable).toMatchObject({
+      event_id: event.event_id,
+      classification: "replayable",
+      status: "open",
+      delivery_count: 1,
+    });
+    expect(replayable.incident_id).toMatch(/^[0-9a-f]{64}$/);
+    expect(replayable.payload_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(replayable.payload_json)).toEqual(event);
+    expect(invalid).toMatchObject({
+      event_id: "",
+      payload_json: "",
+      classification: "invalid",
+      status: "invalid",
+    });
+    expect(invalid.payload_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(invalid)).not.toContain(poisonMarker);
+    await expect(relayBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: { status: "reserved", request_accounted: 0 },
+      user: { quota: 900, request_count: 0 },
+      token: { remain_quota: 400, used_quota: 100 },
+    });
+
+    const { cookie, password } = await setupAndLoginBillingRoot();
+    const listResponse = await SELF.fetch(
+      "https://cinatoken.test/api/platform/relay/billing-finalization/incidents?status=open&limit=20",
+      { headers: { cookie } },
+    );
+    expect(listResponse.status).toBe(200);
+    const listText = await listResponse.text();
+    expect(listText).toContain(replayable.incident_id);
+    expect(listText).not.toContain(reservationKey);
+    expect(listText).not.toContain("payload_json");
+    expect(listText).not.toContain(event.event_id);
+
+    const replayUrl =
+      `https://cinatoken.test/api/platform/relay/billing-finalization/incidents/` +
+      `${replayable.incident_id}/replay`;
+    const unverified = await SELF.fetch(replayUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ confirm_replay: true }),
+    });
+    expect(unverified.status).toBe(403);
+
+    const verified = await SELF.fetch("https://cinatoken.test/api/verify", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ method: "password", password }),
+    });
+    expect(verified.status).toBe(200);
+
+    const replay = await SELF.fetch(replayUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ confirm_replay: true }),
+    });
+    expect(replay.status).toBe(202);
+    await expect(replay.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        incident_id: replayable.incident_id,
+        status: "queued",
+        replay_generation: 1,
+      },
+    });
+
+    await expect(
+      waitForBillingIncidentResolution(reservationKey, replayable.incident_id),
+    ).resolves.toMatchObject({
+      reservation: { status: "refunded", request_accounted: 1 },
+      incident: {
+        status: "resolved",
+        replay_generation: 1,
+        replay_attempt_count: 1,
+        resolution: "applied",
+      },
+      billingAuditCount: 1,
+      adminAuditCount: 1,
+    });
+
+    const duplicateReplay = await SELF.fetch(replayUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ confirm_replay: true }),
+    });
+    expect(duplicateReplay.status).toBe(409);
+  }, 30_000);
+
   it("renews a selected HTTP SSE billing lease without changing quota ownership", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const account = await seedStreamingRelayBillingGateway();
@@ -1296,6 +1426,33 @@ async function seedRealtimeBillingAccount({
   ]);
 }
 
+async function setupAndLoginBillingRoot() {
+  const password = "RuntimeRootPassword123!";
+  await env.DB.prepare(
+    "UPDATE users SET aff_code = 'runtime-billing-user' WHERE id = 1",
+  ).run();
+  const setup = await SELF.fetch("https://cinatoken.test/api/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      username: "runtime-root",
+      password,
+      display_name: "Runtime Root",
+    }),
+  });
+  expect(setup.status).toBe(200);
+
+  const login = await SELF.fetch("https://cinatoken.test/api/user/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "runtime-root", password }),
+  });
+  expect(login.status).toBe(200);
+  const setCookie = login.headers.get("set-cookie");
+  expect(setCookie).toContain("session=");
+  return { cookie: setCookie.split(";", 1)[0], password };
+}
+
 async function seedRealtimeReservation({
   reservationKey,
   session,
@@ -1354,6 +1511,55 @@ async function relayBillingState(reservationKey) {
     ).first(),
   ]);
   return { reservation, user, token };
+}
+
+async function waitForBillingIncidentResolution(reservationKey, incidentId) {
+  const deadline = Date.now() + 5_000;
+  let result;
+  while (Date.now() < deadline) {
+    const [state, incident, billingAudit, adminAudit] = await Promise.all([
+      relayBillingState(reservationKey),
+      env.DB.prepare(
+        `SELECT status, replay_generation, replay_attempt_count, resolution
+         FROM relay_billing_finalization_incidents
+         WHERE incident_id = ?1`,
+      )
+        .bind(incidentId)
+        .first(),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM logs
+         WHERE billing_finalization_event_id = ?1`,
+      )
+        .bind(`relay-finalization-v1:${reservationKey}`)
+        .first(),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM logs
+         WHERE type = 3 AND instr(other, ?1) > 0`,
+      )
+        .bind(incidentId)
+        .first(),
+    ]);
+    result = {
+      ...state,
+      incident,
+      billingAuditCount: Number(billingAudit?.count ?? 0),
+      adminAuditCount: Number(adminAudit?.count ?? 0),
+    };
+    if (
+      state.reservation?.status === "refunded" &&
+      incident?.status === "resolved" &&
+      result.billingAuditCount === 1 &&
+      result.adminAuditCount === 1
+    ) {
+      return result;
+    }
+    await delay(10);
+  }
+  throw new Error(
+    `billing incident was not resolved: ${JSON.stringify(result)}`,
+  );
 }
 
 async function waitForRelayBillingReservation(modelName) {

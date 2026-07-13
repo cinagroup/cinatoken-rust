@@ -901,3 +901,31 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   staging migration/Queue readback, retry exhaustion/DLQ alert, cancellation,
   D1 ambiguity, and settlement/recovery race drills. Production remains
   **NO-GO**.
+
+## 2026-07-14 Billing Finalization DLQ Reconcile Increment
+
+- Added migration 0025 and a D1 incident ledger for valid frozen events and
+  invalid poison-message fingerprints. Invalid payload bodies are not stored;
+  event/payload identity conflicts fail closed.
+- Added the environment-specific DLQ consumer, replay generation/lease claims,
+  sanitized admin list, root + fresh step-up replay route, redacted manage
+  audit, and single-event requeue through `BILLING_QUEUE`. The management route
+  accepts no charge-affecting or replacement event fields and returns
+  asynchronous `202 queued`.
+- The main Queue consumer remains the only financial executor and closes an
+  incident after the existing idempotent D1 finalizer. Workerd proves
+  quarantine, redaction, pre-replay no-mutation, authorization, one refund, one
+  billing audit, one manage audit, resolution, and duplicate replay rejection.
+- The config audit now requires the DLQ consumer and environment-specific
+  parking queue. The smoke tool requires one explicit incident ID and a pre-
+  verified root session. Both Queue and reconciliation remain false in all
+  tracked environments.
+- Next: rotate the exposed credential, apply 0025 in isolated staging, create
+  and read back producer/consumer/DLQ/parking resources, attach alerts and an
+  operator response inside the four-day DLQ retention window, then run retry-
+  exhaustion, D1 outage, identity-conflict, concurrent-claim, completion-
+  ambiguity, recovery-race, reconciliation, and rollback drills. Production
+  remains **NO-GO**.
+- Final local gate: `bun run check` passed with Workerd 19/19, Playground 1/1,
+  frontend readiness 26/26, exact 25-migration replay, all local smoke
+  contracts, workspace tests, and all three wasm32 targets.

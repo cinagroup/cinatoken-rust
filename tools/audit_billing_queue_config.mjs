@@ -25,6 +25,7 @@ const environments = [
     consumers: "queues.consumers",
     queue: "cinatoken-rust-billing-finalization",
     dlq: "cinatoken-rust-billing-finalization-dlq",
+    parking: "cinatoken-rust-billing-finalization-parking",
   },
   {
     name: "staging",
@@ -33,6 +34,7 @@ const environments = [
     consumers: "env.staging.queues.consumers",
     queue: "cinatoken-rust-billing-finalization-staging",
     dlq: "cinatoken-rust-billing-finalization-dlq-staging",
+    parking: "cinatoken-rust-billing-finalization-parking-staging",
   },
   {
     name: "production",
@@ -41,6 +43,7 @@ const environments = [
     consumers: "env.production.queues.consumers",
     queue: "cinatoken-rust-billing-finalization",
     dlq: "cinatoken-rust-billing-finalization-dlq",
+    parking: "cinatoken-rust-billing-finalization-parking",
   },
 ];
 
@@ -49,6 +52,10 @@ for (const environment of environments) {
   assert(
     vars.RELAY_BILLING_FINALIZATION_QUEUE_ENABLED === "false",
     `${environment.vars} must keep relay billing Queue finalization default-off`,
+  );
+  assert(
+    vars.RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED === "false",
+    `${environment.vars} must keep relay billing reconciliation default-off`,
   );
 
   const producers = sections(config, environment.producers).filter(
@@ -91,11 +98,46 @@ for (const environment of environments) {
     queueSource.includes(`"${environment.queue}"`),
     `Rust queue ownership must explicitly recognize ${environment.queue}`,
   );
+
+  const dlqConsumers = sections(config, environment.consumers).filter(
+    (section) => section.queue === environment.dlq,
+  );
+  assert(
+    dlqConsumers.length === 1,
+    `${environment.consumers} must contain exactly one billing DLQ consumer`,
+  );
+  const dlqConsumer = dlqConsumers[0];
+  assert(
+    Number(dlqConsumer.max_batch_size) > 0 && Number(dlqConsumer.max_batch_size) <= 100,
+    `${environment.name} billing DLQ consumer batch size must be bounded to 1..100`,
+  );
+  assert(
+    Number(dlqConsumer.max_batch_timeout) >= 0 &&
+      Number(dlqConsumer.max_batch_timeout) <= 60,
+    `${environment.name} billing DLQ consumer timeout must be bounded to 0..60 seconds`,
+  );
+  assert(
+    Number(dlqConsumer.max_retries) >= 1,
+    `${environment.name} billing DLQ consumer must retry before parking`,
+  );
+  assert(
+    dlqConsumer.dead_letter_queue === environment.parking &&
+      environment.parking !== environment.dlq,
+    `${environment.name} billing DLQ consumer must use an environment-specific parking queue`,
+  );
+  assert(
+    queueSource.includes(`"${environment.dlq}"`),
+    `Rust queue ownership must explicitly recognize ${environment.dlq}`,
+  );
 }
 
 assert(
   queueSource.includes("const BILLING_FINALIZATION_MAX_EVENT_BYTES: usize = 64 * 1024;"),
   "billing finalization events must stay below the Cloudflare Queue message limit",
+);
+assert(
+  queueSource.includes("relay_billing_finalization_dlq_consumer_compiled()"),
+  "billing finalization must expose the compiled DLQ consumer contract",
 );
 
 const report = {
@@ -103,14 +145,19 @@ const report = {
   config: "wrangler.toml",
   binding: "BILLING_QUEUE",
   defaultOff: true,
-  environments: environments.map(({ name, queue, dlq }) => ({ name, queue, dlq })),
+  environments: environments.map(({ name, queue, dlq, parking }) => ({
+    name,
+    queue,
+    dlq,
+    parking,
+  })),
 };
 
 if (process.argv.includes("--json")) {
   console.log(JSON.stringify(report, null, 2));
 } else {
   console.log(
-    `Billing Queue config ok: ${environments.length} environments, default-off producer/consumer/DLQ contract`,
+    `Billing Queue config ok: ${environments.length} environments, default-off producer/consumer/DLQ quarantine contract`,
   );
 }
 

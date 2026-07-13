@@ -1475,7 +1475,7 @@ immediate G7 abort. Local Workerd evidence does not satisfy this remote phase.
 
 ## Phase 4c.1: HTTP Tiered Billing Reservation Recovery
 
-Apply migrations 0023-0024 while the old Worker still serves and all billing
+Apply migrations 0023-0025 while the old Worker still serves and all billing
 recovery/finalization gates are false. Only then deploy the ledger-writing Worker. Do not
 enable HTTP recovery merely because the capability endpoint says it is ready
 to verify.
@@ -1522,7 +1522,7 @@ Pass criteria:
     are all present. Without that proof, leave both gates false.
 
 Rollback disables HTTP recovery and Queue finalization first, retains migrations
-0023-0024 and every ledger/audit row, routes affected traffic back to Go/VPS, and reconciles all `reserved` and
+0023-0025 and every ledger/audit/incident row, routes affected traffic back to Go/VPS, and reconciles all `reserved` and
 `recovery_required` rows before any manual quota correction.
 
 ## Phase 4d: Tencent Hunyuan TC3 Chat
@@ -1567,7 +1567,7 @@ or inability to return traffic to Go is an immediate G3 abort.
 
 ## Phase 4e: HTTP Stream Billing Finalization
 
-Run this phase only after credential rotation and migrations 0023-0024 in
+Run this phase only after credential rotation and migrations 0023-0025 in
 isolated staging. Keep HTTP orphan recovery, Queue finalization, and all three
 billing staging-proof flags false during discovery.
 
@@ -1586,10 +1586,13 @@ billing staging-proof flags false during discovery.
    D1 ambiguous commit, Queue retry and duplicate delivery, DLQ routing, and
    settlement-versus-recovery overlap. The frozen final decision
    must settle through idempotent D1 CAS without re-reading mutable pricing.
-5. Reconcile gate: exercise the admin-authenticated DLQ/pending-reservation
-   reconcile workflow, prove bounded selection and one recorded disposition per
-   event, then empty all fixture DLQ/pending state. The current implementation
-   lacks this workflow, so this phase is presently blocked.
+5. Reconcile gate: first prove unauthenticated, non-root, and root-without-step-
+   up requests fail. A root operator with a fresh `/api/verify` marker then
+   selects one explicit 64-hex incident ID and sends only
+   `{ "confirm_replay": true }`. Require `202 queued`, one redacted manage
+   audit, one main-queue financial CAS, terminal incident resolution, and `409`
+   on a second replay. Invalid incidents must contain no raw payload and must
+   never be replayable. Disable reconciliation immediately after the fixture.
 6. Recovery matrix: verify the 300-second boundary, unbound refund, bound
    quarantine, pre-bind generation race, failed-oldest deferral, and manual
    reconciliation. No fixture may leave an unexplained `reserved` or
@@ -1605,3 +1608,10 @@ Attaching clone-stream work to `waitUntil()` is not a pass condition. Do not set
 matrix is signed independently. `relay_billing_orphan_recovery_cutover_ready`
 must remain false without Queue enablement/binding, consumer, DLQ, replay,
 reconcile, D1 readiness, and signed staging proof.
+
+Queue readback for this phase must include the producer, primary consumer, DLQ
+consumer, per-message retry policy, DLQ, and environment-specific parking
+queue. Attach lag and oldest-message alerts plus an owner action that completes
+before Cloudflare's four-day DLQ retention. At-least-once delivery means every
+fixture must prove duplicate convergence; an ACK only proves local handling,
+not exactly-once delivery.

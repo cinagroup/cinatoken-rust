@@ -1,13 +1,16 @@
 use cinatoken_storage::AuditLogEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use worker::D1Database;
+use sha2::{Digest, Sha256};
+use worker::{D1Database, Env};
 
 use crate::d1_repositories::{
     RelayBillingRequestAccounting, RelayBillingReservationFinalizationOutcome,
 };
 
 pub(crate) const BILLING_QUEUE_BINDING: &str = "BILLING_QUEUE";
+pub(crate) const BILLING_FINALIZATION_RECONCILE_ENABLED_ENV: &str =
+    "RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED";
 pub(crate) const BILLING_FINALIZATION_EVENT_TYPE: &str = "cinatoken.relay_billing_finalization";
 pub(crate) const BILLING_FINALIZATION_SCHEMA_VERSION: u16 = 1;
 const BILLING_FINALIZATION_MAX_EVENT_BYTES: usize = 64 * 1024;
@@ -19,6 +22,7 @@ const BILLING_FINALIZATION_MAX_REASON_BYTES: usize = 96;
 pub(crate) enum WorkerQueueKind {
     AuditLog,
     RelayBillingFinalization,
+    RelayBillingFinalizationDeadLetter,
 }
 
 pub(crate) fn worker_queue_kind(queue_name: &str) -> Option<WorkerQueueKind> {
@@ -31,8 +35,24 @@ pub(crate) fn worker_queue_kind(queue_name: &str) -> Option<WorkerQueueKind> {
         | "cinatoken-rust-billing-finalization-runtime" => {
             Some(WorkerQueueKind::RelayBillingFinalization)
         }
+        "cinatoken-rust-billing-finalization-dlq"
+        | "cinatoken-rust-billing-finalization-dlq-staging"
+        | "cinatoken-rust-billing-finalization-runtime-dlq" => {
+            Some(WorkerQueueKind::RelayBillingFinalizationDeadLetter)
+        }
         _ => None,
     }
+}
+
+pub(crate) fn relay_billing_finalization_dlq_consumer_compiled() -> bool {
+    true
+}
+
+pub(crate) fn relay_billing_finalization_reconcile_enabled(env: &Env) -> bool {
+    env.var(BILLING_FINALIZATION_RECONCILE_ENABLED_ENV)
+        .ok()
+        .map(|value| value.to_string())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,6 +158,12 @@ pub enum WorkerQueueEvent {
 pub(crate) enum RelayBillingFinalizationApplyOutcome {
     Applied,
     Replay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelayBillingFinalizationDeadLetterDisposition {
+    Replayable,
+    Invalid,
 }
 
 impl RelayBillingFinalizationEvent {
@@ -401,6 +427,95 @@ pub(crate) async fn apply_relay_billing_finalization_event(
     })
 }
 
+pub(crate) async fn quarantine_relay_billing_finalization_dead_letter(
+    db: &D1Database,
+    queue_message_id: &str,
+    body: &Value,
+    seen_at: i64,
+) -> worker::Result<RelayBillingFinalizationDeadLetterDisposition> {
+    let queue_message_id = queue_message_id.trim();
+    if queue_message_id.is_empty() || queue_message_id.len() > 160 || seen_at <= 0 {
+        return Err(finalization_error(
+            "relay billing dead-letter identity is invalid",
+        ));
+    }
+    let (payload_sha256, projection) = relay_billing_dead_letter_projection(body)?;
+    crate::d1_repositories::record_relay_billing_finalization_incident(
+        db,
+        crate::d1_repositories::RelayBillingFinalizationIncidentRecord {
+            incident_id: &projection.incident_id,
+            event_id: &projection.event_id,
+            queue_message_id,
+            payload_sha256: &payload_sha256,
+            payload_json: &projection.payload_json,
+            classification: projection.classification,
+            status: projection.status,
+            seen_at,
+            last_error: projection.last_error,
+        },
+    )
+    .await?;
+    Ok(projection.disposition)
+}
+
+fn relay_billing_dead_letter_projection(
+    body: &Value,
+) -> worker::Result<(String, RelayBillingDeadLetterProjection)> {
+    let raw = serde_json::to_vec(body)
+        .map_err(|_| finalization_error("relay billing dead-letter body cannot be serialized"))?;
+    let raw_payload_sha256 = sha256_hex(&raw);
+    match serde_json::from_value::<RelayBillingFinalizationEvent>(body.clone()) {
+        Ok(event) if event.validate().is_ok() => {
+            let payload_json = serde_json::to_string(&event).map_err(|_| {
+                finalization_error("relay billing dead-letter event cannot be serialized")
+            })?;
+            let payload_sha256 = sha256_hex(payload_json.as_bytes());
+            Ok((
+                payload_sha256,
+                RelayBillingDeadLetterProjection {
+                    incident_id: sha256_hex(
+                        format!("relay-billing-dlq-v1:event:{}", event.event_id).as_bytes(),
+                    ),
+                    event_id: event.event_id,
+                    payload_json,
+                    classification: "replayable",
+                    status: "open",
+                    last_error: "delivery_exhausted",
+                    disposition: RelayBillingFinalizationDeadLetterDisposition::Replayable,
+                },
+            ))
+        }
+        _ => Ok((
+            raw_payload_sha256.clone(),
+            RelayBillingDeadLetterProjection {
+                incident_id: sha256_hex(
+                    format!("relay-billing-dlq-v1:payload:{raw_payload_sha256}").as_bytes(),
+                ),
+                event_id: String::new(),
+                payload_json: String::new(),
+                classification: "invalid",
+                status: "invalid",
+                last_error: "invalid_event_schema",
+                disposition: RelayBillingFinalizationDeadLetterDisposition::Invalid,
+            },
+        )),
+    }
+}
+
+struct RelayBillingDeadLetterProjection {
+    incident_id: String,
+    event_id: String,
+    payload_json: String,
+    classification: &'static str,
+    status: &'static str,
+    last_error: &'static str,
+    disposition: RelayBillingFinalizationDeadLetterDisposition,
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(value))
+}
+
 fn billing_finalization_event_id(reservation_key: &str) -> String {
     format!("relay-finalization-v1:{reservation_key}")
 }
@@ -549,6 +664,59 @@ mod tests {
             worker_queue_kind("cinatoken-rust-billing-finalization"),
             Some(WorkerQueueKind::RelayBillingFinalization)
         );
+        assert_eq!(
+            worker_queue_kind("cinatoken-rust-billing-finalization-runtime-dlq"),
+            Some(WorkerQueueKind::RelayBillingFinalizationDeadLetter)
+        );
         assert_eq!(worker_queue_kind("billing-events"), None);
+    }
+
+    #[test]
+    fn dead_letter_projection_persists_only_valid_frozen_events() {
+        let event = RelayBillingFinalizationEvent::settlement(
+            "relayreserve-test",
+            "sha256:expr",
+            9,
+            "default",
+            30,
+            "usage_settlement",
+            1_800_000_000,
+            audit(30),
+        )
+        .expect("event");
+        let (_, projection) = relay_billing_dead_letter_projection(
+            &serde_json::to_value(event).expect("event value"),
+        )
+        .expect("projection");
+        assert_eq!(
+            projection.disposition,
+            RelayBillingFinalizationDeadLetterDisposition::Replayable
+        );
+        assert_eq!(projection.classification, "replayable");
+        assert_eq!(projection.status, "open");
+        assert_eq!(projection.incident_id.len(), 64);
+        assert!(projection.payload_json.contains("usage_settlement"));
+        assert!(!projection.payload_json.contains("private-username"));
+        assert!(!projection.payload_json.contains("raw-request-id"));
+    }
+
+    #[test]
+    fn dead_letter_projection_hashes_but_does_not_store_invalid_payloads() {
+        let value = serde_json::json!({
+            "event_type": "unsupported",
+            "authorization": "must-not-be-persisted"
+        });
+        let (payload_hash, projection) =
+            relay_billing_dead_letter_projection(&value).expect("projection");
+        assert_eq!(payload_hash.len(), 64);
+        assert_eq!(projection.incident_id.len(), 64);
+        assert_eq!(
+            projection.disposition,
+            RelayBillingFinalizationDeadLetterDisposition::Invalid
+        );
+        assert_eq!(projection.classification, "invalid");
+        assert_eq!(projection.status, "invalid");
+        assert!(projection.event_id.is_empty());
+        assert!(projection.payload_json.is_empty());
     }
 }

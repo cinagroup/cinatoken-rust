@@ -19,6 +19,8 @@ pub(crate) const REALTIME_BILLING_GLOBAL_RECOVERY_MIGRATION: &str =
 pub(crate) const RELAY_BILLING_RESERVATION_MIGRATION: &str = "0023_relay_billing_reservations.sql";
 pub(crate) const RELAY_BILLING_FINALIZATION_MIGRATION: &str =
     "0024_relay_billing_finalization_events.sql";
+pub(crate) const RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION: &str =
+    "0025_relay_billing_finalization_incidents.sql";
 pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
 const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
@@ -92,6 +94,49 @@ pub enum RelayBillingReservationFinalizationOutcome {
 pub enum RelayBillingRequestAccounting {
     Skip,
     Account,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayBillingFinalizationIncidentRecord<'a> {
+    pub incident_id: &'a str,
+    pub event_id: &'a str,
+    pub queue_message_id: &'a str,
+    pub payload_sha256: &'a str,
+    pub payload_json: &'a str,
+    pub classification: &'a str,
+    pub status: &'a str,
+    pub seen_at: i64,
+    pub last_error: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayBillingFinalizationIncident {
+    pub incident_id: String,
+    pub event_id: String,
+    pub payload_sha256: String,
+    pub payload_json: String,
+    pub classification: String,
+    pub status: String,
+    pub replay_generation: i64,
+    pub replay_attempt_count: i64,
+    pub replay_lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RelayBillingFinalizationIncidentSummary {
+    pub incident_id: String,
+    pub payload_sha256: String,
+    pub classification: String,
+    pub status: String,
+    pub delivery_count: i64,
+    pub first_seen_at: i64,
+    pub last_seen_at: i64,
+    pub replay_attempt_count: i64,
+    pub replay_lease_expires_at: i64,
+    pub last_replay_at: i64,
+    pub resolved_at: i64,
+    pub resolution: String,
+    pub last_error: String,
 }
 
 impl RelayBillingRequestAccounting {
@@ -809,6 +854,199 @@ pub async fn insert_billing_finalization_audit_log_event(
     Ok(())
 }
 
+pub async fn record_relay_billing_finalization_incident(
+    db: &D1Database,
+    record: RelayBillingFinalizationIncidentRecord<'_>,
+) -> worker::Result<()> {
+    let args = [
+        D1Type::Text(record.incident_id),
+        D1Type::Text(record.event_id),
+        D1Type::Text(record.queue_message_id),
+        D1Type::Text(record.payload_sha256),
+        D1Type::Text(record.payload_json),
+        D1Type::Text(record.classification),
+        D1Type::Text(record.status),
+        D1Type::Integer(d1_i32(record.seen_at)),
+        D1Type::Text(record.last_error),
+    ];
+    let result = db
+        .prepare(
+            r#"
+        INSERT INTO relay_billing_finalization_incidents (
+          incident_id, event_id, queue_message_id, payload_sha256, payload_json,
+          classification, status, first_seen_at, last_seen_at, last_error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)
+        ON CONFLICT(incident_id) DO UPDATE SET
+          queue_message_id = excluded.queue_message_id,
+          last_seen_at = MAX(
+            relay_billing_finalization_incidents.last_seen_at,
+            excluded.last_seen_at
+          ),
+          delivery_count = relay_billing_finalization_incidents.delivery_count + 1,
+          last_error = CASE
+            WHEN relay_billing_finalization_incidents.status = 'resolved'
+              THEN relay_billing_finalization_incidents.last_error
+            ELSE excluded.last_error
+          END
+        WHERE relay_billing_finalization_incidents.event_id = excluded.event_id
+          AND relay_billing_finalization_incidents.payload_sha256 = excluded.payload_sha256
+          AND relay_billing_finalization_incidents.classification = excluded.classification
+        "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
+        return Err(worker::Error::RustError(
+            "relay billing finalization incident identity conflicts".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub async fn list_relay_billing_finalization_incidents(
+    db: &D1Database,
+    status: &str,
+    limit: i64,
+) -> worker::Result<Vec<RelayBillingFinalizationIncidentSummary>> {
+    let args = [
+        D1Type::Text(status),
+        D1Type::Integer(d1_i32(limit.clamp(1, 50))),
+    ];
+    db.prepare(
+        r#"
+        SELECT incident_id, payload_sha256, classification, status,
+               delivery_count, first_seen_at, last_seen_at,
+               replay_attempt_count, replay_lease_expires_at, last_replay_at,
+               resolved_at, resolution, last_error
+        FROM relay_billing_finalization_incidents
+        WHERE ?1 = '' OR status = ?1
+        ORDER BY last_seen_at DESC, incident_id ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayBillingFinalizationIncidentSummary>()
+}
+
+pub async fn relay_billing_finalization_incident(
+    db: &D1Database,
+    incident_id: &str,
+) -> worker::Result<Option<RelayBillingFinalizationIncident>> {
+    db.prepare(
+        r#"
+        SELECT incident_id, event_id, payload_sha256, payload_json, classification, status,
+               replay_generation, replay_attempt_count, replay_lease_expires_at
+        FROM relay_billing_finalization_incidents
+        WHERE incident_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&[D1Type::Text(incident_id)])?
+    .first::<RelayBillingFinalizationIncident>(None)
+    .await
+}
+
+pub async fn claim_relay_billing_finalization_incident(
+    db: &D1Database,
+    incident_id: &str,
+    now: i64,
+    lease_expires_at: i64,
+) -> worker::Result<Option<RelayBillingFinalizationIncident>> {
+    let args = [
+        D1Type::Text(incident_id),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(lease_expires_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_finalization_incidents
+            SET status = 'replaying',
+                replay_generation = replay_generation + 1,
+                replay_attempt_count = replay_attempt_count + 1,
+                replay_lease_expires_at = ?3,
+                last_replay_at = ?2,
+                last_error = ''
+            WHERE incident_id = ?1
+              AND classification = 'replayable'
+              AND (
+                status = 'open' OR
+                (status = 'replaying' AND replay_lease_expires_at <= ?2)
+              )
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
+        return Ok(None);
+    }
+    relay_billing_finalization_incident(db, incident_id).await
+}
+
+pub async fn fail_relay_billing_finalization_incident(
+    db: &D1Database,
+    incident_id: &str,
+    replay_generation: i64,
+    last_error: &str,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(incident_id),
+        D1Type::Integer(d1_i32(replay_generation)),
+        D1Type::Text(last_error),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_finalization_incidents
+            SET status = 'open',
+                replay_lease_expires_at = 0,
+                last_error = ?3
+            WHERE incident_id = ?1
+              AND status = 'replaying'
+              AND replay_generation = ?2
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+pub async fn resolve_relay_billing_finalization_incident_for_event(
+    db: &D1Database,
+    event_id: &str,
+    resolution: &str,
+    resolved_at: i64,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(event_id),
+        D1Type::Text(resolution),
+        D1Type::Integer(d1_i32(resolved_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_finalization_incidents
+            SET status = 'resolved',
+                replay_lease_expires_at = 0,
+                resolved_at = ?3,
+                resolution = ?2,
+                last_error = ''
+            WHERE event_id = ?1
+              AND classification = 'replayable'
+              AND status IN ('open', 'replaying')
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
 fn insert_relay_audit_log_statement(
     db: &D1Database,
     created_at: i64,
@@ -1399,13 +1637,14 @@ pub async fn relay_billing_reservation_schema_ready(db: &D1Database) -> worker::
     let args = [
         D1Type::Text(RELAY_BILLING_RESERVATION_MIGRATION),
         D1Type::Text(RELAY_BILLING_FINALIZATION_MIGRATION),
+        D1Type::Text(RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION),
     ];
     let row = db
-        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2)")
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2, ?3)")
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 2).unwrap_or(false))
+    Ok(row.map(|row| row.count == 3).unwrap_or(false))
 }
 
 pub async fn sweep_expired_relay_billing_reservations(
@@ -11291,6 +11530,26 @@ mod tests {
             "CHECK (status IN ('reserved', 'settled', 'refunded', 'recovery_required'))"
         ));
         assert!(migration.contains("idx_relay_billing_reservations_recovery_required"));
+    }
+
+    #[test]
+    fn relay_billing_incident_migration_has_quarantine_and_claim_contract() {
+        let migration =
+            include_str!("../../../migrations/d1/0025_relay_billing_finalization_incidents.sql");
+        for field in [
+            "payload_sha256",
+            "classification",
+            "delivery_count",
+            "replay_generation",
+            "replay_lease_expires_at",
+            "last_error",
+        ] {
+            assert!(migration.contains(field), "missing incident field {field}");
+        }
+        assert!(migration.contains("classification IN ('replayable', 'invalid')"));
+        assert!(migration.contains("status IN ('open', 'replaying', 'resolved', 'invalid')"));
+        assert!(migration.contains("idx_relay_billing_finalization_incidents_event"));
+        assert!(migration.contains("idx_relay_billing_finalization_incidents_status"));
     }
 
     #[test]

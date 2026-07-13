@@ -43,8 +43,11 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_billing_finalization_queue_available: false,
   relay_billing_finalization_consumer_compiled: false,
   relay_billing_finalization_dlq_contract_compiled: false,
+  relay_billing_finalization_dlq_consumer_compiled: false,
   relay_billing_finalization_replay_compiled: false,
   relay_billing_finalization_reconcile_compiled: false,
+  relay_billing_finalization_reconcile_enabled: false,
+  relay_billing_finalization_reconcile_ready: false,
   relay_billing_finalization_runtime_ready: false,
   relay_billing_finalization_replay_staging_verified: false,
   relay_billing_orphan_recovery_ready: false,
@@ -180,6 +183,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_billing_stream_error_usage_recovery_compiled: true,
         relay_billing_finalization_consumer_compiled: true,
         relay_billing_finalization_dlq_contract_compiled: true,
+        relay_billing_finalization_dlq_consumer_compiled: true,
         relay_billing_finalization_replay_compiled: true,
         relay_billing_finalization_reconcile_compiled: true,
         relay_billing_stream_lease_heartbeat_valid: true,
@@ -263,6 +267,37 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(
       implementation.signals.find(
         (signal) => signal.id === 'task-runner-implementation'
+      )?.status,
+      'blocked'
+    )
+  })
+
+  test('blocks relay billing implementation without the DLQ consumer', () => {
+    const implementation = getStage(
+      buildPlatformReadinessSummary(
+        makeCapabilities({
+          relay_billing_reservation_ledger_compiled: true,
+          relay_billing_ledger_status_compiled: true,
+          relay_billing_stream_lease_renewal_compiled: true,
+          relay_billing_stream_lease_heartbeat_valid: true,
+          relay_billing_stream_error_usage_recovery_compiled: true,
+          relay_billing_finalization_consumer_compiled: true,
+          relay_billing_finalization_dlq_contract_compiled: true,
+          relay_billing_finalization_dlq_consumer_compiled: false,
+          relay_billing_finalization_replay_compiled: true,
+          relay_billing_finalization_reconcile_compiled: true,
+          relay_billing_finalization_reconcile_enabled: true,
+          relay_billing_finalization_reconcile_ready: true,
+          relay_billing_finalization_runtime_ready: true,
+          relay_billing_finalization_replay_staging_verified: true,
+        })
+      ),
+      'implementation'
+    )
+
+    assert.equal(
+      implementation.signals.find(
+        (signal) => signal.id === 'relay-billing-implementation'
       )?.status,
       'blocked'
     )
@@ -675,21 +710,28 @@ describe('Cloudflare platform readiness headline', () => {
     )
   })
 
-  test('keeps durable finalization replay blocked until runtime and proof exist', () => {
+  test('keeps durable finalization replay blocked until readiness and proof exist', () => {
     const missingRuntime = buildPlatformReadinessSummary(makeCapabilities())
     const readyToVerify = buildPlatformReadinessSummary(
       makeCapabilities({
         relay_billing_finalization_runtime_ready: true,
+        relay_billing_finalization_reconcile_enabled: true,
+        relay_billing_finalization_reconcile_ready: true,
       })
     )
     const verified = buildPlatformReadinessSummary(
       makeCapabilities({
         relay_billing_finalization_runtime_ready: true,
+        relay_billing_finalization_reconcile_enabled: true,
+        relay_billing_finalization_reconcile_ready: true,
         relay_billing_finalization_replay_staging_verified: true,
       })
     )
-    const proofWithoutRuntime = buildPlatformReadinessSummary(
+    const proofWithoutReadiness = buildPlatformReadinessSummary(
       makeCapabilities({
+        relay_billing_finalization_runtime_ready: true,
+        relay_billing_finalization_reconcile_enabled: true,
+        relay_billing_finalization_reconcile_ready: false,
         relay_billing_finalization_replay_staging_verified: true,
       })
     )
@@ -703,7 +745,7 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(status(missingRuntime), 'blocked')
     assert.equal(status(readyToVerify), 'ready-to-verify')
     assert.equal(status(verified), 'verified')
-    assert.equal(status(proofWithoutRuntime), 'blocked')
+    assert.equal(status(proofWithoutReadiness), 'blocked')
   })
 
   test('uses only backend cutover readiness fields for cutover success', () => {

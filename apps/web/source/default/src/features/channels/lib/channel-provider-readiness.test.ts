@@ -55,10 +55,34 @@ describe('channel provider relay readiness', () => {
       ],
       reason: 'direct-only opaque-model implementation',
     }
+    const siliconflow = {
+      channel_type: 40,
+      name: 'SiliconFlow',
+      adapter: 'silicon_flow_open_ai',
+      readiness: 'partial' as const,
+      routes: [
+        { method: 'POST', path: '/v1/chat/completions' },
+        { method: 'POST', path: '/v1/completions' },
+        { method: 'POST', path: '/v1/embeddings' },
+        { method: 'POST', path: '/v1/rerank' },
+        { method: 'POST', path: '/v1/images/generations' },
+      ],
+      reason: 'direct-only multi-route implementation',
+    }
+    const mokaai = {
+      channel_type: 44,
+      name: 'MokaAI',
+      adapter: 'dedicated_pending',
+      readiness: 'deferred' as const,
+      routes: [],
+      reason: 'hosted provider contract remains unverified',
+    }
     const index = indexProviderReadiness([
       perplexity,
+      siliconflow,
       mistral,
       deepseek,
+      mokaai,
       xai,
       submodel,
     ])
@@ -72,6 +96,20 @@ describe('channel provider relay readiness', () => {
     ])
     assert.equal(index.get(43), deepseek)
     assert.equal(index.get(43)?.routes[0]?.path, '/v1/messages')
+    assert.equal(index.get(40), siliconflow)
+    assert.deepEqual(
+      index.get(40)?.routes.map((route) => route.path),
+      [
+        '/v1/chat/completions',
+        '/v1/completions',
+        '/v1/embeddings',
+        '/v1/rerank',
+        '/v1/images/generations',
+      ]
+    )
+    assert.equal(index.get(44), mokaai)
+    assert.equal(index.get(44)?.readiness, 'deferred')
+    assert.deepEqual(index.get(44)?.routes, [])
     assert.equal(index.get(48), xai)
     assert.deepEqual(
       index.get(48)?.routes.map((route) => route.path),

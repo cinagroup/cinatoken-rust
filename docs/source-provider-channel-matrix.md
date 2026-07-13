@@ -116,7 +116,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 37 | Dify | api.dify.ai | Dify | dify | Dedicated (app) | C: app |
 | 38 | Jina | api.jina.ai | Jina | jina | Dedicated (rerank/embed) | A: Jina rerank |
 | 39 | Cloudflare | api.cloudflare.com | Cloudflare | cloudflare | Dedicated (Workers AI) | A: Cloudflare Workers AI |
-| 40 | SiliconFlow | api.siliconflow.cn | SiliconFlow | siliconflow | Dedicated (multi-route) | B: FIM + image/rerank transforms |
+| 40 | SiliconFlow | api.siliconflow.cn | SiliconFlow | siliconflow | Dedicated Partial (direct multi-route) | Implemented locally: chat/completions, completions, embeddings, rerank, image generations; staging evidence open |
 | 41 | VertexAI | (per-channel) | VertexAi | vertex (+ vertex task) | Dedicated + Task | E: complex auth + video task |
 | 42 | Mistral | api.mistral.ai | Mistral | mistral | Dedicated | B: thin OpenAI-like |
 | 43 | DeepSeek | api.deepseek.com | DeepSeek | deepseek | Dedicated (OpenAI-like) | B: thin OpenAI-like |
@@ -144,10 +144,16 @@ semantics. Mistral(42) exposes only chat completions. xAI(48) exposes chat
 completions, legacy completions, Responses, and image generations.
 Submodel(53) exposes direct-only chat and legacy completions and treats model
 IDs such as `openai/gpt-oss-120b` as opaque values, never Gateway prefixes.
-SiliconFlow(40) is the next audited multi-route adapter; MokaAI(44) remains
-Deferred until an official or staging-verifiable hosted API contract exists.
-This is local implementation evidence only; live staging and billing evidence
-remain open under G3.
+SiliconFlow(40) now exposes direct-only chat/completions, legacy completions,
+embeddings, rerank, and image generations. It ports FIM empty-message
+compatibility, image field precedence, legacy/current rerank token envelopes,
+minimum image usage, and fixed-price image-count multiplication. Its opaque
+provider model IDs never enter existing Gateway prefix classification. Cloudflare
+does not list SiliconFlow as a provider-native integration; the repository does
+not yet manage an AI Gateway custom-provider contract, so Gateway/WFP transport
+is rejected before reserve. MokaAI(44) remains Deferred until an official or
+staging-verifiable hosted API contract exists. This is local implementation
+evidence only; live staging and billing evidence remain open under G3.
 
 Channel type 0 (`Unknown`) and the trailing `Dummy` sentinel are counters, not
 real providers.

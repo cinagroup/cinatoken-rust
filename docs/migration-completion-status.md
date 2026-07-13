@@ -1,6 +1,6 @@
 # Migration Completion Status
 
-Date: 2026-07-12
+Date: 2026-07-13
 
 This is the short status page. The evidence-based audit is
 `docs/migration-progress-audit-2026-07-02.md`; the canonical Go route list is
@@ -185,6 +185,11 @@ A full diff of every Go-registered route against the Rust worker closed these
   by Go's generic adapter. DeepSeek type 43 is implemented only for chat
   completions, legacy completions, and Anthropic Messages, with route-specific
   URLs and thinking suffix handling.
+- Dedicated Partial adapters now include Perplexity(27), SiliconFlow(40),
+  Mistral(42), DeepSeek(43), xAI(48), and Submodel(53). SiliconFlow is
+  direct-only for chat, legacy completions, embeddings, rerank, and image
+  generations; unsupported routes and AI Gateway/WFP configuration fail before
+  reserve. The registry has 16 Ready, 9 Partial, and 28 Deferred channel types.
 - Admin `GET /api/channel/provider-readiness` and the channel UI expose
   implementation readiness without claiming provider health or production
   proof. Route cache keys are protocol scoped.

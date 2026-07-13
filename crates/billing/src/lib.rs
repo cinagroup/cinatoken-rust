@@ -12,7 +12,10 @@ pub use expression::{
     run_billing_expr_with_request_at, validate_billing_expr, BillingExprError, ExprRun,
     RequestInput, TraceResult,
 };
-pub use flat::{compute_flat_quota, FlatBillingMode, FlatQuotaResult, FlatUsage};
+pub use flat::{
+    compute_flat_quota, compute_flat_quota_with_fixed_price_multiplier, FlatBillingMode,
+    FlatQuotaResult, FlatUsage,
+};
 pub use pricing::PricingConfig;
 pub use tiered::{
     compute_tiered_quota, compute_tiered_quota_with_request, estimate_tiered_billing_snapshot,

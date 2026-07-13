@@ -420,6 +420,9 @@ Minimum first-canary cases:
 | RELAY-JSON-003 | `POST /v1/rerank` | Jina or Cohere | Provider-specific usage parsed |
 | RELAY-JSON-004 | `POST /v1/messages` | Anthropic | Message usage parsed |
 | RELAY-JSON-005 | `POST /v1beta/models/{model}:generateContent` | Gemini | `usageMetadata` parsed |
+| RELAY-JSON-006 | SiliconFlow chat/completions and FIM | SiliconFlow(40) | Direct `.cn`/configured root, model preserved, FIM empty message, usage settled |
+| RELAY-JSON-007 | SiliconFlow embeddings and rerank | SiliconFlow(40) | Batch response bounded; legacy/current rerank token envelope normalized and settled |
+| RELAY-JSON-008 | SiliconFlow image generations | SiliconFlow(40) | JSON response, non-empty images, minimum usage, effective `batch_size`/`n` fixed-price multiplier, no SSE |
 
 Pass criteria:
 
@@ -608,6 +611,7 @@ Minimum first-canary cases:
 | RELAY-SSE-003 | `POST /v1/images/generations` streaming, if provider supports it | Stream passes through and audit branch completes |
 | RELAY-SSE-004 | `POST /v1/messages` streaming | Anthropic usage events merged |
 | RELAY-SSE-005 | `POST /v1beta/models/{model}:streamGenerateContent` | Gemini latest usage metadata captured |
+| RELAY-SSE-006 | SiliconFlow chat and legacy completions | Direct-only SSE, final usage or documented estimate/refund, opaque model preserved |
 
 Pass criteria:
 
@@ -1203,6 +1207,7 @@ Frontend cases:
 | FRONTEND-002 | Hard-refresh SPA routes | `/dashboard`, `/channels`, `/keys`, `/users`, `/usage-logs`, `/models`, `/subscriptions`, `/system-settings`, and `/profile` route fallback works |
 | FRONTEND-003 | API base URL/CORS policy | Same-origin or approved cross-origin credential policy works |
 | FRONTEND-004 | Bundle redaction scan | No secret values in static assets; public config allowlist documented |
+| FRONTEND-005 | Provider readiness on `/channels` | SiliconFlow type 40 shows Partial with exactly five routes; MokaAI type 44 remains Deferred with zero routes; API and UI agree |
 
 Admin/auth cases:
 

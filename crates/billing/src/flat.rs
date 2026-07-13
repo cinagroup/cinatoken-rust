@@ -9,7 +9,7 @@
 //!
 //! Fixed-price mode (`ModelPrice` configured):
 //! ```text
-//! quota = round(model_price * quota_per_unit * group_ratio)
+//! quota = round(model_price * quota_per_unit * group_ratio * fixed_price_multiplier)
 //! ```
 //!
 //! Per-token mode (ports Go `calculateTextQuotaSummary`): each token
@@ -40,7 +40,8 @@
 //!
 //! - No Gemini separate audio-input pricing
 //!   (`GetGeminiInputAudioPricePerMillionTokens`).
-//! - No `OtherRatios` (image "n" multiplier).
+//! - Only the image count `OtherRatios["n"]` equivalent is implemented; other
+//!   provider-specific fixed-price multipliers remain deferred.
 //! - No `ToolCallSurcharge` (web_search / file_search fixed fees).
 
 use crate::pricing::PricingConfig;
@@ -119,6 +120,7 @@ pub struct FlatQuotaResult {
     pub completion_ratio: f64,
     pub group_ratio: f64,
     pub cache_ratio: f64,
+    pub fixed_price_multiplier: f64,
 }
 
 /// Compute the flat quota for a single relay response.
@@ -128,6 +130,24 @@ pub fn compute_flat_quota(
     group: &str,
     config: &PricingConfig,
 ) -> FlatQuotaResult {
+    compute_flat_quota_with_fixed_price_multiplier(usage, model, group, config, 1.0)
+}
+
+/// Compute flat quota while applying a request-derived multiplier only to the
+/// fixed-price branch. This is the Rust equivalent of Go's image `n` ratio.
+pub fn compute_flat_quota_with_fixed_price_multiplier(
+    usage: &FlatUsage,
+    model: &str,
+    group: &str,
+    config: &PricingConfig,
+    fixed_price_multiplier: f64,
+) -> FlatQuotaResult {
+    let fixed_price_multiplier =
+        if fixed_price_multiplier.is_finite() && fixed_price_multiplier > 0.0 {
+            fixed_price_multiplier
+        } else {
+            1.0
+        };
     let group_ratio = config.group_ratio(group);
     let model_ratio = config.model_ratio(model);
     let completion_ratio = config.completion_ratio(model);
@@ -146,12 +166,13 @@ pub fn compute_flat_quota(
             completion_ratio,
             group_ratio,
             cache_ratio,
+            fixed_price_multiplier,
         };
     }
 
     // Fixed-price mode takes precedence.
     if let Some(price) = config.model_price(model) {
-        let quota = price * config.quota_per_unit * group_ratio;
+        let quota = price * config.quota_per_unit * group_ratio * fixed_price_multiplier;
         return FlatQuotaResult {
             quota: quota_round(quota),
             mode: FlatBillingMode::FixedPrice,
@@ -159,6 +180,7 @@ pub fn compute_flat_quota(
             completion_ratio,
             group_ratio,
             cache_ratio,
+            fixed_price_multiplier,
         };
     }
 
@@ -233,6 +255,7 @@ pub fn compute_flat_quota(
         completion_ratio,
         group_ratio,
         cache_ratio,
+        fixed_price_multiplier,
     }
 }
 
@@ -326,6 +349,39 @@ mod tests {
         // 0.04 * 500000 * 1 = 20000
         assert_eq!(result.quota, 20_000);
         assert_eq!(result.mode, FlatBillingMode::FixedPrice);
+    }
+
+    #[test]
+    fn fixed_price_multiplier_scales_before_rounding_and_ignores_invalid_values() {
+        let mut config = PricingConfig::new();
+        config.model_prices.insert("image-model".to_string(), 0.04);
+        let usage = FlatUsage {
+            prompt_tokens: 1,
+            total_tokens: 1,
+            ..FlatUsage::default()
+        };
+
+        let result = compute_flat_quota_with_fixed_price_multiplier(
+            &usage,
+            "image-model",
+            "default",
+            &config,
+            4.0,
+        );
+        assert_eq!(result.quota, 80_000);
+        assert_eq!(result.fixed_price_multiplier, 4.0);
+
+        for invalid in [0.0, -1.0, f64::NAN] {
+            let result = compute_flat_quota_with_fixed_price_multiplier(
+                &usage,
+                "image-model",
+                "default",
+                &config,
+                invalid,
+            );
+            assert_eq!(result.quota, 20_000);
+            assert_eq!(result.fixed_price_multiplier, 1.0);
+        }
     }
 
     #[test]

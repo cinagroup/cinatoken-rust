@@ -3429,3 +3429,33 @@ rollback. No exposed Cloudflare token was used.
   Perplexity/Submodel or Cloudflare credential was used; production remains
   **NO-GO** pending credential rotation and archived provider-specific staging,
   billing, Gateway/WFP where applicable, and rollback evidence.
+
+## 2026-07-13 Dedicated SiliconFlow Multi-Route Verification
+
+- The Go source and billing-expression contracts were audited before changing
+  request shaping or fixed-price settlement. Type 40 now exposes only chat
+  completions, legacy completions, embeddings, rerank, and image generations.
+- `cargo test -p cinatoken-providers`: 52/52 passed; provider Clippy with
+  `-D warnings` passed. Coverage includes the source-compatible URL, FIM body,
+  image aliases, current and legacy rerank usage, malformed envelopes, and
+  direct-only routing.
+- `cargo test -p cinatoken-billing`: 80/80 unit tests plus 10/10 Go parity tests
+  passed; billing Clippy with `-D warnings` passed. Fixed-price image billing
+  now applies the effective request count before quota rounding while tiered
+  billing expressions remain unchanged.
+- `cargo test -p cinatoken-worker --lib`: 596/596 passed. Worker coverage proves
+  pre-reserve request validation, direct-only Gateway/WFP rejection, opaque
+  model preservation, bounded response transforms, usage/audit settlement,
+  failure refunds, stream options, and effective image batch multipliers.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed with
+  only the two pre-existing D1 dead-code warnings. Frontend channel and platform
+  readiness passed 18/18.
+- The complete `bun run check` gate passed, including three release Worker
+  builds, Workerd 7/7, frontend build/redaction/budget/lint/route audits,
+  21-file D1 replay, workspace tests, and main/tenant/outbound wasm32 checks.
+- Evidence anchor: the full gate completed at `2026-07-13T04:36:39Z` against the
+  implementation worktree based on `632311891f7a78d8768ec23a210d7cd93dd903b5`.
+- The capability registry now reports 28 Deferred channel types. No live
+  SiliconFlow or Cloudflare credential was used; production remains **NO-GO**
+  pending credential rotation and archived provider-specific staging, billing,
+  authenticated frontend, and rollback evidence.

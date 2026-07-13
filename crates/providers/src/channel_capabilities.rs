@@ -11,6 +11,7 @@ pub enum ChannelAdapterKind {
     DeepSeek,
     MistralOpenAi,
     PerplexityOpenAi,
+    SiliconFlowOpenAi,
     SubmodelOpenAi,
     XaiOpenAi,
     DedicatedPending,
@@ -131,6 +132,13 @@ const DEEPSEEK_ROUTES: &[ProviderRelayRoute] = &[
 ];
 const MISTRAL_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
 const PERPLEXITY_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
+const SILICONFLOW_ROUTES: &[ProviderRelayRoute] = &[
+    ProviderRelayRoute::ChatCompletions,
+    ProviderRelayRoute::Completions,
+    ProviderRelayRoute::Embeddings,
+    ProviderRelayRoute::Rerank,
+    ProviderRelayRoute::ImageGenerations,
+];
 const SUBMODEL_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ChatCompletions,
     ProviderRelayRoute::Completions,
@@ -440,10 +448,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         40,
         "SiliconFlow",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated SiliconFlow adapter is not migrated"
+        SiliconFlowOpenAi,
+        Partial,
+        SILICONFLOW_ROUTES,
+        "direct-only FIM, embeddings, rerank, and image-generation adapter is implemented"
     ),
     capability!(
         41,
@@ -731,7 +739,17 @@ mod tests {
     fn dedicated_route_sets_are_explicit() {
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::Rerank),
-            vec![34, 38]
+            vec![34, 38, 40]
+        );
+        for route in SILICONFLOW_ROUTES {
+            assert!(channel_supports_relay_route(40, *route));
+        }
+        assert!(!channel_supports_relay_route(
+            40,
+            ProviderRelayRoute::Responses
+        ));
+        assert!(
+            channel_capability(44).is_some_and(|capability| capability.supported_routes.is_empty())
         );
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::GeminiNative),

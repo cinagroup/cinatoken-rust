@@ -8,6 +8,7 @@ pub mod deepseek;
 pub mod mistral;
 pub mod perplexity;
 pub mod routing;
+pub mod siliconflow;
 pub mod submodel;
 pub mod xai;
 

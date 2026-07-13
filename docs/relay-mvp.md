@@ -84,11 +84,13 @@ The Worker:
 - limits generic OpenAI-compatible relay candidates to the Go `openai.Adaptor`
   types `1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47`; dedicated OpenAI-shaped
   providers are admitted only through route-explicit capabilities. Current
-  dedicated Partial adapters include Perplexity(27), Mistral(42),
-  DeepSeek(43), xAI(48), and Submodel(53), while their unsupported routes fail
-  before quota reserve;
-- limits `/v1/rerank` relay candidates to Jina provider type `38` and
-  Cohere provider type `34`;
+  dedicated Partial adapters include Perplexity(27), SiliconFlow(40),
+  Mistral(42), DeepSeek(43), xAI(48), and Submodel(53), while their unsupported
+  routes fail before quota reserve. SiliconFlow is direct-only and explicitly
+  exposes chat/completions, legacy completions, embeddings, rerank, and image
+  generations;
+- limits `/v1/rerank` relay candidates to Jina provider type `38`, Cohere
+  provider type `34`, and SiliconFlow provider type `40`;
 - limits Anthropic Messages relay candidates to native Anthropic provider type
   `14`;
 - limits native Gemini relay candidates to Gemini provider type `24`;

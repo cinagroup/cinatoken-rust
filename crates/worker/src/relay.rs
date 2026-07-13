@@ -1,10 +1,10 @@
 use cinatoken_billing::{
-    build_tiered_token_params, compute_flat_quota, compute_tiered_quota_with_request,
-    detect_billing_expr_variables, estimate_tiered_billing_snapshot_with_request,
-    rebase_tiered_billing_snapshot_group_ratio, settle, split_billing_expr_request_rule,
-    BillingExprVariables, FlatBillingMode, FlatQuotaResult, FlatUsage, PricingConfig, Quota,
-    RequestInput, TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams,
-    UsageSemantic,
+    build_tiered_token_params, compute_flat_quota_with_fixed_price_multiplier,
+    compute_tiered_quota_with_request, detect_billing_expr_variables,
+    estimate_tiered_billing_snapshot_with_request, rebase_tiered_billing_snapshot_group_ratio,
+    settle, split_billing_expr_request_rule, BillingExprVariables, FlatBillingMode,
+    FlatQuotaResult, FlatUsage, PricingConfig, Quota, RequestInput, TieredBillingResult,
+    TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::{
@@ -24,6 +24,10 @@ use cinatoken_providers::{
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
     mistral::apply_mistral_chat_request,
     perplexity::apply_perplexity_chat_request,
+    siliconflow::{
+        apply_siliconflow_request, siliconflow_image_response_usage,
+        transform_siliconflow_rerank_response_body,
+    },
     xai::apply_xai_request,
     ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry, ProviderRelayRoute,
 };
@@ -34,7 +38,8 @@ use cinatoken_relay::{
     usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
     ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL,
-    CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI, RELAY_CACHE_SCHEMA_VERSION,
+    CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI,
+    RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -130,6 +135,7 @@ enum RelayProviderKind {
     DeepSeekMessages,
     MistralOpenAi,
     PerplexityOpenAi,
+    SiliconFlowOpenAi,
     SubmodelOpenAi,
     XaiOpenAi,
     GeminiNative,
@@ -262,6 +268,11 @@ impl RelayEndpoint {
         {
             return RelayProviderKind::PerplexityOpenAi;
         }
+        if channel_type == CHANNEL_TYPE_SILICONFLOW
+            && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::SiliconFlowOpenAi;
+        }
         if channel_type == CHANNEL_TYPE_SUBMODEL
             && self.provider == RelayProviderKind::OpenAiCompatible
         {
@@ -289,6 +300,7 @@ impl RelayEndpoint {
             RelayProviderKind::DeepSeekMessages => RegistryProviderKind::DeepSeekMessages,
             RelayProviderKind::MistralOpenAi => RegistryProviderKind::MistralOpenAi,
             RelayProviderKind::PerplexityOpenAi => RegistryProviderKind::PerplexityOpenAi,
+            RelayProviderKind::SiliconFlowOpenAi => RegistryProviderKind::SiliconFlowOpenAi,
             RelayProviderKind::SubmodelOpenAi => RegistryProviderKind::SubmodelOpenAi,
             RelayProviderKind::XaiOpenAi => RegistryProviderKind::XaiOpenAi,
             RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
@@ -306,12 +318,14 @@ impl RelayEndpoint {
     fn default_json_response_limit_bytes(&self) -> usize {
         match self.provider {
             RelayProviderKind::GeminiNative => GEMINI_JSON_RESPONSE_LIMIT_BYTES,
-            RelayProviderKind::OpenAiCompatible => match self.upstream_path.as_str() {
-                "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
-                "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
-                "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
-                _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
-            },
+            RelayProviderKind::OpenAiCompatible | RelayProviderKind::SiliconFlowOpenAi => {
+                match self.upstream_path.as_str() {
+                    "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
+                    "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
+                    "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
+                    _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+                }
+            }
             RelayProviderKind::AnthropicMessages
             | RelayProviderKind::DeepSeekOpenAi
             | RelayProviderKind::DeepSeekMessages
@@ -2447,6 +2461,11 @@ fn retain_pre_reserve_capable_channels(
             if channel.wfp_worker().is_some() && channel.ai_gateway_opted_in() {
                 return false;
             }
+            if is_direct_only_provider_channel(channel)
+                && (channel.wfp_worker().is_some() || channel.ai_gateway_opted_in())
+            {
+                return false;
+            }
             if is_workers_ai_binding_channel(channel) && should_relay_stream {
                 return false;
             }
@@ -2474,7 +2493,97 @@ fn channel_accepts_endpoint_request_shape(
             .and_then(Value::as_array)
             .is_some_and(|messages| !messages.is_empty());
     }
+    if channel.channel_type == CHANNEL_TYPE_SILICONFLOW {
+        return request_body.is_some_and(|body| siliconflow_accepts_request_shape(endpoint, body));
+    }
     true
+}
+
+fn is_direct_only_provider_channel(channel: &RelayChannel) -> bool {
+    matches!(
+        channel.channel_type,
+        CHANNEL_TYPE_SILICONFLOW | CHANNEL_TYPE_SUBMODEL
+    )
+}
+
+fn siliconflow_accepts_request_shape(endpoint: &RelayEndpoint, body: &Value) -> bool {
+    let has_model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(|model| !model.trim().is_empty());
+    if !has_model {
+        return false;
+    }
+    match endpoint.route {
+        ProviderRelayRoute::ChatCompletions => true,
+        ProviderRelayRoute::Completions => body.get("prompt").is_some_and(|prompt| {
+            prompt.is_string() || prompt.as_array().is_some_and(|prompts| !prompts.is_empty())
+        }),
+        ProviderRelayRoute::Embeddings => body.get("input").is_some_and(|input| !input.is_null()),
+        ProviderRelayRoute::Rerank => {
+            body.get("documents")
+                .and_then(Value::as_array)
+                .is_some_and(|documents| {
+                    !documents.is_empty() && documents.iter().all(Value::is_string)
+                })
+        }
+        ProviderRelayRoute::ImageGenerations => siliconflow_image_request_shape_is_valid(body),
+        _ => false,
+    }
+}
+
+fn siliconflow_image_request_shape_is_valid(body: &Value) -> bool {
+    if body
+        .get("stream")
+        .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false))
+    {
+        return false;
+    }
+    if !body
+        .get("prompt")
+        .and_then(Value::as_str)
+        .is_some_and(|prompt| !prompt.trim().is_empty())
+    {
+        return false;
+    }
+    for field in [
+        "negative_prompt",
+        "size",
+        "image_size",
+        "image",
+        "image2",
+        "image3",
+    ] {
+        if body
+            .get(field)
+            .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return false;
+        }
+    }
+    for field in ["n", "batch_size", "seed", "num_inference_steps"] {
+        if body
+            .get(field)
+            .is_some_and(|value| !value.is_null() && value.as_u64().is_none())
+        {
+            return false;
+        }
+    }
+    for field in ["guidance_scale", "cfg"] {
+        if body
+            .get(field)
+            .is_some_and(|value| !value.is_null() && !value.is_number())
+        {
+            return false;
+        }
+    }
+    let effective_batch_size = body
+        .get("batch_size")
+        .and_then(Value::as_u64)
+        .filter(|value| *value != 0)
+        .or_else(|| body.get("n").and_then(Value::as_u64))
+        .unwrap_or(1);
+    (1..=4).contains(&effective_batch_size)
 }
 
 struct RelayAttemptExecution {
@@ -4223,6 +4332,13 @@ fn plan_relay_ai_gateway_attempt(
             "channel cannot enable both relay AI Gateway and WFP transport".to_string(),
         ));
     }
+    if is_direct_only_provider_channel(channel)
+        && (channel.wfp_worker().is_some() || channel.ai_gateway_opted_in())
+    {
+        return Err(worker::Error::RustError(
+            "direct-only provider channel cannot use AI Gateway or WFP transport".to_string(),
+        ));
+    }
     let decision = plan_ai_gateway_cutover(AiGatewayCutoverInput {
         router_ready: true,
         channel_opted_in: channel.ai_gateway_opted_in(),
@@ -4278,7 +4394,10 @@ fn prepare_same_channel_direct_body(
 ) -> worker::Result<Option<Value>> {
     // Submodel model IDs are opaque provider-native namespaces. Values such as
     // `openai/gpt-oss-120b` are model names, not AI Gateway routing prefixes.
-    if channel_type == CHANNEL_TYPE_SUBMODEL {
+    if matches!(
+        channel_type,
+        CHANNEL_TYPE_SILICONFLOW | CHANNEL_TYPE_SUBMODEL
+    ) {
         return Ok(None);
     }
     let Some(gateway_model) = body.get("model").and_then(Value::as_str) else {
@@ -5281,6 +5400,13 @@ async fn forward_relay_request(
             "channel cannot enable both relay AI Gateway and WFP transport".to_string(),
         ));
     }
+    if is_direct_only_provider_channel(channel)
+        && (channel.wfp_worker().is_some() || channel.ai_gateway_opted_in())
+    {
+        return Err(worker::Error::RustError(
+            "direct-only provider channel cannot use AI Gateway or WFP transport".to_string(),
+        ));
+    }
     if let Some(worker_name) = channel.wfp_worker() {
         return forward_wfp_relay_transport(env, url, &worker_name, channel.id, body).await;
     }
@@ -5289,6 +5415,7 @@ async fn forward_relay_request(
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => {
             forward_openai_compatible(url, upstream_key, channel, body).await
@@ -5695,6 +5822,28 @@ async fn complete_relay_response(
         .flatten()
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    if status == 200
+        && provider == RelayProviderKind::SiliconFlowOpenAi
+        && matches!(endpoint_path.as_str(), "rerank" | "images/generations")
+    {
+        return complete_siliconflow_response(
+            upstream,
+            env,
+            db,
+            context,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            audit,
+            status,
+            upstream_request_id,
+            content_type,
+            max_json_response_bytes,
+        )
+        .await;
+    }
     if status == 200 && should_transform_cohere_rerank_response(&endpoint_path, &channel) {
         return complete_cohere_rerank_response(
             upstream,
@@ -6023,6 +6172,159 @@ async fn complete_cohere_rerank_response(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn complete_siliconflow_response(
+    mut upstream: Response,
+    env: Env,
+    db: D1Database,
+    context: Option<Context>,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    audit: RelayAuditContext,
+    status: u16,
+    upstream_request_id: Option<String>,
+    content_type: String,
+    max_json_response_bytes: usize,
+) -> worker::Result<Response> {
+    let body = match read_response_text_limited(&mut upstream, max_json_response_bytes).await {
+        Ok(body) => body,
+        Err(err) => {
+            let message = format!(
+                "failed to read SiliconFlow response: {}",
+                err.message("SiliconFlow response body")
+            );
+            record_owned_relay_audit(
+                context,
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "SiliconFlow response validation",
+            )
+            .await;
+            return openai_error_response(message, 502);
+        }
+    };
+
+    let transformed = if endpoint_path == "rerank" {
+        transform_siliconflow_rerank_response_body(&body)
+    } else {
+        siliconflow_image_response_usage(&body).map(|usage| (body.clone(), usage))
+    };
+    let (body, usage) = match transformed {
+        Ok(transformed) => transformed,
+        Err(err) => {
+            worker::console_error!("failed to validate SiliconFlow response: {}", err);
+            record_owned_relay_audit(
+                context,
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "SiliconFlow response validation",
+            )
+            .await;
+            return openai_error_response("invalid SiliconFlow response body".to_string(), 502);
+        }
+    };
+
+    record_owned_relay_audit(
+        context,
+        env,
+        db,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint_path,
+        status,
+        usage,
+        audit,
+        upstream_request_id,
+        "SiliconFlow",
+    )
+    .await;
+
+    let mut response = Response::ok(body)?.with_status(status);
+    response.headers_mut().set("content-type", &content_type)?;
+    set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_owned_relay_audit(
+    context: Option<Context>,
+    env: Env,
+    db: D1Database,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    status: u16,
+    usage: UsageSummary,
+    audit: RelayAuditContext,
+    upstream_request_id: Option<String>,
+    log_label: &'static str,
+) {
+    if let Some(context) = context {
+        context.wait_until(async move {
+            if let Err(err) = record_relay_audit(
+                &env,
+                &db,
+                &auth,
+                &channel,
+                &model,
+                &group,
+                &endpoint_path,
+                status,
+                &usage,
+                &audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!("failed to record {} audit: {}", log_label, err);
+            }
+        });
+    } else if let Err(err) = record_relay_audit(
+        &env,
+        &db,
+        &auth,
+        &channel,
+        &model,
+        &group,
+        &endpoint_path,
+        status,
+        &usage,
+        &audit,
+        upstream_request_id.as_deref(),
+        false,
+    )
+    .await
+    {
+        worker::console_error!("failed to record {} audit: {}", log_label, err);
+    }
+}
+
 async fn complete_buffered_relay_response(
     mut upstream: Response,
     env: &Env,
@@ -6131,6 +6433,7 @@ async fn response_usage_summary(
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
                 | RelayProviderKind::PerplexityOpenAi
+                | RelayProviderKind::SiliconFlowOpenAi
                 | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
         )
@@ -6166,6 +6469,7 @@ fn usage_summary_for_provider(
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => usage_summary_from_body(body),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
@@ -6266,6 +6570,7 @@ async fn streaming_usage_summary(
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => SseUsageAccumulator::default(),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
@@ -6288,6 +6593,7 @@ async fn streaming_usage_summary(
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
                 | RelayProviderKind::PerplexityOpenAi
+                | RelayProviderKind::SiliconFlowOpenAi
                 | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
         );
@@ -6560,7 +6866,20 @@ async fn record_relay_audit(
         // preflight exists; a failed tiered mutation must remain pending rather
         // than attempting a second, flat charge. Mirrors Go's
         // `service/text_quota.go::PostTextConsumeQuota` non-tiered path.
-        match try_flat_billing(db, auth, channel.id, model, group, usage, now).await {
+        match try_flat_billing(
+            db,
+            auth,
+            channel.id,
+            channel.channel_type,
+            model,
+            group,
+            endpoint_path,
+            audit.billing_request_input.body.as_ref(),
+            usage,
+            now,
+        )
+        .await
+        {
             Ok(Some(flat_result)) => {
                 quota = flat_result.quota;
                 billing_applied = true;
@@ -6657,6 +6976,7 @@ fn apply_flat_billing_audit(other: &mut Value, result: &FlatQuotaResult) {
             "completion_ratio": result.completion_ratio,
             "group_ratio": result.group_ratio,
             "cache_ratio": result.cache_ratio,
+            "fixed_price_multiplier": result.fixed_price_multiplier,
         }),
     );
 }
@@ -7165,12 +7485,16 @@ fn tiered_billing_settlement(
 /// Mirrors Go's `service.PostTextConsumeQuota` non-tiered path. The audit
 /// metadata is returned to the caller via the `FlatQuotaResult` so it can
 /// be recorded in the relay audit log's `other` JSON column.
+#[allow(clippy::too_many_arguments)]
 async fn try_flat_billing(
     db: &D1Database,
     auth: &AuthenticatedToken,
     channel_id: i64,
+    channel_type: i32,
     model: &str,
     group: &str,
+    endpoint_path: &str,
+    request_body: Option<&Value>,
     usage: &UsageSummary,
     now: i64,
 ) -> Result<Option<FlatQuotaResult>, String> {
@@ -7245,7 +7569,15 @@ async fn try_flat_billing(
         image_tokens: usage.image_input_tokens as i64,
         is_anthropic_usage_semantic: usage.is_anthropic_usage_semantic,
     };
-    let result = compute_flat_quota(&flat_usage, model, group, &config);
+    let fixed_price_multiplier =
+        fixed_price_request_multiplier(endpoint_path, channel_type, request_body);
+    let result = compute_flat_quota_with_fixed_price_multiplier(
+        &flat_usage,
+        model,
+        group,
+        &config,
+        fixed_price_multiplier,
+    );
     if result.quota == 0 {
         // Zero-usage or zero-cost: still considered resolved (no refund
         // needed because non-tiered never reserves).
@@ -7262,6 +7594,28 @@ async fn try_flat_billing(
     .await
     .map_err(|err| format!("failed to apply flat quota: {err}"))?;
     Ok(Some(result))
+}
+
+fn fixed_price_request_multiplier(
+    endpoint_path: &str,
+    channel_type: i32,
+    request_body: Option<&Value>,
+) -> f64 {
+    if endpoint_path != "images/generations" {
+        return 1.0;
+    }
+    let Some(body) = request_body else {
+        return 1.0;
+    };
+    let image_count = if channel_type == CHANNEL_TYPE_SILICONFLOW {
+        body.get("batch_size")
+            .and_then(Value::as_u64)
+            .filter(|value| *value != 0)
+            .or_else(|| body.get("n").and_then(Value::as_u64))
+    } else {
+        body.get("n").and_then(Value::as_u64)
+    };
+    image_count.unwrap_or(1).max(1) as f64
 }
 
 fn tiered_billing_metadata(
@@ -7715,6 +8069,9 @@ fn apply_endpoint_request_transform(
     if endpoint_path == "chat/completions" && channel.channel_type == CHANNEL_TYPE_PERPLEXITY {
         apply_perplexity_chat_request(body);
     }
+    if channel.channel_type == CHANNEL_TYPE_SILICONFLOW {
+        apply_siliconflow_request(body, endpoint_path);
+    }
     if channel.channel_type == CHANNEL_TYPE_XAI {
         apply_xai_request(body, endpoint_path);
     }
@@ -7733,6 +8090,7 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         | RelayProviderKind::AnthropicMessages
         | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::GeminiNative => {}
@@ -8651,6 +9009,7 @@ fn quota_mutation_error_status(err: &worker::Error) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cinatoken_billing::compute_flat_quota;
     use serde_json::json;
 
     #[test]
@@ -9454,7 +9813,10 @@ mod tests {
 
         assert_eq!(endpoint.route, ProviderRelayRoute::Rerank);
         assert_eq!(endpoint.route.cache_family(), "route:rerank");
-        assert_eq!(channel_types_for_relay_route(endpoint.route), vec![34, 38]);
+        assert_eq!(
+            channel_types_for_relay_route(endpoint.route),
+            vec![34, 38, 40]
+        );
         assert!(!endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
         assert!(endpoint.parse_non_stream_usage);
@@ -10716,8 +11078,9 @@ mod tests {
             &channel,
             "openai/gpt-oss-120b"
         )
-        .unwrap()
-        .is_none());
+        .unwrap_err()
+        .to_string()
+        .contains("direct-only provider"));
 
         let mut completions = ai_gateway_chat_endpoint_for_tests();
         completions.route = ProviderRelayRoute::Completions;
@@ -10738,6 +11101,160 @@ mod tests {
             CHANNEL_TYPE_SUBMODEL,
             ProviderRelayRoute::Responses
         ));
+    }
+
+    #[test]
+    fn siliconflow_is_direct_only_and_exposes_only_audited_routes() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_SILICONFLOW), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_SILICONFLOW;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::SiliconFlowOpenAi
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::SiliconFlowOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://api.siliconflow.cn/v1/chat/completions"
+        );
+
+        let mut body = json!({
+            "model": "deepseek-ai/DeepSeek-V3",
+            "prefix": "fn main() {",
+            "suffix": "}",
+            "stream": true
+        });
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        assert_eq!(body["messages"], json!([{"role": "user", "content": ""}]));
+        cinatoken_relay::openai_compatible::apply_stream_options(
+            &mut body,
+            channel.channel_type,
+            true,
+        );
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert!(
+            prepare_same_channel_direct_body(&body, channel.channel_type, "chat/completions")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(body["model"], "deepseek-ai/DeepSeek-V3");
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "deepseek-ai/DeepSeek-V3"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("direct-only provider"));
+
+        for route in [
+            ProviderRelayRoute::ChatCompletions,
+            ProviderRelayRoute::Completions,
+            ProviderRelayRoute::Embeddings,
+            ProviderRelayRoute::Rerank,
+            ProviderRelayRoute::ImageGenerations,
+        ] {
+            assert!(channel_supports_relay_route(
+                CHANNEL_TYPE_SILICONFLOW,
+                route
+            ));
+        }
+        for route in [
+            ProviderRelayRoute::Responses,
+            ProviderRelayRoute::AnthropicMessages,
+            ProviderRelayRoute::ImageEdits,
+            ProviderRelayRoute::AudioSpeech,
+        ] {
+            assert!(!channel_supports_relay_route(
+                CHANNEL_TYPE_SILICONFLOW,
+                route
+            ));
+        }
+    }
+
+    #[test]
+    fn siliconflow_shape_and_direct_transport_guards_run_before_reserve() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_SILICONFLOW), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_SILICONFLOW;
+        let mut image = ai_gateway_chat_endpoint_for_tests();
+        image.route = ProviderRelayRoute::ImageGenerations;
+        image.upstream_path = "images/generations".to_string();
+
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &image,
+            Some(&json!({
+                "model": "Kwai-Kolors/Kolors",
+                "prompt": "rust skyline",
+                "batch_size": 4
+            }))
+        ));
+        for invalid in [
+            json!({"model": "Kwai-Kolors/Kolors", "prompt": "rust", "batch_size": 5}),
+            json!({"model": "Kwai-Kolors/Kolors", "prompt": "rust", "stream": true}),
+            json!({"model": "Kwai-Kolors/Kolors", "prompt": 42}),
+        ] {
+            assert!(!channel_accepts_endpoint_request_shape(
+                &channel,
+                &image,
+                Some(&invalid)
+            ));
+        }
+
+        let mut rerank = ai_gateway_chat_endpoint_for_tests();
+        rerank.route = ProviderRelayRoute::Rerank;
+        rerank.upstream_path = "rerank".to_string();
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &rerank,
+            Some(&json!({
+                "model": "BAAI/bge-reranker-v2-m3",
+                "query": "rust",
+                "documents": ["one", "two"]
+            }))
+        ));
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &rerank,
+            Some(&json!({
+                "model": "BAAI/bge-reranker-v2-m3",
+                "query": "rust",
+                "documents": [{"text": "not supported"}]
+            }))
+        ));
+
+        let body = json!({
+            "model": "deepseek-ai/DeepSeek-V3",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        channel.other_info = r#"{"wfp_worker":"tenant-a"}"#.to_string();
+        let mut pools = vec![("default".to_string(), vec![channel])];
+        retain_pre_reserve_capable_channels(
+            &mut pools,
+            &ai_gateway_chat_endpoint_for_tests(),
+            false,
+            Some(&body),
+        );
+        assert!(pools[0].1.is_empty());
+
+        let mut submodel = test_channel(i64::from(CHANNEL_TYPE_SUBMODEL), 0, 1);
+        submodel.channel_type = CHANNEL_TYPE_SUBMODEL;
+        submodel.other_info = r#"{"wfp_worker":"tenant-a"}"#.to_string();
+        let mut pools = vec![("default".to_string(), vec![submodel])];
+        retain_pre_reserve_capable_channels(
+            &mut pools,
+            &ai_gateway_chat_endpoint_for_tests(),
+            false,
+            Some(&body),
+        );
+        assert!(pools[0].1.is_empty());
     }
 
     #[test]
@@ -11744,6 +12261,43 @@ mod tests {
         assert_eq!(other["billing_pending"], false);
         assert_eq!(other["flat_billing"]["quota"], result.quota);
         assert_eq!(other["flat_billing"]["mode"], "per_token");
+    }
+
+    #[test]
+    fn image_fixed_price_multiplier_uses_provider_effective_count() {
+        let siliconflow = json!({"n": 2, "batch_size": 4});
+        assert_eq!(
+            fixed_price_request_multiplier(
+                "images/generations",
+                CHANNEL_TYPE_SILICONFLOW,
+                Some(&siliconflow)
+            ),
+            4.0
+        );
+        assert_eq!(
+            fixed_price_request_multiplier(
+                "images/generations",
+                CHANNEL_TYPE_XAI,
+                Some(&siliconflow)
+            ),
+            2.0
+        );
+        assert_eq!(
+            fixed_price_request_multiplier(
+                "chat/completions",
+                CHANNEL_TYPE_SILICONFLOW,
+                Some(&siliconflow)
+            ),
+            1.0
+        );
+        assert_eq!(
+            fixed_price_request_multiplier(
+                "images/generations",
+                CHANNEL_TYPE_SILICONFLOW,
+                Some(&json!({"batch_size": 0}))
+            ),
+            1.0
+        );
     }
 
     #[test]

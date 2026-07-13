@@ -14,6 +14,7 @@ pub enum ProviderKind {
     DeepSeekMessages,
     MistralOpenAi,
     PerplexityOpenAi,
+    SiliconFlowOpenAi,
     SubmodelOpenAi,
     XaiOpenAi,
     GeminiNative,
@@ -30,6 +31,7 @@ impl ProviderKind {
             Self::DeepSeekMessages => Some(AiGatewayRouteKind::Anthropic),
             Self::MistralOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::PerplexityOpenAi => Some(AiGatewayRouteKind::Compat),
+            Self::SiliconFlowOpenAi => None,
             Self::SubmodelOpenAi => None,
             Self::XaiOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::GeminiNative => Some(AiGatewayRouteKind::GoogleAiStudio),
@@ -113,6 +115,11 @@ impl ProviderRegistry {
                 crate::perplexity::perplexity_openai_url(endpoint.base_url, endpoint.endpoint_path)
                     .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
             }
+            ProviderKind::SiliconFlowOpenAi => crate::siliconflow::siliconflow_openai_url(
+                endpoint.base_url,
+                endpoint.endpoint_path,
+            )
+            .ok_or(ProviderRouteError::UnsupportedProviderRoute)?,
             ProviderKind::SubmodelOpenAi => {
                 crate::submodel::submodel_openai_url(endpoint.base_url, endpoint.endpoint_path)
                     .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
@@ -314,6 +321,37 @@ mod tests {
             "https://llm.submodel.ai/v1/chat/completions"
         );
         assert_eq!(route.ai_gateway_route, None);
+    }
+
+    #[test]
+    fn registry_resolves_direct_only_siliconflow_routes() {
+        let route = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::SiliconFlowOpenAi,
+            channel_type: 40,
+            base_url: None,
+            endpoint_path: "images/generations",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            route.upstream_url,
+            "https://api.siliconflow.cn/v1/images/generations"
+        );
+        assert_eq!(route.ai_gateway_route, None);
+        assert_eq!(
+            ProviderRegistry::resolve(ProviderEndpoint {
+                provider: ProviderKind::SiliconFlowOpenAi,
+                channel_type: 40,
+                base_url: None,
+                endpoint_path: "responses",
+                upstream_query: None,
+                gemini_route: None,
+            })
+            .unwrap_err(),
+            ProviderRouteError::UnsupportedProviderRoute
+        );
     }
 
     #[test]

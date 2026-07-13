@@ -10461,3 +10461,52 @@ request charge treatment, billing/audit correlation, fallback, and rollback.
 Submodel staging must archive both routes, opaque model namespaces, JSON/SSE
 usage, errors, billing, and rollback. No exposed Cloudflare credential may be
 used; rotate it before any remote evidence collection.
+
+### 22.170 2026-07-13 Dedicated SiliconFlow Multi-Route Adapter
+
+This increment moves SiliconFlow channel type 40 from Deferred to Partial
+without admitting it to the generic OpenAI adapter or the existing Cloudflare
+AI Gateway/WFP transport paths.
+
+Implemented locally:
+
+- The dedicated provider registry preserves the source-compatible default
+  `https://api.siliconflow.cn/v1` root and allows only chat completions, legacy
+  completions, embeddings, rerank, and image generations. Responses, Messages,
+  image edits, audio, Gemini-native, realtime, and every other route fail before
+  quota reserve.
+- FIM requests with `prefix` or `suffix` and no messages receive the Go-compatible
+  empty user message. Legacy completions still require `prompt`. Provider-native
+  model names such as `deepseek-ai/...` and `Qwen/...` are opaque and bypass AI
+  Gateway prefix stripping.
+- Image requests map non-empty `image_size` over `size` and non-zero
+  `batch_size` over `n`, whitelist the SiliconFlow fields, preserve the source
+  adapter's omitted top-level `image` intent instead of copying its known Go
+  field-loss defect, enforce the documented batch range, and reject unsupported
+  image streaming before reserve.
+- Rerank responses normalize both the Go-era `meta.tokens` envelope and the
+  current top-level `tokens` envelope into OpenAI-style usage. A success body
+  without `results`, malformed JSON, or an image success body without at least
+  one image becomes a bounded 502 and records a zero-usage audit so any reserve
+  is refunded.
+- Successful image JSON without upstream usage receives the Go-compatible
+  internal minimum of one prompt/total token while the client body remains
+  unchanged. Non-tiered fixed-price billing now applies the effective image
+  count before rounding; for SiliconFlow this is `batch_size`, then `n`, then
+  one. The multiplier is included in audit metadata. Tiered expressions are not
+  changed.
+- SiliconFlow and Submodel are now rejected before reserve when configured with
+  either AI Gateway opt-in or `wfp_worker`, with a second guard at provider
+  dispatch. Cloudflare documents custom providers, but this repository does not
+  yet own a SiliconFlow custom-provider configuration or credential lifecycle;
+  that is a separate staged migration.
+- Frontend readiness remains backend-owned. The contract test now locks type 40
+  to Partial with exactly five routes, locks MokaAI(44) to Deferred with no
+  routes, and runs under the repository-wide `check:web:readiness` gate. The
+  registry now reports 16 Ready, 9 Partial, and 28 Deferred channel types.
+
+Production status remains **NO-GO**. Before a type-40 canary, rotate the exposed
+Cloudflare credential and archive direct chat/completions JSON/SSE, FIM,
+embeddings batch/limits, both rerank token envelopes, image JSON and effective
+batch settlement, 4xx/429/5xx/timeout/malformed-body refunds, D1 audit
+correlation, frontend readiness, disable/rollback, and Go fallback evidence.

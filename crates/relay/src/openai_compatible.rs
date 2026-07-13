@@ -1330,6 +1330,10 @@ mod tests {
             "https://api.jina.ai/v1/rerank"
         );
         assert_eq!(
+            upstream_v1_url(CHANNEL_TYPE_JINA, None, "embeddings"),
+            "https://api.jina.ai/v1/embeddings"
+        );
+        assert_eq!(
             upstream_v1_url(CHANNEL_TYPE_COHERE, None, "rerank"),
             "https://api.cohere.ai/v1/rerank"
         );

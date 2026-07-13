@@ -114,7 +114,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 35 | MiniMax | api.minimax.chat | MiniMax | minimax (+ hailuo task) | Dedicated + Task | B/D: text + video task |
 | 36 | SunoAPI | (per-channel) | (task) | suno task | Task/media | D: media task |
 | 37 | Dify | api.dify.ai | Dify | dify | Dedicated (app) | C: app |
-| 38 | Jina | api.jina.ai | Jina | jina | Dedicated (rerank/embed) | A: Jina rerank |
+| 38 | Jina | api.jina.ai | Jina | jina | Dedicated Partial (rerank/embed) | Implemented locally: rerank and embeddings; staging evidence open |
 | 39 | Cloudflare | api.cloudflare.com | Cloudflare | cloudflare | Dedicated (Workers AI) | A: Cloudflare Workers AI |
 | 40 | SiliconFlow | api.siliconflow.cn | SiliconFlow | siliconflow | Dedicated Partial (direct multi-route) | Implemented locally: chat/completions, completions, embeddings, rerank, image generations; staging evidence open |
 | 41 | VertexAI | (per-channel) | VertexAi | vertex (+ vertex task) | Dedicated + Task | E: complex auth + video task |
@@ -178,7 +178,7 @@ double-listing, and it reflects two distinct code paths.
 
 - **Family A — first-canary, dedicated low-risk adapters**: 1, 3, 6-10, 12, 13,
   19, 20, 22, 31, 47 (generic `openai`), 14 (Anthropic), 24 (Gemini), 34 (Cohere
-  rerank), 38 (Jina rerank), 39 (Cloudflare Workers AI).
+  rerank), 38 (Jina rerank/embeddings), 39 (Cloudflare Workers AI).
 - **Family B — dedicated text adapters, mainstream**: 15-18, 23, 25 (dual), 26,
   27, 35 (text), 40, 42-46, 48, 53.
 - **Family C — application / self-hosted OpenAI-shaped**: 4 (Ollama), 37 (Dify),

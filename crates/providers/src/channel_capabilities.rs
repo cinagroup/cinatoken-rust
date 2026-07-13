@@ -125,6 +125,8 @@ const GENERIC_OPENAI_ROUTES: &[ProviderRelayRoute] = &[
 const ANTHROPIC_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::AnthropicMessages];
 const GEMINI_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::GeminiNative];
 const RERANK_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::Rerank];
+const JINA_ROUTES: &[ProviderRelayRoute] =
+    &[ProviderRelayRoute::Rerank, ProviderRelayRoute::Embeddings];
 const CLOUDFLARE_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
 const DEEPSEEK_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ChatCompletions,
@@ -442,8 +444,8 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
         "Jina",
         Rerank,
         Partial,
-        RERANK_ROUTES,
-        "rerank is implemented; embedding parity remains deferred"
+        JINA_ROUTES,
+        "rerank and embeddings are implemented; live provider evidence remains open"
     ),
     capability!(
         39,
@@ -749,6 +751,13 @@ mod tests {
             channel_types_for_relay_route(ProviderRelayRoute::Rerank),
             vec![25, 34, 38, 40]
         );
+        for route in JINA_ROUTES {
+            assert!(channel_supports_relay_route(38, *route));
+        }
+        assert!(!channel_supports_relay_route(
+            34,
+            ProviderRelayRoute::Embeddings
+        ));
         for route in MOONSHOT_ROUTES {
             assert!(channel_supports_relay_route(25, *route));
         }

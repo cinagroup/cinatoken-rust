@@ -1306,7 +1306,7 @@ and rollback evidence.
   abstractions, Upstash Redis client, relay auth, channel selection, model
   mapping, OpenAI-compatible relay endpoints, native Anthropic Messages relay,
   OpenAI-compatible image generation JSON/SSE relay, OpenAI-compatible audio
-  speech relay, Jina `/v1/rerank` JSON relay, Cohere `/v1/rerank` JSON
+  speech relay, Jina `/v1/rerank` and `/v1/embeddings` JSON relay, Cohere `/v1/rerank` JSON
   request/response adapter, native Gemini generateContent, streamGenerateContent,
   embedContent, and batchEmbedContents relay, native Gemini countTokens relay,
   read-through token/channel cache, and relay token/IP rate limits are now in
@@ -1371,6 +1371,11 @@ and rollback evidence.
   extraction and upstream forwarding before
   `/v1/audio/transcriptions` and `/v1/audio/translations`. Provider-specific
   rerank transforms beyond Jina/Cohere remain pending.
+
+Jina type `38` also supports `/v1/embeddings`. The provider boundary removes
+the OpenAI-only `encoding_format` field, matching the source Go adapter's
+`omitempty` behavior, while retaining model, input, dimensions, and
+Jina-native fields.
 
 ## Production Execution Cross-References
 
@@ -11002,3 +11007,54 @@ is a stop condition. Disable `WFP_RELAY_TRANSPORT_ENABLED`, preserve quota and
 replay state for reconciliation, detach the outbound service if necessary, and
 keep Go/VPS authoritative. No remote evidence was collected in this increment;
 WFP and the overall production migration remain **NO-GO**.
+
+### 22.179 2026-07-13 Jina Embeddings Adapter Parity
+
+This increment closes the local type-38 route gap found by re-auditing the Go
+provider adapter. Source `relay/channel/jina/adaptor.go` owns both rerank and
+embeddings: it selects `/v1/embeddings`, authenticates with Bearer, clears the
+OpenAI `encoding_format` request field, and reuses the OpenAI embedding response
+handler. Jina's current official API independently confirms the Bearer-protected
+`POST https://api.jina.ai/v1/embeddings` contract and Jina-native output type
+fields. Cloudflare's current Worker guidance still requires bounded request and
+response handling; this change remains inside the relay's existing bounded JSON
+pipeline and adds no request-scoped global state or floating work.
+
+Implemented locally:
+
+- Type 38 now advertises only its two source-owned routes: `/v1/rerank` and
+  `/v1/embeddings`. Cohere type 34 remains rerank-only, and unsupported routes
+  still fail before billing-plan construction or quota reservation.
+- A provider-owned Jina request transform removes `encoding_format` only for
+  embeddings. It preserves model, input, dimensions, and Jina-native fields
+  such as `task`, `normalized`, `truncate`, and `embedding_type`; non-Jina
+  embeddings and Jina rerank remain unchanged.
+- Default and custom version-root URL behavior continues through the shared
+  provider registry, with explicit coverage for
+  `https://api.jina.ai/v1/embeddings`.
+- Admin Channel Test auto-selects embeddings for Jina embedding model names.
+  The backend readiness contract and frontend channel readiness projection both
+  retain the exact rerank-plus-embeddings route evidence.
+
+Local release evidence:
+
+- `cinatoken-providers`: 59/59 passed, including Jina request and explicit
+  capability tests.
+- `cinatoken-relay`: 73/73 passed; `cinatoken-worker`: 614/614 passed,
+  including Jina/non-Jina request transforms, model-aware Channel Test
+  selection, provider-readiness serialization, and route-before-reserve
+  filtering.
+- Frontend provider-readiness projection: 2/2 passed.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+- The complete `bun run check` gate passed: release main/tenant/outbound Wasm,
+  Workerd 12/12, Playground 1/1, frontend readiness 22/22, 217 frontend calls
+  against 320 Worker routes with zero missing calls, bundle redaction/budget,
+  22 D1 migrations and 27-table verification, workspace tests, and all three
+  wasm32 checks.
+
+This is implementation evidence, not G3/G4 provider evidence. Isolated staging
+must still archive success and provider-error requests for both Jina routes,
+prove Bearer/header and body redaction, response bounds, usage parsing,
+reservation/settlement/refund, D1 audit output, provider billing reconciliation,
+and rollback to Go/VPS. No remote credential was used, and production remains
+**NO-GO**.

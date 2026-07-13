@@ -1840,7 +1840,8 @@ baseline above.
 - `cargo test -p cinatoken-worker --lib` covering relay request body mode
   metadata for JSON, multipart, raw-bytes, and pass-through stream modes plus
   pending-mode guard metadata.
-- No live Jina or Cohere `/v1/rerank` upstream request has been executed yet.
+- No live Jina `/v1/rerank` or `/v1/embeddings`, or Cohere `/v1/rerank`,
+  upstream request has been executed yet.
 - `bun run dev:seed:sql -- --model gpt-test --token-key ct-test --output .wrangler/dev-seed-test.sql`
   with a local Cargo target directory.
 - Python `sqlite3` in-memory execution of `migrations/d1/0001_core.sql` plus
@@ -3651,3 +3652,32 @@ authenticated frontend, and rollback evidence.
   redaction/budget/lint checks, 217 frontend calls against 320 Worker routes
   with zero missing calls, the exact 22-file D1 migration chain, all workspace
   tests, and main/tenant/outbound wasm32 checks.
+
+## 2026-07-13 Jina Embeddings Adapter Parity Verification
+
+- Source Go contract review confirmed Jina type 38 owns both `/v1/rerank` and
+  `/v1/embeddings`; its embedding conversion clears `encoding_format` before
+  JSON serialization. Current Jina primary documentation confirms the Bearer
+  API at `https://api.jina.ai/v1/embeddings` and Jina-native embedding output
+  fields.
+- `cargo test -p cinatoken-providers` passed 59/59. New tests prove the exact
+  two-route capability set, Cohere embeddings rejection, Jina-only removal of
+  `encoding_format`, and preservation of model/input/dimensions plus native
+  `task`, `normalized`, `truncate`, and `embedding_type` fields.
+- `cargo test -p cinatoken-relay` passed 73/73 with explicit default Jina
+  embeddings URL coverage. `cargo test -p cinatoken-worker --lib` passed
+  614/614, including request-boundary isolation, admin auto-selection, and
+  backend readiness serialization.
+- Frontend provider-readiness projection passed 2/2 and the broad frontend
+  readiness suite passed 22/22. The route audit classified 217 frontend calls
+  against 320 Worker routes with zero missing calls.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed.
+  The complete `bun run check` gate also passed release main/tenant/outbound
+  Wasm builds, Workerd 12/12, Playground 1/1, bundle redaction and budget,
+  22-migration/27-table D1 verification, workspace tests, and all three wasm32
+  checks at `2026-07-13T11:17:51Z`, based on
+  `35ba769bfc131722ed9e9483a601cede61504799`.
+- No live Jina request or remote credential was used. Jina remains Partial
+  until isolated staging proves both routes, usage and error handling,
+  reservation/settlement/refund, audit/billing reconciliation, and rollback.
+  Production remains **NO-GO**.

@@ -69,6 +69,17 @@ describe('channel provider relay readiness', () => {
       ],
       reason: 'direct-only multi-route implementation',
     }
+    const jina = {
+      channel_type: 38,
+      name: 'Jina',
+      adapter: 'rerank',
+      readiness: 'partial' as const,
+      routes: [
+        { method: 'POST', path: '/v1/rerank' },
+        { method: 'POST', path: '/v1/embeddings' },
+      ],
+      reason: 'rerank and embeddings implementation',
+    }
     const mokaai = {
       channel_type: 44,
       name: 'MokaAI',
@@ -94,6 +105,7 @@ describe('channel provider relay readiness', () => {
     const index = indexProviderReadiness([
       moonshot,
       perplexity,
+      jina,
       siliconflow,
       mistral,
       deepseek,
@@ -122,6 +134,11 @@ describe('channel provider relay readiness', () => {
     ])
     assert.equal(index.get(43), deepseek)
     assert.equal(index.get(43)?.routes[0]?.path, '/v1/messages')
+    assert.equal(index.get(38), jina)
+    assert.deepEqual(
+      index.get(38)?.routes.map((route) => route.path),
+      ['/v1/rerank', '/v1/embeddings']
+    )
     assert.equal(index.get(40), siliconflow)
     assert.deepEqual(
       index.get(40)?.routes.map((route) => route.path),

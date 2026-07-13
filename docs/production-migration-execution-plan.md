@@ -465,7 +465,7 @@ Route readiness:
 | `POST /v1/chat/completions` | JSON + SSE implemented | Live upstream smoke, billing shadow | G3/G4 |
 | `POST /v1/completions` | JSON + SSE implemented | Live upstream smoke, billing shadow | G3/G4 |
 | `POST /v1/responses` | JSON + SSE implemented | Live upstream smoke, response usage edge cases | G3/G4 |
-| `POST /v1/embeddings` | JSON implemented | Live upstream smoke, batch size policy | G3/G4 |
+| `POST /v1/embeddings` | JSON implemented for generic OpenAI-compatible and route-explicit Jina type 38 | Live upstream smoke, Jina request/usage parity, batch size policy | G3/G4 |
 | `POST /v1/rerank` | Jina/Cohere JSON implemented | Additional providers, live Jina/Cohere smoke | G3/G4 |
 | `POST /v1/images/generations` | JSON + SSE implemented | Provider smoke, large response policy | G3/G4 |
 | `POST /v1/audio/speech` | JSON passthrough implemented | Binary/audio live smoke, response audit policy | G3 |

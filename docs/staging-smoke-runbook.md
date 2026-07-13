@@ -456,6 +456,7 @@ Minimum first-canary cases:
 | RELAY-JSON-008 | SiliconFlow image generations | SiliconFlow(40) | JSON response, non-empty images, minimum usage, effective `batch_size`/`n` fixed-price multiplier, no SSE |
 | RELAY-JSON-009 | Moonshot chat, completions, embeddings, rerank | Moonshot(25) | Direct provider root, mapped model preserved, Kimi K2.6 explicit temperature normalized, standard/nested cache usage settled |
 | RELAY-JSON-010 | Moonshot Messages and coding-plan chat/Messages | Moonshot(25) | Bearer-authenticated Claude wire shape, exact sentinel root, usage settled; embeddings/rerank sentinel fallthrough rejected before reserve |
+| RELAY-JSON-011 | `POST /v1/embeddings` | Jina(38) | Direct `/v1/embeddings`, Bearer auth, no forwarded OpenAI `encoding_format`, Jina-native fields preserved, bounded response, usage settled |
 
 Pass criteria:
 

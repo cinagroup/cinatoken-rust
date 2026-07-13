@@ -3429,6 +3429,19 @@ mod tests {
             perplexity["routes"],
             serde_json::json!([{"method": "POST", "path": "/v1/chat/completions"}])
         );
+        let jina = entries
+            .iter()
+            .find(|entry| entry["channel_type"] == 38)
+            .unwrap();
+        assert_eq!(jina["adapter"], "rerank");
+        assert_eq!(jina["readiness"], "partial");
+        assert_eq!(
+            jina["routes"],
+            serde_json::json!([
+                {"method": "POST", "path": "/v1/rerank"},
+                {"method": "POST", "path": "/v1/embeddings"}
+            ])
+        );
         let submodel = entries
             .iter()
             .find(|entry| entry["channel_type"] == 53)

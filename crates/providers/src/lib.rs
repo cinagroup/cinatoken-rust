@@ -5,6 +5,7 @@ use cinatoken_relay::RelayContext;
 pub mod ai_gateway;
 pub mod channel_capabilities;
 pub mod deepseek;
+pub mod jina;
 pub mod mistral;
 pub mod moonshot;
 pub mod perplexity;

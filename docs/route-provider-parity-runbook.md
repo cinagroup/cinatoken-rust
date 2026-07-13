@@ -215,7 +215,7 @@ fixtures.
 | Other dedicated OpenAI-like adapters | Per-adapter explicit routes; Perplexity: Sonar chat JSON/SSE; Mistral: chat JSON/SSE; xAI: chat JSON/SSE, legacy completions JSON/SSE, Responses JSON/SSE, image generations JSON; Submodel: direct-only chat/completions JSON/SSE | 27, 42, 43, 44, 48, 53 | Partial: Perplexity(27), Mistral(42), DeepSeek(43), xAI(48), and Submodel(53) have dedicated Rust adapters; MokaAI(44) fails closed | Perplexity/Mistral/xAI/Submodel TBD | Perplexity/Mistral/xAI/Submodel TBD | Per-adapter Rust group disable; route back to Go. |
 | Anthropic native | Messages JSON/SSE | 14 | Partial | TBD | TBD | Disable Anthropic Rust channel group. |
 | Gemini native | generate, stream, embed, batch embed, countTokens | 24 | Partial | TBD | TBD | Disable Gemini Rust channel group. |
-| Jina rerank | Rerank JSON | 38 | Partial | TBD | TBD | Disable rerank Rust group. |
+| Jina rerank and embeddings | Rerank JSON; embeddings JSON with OpenAI `encoding_format` removal | 38 | Partial locally | TBD: both routes, provider errors, response bounds, unsupported routes, rollback | TBD: usage, missing usage, exact settlement/refund | Disable type-38 Rust channel group and route requests back to Go. |
 | Cohere rerank | Rerank JSON transform | 34 | Partial | TBD | TBD | Disable rerank Rust group. |
 | Regional adapters | Baidu, Zhipu, Ali, Tencent, Xunfei, 360, VolcEngine | 15-18, 23, 45, 46 | Planned | Blocked | Blocked | Keep on Go. |
 | Self-hosted/application APIs | Ollama, Dify, FastGPT | 4, 37, 49 | Planned | Blocked | Blocked | Keep on Go or use service/Tunnel decision. |

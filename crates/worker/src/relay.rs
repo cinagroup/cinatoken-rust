@@ -22,6 +22,7 @@ use cinatoken_providers::{
     },
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
+    jina::apply_jina_request,
     mistral::apply_mistral_chat_request,
     moonshot::{apply_moonshot_request, is_coding_plan_base, MoonshotRequestFormat},
     perplexity::apply_perplexity_chat_request,
@@ -39,9 +40,9 @@ use cinatoken_relay::{
     usage_summary_from_gemini_body, usage_summary_from_moonshot_body,
     usage_summary_from_rerank_body, CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath,
     RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES,
-    CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT,
-    CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI,
-    RELAY_CACHE_SCHEMA_VERSION,
+    CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MISTRAL,
+    CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
+    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI, RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -9245,6 +9246,9 @@ fn apply_endpoint_request_transform(
     if endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE {
         apply_cohere_rerank_request_transform(body);
     }
+    if channel.channel_type == CHANNEL_TYPE_JINA {
+        apply_jina_request(body, endpoint_path);
+    }
     if endpoint_path == "chat/completions" && channel.channel_type == CHANNEL_TYPE_MISTRAL {
         apply_mistral_chat_request(body, random_mistral_tool_call_id).map_err(|error| {
             worker::Error::RustError(format!("Mistral request transform failed: {error}"))
@@ -10283,6 +10287,16 @@ mod tests {
             )
             .unwrap(),
             AdminProbeEndpoint::JinaRerank
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                38,
+                AdminProbeEndpoint::Auto,
+                "jina-embeddings-v4",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::Embeddings
         );
         assert_eq!(
             resolve_admin_probe_endpoint(
@@ -11546,6 +11560,89 @@ mod tests {
         apply_endpoint_request_transform(&mut body, "rerank", &channel).unwrap();
 
         assert_eq!(body, original);
+    }
+
+    #[test]
+    fn jina_embeddings_use_explicit_route_and_remove_openai_encoding_format() {
+        let endpoint = RelayEndpoint {
+            display_name: "embeddings",
+            route: ProviderRelayRoute::Embeddings,
+            upstream_path: "embeddings".to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider: RelayProviderKind::OpenAiCompatible,
+            supports_streaming: false,
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: true,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator: None,
+        };
+        let channel = RelayChannel {
+            id: 38,
+            name: "jina".to_string(),
+            channel_type: CHANNEL_TYPE_JINA,
+            key: "jina-test".to_string(),
+            base_url: None,
+            models: "jina-embeddings-v4".to_string(),
+            channel_group: "default".to_string(),
+            model_mapping: None,
+            openai_organization: None,
+            other_info: String::new(),
+            priority: 0,
+            weight: 0,
+        };
+        let mut body = json!({
+            "model": "jina-embeddings-v4",
+            "input": ["hello"],
+            "encoding_format": "base64",
+            "dimensions": 512,
+            "task": "retrieval.query",
+            "normalized": true
+        });
+
+        assert!(channel_supports_relay_route(
+            CHANNEL_TYPE_JINA,
+            ProviderRelayRoute::Embeddings
+        ));
+        assert_eq!(
+            endpoint.upstream_url(&channel),
+            "https://api.jina.ai/v1/embeddings"
+        );
+        apply_endpoint_request_transform(&mut body, "embeddings", &channel).unwrap();
+
+        assert!(body.get("encoding_format").is_none());
+        assert_eq!(body["input"], json!(["hello"]));
+        assert_eq!(body["dimensions"], 512);
+        assert_eq!(body["task"], "retrieval.query");
+        assert_eq!(body["normalized"], true);
+    }
+
+    #[test]
+    fn non_jina_embeddings_preserve_openai_encoding_format() {
+        let channel = RelayChannel {
+            id: 1,
+            name: "openai".to_string(),
+            channel_type: 1,
+            key: "openai-test".to_string(),
+            base_url: None,
+            models: "text-embedding-3-small".to_string(),
+            channel_group: "default".to_string(),
+            model_mapping: None,
+            openai_organization: None,
+            other_info: String::new(),
+            priority: 0,
+            weight: 0,
+        };
+        let mut body = json!({
+            "model": "text-embedding-3-small",
+            "input": "hello",
+            "encoding_format": "base64"
+        });
+
+        apply_endpoint_request_transform(&mut body, "embeddings", &channel).unwrap();
+
+        assert_eq!(body["encoding_format"], "base64");
     }
 
     #[test]

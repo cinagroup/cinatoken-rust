@@ -16,7 +16,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   passthrough for `stream: true`.
 - `POST /v1/responses` OpenAI-compatible relay MVP, including streaming
   passthrough for `stream: true`.
-- `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP.
+- `POST /v1/embeddings` non-stream OpenAI-compatible relay MVP, including
+  route-explicit Jina type `38` support with Go-compatible `encoding_format`
+  removal.
 - `POST /v1/rerank` non-stream rerank JSON relay MVP for Jina channel type
   `38` and Cohere channel type `34`, including Go-compatible
   `query`/`documents` request validation and Cohere request/response

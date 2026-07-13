@@ -94,6 +94,9 @@ The Worker:
 - limits `/v1/rerank` relay candidates to Moonshot provider type `25`, Jina
   provider type `38`, Cohere provider type `34`, and SiliconFlow provider type
   `40`;
+- admits Jina provider type `38` to `/v1/embeddings`, removes the OpenAI-only
+  `encoding_format` field at the provider adapter boundary, and preserves
+  Jina-native embedding fields;
 - limits Anthropic Messages relay candidates to native Anthropic provider type
   `14`, Moonshot bridge type `25`, and DeepSeek bridge type `43`;
 - limits native Gemini relay candidates to Gemini provider type `24`;
@@ -208,7 +211,8 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
   matching `"group"`, and either empty `models` or a CSV entry for the
   requested model. OpenAI-compatible endpoints, including image generation and
   audio speech, currently support types `1, 20, 40, 42, 43, 48, 53`;
-  `/v1/rerank` currently supports Jina type `38` and Cohere type `34`;
+  `/v1/rerank` currently supports Jina type `38` and Cohere type `34`; Jina
+  type `38` is also explicitly supported by `/v1/embeddings`;
   `/v1/messages` currently supports type `14`; native Gemini
   generate-content, embedding, and token-count endpoints currently support type
   `24`.
@@ -251,6 +255,9 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
 - Rerank support currently covers Jina JSON passthrough and Cohere JSON
   request/response adaptation. Other provider-specific rerank transforms plus
   live upstream coverage are still pending.
+- Jina embedding support matches the Go adapter's `/v1/embeddings` URL and
+  `encoding_format` removal. Live Jina embedding usage, billing, error, and
+  rollback evidence remains pending.
 - Buffered response limits now have endpoint-specific defaults for current JSON
   relays. Additional provider-specific response transforms still need explicit
   size policies before they are added.

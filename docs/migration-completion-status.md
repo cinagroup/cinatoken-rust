@@ -212,12 +212,14 @@ A full diff of every Go-registered route against the Rust worker closed these
   embeddings, rerank, and Messages. SiliconFlow is
   direct-only for chat, legacy completions, embeddings, rerank, and image
   generations; unsupported routes and AI Gateway/WFP configuration fail before
-  reserve. The registry has 16 Ready, 10 Partial, and 27 Deferred channel types.
+  reserve. Jina(38) is route-explicit for rerank and embeddings; its embedding
+  adapter removes OpenAI `encoding_format` while preserving Jina-native fields.
+  The registry has 16 Ready, 10 Partial, and 27 Deferred channel types.
 - Admin `GET /api/channel/provider-readiness` and the channel UI expose
   implementation readiness without claiming provider health or production
   proof. Route cache keys are protocol scoped.
 - Local provider, relay, focused Worker, frontend, route-audit, wasm, and full
-  repository checks pass. Dedicated adapters other than DeepSeek, live
+  repository checks pass. Live
   route/provider fixtures, staging billing reconciliation, and production
   canary evidence remain pending.
 

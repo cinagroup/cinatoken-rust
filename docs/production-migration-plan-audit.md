@@ -48,8 +48,8 @@ production migration. The current codebase is strongest in these areas:
   cache, rate limit, tiered billing foundation, and relay audit logs exist.
 - Several high-frequency relay routes now have unit and wasm compile coverage:
   OpenAI-compatible chat/completions/responses/embeddings/images/audio speech,
-  native Anthropic Messages, native Gemini generate/embedding/countTokens, and
-  Jina/Cohere rerank.
+  native Anthropic Messages, native Gemini generate/embedding/countTokens,
+  Jina rerank/embeddings, and Cohere rerank.
 - Streaming passthrough is implemented for the main SSE routes, with audit
   parsing delegated to `wait_until`.
 
@@ -226,7 +226,8 @@ Production requirement:
 
 Evidence:
 
-- `docs/verification.md` records no live Jina/Cohere rerank request.
+- `docs/verification.md` records no live Jina rerank/embeddings or Cohere
+  rerank request.
 - Local Wrangler D1 20/20 and a localhost Worker D1-binding Realtime settlement
   smoke now pass, but no authenticated staging Worker/D1/binding run exists.
 - Remote provider coverage, SSE coverage beyond the recorded local/selected

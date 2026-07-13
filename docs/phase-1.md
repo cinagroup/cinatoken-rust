@@ -614,7 +614,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
   and [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/)
   docs. Keep dispatch and paid relay gates off until remote attachment,
-  bearer-free tenant readback, live egress, `verified=true`, and authority
+  bearer-free tenant readback, live egress, the attachment collector's scoped
+  `verified=true`, and authority
   replay/billing race evidence are archived. Production remains **NO-GO**.
   The local read-only attachment collector is now available as
   `bun run check:wfp-outbound:readback-collector` and
@@ -636,6 +637,18 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   refund, and no internal/sensitive response headers. Four-route local planning
   is not remote evidence; execute and reconcile each route separately after
   credential rotation.
+- Keep `bun run check:do-lifecycle-runtime` in the local release gate. It builds
+  the deployable Rust Worker artifact and runs it under Workerd to prove one
+  concurrent WFP authority winner, replay rejection after DO eviction,
+  tamper/wrong-shard rejection, TaskRunner storage-decode error propagation,
+  and a successful missing-record alarm no-op. This closes a local runtime gap,
+  but does not replace staging eviction/redeploy, provider-call, D1 billing,
+  alarm retry, latency, throughput, or cleanup evidence.
+- Treat `smoke:wfp-outbound-egress` output as scoped evidence. A positive live
+  result may set only `positiveRelayBillingVerified=true` under
+  `verificationScope=positive-relay-billing-audit`; the authority negative
+  matrix, replay, exactly-one provider call, and production fields remain false
+  until their independent artifacts are collected and reconciled.
 - Capture staging distribution/route evidence for relay weighted channel
   selection, including retry, auto-group, affinity, and provider-family filters.
 - Capture provider-specific staging replay/reconciliation evidence before

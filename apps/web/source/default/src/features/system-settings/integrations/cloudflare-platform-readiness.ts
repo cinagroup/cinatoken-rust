@@ -119,6 +119,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'task_runner_do_enabled'
   | 'task_runner_do_foundation_compiled'
   | 'task_runner_alarm_contract_compiled'
+  | 'task_runner_storage_error_retry_contract_compiled'
   | 'task_runner_rearm_contract_compiled'
   | 'task_runner_submit_path_compiled'
   | 'task_runner_poll_path_compiled'
@@ -221,6 +222,7 @@ export function buildPlatformReadinessSummary(
   const taskRunnerImplementation = allReady(
     capabilities.task_runner_do_foundation_compiled,
     capabilities.task_runner_alarm_contract_compiled,
+    capabilities.task_runner_storage_error_retry_contract_compiled,
     capabilities.task_runner_rearm_contract_compiled,
     capabilities.task_runner_submit_path_compiled,
     capabilities.task_runner_poll_path_compiled,
@@ -277,6 +279,7 @@ export function buildPlatformReadinessSummary(
   const taskRunnerReplayReady = allReady(
     capabilities.task_runner_do_available,
     capabilities.task_runner_do_enabled,
+    capabilities.task_runner_storage_error_retry_contract_compiled,
     capabilities.task_runner_status_probe_compiled
   )
   const smoke = createVerificationStage('smoke', [

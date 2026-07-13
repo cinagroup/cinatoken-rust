@@ -850,7 +850,7 @@ function buildCapabilityGroups(
         {
           label: t('WFP replay guard contract'),
           description: t(
-            'Consumes every signed request ID exactly once and fails closed on duplicates or replay-service errors.'
+            'Compiles atomic signed-request consumption and fail-closed duplicate/service-error handling; deployed replay evidence is required separately.'
           ),
           ready: capabilities.wfp_authority_replay_do_compiled,
           readyLabel: t('Compiled'),
@@ -971,6 +971,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('TaskRunner storage-failure alarm retry contract'),
+          description: t(
+            'Compiled fail-closed contract keeps storage read and decode failures retryable by the alarm; runtime behavior is not verified by this signal.'
+          ),
+          ready: capabilities.task_runner_storage_error_retry_contract_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('TaskRunner recurring alarm contract'),
           description: t(
             'Re-arms non-terminal progress, retries transient failures with bounded backoff, and hands work back to cron after the fast-path horizon.'
@@ -1049,7 +1058,7 @@ function buildCapabilityGroups(
         {
           label: t('TaskRunner cutover readiness'),
           description: t(
-            'Requires the Durable Object binding and gate, compiled submit and poll paths, status probe, and verified staging replay.'
+            'Requires the Durable Object binding and gate, compiled submit, poll, storage-error retry and status paths, plus verified staging replay.'
           ),
           ready: capabilities.task_runner_cutover_ready,
           readyLabel: t('Ready'),

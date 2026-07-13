@@ -275,6 +275,12 @@ function buildDryRun(plan) {
     schemaVersion,
     source: "cinatoken-wfp-outbound-egress-smoke",
     dryRun: true,
+    verificationScope: "positive-relay-billing-audit-plan",
+    positiveRelayBillingVerified: false,
+    authorityNegativeMatrixVerified: false,
+    replayVerified: false,
+    exactlyOneProviderCallVerified: false,
+    productionVerified: false,
     networkRequests: false,
     credentialsRead: false,
     writesFiles: false,
@@ -375,7 +381,12 @@ async function runLiveSmoke(plan, credentials, dependencies = {}) {
     identity: planIdentity(plan),
     capabilities,
     routes: routeEvidence,
-    verified: routeEvidence.length === plan.routes.length,
+    verificationScope: "positive-relay-billing-audit",
+    positiveRelayBillingVerified: routeEvidence.length === plan.routes.length,
+    authorityNegativeMatrixVerified: false,
+    replayVerified: false,
+    exactlyOneProviderCallVerified: false,
+    productionVerified: false,
     requiredExternalEvidence: externalEvidenceChecklist(),
   };
   assertCredentialsAbsent(evidence, credentials);
@@ -1042,7 +1053,11 @@ async function runSelfTest() {
     sleep: async () => {},
   });
   if (
-    mockLive.verified !== true ||
+    mockLive.positiveRelayBillingVerified !== true ||
+    mockLive.authorityNegativeMatrixVerified !== false ||
+    mockLive.replayVerified !== false ||
+    mockLive.exactlyOneProviderCallVerified !== false ||
+    mockLive.productionVerified !== false ||
     mockLive.routes.length !== 1 ||
     mockLive.routes[0].audit.billingPending !== false ||
     JSON.stringify(mockLive).includes(credentials.apiKey) ||

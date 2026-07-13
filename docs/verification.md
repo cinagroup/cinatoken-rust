@@ -3270,3 +3270,36 @@ rollback. No exposed Cloudflare token was used.
   `wfp-tenant-artifact-and-status` and always emits
   `paidEgressVerified=false` and `productionVerified=false`. Its compatibility
   `verified=true` cannot be used as paid-path or cutover evidence.
+
+### Durable Object lifecycle runtime gate and scoped WFP evidence (2026-07-13)
+
+- Fixed a TaskRunner alarm retry defect: Durable Object storage read and decode
+  failures are no longer converted to a missing record. `/status` and `alarm`
+  now propagate malformed/storage failures, allowing Cloudflare's alarm retry
+  semantics to apply, while an actually absent record remains a successful
+  no-op.
+- Added `task_runner_storage_error_retry_contract_compiled` and the
+  `storage_error_retry` cutover guard across platform capabilities, the
+  TaskRunner smoke contract, frontend readiness, and the operator panel.
+- Added `bun run check:do-lifecycle-runtime` using Cloudflare's Vitest Workers
+  pool against the release `worker-build` artifact. Five Workerd tests passed:
+  one of eight concurrent authority consumes won; duplicates returned 409;
+  consumption survived DO eviction; tampered and wrong-shard authorities were
+  rejected; malformed TaskRunner state made alarm/status reject; and a missing
+  record alarm completed as a no-op.
+- The WFP paid-egress tool no longer emits an unqualified `verified` result.
+  Dry-run and live output state `verificationScope`; only the positive relay,
+  billing, and audit chain can set `positiveRelayBillingVerified=true`.
+  `authorityNegativeMatrixVerified`, `replayVerified`,
+  `exactlyOneProviderCallVerified`, and `productionVerified` remain false.
+- Test dependencies were locked to Vite 7.3.5 or newer in the 7.x line; the
+  `bun audit` report contains no known vulnerabilities for this dependency set.
+- The complete `bun run check` release gate passed after these changes,
+  including the production frontend build and audits, 21-migration SQLite
+  verification, all local smoke contracts, workspace tests, and Worker/WFP
+  wasm32 checks.
+- Evidence boundary: this is local Workerd/runtime evidence, not authenticated
+  Cloudflare staging evidence. No remote deployment, provider call, D1 quota
+  mutation, alarm retry observation, or production action was performed. The
+  exposed credential was not used; rotation remains required. Production is
+  **NO-GO**.

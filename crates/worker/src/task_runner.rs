@@ -9,7 +9,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
-use worker::{durable_object, Env, Request, Response, Result as WorkerResult, State};
+use wasm_bindgen::JsValue;
+use worker::{
+    durable_object, Env, Error, Request, Response, Result as WorkerResult, State, Storage,
+};
 
 use crate::d1_repositories::find_channel_by_id;
 use crate::task_orchestration::poll_one_task;
@@ -34,6 +37,7 @@ const TASK_RUNNER_CUTOVER_GUARDS: &[&str] = &[
     "task_runner_gate",
     "deterministic_task_instance",
     "alarm_contract",
+    "storage_error_retry",
     "nonterminal_rearm",
     "failure_backoff",
     "fast_path_horizon",
@@ -180,7 +184,7 @@ impl DurableObject for TaskRunner {
         let url = req.url()?;
         match url.path() {
             "/status" => {
-                let record = self.load_record().await;
+                let record = self.load_record().await?;
                 let alarm_scheduled_at_ms = self.state.storage().get_alarm().await?;
                 let replay_evidence = task_runner_replay_evidence(record.as_ref());
                 let response = TaskRunnerStatusResponse {
@@ -280,7 +284,7 @@ impl DurableObject for TaskRunner {
     }
 
     async fn alarm(&mut self) -> WorkerResult<Response> {
-        let Some(mut record) = self.load_record().await else {
+        let Some(mut record) = self.load_record().await? else {
             return Response::ok("task runner alarm skipped: no record");
         };
         record.alarm_fired_at_ms = Some(now_ms());
@@ -351,12 +355,8 @@ impl DurableObject for TaskRunner {
 }
 
 impl TaskRunner {
-    async fn load_record(&self) -> Option<TaskRunnerRecord> {
-        self.state
-            .storage()
-            .get::<TaskRunnerRecord>(TASK_RUNNER_RECORD_KEY)
-            .await
-            .ok()
+    async fn load_record(&self) -> WorkerResult<Option<TaskRunnerRecord>> {
+        load_optional_task_runner_record(&self.state.storage()).await
     }
 
     async fn poll_once(&self, task_id: &str) -> TaskRunnerPollOutcome {
@@ -459,6 +459,23 @@ impl TaskRunner {
     }
 }
 
+async fn load_optional_task_runner_record(
+    storage: &Storage,
+) -> WorkerResult<Option<TaskRunnerRecord>> {
+    let values = storage.get_multiple(vec![TASK_RUNNER_RECORD_KEY]).await?;
+    let value = values.get(&JsValue::from_str(TASK_RUNNER_RECORD_KEY));
+    if value.is_undefined() {
+        return Ok(None);
+    }
+    serde_wasm_bindgen::from_value(value)
+        .map(Some)
+        .map_err(|err| {
+            Error::RustError(format!(
+                "failed to decode TaskRunner storage {TASK_RUNNER_RECORD_KEY}: {err}"
+            ))
+        })
+}
+
 struct TaskRunnerPollOutcome {
     attempted_at_ms: i64,
     status: TaskRunnerPollStatus,
@@ -547,6 +564,11 @@ pub(crate) fn task_runner_alarm_contract_compiled() -> bool {
         && task_runner_instance_name("task_abc") == "task:task_abc"
 }
 
+pub(crate) fn task_runner_storage_error_retry_contract_compiled() -> bool {
+    task_runner_alarm_contract_compiled()
+        && TASK_RUNNER_CUTOVER_GUARDS.contains(&"storage_error_retry")
+}
+
 pub(crate) fn task_runner_submit_path_compiled() -> bool {
     task_runner_arm_url("task_abc", TASK_RUNNER_DEFAULT_ALARM_DELAY_MS)
         == "https://task-runner/arm?task_id=task_abc&delay_ms=15000"
@@ -598,6 +620,7 @@ pub(crate) fn is_task_runner_cutover_ready(
     enabled: bool,
     foundation_compiled: bool,
     alarm_contract_compiled: bool,
+    storage_error_retry_contract_compiled: bool,
     rearm_contract_compiled: bool,
     submit_path_compiled: bool,
     poll_path_compiled: bool,
@@ -608,6 +631,7 @@ pub(crate) fn is_task_runner_cutover_ready(
         && enabled
         && foundation_compiled
         && alarm_contract_compiled
+        && storage_error_retry_contract_compiled
         && rearm_contract_compiled
         && submit_path_compiled
         && poll_path_compiled
@@ -906,6 +930,7 @@ mod tests {
     fn task_runner_foundation_contract_is_compiled() {
         assert!(task_runner_do_foundation_compiled());
         assert!(task_runner_alarm_contract_compiled());
+        assert!(task_runner_storage_error_retry_contract_compiled());
         assert!(task_runner_submit_path_compiled());
         assert!(task_runner_poll_path_compiled());
         assert!(task_runner_status_probe_compiled());
@@ -1118,21 +1143,21 @@ mod tests {
     #[test]
     fn task_runner_cutover_waits_for_poll_path_and_staging_replay() {
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, false, true, true
+            true, true, true, true, true, true, true, false, true, true
         ));
         assert!(!is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, false, true
+            true, true, true, true, true, true, true, true, false, true
         ));
         assert!(is_task_runner_cutover_ready(
-            true, true, true, true, true, true, true, true, true
+            true, true, true, true, true, true, true, true, true, true
         ));
-        for false_gate in 0..9 {
-            let mut flags = [true; 9];
+        for false_gate in 0..10 {
+            let mut flags = [true; 10];
             flags[false_gate] = false;
             assert!(
                 !is_task_runner_cutover_ready(
                     flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-                    flags[8],
+                    flags[8], flags[9],
                 ),
                 "expected TaskRunner cutover to wait on gate index {false_gate}"
             );

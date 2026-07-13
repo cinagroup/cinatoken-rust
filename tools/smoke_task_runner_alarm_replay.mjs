@@ -286,6 +286,8 @@ function summarizeCapabilities(data) {
     task_runner_do_foundation_compiled: data.task_runner_do_foundation_compiled === true,
     task_runner_alarm_contract_compiled: data.task_runner_alarm_contract_compiled === true,
     task_runner_rearm_contract_compiled: data.task_runner_rearm_contract_compiled === true,
+    task_runner_storage_error_retry_contract_compiled:
+      data.task_runner_storage_error_retry_contract_compiled === true,
     task_runner_max_alarm_fires: Number.isFinite(data.task_runner_max_alarm_fires)
       ? data.task_runner_max_alarm_fires
       : 0,
@@ -438,6 +440,7 @@ function requiredCapabilityTrueFields() {
     "task_runner_do_foundation_compiled",
     "task_runner_alarm_contract_compiled",
     "task_runner_rearm_contract_compiled",
+    "task_runner_storage_error_retry_contract_compiled",
     "task_runner_submit_path_compiled",
     "task_runner_poll_path_compiled",
     "task_runner_status_probe_compiled",
@@ -451,6 +454,7 @@ function requiredCutoverGuards() {
     "deterministic_task_instance",
     "alarm_contract",
     "nonterminal_rearm",
+    "storage_error_retry",
     "failure_backoff",
     "fast_path_horizon",
     "submit_path_armed",
@@ -499,6 +503,7 @@ function runSelfTest() {
       task_runner_do_foundation_compiled: true,
       task_runner_alarm_contract_compiled: true,
       task_runner_rearm_contract_compiled: true,
+      task_runner_storage_error_retry_contract_compiled: true,
       task_runner_max_alarm_fires: 20,
       task_runner_submit_path_compiled: true,
       task_runner_poll_path_compiled: true,
@@ -563,6 +568,7 @@ function runSelfTest() {
             task_runner_do_foundation_compiled: true,
             task_runner_alarm_contract_compiled: true,
             task_runner_rearm_contract_compiled: true,
+            task_runner_storage_error_retry_contract_compiled: true,
             task_runner_max_alarm_fires: 20,
             task_runner_submit_path_compiled: true,
             task_runner_poll_path_compiled: true,

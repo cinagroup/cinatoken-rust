@@ -152,6 +152,7 @@ path:
 ```powershell
 bun run check:task-runner:alarm-replay-contract
 bun run check:task-runner:alarm-replay-plan
+bun run check:do-lifecycle-runtime
 ```
 
 After staging has a low-risk shared task id and `TASK_RUNNER_DO_ENABLED=true`
@@ -176,7 +177,9 @@ Pass criteria:
 
 - `/api/platform/capabilities` reports
   `task_runner_rearm_contract_compiled=true`, a bounded
-  `task_runner_max_alarm_fires`, `task_runner_status_probe_compiled=true`, and
+  `task_runner_max_alarm_fires`,
+  `task_runner_storage_error_retry_contract_compiled=true`,
+  `task_runner_status_probe_compiled=true`, and
   `task_runner_cutover_ready=false`.
 - `GET /api/platform/task-runner/:task_id/status` returns only metadata:
   alarm/rearm timing, poll status, bounded reason, CAS ownership, observed

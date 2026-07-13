@@ -509,6 +509,7 @@ export type PlatformCapabilities = {
   task_runner_do_enabled: boolean
   task_runner_do_foundation_compiled: boolean
   task_runner_alarm_contract_compiled: boolean
+  task_runner_storage_error_retry_contract_compiled: boolean
   task_runner_rearm_contract_compiled: boolean
   task_runner_max_alarm_fires: number
   task_runner_submit_path_compiled: boolean

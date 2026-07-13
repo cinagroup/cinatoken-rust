@@ -91,6 +91,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   task_runner_do_enabled: false,
   task_runner_do_foundation_compiled: false,
   task_runner_alarm_contract_compiled: false,
+  task_runner_storage_error_retry_contract_compiled: false,
   task_runner_rearm_contract_compiled: false,
   task_runner_submit_path_compiled: false,
   task_runner_poll_path_compiled: false,
@@ -181,6 +182,7 @@ describe('Cloudflare platform readiness headline', () => {
         task_runner_do_available: true,
         task_runner_do_foundation_compiled: true,
         task_runner_alarm_contract_compiled: true,
+        task_runner_storage_error_retry_contract_compiled: true,
         task_runner_rearm_contract_compiled: true,
         task_runner_submit_path_compiled: true,
         task_runner_poll_path_compiled: true,
@@ -195,6 +197,50 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(
       summary.every((stage) => stage.complete),
       false
+    )
+  })
+
+  test('blocks TaskRunner implementation without the storage-error retry contract', () => {
+    const implementation = getStage(
+      buildPlatformReadinessSummary(
+        makeCapabilities({
+          task_runner_do_foundation_compiled: true,
+          task_runner_alarm_contract_compiled: true,
+          task_runner_storage_error_retry_contract_compiled: false,
+          task_runner_rearm_contract_compiled: true,
+          task_runner_submit_path_compiled: true,
+          task_runner_poll_path_compiled: true,
+          task_runner_status_probe_compiled: true,
+        })
+      ),
+      'implementation'
+    )
+
+    assert.equal(
+      implementation.signals.find(
+        (signal) => signal.id === 'task-runner-implementation'
+      )?.status,
+      'blocked'
+    )
+  })
+
+  test('blocks TaskRunner replay readiness without the storage-error retry contract', () => {
+    const smoke = getStage(
+      buildPlatformReadinessSummary(
+        makeCapabilities({
+          task_runner_do_available: true,
+          task_runner_do_enabled: true,
+          task_runner_storage_error_retry_contract_compiled: false,
+          task_runner_status_probe_compiled: true,
+        })
+      ),
+      'smoke'
+    )
+
+    assert.equal(
+      smoke.signals.find((signal) => signal.id === 'task-runner-replay')
+        ?.status,
+      'blocked'
     )
   })
 

@@ -10161,3 +10161,58 @@ Evidence boundary:
   run one route at a time, reconcile one provider call and one audit/settlement,
   execute the isolated negative/replay matrix, then return
   `WFP_RELAY_TRANSPORT_ENABLED=false`. Production remains **NO-GO**.
+
+## Durable Object Runtime Gate And Evidence Scoping (2026-07-13)
+
+Implementation:
+
+- Corrected `TaskRunner::load_record` so Durable Object storage access and
+  deserialization failures propagate through `/status` and `alarm`. Only an
+  undefined key maps to `None`; malformed state no longer silently disables the
+  alarm and suppresses Cloudflare retry.
+- Added the `storage_error_retry` cutover guard and
+  `task_runner_storage_error_retry_contract_compiled` capability. The admin
+  frontend and TaskRunner smoke contract require it but label it as compiled,
+  not remotely verified.
+- Added a Cloudflare Vitest/Miniflare runtime project that imports the release
+  `worker-build` artifact and its static `CompiledWasm` module. The root release
+  gate now runs this suite before the broader relay/frontend checks.
+- The suite exercises the real Rust Durable Object classes under Workerd: one
+  winner across eight simultaneous WFP authority consumes, replay rejection
+  after eviction, tamper and canonical-shard rejection, TaskRunner corrupt-state
+  alarm/status failure, and missing-record alarm no-op.
+- Replaced the paid-egress tool's broad `verified` boolean with scoped evidence:
+  `verificationScope`, `positiveRelayBillingVerified`,
+  `authorityNegativeMatrixVerified`, `replayVerified`,
+  `exactlyOneProviderCallVerified`, and `productionVerified`. Mock/dry-run
+  execution cannot promote remote or production fields.
+- Added and locked the official Cloudflare Workers Vitest integration. Vite was
+  raised outside the affected 7.0.0-7.3.4 advisory ranges; `bun audit` reports
+  zero known vulnerabilities for the resulting root test dependency graph.
+
+Verification completed locally:
+
+- `bun run build:worker` passed and produced the release Rust/Wasm artifact.
+- `vitest run --config vitest.do.config.mjs` passed all 5 lifecycle tests.
+- `bun run check` passed, including 14 frontend readiness tests, the TaskRunner
+  and WFP smoke contracts, all 21 D1 migrations, workspace tests, and Worker,
+  WFP tenant, and WFP outbound wasm32 checks.
+
+Production evidence boundary and next execution:
+
+1. Rotate the exposed Cloudflare credential and provision least-privilege,
+   environment-specific deploy and readback tokens. Do not reuse the exposed
+   value.
+2. Run the authenticated staging binding/readback collectors and archive only
+   redacted artifacts with explicit scope.
+3. Repeat the authority race on the deployed external DO binding, including
+   version rollout/redeploy and expiry cleanup. Record latency, throughput,
+   storage, alarms, and 409 distribution.
+4. Execute each paid WFP route as a separate reviewed invocation. Correlate the
+   central request ID across tenant, outbound Worker, AI Gateway/provider, D1
+   reserve, exactly one settlement/refund, and type-2 audit.
+5. Run the complete authority negative matrix and prove exactly one provider
+   call independently. Only then may the corresponding scoped booleans become
+   true. `productionVerified` remains false through staging.
+6. Disable WFP and TaskRunner canary gates, verify cron/central-relay rollback,
+   and retain production **NO-GO** until G8 sign-off.

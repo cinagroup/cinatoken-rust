@@ -27,6 +27,11 @@ use worker::{
 use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
 };
+use crate::quota_coordinator::{
+    quota_coordinator_contract_version, quota_coordinator_foundation_compiled,
+    quota_coordinator_observer_contract_compiled, QUOTA_COORD_BINDING,
+    QUOTA_COORD_SHADOW_ENABLED_ENV, QUOTA_COORD_STAGING_VERIFIED_ENV,
+};
 use crate::realtime_session::{
     realtime_billing_global_orphan_recovery_compiled, realtime_billing_orphan_recovery_enabled,
     realtime_billing_orphan_recovery_grace_seconds, realtime_billing_orphan_sweep_limit,
@@ -296,6 +301,18 @@ struct PlatformCapabilities {
     relay_retry_times: Option<u32>,
     channel_affinity_do_available: bool,
     realtime_sessions_do_available: bool,
+    quota_coordinator_contract_version: u32,
+    quota_coordinator_do_available: bool,
+    quota_coordinator_shadow_enabled: bool,
+    quota_coordinator_foundation_compiled: bool,
+    quota_coordinator_observer_contract_compiled: bool,
+    quota_coordinator_relay_observation_compiled: bool,
+    quota_coordinator_tiered_only: bool,
+    quota_coordinator_write_authority_enabled: bool,
+    quota_coordinator_staging_verified: bool,
+    quota_coordinator_shadow_runtime_ready: bool,
+    quota_coordinator_cutover_ready: bool,
+    quota_coordinator_cutover_guards: Vec<&'static str>,
     wfp_dispatch_binding_available: bool,
     wfp_dispatch_enabled: bool,
     wfp_internal_dispatch_enabled: bool,
@@ -597,6 +614,36 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_cross_model_fallback_staging_verified,
     );
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
+    let quota_coordinator_contract_version = quota_coordinator_contract_version();
+    let quota_coordinator_do_available = env.durable_object(QUOTA_COORD_BINDING).is_ok();
+    let quota_coordinator_shadow_enabled = env_flag(&env, QUOTA_COORD_SHADOW_ENABLED_ENV);
+    let quota_coordinator_foundation_compiled = quota_coordinator_foundation_compiled();
+    let quota_coordinator_observer_contract_compiled =
+        quota_coordinator_observer_contract_compiled();
+    // M4 is observation-only until relay emission and the staging shadow bake
+    // are proven. No configuration flag can turn this into write authority.
+    let quota_coordinator_relay_observation_compiled = false;
+    let quota_coordinator_tiered_only = true;
+    let quota_coordinator_write_authority_enabled = false;
+    let quota_coordinator_staging_verified = env_flag(&env, QUOTA_COORD_STAGING_VERIFIED_ENV);
+    let quota_coordinator_shadow_runtime_ready = quota_coordinator_shadow_runtime_ready(
+        quota_coordinator_do_available,
+        quota_coordinator_shadow_enabled,
+        quota_coordinator_foundation_compiled,
+        quota_coordinator_observer_contract_compiled,
+        quota_coordinator_relay_observation_compiled,
+        quota_coordinator_tiered_only,
+        quota_coordinator_write_authority_enabled,
+    );
+    let quota_coordinator_cutover_ready = quota_coordinator_cutover_ready(
+        quota_coordinator_do_available,
+        quota_coordinator_foundation_compiled,
+        quota_coordinator_observer_contract_compiled,
+        quota_coordinator_relay_observation_compiled,
+        quota_coordinator_tiered_only,
+        quota_coordinator_staging_verified,
+        quota_coordinator_write_authority_enabled,
+    );
     let relay_billing_reservation_ledger_compiled = relay_billing_reservation_ledger_compiled();
     let relay_billing_ledger_status_compiled = true;
     let relay_billing_owner_deadline_runtime = relay_billing_reservation_lease_runtime_status(&env);
@@ -968,6 +1015,18 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_retry_times: relay_retry_times_from_env(&env),
         channel_affinity_do_available: env.durable_object("CHANNEL_AFFINITY").is_ok(),
         realtime_sessions_do_available,
+        quota_coordinator_contract_version,
+        quota_coordinator_do_available,
+        quota_coordinator_shadow_enabled,
+        quota_coordinator_foundation_compiled,
+        quota_coordinator_observer_contract_compiled,
+        quota_coordinator_relay_observation_compiled,
+        quota_coordinator_tiered_only,
+        quota_coordinator_write_authority_enabled,
+        quota_coordinator_staging_verified,
+        quota_coordinator_shadow_runtime_ready,
+        quota_coordinator_cutover_ready,
+        quota_coordinator_cutover_guards: quota_coordinator_cutover_guards(),
         wfp_dispatch_binding_available,
         wfp_dispatch_enabled,
         wfp_internal_dispatch_enabled,
@@ -2804,6 +2863,54 @@ fn realtime_session_cutover_guards() -> Vec<&'static str> {
     REALTIME_SESSION_CUTOVER_GUARDS.to_vec()
 }
 
+fn quota_coordinator_cutover_guards() -> Vec<&'static str> {
+    vec![
+        "quota_coord_binding",
+        "shadow_gate",
+        "tiered_only",
+        "observer_contract",
+        "relay_observation",
+        "staging_shadow_bake",
+        "write_authority",
+    ]
+}
+
+fn quota_coordinator_shadow_runtime_ready(
+    binding_available: bool,
+    shadow_enabled: bool,
+    foundation_compiled: bool,
+    observer_contract_compiled: bool,
+    relay_observation_compiled: bool,
+    tiered_only: bool,
+    write_authority_enabled: bool,
+) -> bool {
+    binding_available
+        && shadow_enabled
+        && foundation_compiled
+        && observer_contract_compiled
+        && relay_observation_compiled
+        && tiered_only
+        && !write_authority_enabled
+}
+
+fn quota_coordinator_cutover_ready(
+    binding_available: bool,
+    foundation_compiled: bool,
+    observer_contract_compiled: bool,
+    relay_observation_compiled: bool,
+    tiered_only: bool,
+    staging_verified: bool,
+    write_authority_enabled: bool,
+) -> bool {
+    binding_available
+        && foundation_compiled
+        && observer_contract_compiled
+        && relay_observation_compiled
+        && tiered_only
+        && staging_verified
+        && write_authority_enabled
+}
+
 fn is_relay_ai_gateway_router_ready(
     router_enabled: bool,
     account_configured: bool,
@@ -3539,6 +3646,33 @@ mod tests {
         assert!(guards.contains(&"status_probe"));
         assert!(!is_task_runner_cutover_ready(
             true, true, true, true, true, true, true, true, true, false
+        ));
+    }
+
+    #[test]
+    fn quota_coordinator_foundation_is_visible_without_runtime_or_cutover_claims() {
+        assert!(quota_coordinator_foundation_compiled());
+        assert!(quota_coordinator_observer_contract_compiled());
+        let guards = quota_coordinator_cutover_guards();
+        for guard in [
+            "quota_coord_binding",
+            "shadow_gate",
+            "tiered_only",
+            "observer_contract",
+            "relay_observation",
+            "staging_shadow_bake",
+            "write_authority",
+        ] {
+            assert!(guards.contains(&guard));
+        }
+        assert!(!quota_coordinator_shadow_runtime_ready(
+            true, true, true, true, false, true, false,
+        ));
+        assert!(!quota_coordinator_cutover_ready(
+            true, true, true, false, true, true, true,
+        ));
+        assert!(quota_coordinator_cutover_ready(
+            true, true, true, true, true, true, true,
         ));
     }
 

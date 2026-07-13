@@ -326,6 +326,25 @@ Settlement owns through `lease_expires_at + 300` inclusive; automated recovery
 owns only from `lease_expires_at + 301`. Any boundary violation or unexplained
 generation jump is an immediate G3/G4 abort.
 
+### QuotaCoordinator Shadow Rollback Order
+
+The current QuotaCoordinator is observation-only. It must never be used as a
+quota correction source during rollback.
+
+1. Set `QUOTA_COORD_SHADOW_ENABLED=false` before changing relay traffic.
+2. Stop every reserve/finalize/Queue/recovery observation producer and drain the
+   asynchronous comparison pipeline.
+3. Confirm D1 reservation, quota, channel usage, request count, audit, Queue,
+   and recovery processing continue without consulting the DO.
+4. Preserve redacted DO summaries and mismatch evidence. Do not delete a
+   namespace during an incident and do not compensate from observer state.
+5. Route the selected scope to Go/VPS if the underlying D1 financial path is
+   also suspect, then reconcile from D1/provider/audit evidence.
+
+`QUOTA_COORD_STAGING_VERIFIED` is evidence metadata, not a runtime override.
+Rollback is complete only when shadow runtime readiness is false and no
+financial behavior depends on the DO.
+
 ### Secret Rollback
 
 Use if any secret may have leaked.

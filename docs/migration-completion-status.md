@@ -557,3 +557,23 @@ not close production readiness. Queue and reconcile gates remain false. Remote
 retry/D1/identity/race fault drills, provider/accounting reconciliation,
 credential rotation, canary, and rollback remain blockers. Production remains
 **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Shadow Foundation Status
+
+M4 now has a local pure Rust observer state machine and a deterministic per-token
+`QuotaCoordinator` Durable Object. The observer contract is tiered-expression-
+only, strict and versioned; state updates are atomic, bounded, idempotent, and
+summary-only at the status boundary. Wrangler declares the SQLite-backed class
+in every tracked environment, and local Workerd restores the same summary after
+eviction.
+
+This does not move billing authority. Both M4 gates remain false, no relay or
+Queue/recovery producer emits observations, the shadow diff pipeline is absent,
+write authority is false, and cutover readiness is false. D1 remains the only
+financial writer. The frontend reflects these separate stages instead of
+collapsing a compiled binding into a readiness claim.
+
+Complete producer coverage, long-lived-token retention/compaction, bounded
+storage/load evidence, observability, a signed disable-first rollback drill, and
+at least 30 days of staging zero-diff reconciliation remain required before even
+read authority can be discussed. Production remains **NO-GO**.

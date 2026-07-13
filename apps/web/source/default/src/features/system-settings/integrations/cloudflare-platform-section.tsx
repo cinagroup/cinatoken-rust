@@ -30,6 +30,7 @@ import type { PlatformCapabilities, TaskRunnerStatusProbe } from '../types'
 import {
   buildPlatformReadinessSummary,
   getPlatformReadinessSignalLabel,
+  getQuotaCoordinatorReadiness,
   type PlatformReadinessSignal,
   type PlatformReadinessStage,
 } from './cloudflare-platform-readiness'
@@ -292,8 +293,27 @@ function getReadinessSignalStatus(
 ) {
   switch (signal.status) {
     case 'ready':
+      if (
+        signal.id === 'quota-coordinator-foundation' ||
+        signal.id === 'quota-coordinator-relay-observer'
+      ) {
+        return t('Compiled')
+      }
+      if (signal.id === 'quota-coordinator-binding') return t('Bound')
+      if (signal.id === 'quota-coordinator-shadow-runtime') {
+        return t('Runtime ready')
+      }
+      if (signal.id === 'quota-coordinator-write-authority') {
+        return t('Enabled')
+      }
+      if (signal.id === 'quota-coordinator-cutover') {
+        return t('Cutover-ready')
+      }
       return t('Ready')
     case 'verified':
+      if (signal.id === 'quota-coordinator-staging-bake') {
+        return t('Staging verified')
+      }
       return t('Verified')
     case 'ready-to-verify':
       return t('Ready to verify')
@@ -336,6 +356,9 @@ function buildCapabilityGroups(
   const schedulingGatewayPrecedence =
     capabilities.scheduling_gateway_route_precedence.join(' -> ') ||
     t('Unavailable')
+  const quotaCoordinatorGuards =
+    capabilities.quota_coordinator_cutover_guards.join(', ') || t('No guards')
+  const quotaCoordinator = getQuotaCoordinatorReadiness(capabilities)
 
   return [
     {
@@ -364,6 +387,115 @@ function buildCapabilityGroups(
           ready: capabilities.scheduling_gateway_preview_fail_closed_compiled,
           readyLabel: t('Fail closed'),
           missingLabel: t('Fallback risk'),
+        },
+      ],
+    },
+    {
+      title: t('QuotaCoordinator'),
+      description: t(
+        'Shadow-first, tiered-only quota coordination with D1 retaining write authority until every production gate passes.'
+      ),
+      rows: [
+        {
+          label: t('Foundation'),
+          description: t(
+            'Contract version {{version}} must compile with the tiered-only scope intact.',
+            { version: capabilities.quota_coordinator_contract_version }
+          ),
+          ready: quotaCoordinator.foundation,
+          readyLabel: t('Compiled'),
+          missingLabel: capabilities.quota_coordinator_tiered_only
+            ? t('Blocked')
+            : t('Scope unsafe'),
+        },
+        {
+          label: t('Binding'),
+          description: t(
+            'The QUOTA_COORD Durable Object binding is present, but binding alone does not establish runtime readiness.'
+          ),
+          ready: quotaCoordinator.binding,
+          readyLabel: t('Bound'),
+          missingLabel: capabilities.quota_coordinator_do_available
+            ? t('Foundation blocked')
+            : t('Missing'),
+          missingVariant: 'neutral',
+        },
+        {
+          label: t('Shadow gate'),
+          description: t(
+            'The default-off shadow gate, binding, and observer must all pass before the backend may report shadow runtime readiness.'
+          ),
+          ready: quotaCoordinator.shadowRuntime,
+          readyLabel: t('Runtime ready'),
+          missingLabel: !capabilities.quota_coordinator_shadow_enabled
+            ? t('Disabled')
+            : !quotaCoordinator.relayObserver
+              ? t('Observer blocked')
+              : t('Runtime blocked'),
+          missingVariant: capabilities.quota_coordinator_shadow_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Relay observer'),
+          description: t(
+            'Requires both the observer contract and the relay observation path; neither grants quota write authority.'
+          ),
+          ready: quotaCoordinator.relayObserver,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Incomplete'),
+        },
+        {
+          label: t('Staging bake'),
+          description: t(
+            'Accepts staging proof only after the bound shadow runtime and relay observer are active.'
+          ),
+          ready: quotaCoordinator.stagingBake,
+          readyLabel: t('Staging verified'),
+          missingLabel: !quotaCoordinator.shadowRuntime
+            ? t('Runtime blocked')
+            : t('Awaiting staging proof'),
+          missingVariant: capabilities.quota_coordinator_shadow_enabled
+            ? 'warning'
+            : 'neutral',
+        },
+        {
+          label: t('Write authority'),
+          description: t(
+            'QuotaCoordinator may become authoritative only after the observer-backed staging bake passes.'
+          ),
+          ready: quotaCoordinator.writeAuthority,
+          readyLabel: t('Enabled'),
+          missingLabel: capabilities.quota_coordinator_write_authority_enabled
+            ? t('Prerequisites blocked')
+            : t('D1 authoritative'),
+          missingVariant:
+            capabilities.quota_coordinator_write_authority_enabled &&
+            !quotaCoordinator.writeAuthority
+              ? 'red'
+              : 'neutral',
+        },
+        {
+          label: t('Cutover'),
+          description: t(
+            'Fail-closed cutover requires write authority, backend approval, and {{count}} declared guards: {{guards}}',
+            {
+              count: capabilities.quota_coordinator_cutover_guards.length,
+              guards: quotaCoordinatorGuards,
+            }
+          ),
+          ready: quotaCoordinator.cutover,
+          readyLabel: t('Cutover-ready'),
+          missingLabel:
+            capabilities.quota_coordinator_cutover_ready &&
+            capabilities.quota_coordinator_cutover_guards.length === 0
+              ? t('Guards missing')
+              : t('Blocked'),
+          missingVariant:
+            capabilities.quota_coordinator_cutover_ready &&
+            !quotaCoordinator.cutover
+              ? 'red'
+              : 'neutral',
         },
       ],
     },
@@ -422,8 +554,7 @@ function buildCapabilityGroups(
                 capabilities.relay_billing_prebind_owner_generation_contract_version,
             }
           ),
-          ready:
-            capabilities.relay_billing_prebind_owner_generation_compiled,
+          ready: capabilities.relay_billing_prebind_owner_generation_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Blocked'),
         },
@@ -436,8 +567,7 @@ function buildCapabilityGroups(
                 capabilities.relay_billing_prebind_owner_deadline_seconds,
             }
           ),
-          ready:
-            capabilities.relay_billing_prebind_owner_generation_configured,
+          ready: capabilities.relay_billing_prebind_owner_generation_configured,
           readyLabel: t('Configured'),
           missingLabel:
             !capabilities.relay_billing_prebind_owner_generation_schema_ready
@@ -464,8 +594,8 @@ function buildCapabilityGroups(
             'Requires all {{count}} generation guards, the exact D1 schema, durable finalization, and staging race proof.',
             {
               count:
-                capabilities.relay_billing_prebind_owner_generation_cutover_guards
-                  .length,
+                capabilities
+                  .relay_billing_prebind_owner_generation_cutover_guards.length,
             }
           ),
           ready:

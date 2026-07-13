@@ -21,6 +21,8 @@ import {
 const authoritySecret = "0123456789abcdef0123456789abcdef";
 const workerName = "tenant-runtime-test";
 const taskRunnerRecordKey = "task_runner_record_v1";
+const quotaCoordinatorStateKey = "quota_coordinator_state_v1";
+const quotaTokenIdHeader = "x-cinatoken-quota-token-id";
 const wfpRouteHeader = "x-cinatoken-wfp-route";
 const wfpWorkerHeader = "x-cinatoken-wfp-worker";
 const realtimeModel = "gpt-4o-realtime-preview";
@@ -37,6 +39,254 @@ afterEach(async () => {
 });
 
 describe("Rust Durable Object lifecycle contracts", () => {
+  it("applies quota reserve replay and settle atomically across eviction", async () => {
+    const tokenId = 701;
+    const reservationFingerprint = quotaHex("b");
+    const stub = quotaCoordinatorStub(tokenId);
+    const reserve = {
+      contract_version: 1,
+      kind: "reserve",
+      operation_id: quotaHex("a"),
+      reservation_fingerprint: reservationFingerprint,
+      generation: 1,
+      reserved_quota: 120,
+      final_quota: 0,
+      request_count: 0,
+    };
+
+    expect((await observeQuota(stub, tokenId, reserve)).status).toBe(204);
+    const afterReserve = await quotaCoordinatorStatus(stub, tokenId);
+    expect(afterReserve.response.status).toBe(200);
+    expect(afterReserve.status).toMatchObject({
+      contract_version: 1,
+      observation_count: 1,
+      applied_count: 1,
+      replay_count: 0,
+      conflict_count: 0,
+      reserve_count: 1,
+      settle_count: 0,
+      active_reservations: 1,
+      terminal_reservations: 0,
+      outstanding_quota: 120,
+      reserved_quota: 120,
+      final_quota: 0,
+    });
+    expect(afterReserve.status.reservations).toBeUndefined();
+    expect(JSON.stringify(afterReserve.status)).not.toContain(
+      reservationFingerprint,
+    );
+
+    expect((await observeQuota(stub, tokenId, reserve)).status).toBe(204);
+    const afterReplay = await quotaCoordinatorStatus(stub, tokenId);
+    expect(afterReplay.status).toMatchObject({
+      observation_count: 2,
+      applied_count: 1,
+      replay_count: 1,
+      conflict_count: 0,
+      active_reservations: 1,
+      outstanding_quota: 120,
+    });
+    expect(
+      (
+        await observeQuota(stub, tokenId, {
+          ...reserve,
+          reserved_quota: 121,
+        })
+      ).status,
+    ).toBe(409);
+
+    expect(
+      (
+        await observeQuota(stub, tokenId, {
+          contract_version: 1,
+          kind: "settle",
+          operation_id: quotaHex("c"),
+          reservation_fingerprint: reservationFingerprint,
+          generation: 2,
+          reserved_quota: 120,
+          final_quota: 75,
+          request_count: 1,
+        })
+      ).status,
+    ).toBe(204);
+    const afterSettle = await quotaCoordinatorStatus(stub, tokenId);
+    expect(afterSettle.status).toMatchObject({
+      contract_version: 1,
+      observation_count: 4,
+      applied_count: 2,
+      replay_count: 1,
+      conflict_count: 1,
+      reserve_count: 1,
+      settle_count: 1,
+      refund_count: 0,
+      active_reservations: 0,
+      terminal_reservations: 1,
+      outstanding_quota: 0,
+      reserved_quota: 120,
+      final_quota: 75,
+      user_net_delta: -75,
+      token_net_delta: -75,
+      channel_used_quota: 75,
+      request_count: 1,
+    });
+    expect(JSON.stringify(afterSettle.status)).not.toContain(
+      reservationFingerprint,
+    );
+
+    await evictDurableObject(stub);
+    const afterEviction = await quotaCoordinatorStatus(stub, tokenId);
+    expect(afterEviction.response.status).toBe(200);
+    expect(afterEviction.status).toEqual(afterSettle.status);
+  });
+
+  it("serializes concurrent quota observations for one token", async () => {
+    const tokenId = 703;
+    const stub = quotaCoordinatorStub(tokenId);
+    const reservationIds = [..."12345678"];
+    const fingerprintIds = [..."abcdef01"];
+    const reserves = reservationIds.map((id, index) => ({
+      contract_version: 1,
+      kind: "reserve",
+      operation_id: quotaHex(id),
+      reservation_fingerprint: quotaHex(fingerprintIds[index]),
+      generation: 1,
+      reserved_quota: 10 + index,
+      final_quota: 0,
+      request_count: 0,
+    }));
+
+    const reserveResponses = await Promise.all(
+      reserves.map((observation) => observeQuota(stub, tokenId, observation)),
+    );
+    expect(reserveResponses.map(({ status }) => status)).toEqual(
+      Array(8).fill(204),
+    );
+
+    const terminal = {
+      ...reserves[0],
+      kind: "settle",
+      operation_id: quotaHex("9"),
+      generation: 2,
+      final_quota: 7,
+      request_count: 1,
+    };
+    const terminalResponses = await Promise.all(
+      Array.from({ length: 8 }, () => observeQuota(stub, tokenId, terminal)),
+    );
+    expect(terminalResponses.map(({ status }) => status)).toEqual(
+      Array(8).fill(204),
+    );
+
+    const { status } = await quotaCoordinatorStatus(stub, tokenId);
+    expect(status).toMatchObject({
+      observation_count: 16,
+      applied_count: 9,
+      replay_count: 7,
+      conflict_count: 0,
+      reserve_count: 8,
+      settle_count: 1,
+      active_reservations: 7,
+      terminal_reservations: 1,
+      final_quota: 7,
+      request_count: 1,
+    });
+  });
+
+  it("enforces the quota observer protocol and propagates corrupt state", async () => {
+    const tokenId = 702;
+    const stub = quotaCoordinatorStub(tokenId);
+    const headers = { [quotaTokenIdHeader]: `${tokenId}` };
+
+    expect(
+      (
+        await stub.fetch("https://quota-coordinator.internal/observe", {
+          method: "GET",
+          headers,
+        })
+      ).status,
+    ).toBe(405);
+    expect(
+      (
+        await stub.fetch("https://quota-coordinator.internal/observe", {
+          method: "POST",
+          headers: { ...headers, "content-type": "text/plain" },
+          body: "{}",
+        })
+      ).status,
+    ).toBe(415);
+    expect(
+      (
+        await stub.fetch("https://quota-coordinator.internal/observe", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: "{not-json}",
+        })
+      ).status,
+    ).toBe(422);
+    expect(
+      (
+        await stub.fetch("https://quota-coordinator.internal/observe", {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: `"${"x".repeat(16 * 1024)}"`,
+        })
+      ).status,
+    ).toBe(413);
+    expect(
+      (
+        await stub.fetch("https://quota-coordinator.internal/status", {
+          headers,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await stub.fetch("https://quota-coordinator.internal/status", {
+          headers: { [quotaTokenIdHeader]: `${tokenId + 1}` },
+        })
+      ).status,
+    ).toBe(409);
+
+    expect(
+      (
+        await observeQuota(stub, tokenId, {
+          contract_version: 1,
+          kind: "settle",
+          operation_id: quotaHex("d"),
+          reservation_fingerprint: quotaHex("e"),
+          generation: 2,
+          reserved_quota: 1,
+          final_quota: 1,
+          request_count: 1,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await observeQuota(stub, tokenId, {
+          contract_version: 1,
+          kind: "reserve",
+          operation_id: quotaHex("f"),
+          reservation_fingerprint: quotaHex("1"),
+          generation: 1,
+          reserved_quota: -1,
+          final_quota: 0,
+          request_count: 0,
+        })
+      ).status,
+    ).toBe(422);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put(quotaCoordinatorStateKey, {
+        contract_version: "corrupt",
+      });
+      return new Response(null);
+    });
+    await expect(
+      stub.fetch("https://quota-coordinator.internal/status", { headers }),
+    ).rejects.toThrow(/failed to decode QuotaCoordinator storage/u);
+  });
+
   it("allows exactly one concurrent authority replay winner", async () => {
     const authority = await signedAuthority({
       requestId: "runtime-concurrent",
@@ -472,8 +722,28 @@ describe("Rust Durable Object lifecycle contracts", () => {
         relay_billing_prebind_owner_generation_cutover_ready: false,
         relay_billing_orphan_recovery_ready: false,
         relay_billing_orphan_recovery_cutover_ready: false,
+        quota_coordinator_contract_version: 1,
+        quota_coordinator_do_available: true,
+        quota_coordinator_shadow_enabled: false,
+        quota_coordinator_foundation_compiled: true,
+        quota_coordinator_observer_contract_compiled: true,
+        quota_coordinator_relay_observation_compiled: false,
+        quota_coordinator_tiered_only: true,
+        quota_coordinator_write_authority_enabled: false,
+        quota_coordinator_staging_verified: false,
+        quota_coordinator_shadow_runtime_ready: false,
+        quota_coordinator_cutover_ready: false,
       },
     });
+    expect(payload.data.quota_coordinator_cutover_guards).toEqual([
+      "quota_coord_binding",
+      "shadow_gate",
+      "tiered_only",
+      "observer_contract",
+      "relay_observation",
+      "staging_shadow_bake",
+      "write_authority",
+    ]);
     expect(
       payload.data.relay_billing_prebind_owner_generation_cutover_guards,
     ).toEqual([
@@ -1161,6 +1431,34 @@ describe("Rust Durable Object lifecycle contracts", () => {
 function replayStub(issuedAt) {
   const bucket = `${workerName}:${Math.floor(issuedAt / 60)}`;
   return env.WFP_AUTHORITY_REPLAY.getByName(bucket);
+}
+
+function quotaCoordinatorStub(tokenId) {
+  return env.QUOTA_COORD.getByName(`token:${tokenId}`);
+}
+
+function quotaHex(character) {
+  return character.repeat(64);
+}
+
+async function observeQuota(stub, tokenId, observation) {
+  const response = await stub.fetch("https://quota-coordinator.internal/observe", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [quotaTokenIdHeader]: `${tokenId}`,
+    },
+    body: JSON.stringify(observation),
+  });
+  await response.arrayBuffer();
+  return response;
+}
+
+async function quotaCoordinatorStatus(stub, tokenId) {
+  const response = await stub.fetch("https://quota-coordinator.internal/status", {
+    headers: { [quotaTokenIdHeader]: `${tokenId}` },
+  });
+  return { response, status: await response.json() };
 }
 
 function consumeAuthority(stub, token) {

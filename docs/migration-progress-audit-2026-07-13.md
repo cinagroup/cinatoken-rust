@@ -99,8 +99,9 @@ for isolated staging, not an all-traffic production declaration.
 
 ### Data, Billing, Auth, Payments, And Tasks
 
-- D1 has 23 contiguous migrations and the local SQLite verifier expects 29
-  required tables, 105 incremental columns, and 20 key indexes.
+- D1 now has 26 contiguous migrations and the local SQLite verifier expects 30
+  required tables, 126 incremental columns, and 23 key indexes. Earlier audit
+  addenda retain their contemporaneous counts as historical evidence.
 - Deterministic source-to-D1 reconciliation tooling exists for core entities,
   topups, Passkeys, TOTP, and backup codes. No production freeze/export/import/
   hash artifact has been supplied.
@@ -176,8 +177,9 @@ correct fail-closed state.
 
 1. Rotate the exposed Cloudflare credential and create scoped staging and
    production credentials; do not reuse the exposed value.
-2. Apply and verify all 23 D1 migrations in isolated staging, then run the full
-   production-source reconciliation toolchain against a controlled snapshot.
+2. Apply and verify all 26 D1 migrations in isolated staging, including the
+   migration-0026 zero-active-reservation guard, then run the full production-
+   source reconciliation toolchain against a controlled snapshot.
 3. Deploy the main Worker and frontend to a staging hostname and execute the
    browser/API owner matrix before enabling any paid transport.
 4. Attach and read back the Rust WFP tenant/outbound topology, prove no tenant
@@ -225,3 +227,31 @@ replay staging proof. Those finalization fields are false. The correct next
 implementation order is pre-bind generation CAS, instrumented single-stream
 observation with bounded state, durable frozen-snapshot finalization replay,
 then the deployed termination/recovery matrix. Production remains **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Shadow Foundation Addendum
+
+M4 is no longer unstarted, but it is deliberately not runtime-ready. A pure
+Rust state machine now models tiered-expression reserve, settle, and refund
+observations with strict versioned input, checked arithmetic, idempotent replay,
+persisted conflict counters, and bounded state. A per-token Durable Object
+stores that state in one atomic storage transaction, exposes only redacted
+aggregate status, restores across local eviction, and is declared as a new
+SQLite-backed class in default, staging, and production configuration.
+
+The capability API and Bun/React operations panel distinguish foundation,
+binding, shadow gate, relay producer, staging bake, write authority, and cutover.
+Both configuration gates are false. Relay observation is explicitly reported
+uncompiled, write authority is false, and no flag combination can make shadow
+runtime or cutover ready. D1 therefore remains the sole financial writer.
+
+This closes only the local foundation slice. Before shadow can be enabled, the
+implementation must observe every tiered reservation and every terminal path,
+including synchronous settle/refund, billing Queue finalization, and orphan
+recovery; prove that observation failures cannot alter financial success; move
+diff work off the hot path; and define a measured retention/compaction policy
+that cannot saturate a long-lived token. Staging then needs eviction, duplicate,
+race, corruption, storage-size, throughput, alert, rollback, and zero-diff
+evidence for at least 30 days. Read or write authority remains out of scope.
+
+No credential, remote namespace, migration, provider request, or deployment was
+used. Production remains **NO-GO**.

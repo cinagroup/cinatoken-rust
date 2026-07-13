@@ -433,6 +433,18 @@ export type PlatformCapabilities = {
   relay_ai_gateway_cross_model_fallback_cutover_guards: string[]
   relay_retry_times: number | null
   channel_affinity_do_available: boolean
+  quota_coordinator_contract_version: number
+  quota_coordinator_do_available: boolean
+  quota_coordinator_shadow_enabled: boolean
+  quota_coordinator_foundation_compiled: boolean
+  quota_coordinator_observer_contract_compiled: boolean
+  quota_coordinator_relay_observation_compiled: boolean
+  quota_coordinator_tiered_only: boolean
+  quota_coordinator_write_authority_enabled: boolean
+  quota_coordinator_staging_verified: boolean
+  quota_coordinator_shadow_runtime_ready: boolean
+  quota_coordinator_cutover_ready: boolean
+  quota_coordinator_cutover_guards: string[]
   realtime_sessions_do_available: boolean
   wfp_dispatch_binding_available: boolean
   wfp_dispatch_enabled: boolean

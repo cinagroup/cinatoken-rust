@@ -622,6 +622,17 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 
 | Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_refund_batch_compiled=true`, `task_poller_refund_replay_contract_compiled=true`, `task_poller_timeout_sweep_enabled=true`, `task_runner_do_available=true`, `task_runner_do_foundation_compiled=true`, `task_runner_alarm_contract_compiled=true`, `task_runner_rearm_contract_compiled=true`, `task_runner_storage_error_retry_contract_compiled=true`, `task_runner_submit_path_compiled=true`, `task_runner_poll_path_compiled=true`, `task_runner_status_probe_compiled=true`, `task_runner_staging_replay_verified=false`, `task_runner_cutover_ready=false`, and the expected query/timeout values before async task canary. Run `bun run check:task-refund-batch`, `bun run check:task-runner:alarm-replay-contract`, `bun run check:task-runner:alarm-replay-plan`, and `bun run check:do-lifecycle-runtime` locally and attach their output before staging D1 replay. |
 
+### QuotaCoordinator shadow foundation
+
+| Item | Requirement |
+| --- | --- |
+| `QUOTA_COORD` | SQLite-backed, per-token Durable Object binding for tiered-expression shadow state only. It is not financial authority, and no public route may expose its internal observe/status endpoints. |
+| `QUOTA_COORD_SHADOW_ENABLED` | Plain var, default `false`. Enable only after relay, Queue finalizer, and orphan-recovery observation producers are all compiled and audited. The foundation alone must keep runtime readiness false. |
+| `QUOTA_COORD_STAGING_VERIFIED` | Plain var, default `false`. It is an evidence marker for a bounded zero-diff staging bake and must never be set from local tests, binding presence, or a direct DO smoke. |
+| Capability probe | Require the foundation, binding, observer contract, tiered-only scope, no-write-authority, relay-observation, staging-bake, runtime-readiness, and cutover fields separately. Until the producer is wired, `quota_coordinator_relay_observation_compiled`, `quota_coordinator_shadow_runtime_ready`, and `quota_coordinator_cutover_ready` must remain false. |
+| Local config evidence | `bun run check:cf:quota-coordinator` proves all three environments declare the same v6 SQLite class migration and keep shadow/proof flags false. It is not staging or financial parity evidence. |
+| Storage/load gate | The foundation serializes one bounded state value. Before enabling shadow, measure default and worst-case bytes, CPU, and latency under long-lived hot-token load; retain operational headroom below Cloudflare's [SQLite-backed DO 2 MiB combined key/value limit](https://developers.cloudflare.com/durable-objects/platform/limits/), and define compaction plus saturation alerts. Capacity conflict is a blocker, not successful shadow evidence. |
+
 ## Observability Checklist
 
 Detailed sampling, dashboard, alert, SLO, and redaction gates are tracked in
@@ -640,7 +651,8 @@ Detailed sampling, dashboard, alert, SLO, and redaction gates are tracked in
 
 G1 can pass only when:
 
-1. `bun run check:d1:migration-config` and `bun run verify:sqlite` pass.
+1. `bun run check:d1:migration-config`, `bun run verify:sqlite`, and
+   `bun run check:cf:quota-coordinator` pass.
 2. Any exposed Cloudflare credential is revoked/rotated and the replacement
    credential is validated without recording its value.
 3. Authenticated Wrangler output proves the intended account and staging D1
@@ -651,11 +663,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `25`, latest/expected
-    `0025_relay_billing_finalization_incidents.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `26`, latest/expected
+    `0026_relay_billing_owner_generation.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0025 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0026 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely

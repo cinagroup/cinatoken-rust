@@ -49,6 +49,8 @@ export default defineConfig({
           RELAY_BILLING_FINALIZATION_QUEUE_ENABLED: "true",
           RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED: "true",
           RELAY_MISSING_USAGE_ESTIMATE_ENABLED: "true",
+          QUOTA_COORD_SHADOW_ENABLED: "false",
+          QUOTA_COORD_STAGING_VERIFIED: "false",
           TEST_D1_MIGRATIONS: d1Migrations,
         },
         d1Databases: { DB: "do-runtime-test" },
@@ -85,6 +87,10 @@ export default defineConfig({
           },
           WFP_AUTHORITY_REPLAY: "WfpAuthorityReplay",
           TASK_RUNNER: "TaskRunner",
+          QUOTA_COORD: {
+            className: "QuotaCoordinator",
+            useSQLite: true,
+          },
         },
         workers: [
           {

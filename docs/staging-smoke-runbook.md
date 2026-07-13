@@ -1665,3 +1665,45 @@ reservation fingerprint, generation transitions, timestamps, Queue attempts,
 provider-call count, accounting before/after, audit identity, and rollback.
 Any raw credential, mutable-price replay, generation reuse, double mutation,
 pending row, or second provider call is an abort.
+
+## Phase 4g: QuotaCoordinator Tiered Shadow Foundation
+
+Do not run this phase until the exposed credential is rotated, the exact
+candidate is deployed with `QUOTA_COORD_SHADOW_ENABLED=false`, and every
+financial path remains D1-authoritative. The class binding alone is not a pass.
+
+Preconditions:
+
+1. Authenticated configuration readback proves one SQLite-backed
+   `QuotaCoordinator` class in staging and no namespace reuse with production.
+   Capabilities must report foundation/binding true and relay observation,
+   shadow runtime, write authority, staging proof, and cutover false.
+2. A producer-coverage audit maps tiered reserve, synchronous settle/refund,
+   billing Queue finalize/replay, and orphan recovery to exactly one observer
+   emission after the corresponding D1 outcome. Flat billing emits none.
+3. Load evidence defines safe active/terminal capacity, serialized state-size
+   headroom, compaction/retention behavior, alert thresholds, and expected cost
+   for long-lived hot tokens. Capacity saturation before that evidence is an
+   abort, not a successful shadow result.
+
+Execution:
+
+1. With the gate false, run representative tiered requests and prove zero DO
+   mutation and unchanged D1 accounting.
+2. Enable shadow for isolated tokens only. Exercise reserve, exact replay,
+   payload conflict, settle-above/below reserve, refund, Queue duplicate,
+   orphan recovery, Worker replacement, DO eviction, and malformed/corrupt
+   state. D1 must remain the sole mutation source in every case.
+3. Reconcile user/token quota, channel used quota, request count, reservation
+   generation, terminal disposition, and audit identity off the request path.
+   Archive only hashes and aggregate deltas.
+4. Disable shadow before rollback traffic changes. Prove requests and all D1
+   finalizers continue normally, drain observer/reconciliation work, and retain
+   DO state only as non-authoritative evidence.
+5. Repeat for at least 30 days. Set `QUOTA_COORD_STAGING_VERIFIED=true` only
+   after zero unexplained deltas, no state-size/capacity breach, alert/rollback
+   drills, and data/billing/SRE owner signatures.
+
+This phase cannot grant read or write authority. Any observer-driven quota
+mutation, hot-path comparison latency, raw token/reservation identifier, false
+ready capability, or unexplained delta is an immediate G4/G5/G7 abort.

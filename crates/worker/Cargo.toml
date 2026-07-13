@@ -18,6 +18,7 @@ cinatoken-auth = { path = "../auth" }
 cinatoken-billing = { path = "../billing" }
 cinatoken-cache = { path = "../cache" }
 cinatoken-core = { path = "../core" }
+cinatoken-coordinator = { path = "../coordinator" }
 cinatoken-gateway = { path = "../gateway" }
 cinatoken-payments = { path = "../payments" }
 cinatoken-providers = { path = "../providers" }

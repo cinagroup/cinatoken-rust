@@ -189,6 +189,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cinatoken-coordinator"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cinatoken-core"
 version = "0.1.0"
 dependencies = [
@@ -362,6 +371,7 @@ dependencies = [
  "cinatoken-auth",
  "cinatoken-billing",
  "cinatoken-cache",
+ "cinatoken-coordinator",
  "cinatoken-core",
  "cinatoken-gateway",
  "cinatoken-payments",

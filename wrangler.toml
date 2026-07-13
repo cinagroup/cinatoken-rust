@@ -87,6 +87,8 @@ RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
+QUOTA_COORD_SHADOW_ENABLED = "false"
+QUOTA_COORD_STAGING_VERIFIED = "false"
 WFP_DISPATCH_ENABLED = "false"
 WFP_INTERNAL_DISPATCH_ENABLED = "false"
 WFP_RELAY_TRANSPORT_ENABLED = "false"
@@ -199,6 +201,10 @@ class_name = "WfpAuthorityReplay"
 name = "PASSKEY_CEREMONIES"
 class_name = "PasskeyCeremony"
 
+[[durable_objects.bindings]]
+name = "QUOTA_COORD"
+class_name = "QuotaCoordinator"
+
 [[migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -218,6 +224,10 @@ new_sqlite_classes = ["WfpAuthorityReplay"]
 [[migrations]]
 tag = "v5-passkey-ceremony"
 new_sqlite_classes = ["PasskeyCeremony"]
+
+[[migrations]]
+tag = "v6-quota-coordinator"
+new_sqlite_classes = ["QuotaCoordinator"]
 
 # ---------------------------------------------------------------------------
 # Staging environment.
@@ -276,6 +286,8 @@ RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
+QUOTA_COORD_SHADOW_ENABLED = "false"
+QUOTA_COORD_STAGING_VERIFIED = "false"
 WFP_DISPATCH_ENABLED = "false"
 WFP_INTERNAL_DISPATCH_ENABLED = "false"
 WFP_RELAY_TRANSPORT_ENABLED = "false"
@@ -388,6 +400,10 @@ class_name = "WfpAuthorityReplay"
 name = "PASSKEY_CEREMONIES"
 class_name = "PasskeyCeremony"
 
+[[env.staging.durable_objects.bindings]]
+name = "QUOTA_COORD"
+class_name = "QuotaCoordinator"
+
 [[env.staging.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -407,6 +423,10 @@ new_sqlite_classes = ["WfpAuthorityReplay"]
 [[env.staging.migrations]]
 tag = "v5-passkey-ceremony"
 new_sqlite_classes = ["PasskeyCeremony"]
+
+[[env.staging.migrations]]
+tag = "v6-quota-coordinator"
+new_sqlite_classes = ["QuotaCoordinator"]
 
 # ---------------------------------------------------------------------------
 # Production environment.
@@ -466,6 +486,8 @@ RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
+QUOTA_COORD_SHADOW_ENABLED = "false"
+QUOTA_COORD_STAGING_VERIFIED = "false"
 WFP_DISPATCH_ENABLED = "false"
 WFP_INTERNAL_DISPATCH_ENABLED = "false"
 WFP_RELAY_TRANSPORT_ENABLED = "false"
@@ -579,6 +601,10 @@ class_name = "WfpAuthorityReplay"
 name = "PASSKEY_CEREMONIES"
 class_name = "PasskeyCeremony"
 
+[[env.production.durable_objects.bindings]]
+name = "QUOTA_COORD"
+class_name = "QuotaCoordinator"
+
 [[env.production.migrations]]
 tag = "v1-channel-affinity"
 new_sqlite_classes = ["ChannelAffinity"]
@@ -598,3 +624,7 @@ new_sqlite_classes = ["WfpAuthorityReplay"]
 [[env.production.migrations]]
 tag = "v5-passkey-ceremony"
 new_sqlite_classes = ["PasskeyCeremony"]
+
+[[env.production.migrations]]
+tag = "v6-quota-coordinator"
+new_sqlite_classes = ["QuotaCoordinator"]

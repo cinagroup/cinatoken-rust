@@ -30,6 +30,8 @@ export type PlatformReadinessSignalId =
   | 'wfp-tenant-implementation'
   | 'relay-billing-implementation'
   | 'relay-billing-owner-generation-compiled'
+  | 'quota-coordinator-foundation'
+  | 'quota-coordinator-relay-observer'
   | 'realtime-implementation'
   | 'task-runner-implementation'
   | 'ai-gateway-runtime'
@@ -37,6 +39,8 @@ export type PlatformReadinessSignalId =
   | 'wfp-tenant-runtime'
   | 'realtime-runtime'
   | 'task-runner-runtime'
+  | 'quota-coordinator-binding'
+  | 'quota-coordinator-shadow-runtime'
   | 'relay-billing-owner-generation-configured'
   | 'ai-gateway-canary'
   | 'ai-gateway-actual-group-billing-smoke'
@@ -45,6 +49,7 @@ export type PlatformReadinessSignalId =
   | 'wfp-relay-authority-smoke'
   | 'realtime-smoke'
   | 'task-runner-replay'
+  | 'quota-coordinator-staging-bake'
   | 'relay-billing-stream-error-smoke'
   | 'relay-billing-finalization-replay'
   | 'relay-billing-recovery-smoke'
@@ -52,6 +57,8 @@ export type PlatformReadinessSignalId =
   | 'task-runner-cutover'
   | 'relay-billing-recovery-cutover'
   | 'relay-billing-owner-generation-cutover'
+  | 'quota-coordinator-write-authority'
+  | 'quota-coordinator-cutover'
   | 'ai-gateway-fallback-cutover'
   | 'realtime-v1-cutover'
 
@@ -113,6 +120,18 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_ai_gateway_cross_model_fallback_cutover_ready'
   | 'relay_ai_gateway_cross_model_fallback_enabled'
   | 'relay_retry_times'
+  | 'quota_coordinator_contract_version'
+  | 'quota_coordinator_do_available'
+  | 'quota_coordinator_shadow_enabled'
+  | 'quota_coordinator_foundation_compiled'
+  | 'quota_coordinator_observer_contract_compiled'
+  | 'quota_coordinator_relay_observation_compiled'
+  | 'quota_coordinator_tiered_only'
+  | 'quota_coordinator_write_authority_enabled'
+  | 'quota_coordinator_staging_verified'
+  | 'quota_coordinator_shadow_runtime_ready'
+  | 'quota_coordinator_cutover_ready'
+  | 'quota_coordinator_cutover_guards'
   | 'wfp_dispatch_binding_available'
   | 'wfp_dispatch_enabled'
   | 'wfp_internal_dispatch_enabled'
@@ -178,8 +197,9 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'ai-gateway-implementation': 'AI Gateway',
   'wfp-tenant-implementation': 'WFP tenant',
   'relay-billing-implementation': 'Relay billing ledger',
-  'relay-billing-owner-generation-compiled':
-    'Relay billing owner generation',
+  'relay-billing-owner-generation-compiled': 'Relay billing owner generation',
+  'quota-coordinator-foundation': 'QuotaCoordinator foundation',
+  'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
   'realtime-implementation': 'Realtime',
   'task-runner-implementation': 'TaskRunner',
   'ai-gateway-runtime': 'AI Gateway',
@@ -187,8 +207,9 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'wfp-tenant-runtime': 'WFP tenant',
   'realtime-runtime': 'Realtime',
   'task-runner-runtime': 'TaskRunner',
-  'relay-billing-owner-generation-configured':
-    'Relay billing owner generation',
+  'quota-coordinator-binding': 'QuotaCoordinator binding',
+  'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
+  'relay-billing-owner-generation-configured': 'Relay billing owner generation',
   'ai-gateway-canary': 'AI Gateway canary',
   'ai-gateway-actual-group-billing-smoke':
     'AI Gateway actual-group billing smoke',
@@ -197,6 +218,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'wfp-relay-authority-smoke': 'WFP relay authority smoke',
   'realtime-smoke': 'Realtime smoke',
   'task-runner-replay': 'TaskRunner replay',
+  'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
   'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
   'relay-billing-finalization-replay': 'Relay billing finalization replay',
   'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
@@ -204,8 +226,9 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
     'Relay billing owner race proof',
   'task-runner-cutover': 'TaskRunner',
   'relay-billing-recovery-cutover': 'Relay billing recovery',
-  'relay-billing-owner-generation-cutover':
-    'Relay billing owner generation',
+  'relay-billing-owner-generation-cutover': 'Relay billing owner generation',
+  'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
+  'quota-coordinator-cutover': 'QuotaCoordinator cutover',
   'ai-gateway-fallback-cutover': 'AI Gateway fallback',
   'realtime-v1-cutover': 'Realtime v1',
 } satisfies Record<PlatformReadinessSignalId, string>
@@ -224,9 +247,62 @@ export type PlatformReadinessStage = {
   verifiedCount: number
 }
 
+export function getQuotaCoordinatorReadiness(
+  capabilities: PlatformReadinessCapabilities
+) {
+  const foundation = allReady(
+    capabilities.quota_coordinator_contract_version > 0,
+    capabilities.quota_coordinator_foundation_compiled,
+    capabilities.quota_coordinator_tiered_only
+  )
+  const binding = allReady(
+    foundation,
+    capabilities.quota_coordinator_do_available
+  )
+  const shadowGate = allReady(
+    binding,
+    capabilities.quota_coordinator_shadow_enabled
+  )
+  const relayObserver = allReady(
+    foundation,
+    capabilities.quota_coordinator_observer_contract_compiled,
+    capabilities.quota_coordinator_relay_observation_compiled
+  )
+  const shadowRuntime = allReady(
+    shadowGate,
+    relayObserver,
+    capabilities.quota_coordinator_shadow_runtime_ready
+  )
+  const stagingBake = allReady(
+    shadowRuntime,
+    capabilities.quota_coordinator_staging_verified
+  )
+  const writeAuthority = allReady(
+    stagingBake,
+    capabilities.quota_coordinator_write_authority_enabled
+  )
+  const cutover = allReady(
+    writeAuthority,
+    capabilities.quota_coordinator_cutover_ready,
+    capabilities.quota_coordinator_cutover_guards.length > 0
+  )
+
+  return {
+    foundation,
+    binding,
+    shadowGate,
+    relayObserver,
+    shadowRuntime,
+    stagingBake,
+    writeAuthority,
+    cutover,
+  }
+}
+
 export function buildPlatformReadinessSummary(
   capabilities: PlatformReadinessCapabilities
 ): PlatformReadinessStage[] {
+  const quotaCoordinator = getQuotaCoordinatorReadiness(capabilities)
   const schedulingGatewayImplementation = allReady(
     capabilities.scheduling_gateway_compiled,
     capabilities.scheduling_gateway_active,
@@ -310,6 +386,11 @@ export function buildPlatformReadinessSummary(
       'relay-billing-owner-generation-compiled',
       capabilities.relay_billing_prebind_owner_generation_compiled
     ),
+    readySignal('quota-coordinator-foundation', quotaCoordinator.foundation),
+    readySignal(
+      'quota-coordinator-relay-observer',
+      quotaCoordinator.relayObserver
+    ),
     readySignal('realtime-implementation', realtimeImplementation),
     readySignal('task-runner-implementation', taskRunnerImplementation),
   ])
@@ -347,6 +428,11 @@ export function buildPlatformReadinessSummary(
         capabilities.task_runner_do_available,
         capabilities.task_runner_do_enabled
       )
+    ),
+    readySignal('quota-coordinator-binding', quotaCoordinator.binding),
+    readySignal(
+      'quota-coordinator-shadow-runtime',
+      quotaCoordinator.shadowRuntime
     ),
     readySignal(
       'relay-billing-owner-generation-configured',
@@ -404,6 +490,11 @@ export function buildPlatformReadinessSummary(
       capabilities.task_runner_staging_replay_verified
     ),
     verificationSignal(
+      'quota-coordinator-staging-bake',
+      quotaCoordinator.shadowRuntime,
+      quotaCoordinator.stagingBake
+    ),
+    verificationSignal(
       'relay-billing-stream-error-smoke',
       allReady(
         capabilities.relay_billing_stream_error_usage_recovery_compiled,
@@ -448,6 +539,11 @@ export function buildPlatformReadinessSummary(
       'relay-billing-owner-generation-cutover',
       capabilities.relay_billing_prebind_owner_generation_cutover_ready
     ),
+    readySignal(
+      'quota-coordinator-write-authority',
+      quotaCoordinator.writeAuthority
+    ),
+    readySignal('quota-coordinator-cutover', quotaCoordinator.cutover),
     readySignal(
       'realtime-v1-cutover',
       capabilities.realtime_session_v1_cutover_ready

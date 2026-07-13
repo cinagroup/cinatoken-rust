@@ -76,6 +76,18 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_ai_gateway_cross_model_fallback_cutover_ready: false,
   relay_ai_gateway_cross_model_fallback_enabled: false,
   relay_retry_times: null,
+  quota_coordinator_contract_version: 0,
+  quota_coordinator_do_available: false,
+  quota_coordinator_shadow_enabled: false,
+  quota_coordinator_foundation_compiled: false,
+  quota_coordinator_observer_contract_compiled: false,
+  quota_coordinator_relay_observation_compiled: false,
+  quota_coordinator_tiered_only: false,
+  quota_coordinator_write_authority_enabled: false,
+  quota_coordinator_staging_verified: false,
+  quota_coordinator_shadow_runtime_ready: false,
+  quota_coordinator_cutover_ready: false,
+  quota_coordinator_cutover_guards: [],
   wfp_dispatch_binding_available: false,
   wfp_dispatch_enabled: false,
   wfp_internal_dispatch_enabled: false,
@@ -149,6 +161,8 @@ describe('Cloudflare platform readiness headline', () => {
       'relay-billing-implementation': 'Relay billing ledger',
       'relay-billing-owner-generation-compiled':
         'Relay billing owner generation',
+      'quota-coordinator-foundation': 'QuotaCoordinator foundation',
+      'quota-coordinator-relay-observer': 'QuotaCoordinator relay observer',
       'realtime-implementation': 'Realtime',
       'task-runner-implementation': 'TaskRunner',
       'ai-gateway-runtime': 'AI Gateway',
@@ -156,6 +170,8 @@ describe('Cloudflare platform readiness headline', () => {
       'wfp-tenant-runtime': 'WFP tenant',
       'realtime-runtime': 'Realtime',
       'task-runner-runtime': 'TaskRunner',
+      'quota-coordinator-binding': 'QuotaCoordinator binding',
+      'quota-coordinator-shadow-runtime': 'QuotaCoordinator shadow runtime',
       'relay-billing-owner-generation-configured':
         'Relay billing owner generation',
       'ai-gateway-canary': 'AI Gateway canary',
@@ -166,6 +182,7 @@ describe('Cloudflare platform readiness headline', () => {
       'wfp-relay-authority-smoke': 'WFP relay authority smoke',
       'realtime-smoke': 'Realtime smoke',
       'task-runner-replay': 'TaskRunner replay',
+      'quota-coordinator-staging-bake': 'QuotaCoordinator staging bake',
       'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
       'relay-billing-finalization-replay': 'Relay billing finalization replay',
       'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
@@ -176,6 +193,8 @@ describe('Cloudflare platform readiness headline', () => {
       'relay-billing-recovery-cutover': 'Relay billing recovery',
       'relay-billing-owner-generation-cutover':
         'Relay billing owner generation',
+      'quota-coordinator-write-authority': 'QuotaCoordinator write authority',
+      'quota-coordinator-cutover': 'QuotaCoordinator cutover',
       'realtime-v1-cutover': 'Realtime v1',
     })
   })
@@ -211,6 +230,12 @@ describe('Cloudflare platform readiness headline', () => {
         relay_ai_gateway_cross_model_actual_group_billing_compiled: true,
         relay_ai_gateway_actual_group_billing_staging_smoke_compiled: true,
         relay_ai_gateway_cross_model_terminal_audit_compiled: true,
+        quota_coordinator_contract_version: 1,
+        quota_coordinator_do_available: true,
+        quota_coordinator_foundation_compiled: true,
+        quota_coordinator_observer_contract_compiled: true,
+        quota_coordinator_relay_observation_compiled: true,
+        quota_coordinator_tiered_only: true,
         wfp_dispatch_binding_available: true,
         wfp_tenant_supported_routes: ['/v1/responses'],
         wfp_tenant_cutover_guards: ['internal-dispatch'],
@@ -589,6 +614,7 @@ describe('Cloudflare platform readiness headline', () => {
         'blocked',
         'blocked',
         'blocked',
+        'blocked',
       ]
     )
   })
@@ -763,7 +789,131 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(status(proofWithoutReadiness), 'blocked')
   })
 
-  test('uses only backend cutover readiness fields for cutover success', () => {
+  test('does not treat the QuotaCoordinator foundation as runtime readiness', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        quota_coordinator_contract_version: 1,
+        quota_coordinator_foundation_compiled: true,
+        quota_coordinator_tiered_only: true,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'implementation',
+        'quota-coordinator-foundation'
+      ),
+      'ready'
+    )
+    assert.equal(
+      getSignalStatus(summary, 'configuration', 'quota-coordinator-binding'),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'configuration',
+        'quota-coordinator-shadow-runtime'
+      ),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(summary, 'smoke', 'quota-coordinator-staging-bake'),
+      'blocked'
+    )
+  })
+
+  test('rejects forged QuotaCoordinator staging proof without observer and write authority', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        quota_coordinator_contract_version: 1,
+        quota_coordinator_do_available: true,
+        quota_coordinator_shadow_enabled: true,
+        quota_coordinator_foundation_compiled: true,
+        quota_coordinator_observer_contract_compiled: false,
+        quota_coordinator_relay_observation_compiled: false,
+        quota_coordinator_tiered_only: true,
+        quota_coordinator_staging_verified: true,
+        quota_coordinator_shadow_runtime_ready: true,
+        quota_coordinator_write_authority_enabled: false,
+        quota_coordinator_cutover_ready: true,
+        quota_coordinator_cutover_guards: ['shadow-bake'],
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'implementation',
+        'quota-coordinator-relay-observer'
+      ),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(summary, 'smoke', 'quota-coordinator-staging-bake'),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(summary, 'cutover', 'quota-coordinator-write-authority'),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(summary, 'cutover', 'quota-coordinator-cutover'),
+      'blocked'
+    )
+  })
+
+  test('keeps QuotaCoordinator cutover fail-closed', () => {
+    const prerequisites = {
+      quota_coordinator_contract_version: 1,
+      quota_coordinator_do_available: true,
+      quota_coordinator_shadow_enabled: true,
+      quota_coordinator_foundation_compiled: true,
+      quota_coordinator_observer_contract_compiled: true,
+      quota_coordinator_relay_observation_compiled: true,
+      quota_coordinator_tiered_only: true,
+      quota_coordinator_staging_verified: true,
+      quota_coordinator_shadow_runtime_ready: true,
+      quota_coordinator_write_authority_enabled: true,
+    }
+    const missingGuards = buildPlatformReadinessSummary(
+      makeCapabilities({
+        ...prerequisites,
+        quota_coordinator_cutover_ready: true,
+        quota_coordinator_cutover_guards: [],
+      })
+    )
+    const missingApproval = buildPlatformReadinessSummary(
+      makeCapabilities({
+        ...prerequisites,
+        quota_coordinator_cutover_ready: false,
+        quota_coordinator_cutover_guards: ['shadow-bake'],
+      })
+    )
+    const ready = buildPlatformReadinessSummary(
+      makeCapabilities({
+        ...prerequisites,
+        quota_coordinator_cutover_ready: true,
+        quota_coordinator_cutover_guards: ['shadow-bake'],
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(missingGuards, 'cutover', 'quota-coordinator-cutover'),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(missingApproval, 'cutover', 'quota-coordinator-cutover'),
+      'blocked'
+    )
+    assert.equal(
+      getSignalStatus(ready, 'cutover', 'quota-coordinator-cutover'),
+      'ready'
+    )
+  })
+
+  test('requires every backend cutover readiness field for stage success', () => {
     const blocked = buildPlatformReadinessSummary(makeCapabilities())
     const ready = buildPlatformReadinessSummary(
       makeCapabilities({
@@ -772,12 +922,24 @@ describe('Cloudflare platform readiness headline', () => {
         relay_billing_orphan_recovery_cutover_ready: true,
         relay_billing_prebind_owner_generation_cutover_ready: true,
         realtime_session_v1_cutover_ready: true,
+        quota_coordinator_contract_version: 1,
+        quota_coordinator_do_available: true,
+        quota_coordinator_shadow_enabled: true,
+        quota_coordinator_foundation_compiled: true,
+        quota_coordinator_observer_contract_compiled: true,
+        quota_coordinator_relay_observation_compiled: true,
+        quota_coordinator_tiered_only: true,
+        quota_coordinator_write_authority_enabled: true,
+        quota_coordinator_staging_verified: true,
+        quota_coordinator_shadow_runtime_ready: true,
+        quota_coordinator_cutover_ready: true,
+        quota_coordinator_cutover_guards: ['shadow-bake'],
       })
     )
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 5)
+    assert.equal(getStage(ready, 'cutover').readyCount, 7)
   })
 
   test('keeps relay owner generation split across all four production stages', () => {
@@ -789,17 +951,19 @@ describe('Cloudflare platform readiness headline', () => {
         relay_billing_prebind_owner_generation_cutover_ready: true,
       })
     )
-    const signalStatus = (
-      stage: PlatformReadinessStageId,
-      id: string
-    ) => getStage(summary, stage).signals.find((signal) => signal.id === id)?.status
+    const signalStatus = (stage: PlatformReadinessStageId, id: string) =>
+      getStage(summary, stage).signals.find((signal) => signal.id === id)
+        ?.status
 
     assert.equal(
       signalStatus('implementation', 'relay-billing-owner-generation-compiled'),
       'ready'
     )
     assert.equal(
-      signalStatus('configuration', 'relay-billing-owner-generation-configured'),
+      signalStatus(
+        'configuration',
+        'relay-billing-owner-generation-configured'
+      ),
       'ready'
     )
     assert.equal(
@@ -826,4 +990,14 @@ function getStage(
   const stage = summary.find((candidate) => candidate.id === id)
   assert.ok(stage)
   return stage
+}
+
+function getSignalStatus(
+  summary: ReturnType<typeof buildPlatformReadinessSummary>,
+  stageId: PlatformReadinessStageId,
+  signalId: string
+) {
+  return getStage(summary, stageId).signals.find(
+    (signal) => signal.id === signalId
+  )?.status
 }

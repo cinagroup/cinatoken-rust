@@ -51,6 +51,7 @@ mod passkey_ceremony;
 mod platform_gateway;
 mod prefill_group_api;
 mod pricing_api;
+mod quota_coordinator;
 mod rankings_api;
 mod ratio_sync;
 mod realtime_session;

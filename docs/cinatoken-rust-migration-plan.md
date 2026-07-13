@@ -11670,3 +11670,46 @@ Rust admission and returning traffic to Go/VPS. Migration 0026 and the highest
 owner generation are retained; neither schema nor generation may be rolled
 back or reused. No remote migration, credential, provider call, Queue resource,
 or deployment was used in this increment. Production remains **NO-GO**.
+
+### 22.190 2026-07-14 QuotaCoordinator Shadow Foundation
+
+This increment starts M4 without changing the financial ownership model. It
+uses the billing-expression contract already read for the preceding billing
+work: only tiered-expression traffic is eligible for future observation; flat
+billing remains post-paid and unchanged. D1 is still the sole quota, request-
+count, channel-usage, settlement, refund, and audit writer.
+
+Implemented locally:
+
+- `cinatoken-coordinator` is a Worker-independent Rust state machine with a
+  versioned strict observation contract, checked quota arithmetic, deterministic
+  replay/conflict classification, redacted identifiers, and bounded active and
+  terminal collections. Business conflicts are persisted as evidence; malformed
+  input or invalid/overflowed state cannot partially mutate the state.
+- `QuotaCoordinator` maps one canonical token identity to one deterministic DO,
+  accepts bounded internal `POST /observe`, and returns summary-only
+  `GET /status`. State read, apply, and write occur in one Durable Object storage
+  transaction with no external I/O. Workerd verifies reserve, replay, conflict,
+  settle, redaction, protocol rejection, corruption propagation, and state
+  restoration after eviction.
+- Default, staging, and production Wrangler scopes declare the `QUOTA_COORD`
+  SQLite-backed class with migration tag `v6-quota-coordinator`. Both
+  `QUOTA_COORD_SHADOW_ENABLED` and `QUOTA_COORD_STAGING_VERIFIED` remain false.
+  A static audit prevents missing bindings, divergent migration tags, or an
+  accidentally enabled gate.
+- Platform capabilities and the frontend expose foundation, binding, gate,
+  relay-observer, staging-bake, write-authority, and cutover stages separately.
+  Relay observation and write authority are intentionally false, so neither
+  shadow runtime nor cutover can become ready through configuration alone.
+
+This is a foundation, not the shadow rollout. The next M4 slice must wire
+best-effort observations after the D1 reserve/finalize/orphan-recovery outcomes,
+including Queue replay, without adding a second financial writer. It must also
+replace or validate the current single-record capacity policy for long-lived hot
+tokens, offload reconciliation from the request path, and prove storage size,
+load, eviction, duplicate/race behavior, alerts, and disable-first rollback.
+Only after complete producer coverage may staging begin a signed 30-day zero-
+diff bake. Read-from-DO and write-from-DO remain blocked.
+
+No remote resource, credential, provider request, migration, or deployment was
+used. Production remains **NO-GO**.

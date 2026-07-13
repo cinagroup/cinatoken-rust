@@ -327,8 +327,8 @@ Corrected production rules:
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0020, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 20/20 and 26-table replay are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0026, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 26/26 and 30-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -344,7 +344,7 @@ Corrected production rules:
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
 | Data migration | Partial: local 20/20 Wrangler apply and 26-table SQLite replay pass | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 20/20 staging apply, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
-| Billing/quota | Partial | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, and shadow mode | Golden fixture set and shadow delta report |
+| Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator is a default-off observer foundation with no producer or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, complete tiered observation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, complete producer-coverage audit, bounded hot-token storage/load report, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
 | Observability/SRE | Partial | Logs, traces, metrics, alerts, runbooks, and incident ownership | Dashboard and alert checklist |
 | Security/compliance | Partial | Secret isolation, CORS/WAF/rate limits, SSRF controls, admin audit, OAuth/webhook checks | Security checklist and smoke evidence |
@@ -1130,3 +1130,31 @@ Rollback order is recovery off, reconcile off, Queue finalization off, new Rust
 admission off, traffic to Go/VPS, then ledger/Queue drain and reconciliation.
 Retain migration 0026 and the highest generation. No remote evidence is
 currently archived, so production remains **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Shadow Rollout Order
+
+This sequence applies only to tiered-expression observation. It must never be
+used to move financial writes during the shadow phase.
+
+1. Deploy the `QUOTA_COORD` class and both false gates with Go/VPS and D1 still
+   authoritative. Verify binding/migration readback and summary redaction; do
+   not infer readiness from class availability.
+2. Implement and audit best-effort observation producers for D1 reserve,
+   synchronous settle/refund, billing Queue finalization/replay, and orphan
+   recovery. A DO failure must be observable but must not change the committed
+   D1 financial outcome.
+3. Prove the per-token storage model under long-lived hot-token load, including
+   record-size headroom, capacity/compaction behavior, eviction, duplicate and
+   conflict storms, corruption propagation, cost, and alert thresholds.
+4. Enable shadow only for isolated staging tokens. Reconcile asynchronously off
+   the relay hot path and retain redacted evidence for every producer family.
+5. Run at least 30 days with zero unexplained quota, request-count, channel-
+   usage, settlement, refund, and audit deltas. Exercise disable-first rollback
+   repeatedly while D1 continues to serve every financial read and write.
+6. Set staging verification only after owner sign-off. Any later read-authority
+   proposal requires a separate design/review/gate; write authority requires an
+   additional migration and is not enabled by this foundation.
+
+Rollback is `QUOTA_COORD_SHADOW_ENABLED=false` first, followed by observer
+emission off and reconciliation drain. Preserve DO evidence for audit; do not
+compensate quota from observer state. D1 and Go/VPS ownership are unchanged.

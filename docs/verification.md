@@ -4085,3 +4085,73 @@ remote migration or resource was changed, and no provider request or deployment
 was made. Credential rotation, migration-0026 drain/application, delayed-header
 and ambiguity fault replay, Queue v2 drain, direct/Gateway/WFP accounting,
 alerts, rollback, and G1-G8 approval remain mandatory. Production is **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Shadow Foundation Verification
+
+Scope: local M4 pure state machine, observation-only per-token Durable Object,
+SQLite-backed class configuration, capability/frontend staging separation, and
+production rollout/rollback documentation. The billing-expression source
+contract was read before this work. Flat billing remains unchanged and D1
+remains the sole financial writer.
+
+Commands and results:
+
+```powershell
+cargo test -p cinatoken-coordinator
+# PASS; 12 passed
+
+cargo test -p cinatoken-worker --lib
+# PASS; 653 passed
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; only two pre-existing unused topup repository warnings
+
+bun run check:web:readiness
+# PASS; 30 passed
+
+bun run check:cf:quota-coordinator
+# PASS; default/staging/production have one v6 SQLite class and both gates false
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 23/23, Playground 1/1,
+# frontend production build and audits, 217 frontend calls / 322 Worker routes /
+# zero missing, 26 D1 migrations / 30 tables / 126 checked columns / 23 indexes,
+# workspace tests, and main/tenant/outbound wasm32 checks
+
+bun run check:cf:dry-run
+bun run check:cf:startup
+# PASS with Wrangler 4.110.0; dry-run read QUOTA_COORD and both false gates,
+# startup analysis completed locally. No deployment was performed.
+```
+
+Observed contracts:
+
+- Pure observations reject unknown fields, invalid hashes, out-of-range quota,
+  invalid generations, and invalid request counts. Checked arithmetic and state
+  validation are transactional. Applied, replay, and conflict counts survive
+  serialization; status contains no reservation or operation identifier.
+- The DO requires a canonical positive token identity and matching deterministic
+  object ID, accepts only bounded JSON on the internal observe route, and uses
+  one storage transaction with no external I/O. Business conflicts are committed
+  as evidence and return 409; malformed observations return 422; corrupt stored
+  state propagates as a runtime error instead of being replaced.
+- Workerd proves reserve, exact replay, payload conflict, settle, summary
+  redaction, protocol rejection, corruption propagation, and identical state
+  after Durable Object eviction. The first eviction run timed out because the
+  test client retained an unread `/observe` response body; consuming that body
+  made eviction deterministic and the complete 23-test lifecycle suite passed.
+- Capabilities and the React/Bun panel separate foundation, binding, shadow
+  runtime, relay observer, staging bake, write authority, and cutover. Relay
+  observation and write authority are hard-coded false in this increment, so
+  false staging metadata cannot manufacture runtime or cutover readiness.
+- The observer currently persists one bounded JSON value. Cloudflare's
+  SQLite-backed Durable Object key/value entry limit is 2 MiB, and the current
+  long-lived-token retention/capacity policy has not been load- or size-proven.
+  Shadow enablement therefore remains blocked pending producer coverage,
+  compaction/retention design, serialized-size headroom, latency/cost evidence,
+  alerts, rollback, and a signed 30-day zero-diff bake.
+
+No relay, Queue, or orphan-recovery producer emits QuotaCoordinator observations.
+No credential, remote namespace, migration, provider request, or deployment was
+used. Both gates remain false; read authority, write authority, and production
+cutover remain **NO-GO**.

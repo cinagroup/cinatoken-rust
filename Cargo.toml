@@ -4,6 +4,7 @@ members = [
   "crates/auth",
   "crates/billing",
   "crates/cache",
+  "crates/coordinator",
   "crates/core",
   "crates/gateway",
   "crates/migration",

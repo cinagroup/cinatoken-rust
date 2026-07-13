@@ -3303,3 +3303,30 @@ rollback. No exposed Cloudflare token was used.
   mutation, alarm retry observation, or production action was performed. The
   exposed credential was not used; rotation remains required. Production is
   **NO-GO**.
+
+## 2026-07-13 Cross-Worker And Platform Boundary Verification
+
+- `check:do-lifecycle-runtime` builds the main Worker, WFP tenant, and WFP
+  outbound release artifacts and runs them as separate Workerd services. The
+  suite now includes tenant status plus concurrent signed-authority traffic
+  through the real tenant and outbound Workers to a provider-counting mock.
+- The concurrency assertion requires one success, seven replay conflicts, and
+  exactly one provider call. It also proves outbound-only Bearer injection,
+  Cookie isolation, and removal of authorization, Set-Cookie, and AI Gateway
+  response metadata.
+- `check:wfp-dispatch:response-header-guard` includes the three preview browser
+  side-effect headers. Worker unit tests prove they are removed only from
+  regular PreviewHost HTTP responses and that WebSocket/internal dispatch
+  classification is preserved.
+- `check:realtime-session:platform-admin-auth-contract` proves missing platform
+  auth is rejected, the Cookie is attached only to platform requests, and the
+  self-test report cannot contain the Cookie value. Live platform smoke requires
+  `--cookie` for both WebSocket and status probes; dry-run emits only
+  `adminCookieConfigured`.
+- Before accepting this increment, run `cargo test -p cinatoken-worker --lib`,
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
+  `bun run check:do-lifecycle-runtime`, `bun run check:web:readiness`, and the
+  complete `bun run check` release gate. Remote evidence remains outstanding.
+- Completed result: Worker 580/580, WFP tenant 16/16, WFP outbound 4/4,
+  multi-service Workerd 7/7, frontend readiness 16/16, complete
+  `bun run check`, and `bun audit --json` all passed locally.

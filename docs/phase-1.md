@@ -499,6 +499,17 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Use `docs/performance-capacity-cost-runbook.md` for load profiles, D1/
   Upstash/Queue/R2 capacity checks, Worker resource-limit evidence, and
   1x/2x/5x cost forecasts before canary expansion or full cutover.
+- Close the renewed P0 data reconciliation gap before any source freeze: all 23
+  importable D1 table families need deterministic source/target count, hash,
+  sample, and relationship evidence. The current reconciler covers 11; an
+  import success alone is not a G2 pass.
+- Close the G5 channel compatibility gap for the frontend's no-id test,
+  no-id balance refresh, model discovery, and copy-by-id calls, and harden the
+  route auditor so dynamic `/:id` routes cannot mask a missing static action.
+- Preserve the new WFP/Realtime boundaries: preview HTTP responses strip the
+  three browser side-effect headers, platform Realtime requires AdminAuth, and
+  local multi-Worker exactly-one-egress evidence remains distinct from remote
+  staging verification.
 - Continue broadening Go/Rust golden parity tests for billing expression edge
   cases.
 - Continue replacing the Worker request-token estimate with Go `TokenCountMeta`

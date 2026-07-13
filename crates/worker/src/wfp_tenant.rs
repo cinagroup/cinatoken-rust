@@ -78,6 +78,7 @@ pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
     "internal_dispatch_required",
     "request_header_scrub",
     "response_header_allowlist",
+    "preview_response_security_headers",
     "ai_gateway_policy_headers",
     "central_billing_settlement",
     "tenant_status_smoke",
@@ -650,7 +651,9 @@ pub(crate) fn wfp_outbound_egress_policy_compiled() -> bool {
         && source.contains("/ai/v1/responses")
         && source.contains("/ai/v1/messages")
         && source.contains("/ai/run")
-        && source.contains("RequestRedirect::Error")
+        && source.contains("RequestRedirect::Manual")
+        && source.contains("wfp_outbound_redirect_denied")
+        && source.contains("is_redirect_status(status)")
         && source.contains("FORWARDED_REQUEST_HEADERS")
         && source.contains("FORWARDED_RESPONSE_HEADERS")
         && !source.contains("passThroughOnException")

@@ -66,6 +66,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   wfp_tenant_internal_dispatch_required_compiled: false,
   wfp_tenant_relay_authority_verifier_compiled: false,
   wfp_tenant_response_header_guard_compiled: false,
+  wfp_preview_response_security_headers_compiled: false,
   wfp_tenant_ai_gateway_policy_compiled: false,
   wfp_outbound_egress_policy_compiled: false,
   wfp_relay_authority_transport_compiled: false,
@@ -80,6 +81,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   realtime_session_metrics_persisted_compiled: false,
   realtime_session_control_no_echo_compiled: false,
   realtime_session_platform_header_boundary_compiled: false,
+  realtime_session_platform_admin_auth_compiled: false,
   realtime_session_upstream_bridge_hibernation_fail_closed_compiled: false,
   realtime_session_upstream_bridge_compiled: false,
   realtime_session_billing_settlement_compiled: false,
@@ -164,6 +166,7 @@ describe('Cloudflare platform readiness headline', () => {
         wfp_tenant_internal_dispatch_required_compiled: true,
         wfp_tenant_relay_authority_verifier_compiled: true,
         wfp_tenant_response_header_guard_compiled: true,
+        wfp_preview_response_security_headers_compiled: true,
         wfp_tenant_ai_gateway_policy_compiled: true,
         wfp_outbound_egress_policy_compiled: true,
         wfp_authority_replay_do_compiled: true,
@@ -175,6 +178,7 @@ describe('Cloudflare platform readiness headline', () => {
         realtime_session_metrics_persisted_compiled: true,
         realtime_session_control_no_echo_compiled: true,
         realtime_session_platform_header_boundary_compiled: true,
+        realtime_session_platform_admin_auth_compiled: true,
         realtime_session_upstream_bridge_hibernation_fail_closed_compiled: true,
         realtime_session_upstream_bridge_compiled: true,
         realtime_session_billing_settlement_compiled: true,
@@ -338,6 +342,7 @@ describe('Cloudflare platform readiness headline', () => {
       wfp_tenant_internal_dispatch_required_compiled: true,
       wfp_tenant_relay_authority_verifier_compiled: true,
       wfp_tenant_response_header_guard_compiled: true,
+      wfp_preview_response_security_headers_compiled: true,
       wfp_tenant_ai_gateway_policy_compiled: true,
       wfp_authority_replay_do_compiled: true,
       wfp_relay_authority_transport_compiled: true,
@@ -372,6 +377,34 @@ describe('Cloudflare platform readiness headline', () => {
     )
   })
 
+  test('requires the preview response security boundary for WFP implementation readiness', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        wfp_tenant_supported_routes: ['/v1/responses'],
+        wfp_tenant_cutover_guards: ['preview-response-security-headers'],
+        wfp_tenant_script_plan_compiled: true,
+        wfp_tenant_rust_wasm_runtime_compiled: true,
+        wfp_tenant_route_manifest_compiled: true,
+        wfp_tenant_internal_dispatch_required_compiled: true,
+        wfp_tenant_relay_authority_verifier_compiled: true,
+        wfp_tenant_response_header_guard_compiled: true,
+        wfp_preview_response_security_headers_compiled: false,
+        wfp_tenant_ai_gateway_policy_compiled: true,
+        wfp_outbound_egress_policy_compiled: true,
+        wfp_authority_replay_do_compiled: true,
+        wfp_relay_authority_transport_compiled: true,
+        wfp_dispatch_failure_contract_compiled: true,
+      })
+    )
+
+    assert.equal(
+      getStage(summary, 'implementation').signals.find(
+        (signal) => signal.id === 'wfp-tenant-implementation'
+      )?.status,
+      'blocked'
+    )
+  })
+
   test('requires bridge-segment billing isolation for Realtime implementation', () => {
     const summary = buildPlatformReadinessSummary(
       makeCapabilities({
@@ -384,6 +417,30 @@ describe('Cloudflare platform readiness headline', () => {
         realtime_session_upstream_bridge_compiled: true,
         realtime_session_billing_settlement_compiled: true,
         realtime_session_billing_settlement_batch_compiled: false,
+      })
+    )
+
+    assert.equal(
+      getStage(summary, 'implementation').signals.find(
+        (signal) => signal.id === 'realtime-implementation'
+      )?.status,
+      'blocked'
+    )
+  })
+
+  test('requires platform AdminAuth for Realtime implementation readiness', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        do_websocket_hibernation_compiled: true,
+        realtime_session_auth_boundary_compiled: true,
+        realtime_session_metrics_persisted_compiled: true,
+        realtime_session_control_no_echo_compiled: true,
+        realtime_session_platform_header_boundary_compiled: true,
+        realtime_session_platform_admin_auth_compiled: false,
+        realtime_session_upstream_bridge_hibernation_fail_closed_compiled: true,
+        realtime_session_upstream_bridge_compiled: true,
+        realtime_session_billing_settlement_compiled: true,
+        realtime_session_billing_settlement_batch_compiled: true,
       })
     )
 

@@ -94,6 +94,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'wfp_tenant_internal_dispatch_required_compiled'
   | 'wfp_tenant_relay_authority_verifier_compiled'
   | 'wfp_tenant_response_header_guard_compiled'
+  | 'wfp_preview_response_security_headers_compiled'
   | 'wfp_tenant_ai_gateway_policy_compiled'
   | 'wfp_outbound_egress_policy_compiled'
   | 'wfp_relay_authority_transport_compiled'
@@ -108,6 +109,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'realtime_session_metrics_persisted_compiled'
   | 'realtime_session_control_no_echo_compiled'
   | 'realtime_session_platform_header_boundary_compiled'
+  | 'realtime_session_platform_admin_auth_compiled'
   | 'realtime_session_upstream_bridge_hibernation_fail_closed_compiled'
   | 'realtime_session_upstream_bridge_compiled'
   | 'realtime_session_billing_settlement_compiled'
@@ -202,6 +204,7 @@ export function buildPlatformReadinessSummary(
     capabilities.wfp_tenant_internal_dispatch_required_compiled,
     capabilities.wfp_tenant_relay_authority_verifier_compiled,
     capabilities.wfp_tenant_response_header_guard_compiled,
+    capabilities.wfp_preview_response_security_headers_compiled,
     capabilities.wfp_tenant_ai_gateway_policy_compiled,
     capabilities.wfp_outbound_egress_policy_compiled,
     capabilities.wfp_authority_replay_do_compiled,
@@ -214,6 +217,7 @@ export function buildPlatformReadinessSummary(
     capabilities.realtime_session_metrics_persisted_compiled,
     capabilities.realtime_session_control_no_echo_compiled,
     capabilities.realtime_session_platform_header_boundary_compiled,
+    capabilities.realtime_session_platform_admin_auth_compiled,
     capabilities.realtime_session_upstream_bridge_hibernation_fail_closed_compiled,
     capabilities.realtime_session_upstream_bridge_compiled,
     capabilities.realtime_session_billing_settlement_compiled,

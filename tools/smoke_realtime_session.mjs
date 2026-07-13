@@ -24,6 +24,8 @@ try {
       runPlatformHeaderBoundarySelfTest(),
       args.flags.has("json"),
     );
+  } else if (args.flags.has("self-test-platform-admin-auth")) {
+    printPlatformAdminAuthSelfTestResult(runPlatformAdminAuthSelfTest(), args.flags.has("json"));
   } else {
     const options = normalizeOptions(args);
     const result = options.dryRun ? redactedPlan(buildPlan(options)) : await smoke(options);
@@ -35,11 +37,13 @@ try {
 }
 
 async function smoke(options) {
+  requirePlatformAdminAuth(options);
   const plan = buildPlan(options);
   const capabilities = await maybeCheckCapabilities(options, plan);
   const forgedHeaders = options.expectPlatformHeaderBoundary ? forgedRealtimeUpstreamHeaders() : null;
+  const requestHeaders = platformGatewayHeaders(options, forgedHeaders);
   const ws = await openWebSocket(plan.wsUrl, plan.protocols, options.timeoutMs, {
-    headers: forgedHeaders,
+    headers: requestHeaders,
   });
   try {
     ws.send("ping");
@@ -90,7 +94,12 @@ async function smoke(options) {
 
     let httpStatus = null;
     if (plan.statusUrl) {
-      const response = await fetch(plan.statusUrl, { redirect: "error" });
+      const response = await fetch(plan.statusUrl, {
+        headers: platformGatewayHeaders(options, {
+          accept: "application/json",
+        }),
+        redirect: "error",
+      });
       if (!response.ok) {
         throw new Error(`HTTP status smoke failed: ${response.status} ${response.statusText}`);
       }
@@ -234,6 +243,7 @@ function parseArgs(argv) {
     "self-test-bridge-replay",
     "self-test-upstream-replay",
     "self-test-platform-header-boundary",
+    "self-test-platform-admin-auth",
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -317,7 +327,7 @@ function usage(exitCode, error) {
       "  --session <name>      or REALTIME_SMOKE_SESSION (platform mode)",
       "  --model <model>       or REALTIME_SMOKE_MODEL (v1 mode)",
       "  --api-key <token>     or REALTIME_SMOKE_API_KEY (v1 mode)",
-      "  --cookie <header>     or REALTIME_SMOKE_COOKIE, admin Cookie for capabilities preflight",
+      "  --cookie <header>     or REALTIME_SMOKE_COOKIE, required for platform mode and capabilities preflight",
       "  --probe <text>        or REALTIME_SMOKE_PROBE, default is a safe fixed probe",
       "  --timeout-ms <ms>     or REALTIME_SMOKE_TIMEOUT_MS, default 10000",
       "  --skip-capabilities   Do not preflight /api/platform/capabilities",
@@ -333,6 +343,7 @@ function usage(exitCode, error) {
       "  --self-test-bridge-replay        Run local synthetic close/error/send-failure replay contract tests without network",
       "  --self-test-upstream-replay      Run ordered mock upstream replay scenario contract tests without network",
       "  --self-test-platform-header-boundary  Run local synthetic platform header-boundary validator tests without network",
+      "  --self-test-platform-admin-auth  Verify platform request authentication and redaction without network",
       "  --dry-run             resolve URLs/protocols without network",
       "  --json",
       "",
@@ -391,6 +402,64 @@ function shouldCheckCapabilities(options) {
       options.expectV1CutoverReady ||
       options.expectPlatformHeaderBoundary)
   );
+}
+
+function requirePlatformAdminAuth(options) {
+  if (options.mode === "platform" && !options.adminCookie) {
+    throw new Error("platform mode requires --cookie or REALTIME_SMOKE_COOKIE for WebSocket and status requests");
+  }
+}
+
+function platformGatewayHeaders(options, extraHeaders = null) {
+  const headers = extraHeaders ? { ...extraHeaders } : {};
+  if (options.mode === "platform" && options.adminCookie) {
+    headers.cookie = options.adminCookie;
+  }
+  return Object.keys(headers).length > 0 ? headers : null;
+}
+
+function runPlatformAdminAuthSelfTest() {
+  const secret = "session=cinatoken-platform-admin-secret";
+  const headers = platformGatewayHeaders(
+    { mode: "platform", adminCookie: secret },
+    { [realtimeUpstreamPlanHeader]: "forged" },
+  );
+  if (headers?.cookie !== secret || headers[realtimeUpstreamPlanHeader] !== "forged") {
+    throw new Error("platform request headers did not preserve admin auth and boundary probe");
+  }
+  if (platformGatewayHeaders({ mode: "v1", adminCookie: secret }) !== null) {
+    throw new Error("v1 mode must not receive the platform admin Cookie");
+  }
+
+  let missingCookieRejected = false;
+  try {
+    requirePlatformAdminAuth({ mode: "platform", adminCookie: "" });
+  } catch {
+    missingCookieRejected = true;
+  }
+  if (!missingCookieRejected) {
+    throw new Error("platform mode accepted a missing admin Cookie");
+  }
+
+  const report = {
+    ok: true,
+    selfTest: "realtime-platform-admin-auth",
+    platformCookieForwarded: true,
+    v1CookieIsolated: true,
+    missingCookieRejected: true,
+  };
+  if (JSON.stringify(report).includes(secret)) {
+    throw new Error("platform admin auth self-test leaked the Cookie");
+  }
+  return report;
+}
+
+function printPlatformAdminAuthSelfTestResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log("Realtime platform AdminAuth self-test passed");
 }
 
 async function readCapabilitiesEnvelope(response) {
@@ -481,6 +550,8 @@ function summarizeCapabilities(data) {
       data.realtime_session_billing_settlement_write_enabled === true,
     realtime_session_platform_header_boundary_compiled:
       data.realtime_session_platform_header_boundary_compiled === true,
+    realtime_session_platform_admin_auth_compiled:
+      data.realtime_session_platform_admin_auth_compiled === true,
     realtime_session_upstream_bridge_compiled:
       data.realtime_session_upstream_bridge_compiled === true,
     realtime_session_billing_settlement_compiled:
@@ -524,6 +595,7 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_billing_settlement_retry_compiled", true],
     ["realtime_session_billing_reservation_lease_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
+    ["realtime_session_platform_admin_auth_compiled", true],
   ]) {
     if (capabilities[field] !== expected) {
       throw new Error(`platform capabilities ${field}=${capabilities[field]} did not match ${expected}`);
@@ -540,6 +612,7 @@ function validateCapabilities(capabilities, options) {
   }
   for (const guard of [
     "platform_gateway_gate",
+    "platform_admin_auth",
     "v1_gateway_gate",
     "relay_token_auth",
     "relay_rate_limits",

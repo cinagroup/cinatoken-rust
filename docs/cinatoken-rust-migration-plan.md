@@ -10216,3 +10216,69 @@ Production evidence boundary and next execution:
    true. `productionVerified` remains false through staging.
 6. Disable WFP and TaskRunner canary gates, verify cron/central-relay rollback,
    and retain production **NO-GO** until G8 sign-off.
+
+### 22.165 2026-07-13 Cross-Worker Runtime And Browser Boundary Hardening
+
+This increment validates the paid WFP path as cooperating Workers rather than
+as isolated source contracts, and closes two platform control-plane boundaries
+found by the renewed cinaVibeSDK/Go/Rust/frontend audit.
+
+Implemented and locally exercised:
+
+- The Cloudflare Vitest project now runs the real release Rust/Wasm main Worker,
+  Rust WFP tenant, and Rust WFP outbound Worker as separate services. A mock
+  provider Durable Object counts terminal egress without storing credentials.
+- Eight concurrent tenant requests carrying the same body-bound signed
+  authority produce exactly one `200`, seven `409` responses, and exactly one
+  provider call. The tenant has no Cloudflare bearer; the outbound Worker alone
+  injects `Authorization: Bearer`, strips Cookie and upstream-only response
+  headers, and returns only the public response allowlist.
+- Redirect handling is owned by the final outbound policy boundary. It uses
+  manual redirect mode and rejects every 3xx with the bounded
+  `wfp_outbound_redirect_denied` response. The tenant service-binding hop no
+  longer asks the runtime to apply browser redirect-error semantics before the
+  outbound Worker can inspect the request.
+- Preview-host HTTP responses now remove `Service-Worker-Allowed`,
+  `Service-Worker-Navigation-Preload`, and `Clear-Site-Data`. This follows the
+  current cinaVibeSDK preview chokepoint while preserving WebSocket upgrades and
+  keeping internal admin dispatch semantics unchanged.
+- `/api/platform/realtime/:session` and its status path now require AdminAuth
+  before session parsing or Durable Object lookup. The capability contract,
+  frontend readiness summary, operator panel, and smoke harness expose and
+  require this boundary. Live platform smoke now sends the admin Cookie to both
+  WebSocket and HTTP status requests; dry-run output remains credential-free.
+
+Audit decisions and next production work:
+
+- Data migration is not yet cutover-safe. `D1_IMPORT_TABLES` contains 23 target
+  tables, while deterministic source/target reconciliation currently covers
+  only 11. Logs, tasks, checkins, redemptions, subscriptions, models, vendors,
+  and OAuth families must receive count/hash/sample/domain reconciliation or an
+  approved exclusion/rebuild manifest before G2 can pass.
+- The default frontend still calls four channel compatibility shapes not owned
+  by Rust: `GET /api/channel/models`, `GET /api/channel/test`,
+  `GET /api/channel/update_balance`, and `POST /api/channel/copy/:id`. Existing
+  `/:id` routes do not satisfy the no-id batch actions, and the route auditor
+  must stop treating a neighboring dynamic route as proof of compatibility.
+- Thirty-three deferred Go channel types remain a G3 provider-adapter program,
+  not a generic OpenAI-compatible fallback opportunity.
+- Realtime v1 cutover readiness must eventually depend on archived staging
+  evidence rather than only compiled and environment booleans. Keep both
+  Realtime gates default-off until that evidence is persisted and reviewed.
+
+Local runtime proof is not remote deployment proof. Rotated least-privilege
+credentials, remote service/namespace binding readback, deployed replay and
+eviction tests, provider/Gateway/D1 correlation, rollback, capacity, and cost
+evidence are still required. No exposed credential was used; production
+remains **NO-GO**.
+
+Completed local verification:
+
+- Worker unit tests: 580/580.
+- Rust WFP tenant tests: 16/16; Rust WFP outbound tests: 4/4.
+- Multi-service Workerd lifecycle/runtime tests: 7/7.
+- Frontend production build and readiness tests: 16/16.
+- `bun run check`: passed, including frontend redaction/budget/lint/route
+  audits, 21-file D1 migration verification, smoke contracts, workspace tests,
+  and main/tenant/outbound wasm32 checks.
+- `bun audit --json`: no known dependency advisories.

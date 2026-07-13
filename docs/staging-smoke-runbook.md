@@ -1347,3 +1347,24 @@ Store smoke reports outside the source tree if they contain request payloads,
 customer-like data, API responses, or operational screenshots. Commit only a
 redacted summary to `docs/verification.md` or a future `docs/smoke-reports/`
 index.
+## 2026-07-13 Platform Boundary Addendum
+
+Platform Realtime smoke is now an authenticated admin operation. Set the
+complete admin Cookie in `REALTIME_SMOKE_COOKIE` or pass `--cookie`; the harness
+uses it for capabilities, the platform WebSocket upgrade, and the HTTP status
+probe. A live `--mode platform` invocation without the Cookie must fail before
+network traffic. The public `/v1/realtime` mode continues to use relay-token
+subprotocol authentication and does not receive the admin Cookie.
+
+Before platform Realtime staging smoke, require both
+`realtime_session_platform_admin_auth_compiled=true` and
+`realtime_session_platform_smoke_ready=true`. Archive only the redacted report;
+never archive the Cookie or raw request headers.
+
+For WFP preview-host response smoke, make a tenant fixture return each of
+`Service-Worker-Allowed`, `Service-Worker-Navigation-Preload`, and
+`Clear-Site-Data`. The browser-facing preview response must omit all three while
+preserving a safe marker such as `x-request-id`. Repeat a WebSocket upgrade and
+prove the preview-header rule does not replace or break upgrade handling.
+Require `wfp_preview_response_security_headers_compiled=true` in the archived
+capability snapshot.

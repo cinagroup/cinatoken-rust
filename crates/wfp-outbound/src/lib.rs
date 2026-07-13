@@ -106,7 +106,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> WorkerResult<Re
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_redirect(RequestRedirect::Error)
+        .with_redirect(RequestRedirect::Manual)
         .with_body(Some(JsValue::from(js_sys::Uint8Array::from(
             body.as_slice(),
         ))));
@@ -122,6 +122,13 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> WorkerResult<Re
         }
     };
     let status = upstream.status_code();
+    if is_redirect_status(status) {
+        return json_error(
+            502,
+            "wfp_outbound_redirect_denied",
+            "outbound AI Gateway redirects are not allowed",
+        );
+    }
     let response_headers = public_response_headers(upstream.headers())?;
     Ok(Response::from_stream(upstream.stream()?)?
         .with_status(status)
@@ -178,6 +185,10 @@ fn validate_egress_request(
 
 fn valid_account_id(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_redirect_status(status: u16) -> bool {
+    (300..400).contains(&status)
 }
 
 async fn read_bounded_json_body(req: &mut Request) -> Result<Vec<u8>, EgressPolicyError> {
@@ -396,5 +407,9 @@ mod tests {
         assert!(!FORWARDED_REQUEST_HEADERS.contains(&"cookie"));
         assert!(!FORWARDED_RESPONSE_HEADERS.contains(&"set-cookie"));
         assert!(!FORWARDED_RESPONSE_HEADERS.contains(&"cf-aig-log-id"));
+        assert!(is_redirect_status(301));
+        assert!(is_redirect_status(308));
+        assert!(!is_redirect_status(299));
+        assert!(!is_redirect_status(400));
     }
 }

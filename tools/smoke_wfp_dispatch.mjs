@@ -82,6 +82,9 @@ const forbiddenResponseHeaderNames = new Set([
   "cookie",
   "set-cookie",
   "set-cookie2",
+  "service-worker-allowed",
+  "service-worker-navigation-preload",
+  "clear-site-data",
   "x-api-key",
   "x-goog-api-key",
   "api-key",
@@ -635,6 +638,8 @@ function summarizeCapabilities(data) {
       data.wfp_authority_replay_do_compiled === true,
     wfp_tenant_response_header_guard_compiled:
       data.wfp_tenant_response_header_guard_compiled === true,
+    wfp_preview_response_security_headers_compiled:
+      data.wfp_preview_response_security_headers_compiled === true,
     wfp_tenant_ai_gateway_policy_compiled:
       data.wfp_tenant_ai_gateway_policy_compiled === true,
     wfp_outbound_egress_policy_compiled:
@@ -696,6 +701,7 @@ function expectedWfpCapabilityBooleans() {
     "wfp_authority_replay_do_available",
     "wfp_authority_replay_do_compiled",
     "wfp_tenant_response_header_guard_compiled",
+    "wfp_preview_response_security_headers_compiled",
     "wfp_tenant_ai_gateway_policy_compiled",
     "wfp_outbound_egress_policy_compiled",
     "wfp_tenant_smoke_ready",
@@ -727,6 +733,7 @@ function expectedWfpCutoverGuards() {
     "internal_dispatch_required",
     "request_header_scrub",
     "response_header_allowlist",
+    "preview_response_security_headers",
     "ai_gateway_policy_headers",
     "central_billing_settlement",
     "tenant_status_smoke",
@@ -1114,6 +1121,9 @@ function runResponseHeaderGuardSelfTest() {
     "authorization",
     "set-cookie",
     "cookie",
+    "service-worker-allowed",
+    "service-worker-navigation-preload",
+    "clear-site-data",
     "cf-aig-log-id",
     "cf-aig-extra",
     "x-cinatoken-tenant",

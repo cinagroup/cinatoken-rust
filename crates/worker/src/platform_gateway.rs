@@ -32,7 +32,7 @@ use crate::realtime_session::{
     realtime_billing_settlement_mutation_plan_compiled,
     realtime_billing_settlement_preview_compiled,
     realtime_billing_settlement_replay_marker_compiled, realtime_billing_settlement_retry_compiled,
-    realtime_billing_settlement_writer_compiled,
+    realtime_billing_settlement_writer_compiled, realtime_session_platform_admin_auth_compiled,
     realtime_session_platform_header_boundary_compiled,
     realtime_upstream_bridge_backpressure_policy_compiled,
     realtime_upstream_bridge_backpressure_runtime_compiled,
@@ -176,6 +176,11 @@ const WFP_DISPATCH_FAILURE_CLASSES: &[&str] = &[
     "resource_limit_exceeded",
     "tenant_execution_failed",
 ];
+const WFP_PREVIEW_SECURITY_HEADERS: &[&str] = &[
+    "service-worker-allowed",
+    "service-worker-navigation-preload",
+    "clear-site-data",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WfpDispatchFailureKind {
@@ -258,6 +263,7 @@ struct PlatformCapabilities {
     wfp_tenant_internal_dispatch_required_compiled: bool,
     wfp_tenant_relay_authority_verifier_compiled: bool,
     wfp_tenant_response_header_guard_compiled: bool,
+    wfp_preview_response_security_headers_compiled: bool,
     wfp_tenant_ai_gateway_policy_compiled: bool,
     wfp_outbound_egress_policy_compiled: bool,
     wfp_relay_authority_transport_compiled: bool,
@@ -301,6 +307,7 @@ struct PlatformCapabilities {
     realtime_session_billing_settlement_staging_smoke_enabled: bool,
     realtime_session_billing_settlement_staging_smoke_ready: bool,
     realtime_session_platform_header_boundary_compiled: bool,
+    realtime_session_platform_admin_auth_compiled: bool,
     realtime_session_upstream_bridge_compiled: bool,
     realtime_session_billing_settlement_compiled: bool,
     realtime_session_platform_smoke_ready: bool,
@@ -392,6 +399,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let wfp_tenant_relay_authority_verifier_compiled =
         wfp_tenant_relay_authority_verifier_compiled();
     let wfp_tenant_response_header_guard_compiled = wfp_tenant_response_header_guard_compiled();
+    let wfp_preview_response_security_headers_compiled =
+        wfp_preview_response_security_headers_compiled();
     let wfp_tenant_ai_gateway_policy_compiled = wfp_tenant_ai_gateway_policy_compiled();
     let wfp_outbound_egress_policy_compiled = wfp_outbound_egress_policy_compiled();
     let wfp_relay_authority_transport_compiled = relay_wfp_authority_transport_contract_compiled();
@@ -419,6 +428,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_route_manifest_compiled,
         wfp_tenant_internal_dispatch_required_compiled,
         wfp_tenant_response_header_guard_compiled,
+        wfp_preview_response_security_headers_compiled,
         wfp_tenant_ai_gateway_policy_compiled,
         wfp_outbound_egress_policy_compiled,
     );
@@ -492,6 +502,8 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             && realtime_session_billing_settlement_staging_smoke_enabled;
     let realtime_session_platform_header_boundary_compiled =
         realtime_session_platform_header_boundary_compiled();
+    let realtime_session_platform_admin_auth_compiled =
+        realtime_session_platform_admin_auth_compiled();
     // The managed local workerd suite now exercises the complete upstream
     // WebSocket bridge and D1 settlement/replay path. These fields describe
     // compiled implementation, while the environment gates and remote D1/DO
@@ -505,6 +517,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_metrics_persisted_compiled,
         realtime_session_control_no_echo_compiled,
         realtime_session_platform_header_boundary_compiled,
+        realtime_session_platform_admin_auth_compiled,
     );
     let realtime_session_v1_cutover_ready = is_realtime_session_v1_cutover_ready(
         realtime_sessions_do_available,
@@ -638,6 +651,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_internal_dispatch_required_compiled,
         wfp_tenant_relay_authority_verifier_compiled,
         wfp_tenant_response_header_guard_compiled,
+        wfp_preview_response_security_headers_compiled,
         wfp_tenant_ai_gateway_policy_compiled,
         wfp_outbound_egress_policy_compiled,
         wfp_relay_authority_transport_compiled,
@@ -681,6 +695,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_staging_smoke_enabled,
         realtime_session_billing_settlement_staging_smoke_ready,
         realtime_session_platform_header_boundary_compiled,
+        realtime_session_platform_admin_auth_compiled,
         realtime_session_upstream_bridge_compiled,
         realtime_session_billing_settlement_compiled,
         realtime_session_platform_smoke_ready,
@@ -1703,10 +1718,51 @@ async fn dispatch_request_with_env(
         Ok(response) => response,
         Err(err) => return wfp_dispatch_failure_response(&target, &err.to_string()),
     };
+    strip_preview_response_security_headers(&mut response, &target)?;
     let headers = response.headers_mut();
     let _ = headers.set(WFP_ROUTE_REQUEST_HEADER, target.route_kind.header_value());
     let _ = headers.set(WFP_WORKER_REQUEST_HEADER, &target.public_name);
     Ok(response)
+}
+
+fn wfp_preview_response_security_headers_compiled() -> bool {
+    WFP_PREVIEW_SECURITY_HEADERS
+        == [
+            "service-worker-allowed",
+            "service-worker-navigation-preload",
+            "clear-site-data",
+        ]
+}
+
+fn should_strip_preview_response_security_headers(
+    route_kind: DispatchRouteKind,
+    status: u16,
+    upgrade: Option<&str>,
+) -> bool {
+    route_kind == DispatchRouteKind::PreviewHost
+        && status != 101
+        && !upgrade.is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+fn strip_preview_response_security_headers(
+    response: &mut Response,
+    target: &DispatchTarget,
+) -> WorkerResult<()> {
+    let status = response.status_code();
+    let upgrade = response.headers().get("upgrade")?;
+    if !should_strip_preview_response_security_headers(
+        target.route_kind,
+        status,
+        upgrade.as_deref(),
+    ) {
+        return Ok(());
+    }
+
+    let headers = response.headers_mut();
+    for name in WFP_PREVIEW_SECURITY_HEADERS {
+        headers.delete(name)?;
+    }
+    Ok(())
 }
 
 fn classify_wfp_dispatch_failure(message: &str) -> WfpDispatchFailureKind {
@@ -2076,8 +2132,9 @@ fn is_wfp_tenant_smoke_ready(
     tenant_script_plan_compiled: bool,
     rust_wasm_runtime_compiled: bool,
     route_manifest_compiled: bool,
-    relay_authority_verifier_compiled: bool,
+    internal_dispatch_required_compiled: bool,
     response_header_guard_compiled: bool,
+    preview_response_security_headers_compiled: bool,
     ai_gateway_policy_compiled: bool,
     outbound_egress_policy_compiled: bool,
 ) -> bool {
@@ -2088,8 +2145,9 @@ fn is_wfp_tenant_smoke_ready(
         && tenant_script_plan_compiled
         && rust_wasm_runtime_compiled
         && route_manifest_compiled
-        && relay_authority_verifier_compiled
+        && internal_dispatch_required_compiled
         && response_header_guard_compiled
+        && preview_response_security_headers_compiled
         && ai_gateway_policy_compiled
         && outbound_egress_policy_compiled
 }
@@ -2129,6 +2187,7 @@ fn is_realtime_session_platform_smoke_ready(
     metrics_persisted_compiled: bool,
     control_no_echo_compiled: bool,
     platform_header_boundary_compiled: bool,
+    platform_admin_auth_compiled: bool,
 ) -> bool {
     do_available
         && platform_gate_enabled
@@ -2136,6 +2195,7 @@ fn is_realtime_session_platform_smoke_ready(
         && metrics_persisted_compiled
         && control_no_echo_compiled
         && platform_header_boundary_compiled
+        && platform_admin_auth_compiled
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2588,6 +2648,7 @@ mod tests {
             "internal_dispatch_required",
             "request_header_scrub",
             "response_header_allowlist",
+            "preview_response_security_headers",
             "ai_gateway_policy_headers",
             "central_billing_settlement",
             "tenant_status_smoke",
@@ -2603,22 +2664,53 @@ mod tests {
         assert!(wfp_tenant_relay_authority_verifier_compiled());
         assert!(wfp_authority_replay_contract_compiled());
         assert!(wfp_tenant_response_header_guard_compiled());
+        assert!(wfp_preview_response_security_headers_compiled());
         assert!(wfp_tenant_ai_gateway_policy_compiled());
         assert!(wfp_outbound_egress_policy_compiled());
     }
 
     #[test]
     fn wfp_tenant_smoke_ready_requires_binding_gate_and_contracts() {
-        assert!(wfp_tenant_smoke_ready_with_flags([true; 11]));
+        assert!(wfp_tenant_smoke_ready_with_flags([true; 12]));
 
-        for false_gate in 0..11 {
-            let mut flags = [true; 11];
+        for false_gate in 0..12 {
+            let mut flags = [true; 12];
             flags[false_gate] = false;
             assert!(
                 !wfp_tenant_smoke_ready_with_flags(flags),
                 "expected WFP tenant smoke readiness to wait on gate index {false_gate}"
             );
         }
+    }
+
+    #[test]
+    fn preview_response_security_headers_apply_only_to_regular_preview_http() {
+        assert!(wfp_preview_response_security_headers_compiled());
+        assert!(should_strip_preview_response_security_headers(
+            DispatchRouteKind::PreviewHost,
+            200,
+            None,
+        ));
+        assert!(!should_strip_preview_response_security_headers(
+            DispatchRouteKind::PreviewHost,
+            101,
+            Some("websocket"),
+        ));
+        assert!(!should_strip_preview_response_security_headers(
+            DispatchRouteKind::PreviewHost,
+            200,
+            Some("WebSocket"),
+        ));
+        assert!(!should_strip_preview_response_security_headers(
+            DispatchRouteKind::InternalPath,
+            200,
+            None,
+        ));
+        assert!(!should_strip_preview_response_security_headers(
+            DispatchRouteKind::RelayAuthority,
+            200,
+            None,
+        ));
     }
 
     #[test]
@@ -2671,6 +2763,7 @@ mod tests {
     fn realtime_session_cutover_guards_expose_remaining_blockers() {
         let guards = realtime_session_cutover_guards();
         assert!(guards.contains(&"platform_gateway_gate"));
+        assert!(guards.contains(&"platform_admin_auth"));
         assert!(guards.contains(&"v1_gateway_gate"));
         assert!(guards.contains(&"relay_token_auth"));
         assert!(guards.contains(&"relay_rate_limits"));
@@ -2779,22 +2872,25 @@ mod tests {
     #[test]
     fn realtime_platform_smoke_ready_requires_do_gate_and_safe_control_surface() {
         assert!(is_realtime_session_platform_smoke_ready(
-            true, true, true, true, true, true
+            true, true, true, true, true, true, true
         ));
         assert!(!is_realtime_session_platform_smoke_ready(
-            false, true, true, true, true, true
+            false, true, true, true, true, true, true
         ));
         assert!(!is_realtime_session_platform_smoke_ready(
-            true, false, true, true, true, true
+            true, false, true, true, true, true, true
         ));
         assert!(!is_realtime_session_platform_smoke_ready(
-            true, true, true, false, true, true
+            true, true, true, false, true, true, true
         ));
         assert!(!is_realtime_session_platform_smoke_ready(
-            true, true, true, true, false, true
+            true, true, true, true, false, true, true
         ));
         assert!(!is_realtime_session_platform_smoke_ready(
-            true, true, true, true, true, false
+            true, true, true, true, true, false, true
+        ));
+        assert!(!is_realtime_session_platform_smoke_ready(
+            true, true, true, true, true, true, false
         ));
     }
 
@@ -2822,10 +2918,10 @@ mod tests {
         )
     }
 
-    fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 11]) -> bool {
+    fn wfp_tenant_smoke_ready_with_flags(flags: [bool; 12]) -> bool {
         is_wfp_tenant_smoke_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-            flags[8], flags[9], flags[10],
+            flags[8], flags[9], flags[10], flags[11],
         )
     }
 

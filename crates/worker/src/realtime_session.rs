@@ -33,6 +33,7 @@ use worker::{
     Storage, WebSocket, WebSocketIncomingMessage, WebSocketPair, WebsocketEvent,
 };
 
+use crate::admin::require_admin_auth;
 use crate::platform_gateway::env_flag;
 
 pub const REALTIME_SESSIONS_BINDING: &str = "REALTIME_SESSIONS";
@@ -69,11 +70,13 @@ pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
 pub const REALTIME_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
     "REALTIME_BILLING_RESERVATION_LEASE_SECONDS";
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
+pub const REALTIME_SESSION_PLATFORM_ADMIN_AUTH_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
 const REALTIME_UPSTREAM_CONNECT_HEADER: &str = "x-cinatoken-realtime-upstream-connect";
 pub use cinatoken_gateway::REALTIME_OPENAI_PATH;
 pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "platform_gateway_gate",
+    "platform_admin_auth",
     "v1_gateway_gate",
     "relay_token_auth",
     "relay_rate_limits",
@@ -3120,6 +3123,9 @@ pub async fn handle_gateway(req: Request, env: Env) -> WorkerResult<Response> {
 }
 
 async fn handle_platform_realtime_gateway(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
     if !env_flag(&env, REALTIME_SESSION_GATEWAY_ENABLED_ENV) {
         return realtime_error_response(
             "realtime_session_gateway_disabled",
@@ -3143,6 +3149,11 @@ async fn handle_platform_realtime_gateway(req: Request, env: Env) -> WorkerResul
 
     let req = platform_realtime_gateway_request(&req)?;
     fetch_session_stub(req, env, session).await
+}
+
+pub(crate) fn realtime_session_platform_admin_auth_compiled() -> bool {
+    REALTIME_SESSION_PLATFORM_ADMIN_AUTH_COMPILED
+        && REALTIME_SESSION_CUTOVER_GUARDS.contains(&"platform_admin_auth")
 }
 
 async fn handle_openai_realtime_gateway(req: Request, env: Env) -> WorkerResult<Response> {

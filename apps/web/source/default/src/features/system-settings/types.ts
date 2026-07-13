@@ -454,6 +454,7 @@ export type PlatformCapabilities = {
   wfp_tenant_internal_dispatch_required_compiled: boolean
   wfp_tenant_relay_authority_verifier_compiled: boolean
   wfp_tenant_response_header_guard_compiled: boolean
+  wfp_preview_response_security_headers_compiled: boolean
   wfp_tenant_ai_gateway_policy_compiled: boolean
   wfp_outbound_egress_policy_compiled: boolean
   wfp_relay_authority_transport_compiled: boolean
@@ -497,6 +498,7 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_staging_smoke_enabled: boolean
   realtime_session_billing_settlement_staging_smoke_ready: boolean
   realtime_session_platform_header_boundary_compiled: boolean
+  realtime_session_platform_admin_auth_compiled: boolean
   realtime_session_upstream_bridge_compiled: boolean
   realtime_session_billing_settlement_compiled: boolean
   realtime_session_platform_smoke_ready: boolean

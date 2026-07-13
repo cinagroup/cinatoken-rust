@@ -783,3 +783,25 @@ This migration mapping is production-ready when each enabled pillar has:
 
 Until then, the correct production posture is "compiled and gated", not
 "cutover-ready".
+
+## 2026-07-13 Preview Response Chokepoint Alignment
+
+The reference audit at cinaVibeSDK commit `918e97480ee4` and its current preview
+response hardening change identified three browser side-effect headers that
+must not cross the tenant preview chokepoint:
+`Service-Worker-Allowed`, `Service-Worker-Navigation-Preload`, and
+`Clear-Site-Data`.
+
+cinatoken-rust now applies the same boundary in the Rust platform dispatch
+gateway for regular `PreviewHost` HTTP responses. WebSocket upgrades are
+excluded, and internal status dispatch is unchanged. This complements rather
+than replaces the tenant/outbound response allowlists: the tenant boundary
+protects provider secrets, while the dispatch preview boundary prevents a
+tenant response from changing browser state outside the intended preview
+surface.
+
+The local multi-service Workerd suite additionally proves the Rust tenant and
+outbound Worker can cooperate through service bindings with one replay winner
+and one terminal provider call. This is stronger local runtime evidence than a
+source-only mapping, but it is still not remote dispatch-namespace attachment,
+deployed compatibility, or production evidence.

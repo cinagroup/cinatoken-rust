@@ -878,6 +878,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Preview browser security boundary'),
+          description: t(
+            'Strips Service-Worker-Allowed, Service-Worker-Navigation-Preload, and Clear-Site-Data from regular preview HTTP responses while preserving WebSocket upgrades.'
+          ),
+          ready: capabilities.wfp_preview_response_security_headers_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Tenant AI Gateway policy'),
           description: t(
             'Supports route-specific Gateway IDs, retry/cache/log policy headers, and metadata for tenant route smokes.'
@@ -1517,6 +1526,15 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.realtime_session_platform_header_boundary_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Platform admin boundary'),
+          description: t(
+            'Requires AdminAuth before platform Realtime WebSocket or status requests can resolve and touch a session Durable Object.'
+          ),
+          ready: capabilities.realtime_session_platform_admin_auth_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },

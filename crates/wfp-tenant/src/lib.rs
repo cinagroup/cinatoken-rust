@@ -16,7 +16,7 @@ use serde_json::json;
 use url::Url;
 use wasm_bindgen::JsValue;
 use worker::{
-    event, Context, Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response,
+    event, Context, Env, Fetch, Headers, Method, Request, RequestInit, Response,
     Result as WorkerResult,
 };
 
@@ -454,7 +454,6 @@ async fn forward_ai_gateway(
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_redirect(RequestRedirect::Error)
         .with_body(Some(JsValue::from(js_sys::Uint8Array::from(
             body.as_slice(),
         ))));

@@ -3795,3 +3795,39 @@ authenticated frontend, and rollback evidence.
   channels, response bounds, reserve/settle/refund, D1 audit/provider invoice
   reconciliation, disable/recovery behavior, and Go rollback. Production
   remains **NO-GO**.
+
+## 2026-07-13 Tencent Hunyuan TC3 Adapter Verification
+
+- Source type 23 and the current Hunyuan ChatCompletions/TC3 contracts were
+  reviewed before implementation. Rust admits exactly direct, non-streaming,
+  text-only Chat Completions at the fixed official host. Unsupported fields,
+  tools/multimodal input, streaming, custom base URLs, AI Gateway, and WFP are
+  filtered before quota reservation.
+- Provider tests cover strict three-part credential parsing, exact request
+  conversion, UTC date boundaries, a fixed independently checked TC3 signature,
+  direct/enveloped successes, optional `Note`, missing usage, and string/numeric
+  provider errors. Worker tests cover pre-reserve filtering, direct-only
+  transport, Admin probe constraints, provider-error status classes, and
+  readiness projection. Normalized responses retain only bounded request-id
+  and retry metadata rather than replaying arbitrary upstream headers.
+- `cargo test -p cinatoken-providers` passed 90/90,
+  `cargo clippy -p cinatoken-providers --no-deps -- -D warnings` passed,
+  `cargo test -p cinatoken-relay` passed 74/74, and
+  `cargo test -p cinatoken-worker --lib` passed 625/625. The Worker
+  `wasm32-unknown-unknown` check passed with only the two pre-existing unused
+  topup repository warnings. Frontend readiness passed 22/22.
+- The complete `bun run check` gate passed at `2026-07-13T14:31:17Z` against
+  the implementation worktree based on
+  `0543128824220f16b9a8aa77ffac38eac346e234`: release main/tenant/outbound
+  Rust/Wasm builds, Workerd 12/12, Playground 1/1, frontend build/redaction/
+  budget/zero-lint-debt gates, 217 frontend calls against 320 Worker routes
+  with zero missing, the 22-migration/27-table D1 verifier, workspace tests,
+  WFP/Realtime/TaskRunner/AI Gateway contract checks and dry-run plans, and all
+  three wasm32 target checks.
+- No Tencent or Cloudflare credential, remote account, or live provider request
+  was used. Type 23 remains Partial until rotated-credential staging proves TC3
+  acceptance, UTC/skew behavior, direct/enveloped success, 400/401/403/429/503
+  handling, retry winner, response bounds, usage, reserve/settle/refund, D1 and
+  provider-invoice reconciliation, disable/recovery, and Go rollback. The
+  registry reports 16 Ready, 15 Partial, and 22 Deferred channel types.
+  Production remains **NO-GO**.

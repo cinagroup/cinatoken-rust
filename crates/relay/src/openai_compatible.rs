@@ -7,6 +7,7 @@ pub const CHANNEL_TYPE_BAIDU: i32 = 15;
 pub const CHANNEL_TYPE_ZHIPU: i32 = 16;
 pub const CHANNEL_TYPE_ALI: i32 = 17;
 pub const CHANNEL_TYPE_OPENROUTER: i32 = 20;
+pub const CHANNEL_TYPE_TENCENT: i32 = 23;
 pub const CHANNEL_TYPE_MOONSHOT: i32 = 25;
 pub const CHANNEL_TYPE_ZHIPU_V4: i32 = 26;
 pub const CHANNEL_TYPE_PERPLEXITY: i32 = 27;

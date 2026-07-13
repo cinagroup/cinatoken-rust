@@ -3443,6 +3443,16 @@ mod tests {
                 {"method": "POST", "path": "/v1/embeddings"}
             ])
         );
+        let tencent = entries
+            .iter()
+            .find(|entry| entry["channel_type"] == 23)
+            .unwrap();
+        assert_eq!(tencent["adapter"], "tencent_hunyuan");
+        assert_eq!(tencent["readiness"], "partial");
+        assert_eq!(
+            tencent["routes"],
+            serde_json::json!([{"method": "POST", "path": "/v1/chat/completions"}])
+        );
         let submodel = entries
             .iter()
             .find(|entry| entry["channel_type"] == 53)

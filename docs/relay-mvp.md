@@ -332,3 +332,26 @@ either transport. Admin Channel Test, including legacy Completions, and
 frontend readiness consume the same six-route registry. This is local contract
 evidence only; production remains **NO-GO** pending route-specific staging,
 billing/audit reconciliation, and rollback proof.
+
+## 2026-07-13 Tencent Hunyuan Direct Adapter Boundary
+
+Channel type 23 is Partial for only `/v1/chat/completions` with a
+non-streaming, text-only request. The dedicated adapter targets the fixed
+Hunyuan API host/action/version, preserves the Go credential shape
+`appId|secretId|secretKey`, and computes request-local TC3-HMAC-SHA256 headers
+over the exact serialized provider body. appId is validated for source
+compatibility but is not part of the provider request or TC3 signature.
+
+The request converter admits only model, messages, stream=false/null, top_p,
+and temperature; unsupported root/message fields and non-text content fail
+before reserve. AI Gateway, WFP, custom base URLs, and streaming also fail
+before reserve. Provider HTTP-200 `Response.Error` envelopes are mapped into
+owned 4xx/429/5xx responses before the shared retry loop chooses a winner, so
+failed attempts cannot create successful affinity or settlement. Successful
+direct/enveloped responses are bounded and converted to the OpenAI shape with
+usage required; the optional provider `Note` remains a bounded extension.
+
+This is local contract evidence, not live Tencent parity. Rotated-credential
+staging must still prove TC3 acceptance, UTC/skew behavior, error/retry classes,
+usage, reserve/settle/refund, D1/provider reconciliation, disable/recovery, and
+Go rollback. Production remains **NO-GO**.

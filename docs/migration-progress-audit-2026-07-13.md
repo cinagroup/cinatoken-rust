@@ -58,14 +58,14 @@ for isolated staging, not an all-traffic production declaration.
 ### Provider Relay
 
 - The capability registry covers all 53 real Go channel types exactly once.
-- After this audit increment it reports **16 Ready, 14 Partial, and 23
+- After this audit increment it reports **16 Ready, 15 Partial, and 22
   Deferred** types.
 - Generic OpenAI compatibility remains restricted to the 14 types that the Go
   dispatcher actually sends through `openai.Adaptor`.
 - Dedicated Partial providers are Ali(17), Moonshot(25), ZhipuV4(26),
   Perplexity(27), Jina(38), Cloudflare(39), SiliconFlow(40), Mistral(42),
   DeepSeek(43), VolcEngine(45), BaiduV2(46), xAI(48), and Submodel(53), plus
-  Cohere rerank(34).
+  Tencent Hunyuan(23) and Cohere rerank(34).
 - Ali(17) now admits only direct DashScope Chat Completions, legacy
   Completions, current Responses, Embeddings, model-allowlisted native
   Messages, and `gte-rerank-v2`. Messages model patterns retain the source
@@ -83,9 +83,16 @@ for isolated staging, not an all-traffic production declaration.
   `-search` normalization and `token|appid` header separation. Source URL
   branches whose converters return not-implemented remain rejected before
   reserve.
-- Neither provider is listed by Cloudflare as a native AI Gateway provider.
-  Both are direct-only; AI Gateway and WFP configuration is filtered before
-  quota reservation.
+- VolcEngine and BaiduV2 are not listed by Cloudflare as native AI Gateway
+  providers. Both are direct-only; AI Gateway and WFP configuration is
+  filtered before quota reservation.
+- Tencent Hunyuan(23) now admits only direct, non-streaming, text-only Chat
+  Completions against the fixed official host. The source-compatible
+  `appId|secretId|secretKey` credential is parsed request-locally, TC3 headers
+  sign the exact transmitted bytes, unsupported OpenAI fields fail before
+  reserve, and provider HTTP-200 error envelopes are normalized before retry,
+  affinity, settlement, and audit classification. Streaming, tool/multimodal
+  inputs, custom base URLs, AI Gateway, and WFP remain rejected.
 - Every Partial provider still needs route-specific live success/error/stream
   fixtures, bounded-response evidence, usage reconciliation, reserve/settle/
   refund proof, audit comparison, disable behavior, and Go rollback.

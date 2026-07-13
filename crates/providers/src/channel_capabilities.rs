@@ -16,6 +16,7 @@ pub enum ChannelAdapterKind {
     PerplexityOpenAi,
     SiliconFlowOpenAi,
     SubmodelOpenAi,
+    TencentHunyuan,
     XaiOpenAi,
     ZhipuV4,
     VolcEngineOpenAi,
@@ -170,6 +171,7 @@ const ZHIPU_V4_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::AnthropicMessages,
 ];
 const BAIDU_V2_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
+const TENCENT_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
 const VOLCENGINE_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ChatCompletions,
     ProviderRelayRoute::Embeddings,
@@ -379,10 +381,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         23,
         "Tencent",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated Tencent adapter is not migrated"
+        TencentHunyuan,
+        Partial,
+        TENCENT_ROUTES,
+        "direct-only non-streaming Hunyuan ChatCompletions adapter is implemented"
     ),
     capability!(
         24,
@@ -684,7 +686,7 @@ mod tests {
                 ChannelRelayReadiness::Deferred => (ready, partial, deferred + 1),
             },
         );
-        assert_eq!(totals, (16, 14, 23));
+        assert_eq!(totals, (16, 15, 22));
     }
 
     #[test]
@@ -720,6 +722,14 @@ mod tests {
         assert!(!channel_supports_relay_route(
             15,
             ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(channel_supports_relay_route(
+            23,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(!channel_supports_relay_route(
+            23,
+            ProviderRelayRoute::Completions
         ));
         assert!(channel_supports_relay_route(
             42,
@@ -835,6 +845,10 @@ mod tests {
         assert_eq!(
             channel_capability(46).map(|capability| capability.supported_routes),
             Some(BAIDU_V2_ROUTES)
+        );
+        assert_eq!(
+            channel_capability(23).map(|capability| capability.supported_routes),
+            Some(TENCENT_ROUTES)
         );
         assert!(!channel_supports_relay_route(
             46,

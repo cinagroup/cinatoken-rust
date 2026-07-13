@@ -44,6 +44,14 @@ describe('channel provider relay readiness', () => {
       routes: [{ method: 'POST', path: '/v1/chat/completions' }],
       reason: 'dedicated Sonar chat implementation',
     }
+    const tencent = {
+      channel_type: 23,
+      name: 'Tencent',
+      adapter: 'tencent_hunyuan',
+      readiness: 'partial' as const,
+      routes: [{ method: 'POST', path: '/v1/chat/completions' }],
+      reason: 'direct-only non-streaming Hunyuan chat implementation',
+    }
     const submodel = {
       channel_type: 53,
       name: 'Submodel',
@@ -153,6 +161,7 @@ describe('channel provider relay readiness', () => {
     }
     const index = indexProviderReadiness([
       ali,
+      tencent,
       moonshot,
       zhipuV4,
       perplexity,
@@ -179,6 +188,10 @@ describe('channel provider relay readiness', () => {
       ]
     )
     assert.equal(index.get(25), moonshot)
+    assert.equal(index.get(23), tencent)
+    assert.deepEqual(index.get(23)?.routes, [
+      { method: 'POST', path: '/v1/chat/completions' },
+    ])
     assert.deepEqual(
       index.get(25)?.routes.map((route) => route.path),
       [

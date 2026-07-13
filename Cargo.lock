@@ -240,8 +240,10 @@ dependencies = [
  "async-trait",
  "cinatoken-core",
  "cinatoken-relay",
+ "hmac",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

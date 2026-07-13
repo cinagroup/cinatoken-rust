@@ -1470,3 +1470,43 @@ Rollback:
 Any wrong winner, double mutation, stale successful-sweep signal, unbounded
 query count, raw identifier leakage, or unexplained D1/DO ownership state is an
 immediate G7 abort. Local Workerd evidence does not satisfy this remote phase.
+
+## Phase 4d: Tencent Hunyuan TC3 Chat
+
+Run this phase only after credential rotation in an isolated staging account.
+Use one dedicated type-23 channel with `appId|secretId|secretKey`; never archive
+the raw channel key, Authorization value, canonical request, or derived TC3
+keys. Keep AI Gateway and WFP disabled for this channel.
+
+Preconditions:
+
+1. `bun run check` passes at the exact candidate commit and readiness reports
+   type 23 Partial with only Chat Completions.
+2. The staging Worker clock is observable and within the provider's accepted
+   skew. Record UTC timestamp/date metadata without credentials or body data.
+3. The Go/VPS type-23 path remains enabled as the immediate rollback target.
+
+Execution order:
+
+1. Send one minimal non-streaming text request and archive redacted provider
+   request id, status, model, usage, Worker audit id, reservation, settlement,
+   and provider-console billing evidence.
+2. Exercise both provider success shapes if the account/API exposes them and
+   confirm the OpenAI response plus optional `note` extension is bounded.
+3. Re-run with malformed credentials, permission denial, invalid input, rate
+   limiting, and induced service failure. Prove 400/401/403/429/503 mapping,
+   retry selection, no successful affinity for failed attempts, and exactly
+   one terminal settlement or refund.
+4. Exercise an accepted timestamp near UTC midnight and a deliberately stale
+   timestamp in a non-billable signature probe. Prove the date scope is UTC and
+   skew failure does not reserve or settle quota.
+5. Submit stream=true, tool fields, multimodal content, an unsupported root
+   field, a custom base URL, AI Gateway, and WFP configuration. Every case must
+   fail before provider egress and quota reservation.
+6. Disable the channel during a controlled request window, confirm no new Rust
+   admission, then route the same fixture through Go/VPS and reconcile both
+   systems' audit and quota records.
+
+Any leaked credential/signing material, unbounded body, mismatched usage,
+retry-after-success, false successful affinity, duplicate terminal mutation,
+or inability to return traffic to Go is an immediate G3 abort.

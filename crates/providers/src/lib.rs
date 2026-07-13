@@ -14,6 +14,7 @@ pub mod perplexity;
 pub mod routing;
 pub mod siliconflow;
 pub mod submodel;
+pub mod tencent;
 pub mod volcengine;
 pub mod xai;
 pub mod zhipu;

@@ -784,6 +784,28 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   server-side `channels.other`. Relay cache schema v4 invalidates older cached
   channel rows, and main/fallback/Admin OpenAI SSE paths share one usage-option
   policy while native Messages remains Anthropic-shaped.
-- The capability registry now reports 16 Ready, 14 Partial, and 23 Deferred
+- The capability registry now reports 16 Ready, 15 Partial, and 22 Deferred
   channel types. This changes implementation readiness, not the G3 staging or
   production decision; production remains **NO-GO**.
+
+## 2026-07-13 Tencent Hunyuan Direct Adapter Increment
+
+- Tencent channel type 23 moved from Deferred to Partial for one deliberately
+  narrow route: direct, non-streaming, text-only Chat Completions.
+- The Worker uses the fixed official Hunyuan host and action/version contract,
+  parses the source-compatible `appId|secretId|secretKey` credential, and signs
+  the exact serialized body with request-local TC3-HMAC-SHA256 headers. appId
+  remains compatibility metadata and is neither transmitted nor signed.
+- Unsupported OpenAI fields, non-text message parts, streaming, custom base
+  URLs, AI Gateway, and WFP are rejected before quota reservation. Provider
+  HTTP-200 error envelopes are normalized before retry, affinity, settlement,
+  and audit classification; direct and enveloped successes share bounded
+  OpenAI response conversion and preserve a bounded provider `Note`.
+- Local fixtures cover fixed URL ownership, credential parsing, request shape,
+  UTC date/signature stability, response forms, missing usage, error classes,
+  readiness projection, and wasm compilation. This does not establish live
+  credential health or provider parity.
+- The capability registry now reports 16 Ready, 15 Partial, and 22 Deferred
+  channel types. Production remains **NO-GO** until rotated-credential staging
+  proves TC3 acceptance, skew/error behavior, usage and billing reconciliation,
+  disable/recovery, canary, and Go rollback.

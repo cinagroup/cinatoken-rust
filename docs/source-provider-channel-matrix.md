@@ -103,7 +103,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 20 | OpenRouter | openrouter.ai/api | OpenRouter | openai | OpenAI-adaptor | A: OpenAI core |
 | 21 | AIProxyLibrary | api.aiproxy.io | AIProxyLibrary | **nil** | **Unsupported** | none — mark deferred |
 | 22 | FastGPT | fastgpt.run/api/openapi | OpenAI (fallback) | openai | OpenAI-adaptor | C: app (OpenAI-shaped) |
-| 23 | Tencent | hunyuan.tencentcloudapi.com | Tencent | tencent | Dedicated (regional) | B: regional |
+| 23 | Tencent | hunyuan.tencentcloudapi.com | Tencent | tencent | Dedicated Partial (direct TC3 Hunyuan chat) | Implemented locally: non-streaming text-only Chat Completions; staging evidence open |
 | 24 | Gemini | generativelanguage.googleapis.com | Gemini | gemini | Dedicated (native) | A: Gemini native |
 | 25 | Moonshot | api.moonshot.cn | Moonshot | moonshot | Dedicated Partial (direct Claude+OpenAI bridge) | Implemented locally: chat/completions, completions, embeddings, rerank, Messages; staging evidence open |
 | 26 | ZhipuV4 | open.bigmodel.cn | ZhipuV4 | zhipu_4v | Dedicated Partial (direct OpenAI/Claude bridge) | Implemented locally: chat/completions, embeddings, image generations, Messages; staging evidence open |
@@ -222,6 +222,21 @@ not implemented; Rust does not expose those branches. Cloudflare does not list
 Baidu as a native AI Gateway provider, so Gateway/WFP transport also fails
 before reserve.
 
+Tencent Hunyuan(23) is a direct-only adapter for the source Hunyuan
+`ChatCompletions` action at the fixed `hunyuan.tencentcloudapi.com` host. It
+preserves the source `appId|secretId|secretKey` credential shape, treats appId
+as compatibility metadata rather than signed input, and creates request-local
+TC3-HMAC-SHA256 headers over the exact JSON bytes sent upstream. The admitted
+intersection is deliberately narrow: non-streaming, text-only OpenAI Chat
+Completions with model, messages, top_p, and temperature. Unsupported root or
+message fields, stream requests, non-text content, custom base URLs, AI
+Gateway, and WFP fail before reserve. Direct and enveloped success bodies are
+converted to the shared OpenAI response, provider `Note` is retained as a
+bounded extension, and HTTP-200 `Response.Error` envelopes are classified
+before retry, affinity, settlement, and audit. This is local E2 evidence only;
+real TC3 acceptance, clock-skew behavior, errors, usage, billing, disable, and
+rollback remain G3 staging work.
+
 Channel type 0 (`Unknown`) and the trailing `Dummy` sentinel are counters, not
 real providers.
 
@@ -264,7 +279,8 @@ The generic set is locked to source adapter dispatch by tests: 1, 3, 6, 7, 8,
 resolves no text adapter. Types 25, 27, 42, 43, 48, and 53 are Partial only for
 their explicit routes; unsupported routes fail before quota reserve. Types
 14/25/43 are the Messages candidates; types 25/34/38/40 are the rerank
-candidates; type 24 is the native Gemini candidate. Async task/media routing
+candidates; type 24 is the native Gemini candidate; type 23 is the bounded
+Tencent Hunyuan chat candidate. Async task/media routing
 remains a separate authority and is not implied by this text-relay registry.
 
 The admin API and frontend deliberately call this contract "Relay

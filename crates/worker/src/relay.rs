@@ -35,6 +35,11 @@ use cinatoken_providers::{
         apply_siliconflow_request, siliconflow_image_response_usage,
         transform_siliconflow_rerank_response_body,
     },
+    tencent::{
+        apply_tencent_chat_request, parse_tencent_key, tencent_tc3_headers,
+        transform_tencent_chat_response_body, TencentResponseError, TENCENT_HUNYUAN_ACTION,
+        TENCENT_HUNYUAN_VERSION,
+    },
     volcengine::{apply_volcengine_request, is_volcengine_bot_model, is_volcengine_coding_plan},
     xai::apply_xai_request,
     zhipu::apply_zhipu_v4_request,
@@ -49,8 +54,8 @@ use cinatoken_relay::{
     RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI,
     CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA,
     CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
-    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4,
-    RELAY_CACHE_SCHEMA_VERSION,
+    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI,
+    CHANNEL_TYPE_ZHIPU_V4, RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -162,6 +167,7 @@ enum RelayProviderKind {
     PerplexityOpenAi,
     SiliconFlowOpenAi,
     SubmodelOpenAi,
+    TencentHunyuan,
     XaiOpenAi,
     VolcEngineOpenAi,
     GeminiNative,
@@ -323,6 +329,11 @@ impl RelayEndpoint {
         {
             return RelayProviderKind::SubmodelOpenAi;
         }
+        if channel_type == CHANNEL_TYPE_TENCENT
+            && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::TencentHunyuan;
+        }
         if channel_type == CHANNEL_TYPE_XAI && self.provider == RelayProviderKind::OpenAiCompatible
         {
             return RelayProviderKind::XaiOpenAi;
@@ -368,6 +379,7 @@ impl RelayEndpoint {
             RelayProviderKind::PerplexityOpenAi => RegistryProviderKind::PerplexityOpenAi,
             RelayProviderKind::SiliconFlowOpenAi => RegistryProviderKind::SiliconFlowOpenAi,
             RelayProviderKind::SubmodelOpenAi => RegistryProviderKind::SubmodelOpenAi,
+            RelayProviderKind::TencentHunyuan => RegistryProviderKind::TencentHunyuan,
             RelayProviderKind::XaiOpenAi => RegistryProviderKind::XaiOpenAi,
             RelayProviderKind::VolcEngineOpenAi => RegistryProviderKind::VolcEngineOpenAi,
             RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
@@ -403,6 +415,7 @@ impl RelayEndpoint {
             | RelayProviderKind::MoonshotMessages
             | RelayProviderKind::PerplexityOpenAi
             | RelayProviderKind::SubmodelOpenAi
+            | RelayProviderKind::TencentHunyuan
             | RelayProviderKind::XaiOpenAi => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
             RelayProviderKind::VolcEngineOpenAi => match self.upstream_path.as_str() {
                 "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
@@ -673,6 +686,12 @@ fn resolve_admin_probe_endpoint(
     } else {
         requested
     };
+    if stream && channel_type == CHANNEL_TYPE_TENCENT {
+        return Err(AdminChannelProbeError::bad_request(
+            "channel_test_stream_incompatible",
+            "Tencent Hunyuan streaming probes are not implemented",
+        ));
+    }
     if stream && !preferred.supports_stream() {
         return Err(AdminChannelProbeError::bad_request(
             "channel_test_stream_incompatible",
@@ -2450,6 +2469,15 @@ async fn relay_endpoint_with_auth(
         Err(response) => return response,
     };
     retain_route_capable_channels(&mut group_pools, Some(endpoint.route));
+    let tencent_is_only_stream_candidate = should_relay_stream
+        && group_pools
+            .iter()
+            .flat_map(|(_, channels)| channels)
+            .any(|channel| channel.channel_type == CHANNEL_TYPE_TENCENT)
+        && group_pools
+            .iter()
+            .flat_map(|(_, channels)| channels)
+            .all(|channel| channel.channel_type == CHANNEL_TYPE_TENCENT);
     retain_pre_reserve_capable_channels(
         &mut group_pools,
         &endpoint,
@@ -2457,6 +2485,14 @@ async fn relay_endpoint_with_auth(
         json_body.as_ref(),
         ali_messages_model_patterns.as_deref(),
     );
+    if tencent_is_only_stream_candidate
+        && group_pools.iter().all(|(_, channels)| channels.is_empty())
+    {
+        return json_with_status(
+            &ErrorBody::not_implemented("Tencent Hunyuan streaming relay"),
+            501,
+        );
+    }
 
     // Go applies the per-token cross-group switch only to `auto` tokens. Empty
     // groups can still be skipped during initial selection, but retry
@@ -3686,6 +3722,9 @@ fn retain_pre_reserve_capable_channels(
             if is_workers_ai_binding_channel(channel) && should_relay_stream {
                 return false;
             }
+            if channel.channel_type == CHANNEL_TYPE_TENCENT && should_relay_stream {
+                return false;
+            }
             let request_shape_supported = if channel.channel_type == CHANNEL_TYPE_ALI {
                 request_body.is_some_and(|body| {
                     ali_accepts_request_shape(
@@ -3715,6 +3754,32 @@ fn channel_accepts_endpoint_request_shape(
     endpoint: &RelayEndpoint,
     request_body: Option<&Value>,
 ) -> bool {
+    if channel.channel_type == CHANNEL_TYPE_TENCENT {
+        let key_is_valid =
+            first_channel_key(&channel.key).is_some_and(|key| parse_tencent_key(&key).is_ok());
+        if endpoint.route != ProviderRelayRoute::ChatCompletions || !key_is_valid {
+            return false;
+        }
+        let Some(body) = request_body else {
+            return false;
+        };
+        if body.get("model").is_some() || body.get("messages").is_some() {
+            let mut converted = body.clone();
+            return apply_tencent_chat_request(&mut converted).is_ok();
+        }
+        let model_is_present = body
+            .get("Model")
+            .and_then(Value::as_str)
+            .is_some_and(|model| !model.trim().is_empty());
+        let has_messages = body
+            .get("Messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| !messages.is_empty());
+        let stream_is_disabled = body.get("Stream").map_or(true, |stream| {
+            stream.is_null() || stream.as_bool() == Some(false)
+        });
+        return model_is_present && has_messages && stream_is_disabled;
+    }
     if channel.channel_type == CHANNEL_TYPE_BAIDU_V2 {
         let key_is_valid =
             first_channel_key(&channel.key).is_some_and(|key| parse_baidu_v2_key(&key).is_ok());
@@ -3775,6 +3840,7 @@ fn is_direct_only_provider_channel(channel: &RelayChannel) -> bool {
             | CHANNEL_TYPE_ZHIPU_V4
             | CHANNEL_TYPE_SILICONFLOW
             | CHANNEL_TYPE_SUBMODEL
+            | CHANNEL_TYPE_TENCENT
             | CHANNEL_TYPE_VOLCENGINE
     )
 }
@@ -6797,6 +6863,7 @@ async fn forward_relay_request(
             forward_ali(url, upstream_key, channel, body).await
         }
         RelayProviderKind::BaiduV2OpenAi => forward_baidu_v2_openai(url, upstream_key, body).await,
+        RelayProviderKind::TencentHunyuan => forward_tencent_hunyuan(url, upstream_key, body).await,
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
@@ -7127,6 +7194,137 @@ async fn forward_baidu_v2_openai(
     Fetch::Request(outbound).send().await
 }
 
+async fn forward_tencent_hunyuan(
+    url: &str,
+    upstream_key: &str,
+    body: &Value,
+) -> worker::Result<Response> {
+    let credentials = parse_tencent_key(upstream_key)
+        .map_err(|reason| worker::Error::RustError(format!("invalid Tencent API key: {reason}")))?;
+    let model = body
+        .get("Model")
+        .and_then(Value::as_str)
+        .unwrap_or("tencent-hunyuan")
+        .to_string();
+    let body = serde_json::to_string(body)?;
+    let signed = tencent_tc3_headers(&body, &credentials, unix_timestamp()).map_err(|reason| {
+        worker::Error::RustError(format!("failed to sign Tencent request: {reason}"))
+    })?;
+    let mut headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("authorization", &signed.authorization)?;
+    headers.set("x-tc-action", TENCENT_HUNYUAN_ACTION)?;
+    headers.set("x-tc-version", TENCENT_HUNYUAN_VERSION)?;
+    headers.set("x-tc-timestamp", &signed.timestamp)?;
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body)));
+    let outbound = Request::new_with_init(url, &init)?;
+    let response = Fetch::Request(outbound).send().await?;
+    normalize_tencent_hunyuan_response(response, &model).await
+}
+
+async fn normalize_tencent_hunyuan_response(
+    mut response: Response,
+    model: &str,
+) -> worker::Result<Response> {
+    if response.status_code() != 200 {
+        return Ok(response);
+    }
+    let mut headers = Headers::new();
+    for name in ["x-tc-requestid", "x-request-id", "retry-after"] {
+        if let Some(value) = response.headers().get(name).ok().flatten() {
+            let _ = headers.set(name, &value);
+        }
+    }
+    let transformed =
+        match read_response_text_limited(&mut response, DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES)
+            .await
+        {
+            Ok(body) => {
+                match transform_tencent_chat_response_body(&body, model, unix_timestamp()) {
+                    Ok((body, _, request_id)) => {
+                        if let Some(request_id) = request_id {
+                            let _ = headers.set("x-tc-requestid", &request_id);
+                        }
+                        (200, body)
+                    }
+                    Err(TencentResponseError::Provider(error)) => {
+                        if let Some(request_id) = error.request_id.as_deref() {
+                            let _ = headers.set("x-tc-requestid", request_id);
+                        }
+                        let status = tencent_provider_error_status(&error.code);
+                        (
+                            status,
+                            tencent_openai_error_body(status, &error.code, &error.message)?,
+                        )
+                    }
+                    Err(TencentResponseError::Malformed(reason)) => (
+                        502,
+                        tencent_openai_error_body(502, "invalid_provider_response", reason)?,
+                    ),
+                }
+            }
+            Err(err) => (
+                502,
+                tencent_openai_error_body(
+                    502,
+                    "invalid_provider_response",
+                    &err.message("Tencent response body"),
+                )?,
+            ),
+        };
+    let mut response = Response::ok(transformed.1)?
+        .with_status(transformed.0)
+        .with_headers(headers);
+    response
+        .headers_mut()
+        .set("content-type", "application/json")?;
+    Ok(response)
+}
+
+fn tencent_provider_error_status(code: &str) -> u16 {
+    let code = code.trim().to_ascii_lowercase();
+    if code.starts_with("invalidparameter") || code.starts_with("missingparameter") {
+        400
+    } else if code.starts_with("authfailure")
+        || code.contains("signaturefailure")
+        || code.contains("invalidcredential")
+    {
+        401
+    } else if code.starts_with("unauthorizedoperation") {
+        403
+    } else if code.starts_with("requestlimitexceeded") {
+        429
+    } else if code.starts_with("internalerror")
+        || code.starts_with("failedoperation.enginerequesttimeout")
+        || code.starts_with("failedoperation.engineservererror")
+        || code.starts_with("failedoperation.engineserverlimitexceeded")
+    {
+        503
+    } else {
+        502
+    }
+}
+
+fn tencent_openai_error_body(status: u16, code: &str, message: &str) -> worker::Result<String> {
+    let code = code.chars().take(128).collect::<String>();
+    let message = message.chars().take(512).collect::<String>();
+    let error_type = match status {
+        400 => "invalid_request_error",
+        401 | 403 => "authentication_error",
+        429 => "rate_limit_error",
+        503 => "provider_unavailable",
+        _ => "provider_error",
+    };
+    serde_json::to_string(&json!({
+        "error": {"message": message, "type": error_type, "code": code}
+    }))
+    .map_err(Into::into)
+}
+
 /// Forward a raw-bytes body (multipart/form-data, octet-stream, etc.) to an
 /// OpenAI-compatible upstream. Used by the upload endpoints
 /// (`/v1/audio/transcriptions`, `/v1/audio/translations`,
@@ -7263,7 +7461,8 @@ async fn complete_relay_response(
         .ok()
         .flatten()
         .unwrap_or_else(|| "application/json".to_string());
-    let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    let upstream_request_id =
+        response_header(&upstream, &["x-tc-requestid", "x-request-id", "cf-ray"]);
     if status == 200 && provider == RelayProviderKind::AliOpenAi && endpoint_path == "rerank" {
         return complete_ali_rerank_response(
             upstream,
@@ -8038,6 +8237,7 @@ fn usage_summary_for_provider(
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
+        | RelayProviderKind::TencentHunyuan
         | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::VolcEngineOpenAi => usage_summary_from_body(body),
         RelayProviderKind::AnthropicMessages
@@ -8142,6 +8342,7 @@ async fn streaming_usage_summary(
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
+        | RelayProviderKind::TencentHunyuan
         | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::VolcEngineOpenAi => SseUsageAccumulator::default(),
         RelayProviderKind::MoonshotOpenAi => SseUsageAccumulator::moonshot(),
@@ -9682,6 +9883,11 @@ fn apply_endpoint_request_transform(
     if channel.channel_type == CHANNEL_TYPE_BAIDU_V2 {
         apply_baidu_v2_request(body);
     }
+    if channel.channel_type == CHANNEL_TYPE_TENCENT {
+        apply_tencent_chat_request(body).map_err(|reason| {
+            worker::Error::RustError(format!("Tencent request transform failed: {reason}"))
+        })?;
+    }
     if channel.channel_type == CHANNEL_TYPE_VOLCENGINE {
         apply_volcengine_request(body);
     }
@@ -9711,6 +9917,7 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
+        | RelayProviderKind::TencentHunyuan
         | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::VolcEngineOpenAi
         | RelayProviderKind::GeminiNative => {}
@@ -13867,6 +14074,141 @@ mod tests {
             .unwrap(),
             AdminProbeEndpoint::OpenAi
         );
+    }
+
+    #[test]
+    fn tencent_hunyuan_is_non_streaming_direct_only_and_tc3_shaped() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_TENCENT), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_TENCENT;
+        channel.key = "1250000000|AKID-test|secret-test".to_string();
+        let chat = ai_gateway_chat_endpoint_for_tests();
+
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::TencentHunyuan
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::TencentHunyuan
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://hunyuan.tencentcloudapi.com/"
+        );
+
+        let mut body = json!({
+            "model": "hunyuan-turbo",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": false,
+            "top_p": 0.8,
+            "temperature": 0.2
+        });
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&body)
+        ));
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        assert_eq!(body["Model"], "hunyuan-turbo");
+        assert_eq!(body["Messages"][0]["Content"], "hello");
+        assert_eq!(body["Stream"], false);
+        assert!(body.get("model").is_none());
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&body)
+        ));
+
+        let null_stream = json!({
+            "model": "hunyuan-turbo",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": null
+        });
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&null_stream)
+        ));
+
+        let mut unsupported = json!({
+            "model": "hunyuan-turbo",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 16
+        });
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&unsupported)
+        ));
+        assert!(
+            apply_endpoint_request_transform(&mut unsupported, "chat/completions", &channel)
+                .is_err()
+        );
+
+        let streaming_body = json!({
+            "model": "hunyuan-turbo",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true
+        });
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&streaming_body)
+        ));
+        assert!(resolve_admin_probe_endpoint(
+            CHANNEL_TYPE_TENCENT,
+            AdminProbeEndpoint::OpenAi,
+            "hunyuan-turbo",
+            true,
+        )
+        .is_err());
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "hunyuan-turbo"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("direct-only provider"));
+        channel.other_info.clear();
+        channel.key = "invalid".to_string();
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&json!({
+                "model": "hunyuan-turbo",
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+        ));
+    }
+
+    #[test]
+    fn tencent_provider_errors_map_into_retry_and_refund_status_classes() {
+        assert_eq!(
+            tencent_provider_error_status("InvalidParameterValue.Model"),
+            400
+        );
+        assert_eq!(
+            tencent_provider_error_status("AuthFailure.SignatureFailure"),
+            401
+        );
+        assert_eq!(tencent_provider_error_status("UnauthorizedOperation"), 403);
+        assert_eq!(tencent_provider_error_status("RequestLimitExceeded"), 429);
+        assert_eq!(
+            tencent_provider_error_status("FailedOperation.EngineRequestTimeout"),
+            503
+        );
+        assert_eq!(tencent_provider_error_status("UnknownProviderError"), 502);
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(503));
+
+        let body = tencent_openai_error_body(429, "RequestLimitExceeded", "rate limited").unwrap();
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["error"]["type"], "rate_limit_error");
+        assert_eq!(body["error"]["code"], "RequestLimitExceeded");
     }
 
     #[test]

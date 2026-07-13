@@ -10,5 +10,7 @@ rust-version.workspace = true
 async-trait.workspace = true
 cinatoken-core = { path = "../core" }
 cinatoken-relay = { path = "../relay" }
+hmac.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true

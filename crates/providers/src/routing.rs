@@ -21,6 +21,7 @@ pub enum ProviderKind {
     PerplexityOpenAi,
     SiliconFlowOpenAi,
     SubmodelOpenAi,
+    TencentHunyuan,
     XaiOpenAi,
     ZhipuV4OpenAi,
     ZhipuV4Messages,
@@ -44,6 +45,7 @@ impl ProviderKind {
             Self::PerplexityOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::SiliconFlowOpenAi => None,
             Self::SubmodelOpenAi => None,
+            Self::TencentHunyuan => None,
             Self::XaiOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::ZhipuV4OpenAi | Self::ZhipuV4Messages => None,
             Self::VolcEngineOpenAi => None,
@@ -152,6 +154,10 @@ impl ProviderRegistry {
             .ok_or(ProviderRouteError::UnsupportedProviderRoute)?,
             ProviderKind::SubmodelOpenAi => {
                 crate::submodel::submodel_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
+            ProviderKind::TencentHunyuan => {
+                crate::tencent::tencent_hunyuan_url(endpoint.base_url, endpoint.endpoint_path)
                     .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
             }
             ProviderKind::XaiOpenAi => {
@@ -360,6 +366,34 @@ mod tests {
             "https://llm.submodel.ai/v1/chat/completions"
         );
         assert_eq!(route.ai_gateway_route, None);
+    }
+
+    #[test]
+    fn registry_resolves_direct_only_tencent_hunyuan_chat() {
+        let route = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::TencentHunyuan,
+            channel_type: 23,
+            base_url: None,
+            endpoint_path: "chat/completions",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+
+        assert_eq!(route.upstream_url, "https://hunyuan.tencentcloudapi.com/");
+        assert_eq!(route.ai_gateway_route, None);
+        assert_eq!(
+            ProviderRegistry::resolve(ProviderEndpoint {
+                provider: ProviderKind::TencentHunyuan,
+                channel_type: 23,
+                base_url: None,
+                endpoint_path: "embeddings",
+                upstream_query: None,
+                gemini_route: None,
+            })
+            .unwrap_err(),
+            ProviderRouteError::UnsupportedProviderRoute
+        );
     }
 
     #[test]

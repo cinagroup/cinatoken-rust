@@ -218,7 +218,8 @@ fixtures.
 | Gemini native | generate, stream, embed, batch embed, countTokens | 24 | Partial | TBD | TBD | Disable Gemini Rust channel group. |
 | Jina rerank and embeddings | Rerank JSON; embeddings JSON with OpenAI `encoding_format` removal | 38 | Partial locally | TBD: both routes, provider errors, response bounds, unsupported routes, rollback | TBD: usage, missing usage, exact settlement/refund | Disable type-38 Rust channel group and route requests back to Go. |
 | Cohere rerank | Rerank JSON transform | 34 | Partial | TBD | TBD | Disable rerank Rust group. |
-| Remaining regional adapters | legacy Baidu, legacy Zhipu, Tencent, Xunfei | 15, 16, 18, 23 | Planned; type 16 should migrate to type 26 | Blocked | Blocked | Keep on Go or perform the reviewed type-15/type-16 channel conversion. |
+| Tencent Hunyuan | Non-streaming text-only Chat Completions via TC3 | 23 | Partial locally | TBD: live TC3 acceptance, direct/enveloped success, 400/401/403/429/503, clock skew, response bound, disable and rollback | TBD: provider usage, reserve/settle/refund, retry winner, D1 audit and invoice reconciliation | Disable the type-23 Rust channel group and route requests back to Go. |
+| Remaining regional adapters | legacy Baidu, legacy Zhipu, Xunfei | 15, 16, 18 | Planned; type 16 should migrate to type 26 | Blocked | Blocked | Keep on Go or perform the reviewed type-15/type-16 channel conversion. |
 | Self-hosted/application APIs | Ollama, Dify, FastGPT | 4, 37, 49 | Planned | Blocked | Blocked | Keep on Go or use service/Tunnel decision. |
 | Task/media providers | Midjourney, Suno, Kling, Jimeng, Vidu, Sora, Replicate/video | 2, 5, 36, 50-52, 54-56 | Planned | Blocked | Blocked | Keep on Go until Queue/R2 task plan passes. |
 

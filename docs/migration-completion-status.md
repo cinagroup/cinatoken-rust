@@ -228,7 +228,10 @@ A full diff of every Go-registered route against the Rust worker closed these
   cache schema v4 prevents stale cached rows from bypassing that field. Main,
   fallback, and Admin OpenAI streaming paths use the same usage-option policy.
   Async images, audio, Gemini, non-native Messages, and qwen3 rerank stay
-  Deferred. The registry has 16 Ready, 14 Partial, and 23 Deferred channel
+  Deferred. Tencent Hunyuan(23) is direct-only for non-streaming, text-only
+  Chat Completions with exact-body TC3 signing and pre-retry provider-error
+  normalization; stream, tools/multimodal, custom base URL, Gateway, and WFP
+  remain Deferred. The registry has 16 Ready, 15 Partial, and 22 Deferred channel
   types.
 - Admin `GET /api/channel/provider-readiness` and the channel UI expose
   implementation readiness without claiming provider health or production

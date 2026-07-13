@@ -11238,3 +11238,41 @@ paths, response bounds, malformed rerank refund, reservation/settlement/refund,
 D1 audit and provider billing reconciliation, disable/recovery behavior, and
 rollback to Go/VPS. No provider or Cloudflare credential was used. Production
 remains **NO-GO**.
+
+### 22.183 2026-07-13 Tencent Hunyuan TC3 Non-Streaming Adapter
+
+This increment narrows the historical Container assumption for Tencent
+signing. A bounded Hunyuan ChatCompletions path can run natively in the Worker;
+stream conversion, tools, multimodal inputs, and broader Tencent products are
+still outside the migrated surface and may need a later Worker/Container
+decision.
+
+Implemented locally:
+
+- Type 23 admits only direct, non-streaming, text-only Chat Completions at the
+  fixed `hunyuan.tencentcloudapi.com` host with action `ChatCompletions` and
+  version `2023-09-01`. Custom base URLs, AI Gateway, and WFP fail before
+  quota reservation.
+- The source-compatible `appId|secretId|secretKey` value is parsed per request.
+  appId is validated as compatibility metadata; secretId and secretKey create
+  TC3-HMAC-SHA256 headers over the exact JSON bytes transmitted. No credential
+  or signing intermediate is persisted in global or Durable Object state.
+- Request conversion is an explicit allowlist. Unsupported root/message
+  fields, stream=true, and non-text content fail before reserve rather than
+  disappearing during conversion.
+- Direct and enveloped successes are converted into the OpenAI response shape
+  under a fixed response bound, require billable usage, and preserve the
+  provider's optional `Note` as a bounded `note` extension.
+- Provider HTTP-200 `Response.Error` envelopes are normalized to owned
+  400/401/403/429/503/502 outcomes before the shared attempt loop classifies
+  retry, affinity, settlement, refund, and audit. Failed envelopes therefore
+  cannot become a selected successful attempt.
+- Backend/frontend readiness expose one Partial route. The reviewed registry
+  totals are 16 Ready, 15 Partial, and 22 Deferred channel types.
+
+Local provider, relay, focused Worker, readiness, and wasm tests establish E2
+implementation evidence only. After rotating the exposed Cloudflare
+credential, G3 staging must prove live TC3 acceptance, UTC and clock-skew
+behavior, direct/enveloped success, provider error and retry classes, response
+bounds, usage, reserve/settle/refund, D1/provider invoice reconciliation,
+disable/recovery, and rollback to Go/VPS. Production remains **NO-GO**.

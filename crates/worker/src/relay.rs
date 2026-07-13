@@ -47,16 +47,20 @@ use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayC
 use cinatoken_wfp_authority::{
     sign_authority, verify_authority, AuthorityExpectation, AuthorityInput, AUTHORITY_SECRET_ENV,
 };
-use futures_util::StreamExt;
+use futures_util::{
+    future::{select, Either},
+    StreamExt,
+};
 use js_sys::{Function, Object, Promise, Reflect};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 use url::Url;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::{
-    Context, D1Database, Env, Fetch, Headers, Method, Request, RequestInit, Response, ResponseBody,
+    Context, D1Database, Delay, Env, Fetch, Headers, Method, Request, RequestInit, Response,
+    ResponseBody,
 };
 
 use crate::{affinity, json_with_status, set_cors_headers};
@@ -119,6 +123,11 @@ const EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const IMAGE_JSON_RESPONSE_LIMIT_BYTES: usize = 24 * 1024 * 1024;
 const RERANK_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const GEMINI_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+const ADMIN_CHANNEL_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const ADMIN_CHANNEL_PROBE_SSE_LIMIT_BYTES: usize = 512 * 1024;
+const CHANNEL_TYPE_MOKAAI: i32 = 44;
+const CHANNEL_TYPE_VOLCENGINE: i32 = 45;
+const CHANNEL_TYPE_CODEX: i32 = 57;
 const REALTIME_MOCK_QUEUE_PROBE_MAX_DELAY_MS: u64 = 1_000;
 const REALTIME_BILLING_REQUEST_MAX_HEADERS: usize = 16;
 const REALTIME_BILLING_REQUEST_MAX_HEADER_VALUE_CHARS: usize = 256;
@@ -349,6 +358,1109 @@ impl RelayEndpoint {
             | RelayProviderKind::SubmodelOpenAi
             | RelayProviderKind::XaiOpenAi => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdminProbeEndpoint {
+    Auto,
+    OpenAi,
+    OpenAiResponse,
+    OpenAiResponseCompact,
+    Anthropic,
+    Gemini,
+    JinaRerank,
+    ImageGeneration,
+    Embeddings,
+}
+
+impl AdminProbeEndpoint {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "openai" => Some(Self::OpenAi),
+            "openai-response" => Some(Self::OpenAiResponse),
+            "openai-response-compact" => Some(Self::OpenAiResponseCompact),
+            "anthropic" => Some(Self::Anthropic),
+            "gemini" => Some(Self::Gemini),
+            "jina-rerank" => Some(Self::JinaRerank),
+            "image-generation" => Some(Self::ImageGeneration),
+            "embeddings" => Some(Self::Embeddings),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::OpenAi => "openai",
+            Self::OpenAiResponse => "openai-response",
+            Self::OpenAiResponseCompact => "openai-response-compact",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::JinaRerank => "jina-rerank",
+            Self::ImageGeneration => "image-generation",
+            Self::Embeddings => "embeddings",
+        }
+    }
+
+    const fn route(self) -> Option<ProviderRelayRoute> {
+        match self {
+            Self::Auto => None,
+            Self::OpenAi => Some(ProviderRelayRoute::ChatCompletions),
+            Self::OpenAiResponse => Some(ProviderRelayRoute::Responses),
+            Self::OpenAiResponseCompact => Some(ProviderRelayRoute::ResponsesCompact),
+            Self::Anthropic => Some(ProviderRelayRoute::AnthropicMessages),
+            Self::Gemini => Some(ProviderRelayRoute::GeminiNative),
+            Self::JinaRerank => Some(ProviderRelayRoute::Rerank),
+            Self::ImageGeneration => Some(ProviderRelayRoute::ImageGenerations),
+            Self::Embeddings => Some(ProviderRelayRoute::Embeddings),
+        }
+    }
+
+    const fn supports_stream(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAi | Self::OpenAiResponse | Self::Anthropic | Self::Gemini
+        )
+    }
+
+    fn relay_endpoint(self, model: &str, stream: bool) -> RelayEndpoint {
+        if self == Self::Gemini {
+            let route = GeminiNativePath {
+                api_version: "v1beta".to_string(),
+                model: model.to_string(),
+                action: if stream {
+                    "streamGenerateContent"
+                } else {
+                    "generateContent"
+                }
+                .to_string(),
+            };
+            return RelayEndpoint {
+                display_name: "admin channel Gemini probe",
+                route: ProviderRelayRoute::GeminiNative,
+                upstream_path: route.upstream_path(),
+                upstream_query: stream.then(|| "alt=sse".to_string()),
+                gemini_route: Some(route),
+                provider: RelayProviderKind::GeminiNative,
+                supports_streaming: stream,
+                force_streaming: stream,
+                stream_not_implemented_feature: None,
+                parse_non_stream_usage: false,
+                request_body_mode: RelayRequestBodyMode::Json,
+                request_validator: None,
+            };
+        }
+        let (display_name, route, upstream_path, provider, request_validator) = match self {
+            Self::OpenAi => (
+                "admin channel OpenAI probe",
+                ProviderRelayRoute::ChatCompletions,
+                "chat/completions",
+                RelayProviderKind::OpenAiCompatible,
+                Some(validate_chat_completions_request as fn(&Value) -> Option<&'static str>),
+            ),
+            Self::OpenAiResponse => (
+                "admin channel Responses probe",
+                ProviderRelayRoute::Responses,
+                "responses",
+                RelayProviderKind::OpenAiCompatible,
+                None,
+            ),
+            Self::OpenAiResponseCompact => (
+                "admin channel Responses compact probe",
+                ProviderRelayRoute::ResponsesCompact,
+                "responses/compact",
+                RelayProviderKind::OpenAiCompatible,
+                None,
+            ),
+            Self::Anthropic => (
+                "admin channel Anthropic probe",
+                ProviderRelayRoute::AnthropicMessages,
+                "messages",
+                RelayProviderKind::AnthropicMessages,
+                None,
+            ),
+            Self::JinaRerank => (
+                "admin channel rerank probe",
+                ProviderRelayRoute::Rerank,
+                "rerank",
+                RelayProviderKind::OpenAiCompatible,
+                Some(validate_rerank_request as fn(&Value) -> Option<&'static str>),
+            ),
+            Self::ImageGeneration => (
+                "admin channel image generation probe",
+                ProviderRelayRoute::ImageGenerations,
+                "images/generations",
+                RelayProviderKind::OpenAiCompatible,
+                None,
+            ),
+            Self::Embeddings => (
+                "admin channel embeddings probe",
+                ProviderRelayRoute::Embeddings,
+                "embeddings",
+                RelayProviderKind::OpenAiCompatible,
+                None,
+            ),
+            Self::Auto | Self::Gemini => {
+                unreachable!("admin probe endpoint must be resolved before construction")
+            }
+        };
+        RelayEndpoint {
+            display_name,
+            route,
+            upstream_path: upstream_path.to_string(),
+            upstream_query: None,
+            gemini_route: None,
+            provider,
+            supports_streaming: self.supports_stream(),
+            force_streaming: false,
+            stream_not_implemented_feature: None,
+            parse_non_stream_usage: false,
+            request_body_mode: RelayRequestBodyMode::Json,
+            request_validator,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AdminChannelProbeRequest {
+    pub model: String,
+    pub endpoint_type: AdminProbeEndpoint,
+    pub stream: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AdminChannelProbeResult {
+    pub requested_model: String,
+    pub requested_endpoint_type: &'static str,
+    pub requested_stream: bool,
+    pub effective_model: String,
+    pub effective_endpoint_type: &'static str,
+    pub effective_route: String,
+    pub effective_stream: bool,
+    pub transport: &'static str,
+    pub response_time_ms: f64,
+    pub validation_mode: &'static str,
+    pub content_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AdminChannelProbeError {
+    pub status: u16,
+    pub error_code: &'static str,
+    pub message: String,
+}
+
+impl AdminChannelProbeError {
+    pub(crate) fn new(status: u16, error_code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            error_code,
+            message: message.into(),
+        }
+    }
+
+    fn bad_request(error_code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(400, error_code, message)
+    }
+
+    fn bad_gateway(error_code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(502, error_code, message)
+    }
+}
+
+fn model_sensitive_admin_probe_endpoint(channel_type: i32, model: &str) -> AdminProbeEndpoint {
+    let model = model.trim().to_ascii_lowercase();
+    if model.ends_with("-openai-compact") {
+        AdminProbeEndpoint::OpenAiResponseCompact
+    } else if channel_type == CHANNEL_TYPE_CODEX || model.contains("codex") {
+        AdminProbeEndpoint::OpenAiResponse
+    } else if model.contains("rerank") {
+        AdminProbeEndpoint::JinaRerank
+    } else if channel_type == CHANNEL_TYPE_MOKAAI
+        || ["embedding", "embed", "m3e", "bge"]
+            .iter()
+            .any(|marker| model.contains(marker))
+    {
+        AdminProbeEndpoint::Embeddings
+    } else if channel_type == CHANNEL_TYPE_VOLCENGINE && model.contains("seedream") {
+        AdminProbeEndpoint::ImageGeneration
+    } else {
+        AdminProbeEndpoint::OpenAi
+    }
+}
+
+fn resolve_admin_probe_endpoint(
+    channel_type: i32,
+    requested: AdminProbeEndpoint,
+    model: &str,
+    stream: bool,
+) -> Result<AdminProbeEndpoint, AdminChannelProbeError> {
+    let preferred = if requested == AdminProbeEndpoint::Auto {
+        model_sensitive_admin_probe_endpoint(channel_type, model)
+    } else {
+        requested
+    };
+    if stream && !preferred.supports_stream() {
+        return Err(AdminChannelProbeError::bad_request(
+            "channel_test_stream_incompatible",
+            format!(
+                "endpoint_type {} does not support streaming probes",
+                preferred.as_str()
+            ),
+        ));
+    }
+    let preferred_route = preferred
+        .route()
+        .expect("resolved admin probe endpoint must have a relay route");
+    if channel_supports_relay_route(channel_type, preferred_route) {
+        return Ok(preferred);
+    }
+    if requested != AdminProbeEndpoint::Auto {
+        return Err(AdminChannelProbeError::bad_request(
+            "channel_test_route_unsupported",
+            format!(
+                "channel type {channel_type} does not support endpoint_type {}",
+                requested.as_str()
+            ),
+        ));
+    }
+
+    if preferred == AdminProbeEndpoint::OpenAiResponseCompact
+        && channel_supports_relay_route(channel_type, ProviderRelayRoute::Responses)
+    {
+        return Ok(AdminProbeEndpoint::OpenAiResponse);
+    }
+    if preferred != AdminProbeEndpoint::OpenAi {
+        return Err(AdminChannelProbeError::bad_request(
+            "channel_test_auto_route_unsupported",
+            format!(
+                "auto selected endpoint_type {} for model {model}, but channel type {channel_type} does not support it",
+                preferred.as_str()
+            ),
+        ));
+    }
+
+    const SAFE_AUTO_FALLBACKS: &[AdminProbeEndpoint] = &[
+        AdminProbeEndpoint::OpenAiResponse,
+        AdminProbeEndpoint::Anthropic,
+        AdminProbeEndpoint::Gemini,
+        AdminProbeEndpoint::JinaRerank,
+        AdminProbeEndpoint::Embeddings,
+        AdminProbeEndpoint::ImageGeneration,
+    ];
+    if let Some(endpoint) = SAFE_AUTO_FALLBACKS.iter().copied().find(|endpoint| {
+        (!stream || endpoint.supports_stream())
+            && endpoint
+                .route()
+                .is_some_and(|route| channel_supports_relay_route(channel_type, route))
+    }) {
+        return Ok(endpoint);
+    }
+
+    let has_any_supported_route = [
+        AdminProbeEndpoint::OpenAi,
+        AdminProbeEndpoint::OpenAiResponse,
+        AdminProbeEndpoint::OpenAiResponseCompact,
+        AdminProbeEndpoint::Anthropic,
+        AdminProbeEndpoint::Gemini,
+        AdminProbeEndpoint::JinaRerank,
+        AdminProbeEndpoint::ImageGeneration,
+        AdminProbeEndpoint::Embeddings,
+    ]
+    .iter()
+    .filter_map(|endpoint| endpoint.route())
+    .any(|route| channel_supports_relay_route(channel_type, route));
+    let (error_code, message) = if stream && has_any_supported_route {
+        (
+            "channel_test_stream_incompatible",
+            format!(
+                "channel type {channel_type} has no production-supported streaming probe route"
+            ),
+        )
+    } else {
+        (
+            "channel_test_route_unsupported",
+            format!("channel type {channel_type} has no production-supported admin probe route"),
+        )
+    };
+    Err(AdminChannelProbeError::bad_request(error_code, message))
+}
+
+fn build_admin_probe_body(endpoint: AdminProbeEndpoint, model: &str, stream: bool) -> Value {
+    match endpoint {
+        AdminProbeEndpoint::OpenAi => json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+            "stream": stream,
+        }),
+        AdminProbeEndpoint::OpenAiResponse | AdminProbeEndpoint::OpenAiResponseCompact => json!({
+            "model": model,
+            "input": [{"role": "user", "content": "hi"}],
+            "max_output_tokens": 16,
+            "stream": stream,
+        }),
+        AdminProbeEndpoint::Anthropic => json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+            "stream": stream,
+        }),
+        AdminProbeEndpoint::Gemini => json!({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {"maxOutputTokens": 3000},
+        }),
+        AdminProbeEndpoint::JinaRerank => json!({
+            "model": model,
+            "query": "hi",
+            "documents": ["hello", "world"],
+            "top_n": 2,
+        }),
+        AdminProbeEndpoint::ImageGeneration => json!({
+            "model": model,
+            "prompt": "a common cat",
+            "n": 1,
+            "size": "1024x1024",
+            "stream": stream,
+        }),
+        AdminProbeEndpoint::Embeddings => json!({
+            "model": model,
+            "input": ["hi"],
+        }),
+        AdminProbeEndpoint::Auto => unreachable!("auto endpoint must be resolved first"),
+    }
+}
+
+struct PreparedAdminChannelProbe {
+    endpoint_type: AdminProbeEndpoint,
+    endpoint: RelayEndpoint,
+    upstream_key: String,
+    upstream_url: String,
+    body: Value,
+    effective_model: String,
+    effective_route: String,
+    provider: RelayProviderKind,
+}
+
+fn prepare_admin_channel_probe(
+    channel: &RelayChannel,
+    request: &AdminChannelProbeRequest,
+    inject_stream_options: bool,
+) -> Result<PreparedAdminChannelProbe, AdminChannelProbeError> {
+    let model = request.model.trim();
+    if model.is_empty() {
+        return Err(AdminChannelProbeError::bad_request(
+            "channel_test_model_invalid",
+            "channel test model must not be empty",
+        ));
+    }
+    let endpoint_type = resolve_admin_probe_endpoint(
+        channel.channel_type,
+        request.endpoint_type,
+        model,
+        request.stream,
+    )?;
+    let mut endpoint = endpoint_type.relay_endpoint(model, request.stream);
+    let upstream_key = first_channel_key(&channel.key).ok_or_else(|| {
+        AdminChannelProbeError::new(
+            422,
+            "channel_test_key_missing",
+            "channel has no usable provider key",
+        )
+    })?;
+    let mut body = build_admin_probe_body(endpoint_type, model, request.stream);
+
+    let effective_model = if endpoint_type == AdminProbeEndpoint::Gemini {
+        let mapped_model = mapped_model_name(model, channel.model_mapping.as_deref())
+            .unwrap_or_else(|| model.to_string());
+        apply_gemini_native_model_mapping(&mut body, model, &mapped_model);
+        if let Some(route) = endpoint.gemini_route.as_mut() {
+            route.model = mapped_model.clone();
+            endpoint.upstream_path = route.upstream_path();
+        }
+        mapped_model
+    } else {
+        apply_model_mapping(&mut body, model, channel.model_mapping.as_deref());
+        body.get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(model)
+            .to_string()
+    };
+    let provider = endpoint.effective_provider(channel.channel_type);
+    apply_endpoint_request_transform(&mut body, &endpoint.upstream_path, channel).map_err(
+        |err| {
+            AdminChannelProbeError::new(
+                422,
+                "channel_test_transform_invalid",
+                format!("channel probe request transform failed: {err}"),
+            )
+        },
+    )?;
+    apply_provider_request_transform(&mut body, provider);
+    if inject_stream_options
+        && matches!(
+            provider,
+            RelayProviderKind::OpenAiCompatible
+                | RelayProviderKind::DeepSeekOpenAi
+                | RelayProviderKind::MoonshotOpenAi
+                | RelayProviderKind::SubmodelOpenAi
+                | RelayProviderKind::XaiOpenAi
+        )
+    {
+        cinatoken_relay::openai_compatible::apply_stream_options(
+            &mut body,
+            channel.channel_type,
+            request.stream,
+        );
+    }
+    if !channel_accepts_endpoint_request_shape(channel, &endpoint, Some(&body)) {
+        return Err(AdminChannelProbeError::new(
+            422,
+            "channel_test_request_shape_unsupported",
+            format!(
+                "channel type {} rejected the minimal {} probe request shape",
+                channel.channel_type,
+                endpoint_type.as_str()
+            ),
+        ));
+    }
+
+    let upstream_url = endpoint.try_upstream_url(channel).map_err(|err| {
+        AdminChannelProbeError::new(
+            422,
+            "channel_test_route_configuration_invalid",
+            format!("failed to resolve channel probe route: {err}"),
+        )
+    })?;
+    let effective_route = Url::parse(&upstream_url)
+        .map(|url| url.path().to_string())
+        .map_err(|err| {
+            AdminChannelProbeError::new(
+                422,
+                "channel_test_route_configuration_invalid",
+                format!("resolved channel probe URL is invalid: {err}"),
+            )
+        })?;
+    let effective_model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(&effective_model)
+        .to_string();
+    Ok(PreparedAdminChannelProbe {
+        endpoint_type,
+        endpoint,
+        upstream_key,
+        upstream_url,
+        body,
+        effective_model,
+        effective_route,
+        provider,
+    })
+}
+
+#[derive(Debug)]
+enum AdminProbeTransportPlan {
+    Direct,
+    AiGateway(RelayAiGatewayAttempt),
+    WorkersAi,
+    Wfp,
+}
+
+impl AdminProbeTransportPlan {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::AiGateway(_) => "ai_gateway",
+            Self::WorkersAi => "workers_ai",
+            Self::Wfp => "wfp",
+        }
+    }
+}
+
+fn plan_admin_probe_transport(
+    runtime: Option<&RelayAiGatewayRuntime>,
+    endpoint: &RelayEndpoint,
+    channel: &RelayChannel,
+    upstream_url: &str,
+    upstream_model: &str,
+    stream: bool,
+) -> Result<AdminProbeTransportPlan, AdminChannelProbeError> {
+    if channel.wfp_worker().is_some() && channel.ai_gateway_opted_in() {
+        return Err(AdminChannelProbeError::new(
+            422,
+            "channel_test_transport_conflict",
+            "channel cannot enable both AI Gateway and WFP transport",
+        ));
+    }
+    if is_direct_only_provider_channel(channel)
+        && (channel.wfp_worker().is_some() || channel.ai_gateway_opted_in())
+    {
+        return Err(AdminChannelProbeError::new(
+            422,
+            "channel_test_transport_unsupported",
+            "direct-only provider channel cannot use AI Gateway or WFP transport",
+        ));
+    }
+    if is_workers_ai_binding_channel(channel) {
+        if stream {
+            return Err(AdminChannelProbeError::bad_request(
+                "channel_test_stream_incompatible",
+                "Workers AI binding channels do not support streaming probes",
+            ));
+        }
+        return Ok(AdminProbeTransportPlan::WorkersAi);
+    }
+    if channel.wfp_worker().is_some() {
+        wfp_relay_path(upstream_url).map_err(|err| {
+            AdminChannelProbeError::new(
+                422,
+                "channel_test_transport_unsupported",
+                format!("WFP cannot carry the selected admin probe route: {err}"),
+            )
+        })?;
+        return Ok(AdminProbeTransportPlan::Wfp);
+    }
+    if let Some(runtime) = runtime {
+        if let Some(attempt) =
+            plan_relay_ai_gateway_attempt(runtime, endpoint, channel, upstream_model).map_err(
+                |err| {
+                    AdminChannelProbeError::new(
+                        422,
+                        "channel_test_transport_configuration_invalid",
+                        format!("AI Gateway probe planning failed: {err}"),
+                    )
+                },
+            )?
+        {
+            return Ok(AdminProbeTransportPlan::AiGateway(attempt));
+        }
+    }
+    Ok(AdminProbeTransportPlan::Direct)
+}
+
+struct ForwardedAdminChannelProbe {
+    response: Response,
+    transport: &'static str,
+    effective_model: String,
+}
+
+fn effective_body_model(body: &Value, fallback: &str) -> String {
+    body.get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+async fn forward_admin_channel_probe(
+    env: &Env,
+    channel: &RelayChannel,
+    prepared: &PreparedAdminChannelProbe,
+    plan: AdminProbeTransportPlan,
+) -> Result<ForwardedAdminChannelProbe, AdminChannelProbeError> {
+    let provider_headers = RelayProviderHeaders {
+        anthropic_version: None,
+        anthropic_beta: None,
+    };
+    match plan {
+        AdminProbeTransportPlan::WorkersAi => {
+            let response =
+                forward_workers_ai_binding(env, &prepared.effective_model, &prepared.body)
+                    .await
+                    .map_err(|err| {
+                        AdminChannelProbeError::bad_gateway(
+                            "channel_test_upstream_fetch_failed",
+                            format!("Workers AI probe failed: {err}"),
+                        )
+                    })?;
+            Ok(ForwardedAdminChannelProbe {
+                response,
+                transport: AdminProbeTransportPlan::WorkersAi.name(),
+                effective_model: prepared.effective_model.clone(),
+            })
+        }
+        AdminProbeTransportPlan::AiGateway(attempt) => {
+            let runtime = RelayAiGatewayRuntime::from_env(env).ok_or_else(|| {
+                AdminChannelProbeError::new(
+                    500,
+                    "channel_test_transport_configuration_invalid",
+                    "AI Gateway runtime became unavailable during channel probe",
+                )
+            })?;
+            match forward_ai_gateway_rest(&attempt, &runtime, &prepared.body).await {
+                Ok(response) if should_ai_gateway_direct_fallback(response.status_code()) => {
+                    let status = response.status_code();
+                    let Some(direct_body) =
+                        prepare_ai_gateway_direct_fallback_body(&prepared.body, &attempt)
+                    else {
+                        return Ok(ForwardedAdminChannelProbe {
+                            response,
+                            transport: "ai_gateway",
+                            effective_model: prepared.effective_model.clone(),
+                        });
+                    };
+                    let response = forward_relay_request(
+                        env,
+                        prepared.provider,
+                        &prepared.upstream_url,
+                        &prepared.upstream_key,
+                        channel,
+                        &direct_body,
+                        &provider_headers,
+                    )
+                    .await
+                    .map_err(|err| {
+                        AdminChannelProbeError::bad_gateway(
+                            "channel_test_upstream_fetch_failed",
+                            format!(
+                                "AI Gateway returned status {status} and direct probe fallback failed: {err}"
+                            ),
+                        )
+                    })?;
+                    Ok(ForwardedAdminChannelProbe {
+                        response,
+                        transport: "ai_gateway_direct_fallback",
+                        effective_model: effective_body_model(
+                            &direct_body,
+                            &prepared.effective_model,
+                        ),
+                    })
+                }
+                Ok(response) => Ok(ForwardedAdminChannelProbe {
+                    response,
+                    transport: "ai_gateway",
+                    effective_model: prepared.effective_model.clone(),
+                }),
+                Err(gateway_error) => {
+                    let direct_body =
+                        prepare_ai_gateway_direct_fallback_body(&prepared.body, &attempt)
+                            .ok_or_else(|| {
+                                AdminChannelProbeError::bad_gateway(
+                                    "channel_test_upstream_fetch_failed",
+                                    format!("AI Gateway probe failed: {gateway_error}"),
+                                )
+                            })?;
+                    let response = forward_relay_request(
+                        env,
+                        prepared.provider,
+                        &prepared.upstream_url,
+                        &prepared.upstream_key,
+                        channel,
+                        &direct_body,
+                        &provider_headers,
+                    )
+                    .await
+                    .map_err(|err| {
+                        AdminChannelProbeError::bad_gateway(
+                            "channel_test_upstream_fetch_failed",
+                            format!(
+                                "AI Gateway probe failed ({gateway_error}) and direct fallback failed: {err}"
+                            ),
+                        )
+                    })?;
+                    Ok(ForwardedAdminChannelProbe {
+                        response,
+                        transport: "ai_gateway_direct_fallback",
+                        effective_model: effective_body_model(
+                            &direct_body,
+                            &prepared.effective_model,
+                        ),
+                    })
+                }
+            }
+        }
+        direct_plan @ (AdminProbeTransportPlan::Direct | AdminProbeTransportPlan::Wfp) => {
+            let direct_body = prepare_same_channel_direct_body(
+                &prepared.body,
+                channel.channel_type,
+                &prepared.endpoint.upstream_path,
+            )
+            .map_err(|err| {
+                AdminChannelProbeError::new(
+                    422,
+                    "channel_test_model_mapping_invalid",
+                    format!("failed to prepare direct channel probe body: {err}"),
+                )
+            })?;
+            let body = direct_body.as_ref().unwrap_or(&prepared.body);
+            let transport = direct_plan.name();
+            let response = forward_relay_request(
+                env,
+                prepared.provider,
+                &prepared.upstream_url,
+                &prepared.upstream_key,
+                channel,
+                body,
+                &provider_headers,
+            )
+            .await
+            .map_err(|err| {
+                AdminChannelProbeError::bad_gateway(
+                    "channel_test_upstream_fetch_failed",
+                    format!("channel probe request failed: {err}"),
+                )
+            })?;
+            Ok(ForwardedAdminChannelProbe {
+                response,
+                transport,
+                effective_model: effective_body_model(body, &prepared.effective_model),
+            })
+        }
+    }
+}
+
+struct AdminProbeValidation {
+    mode: &'static str,
+    content_type: String,
+}
+
+fn response_content_type_strict(response: &Response) -> Result<String, AdminChannelProbeError> {
+    response
+        .headers()
+        .get("content-type")
+        .map_err(|err| {
+            AdminChannelProbeError::bad_gateway(
+                "channel_test_content_type_invalid",
+                format!("failed to inspect channel probe content-type: {err}"),
+            )
+        })?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AdminChannelProbeError::bad_gateway(
+                "channel_test_content_type_invalid",
+                "channel probe response is missing content-type",
+            )
+        })
+}
+
+fn content_type_media_type(content_type: &str) -> &str {
+    content_type.split(';').next().unwrap_or_default().trim()
+}
+
+fn is_json_response_content_type(content_type: &str) -> bool {
+    let media_type = content_type_media_type(content_type).to_ascii_lowercase();
+    media_type == "application/json" || media_type.ends_with("+json")
+}
+
+fn is_sse_response_content_type(content_type: &str) -> bool {
+    content_type_media_type(content_type).eq_ignore_ascii_case("text/event-stream")
+}
+
+fn nonempty_array(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+}
+
+fn admin_probe_json_shape_valid(endpoint: AdminProbeEndpoint, value: &Value) -> bool {
+    match endpoint {
+        AdminProbeEndpoint::OpenAi => nonempty_array(value.get("choices")),
+        AdminProbeEndpoint::OpenAiResponse | AdminProbeEndpoint::OpenAiResponseCompact => {
+            value.is_object()
+                && (nonempty_array(value.get("output"))
+                    || value
+                        .get("object")
+                        .and_then(Value::as_str)
+                        .is_some_and(|object| object.starts_with("response"))
+                    || value.get("compacted_prompt").is_some_and(Value::is_string))
+        }
+        AdminProbeEndpoint::Anthropic => {
+            value.get("type").and_then(Value::as_str) == Some("message")
+                && nonempty_array(value.get("content"))
+        }
+        AdminProbeEndpoint::Gemini => nonempty_array(value.get("candidates")),
+        AdminProbeEndpoint::JinaRerank => nonempty_array(value.get("results")),
+        AdminProbeEndpoint::ImageGeneration => {
+            nonempty_array(value.get("data")) || nonempty_array(value.get("images"))
+        }
+        AdminProbeEndpoint::Embeddings => {
+            value
+                .get("data")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    !items.is_empty()
+                        && items
+                            .iter()
+                            .all(|item| item.get("embedding").is_some_and(Value::is_array))
+                })
+        }
+        AdminProbeEndpoint::Auto => false,
+    }
+}
+
+fn admin_probe_sse_event_shape_valid(endpoint: AdminProbeEndpoint, value: &Value) -> bool {
+    match endpoint {
+        AdminProbeEndpoint::OpenAi => {
+            value.get("choices").is_some_and(Value::is_array)
+                || value.get("object").and_then(Value::as_str) == Some("chat.completion.chunk")
+        }
+        AdminProbeEndpoint::OpenAiResponse => value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|event_type| {
+                event_type.starts_with("response.")
+                    && !matches!(event_type, "response.failed" | "response.error")
+            }),
+        AdminProbeEndpoint::Anthropic => {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|event_type| {
+                    event_type.starts_with("message_") || event_type.starts_with("content_block_")
+                })
+        }
+        AdminProbeEndpoint::Gemini => nonempty_array(value.get("candidates")),
+        AdminProbeEndpoint::Auto
+        | AdminProbeEndpoint::OpenAiResponseCompact
+        | AdminProbeEndpoint::JinaRerank
+        | AdminProbeEndpoint::ImageGeneration
+        | AdminProbeEndpoint::Embeddings => false,
+    }
+}
+
+fn admin_probe_sse_has_valid_event(
+    endpoint: AdminProbeEndpoint,
+    bytes: &[u8],
+    include_trailing_event: bool,
+) -> Result<bool, ()> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ())?;
+    let normalized = text.replace("\r\n", "\n");
+    let events = normalized.split("\n\n").collect::<Vec<_>>();
+    let event_count = if include_trailing_event || normalized.ends_with("\n\n") {
+        events.len()
+    } else {
+        events.len().saturating_sub(1)
+    };
+    for event in events.into_iter().take(event_count) {
+        let data = event
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(data) {
+            if admin_probe_sse_event_shape_valid(endpoint, &value) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+async fn validate_admin_probe_sse_response(
+    response: &mut Response,
+    endpoint: AdminProbeEndpoint,
+) -> Result<(), AdminChannelProbeError> {
+    let mut bytes = Vec::new();
+    match response.body() {
+        ResponseBody::Empty => {}
+        ResponseBody::Body(body) => {
+            if body.len() > ADMIN_CHANNEL_PROBE_SSE_LIMIT_BYTES {
+                return Err(AdminChannelProbeError::bad_gateway(
+                    "channel_test_response_too_large",
+                    format!(
+                        "channel probe SSE response exceeds {} bytes",
+                        ADMIN_CHANNEL_PROBE_SSE_LIMIT_BYTES
+                    ),
+                ));
+            }
+            bytes.extend_from_slice(body);
+        }
+        ResponseBody::Stream(_) => {
+            let mut stream = response.stream().map_err(|err| {
+                AdminChannelProbeError::bad_gateway(
+                    "channel_test_response_read_failed",
+                    format!("failed to open channel probe SSE stream: {err}"),
+                )
+            })?;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|err| {
+                    AdminChannelProbeError::bad_gateway(
+                        "channel_test_response_read_failed",
+                        format!("failed to read channel probe SSE stream: {err}"),
+                    )
+                })?;
+                let next_len = bytes.len().checked_add(chunk.len()).ok_or_else(|| {
+                    AdminChannelProbeError::bad_gateway(
+                        "channel_test_response_too_large",
+                        "channel probe SSE response size overflowed",
+                    )
+                })?;
+                if next_len > ADMIN_CHANNEL_PROBE_SSE_LIMIT_BYTES {
+                    return Err(AdminChannelProbeError::bad_gateway(
+                        "channel_test_response_too_large",
+                        format!(
+                            "channel probe SSE response exceeds {} bytes",
+                            ADMIN_CHANNEL_PROBE_SSE_LIMIT_BYTES
+                        ),
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+                match admin_probe_sse_has_valid_event(endpoint, &bytes, false) {
+                    Ok(true) => return Ok(()),
+                    Ok(false) | Err(()) => {}
+                }
+            }
+        }
+    }
+    match admin_probe_sse_has_valid_event(endpoint, &bytes, true) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(AdminChannelProbeError::bad_gateway(
+            "channel_test_sse_event_missing",
+            "channel probe SSE response did not contain a non-DONE JSON data event",
+        )),
+        Err(()) => Err(AdminChannelProbeError::bad_gateway(
+            "channel_test_sse_invalid_utf8",
+            "channel probe SSE response is not valid UTF-8",
+        )),
+    }
+}
+
+async fn validate_admin_channel_probe_response(
+    response: &mut Response,
+    endpoint: AdminProbeEndpoint,
+    stream: bool,
+    max_json_response_bytes: usize,
+) -> Result<AdminProbeValidation, AdminChannelProbeError> {
+    let status = response.status_code();
+    if !(200..300).contains(&status) {
+        return Err(AdminChannelProbeError::bad_gateway(
+            "channel_test_upstream_status",
+            format!("channel probe upstream returned status {status}"),
+        ));
+    }
+    let content_type = response_content_type_strict(response)?;
+    if stream {
+        if !is_sse_response_content_type(&content_type) {
+            return Err(AdminChannelProbeError::bad_gateway(
+                "channel_test_content_type_invalid",
+                format!(
+                    "streaming channel probe requires text/event-stream, received {content_type}"
+                ),
+            ));
+        }
+        validate_admin_probe_sse_response(response, endpoint).await?;
+        return Ok(AdminProbeValidation {
+            mode: "sse",
+            content_type,
+        });
+    }
+    if !is_json_response_content_type(&content_type) {
+        return Err(AdminChannelProbeError::bad_gateway(
+            "channel_test_content_type_invalid",
+            format!("non-stream channel probe requires JSON, received {content_type}"),
+        ));
+    }
+    let body = read_response_text_limited(response, max_json_response_bytes)
+        .await
+        .map_err(|err| {
+            let error_code = if matches!(err, RelayBufferedTextError::TooLarge { .. }) {
+                "channel_test_response_too_large"
+            } else {
+                "channel_test_response_read_failed"
+            };
+            AdminChannelProbeError::bad_gateway(
+                error_code,
+                err.message("channel probe JSON response"),
+            )
+        })?;
+    let value = serde_json::from_str::<Value>(&body).map_err(|_| {
+        AdminChannelProbeError::bad_gateway(
+            "channel_test_response_json_invalid",
+            "channel probe response is not valid JSON",
+        )
+    })?;
+    if !admin_probe_json_shape_valid(endpoint, &value) {
+        return Err(AdminChannelProbeError::bad_gateway(
+            "channel_test_response_shape_invalid",
+            format!(
+                "channel probe response does not match the {} endpoint shape",
+                endpoint.as_str()
+            ),
+        ));
+    }
+    Ok(AdminProbeValidation {
+        mode: "json",
+        content_type,
+    })
+}
+
+async fn execute_admin_channel_probe_inner(
+    env: &Env,
+    channel: &RelayChannel,
+    request: &AdminChannelProbeRequest,
+) -> Result<AdminChannelProbeResult, AdminChannelProbeError> {
+    let inject_stream_options = stream_options_inject_enabled(env);
+    let prepared = prepare_admin_channel_probe(channel, request, inject_stream_options)?;
+    let max_json_response_bytes = RelayJsonResponseConfig::from_env(env)
+        .map_err(|err| {
+            AdminChannelProbeError::new(
+                500,
+                "channel_test_response_limit_invalid",
+                format!("invalid channel probe response limit: {err}"),
+            )
+        })?
+        .max_bytes_for(&prepared.endpoint);
+    let ai_gateway_runtime = RelayAiGatewayRuntime::from_env(env);
+    let transport_plan = plan_admin_probe_transport(
+        ai_gateway_runtime.as_ref(),
+        &prepared.endpoint,
+        channel,
+        &prepared.upstream_url,
+        &prepared.effective_model,
+        request.stream,
+    )?;
+    let started = js_sys::Date::now();
+    let mut forwarded =
+        forward_admin_channel_probe(env, channel, &prepared, transport_plan).await?;
+    let validation = validate_admin_channel_probe_response(
+        &mut forwarded.response,
+        prepared.endpoint_type,
+        request.stream,
+        max_json_response_bytes,
+    )
+    .await?;
+    let response_time_ms = (js_sys::Date::now() - started).max(0.0);
+    Ok(AdminChannelProbeResult {
+        requested_model: request.model.clone(),
+        requested_endpoint_type: request.endpoint_type.as_str(),
+        requested_stream: request.stream,
+        effective_model: forwarded.effective_model,
+        effective_endpoint_type: prepared.endpoint_type.as_str(),
+        effective_route: prepared.effective_route,
+        effective_stream: request.stream,
+        transport: forwarded.transport,
+        response_time_ms,
+        validation_mode: validation.mode,
+        content_type: validation.content_type,
+    })
+}
+
+pub(crate) async fn execute_admin_channel_probe(
+    env: &Env,
+    channel: &RelayChannel,
+    request: AdminChannelProbeRequest,
+) -> Result<AdminChannelProbeResult, AdminChannelProbeError> {
+    let probe = execute_admin_channel_probe_inner(env, channel, &request);
+    let timeout = Delay::from(ADMIN_CHANNEL_PROBE_TIMEOUT);
+    futures_util::pin_mut!(probe);
+    futures_util::pin_mut!(timeout);
+    match select(probe, timeout).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => Err(AdminChannelProbeError::new(
+            504,
+            "channel_test_timeout",
+            format!(
+                "channel probe exceeded {} seconds",
+                ADMIN_CHANNEL_PROBE_TIMEOUT.as_secs()
+            ),
+        )),
     }
 }
 
@@ -9086,6 +10198,368 @@ mod tests {
     use super::*;
     use cinatoken_billing::compute_flat_quota;
     use serde_json::json;
+
+    #[test]
+    fn admin_probe_endpoint_mapping_is_strict_and_complete() {
+        let cases = [
+            ("auto", AdminProbeEndpoint::Auto, None),
+            (
+                "openai",
+                AdminProbeEndpoint::OpenAi,
+                Some("/v1/chat/completions"),
+            ),
+            (
+                "openai-response",
+                AdminProbeEndpoint::OpenAiResponse,
+                Some("/v1/responses"),
+            ),
+            (
+                "openai-response-compact",
+                AdminProbeEndpoint::OpenAiResponseCompact,
+                Some("/v1/responses/compact"),
+            ),
+            (
+                "anthropic",
+                AdminProbeEndpoint::Anthropic,
+                Some("/v1/messages"),
+            ),
+            (
+                "gemini",
+                AdminProbeEndpoint::Gemini,
+                Some("/v1beta/models/*"),
+            ),
+            (
+                "jina-rerank",
+                AdminProbeEndpoint::JinaRerank,
+                Some("/v1/rerank"),
+            ),
+            (
+                "image-generation",
+                AdminProbeEndpoint::ImageGeneration,
+                Some("/v1/images/generations"),
+            ),
+            (
+                "embeddings",
+                AdminProbeEndpoint::Embeddings,
+                Some("/v1/embeddings"),
+            ),
+        ];
+        for (raw, endpoint, route) in cases {
+            assert_eq!(AdminProbeEndpoint::parse(raw), Some(endpoint));
+            assert_eq!(endpoint.as_str(), raw);
+            assert_eq!(endpoint.route().map(ProviderRelayRoute::path), route);
+        }
+        for invalid in ["", "OPENAI", "chat", "openai-responses", "unknown"] {
+            assert_eq!(AdminProbeEndpoint::parse(invalid), None);
+        }
+    }
+
+    #[test]
+    fn admin_probe_auto_preserves_model_sensitive_go_rules() {
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                1,
+                AdminProbeEndpoint::Auto,
+                "gpt-4.1-openai-compact",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::OpenAiResponseCompact
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(1, AdminProbeEndpoint::Auto, "gpt-5-codex", false)
+                .unwrap(),
+            AdminProbeEndpoint::OpenAiResponse
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                38,
+                AdminProbeEndpoint::Auto,
+                "jina-reranker-v2-base-multilingual",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::JinaRerank
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                1,
+                AdminProbeEndpoint::Auto,
+                "text-embedding-3-small",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::Embeddings
+        );
+        assert_eq!(
+            model_sensitive_admin_probe_endpoint(45, "doubao-seedream-4-0"),
+            AdminProbeEndpoint::ImageGeneration
+        );
+        assert_eq!(
+            model_sensitive_admin_probe_endpoint(44, "moka-model"),
+            AdminProbeEndpoint::Embeddings
+        );
+    }
+
+    #[test]
+    fn admin_probe_auto_falls_back_only_to_supported_safe_routes() {
+        assert_eq!(
+            resolve_admin_probe_endpoint(14, AdminProbeEndpoint::Auto, "claude-3-haiku", false)
+                .unwrap(),
+            AdminProbeEndpoint::Anthropic
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(24, AdminProbeEndpoint::Auto, "gemini-2.5-flash", false)
+                .unwrap(),
+            AdminProbeEndpoint::Gemini
+        );
+        let deferred = resolve_admin_probe_endpoint(
+            CHANNEL_TYPE_CODEX,
+            AdminProbeEndpoint::Auto,
+            "gpt-5-codex",
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(deferred.error_code, "channel_test_auto_route_unsupported");
+        let volcengine = resolve_admin_probe_endpoint(
+            CHANNEL_TYPE_VOLCENGINE,
+            AdminProbeEndpoint::Auto,
+            "doubao-seedream-4-0",
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(volcengine.error_code, "channel_test_auto_route_unsupported");
+    }
+
+    #[test]
+    fn admin_probe_rejects_unsupported_routes_and_incompatible_streams() {
+        let unsupported =
+            resolve_admin_probe_endpoint(14, AdminProbeEndpoint::OpenAi, "claude-3-haiku", false)
+                .unwrap_err();
+        assert_eq!(unsupported.status, 400);
+        assert_eq!(unsupported.error_code, "channel_test_route_unsupported");
+
+        for endpoint in [
+            AdminProbeEndpoint::OpenAiResponseCompact,
+            AdminProbeEndpoint::JinaRerank,
+            AdminProbeEndpoint::ImageGeneration,
+            AdminProbeEndpoint::Embeddings,
+        ] {
+            let error = resolve_admin_probe_endpoint(1, endpoint, "model", true).unwrap_err();
+            assert_eq!(error.status, 400);
+            assert_eq!(error.error_code, "channel_test_stream_incompatible");
+        }
+        let auto_rerank = resolve_admin_probe_endpoint(
+            38,
+            AdminProbeEndpoint::Auto,
+            "jina-reranker-v2-base-multilingual",
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(auto_rerank.error_code, "channel_test_stream_incompatible");
+    }
+
+    #[test]
+    fn admin_probe_minimal_bodies_match_route_contracts() {
+        let embeddings = build_admin_probe_body(
+            AdminProbeEndpoint::Embeddings,
+            "text-embedding-3-small",
+            false,
+        );
+        assert_eq!(embeddings["input"], json!(["hi"]));
+        let image = build_admin_probe_body(
+            AdminProbeEndpoint::ImageGeneration,
+            "doubao-seedream-4-0",
+            false,
+        );
+        assert_eq!(image["prompt"], "a common cat");
+        assert_eq!(image["size"], "1024x1024");
+        let rerank = build_admin_probe_body(
+            AdminProbeEndpoint::JinaRerank,
+            "jina-reranker-v2-base-multilingual",
+            false,
+        );
+        assert_eq!(rerank["documents"].as_array().unwrap().len(), 2);
+        assert_eq!(rerank["top_n"], 2);
+        let responses =
+            build_admin_probe_body(AdminProbeEndpoint::OpenAiResponse, "gpt-4.1", false);
+        assert_eq!(responses["input"][0]["role"], "user");
+        let chat = build_admin_probe_body(AdminProbeEndpoint::OpenAi, "gpt-4.1", false);
+        assert_eq!(chat["max_tokens"], 16);
+        let gemini = build_admin_probe_body(AdminProbeEndpoint::Gemini, "gemini-2.5-flash", false);
+        assert_eq!(gemini["generationConfig"]["maxOutputTokens"], 3000);
+    }
+
+    #[test]
+    fn admin_probe_json_shape_validation_is_route_specific() {
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::OpenAi,
+            &json!({"choices": [{"message": {"content": "hi"}}]})
+        ));
+        assert!(!admin_probe_json_shape_valid(
+            AdminProbeEndpoint::OpenAi,
+            &json!({"choices": []})
+        ));
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::OpenAiResponse,
+            &json!({"object": "response", "output": []})
+        ));
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::Anthropic,
+            &json!({"type": "message", "content": [{"type": "text", "text": "hi"}]})
+        ));
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::Gemini,
+            &json!({"candidates": [{"content": {"parts": [{"text": "hi"}]}}]})
+        ));
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::JinaRerank,
+            &json!({"results": [{"index": 0, "relevance_score": 1.0}]})
+        ));
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::ImageGeneration,
+            &json!({"images": [{"url": "https://example.test/cat.png"}]})
+        ));
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::Embeddings,
+            &json!({"data": [{"embedding": [0.1, 0.2]}]})
+        ));
+        assert!(!admin_probe_json_shape_valid(
+            AdminProbeEndpoint::Embeddings,
+            &json!({"data": [{"index": 0}]})
+        ));
+    }
+
+    #[test]
+    fn admin_probe_sse_parser_requires_route_specific_non_done_json_event() {
+        assert_eq!(
+            admin_probe_sse_has_valid_event(
+                AdminProbeEndpoint::OpenAiResponse,
+                b"event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n\r\n",
+                false,
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            admin_probe_sse_has_valid_event(
+                AdminProbeEndpoint::OpenAiResponse,
+                b"data: [DONE]\n\n",
+                true,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            admin_probe_sse_has_valid_event(
+                AdminProbeEndpoint::OpenAiResponse,
+                b"data: not-json\n\n",
+                true,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            admin_probe_sse_has_valid_event(
+                AdminProbeEndpoint::OpenAiResponse,
+                b"data: {\"type\":\"response.created\"}",
+                false,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            admin_probe_sse_has_valid_event(
+                AdminProbeEndpoint::OpenAiResponse,
+                b"data: {\"type\":\"response.created\"}",
+                true,
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            admin_probe_sse_has_valid_event(
+                AdminProbeEndpoint::OpenAi,
+                b"data: {\"type\":\"response.created\"}\n\n",
+                true,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            admin_probe_sse_has_valid_event(
+                AdminProbeEndpoint::OpenAiResponse,
+                b"data: {\"type\":\"response.failed\"}\n\n",
+                true,
+            ),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn admin_probe_preparation_reuses_first_key_and_model_mapping() {
+        let mut channel = test_channel(1, 0, 1);
+        channel.key = " first-key\nsecond-key ".to_string();
+        channel.model_mapping = Some(r#"{"gpt-test":"provider-model"}"#.to_string());
+        let request = AdminChannelProbeRequest {
+            model: "gpt-test".to_string(),
+            endpoint_type: AdminProbeEndpoint::OpenAi,
+            stream: false,
+        };
+        let prepared = prepare_admin_channel_probe(&channel, &request, false).unwrap();
+        assert_eq!(prepared.upstream_key, "first-key");
+        assert_eq!(prepared.body["model"], "provider-model");
+        assert_eq!(prepared.effective_model, "provider-model");
+        assert_eq!(prepared.effective_route, "/v1/chat/completions");
+    }
+
+    #[test]
+    fn admin_probe_transport_planning_reuses_production_transports() {
+        let endpoint = AdminProbeEndpoint::OpenAi.relay_endpoint("gpt-4.1", false);
+        let direct = test_channel(1, 0, 1);
+        let direct_url = endpoint.try_upstream_url(&direct).unwrap();
+        assert!(matches!(
+            plan_admin_probe_transport(None, &endpoint, &direct, &direct_url, "gpt-4.1", false,)
+                .unwrap(),
+            AdminProbeTransportPlan::Direct
+        ));
+
+        let mut workers_ai = test_channel(39, 0, 1);
+        workers_ai.channel_type = 39;
+        workers_ai.key = "internal".to_string();
+        let workers_ai_url = endpoint.try_upstream_url(&workers_ai).unwrap();
+        assert!(matches!(
+            plan_admin_probe_transport(
+                None,
+                &endpoint,
+                &workers_ai,
+                &workers_ai_url,
+                "@cf/meta/llama-3.1-8b-instruct",
+                false,
+            )
+            .unwrap(),
+            AdminProbeTransportPlan::WorkersAi
+        ));
+
+        let mut wfp = test_channel(2, 0, 1);
+        wfp.other_info = r#"{"wfp_worker":"tenant-a"}"#.to_string();
+        let wfp_url = endpoint.try_upstream_url(&wfp).unwrap();
+        assert!(matches!(
+            plan_admin_probe_transport(None, &endpoint, &wfp, &wfp_url, "gpt-4.1", false,).unwrap(),
+            AdminProbeTransportPlan::Wfp
+        ));
+
+        let runtime = ai_gateway_runtime_for_tests();
+        let mut gateway = test_channel(3, 0, 1);
+        gateway.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        let gateway_url = endpoint.try_upstream_url(&gateway).unwrap();
+        assert!(matches!(
+            plan_admin_probe_transport(
+                Some(&runtime),
+                &endpoint,
+                &gateway,
+                &gateway_url,
+                "openai/gpt-4.1",
+                false,
+            )
+            .unwrap(),
+            AdminProbeTransportPlan::AiGateway(_)
+        ));
+    }
 
     #[test]
     fn realtime_billing_request_headers_strip_sensitive_values() {

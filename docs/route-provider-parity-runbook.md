@@ -134,6 +134,15 @@ fall through to an unbounded parser.
 
 ## Provider Adapter Contract
 
+Before a provider row can use Channel Test as canary evidence, the typed
+`POST /api/channel/test/:id` response must echo the requested endpoint/model/
+stream contract, report the effective route and transport, and show successful
+route-specific bounded JSON or SSE validation. A 2xx without that evidence is
+not a passing probe. Explicit route/stream incompatibility must fail before
+egress, and only validated probes may update D1 channel health. Archive direct,
+AI Gateway, WFP, and Workers AI probe evidence separately for whichever
+transports are enabled; local executor tests do not replace provider staging.
+
 Each provider family must have an adapter report before canary:
 
 | Area | Required Evidence |

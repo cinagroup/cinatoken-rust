@@ -37,7 +37,15 @@ import {
   updateChannelBalance,
 } from '../api'
 import { CHANNEL_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
-import type { ChannelTestResponse, CopyChannelParams } from '../types'
+import type {
+  ChannelTestEndpointType,
+  ChannelTestResponse,
+  CopyChannelParams,
+} from '../types'
+import {
+  channelTestAllContractValid,
+  channelTestSuccessContractError,
+} from './channel-test-contract'
 
 // ============================================================================
 // Query Keys
@@ -234,7 +242,7 @@ export async function handleTestChannel(
   id: number,
   options?: {
     testModel?: string
-    endpointType?: string
+    endpointType?: ChannelTestEndpointType
     stream?: boolean
     silent?: boolean
   },
@@ -259,30 +267,38 @@ export async function handleTestChannel(
   try {
     const response = await testChannel(id, payload)
     const responseTime = getChannelTestResponseTime(response)
-    if (response.success) {
+    const contractError = channelTestSuccessContractError(response, payload)
+    if (response.success && !contractError) {
       if (!options?.silent) {
         toast.success(i18next.t(SUCCESS_MESSAGES.TESTED))
       }
       onTestComplete?.(true, responseTime)
     } else {
+      const message =
+        contractError ||
+        response.message ||
+        i18next.t(ERROR_MESSAGES.TEST_FAILED)
       if (!options?.silent) {
-        toast.error(response.message || i18next.t(ERROR_MESSAGES.TEST_FAILED))
+        toast.error(message)
       }
       onTestComplete?.(
         false,
         responseTime,
-        response.message,
-        response.error_code
+        message,
+        contractError ? 'channel_test_contract_mismatch' : response.error_code
       )
     }
   } catch (_error: unknown) {
-    const err = _error as { response?: { data?: { message?: string } } }
+    const err = _error as {
+      response?: { data?: { message?: string; error_code?: string } }
+    }
     const errorMsg =
       err?.response?.data?.message || i18next.t(ERROR_MESSAGES.TEST_FAILED)
+    const errorCode = err?.response?.data?.error_code
     if (!options?.silent) {
       toast.error(errorMsg)
     }
-    onTestComplete?.(false, undefined, errorMsg)
+    onTestComplete?.(false, undefined, errorMsg, errorCode)
   }
 }
 
@@ -617,17 +633,24 @@ export async function handleTestAllChannels(
 ): Promise<void> {
   try {
     const response = await testAllChannels()
-    if (response.success) {
+    if (channelTestAllContractValid(response)) {
+      const data = response.data!
       toast.success(
         i18next.t(
-          'Testing all enabled channels started. Please refresh to see results.'
+          'Channel test completed: {{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped.',
+          {
+            succeeded: data.succeeded,
+            failed: data.failed,
+            skipped: data.skipped,
+          }
         )
       )
       queryClient?.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
       onSuccess?.()
     } else {
       toast.error(
-        response.message || i18next.t('Failed to start testing all channels')
+        response.message ||
+          i18next.t('Channel test returned an invalid summary')
       )
     }
   } catch (_error) {

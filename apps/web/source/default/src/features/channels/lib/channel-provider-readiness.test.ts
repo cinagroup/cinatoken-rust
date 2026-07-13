@@ -156,7 +156,7 @@ describe('channel provider relay readiness', () => {
 
   test('maps the three implementation states to stable badge treatments', () => {
     assert.deepEqual(providerReadinessPresentation('ready'), {
-      label: 'Ready',
+      label: 'Implemented',
       variant: 'success',
     })
     assert.deepEqual(providerReadinessPresentation('partial'), {

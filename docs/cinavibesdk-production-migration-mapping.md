@@ -785,6 +785,47 @@ This migration mapping is production-ready when each enabled pillar has:
 Until then, the correct production posture is "compiled and gated", not
 "cutover-ready".
 
+## 2026-07-13 cinaVibeSDK Re-Audit And Workerd Eviction Application
+
+The current cinaVibeSDK `main` at `918e974` was re-read rather than treating its
+documentation as executable evidence. The reusable design remains sound:
+client WebSockets belong to a hibernatable DO/Agent boundary, durable session
+state belongs in SQLite, request-scoped secrets stay outside persisted socket
+metadata, and host/tenant/provider responsibilities remain separate. Its
+`UserSecretsStore` also reinforces a useful fail-closed rule: encrypted durable
+material may survive eviction, while an unlocked in-memory key must not.
+
+Two reference implementation details are deliberately not copied:
+
+- The cinaVibeSDK dispatch path rebuilds a `Response` after WFP fetch without
+  explicitly preserving `response.webSocket`; this is not proof of transparent
+  `101 Upgrade` forwarding. cinatoken-rust keeps the dispatch response intact
+  and still requires a dedicated WebSocket dispatch regression plus remote
+  namespace smoke.
+- Its current agent inference path still uses AI Gateway `/compat`. New
+  cinatoken-rust work continues to use the provider REST API boundary through
+  the Rust tenant/outbound services, preserving outbound-only authorization and
+  the reviewed route allowlist.
+
+The design is now applied through an executable local runtime gate. The release
+Rust/Wasm `RealtimeSession` is exported into Cloudflare's Vitest Workers pool,
+bound as a SQLite Durable Object, and explicitly evicted while a hibernatable
+client WebSocket is open. The same socket processes another message after
+eviction; its redacted attachment and bridge segment are restored, durable
+metrics continue from the stored value, and HTTP status reports one active
+socket and one restored attachment. This is stronger than a mock or source-only
+claim and is absent from the audited cinaVibeSDK test suite.
+
+The evidence boundary remains strict. The passing case intentionally has no
+outbound provider WebSocket. An active upstream bridge is transient and cannot
+be represented as restored merely because the client attachment survived. The
+next Workerd Realtime lifecycle increment must establish a mock upstream,
+confirm one active bridge, force reconstruction, then prove metadata-only
+`upstream_unavailable`, close 1011, exactly-once refund or lease ownership, no
+second provider request, secret-free state/events, and a fresh bridge segment
+after client reconnect. Cloudflare staging must repeat the lifecycle and billing
+drill before G7 or production cutover can pass.
+
 ## 2026-07-13 Preview Response Chokepoint Alignment
 
 The reference audit at cinaVibeSDK commit `918e97480ee4` and its current preview

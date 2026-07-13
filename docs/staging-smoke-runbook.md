@@ -155,6 +155,15 @@ bun run check:task-runner:alarm-replay-plan
 bun run check:do-lifecycle-runtime
 ```
 
+The lifecycle command builds the release Rust/Wasm artifacts and runs them in
+Cloudflare's Vitest Workerd pool. Its Realtime case uses a SQLite Durable Object,
+explicitly calls `evictDurableObject(..., { webSockets: "hibernate" })`, then
+requires the same client socket to return a status frame with the same redacted
+bridge segment, incremented persisted metrics, and HTTP readback showing one
+active WebSocket plus one restored attachment. This is local runtime evidence;
+it does not satisfy the remote staging steps below or the active-upstream bridge
+loss/refund drill.
+
 After staging has a low-risk shared task id and `TASK_RUNNER_DO_ENABLED=true`
 has been enabled only for the controlled replay, run:
 

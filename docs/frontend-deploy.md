@@ -253,9 +253,17 @@ Before marking frontend hosting complete:
    embeddings, rerank, and image-generation routes; and keep `MokaAI` Deferred
    with no routes. Correlate the view with
    `GET /api/channel/provider-readiness` from the same deployment.
+8. Confirm type-level full support is labelled `Implemented`, not `Ready`, and
+   remains visually separate from channel-specific provider verification. For
+   each enabled Channel Test endpoint, capture the POST request and response
+   evidence showing identical requested endpoint/stream values, the effective
+   relay route and transport, and successful bounded JSON or SSE validation.
+   A 2xx response without this evidence must not render as Success. Run Test All
+   once and reconcile its synchronous succeeded/failed/skipped counts with the
+   refreshed channel rows.
 
 The HTTP-only portions of items 1-2 have staging evidence. Rendered browser
-behavior and items 3-7 remain open because the current staging database is
+behavior and items 3-8 remain open because the current staging database is
 uninitialized and browser-control tooling was unavailable in the audit
 session. Do not initialize shared staging solely to make a smoke test pass.
 

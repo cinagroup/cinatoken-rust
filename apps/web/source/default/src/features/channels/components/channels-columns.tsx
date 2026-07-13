@@ -680,7 +680,7 @@ export function useChannelsColumns(): ColumnDef<Channel>[] {
                     {relayReadiness ? (
                       <div className='space-y-1.5'>
                         <div className='font-medium'>
-                          {t('Relay implementation readiness')}
+                          {t('Relay implementation support')}
                         </div>
                         <div>{t(relayReadiness.reason)}</div>
                         {relayReadiness.routes.length > 0 && (

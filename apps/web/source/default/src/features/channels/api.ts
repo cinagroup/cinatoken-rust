@@ -24,6 +24,8 @@ import type {
   BatchSetTagParams,
   Channel,
   ChannelBalanceResponse,
+  ChannelTestAllResponse,
+  ChannelTestRequest,
   ChannelTestResponse,
   CopyChannelParams,
   CopyChannelResponse,
@@ -174,11 +176,12 @@ export async function batchSetChannelTag(
  */
 export async function testChannel(
   id: number,
-  params?: { model?: string; endpoint_type?: string; stream?: boolean }
+  request: ChannelTestRequest = {}
 ): Promise<ChannelTestResponse> {
-  const res = await api.get(
+  const res = await api.post(
     `/api/channel/test/${id}`,
-    channelActionConfig({ params })
+    request,
+    channelActionConfig()
   )
   return res.data
 }
@@ -496,10 +499,7 @@ export async function deleteOllamaModel(params: {
 /**
  * Test all enabled channels
  */
-export async function testAllChannels(): Promise<{
-  success: boolean
-  message?: string
-}> {
+export async function testAllChannels(): Promise<ChannelTestAllResponse> {
   const res = await api.get('/api/channel/test', channelActionConfig())
   return res.data
 }

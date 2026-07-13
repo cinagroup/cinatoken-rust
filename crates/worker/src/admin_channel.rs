@@ -10,6 +10,7 @@
 //! upstream batch operations. Codex usage/refresh lives in
 //! `admin_codex_channel`; Ollama model management lives in `admin_ollama`.
 
+use cinatoken_storage::RelayChannel;
 use futures_util::future::{select, Either};
 use futures_util::{stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use wasm_bindgen::JsValue;
 use worker::{
-    AbortController, Delay, Env, Request, RequestRedirect, Response, Result as WorkerResult,
+    AbortController, Delay, Env, Method, Request, RequestRedirect, Response, Result as WorkerResult,
 };
 
 use crate::admin::{
@@ -28,6 +29,10 @@ use crate::admin::{
 };
 use crate::cache_invalidation::invalidate_channel_cache;
 use crate::d1_repositories::{self, ChannelFilter, ChannelRow, CreateChannel, UpdateChannel};
+use crate::relay::{
+    execute_admin_channel_probe, AdminChannelProbeError, AdminChannelProbeRequest,
+    AdminChannelProbeResult, AdminProbeEndpoint,
+};
 
 #[derive(Serialize)]
 struct ProviderReadinessRoute {
@@ -357,45 +362,58 @@ pub async fn manage_multi_keys(mut req: Request, env: Env) -> WorkerResult<Respo
     }
 }
 
-/// `GET /api/channel/test/:id?model=`: send a minimal chat completion through
-/// the channel with its own stored key and record the latency (Go
-/// `TestChannel`). Test model precedence: query param > channel `test_model` >
-/// first of the channel's `models` CSV > `gpt-4o-mini` (Go's fallback chain).
-/// On success the channel's `response_time`/`test_time` are updated and the
-/// elapsed seconds returned. Bounded subset vs Go (documented): tests the
-/// OpenAI-compatible chat endpoint only (no per-endpoint-type dispatch /
-/// embedding / rerank variants).
+/// Typed `POST /api/channel/test/:id` with a query-compatible `GET` shim.
+/// Both methods execute one production relay route against the specified
+/// channel and persist health only after the upstream response is validated.
 pub async fn test_channel(
-    req: Request,
+    mut req: Request,
     env: Env,
     id_param: Option<&String>,
 ) -> WorkerResult<Response> {
     if let Err(response) = require_admin_auth(&req, &env).await? {
-        return Ok(response);
+        return channel_test_error_response(
+            response.status_code(),
+            "channel_test_auth_failed",
+            "admin authentication is required",
+        );
     }
-    let Some(id) = parse_id_param(id_param) else {
-        return Ok(envelope_error_response(400, "invalid channel id"));
+    let Some(id) = parse_id_param(id_param).filter(|id| *id > 0) else {
+        return channel_test_error_response(400, "channel_test_id_invalid", "invalid channel id");
+    };
+    let input = match parse_channel_test_input(&mut req).await {
+        Ok(input) => input,
+        Err(error) => {
+            return channel_test_error_response(error.status, error.error_code, &error.message)
+        }
     };
     let db = env.d1("DB")?;
     let Some(channel) = d1_repositories::find_channel_by_id(&db, id).await? else {
-        return Ok(envelope_error_response(404, "channel not found"));
+        return channel_test_error_response(
+            404,
+            "channel_test_channel_not_found",
+            "channel not found",
+        );
     };
-    let query_model = parse_query_string(&req, "model");
-    match probe_channel(&channel, query_model.as_deref()).await {
-        Ok(elapsed_ms) => {
-            d1_repositories::record_channel_test(&db, id, elapsed_ms as i64, unix_timestamp())
-                .await?;
-            Response::from_json(&serde_json::json!({
-                "success": true,
-                "message": "",
-                "time": elapsed_ms / 1000.0,
-            }))
+    let request = channel_test_probe_request(&channel, input);
+    match execute_admin_channel_probe(&env, &relay_channel_from_row(&channel), request).await {
+        Ok(result) => {
+            if let Err(error) = d1_repositories::record_channel_test(
+                &db,
+                id,
+                result.response_time_ms.round() as i64,
+                unix_timestamp(),
+            )
+            .await
+            {
+                return channel_test_error_response(
+                    500,
+                    "channel_test_record_failed",
+                    &format!("validated channel probe could not be recorded: {error}"),
+                );
+            }
+            channel_test_success_response(result)
         }
-        Err(message) => Response::from_json(&serde_json::json!({
-            "success": false,
-            "message": message,
-            "time": 0.0,
-        })),
+        Err(error) => channel_test_error_response(error.status, error.error_code, &error.message),
     }
 }
 
@@ -421,9 +439,17 @@ pub async fn test_all_channels(req: Request, env: Env) -> WorkerResult<Response>
     let attempted = batch.channels.len() + batch.failed;
     let skipped = batch.skipped;
     let initial_failed = batch.failed;
-    let results = stream::iter(batch.channels.into_iter().map(|channel| async move {
-        let id = channel.id;
-        (id, probe_channel(&channel, None).await)
+    let results = stream::iter(batch.channels.into_iter().map(|channel| {
+        let env = env.clone();
+        async move {
+            let id = channel.id;
+            let request = channel_test_probe_request(&channel, ChannelTestInput::default());
+            let relay_channel = relay_channel_from_row(&channel);
+            (
+                id,
+                execute_admin_channel_probe(&env, &relay_channel, request).await,
+            )
+        }
     }))
     .buffer_unordered(CHANNEL_BATCH_CONCURRENCY)
     .collect::<Vec<_>>()
@@ -434,7 +460,7 @@ pub async fn test_all_channels(req: Request, env: Env) -> WorkerResult<Response>
     let mut measurements = Vec::new();
     for (id, result) in results {
         match result {
-            Ok(elapsed_ms) => measurements.push((id, elapsed_ms as i64, now)),
+            Ok(result) => measurements.push((id, result.response_time_ms.round() as i64, now)),
             Err(_) => failed += 1,
         }
     }
@@ -445,7 +471,7 @@ pub async fn test_all_channels(req: Request, env: Env) -> WorkerResult<Response>
         succeeded: persisted,
         failed,
         skipped,
-        max_channels: CHANNEL_BATCH_OPERATION_LIMIT,
+        max_channels: CHANNEL_BATCH_SCAN_LIMIT,
     };
     let _ = d1_repositories::insert_admin_audit_log(
         &db,
@@ -1473,60 +1499,261 @@ fn select_channel_test_model(
         .to_string()
 }
 
-async fn probe_channel(channel: &ChannelRow, query_model: Option<&str>) -> Result<f64, String> {
-    if channel.key.trim().is_empty() {
-        return Err("channel key is empty".to_string());
+const CHANNEL_TEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
+const CHANNEL_TEST_MODEL_MAX_CHARS: usize = 256;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ChannelTestJsonInput {
+    model: Option<String>,
+    endpoint_type: Option<String>,
+    stream: Option<bool>,
+}
+
+#[derive(Debug)]
+struct ChannelTestInput {
+    model: Option<String>,
+    endpoint_type: AdminProbeEndpoint,
+    stream: bool,
+}
+
+impl Default for ChannelTestInput {
+    fn default() -> Self {
+        Self {
+            model: None,
+            endpoint_type: AdminProbeEndpoint::Auto,
+            stream: false,
+        }
     }
-    let base_url = if channel.base_url.trim().is_empty() && channel.kind == 1 {
-        "https://api.openai.com"
-    } else {
-        channel.base_url.trim()
-    };
-    let url = validated_channel_url(base_url, "/v1/chat/completions")?;
-    let test_model =
-        select_channel_test_model(query_model, channel.test_model.as_deref(), &channel.models);
-    let body = serde_json::json!({
-        "model": test_model,
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 1,
-    });
-    let mut headers = worker::Headers::new();
-    headers
-        .set("Content-Type", "application/json")
-        .map_err(|_| "failed to build channel test request".to_string())?;
-    headers
-        .set("Authorization", &format!("Bearer {}", channel.key))
-        .map_err(|_| "channel key is not valid for an HTTP header".to_string())?;
-    let mut init = worker::RequestInit::new();
-    init.with_method(worker::Method::Post)
-        .with_headers(headers)
-        .with_redirect(RequestRedirect::Error)
-        .with_body(Some(body.to_string().into()));
-    let request = Request::new_with_init(&url, &init)
-        .map_err(|_| "failed to build channel test request".to_string())?;
-    let controller = AbortController::default();
-    let signal = controller.signal();
-    let outbound = worker::Fetch::Request(request);
-    let fetch = outbound.send_with_signal(&signal);
-    let delay = Delay::from(CHANNEL_OUTBOUND_TIMEOUT);
-    futures_util::pin_mut!(fetch);
-    futures_util::pin_mut!(delay);
-    let started = js_sys::Date::now();
-    let response = match select(fetch, delay).await {
-        Either::Left((result, _)) => result.map_err(|_| "channel request failed".to_string())?,
-        Either::Right(((), _)) => {
-            controller.abort();
-            return Err("channel request timed out".to_string());
+}
+
+#[derive(Serialize)]
+struct ChannelTestSuccessResponse {
+    success: bool,
+    message: &'static str,
+    time: f64,
+    data: ChannelTestSuccessData,
+}
+
+#[derive(Serialize)]
+struct ChannelTestSuccessData {
+    response_time: f64,
+    requested: ChannelTestRequested,
+    effective: ChannelTestEffective,
+    validation: ChannelTestValidation,
+}
+
+#[derive(Serialize)]
+struct ChannelTestRequested {
+    model: String,
+    endpoint_type: &'static str,
+    stream: bool,
+}
+
+#[derive(Serialize)]
+struct ChannelTestEffective {
+    model: String,
+    endpoint_type: &'static str,
+    route: String,
+    stream: bool,
+    transport: &'static str,
+}
+
+#[derive(Serialize)]
+struct ChannelTestValidation {
+    mode: &'static str,
+    content_type: String,
+    response_validated: bool,
+}
+
+#[derive(Serialize)]
+struct ChannelTestFailureResponse<'a> {
+    success: bool,
+    message: &'a str,
+    time: f64,
+    error_code: &'static str,
+}
+
+async fn parse_channel_test_input(
+    req: &mut Request,
+) -> Result<ChannelTestInput, AdminChannelProbeError> {
+    let raw = match req.method() {
+        Method::Get => ChannelTestJsonInput {
+            model: parse_query_string(req, "model"),
+            endpoint_type: parse_query_string(req, "endpoint_type"),
+            stream: parse_channel_test_query_stream(req)?,
+        },
+        Method::Post => {
+            let content_type = req
+                .headers()
+                .get("content-type")
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            if content_type
+                .split(';')
+                .next()
+                .is_none_or(|value| !value.trim().eq_ignore_ascii_case("application/json"))
+            {
+                return Err(AdminChannelProbeError::new(
+                    415,
+                    "channel_test_content_type_invalid",
+                    "channel test POST body must use application/json",
+                ));
+            }
+            let bytes = req.bytes().await.map_err(|err| {
+                AdminChannelProbeError::new(
+                    400,
+                    "channel_test_body_read_failed",
+                    format!("failed to read channel test body: {err}"),
+                )
+            })?;
+            if bytes.len() > CHANNEL_TEST_BODY_LIMIT_BYTES {
+                return Err(AdminChannelProbeError::new(
+                    413,
+                    "channel_test_body_too_large",
+                    "channel test body is too large",
+                ));
+            }
+            serde_json::from_slice::<ChannelTestJsonInput>(&bytes).map_err(|err| {
+                AdminChannelProbeError::new(
+                    400,
+                    "channel_test_body_invalid",
+                    format!("invalid channel test JSON body: {err}"),
+                )
+            })?
+        }
+        _ => {
+            return Err(AdminChannelProbeError::new(
+                405,
+                "channel_test_method_not_allowed",
+                "channel test supports GET and POST only",
+            ));
         }
     };
-    let elapsed_ms = (js_sys::Date::now() - started).max(0.0);
-    if !(200..300).contains(&response.status_code()) {
-        return Err(format!(
-            "upstream returned status {}",
-            response.status_code()
-        ));
+    let model = match raw.model {
+        Some(model) if model.trim().is_empty() => None,
+        Some(model) if model.trim() != model => {
+            return Err(AdminChannelProbeError::new(
+                400,
+                "channel_test_model_invalid",
+                "channel test model must not have leading or trailing whitespace",
+            ));
+        }
+        Some(model) if model.chars().count() > CHANNEL_TEST_MODEL_MAX_CHARS => {
+            return Err(AdminChannelProbeError::new(
+                400,
+                "channel_test_model_invalid",
+                "channel test model is too long",
+            ));
+        }
+        model => model,
+    };
+    let endpoint_raw = raw.endpoint_type.as_deref().unwrap_or("auto");
+    let endpoint_type = AdminProbeEndpoint::parse(endpoint_raw).ok_or_else(|| {
+        AdminChannelProbeError::new(
+            400,
+            "channel_test_endpoint_invalid",
+            format!("unknown channel test endpoint_type {endpoint_raw}"),
+        )
+    })?;
+    Ok(ChannelTestInput {
+        model,
+        endpoint_type,
+        stream: raw.stream.unwrap_or(false),
+    })
+}
+
+fn parse_channel_test_query_stream(req: &Request) -> Result<Option<bool>, AdminChannelProbeError> {
+    match parse_query_string(req, "stream").as_deref() {
+        None => Ok(None),
+        Some("true") => Ok(Some(true)),
+        Some("false") => Ok(Some(false)),
+        Some(_) => Err(AdminChannelProbeError::new(
+            400,
+            "channel_test_stream_invalid",
+            "channel test stream query must be true or false",
+        )),
     }
-    Ok(elapsed_ms)
+}
+
+fn channel_test_probe_request(
+    channel: &ChannelRow,
+    input: ChannelTestInput,
+) -> AdminChannelProbeRequest {
+    AdminChannelProbeRequest {
+        model: select_channel_test_model(
+            input.model.as_deref(),
+            channel.test_model.as_deref(),
+            &channel.models,
+        ),
+        endpoint_type: input.endpoint_type,
+        stream: input.stream,
+    }
+}
+
+fn relay_channel_from_row(channel: &ChannelRow) -> RelayChannel {
+    RelayChannel {
+        id: channel.id,
+        channel_type: channel.kind,
+        key: channel.key.clone(),
+        name: channel.name.clone(),
+        base_url: (!channel.base_url.trim().is_empty()).then(|| channel.base_url.clone()),
+        models: channel.models.clone(),
+        channel_group: channel.channel_group.clone(),
+        model_mapping: channel.model_mapping.clone(),
+        openai_organization: channel.openai_organization.clone(),
+        other_info: channel.other_info.clone(),
+        priority: i64::from(channel.priority),
+        weight: channel.weight,
+    }
+}
+
+fn channel_test_success_response(result: AdminChannelProbeResult) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&ChannelTestSuccessResponse {
+        success: true,
+        message: "",
+        time: result.response_time_ms / 1000.0,
+        data: ChannelTestSuccessData {
+            response_time: result.response_time_ms,
+            requested: ChannelTestRequested {
+                model: result.requested_model,
+                endpoint_type: result.requested_endpoint_type,
+                stream: result.requested_stream,
+            },
+            effective: ChannelTestEffective {
+                model: result.effective_model,
+                endpoint_type: result.effective_endpoint_type,
+                route: result.effective_route,
+                stream: result.effective_stream,
+                transport: result.transport,
+            },
+            validation: ChannelTestValidation {
+                mode: result.validation_mode,
+                content_type: result.content_type,
+                response_validated: true,
+            },
+        },
+    })?
+    .with_status(200);
+    crate::set_cors_headers(&mut response)?;
+    Ok(response)
+}
+
+fn channel_test_error_response(
+    status: u16,
+    error_code: &'static str,
+    message: &str,
+) -> WorkerResult<Response> {
+    let mut response = Response::from_json(&ChannelTestFailureResponse {
+        success: false,
+        message,
+        time: 0.0,
+        error_code,
+    })?
+    .with_status(status);
+    crate::set_cors_headers(&mut response)?;
+    Ok(response)
 }
 
 fn default_copy_suffix() -> &'static str {
@@ -2698,6 +2925,27 @@ mod tests {
             "first"
         );
         assert_eq!(select_channel_test_model(None, None, ""), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn channel_test_json_contract_is_strict_and_typed() {
+        let input = serde_json::from_value::<ChannelTestJsonInput>(serde_json::json!({
+            "model": "gpt-4.1",
+            "endpoint_type": "openai-response",
+            "stream": true
+        }))
+        .unwrap();
+        assert_eq!(input.model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(input.endpoint_type.as_deref(), Some("openai-response"));
+        assert_eq!(input.stream, Some(true));
+
+        assert!(
+            serde_json::from_value::<ChannelTestJsonInput>(serde_json::json!({
+                "model": "gpt-4.1",
+                "unknown": true
+            }))
+            .is_err()
+        );
     }
 
     #[test]

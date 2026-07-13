@@ -18,6 +18,7 @@ For commercial licensing, please contact support@cinagroup.com
 */
 // Re-export all library functions
 export * from './channel-actions'
+export * from './channel-test-contract'
 export * from './channel-form-errors'
 export * from './channel-form'
 export * from './channel-type-config'

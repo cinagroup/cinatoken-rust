@@ -165,6 +165,23 @@ export interface ProviderReadinessResponse {
   }
 }
 
+export type ChannelTestEndpointType =
+  | 'auto'
+  | 'openai'
+  | 'openai-response'
+  | 'openai-response-compact'
+  | 'anthropic'
+  | 'gemini'
+  | 'jina-rerank'
+  | 'image-generation'
+  | 'embeddings'
+
+export interface ChannelTestRequest {
+  model?: string
+  endpoint_type?: ChannelTestEndpointType
+  stream?: boolean
+}
+
 export interface ChannelTestResponse {
   success: boolean
   message?: string
@@ -172,7 +189,35 @@ export interface ChannelTestResponse {
   time?: number
   data?: {
     response_time?: number
-    error?: string
+    requested: {
+      model: string
+      endpoint_type: ChannelTestEndpointType
+      stream: boolean
+    }
+    effective: {
+      model: string
+      endpoint_type: Exclude<ChannelTestEndpointType, 'auto'>
+      route: string
+      stream: boolean
+      transport: string
+    }
+    validation: {
+      mode: 'json' | 'sse'
+      content_type: string
+      response_validated: boolean
+    }
+  }
+}
+
+export interface ChannelTestAllResponse {
+  success: boolean
+  message?: string
+  data?: {
+    attempted: number
+    succeeded: number
+    failed: number
+    skipped: number
+    max_channels: number
   }
 }
 

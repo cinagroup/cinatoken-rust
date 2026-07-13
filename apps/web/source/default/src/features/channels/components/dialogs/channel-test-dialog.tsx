@@ -75,6 +75,7 @@ import {
 } from '../../lib'
 import type {
   Channel,
+  ChannelTestEndpointType,
   GetChannelsResponse,
   SearchChannelsResponse,
 } from '../../types'
@@ -151,7 +152,10 @@ function getLatestChannelTestCachePatch(
   return latest?.patch
 }
 
-const endpointTypeOptions: Array<{ value: string; label: string }> = [
+const endpointTypeOptions: Array<{
+  value: ChannelTestEndpointType
+  label: string
+}> = [
   { value: 'auto', label: 'Auto detect (default)' },
   { value: 'openai', label: 'OpenAI (/v1/chat/completions)' },
   { value: 'openai-response', label: 'OpenAI Responses (/v1/responses)' },
@@ -172,7 +176,7 @@ const endpointTypeOptions: Array<{ value: string; label: string }> = [
   { value: 'embeddings', label: 'Embeddings (/v1/embeddings)' },
 ]
 
-const STREAM_INCOMPATIBLE_ENDPOINTS = new Set([
+const STREAM_INCOMPATIBLE_ENDPOINTS = new Set<ChannelTestEndpointType>([
   'embeddings',
   'image-generation',
   'jina-rerank',
@@ -289,7 +293,8 @@ function ChannelTestDialogContent({
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const currentChannelId = currentRow.id
-  const [endpointType, setEndpointType] = useState('auto')
+  const [endpointType, setEndpointType] =
+    useState<ChannelTestEndpointType>('auto')
   const [isStreamTest, setIsStreamTest] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
@@ -331,8 +336,9 @@ function ChannelTestDialogContent({
   const handleEndpointTypeChange = useCallback((value: string | null) => {
     if (value === null) return
 
-    setEndpointType(value)
-    if (STREAM_INCOMPATIBLE_ENDPOINTS.has(value)) {
+    const nextEndpoint = value as ChannelTestEndpointType
+    setEndpointType(nextEndpoint)
+    if (STREAM_INCOMPATIBLE_ENDPOINTS.has(nextEndpoint)) {
       setIsStreamTest(false)
     }
   }, [])

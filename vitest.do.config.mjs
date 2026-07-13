@@ -46,6 +46,10 @@ export default defineConfig({
           WFP_PROVIDER_MOCK: "wfp-provider-mock",
         },
         durableObjects: {
+          REALTIME_SESSIONS: {
+            className: "RealtimeSession",
+            useSQLite: true,
+          },
           WFP_AUTHORITY_REPLAY: "WfpAuthorityReplay",
           TASK_RUNNER: "TaskRunner",
         },

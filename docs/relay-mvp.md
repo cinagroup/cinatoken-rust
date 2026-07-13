@@ -172,6 +172,31 @@ The Worker:
   when Redis is configured and `RELAY_CACHE_TTL_SECONDS` is not `0`; channel
   cache keys include endpoint provider family to avoid cross-provider reuse.
 
+## Admin Channel Probe Contract
+
+`POST /api/channel/test/:id` accepts a bounded JSON object with optional
+`model`, `endpoint_type`, and `stream`; the existing GET route remains as a
+strict query-compatible shim. Endpoint values are `auto`, `openai`,
+`openai-response`, `openai-response-compact`, `anthropic`, `gemini`,
+`jina-rerank`, `image-generation`, and `embeddings`. Unknown fields, unknown
+endpoint values, surrounding model whitespace, incompatible streaming, and
+unsupported channel capabilities fail before provider egress.
+
+The executor reuses production model mapping, provider transforms, URL/header
+construction, and direct, AI Gateway REST, WFP, or Workers AI transport
+selection. It requires a route-specific bounded JSON response for non-stream
+tests or a route-specific non-DONE JSON SSE event for stream tests, all within
+15 seconds. Channel health timestamps are persisted only after this validation.
+The response includes requested and effective model/endpoint/stream values,
+effective route and transport, content type, validation mode, and
+`response_validated=true`; provider keys and response bodies are never returned.
+
+`GET /api/channel/test` applies the same executor to a bounded batch. It scans
+at most 100 enabled rows, permits at most 12 eligible single-key probes with
+concurrency 3, writes successful measurements in one D1 batch, and exposes only
+aggregate counts. Full-fleet unattended health checking remains a
+Queue/Workflow concern.
+
 ## D1 Data Requirements
 
 The MVP expects tables from `migrations/d1/0001_core.sql` and at least:

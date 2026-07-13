@@ -11,12 +11,12 @@ export function indexProviderReadiness(
 export function providerReadinessPresentation(
   readiness: ProviderRelayReadiness
 ): {
-  label: 'Ready' | 'Partial' | 'Deferred'
+  label: 'Implemented' | 'Partial' | 'Deferred'
   variant: ProviderReadinessVariant
 } {
   switch (readiness) {
     case 'ready':
-      return { label: 'Ready', variant: 'success' }
+      return { label: 'Implemented', variant: 'success' }
     case 'partial':
       return { label: 'Partial', variant: 'warning' }
     case 'deferred':

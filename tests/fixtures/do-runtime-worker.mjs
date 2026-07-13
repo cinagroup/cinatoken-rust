@@ -1,4 +1,5 @@
 export {
+  RealtimeSession,
   TaskRunner,
   WfpAuthorityReplay,
 } from "../../crates/worker/build/index.js";

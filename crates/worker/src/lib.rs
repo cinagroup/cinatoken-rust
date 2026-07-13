@@ -885,6 +885,10 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let id = ctx.param("id").cloned();
             admin_channel::test_channel(req, ctx.env, id.as_ref()).await
         })
+        .post_async("/api/channel/test/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_channel::test_channel(req, ctx.env, id.as_ref()).await
+        })
         .post_async("/api/channel/copy/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_channel::copy_channel(req, ctx.env, id.as_ref()).await
@@ -1703,6 +1707,7 @@ mod tests {
         for registration in [
             ".get_async(\"/api/channel/models\"",
             ".get_async(\"/api/channel/test\"",
+            ".post_async(\"/api/channel/test/:id\"",
             ".get_async(\"/api/channel/update_balance\"",
             ".post_async(\"/api/channel/copy/:id\"",
             ".get_async(\"/api/user/logout\"",

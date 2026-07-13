@@ -623,10 +623,15 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   upstream bridge no longer exists. The DO emits a metadata-only
   `upstream_unavailable` terminal event and closes the client with 1011 before
   any D1 await, then best-effort refunds session reservations except retry-owned
-  work; `ping` and `status` remain available as diagnostic controls. Production
-  still needs a real eviction/restore replay
-  proving one terminal event, idempotent refund/lease handoff, no payload or
-  credential disclosure, and successful reconnect from a fresh client.
+  work; `ping` and `status` remain available as diagnostic controls. A release
+  Rust/Wasm `RealtimeSession` now passes a real local Workerd eviction test with
+  SQLite storage: the same hibernatable client socket survives explicit
+  eviction, restores its serialized attachment and bridge segment, and advances
+  persisted metrics. The remaining higher-risk replay must start with an active
+  mock upstream bridge and prove one 1011 terminal event, idempotent
+  refund/lease handoff, no replacement provider call, no payload or credential
+  disclosure, and successful reconnect with a fresh bridge segment. Deployed
+  Cloudflare staging evidence remains mandatory.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond the currently implemented OpenAI,
@@ -687,9 +692,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   the deployable Rust Worker artifact and runs it under Workerd to prove one
   concurrent WFP authority winner, replay rejection after DO eviction,
   tamper/wrong-shard rejection, TaskRunner storage-decode error propagation,
-  and a successful missing-record alarm no-op. This closes a local runtime gap,
-  but does not replace staging eviction/redeploy, provider-call, D1 billing,
-  alarm retry, latency, throughput, or cleanup evidence.
+  a successful missing-record alarm no-op, and Realtime client WebSocket plus
+  attachment/metrics restoration after eviction. The Realtime binding uses the
+  SQLite DO backend to match production migrations. This closes a local runtime
+  gap, but does not replace staging eviction/redeploy, active-upstream bridge
+  loss, provider-call, D1 billing, alarm retry, latency, throughput, or cleanup
+  evidence.
 - Treat `smoke:wfp-outbound-egress` output as scoped evidence. A positive live
   result may set only `positiveRelayBillingVerified=true` under
   `verificationScope=positive-relay-billing-audit`; the authority negative

@@ -49,6 +49,96 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect((await consumeAuthority(stub, authority.token)).status).toBe(409);
   });
 
+  it("restores a hibernatable Rust RealtimeSession WebSocket after eviction", async () => {
+    const session = "runtime-hibernation";
+    const stub = env.REALTIME_SESSIONS.getByName(session);
+    const response = await stub.fetch(
+      `https://realtime-session.internal/api/platform/realtime/${session}`,
+      { headers: { Upgrade: "websocket" } },
+    );
+    const socket = response.webSocket;
+
+    expect(response.status).toBe(101);
+    expect(socket).toBeDefined();
+    socket.accept();
+
+    const beforeMessage = nextJsonWebSocketMessage(socket, "pre-eviction status");
+    socket.send("status");
+    const before = await beforeMessage;
+
+    expect(before).toMatchObject({
+      type: "realtime_session_status",
+      context: {
+        session,
+        entrypoint: "platform_realtime",
+        auth_state: "not_required",
+        upstream_connect_handoff: false,
+      },
+      metrics: {
+        connected_count: 1,
+        text_message_count: 1,
+      },
+      active_upstream_bridges: 0,
+      queued_upstream_frames: 0,
+      queued_upstream_bytes: 0,
+    });
+    const bridgeSegment = before.context.bridge_segment;
+    expect(bridgeSegment).toMatch(/^rtsegment-[a-f0-9]{64}$/u);
+
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+
+    const afterMessage = nextJsonWebSocketMessage(socket, "post-eviction status");
+    socket.send("status");
+    const after = await afterMessage;
+
+    expect(after).toMatchObject({
+      type: "realtime_session_status",
+      context: {
+        session,
+        bridge_segment: bridgeSegment,
+        entrypoint: "platform_realtime",
+        auth_state: "not_required",
+        upstream_connect_handoff: false,
+      },
+      metrics: {
+        connected_count: 1,
+        text_message_count: 2,
+      },
+      active_upstream_bridges: 0,
+      queued_upstream_frames: 0,
+      queued_upstream_bytes: 0,
+    });
+
+    const statusResponse = await stub.fetch(
+      `https://realtime-session.internal/api/platform/realtime/${session}/status`,
+    );
+    const status = await statusResponse.json();
+    expect(statusResponse.status).toBe(200);
+    expect(status).toMatchObject({
+      session,
+      active_websockets: 1,
+      restored_attachments: 1,
+      hibernation: true,
+      observability: "durable_object_storage",
+      active_upstream_bridges: 0,
+      metrics: {
+        connected_count: 1,
+        text_message_count: 2,
+      },
+      attachments: [
+        {
+          session,
+          bridge_segment: bridgeSegment,
+          entrypoint: "platform_realtime",
+          auth_state: "not_required",
+          upstream_connect_handoff: false,
+        },
+      ],
+    });
+
+    socket.close(1000, "test complete");
+  });
+
   it("rejects tampered authority and a non-canonical replay shard", async () => {
     const authority = await signedAuthority({ requestId: "runtime-negative" });
     const canonical = replayStub(authority.issuedAt);
@@ -241,4 +331,23 @@ function base64Url(value) {
   let binary = "";
   for (const byte of value) binary += String.fromCharCode(byte);
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+function nextJsonWebSocketMessage(socket, label) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.removeEventListener("message", onMessage);
+      reject(new Error(`timed out waiting for ${label}`));
+    }, 5_000);
+    const onMessage = (event) => {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      try {
+        resolve(JSON.parse(event.data));
+      } catch (error) {
+        reject(new Error(`${label} was not JSON: ${error.message}`));
+      }
+    };
+    socket.addEventListener("message", onMessage);
+  });
 }

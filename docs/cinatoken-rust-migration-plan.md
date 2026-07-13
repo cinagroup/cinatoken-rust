@@ -10551,3 +10551,65 @@ Production remains **NO-GO**. A rotated Moonshot credential must be exercised
 in staging across both wire formats, JSON/SSE, coding-plan roots, nested cached
 usage, bounded embeddings/rerank, malformed/error/refund paths, audit and
 billing reconciliation, unsupported-route rejection, disable, and Go rollback.
+
+### 22.172 2026-07-13 Workerd Realtime Eviction And Production Channel Probes
+
+This increment closes two local evidence gaps identified by the renewed
+cinaVibeSDK, Go channel-test, Worker, and frontend audit. It does not use the
+exposed Cloudflare credential and does not change any remote readiness field.
+
+Implemented locally:
+
+- The release Rust/Wasm `RealtimeSession` is exported into Cloudflare's Vitest
+  Workers pool as a SQLite Durable Object. A real hibernatable client WebSocket
+  is opened, its status and durable metrics are captured, and
+  `evictDurableObject(..., { webSockets: "hibernate" })` explicitly reconstructs
+  the object. The same socket then processes another frame with its serialized
+  attachment and bridge segment intact; persisted text metrics advance and HTTP
+  status reports one restored attachment.
+- This test proves the client-side hibernation contract only. Cloudflare's
+  current lifecycle does not make an outbound provider WebSocket hibernatable,
+  and an active outbound connection normally keeps the object in memory. The
+  next lifecycle case must therefore use a controlled mock upstream, force the
+  reconstructable failure boundary, and prove one metadata-only
+  `upstream_unavailable`, close 1011, exactly-once refund or lease ownership, no
+  second provider request, no secret persistence, and a fresh bridge segment on
+  reconnect. Staging must repeat the drill with D1 billing evidence.
+- Channel Test now has a typed `POST /api/channel/test/:id` contract and retains
+  the query-compatible GET shim. `auto`, OpenAI chat, Responses, Responses
+  Compact, Anthropic Messages, Gemini native, Jina rerank, image generation,
+  and embeddings resolve through the production capability registry. Explicit
+  unsupported route or stream combinations fail before egress.
+- The probe uses the channel's first usable stored key, model mapping, endpoint
+  and provider request transforms, production URL/header construction, and the
+  same direct, AI Gateway REST, WFP, or Workers AI boundary as relay traffic.
+  AI Gateway/WFP conflicts and direct-only provider transports fail closed.
+- A 2xx alone is no longer health evidence. Non-stream probes require a bounded
+  JSON media type and route-specific response shape. Stream probes require
+  `text/event-stream` plus a non-DONE, route-specific OpenAI chat, Responses,
+  Anthropic, or Gemini JSON event. The whole operation is bounded to 15 seconds;
+  SSE inspection is bounded to 512 KiB and JSON uses the relay response limit.
+  D1 `test_time`/`response_time` is written only after validation succeeds.
+- Test All uses the same executor, scans at most 100 enabled rows, executes at
+  most 12 eligible single-key probes with concurrency 3, persists successful
+  measurements in one bounded D1 batch, and returns only aggregate
+  attempted/succeeded/failed/skipped counts. Per-channel keys and failures are
+  not returned.
+- The React/Bun frontend sends the selected endpoint/model/stream values and
+  treats success as valid only when the Worker echoes the requested contract,
+  reports an effective route/transport, and supplies matching JSON/SSE
+  validation evidence. Stable Worker `error_code` values survive Axios error
+  handling. Type-level capability status is labelled `Implemented`, not
+  provider-health or production `Ready`.
+- Re-reading cinaVibeSDK at `918e974` confirmed the reusable host/tenant/DO
+  layering and fail-closed in-memory secret rule. Rust deliberately does not
+  copy its response-reconstruction path that may drop `response.webSocket`, or
+  its deprecated AI Gateway `/compat` inference path; WFP upgrade forwarding
+  still needs a dedicated regression and remote namespace evidence.
+
+Local tests establish implementation and runtime behavior, not provider or
+production readiness. G2/G3/G5/G7/G8 remain closed until the exposed token is
+revoked, a least-privilege replacement is issued, authenticated staging probes
+archive direct/Gateway/WFP JSON and SSE evidence, active-upstream eviction and
+billing idempotency pass, and rollback is rehearsed. Production remains
+**NO-GO**.

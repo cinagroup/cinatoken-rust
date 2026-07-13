@@ -3489,3 +3489,43 @@ authenticated frontend, and rollback evidence.
 - No live Moonshot or Cloudflare credential was used. Production remains
   **NO-GO** pending credential rotation and archived dual-format staging,
   billing, error/refund, authenticated frontend, disable, and rollback evidence.
+
+## 2026-07-13 Workerd Realtime Eviction And Channel Probe Verification
+
+- The release main Worker, WFP tenant, and WFP outbound Rust/Wasm artifacts
+  built successfully. The multi-service Cloudflare Vitest Workers pool passed
+  8/8 cases, including explicit SQLite `RealtimeSession` eviction with a live
+  hibernatable client socket. The post-eviction frame retained the same
+  serialized attachment and bridge segment, advanced persisted text metrics,
+  and reported one restored attachment through HTTP status.
+- The eviction test has no outbound provider WebSocket. It is evidence for
+  client hibernation and durable attachment/metric restoration only, not active
+  upstream recovery, exactly-once refund/lease transfer, no-second-call, remote
+  compatibility-date, provider, or production behavior.
+- Worker tests passed 609/609. The new focused coverage proves strict endpoint
+  names, Go-compatible model-sensitive auto selection, route capability
+  rejection, non-stream-only compact/rerank/image/embedding probes, minimal
+  request shapes, first-key/model mapping, direct/AI Gateway/WFP/Workers AI
+  planning, route-specific JSON shapes, route-specific non-DONE SSE events,
+  strict POST JSON fields, and exact GET/POST route registration.
+- Worker wasm32 passed with only the two pre-existing D1 dead-code warnings.
+  The complete `bun run check` gate also passed workspace tests, main/tenant/
+  outbound wasm32 checks, 21 contiguous D1 migrations with 26-table SQLite
+  verification, and all existing WFP, Realtime, task, and AI Gateway contract
+  self-tests/dry-run plans.
+- Frontend Channel Test and platform readiness tests passed 22/22. TypeScript
+  and the production build passed. The route audit found 217 frontend calls,
+  319 Worker routes, and zero missing calls. Bundle redaction scanned 460 files
+  and found zero findings; the budget gate passed at 19.01 MB raw and 4.51 MB
+  gzip, which remains close enough to its 20.50/4.90 MB limits to monitor.
+- `bun audit --json` returned an empty finding object. `cargo fmt --all
+  --check`, frontend lint/format, `git diff --check`, protected-reference, and
+  credential/private-key scans passed; scan-only matches were existing
+  defensive assertions and test fixtures, not embedded credentials.
+- Evidence anchor: the full gate completed at `2026-07-13T06:28:54Z` against
+  the implementation worktree based on
+  `67786d46f22ab7343b79129b04038c6cc8d214da`.
+- No exposed Cloudflare token was read or used and no remote request was made.
+  Production remains **NO-GO** pending credential revocation/rotation,
+  authenticated provider/transport staging probes, active-upstream eviction
+  with billing idempotency, canary, rollback, and G1-G8 approval evidence.

@@ -2,8 +2,8 @@
 
 Date: 2026-07-13
 
-This is the short status page. The evidence-based audit is
-`docs/migration-progress-audit-2026-07-02.md`; the canonical Go route list is
+This is the short status page. The current requirement-level evidence audit is
+`docs/migration-progress-audit-2026-07-13.md`; the canonical Go route list is
 `docs/source-route-inventory.md`.
 
 ## Headline
@@ -207,8 +207,9 @@ A full diff of every Go-registered route against the Rust worker closed these
   completions, legacy completions, and Anthropic Messages, with route-specific
   URLs and thinking suffix handling.
 - Dedicated Partial adapters now include Moonshot(25), ZhipuV4(26),
-  Perplexity(27), SiliconFlow(40), Mistral(42), DeepSeek(43), xAI(48), and
-  Submodel(53).
+  Perplexity(27), Jina(38), SiliconFlow(40), Mistral(42), DeepSeek(43),
+  VolcEngine(45), BaiduV2(46), xAI(48), and Submodel(53), plus Cohere
+  rerank(34) and the Cloudflare adapter(39).
   Moonshot is a direct-only OpenAI/Claude bridge for chat, legacy completions,
   embeddings, rerank, and Messages. SiliconFlow is
   direct-only for chat, legacy completions, embeddings, rerank, and image
@@ -216,8 +217,11 @@ A full diff of every Go-registered route against the Rust worker closed these
   reserve. Jina(38) is route-explicit for rerank and embeddings; its embedding
   adapter removes OpenAI `encoding_format` while preserving Jina-native fields.
   ZhipuV4 is direct-only for chat, embeddings, image generations, and Messages;
-  legacy Zhipu type 16 remains Deferred for migration to type 26. The registry
-  has 16 Ready, 11 Partial, and 26 Deferred channel types.
+  legacy Zhipu type 16 remains Deferred for migration to type 26. VolcEngine is
+  direct-only for chat, embeddings, image generations, and Responses, while
+  `doubao-coding-plan` is chat-only. BaiduV2 is direct-only for chat and
+  preserves the source `-search` behavior plus `token|appid` separation. The
+  registry has 16 Ready, 13 Partial, and 24 Deferred channel types.
 - Admin `GET /api/channel/provider-readiness` and the channel UI expose
   implementation readiness without claiming provider health or production
   proof. Route cache keys are protocol scoped.

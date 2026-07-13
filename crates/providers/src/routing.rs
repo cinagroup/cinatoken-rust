@@ -8,6 +8,7 @@ use crate::ai_gateway::AiGatewayRouteKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
+    BaiduV2OpenAi,
     OpenAiCompatible,
     AnthropicMessages,
     DeepSeekOpenAi,
@@ -21,6 +22,7 @@ pub enum ProviderKind {
     XaiOpenAi,
     ZhipuV4OpenAi,
     ZhipuV4Messages,
+    VolcEngineOpenAi,
     GeminiNative,
     CloudflareWorkersAi,
     AiGateway,
@@ -29,6 +31,7 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub fn ai_gateway_route(self) -> Option<AiGatewayRouteKind> {
         match self {
+            Self::BaiduV2OpenAi => None,
             Self::OpenAiCompatible => Some(AiGatewayRouteKind::Compat),
             Self::AnthropicMessages => Some(AiGatewayRouteKind::Anthropic),
             Self::DeepSeekOpenAi => Some(AiGatewayRouteKind::Compat),
@@ -40,6 +43,7 @@ impl ProviderKind {
             Self::SubmodelOpenAi => None,
             Self::XaiOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::ZhipuV4OpenAi | Self::ZhipuV4Messages => None,
+            Self::VolcEngineOpenAi => None,
             Self::GeminiNative => Some(AiGatewayRouteKind::GoogleAiStudio),
             Self::CloudflareWorkersAi => Some(AiGatewayRouteKind::WorkersAi),
             Self::AiGateway => None,
@@ -101,6 +105,10 @@ pub struct ProviderRegistry;
 impl ProviderRegistry {
     pub fn resolve(endpoint: ProviderEndpoint<'_>) -> Result<ProviderRoute, ProviderRouteError> {
         let upstream_url = match endpoint.provider {
+            ProviderKind::BaiduV2OpenAi => {
+                crate::baidu_v2::baidu_v2_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
             ProviderKind::OpenAiCompatible => upstream_v1_url(
                 endpoint.channel_type,
                 endpoint.base_url,
@@ -145,6 +153,10 @@ impl ProviderRegistry {
                     .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
             }
             ProviderKind::ZhipuV4Messages => crate::zhipu::zhipu_v4_messages_url(endpoint.base_url),
+            ProviderKind::VolcEngineOpenAi => {
+                crate::volcengine::volcengine_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
             ProviderKind::GeminiNative => upstream_gemini_native_url(
                 endpoint.base_url,
                 endpoint
@@ -459,6 +471,57 @@ mod tests {
             .unwrap_err(),
             ProviderRouteError::UnsupportedProviderRoute
         );
+    }
+
+    #[test]
+    fn registry_resolves_direct_only_baidu_v2_and_volcengine_routes() {
+        let baidu = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::BaiduV2OpenAi,
+            channel_type: 46,
+            base_url: None,
+            endpoint_path: "chat/completions",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(
+            baidu.upstream_url,
+            "https://qianfan.baidubce.com/v2/chat/completions"
+        );
+        assert_eq!(baidu.ai_gateway_route, None);
+
+        let volcengine = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::VolcEngineOpenAi,
+            channel_type: 45,
+            base_url: None,
+            endpoint_path: "responses",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(
+            volcengine.upstream_url,
+            "https://ark.cn-beijing.volces.com/api/v3/responses"
+        );
+        assert_eq!(volcengine.ai_gateway_route, None);
+
+        for (provider, channel_type, endpoint_path) in [
+            (ProviderKind::BaiduV2OpenAi, 46, "embeddings"),
+            (ProviderKind::VolcEngineOpenAi, 45, "audio/speech"),
+        ] {
+            assert_eq!(
+                ProviderRegistry::resolve(ProviderEndpoint {
+                    provider,
+                    channel_type,
+                    base_url: None,
+                    endpoint_path,
+                    upstream_query: None,
+                    gemini_route: None,
+                })
+                .unwrap_err(),
+                ProviderRouteError::UnsupportedProviderRoute
+            );
+        }
     }
 
     #[test]

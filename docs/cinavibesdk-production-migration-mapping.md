@@ -938,3 +938,26 @@ routes or prove live parameter propagation. After credential rotation, an
 account-wide route inventory plus schema-3 readback, remote Dynamic Dispatch
 composition, provider call, settlement/audit correlation, and rollback remain
 required. Production remains **NO-GO**.
+
+## 2026-07-13 Regional Provider Registry Application
+
+The VolcEngine(45) and BaiduV2(46) increment applies the existing
+cinaVibeSDK-derived responsibility split to two more dedicated providers. The
+provider crate owns exact route admission, upstream URL construction, and
+request transforms. The central Rust relay still owns model/channel selection,
+quota reservation, settlement/refund, retry, auto-disable, and audit. A
+regional OpenAI-shaped API does not become part of the generic adapter merely
+because its payload resembles OpenAI.
+
+Both providers remain direct-only because Cloudflare's native AI Gateway
+registry does not list them and the WFP tenant/outbound route policy does not
+own their credentials or route set. VolcEngine Bot/TTS/rerank/image-edit/
+Messages paths and Baidu embeddings/image/rerank paths fail before reserve
+until their complete transport and conversion contracts are implemented. This
+keeps WFP as an optional execution boundary and prevents provider-specific
+gaps from leaking into central billing authority.
+
+The cinaVibeSDK reference still supplies architectural guidance, not deployed
+proof. Production requires rotated credentials, staging route fixtures,
+provider/Gateway/WFP traces where applicable, billing/audit reconciliation,
+fault evidence, and rollback. Production remains **NO-GO**.

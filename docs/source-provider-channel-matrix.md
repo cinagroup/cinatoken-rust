@@ -121,8 +121,8 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 42 | Mistral | api.mistral.ai | Mistral | mistral | Dedicated | B: thin OpenAI-like |
 | 43 | DeepSeek | api.deepseek.com | DeepSeek | deepseek | Dedicated (OpenAI-like) | B: thin OpenAI-like |
 | 44 | MokaAI | api.moka.ai | MokaAI | mokaai | Dedicated (embeddings bridge) | B: embeddings-only; contract unverified |
-| 45 | VolcEngine | ark.cn-beijing.volces.com | VolcEngine | volcengine (+ doubao task) | Dedicated + Task | B/D: text + video task |
-| 46 | BaiduV2 | qianfan.baidubce.com | BaiduV2 | baidu_v2 | Dedicated (regional) | B: regional |
+| 45 | VolcEngine | ark.cn-beijing.volces.com | VolcEngine | volcengine (+ doubao task) | Dedicated Partial (direct Ark v3) + Task | Implemented locally: chat/completions, embeddings, image generations, Responses; Bot/TTS/rerank/image edits/Messages/task staging evidence open |
+| 46 | BaiduV2 | qianfan.baidubce.com | BaiduV2 | baidu_v2 | Dedicated Partial (direct Qianfan v2) | Implemented locally: chat/completions with `-search` and `token|appid`; staging evidence open |
 | 47 | Xinference | (per-channel) | Xinference | openai | OpenAI-adaptor | C: self-hosted (OpenAI-shaped) |
 | 48 | xAI | api.x.ai | Xai | xai | Dedicated (OpenAI-like) | B: thin OpenAI-like |
 | 49 | Coze | api.coze.cn | Coze | coze | Dedicated (app) | C: app |
@@ -183,6 +183,26 @@ contract, so AI Gateway/WFP configuration fails before reserve. Zhipu(16)
 remains Deferred because the source adapter targets a legacy v3 invoke/SSE
 protocol absent from the current official API index; migrate and validate those
 channels as type 26 rather than reviving an undocumented API.
+
+VolcEngine(45) is a direct-only route-explicit adapter for the reviewed Ark v3
+intersection between the Go source and the current provider contract: chat
+completions, embeddings, image generations, and Responses. The
+`doubao-coding-plan` sentinel is admitted only for chat at the coding v3 root;
+DeepSeek `-thinking` aliases are normalized into an explicit thinking request.
+Bot chat needs model-dependent URL ownership, TTS has separate WebSocket/HTTP
+contracts, rerank conversion is incomplete in the source, image edits require
+multipart semantics, and ordinary Messages needs a format bridge. Those paths
+therefore fail before reserve. Cloudflare does not list VolcEngine as a native
+AI Gateway provider, so existing Gateway/WFP transport is rejected.
+
+BaiduV2(46) is a direct-only Qianfan v2 chat adapter. It splits the source
+`token|appid` credential into Bearer authorization plus an optional `appid`
+header, strips the source `-search` model suffix, and injects the default
+`web_search` tool only when the caller did not provide one. Although the Go URL
+switch names embeddings, image, and rerank paths, their request converters are
+not implemented; Rust does not expose those branches. Cloudflare does not list
+Baidu as a native AI Gateway provider, so Gateway/WFP transport also fails
+before reserve.
 
 Channel type 0 (`Unknown`) and the trailing `Dummy` sentinel are counters, not
 real providers.

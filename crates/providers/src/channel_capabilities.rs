@@ -3,6 +3,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelAdapterKind {
+    BaiduV2OpenAi,
     GenericOpenAi,
     AnthropicNative,
     GeminiNative,
@@ -16,6 +17,7 @@ pub enum ChannelAdapterKind {
     SubmodelOpenAi,
     XaiOpenAi,
     ZhipuV4,
+    VolcEngineOpenAi,
     DedicatedPending,
     TaskOnly,
     Unsupported,
@@ -165,6 +167,13 @@ const ZHIPU_V4_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::Embeddings,
     ProviderRelayRoute::ImageGenerations,
     ProviderRelayRoute::AnthropicMessages,
+];
+const BAIDU_V2_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
+const VOLCENGINE_ROUTES: &[ProviderRelayRoute] = &[
+    ProviderRelayRoute::ChatCompletions,
+    ProviderRelayRoute::Embeddings,
+    ProviderRelayRoute::ImageGenerations,
+    ProviderRelayRoute::Responses,
 ];
 const NO_ROUTES: &[ProviderRelayRoute] = &[];
 
@@ -505,18 +514,18 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         45,
         "VolcEngine",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated VolcEngine text adapter is not migrated"
+        VolcEngineOpenAi,
+        Partial,
+        VOLCENGINE_ROUTES,
+        "direct-only Ark v3 chat, embeddings, image generation, and Responses adapter is implemented"
     ),
     capability!(
         46,
         "BaiduV2",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated Baidu v2 adapter is not migrated"
+        BaiduV2OpenAi,
+        Partial,
+        BAIDU_V2_ROUTES,
+        "direct-only Qianfan v2 chat adapter with optional appid authentication is implemented"
     ),
     capability!(
         47,
@@ -782,6 +791,25 @@ mod tests {
         assert!(!channel_supports_relay_route(
             26,
             ProviderRelayRoute::Responses
+        ));
+        for route in VOLCENGINE_ROUTES {
+            assert!(channel_supports_relay_route(45, *route));
+        }
+        assert!(!channel_supports_relay_route(
+            45,
+            ProviderRelayRoute::AnthropicMessages
+        ));
+        assert!(!channel_supports_relay_route(
+            45,
+            ProviderRelayRoute::AudioSpeech
+        ));
+        assert_eq!(
+            channel_capability(46).map(|capability| capability.supported_routes),
+            Some(BAIDU_V2_ROUTES)
+        );
+        assert!(!channel_supports_relay_route(
+            46,
+            ProviderRelayRoute::Embeddings
         ));
         for route in SILICONFLOW_ROUTES {
             assert!(channel_supports_relay_route(40, *route));

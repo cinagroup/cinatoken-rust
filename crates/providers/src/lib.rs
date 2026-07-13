@@ -3,6 +3,7 @@ use cinatoken_core::ApiResult;
 use cinatoken_relay::RelayContext;
 
 pub mod ai_gateway;
+pub mod baidu_v2;
 pub mod channel_capabilities;
 pub mod deepseek;
 pub mod jina;
@@ -12,6 +13,7 @@ pub mod perplexity;
 pub mod routing;
 pub mod siliconflow;
 pub mod submodel;
+pub mod volcengine;
 pub mod xai;
 pub mod zhipu;
 

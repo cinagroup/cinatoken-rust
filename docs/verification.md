@@ -3720,3 +3720,40 @@ authenticated frontend, and rollback evidence.
   four routes, error and streaming behavior, billing/audit reconciliation,
   rollback, and direct-vs-Custom-Provider deployment policy. Production remains
   **NO-GO**.
+
+## 2026-07-13 Baidu V2 And VolcEngine Direct Adapter Verification
+
+- Go source and current provider contracts were reviewed before implementation.
+  VolcEngine(45) is Partial for the exact direct Ark v3 Chat Completions,
+  Embeddings, Image Generations, and Responses routes; `doubao-coding-plan` is
+  chat-only. Bot chat, TTS, rerank, image edits, ordinary Messages, AI Gateway,
+  and WFP fail before quota reserve. BaiduV2(46) is Partial only for direct
+  Qianfan v2 Chat Completions, with source-compatible `-search` normalization
+  and `token|appid` header separation; its unimplemented source converter paths
+  remain unavailable.
+- `cargo test -p cinatoken-providers --lib` passed 71/71,
+  `cargo test -p cinatoken-relay --lib` passed 73/73, and
+  `cargo test -p cinatoken-worker --lib` passed 620/620. Focused provider and
+  Worker fixtures cover URL allowlists, custom roots, credential parsing,
+  request transforms, exact capabilities, model mapping, Bot/coding-plan
+  rejection, direct-only transport, usage handling, Channel Test auto-selection,
+  and frontend readiness projection.
+- `cargo clippy -p cinatoken-providers --no-deps -- -D warnings` passed.
+  `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed with
+  only the two pre-existing unused topup repository warnings. Frontend provider
+  readiness passed 2/2 and the broad readiness suite passed 22/22.
+- The complete `bun run check` gate passed at `2026-07-13T12:29:57Z` against
+  the implementation worktree based on
+  `0872615a3952a280239b46938247a414d19c4f4f`: release main/tenant/outbound
+  Rust/Wasm builds, Workerd 12/12, Playground 1/1, frontend build/redaction/
+  budget/lint, 217 frontend calls against 320 Worker routes with zero missing,
+  22-migration/27-table D1 verification, all workspace tests, all WFP/Realtime/
+  TaskRunner/AI Gateway contract checks and dry-run plans, and all three wasm32
+  target checks.
+- `docs/migration-progress-audit-2026-07-13.md` records the requirement-level
+  E1-E5 evidence boundary and G1-G8 production gaps. No live provider or
+  Cloudflare credential, remote account, or production data was used. The
+  registry now reports 16 Ready, 13 Partial, and 24 Deferred channel types.
+  Production remains **NO-GO** pending credential rotation, deployed staging,
+  route-specific provider fixtures, billing/audit reconciliation, production
+  data migration, canary, and rollback evidence.

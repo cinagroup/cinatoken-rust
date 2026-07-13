@@ -11122,3 +11122,53 @@ base64, embeddings, provider-URL image JSON, Messages JSON/SSE, bounded
 audit and provider billing reconciliation, disable behavior, and rollback to
 Go/VPS. A future AI Gateway custom-provider path is a separate staged change
 and may not be inferred from this direct adapter.
+
+### 22.181 2026-07-13 Baidu V2 And VolcEngine Direct Adapters
+
+This increment re-audits source channel types 45 and 46 against the current
+provider contracts instead of treating regional OpenAI-shaped APIs as generic
+compatibility. VolcEngine references the official Ark
+[Chat Completions](https://api.volcengine.com/api-docs/view?action=ChatCompletions&serviceCode=ark&version=2024-01-01),
+[Embeddings](https://api.volcengine.com/api-docs/view?action=Embeddings&serviceCode=ark&version=2024-01-01),
+[Image Generations](https://api.volcengine.com/api-docs/view?action=ImageGenerations&serviceCode=ark&version=2024-01-01),
+and [Responses](https://www.volcengine.com/docs/82379/1795150) contracts. Baidu
+references Qianfan's official
+[authentication](https://cloud.baidu.com/doc/qianfan-api/s/ym9chdsy5),
+[common header](https://cloud.baidu.com/doc/qianfan-api/s/3m9b5lqft), and
+[Chat Completions](https://cloud.baidu.com/doc/qianfan-api/s/3m7of64lb)
+contracts.
+
+Implemented locally:
+
+- VolcEngine(45) admits only Chat Completions, Embeddings, Image Generations,
+  and Responses at the Ark v3 root. Custom bases preserve the same bounded
+  route ownership. `doubao-coding-plan` is chat-only at `/api/coding/v3`, and
+  DeepSeek `-thinking` aliases become an explicit enabled thinking object.
+- VolcEngine Bot chat is rejected because it needs model-dependent URL
+  selection before egress. TTS, rerank, image edits, and ordinary Messages are
+  also rejected because their transport or conversion contracts are not owned
+  end to end by the current source adapter. Rejection occurs before quota
+  reserve.
+- BaiduV2(46) admits only Qianfan v2 Chat Completions. The channel key is parsed
+  as `token|appid`, with only the token used for Bearer authorization and the
+  optional appid sent in its provider header. `-search` models are normalized
+  and receive the source default web-search tool only when absent.
+- Source Baidu URL branches for embeddings, images, and rerank remain disabled
+  because their request converters return not-implemented. A URL constant is
+  not treated as migration parity.
+- Cloudflare's current
+  [native AI Gateway provider list](https://developers.cloudflare.com/ai-gateway/usage/providers/)
+  contains neither provider. Both adapters are direct-only; AI Gateway and WFP
+  settings fail before reserve. Central Rust selection, billing, settlement,
+  audit, retry, and disable authority remains unchanged.
+- Admin Channel Test auto-selection is constrained to the migrated route set,
+  and backend/frontend readiness projects the exact Partial capabilities. The
+  registry now reports 16 Ready, 13 Partial, and 24 Deferred channel types.
+
+The requirement-level state is captured in
+`docs/migration-progress-audit-2026-07-13.md`. Local tests are implementation
+evidence only. Isolated staging must still archive every admitted route's
+success/error/stream behavior, usage and request-contract settlement,
+reservation/refund, audit/provider reconciliation, disable behavior, and
+rollback. No live provider or Cloudflare credential was used. Production
+remains **NO-GO**.

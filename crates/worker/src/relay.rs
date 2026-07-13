@@ -20,6 +20,7 @@ use cinatoken_providers::{
         AiGatewayCutoverDecision, AiGatewayCutoverInput, AiGatewayCutoverPlan,
         AiGatewayModelAuthor,
     },
+    baidu_v2::{apply_baidu_v2_request, parse_baidu_v2_key},
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
     jina::apply_jina_request,
@@ -30,6 +31,7 @@ use cinatoken_providers::{
         apply_siliconflow_request, siliconflow_image_response_usage,
         transform_siliconflow_rerank_response_body,
     },
+    volcengine::{apply_volcengine_request, is_volcengine_bot_model, is_volcengine_coding_plan},
     xai::apply_xai_request,
     zhipu::apply_zhipu_v4_request,
     ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry, ProviderRelayRoute,
@@ -41,9 +43,10 @@ use cinatoken_relay::{
     usage_summary_from_gemini_body, usage_summary_from_moonshot_body,
     usage_summary_from_rerank_body, CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath,
     RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES,
-    CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MISTRAL,
-    CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
-    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4, RELAY_CACHE_SCHEMA_VERSION,
+    CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA,
+    CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
+    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4,
+    RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -128,7 +131,6 @@ const GEMINI_JSON_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const ADMIN_CHANNEL_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_CHANNEL_PROBE_SSE_LIMIT_BYTES: usize = 512 * 1024;
 const CHANNEL_TYPE_MOKAAI: i32 = 44;
-const CHANNEL_TYPE_VOLCENGINE: i32 = 45;
 const CHANNEL_TYPE_CODEX: i32 = 57;
 const REALTIME_MOCK_QUEUE_PROBE_MAX_DELAY_MS: u64 = 1_000;
 const REALTIME_BILLING_REQUEST_MAX_HEADERS: usize = 16;
@@ -142,6 +144,7 @@ const MODEL_LIST_CACHE_MODEL_KEY: &str = "__model_list__";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayProviderKind {
+    BaiduV2OpenAi,
     OpenAiCompatible,
     AnthropicMessages,
     DeepSeekOpenAi,
@@ -153,6 +156,7 @@ enum RelayProviderKind {
     SiliconFlowOpenAi,
     SubmodelOpenAi,
     XaiOpenAi,
+    VolcEngineOpenAi,
     GeminiNative,
 }
 
@@ -273,6 +277,11 @@ impl RelayEndpoint {
     }
 
     fn effective_provider(&self, channel_type: i32) -> RelayProviderKind {
+        if channel_type == CHANNEL_TYPE_BAIDU_V2
+            && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::BaiduV2OpenAi;
+        }
         if channel_type == CHANNEL_TYPE_MISTRAL
             && self.provider == RelayProviderKind::OpenAiCompatible
         {
@@ -304,6 +313,11 @@ impl RelayEndpoint {
         {
             return RelayProviderKind::XaiOpenAi;
         }
+        if channel_type == CHANNEL_TYPE_VOLCENGINE
+            && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::VolcEngineOpenAi;
+        }
         if channel_type == CHANNEL_TYPE_DEEPSEEK {
             return match self.provider {
                 RelayProviderKind::OpenAiCompatible => RelayProviderKind::DeepSeekOpenAi,
@@ -327,6 +341,7 @@ impl RelayEndpoint {
 
     fn registry_provider_kind_from_effective(&self, channel_type: i32) -> RegistryProviderKind {
         match self.effective_provider(channel_type) {
+            RelayProviderKind::BaiduV2OpenAi => RegistryProviderKind::BaiduV2OpenAi,
             RelayProviderKind::OpenAiCompatible => RegistryProviderKind::OpenAiCompatible,
             RelayProviderKind::AnthropicMessages => RegistryProviderKind::AnthropicMessages,
             RelayProviderKind::DeepSeekOpenAi => RegistryProviderKind::DeepSeekOpenAi,
@@ -338,6 +353,7 @@ impl RelayEndpoint {
             RelayProviderKind::SiliconFlowOpenAi => RegistryProviderKind::SiliconFlowOpenAi,
             RelayProviderKind::SubmodelOpenAi => RegistryProviderKind::SubmodelOpenAi,
             RelayProviderKind::XaiOpenAi => RegistryProviderKind::XaiOpenAi,
+            RelayProviderKind::VolcEngineOpenAi => RegistryProviderKind::VolcEngineOpenAi,
             RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
         }
     }
@@ -362,6 +378,7 @@ impl RelayEndpoint {
                 }
             }
             RelayProviderKind::AnthropicMessages
+            | RelayProviderKind::BaiduV2OpenAi
             | RelayProviderKind::DeepSeekOpenAi
             | RelayProviderKind::DeepSeekMessages
             | RelayProviderKind::MistralOpenAi
@@ -370,6 +387,11 @@ impl RelayEndpoint {
             | RelayProviderKind::PerplexityOpenAi
             | RelayProviderKind::SubmodelOpenAi
             | RelayProviderKind::XaiOpenAi => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+            RelayProviderKind::VolcEngineOpenAi => match self.upstream_path.as_str() {
+                "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
+                "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
+                _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+            },
         }
     }
 }
@@ -819,11 +841,13 @@ fn prepare_admin_channel_probe(
     if inject_stream_options
         && matches!(
             provider,
-            RelayProviderKind::OpenAiCompatible
+            RelayProviderKind::BaiduV2OpenAi
+                | RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MoonshotOpenAi
                 | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
+                | RelayProviderKind::VolcEngineOpenAi
         )
     {
         cinatoken_relay::openai_compatible::apply_stream_options(
@@ -2565,11 +2589,13 @@ async fn relay_endpoint_with_auth(
                 if inject_stream_options
                     && matches!(
                         attempt_provider,
-                        RelayProviderKind::OpenAiCompatible
+                        RelayProviderKind::BaiduV2OpenAi
+                            | RelayProviderKind::OpenAiCompatible
                             | RelayProviderKind::DeepSeekOpenAi
                             | RelayProviderKind::MoonshotOpenAi
                             | RelayProviderKind::SubmodelOpenAi
                             | RelayProviderKind::XaiOpenAi
+                            | RelayProviderKind::VolcEngineOpenAi
                     )
                 {
                     cinatoken_relay::openai_compatible::apply_stream_options(
@@ -3630,6 +3656,35 @@ fn channel_accepts_endpoint_request_shape(
     endpoint: &RelayEndpoint,
     request_body: Option<&Value>,
 ) -> bool {
+    if channel.channel_type == CHANNEL_TYPE_BAIDU_V2 {
+        let key_is_valid =
+            first_channel_key(&channel.key).is_some_and(|key| parse_baidu_v2_key(&key).is_ok());
+        let has_messages = request_body
+            .and_then(|body| body.get("messages"))
+            .and_then(Value::as_array)
+            .is_some_and(|messages| !messages.is_empty());
+        return endpoint.route == ProviderRelayRoute::ChatCompletions
+            && key_is_valid
+            && has_messages;
+    }
+    if channel.channel_type == CHANNEL_TYPE_VOLCENGINE {
+        let Some(body) = request_body else {
+            return false;
+        };
+        let Some(request_model) = body.get("model").and_then(Value::as_str) else {
+            return false;
+        };
+        let effective_model = mapped_model_name(request_model, channel.model_mapping.as_deref())
+            .unwrap_or_else(|| request_model.to_string());
+        if is_volcengine_bot_model(&effective_model) {
+            return false;
+        }
+        if is_volcengine_coding_plan(channel.base_url.as_deref())
+            && endpoint.route != ProviderRelayRoute::ChatCompletions
+        {
+            return false;
+        }
+    }
     if channel.channel_type == CHANNEL_TYPE_PERPLEXITY
         && endpoint.route == ProviderRelayRoute::ChatCompletions
     {
@@ -3651,10 +3706,12 @@ fn channel_accepts_endpoint_request_shape(
 fn is_direct_only_provider_channel(channel: &RelayChannel) -> bool {
     matches!(
         channel.channel_type,
-        CHANNEL_TYPE_MOONSHOT
+        CHANNEL_TYPE_BAIDU_V2
+            | CHANNEL_TYPE_MOONSHOT
             | CHANNEL_TYPE_ZHIPU_V4
             | CHANNEL_TYPE_SILICONFLOW
             | CHANNEL_TYPE_SUBMODEL
+            | CHANNEL_TYPE_VOLCENGINE
     )
 }
 
@@ -3895,11 +3952,13 @@ async fn execute_relay_attempt_plan(
                 if inject_stream_options
                     && matches!(
                         attempt_provider,
-                        RelayProviderKind::OpenAiCompatible
+                        RelayProviderKind::BaiduV2OpenAi
+                            | RelayProviderKind::OpenAiCompatible
                             | RelayProviderKind::DeepSeekOpenAi
                             | RelayProviderKind::MoonshotOpenAi
                             | RelayProviderKind::SubmodelOpenAi
                             | RelayProviderKind::XaiOpenAi
+                            | RelayProviderKind::VolcEngineOpenAi
                     )
                 {
                     cinatoken_relay::openai_compatible::apply_stream_options(
@@ -6604,6 +6663,7 @@ async fn forward_relay_request(
         return forward_wfp_relay_transport(env, url, &worker_name, channel.id, body).await;
     }
     match provider {
+        RelayProviderKind::BaiduV2OpenAi => forward_baidu_v2_openai(url, upstream_key, body).await,
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
@@ -6611,7 +6671,8 @@ async fn forward_relay_request(
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
-        | RelayProviderKind::XaiOpenAi => {
+        | RelayProviderKind::XaiOpenAi
+        | RelayProviderKind::VolcEngineOpenAi => {
             forward_openai_compatible(url, upstream_key, channel, body).await
         }
         RelayProviderKind::AnthropicMessages => {
@@ -6872,6 +6933,30 @@ async fn forward_openai_compatible(
         .filter(|value| !value.is_empty())
     {
         headers.set("openai-organization", org)?;
+    }
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body)));
+    let outbound = Request::new_with_init(url, &init)?;
+    Fetch::Request(outbound).send().await
+}
+
+async fn forward_baidu_v2_openai(
+    url: &str,
+    upstream_key: &str,
+    body: &Value,
+) -> worker::Result<Response> {
+    let (token, app_id) = parse_baidu_v2_key(upstream_key).map_err(|reason| {
+        worker::Error::RustError(format!("invalid Baidu V2 API key: {reason}"))
+    })?;
+    let body = serde_json::to_string(body)?;
+    let mut headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("authorization", &format!("Bearer {token}"))?;
+    if let Some(app_id) = app_id {
+        headers.set("appid", app_id)?;
     }
 
     let mut init = RequestInit::new();
@@ -7626,7 +7711,8 @@ async fn response_usage_summary(
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
-            RelayProviderKind::OpenAiCompatible
+            RelayProviderKind::BaiduV2OpenAi
+                | RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
                 | RelayProviderKind::MoonshotOpenAi
@@ -7634,6 +7720,7 @@ async fn response_usage_summary(
                 | RelayProviderKind::SiliconFlowOpenAi
                 | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
+                | RelayProviderKind::VolcEngineOpenAi
         )
         && endpoint_path != "rerank";
     let (usage, locally_estimated) = resolve_non_stream_usage(
@@ -7667,13 +7754,15 @@ fn usage_summary_for_provider(
             usage_summary_from_rerank_body(body)
         }
         RelayProviderKind::MoonshotOpenAi => usage_summary_from_moonshot_body(body),
-        RelayProviderKind::OpenAiCompatible
+        RelayProviderKind::BaiduV2OpenAi
+        | RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
-        | RelayProviderKind::XaiOpenAi => usage_summary_from_body(body),
+        | RelayProviderKind::XaiOpenAi
+        | RelayProviderKind::VolcEngineOpenAi => usage_summary_from_body(body),
         RelayProviderKind::AnthropicMessages
         | RelayProviderKind::DeepSeekMessages
         | RelayProviderKind::MoonshotMessages => usage_summary_from_anthropic_body(body),
@@ -7768,13 +7857,15 @@ async fn streaming_usage_summary(
 ) -> worker::Result<(UsageSummary, bool)> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
-        RelayProviderKind::OpenAiCompatible
+        RelayProviderKind::BaiduV2OpenAi
+        | RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
-        | RelayProviderKind::XaiOpenAi => SseUsageAccumulator::default(),
+        | RelayProviderKind::XaiOpenAi
+        | RelayProviderKind::VolcEngineOpenAi => SseUsageAccumulator::default(),
         RelayProviderKind::MoonshotOpenAi => SseUsageAccumulator::moonshot(),
         RelayProviderKind::AnthropicMessages
         | RelayProviderKind::DeepSeekMessages
@@ -7792,7 +7883,8 @@ async fn streaming_usage_summary(
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
-            RelayProviderKind::OpenAiCompatible
+            RelayProviderKind::BaiduV2OpenAi
+                | RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
                 | RelayProviderKind::MoonshotOpenAi
@@ -7800,6 +7892,7 @@ async fn streaming_usage_summary(
                 | RelayProviderKind::SiliconFlowOpenAi
                 | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
+                | RelayProviderKind::VolcEngineOpenAi
         );
     let (usage, locally_estimated) = resolve_stream_usage(
         usage,
@@ -9303,6 +9396,12 @@ fn apply_endpoint_request_transform(
     if channel.channel_type == CHANNEL_TYPE_ZHIPU_V4 {
         apply_zhipu_v4_request(body, endpoint_path);
     }
+    if channel.channel_type == CHANNEL_TYPE_BAIDU_V2 {
+        apply_baidu_v2_request(body);
+    }
+    if channel.channel_type == CHANNEL_TYPE_VOLCENGINE {
+        apply_volcengine_request(body);
+    }
     Ok(())
 }
 
@@ -9320,13 +9419,15 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         RelayProviderKind::MoonshotMessages => {
             apply_moonshot_request(body, MoonshotRequestFormat::AnthropicMessages)
         }
-        RelayProviderKind::OpenAiCompatible
+        RelayProviderKind::BaiduV2OpenAi
+        | RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::AnthropicMessages
         | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::PerplexityOpenAi
         | RelayProviderKind::SiliconFlowOpenAi
         | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi
+        | RelayProviderKind::VolcEngineOpenAi
         | RelayProviderKind::GeminiNative => {}
     }
 }
@@ -10378,14 +10479,16 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(deferred.error_code, "channel_test_auto_route_unsupported");
-        let volcengine = resolve_admin_probe_endpoint(
-            CHANNEL_TYPE_VOLCENGINE,
-            AdminProbeEndpoint::Auto,
-            "doubao-seedream-4-0",
-            false,
-        )
-        .unwrap_err();
-        assert_eq!(volcengine.error_code, "channel_test_auto_route_unsupported");
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_VOLCENGINE,
+                AdminProbeEndpoint::Auto,
+                "doubao-seedream-4-0",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::ImageGeneration
+        );
     }
 
     #[test]
@@ -13007,6 +13110,165 @@ mod tests {
             )
             .unwrap(),
             AdminProbeEndpoint::ImageGeneration
+        );
+    }
+
+    #[test]
+    fn baidu_v2_chat_is_route_explicit_direct_only_and_search_aware() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_BAIDU_V2), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_BAIDU_V2;
+        channel.key = "token-1|app-2".to_string();
+        let chat = ai_gateway_chat_endpoint_for_tests();
+
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::BaiduV2OpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://qianfan.baidubce.com/v2/chat/completions"
+        );
+        let mut body = json!({
+            "model": "ernie-4.5-turbo-search",
+            "messages": [{"role": "user", "content": "news"}],
+            "stream": false
+        });
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&body)
+        ));
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        assert_eq!(body["model"], "ernie-4.5-turbo");
+        assert_eq!(body["web_search"]["enable"], true);
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "ernie-4.5-turbo"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("direct-only provider"));
+
+        channel.other_info.clear();
+        channel.key = "|app-2".to_string();
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&body)
+        ));
+        assert!(!channel_supports_relay_route(
+            CHANNEL_TYPE_BAIDU_V2,
+            ProviderRelayRoute::Embeddings
+        ));
+    }
+
+    #[test]
+    fn volcengine_standard_routes_are_explicit_direct_only_and_fail_closed_for_bots() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_VOLCENGINE), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_VOLCENGINE;
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::VolcEngineOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+        );
+
+        let mut body = json!({
+            "model": "deepseek-v3-thinking",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&body)
+        ));
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        assert_eq!(body["model"], "deepseek-v3");
+        assert_eq!(body["thinking"]["type"], "enabled");
+
+        for route in [
+            ProviderRelayRoute::ChatCompletions,
+            ProviderRelayRoute::Embeddings,
+            ProviderRelayRoute::ImageGenerations,
+            ProviderRelayRoute::Responses,
+        ] {
+            assert!(channel_supports_relay_route(CHANNEL_TYPE_VOLCENGINE, route));
+        }
+        for route in [
+            ProviderRelayRoute::Completions,
+            ProviderRelayRoute::Rerank,
+            ProviderRelayRoute::AudioSpeech,
+            ProviderRelayRoute::AnthropicMessages,
+        ] {
+            assert!(!channel_supports_relay_route(
+                CHANNEL_TYPE_VOLCENGINE,
+                route
+            ));
+        }
+
+        let bot_body = json!({
+            "model": "bot-app-1",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&bot_body)
+        ));
+
+        channel.base_url = Some("doubao-coding-plan".to_string());
+        let mut responses = endpoint(false, None);
+        responses.route = ProviderRelayRoute::Responses;
+        responses.upstream_path = "responses".to_string();
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &responses,
+            Some(&json!({"model": "doubao-seed", "input": "hello"}))
+        ));
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+        );
+    }
+
+    #[test]
+    fn regional_provider_admin_auto_probe_uses_only_migrated_routes() {
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_VOLCENGINE,
+                AdminProbeEndpoint::Auto,
+                "doubao-seedream-4-0",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::ImageGeneration
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_VOLCENGINE,
+                AdminProbeEndpoint::Auto,
+                "doubao-embedding",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::Embeddings
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_BAIDU_V2,
+                AdminProbeEndpoint::Auto,
+                "ernie-4.5-turbo-search",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::OpenAi
         );
     }
 

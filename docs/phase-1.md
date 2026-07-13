@@ -659,6 +659,17 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   revive the undocumented v3 invoke protocol. Keep type 26 off AI Gateway and
   WFP until a managed custom-provider slug, deploy/readback, and credential
   lifecycle are owned by this repository.
+- Close VolcEngine G3 evidence for Ark v3 chat JSON/SSE, embeddings, image
+  generations, Responses, coding-plan chat, DeepSeek thinking normalization,
+  response bounds, usage, errors/refunds, audit/billing reconciliation, disable,
+  and Go rollback. Keep Bot chat, TTS, rerank, image edits, ordinary Messages,
+  AI Gateway, and WFP fail-closed until each has an owned route/format/credential
+  contract.
+- Close BaiduV2 G3 evidence for normal and `-search` chat JSON/SSE, Bearer and
+  optional `appid` separation, bounded responses, usage, errors/refunds,
+  unsupported-route rejection, audit/billing reconciliation, disable, and Go
+  rollback. Do not infer embeddings/image/rerank support from source URL cases
+  whose converters are not implemented, and keep AI Gateway/WFP fail-closed.
 - Deploy and attach the Rust outbound service `cinatoken-wfp-outbound` to the
   staging dispatch namespace. Store `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on
   that service; the tenant must receive only

@@ -15,6 +15,8 @@ pub const CHANNEL_TYPE_SILICONFLOW: i32 = 40;
 pub const CHANNEL_TYPE_MISTRAL: i32 = 42;
 pub const CHANNEL_TYPE_DEEPSEEK: i32 = 43;
 pub const CHANNEL_TYPE_MOKAAI: i32 = 44;
+pub const CHANNEL_TYPE_VOLCENGINE: i32 = 45;
+pub const CHANNEL_TYPE_BAIDU_V2: i32 = 46;
 /// Cloudflare Workers AI (Go `ChannelCloudflare`). Speaks the OpenAI wire
 /// format via the Workers AI REST endpoint (`{account base}/ai/v1/...`, the
 /// account-scoped base configured on the channel) or an AI Gateway workers-ai

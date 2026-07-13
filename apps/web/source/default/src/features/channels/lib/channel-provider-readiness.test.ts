@@ -115,6 +115,27 @@ describe('channel provider relay readiness', () => {
       ],
       reason: 'direct-only current v4 implementation',
     }
+    const volcengine = {
+      channel_type: 45,
+      name: 'VolcEngine',
+      adapter: 'volc_engine_open_ai',
+      readiness: 'partial' as const,
+      routes: [
+        { method: 'POST', path: '/v1/chat/completions' },
+        { method: 'POST', path: '/v1/embeddings' },
+        { method: 'POST', path: '/v1/images/generations' },
+        { method: 'POST', path: '/v1/responses' },
+      ],
+      reason: 'direct-only Ark v3 implementation',
+    }
+    const baiduV2 = {
+      channel_type: 46,
+      name: 'BaiduV2',
+      adapter: 'baidu_v2_open_ai',
+      readiness: 'partial' as const,
+      routes: [{ method: 'POST', path: '/v1/chat/completions' }],
+      reason: 'direct-only Qianfan v2 chat implementation',
+    }
     const index = indexProviderReadiness([
       moonshot,
       zhipuV4,
@@ -124,6 +145,8 @@ describe('channel provider relay readiness', () => {
       mistral,
       deepseek,
       mokaai,
+      volcengine,
+      baiduV2,
       xai,
       submodel,
     ])
@@ -177,6 +200,20 @@ describe('channel provider relay readiness', () => {
     assert.equal(index.get(44), mokaai)
     assert.equal(index.get(44)?.readiness, 'deferred')
     assert.deepEqual(index.get(44)?.routes, [])
+    assert.equal(index.get(45), volcengine)
+    assert.deepEqual(
+      index.get(45)?.routes.map((route) => route.path),
+      [
+        '/v1/chat/completions',
+        '/v1/embeddings',
+        '/v1/images/generations',
+        '/v1/responses',
+      ]
+    )
+    assert.equal(index.get(46), baiduV2)
+    assert.deepEqual(index.get(46)?.routes, [
+      { method: 'POST', path: '/v1/chat/completions' },
+    ])
     assert.equal(index.get(48), xai)
     assert.deepEqual(
       index.get(48)?.routes.map((route) => route.path),

@@ -85,13 +85,17 @@ The Worker:
   types `1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47`; dedicated OpenAI-shaped
   providers are admitted only through route-explicit capabilities. Current
   dedicated Partial adapters include Moonshot(25), ZhipuV4(26), Perplexity(27),
-  SiliconFlow(40), Mistral(42), DeepSeek(43), xAI(48), and Submodel(53), while
-  their unsupported routes fail before quota reserve. Moonshot is a direct-only
+  Jina(38), SiliconFlow(40), Mistral(42), DeepSeek(43), VolcEngine(45),
+  BaiduV2(46), xAI(48), and Submodel(53), while their unsupported routes fail
+  before quota reserve. Moonshot is a direct-only
   OpenAI/Claude bridge for chat, completions, embeddings, rerank, and Messages;
   SiliconFlow is direct-only and explicitly
   exposes chat/completions, legacy completions, embeddings, rerank, and image
   generations; ZhipuV4 is direct-only and exposes chat/completions, embeddings,
   image generations, and Messages, while legacy type 16 remains Deferred.
+  VolcEngine is direct-only for Ark v3 chat, embeddings, image generations, and
+  Responses; BaiduV2 is direct-only for Qianfan v2 chat with source-compatible
+  search and appid handling. Neither enters the existing AI Gateway/WFP paths.
   Usage-less successful image JSON settles under an explicit request-contract
   audit source without fabricating provider token usage;
 - limits `/v1/rerank` relay candidates to Moonshot provider type `25`, Jina

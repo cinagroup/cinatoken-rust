@@ -894,3 +894,25 @@ enter this Gateway-direct set; existing WFP tenants also reject it before
 reserve. Moonshot is likewise direct-only for its five audited OpenAI/Claude
 routes; its provider-native/coding-plan model IDs never enter Gateway prefix
 classification. MokaAI remains Deferred pending hosted API evidence.
+
+## 2026-07-13 Scheduling-Gateway Recovery Application
+
+The global Realtime recovery increment applies the cinaVibeSDK-inspired
+responsibility split without copying runtime assumptions that do not hold for
+Rust Workers. `RealtimeSession` remains the long-session authority and keeps
+its live retry/lease state private. D1 is the durable billing ledger. The root
+Rust scheduling gateway now performs only a default-off, migration-gated,
+bounded reconciliation pass for rows that outlive both their lease and a
+300-second settlement grace.
+
+WFP tenant and outbound Workers do not participate in reservation recovery and
+do not gain billing authority. The admin global status exposes hashed D1 policy
+state, while current DO ownership still requires a separate redacted DO probe.
+This is deliberate: a bridge-scope fingerprint cannot prove that a live
+settlement retry exists.
+
+The release Workerd suite now exercises the generated Rust scheduled
+entrypoint, concurrent schedule idempotency, and failed-row fairness. Remote
+dispatch namespace attachment, deployed DO eviction/redeploy, authenticated
+reserve/settlement ownership, AI Gateway/provider correlation, and rollback
+remain unverified, so the architecture mapping remains production **NO-GO**.

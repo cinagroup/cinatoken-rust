@@ -3546,3 +3546,30 @@ authenticated frontend, and rollback evidence.
   Production remains **NO-GO** pending credential revocation/rotation,
   authenticated provider/transport staging probes, active-upstream eviction
   with billing idempotency, canary, rollback, and G1-G8 approval evidence.
+
+## 2026-07-13 Global Realtime Orphan Recovery Evidence
+
+- `python tools/verify_sqlite.py` passes the complete chain at 22 migrations,
+  27 required tables, 69 incremental columns, and 17 key indexes. Migration
+  0022 provides the global lease scan, retry-deferral fields, aggregate sweep
+  state, and recent-outcome index.
+- `bun run check:realtime-session:settlement-batch-contract` passes 15/15. The
+  added race contract proves settlement may commit at `lease + 300s`, is
+  rejected at `lease + 301s`, global refund then restores quota once, and a
+  delayed replay cannot replace that terminal outcome.
+- `bun run check:do-lifecycle-runtime` builds optimized main, WFP tenant, and
+  WFP outbound Rust/Wasm artifacts and passes 11/11 Workerd tests. The scheduled
+  cases call the generated default Rust `WorkerEntrypoint.scheduled()` with
+  Cloudflare's scheduled controller and execution context.
+- Managed-runtime assertions prove inside-grace no-op, exactly-once refund under
+  overlapping cron delivery, terminal replay no-op, and failed-oldest-row
+  deferral followed by recovery of a newer valid row with a one-item sweep.
+- Focused Worker Realtime tests, gateway route-precedence coverage, the SQLite
+  contract, JavaScript syntax checks, `cargo fmt`, and `git diff --check` pass.
+  The only Rust warnings remain the two pre-existing unused topup repository
+  functions. Workerd also prints the pre-existing corrupt TaskRunner fixture's
+  expected decode exception while all 11 assertions pass.
+- The recovery gate remains false in all tracked environments. These results
+  are local E3 evidence only: migration 0022 has not been applied remotely, no
+  provider or authenticated public reserve path was used, and no production
+  credential was used. Production remains **NO-GO**.

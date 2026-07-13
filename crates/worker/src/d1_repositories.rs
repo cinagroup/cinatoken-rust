@@ -13,6 +13,18 @@ pub(crate) const LEGACY_GROUP_RATIO_OPTION_KEY: &str = "GroupRatio";
 pub(crate) const GROUP_GROUP_RATIO_OPTION_KEY: &str = "group_ratio_setting.group_group_ratio";
 pub(crate) const LEGACY_GROUP_GROUP_RATIO_OPTION_KEY: &str = "GroupGroupRatio";
 const BILLING_MODE_TIERED_EXPR: &str = "tiered_expr";
+pub(crate) const REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
+pub(crate) const REALTIME_BILLING_GLOBAL_RECOVERY_MIGRATION: &str =
+    "0022_realtime_billing_global_recovery.sql";
+const REALTIME_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
+const REALTIME_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
+const REALTIME_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
+
+fn realtime_billing_settlement_deadline_allows(lease_expires_at: i64, applied_at: i64) -> bool {
+    lease_expires_at > 0
+        && applied_at
+            <= lease_expires_at.saturating_add(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)
+}
 // Auto cross-group selection settings (Go option keys, see model/option.go).
 const AUTO_GROUPS_OPTION_KEY: &str = "AutoGroups";
 const USER_USABLE_GROUPS_OPTION_KEY: &str = "UserUsableGroups";
@@ -111,6 +123,52 @@ pub enum RealtimeBillingReservationRefundOutcome {
         reservation_sequence: i64,
         lease_expires_at: i64,
     },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RealtimeBillingExpiredLeaseCandidate {
+    pub reservation_key: String,
+    pub reservation_sequence: i64,
+    pub lease_expires_at: i64,
+    pub recovery_attempt_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RealtimeBillingOrphanSweepSummary {
+    pub candidates: u32,
+    pub refunded: u32,
+    pub already_finalized: u32,
+    pub lease_active: u32,
+    pub not_found: u32,
+    pub failed: u32,
+    pub deferred: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RealtimeBillingLedgerStatusRow {
+    pub reservation_key: String,
+    pub session: String,
+    pub bridge_segment: String,
+    pub status: String,
+    pub reservation_sequence: i64,
+    pub lease_expires_at: i64,
+    pub updated_at: i64,
+    pub settled_at: i64,
+    pub refunded_at: i64,
+    pub recovery_attempt_count: i64,
+    pub recovery_next_attempt_at: i64,
+    pub recovery_last_attempt_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RealtimeBillingRecoveryStateRow {
+    pub last_started_at: i64,
+    pub last_completed_at: i64,
+    pub last_success_at: i64,
+    pub last_candidates: i64,
+    pub last_refunded: i64,
+    pub last_failed: i64,
+    pub last_deferred: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1116,6 +1174,224 @@ pub async fn refund_realtime_billing_reservation(
     refund_realtime_billing_reservation_inner(db, reservation_key, "", refunded_at, None).await
 }
 
+pub async fn expired_realtime_billing_reservations(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<Vec<RealtimeBillingExpiredLeaseCandidate>> {
+    let cutoff = now.saturating_sub(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS);
+    let args = [
+        D1Type::Integer(d1_i32(cutoff)),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(
+            limit.clamp(1, REALTIME_BILLING_ORPHAN_SWEEP_MAX_LIMIT),
+        )),
+    ];
+    db.prepare(
+        r#"
+        SELECT reservation_key, reservation_sequence, lease_expires_at,
+               recovery_attempt_count
+        FROM realtime_billing_reservations
+        WHERE status = 'reserved'
+          AND lease_expires_at > 0
+          AND lease_expires_at < ?1
+          AND recovery_next_attempt_at <= ?2
+        ORDER BY lease_expires_at ASC, reservation_sequence ASC, reservation_key ASC
+        LIMIT ?3
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RealtimeBillingExpiredLeaseCandidate>()
+}
+
+pub async fn realtime_billing_global_recovery_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let args = [D1Type::Text(REALTIME_BILLING_GLOBAL_RECOVERY_MIGRATION)];
+    let row = db
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name = ?1")
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+pub async fn sweep_expired_realtime_billing_reservations(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<RealtimeBillingOrphanSweepSummary> {
+    let candidates = expired_realtime_billing_reservations(db, now, limit).await?;
+    let mut summary = RealtimeBillingOrphanSweepSummary {
+        candidates: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
+        ..RealtimeBillingOrphanSweepSummary::default()
+    };
+    for candidate in candidates {
+        match refund_expired_realtime_billing_reservation(
+            db,
+            &candidate.reservation_key,
+            candidate.reservation_sequence,
+            candidate.lease_expires_at,
+            now,
+        )
+        .await
+        {
+            Ok(RealtimeBillingReservationRefundOutcome::Applied) => {
+                summary.refunded = summary.refunded.saturating_add(1);
+            }
+            Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized) => {
+                summary.already_finalized = summary.already_finalized.saturating_add(1);
+            }
+            Ok(RealtimeBillingReservationRefundOutcome::LeaseActive { .. }) => {
+                summary.lease_active = summary.lease_active.saturating_add(1);
+            }
+            Ok(RealtimeBillingReservationRefundOutcome::NotFound) => {
+                summary.not_found = summary.not_found.saturating_add(1);
+            }
+            Err(_) => {
+                summary.failed = summary.failed.saturating_add(1);
+                match defer_realtime_billing_orphan_recovery(db, &candidate, now).await {
+                    Ok(true) => summary.deferred = summary.deferred.saturating_add(1),
+                    Ok(false) => {}
+                    Err(_) => worker::console_error!(
+                        "realtime billing orphan sweep: retry deferral failed"
+                    ),
+                }
+                worker::console_error!("realtime billing orphan sweep: candidate refund failed");
+            }
+        }
+    }
+    Ok(summary)
+}
+
+async fn defer_realtime_billing_orphan_recovery(
+    db: &D1Database,
+    candidate: &RealtimeBillingExpiredLeaseCandidate,
+    now: i64,
+) -> worker::Result<bool> {
+    let retry_after = realtime_billing_orphan_retry_delay_seconds(
+        candidate.recovery_attempt_count.saturating_add(1),
+    );
+    let args = [
+        D1Type::Text(candidate.reservation_key.as_str()),
+        D1Type::Integer(d1_i32(candidate.reservation_sequence)),
+        D1Type::Integer(d1_i32(candidate.lease_expires_at)),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(now.saturating_add(retry_after))),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE realtime_billing_reservations
+            SET recovery_attempt_count = recovery_attempt_count + 1,
+                recovery_last_attempt_at = ?4,
+                recovery_next_attempt_at = ?5,
+                updated_at = MAX(updated_at, ?4)
+            WHERE reservation_key = ?1
+              AND status = 'reserved'
+              AND reservation_sequence = ?2
+              AND lease_expires_at = ?3
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+fn realtime_billing_orphan_retry_delay_seconds(attempt_count: i64) -> i64 {
+    let exponent = attempt_count.saturating_sub(1).clamp(0, 6) as u32;
+    REALTIME_BILLING_ORPHAN_RETRY_INITIAL_SECONDS
+        .saturating_mul(1_i64 << exponent)
+        .min(REALTIME_BILLING_ORPHAN_RETRY_MAX_SECONDS)
+}
+
+pub async fn mark_realtime_billing_recovery_started(
+    db: &D1Database,
+    started_at: i64,
+) -> worker::Result<()> {
+    let args = [D1Type::Integer(d1_i32(started_at))];
+    db.prepare(
+        "UPDATE realtime_billing_recovery_state SET last_started_at = ?1, updated_at = ?1 WHERE id = 1",
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_realtime_billing_recovery_completed(
+    db: &D1Database,
+    completed_at: i64,
+    summary: RealtimeBillingOrphanSweepSummary,
+) -> worker::Result<()> {
+    let successful_at = if summary.failed == 0 { completed_at } else { 0 };
+    let args = [
+        D1Type::Integer(d1_i32(completed_at)),
+        D1Type::Integer(d1_i32(successful_at)),
+        D1Type::Integer(d1_i32(i64::from(summary.candidates))),
+        D1Type::Integer(d1_i32(i64::from(summary.refunded))),
+        D1Type::Integer(d1_i32(i64::from(summary.failed))),
+        D1Type::Integer(d1_i32(i64::from(summary.deferred))),
+    ];
+    db.prepare(
+        r#"
+        UPDATE realtime_billing_recovery_state
+        SET last_completed_at = ?1,
+            last_success_at = CASE WHEN ?2 > 0 THEN ?2 ELSE last_success_at END,
+            last_candidates = ?3,
+            last_refunded = ?4,
+            last_failed = ?5,
+            last_deferred = ?6,
+            updated_at = ?1
+        WHERE id = 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+pub async fn realtime_billing_recovery_state(
+    db: &D1Database,
+) -> worker::Result<Option<RealtimeBillingRecoveryStateRow>> {
+    db.prepare(
+        r#"
+        SELECT last_started_at, last_completed_at, last_success_at,
+               last_candidates, last_refunded, last_failed, last_deferred
+        FROM realtime_billing_recovery_state
+        WHERE id = 1
+        "#,
+    )
+    .first::<RealtimeBillingRecoveryStateRow>(None)
+    .await
+}
+
+pub async fn recent_realtime_billing_ledger_status(
+    db: &D1Database,
+    limit: i64,
+) -> worker::Result<Vec<RealtimeBillingLedgerStatusRow>> {
+    let args = [D1Type::Integer(d1_i32(limit.clamp(1, 100)))];
+    db.prepare(
+        r#"
+        SELECT
+          reservation_key, session, bridge_segment, status,
+          reservation_sequence, lease_expires_at, updated_at, settled_at, refunded_at,
+          recovery_attempt_count, recovery_next_attempt_at, recovery_last_attempt_at
+        FROM realtime_billing_reservations
+        ORDER BY updated_at DESC, reservation_sequence DESC, reservation_key ASC
+        LIMIT ?1
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RealtimeBillingLedgerStatusRow>()
+}
+
 pub async fn refund_expired_realtime_billing_reservation(
     db: &D1Database,
     reservation_key: &str,
@@ -1378,6 +1654,12 @@ pub async fn apply_realtime_reserved_settlement_batch(
             reservation.status
         )));
     }
+    if !realtime_billing_settlement_deadline_allows(reservation.lease_expires_at, record.applied_at)
+    {
+        return Err(worker::Error::RustError(
+            "realtime billing reservation settlement deadline expired".to_string(),
+        ));
+    }
     if reservation.session != record.session
         || reservation.user_id != record.user_id
         || reservation.token_id != record.token_id
@@ -1435,6 +1717,7 @@ async fn apply_realtime_settlement_batch_inner(
             D1Type::Text(replay_key),
             D1Type::Integer(final_quota),
             D1Type::Integer(d1_i32(record.applied_at)),
+            D1Type::Integer(d1_i32(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)),
         ];
         let reservation_update = db
             .prepare(
@@ -1455,6 +1738,8 @@ async fn apply_realtime_settlement_batch_inner(
                 WHERE reservation_key = ?1
                   AND status = 'reserved'
                   AND (upstream_response_id_hash = '' OR upstream_response_id_hash = ?2)
+                  AND lease_expires_at > 0
+                  AND ?5 <= lease_expires_at + ?6
                 "#,
             )
             .bind_refs(&reservation_args)?;
@@ -9728,6 +10013,8 @@ mod tests {
             include_str!("../../../migrations/d1/0020_realtime_billing_reservation_leases.sql");
         let segment_migration =
             include_str!("../../../migrations/d1/0021_realtime_billing_bridge_segments.sql");
+        let recovery_migration =
+            include_str!("../../../migrations/d1/0022_realtime_billing_global_recovery.sql");
         assert!(migration.contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations"));
         assert!(migration.contains("CHECK (status IN ('reserved', 'settled', 'refunded'))"));
         assert!(migration.contains("reservation_sequence"));
@@ -9750,6 +10037,25 @@ mod tests {
         assert!(segment_migration.contains("DROP TABLE migration_0021_realtime_segment_guard"));
         assert!(segment_migration.contains("ADD COLUMN bridge_segment"));
         assert!(segment_migration.contains("idx_realtime_billing_reservations_segment_status"));
+        assert!(recovery_migration.contains("idx_realtime_billing_reservations_global_lease"));
+        assert!(recovery_migration.contains("WHERE status = 'reserved' AND lease_expires_at > 0"));
+        assert!(recovery_migration.contains("idx_realtime_billing_reservations_recent_outcome"));
+        assert!(recovery_migration.contains("ADD COLUMN recovery_attempt_count"));
+        assert!(recovery_migration.contains("ADD COLUMN recovery_next_attempt_at"));
+        assert!(recovery_migration
+            .contains("CREATE TABLE IF NOT EXISTS realtime_billing_recovery_state"));
+    }
+
+    #[test]
+    fn realtime_settlement_and_global_recovery_have_a_deterministic_deadline() {
+        assert!(realtime_billing_settlement_deadline_allows(900, 1_200));
+        assert!(!realtime_billing_settlement_deadline_allows(900, 1_201));
+        assert!(!realtime_billing_settlement_deadline_allows(0, 1));
+        assert_eq!(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS, 300);
+        assert_eq!(realtime_billing_orphan_retry_delay_seconds(1), 60);
+        assert_eq!(realtime_billing_orphan_retry_delay_seconds(2), 120);
+        assert_eq!(realtime_billing_orphan_retry_delay_seconds(7), 3_600);
+        assert_eq!(realtime_billing_orphan_retry_delay_seconds(100), 3_600);
     }
 
     #[test]

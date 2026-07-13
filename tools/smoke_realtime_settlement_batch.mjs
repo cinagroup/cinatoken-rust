@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 
 const defaultNow = 1_800_100_000;
+const orphanRecoveryGraceSeconds = 300;
 const defaultStagingDatabase = "<STAGING_D1_DATABASE_NAME>";
 const defaultArtifactDir = "artifacts/realtime-settlement-batch";
 const defaultBindingSmokeUrl = "http://127.0.0.1:8787";
@@ -79,6 +80,7 @@ function runSelfTest() {
     runCheck("response_reservation_guard_rolls_back", responseReservationGuardRollsBack),
     runCheck("response_reservation_refund_is_idempotent", responseReservationRefundIsIdempotent),
     runCheck("response_reservation_lease_expiry_refunds_once", responseReservationLeaseExpiryRefundsOnce),
+    runCheck("settlement_deadline_has_disjoint_terminal_winners", settlementDeadlineHasDisjointTerminalWinners),
     runCheck("stale_lease_generation_does_not_refund_new_reservation", staleLeaseGenerationDoesNotRefundNewReservation),
     runCheck("parallel_responses_settle_by_response_identity", parallelResponsesSettleByResponseIdentity),
     runCheck("bridge_segment_binding_and_refund_are_isolated", bridgeSegmentBindingAndRefundAreIsolated),
@@ -606,6 +608,70 @@ function responseReservationLeaseExpiryRefundsOnce() {
   });
 }
 
+function settlementDeadlineHasDisjointTerminalWinners() {
+  const deadlineWinner = withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 500,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const leaseExpiresAt = defaultNow + 900;
+    const record = settlementRecord({
+      reservationKey: "rtreserve-deadline-winner",
+      replayKey: "rtsettle-deadline-winner",
+      preConsumedQuota: 100,
+      finalQuota: 150,
+      leaseExpiresAt,
+      appliedAt: leaseExpiresAt + orphanRecoveryGraceSeconds,
+    });
+    assert(reserveRealtimeResponse(db, record).outcome === "Applied", "deadline fixture should reserve");
+    const settlement = runRealtimeSettlementBatch(db, record, auditLog(record));
+    const snapshot = settlementSnapshot(db, record);
+    assert(settlement.outcome === "Applied", "settlement should own the exact deadline boundary");
+    assert(snapshot.userQuota === 850, "deadline settlement should mutate quota once");
+    return settlement.outcome;
+  });
+  const recoveryWinner = withDatabase((db) => {
+    seedSettlementFixture(db, {
+      userQuota: 1_000,
+      userUsedQuota: 0,
+      tokenRemainQuota: 500,
+      tokenUsedQuota: 0,
+      channelUsedQuota: 0,
+    });
+    const leaseExpiresAt = defaultNow + 900;
+    const record = settlementRecord({
+      reservationKey: "rtreserve-recovery-winner",
+      replayKey: "rtsettle-recovery-winner",
+      preConsumedQuota: 100,
+      finalQuota: 150,
+      leaseExpiresAt,
+      appliedAt: leaseExpiresAt + orphanRecoveryGraceSeconds + 1,
+    });
+    assert(reserveRealtimeResponse(db, record).outcome === "Applied", "recovery fixture should reserve");
+    const staleSettlement = runRealtimeSettlementBatch(db, record, auditLog(record));
+    const recovery = refundExpiredRealtimeResponse(db, record, record.appliedAt);
+    const replay = runRealtimeSettlementBatch(db, record, auditLog(record));
+    const snapshot = settlementSnapshot(db, record);
+    assert(
+      staleSettlement.outcome === "SettlementDeadlineExpired",
+      "settlement must stop one second after the global recovery boundary",
+    );
+    assert(recovery.outcome === "Applied", "global recovery should own the post-deadline terminal transition");
+    assert(replay.outcome === "AlreadyFinalized", "a delayed settlement retry must not overwrite recovery");
+    assert(snapshot.userQuota === 1_000, "recovery should restore quota exactly once");
+    assert(snapshot.replayRows === 0, "rejected settlement must not persist a replay marker");
+    return {
+      staleSettlement: staleSettlement.outcome,
+      recovery: recovery.outcome,
+      replay: replay.outcome,
+    };
+  });
+  return { deadlineWinner, recoveryWinner };
+}
+
 function staleLeaseGenerationDoesNotRefundNewReservation() {
   return withDatabase((db) => {
     seedSettlementFixture(db, {
@@ -822,7 +888,7 @@ function buildStagingPlan(options) {
     },
     requiredBeforeRun: [
       "Confirm the target database is an isolated staging D1, not production.",
-      "Apply migrations through migrations/d1/0021_realtime_billing_bridge_segments.sql.",
+      "Apply migrations through migrations/d1/0022_realtime_billing_global_recovery.sql.",
       "Write each sqlArtifacts[].sql body to its sqlArtifacts[].path exactly, then review it before running.",
       "Use Wrangler SQL artifacts only for setup, verification, and cleanup; do not treat multi-statement SQL files as D1Database.batch evidence.",
       "Apply the settlement through the deployed Worker binding path, then archive Wrangler stdout/stderr, Worker smoke output, D1 row snapshots, capabilities output, and the matching git commit SHA.",
@@ -898,7 +964,7 @@ function buildBindingSmokePlan(options) {
       "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
       "Keep ENVIRONMENT=staging; the Worker route rejects production.",
       "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
-      "Run against an isolated staging D1 database with migrations through 0021 applied.",
+      "Run against an isolated staging D1 database with migrations through 0022 applied.",
       "Archive /api/platform/capabilities before and after the smoke run.",
     ],
     requests: options.scenarios.map((scenario) => ({
@@ -1783,6 +1849,22 @@ function runRealtimeSettlementBatch(db, record, audit, options = {}) {
   if (replayApplied(db, record.replayKey)) {
     return { outcome: "DuplicateReplay", guardedStatements: 0 };
   }
+  if (record.reservationKey) {
+    const reservation = db
+      .prepare(
+        "SELECT status, lease_expires_at FROM realtime_billing_reservations WHERE reservation_key = ?1",
+      )
+      .get(record.reservationKey);
+    if (reservation?.status !== "reserved") {
+      return { outcome: reservation ? "AlreadyFinalized" : "NotFound", guardedStatements: 0 };
+    }
+    if (
+      Number(reservation.lease_expires_at) <= 0 ||
+      record.appliedAt > Number(reservation.lease_expires_at) + orphanRecoveryGraceSeconds
+    ) {
+      return { outcome: "SettlementDeadlineExpired", guardedStatements: 0 };
+    }
+  }
   const guardedChanges = [];
   try {
     db.transaction(() => {
@@ -1797,8 +1879,17 @@ function runRealtimeSettlementBatch(db, record, audit, options = {}) {
                  updated_at = ?5, settled_at = ?5
              WHERE reservation_key = ?1
                AND status = 'reserved'
-               AND (upstream_response_id_hash = '' OR upstream_response_id_hash = ?2)`,
-            [record.reservationKey, record.responseIdHash, record.replayKey, record.finalQuota, record.appliedAt],
+               AND (upstream_response_id_hash = '' OR upstream_response_id_hash = ?2)
+               AND lease_expires_at > 0
+               AND ?5 <= lease_expires_at + ?6`,
+            [
+              record.reservationKey,
+              record.responseIdHash,
+              record.replayKey,
+              record.finalQuota,
+              record.appliedAt,
+              orphanRecoveryGraceSeconds,
+            ],
             record.reservationKey,
           ),
         );
@@ -1980,7 +2071,7 @@ function settlementRecord(overrides = {}) {
     finalQuota: overrides.finalQuota ?? 150,
     createdAt: overrides.createdAt ?? defaultNow,
     appliedAt: overrides.appliedAt ?? defaultNow,
-    leaseExpiresAt: overrides.leaseExpiresAt ?? defaultNow + 600,
+    leaseExpiresAt: overrides.leaseExpiresAt ?? defaultNow + 900,
   };
 }
 

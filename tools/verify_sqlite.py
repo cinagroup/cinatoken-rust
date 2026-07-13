@@ -31,6 +31,7 @@ REQUIRED_TABLES = [
     "passkey_credentials",
     "realtime_settlement_replays",
     "realtime_billing_reservations",
+    "realtime_billing_recovery_state",
 ]
 
 REQUIRED_COLUMNS = {
@@ -97,6 +98,20 @@ REQUIRED_COLUMNS = {
         "refunded_at",
         "lease_expires_at",
         "bridge_segment",
+        "recovery_attempt_count",
+        "recovery_next_attempt_at",
+        "recovery_last_attempt_at",
+    },
+    "realtime_billing_recovery_state": {
+        "id",
+        "last_started_at",
+        "last_completed_at",
+        "last_success_at",
+        "last_candidates",
+        "last_refunded",
+        "last_failed",
+        "last_deferred",
+        "updated_at",
     },
 }
 
@@ -121,6 +136,8 @@ REQUIRED_INDEXES = {
         "idx_realtime_billing_reservations_response": True,
         "idx_realtime_billing_reservations_lease": False,
         "idx_realtime_billing_reservations_segment_status": False,
+        "idx_realtime_billing_reservations_global_lease": False,
+        "idx_realtime_billing_reservations_recent_outcome": False,
     },
 }
 

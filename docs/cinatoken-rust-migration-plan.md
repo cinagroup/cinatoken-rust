@@ -10677,3 +10677,78 @@ per-reservation owner/outcome identity; and no remote eviction/redeploy,
 provider, billing reconciliation, alert, or rollback evidence is archived.
 Settlement writes and `/v1/realtime` therefore remain default-off and
 production remains **NO-GO**.
+
+### 22.174 2026-07-13 Guarded Global Realtime Reservation Recovery
+
+This increment closes the local D1-orphan scanner gap identified in 22.173,
+without claiming that a D1 row can identify a currently running Durable Object.
+It preserves the Go behavior of one pre-reserve followed by exactly one
+settlement or refund, while adding the durable recovery required by the
+Cloudflare execution model.
+
+Implemented locally:
+
+- Migration `0022_realtime_billing_global_recovery.sql` adds a partial global
+  lease index matching the oldest-expiry scan, a recent-outcome index, three
+  non-secret retry scheduling columns, and a singleton aggregate sweep-state
+  row. The verified chain is now 22 migrations, 27 required tables, 69
+  incremental columns, and 17 key indexes.
+- Settlement owns a reservation through the inclusive hard deadline
+  `lease_expires_at + 300`. The global scanner selects only rows strictly after
+  that boundary, and the settlement update repeats the deadline predicate in
+  its D1 CAS. This prevents timing alone from choosing an underbilling winner.
+- A failed candidate increments only attempt/timing metadata and receives
+  exponential retry deferral from 60 to 3,600 seconds. The next cron can then
+  advance to newer eligible rows instead of repeatedly selecting a permanently
+  broken oldest row. No provider error, reservation key, prompt, credential, or
+  billing expression is persisted in the recovery metadata.
+- `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED` is explicitly `false` in default,
+  staging, and production. The scheduled handler refuses recovery unless the
+  gate is true and migration 0022 is present. The cutover predicate also
+  requires the resulting recovery readiness field.
+- `REALTIME_BILLING_ORPHAN_SWEEP_LIMIT` defaults to 32 and accepts only `1..64`.
+  This reserves D1 query/subrequest headroom for guarded refund batches and the
+  video/Suno/Midjourney pollers sharing the same cron invocation. Any increase
+  requires measured query-count and rows-read evidence, not only latency.
+- The admin-only, no-store endpoint is
+  `GET /api/platform/realtime-billing/ledger/status`, deliberately outside the
+  generic Realtime DO prefix. It exposes domain-separated SHA-256 reservation
+  and bridge-scope fingerprints, explicit terminal outcomes, policy state
+  (`settlement_grace`, `recovery_due`, `retry_backoff`, or terminal), retry
+  timestamps/counts, and aggregate last-sweep counters. It does not call the
+  bridge scope the current owner and does not appear in public or WebSocket
+  status.
+- The React/Bun Cloudflare platform panel shows only compiled/enabled/ready,
+  grace, and sweep-limit capability state. It does not list reservation rows or
+  infer production readiness from local evidence.
+
+Local evidence now includes the release Rust/Wasm scheduled entrypoint under
+Cloudflare's Workerd Vitest pool. The suite proves no refund inside grace,
+exactly one refund under two concurrent scheduled deliveries, replay no-op,
+and failed-head deferral followed by progress of a newer valid row. The SQLite
+settlement model separately proves settlement wins at the exact deadline,
+global recovery wins one second later, and a delayed settlement retry cannot
+overwrite the refund.
+
+Production rollout remains fail-closed:
+
+1. Rotate the exposed Cloudflare credential and authenticate with a new
+   least-privilege credential; do not reuse the exposed value.
+2. Apply and verify the exact 22-file migration set in isolated staging while
+   all Realtime write/admission/recovery gates are off.
+3. Capture a capability snapshot, verify migration 0022 and the 300-second
+   grace, then enable only global recovery with a sweep limit of 1 for the
+   first controlled fixture.
+4. Prove inside-grace no-op, post-grace refund, concurrent cron idempotency,
+   failed-head fairness, late settlement rejection, aggregate sweep status,
+   alert delivery, and zero raw identifiers in logs/HTTP artifacts.
+5. Repeat with a reservation created by the authenticated public reserve path
+   and a real DO settlement retry across eviction/redeploy. D1 policy state is
+   not sufficient evidence of current DO retry ownership.
+6. Roll back by disabling new Realtime admission first, then the global
+   recovery gate. Preserve D1 state, reconcile every reserved/settled/refunded
+   row and quota delta, and keep Go/VPS authoritative until sign-off.
+
+The exposed credential, absent authenticated staging migration, absent live DO
+owner correlation, provider billing reconciliation, alert drill, and rollback
+rehearsal keep G1/G2/G4/G6/G7/G8 and production **NO-GO**.

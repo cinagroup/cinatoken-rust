@@ -546,6 +546,20 @@ function summarizeCapabilities(data) {
     realtime_session_billing_reservation_lease_seconds: Number(
       data.realtime_session_billing_reservation_lease_seconds
     ),
+    realtime_session_billing_global_orphan_recovery_compiled:
+      data.realtime_session_billing_global_orphan_recovery_compiled === true,
+    realtime_session_billing_global_orphan_recovery_enabled:
+      data.realtime_session_billing_global_orphan_recovery_enabled === true,
+    realtime_session_billing_global_orphan_recovery_ready:
+      data.realtime_session_billing_global_orphan_recovery_ready === true,
+    realtime_session_billing_orphan_recovery_grace_seconds: Number(
+      data.realtime_session_billing_orphan_recovery_grace_seconds
+    ),
+    realtime_session_billing_orphan_sweep_limit: Number(
+      data.realtime_session_billing_orphan_sweep_limit
+    ),
+    realtime_session_billing_ledger_status_compiled:
+      data.realtime_session_billing_ledger_status_compiled === true,
     realtime_session_billing_settlement_write_enabled:
       data.realtime_session_billing_settlement_write_enabled === true,
     realtime_session_platform_header_boundary_compiled:
@@ -594,6 +608,8 @@ function validateCapabilities(capabilities, options) {
     ["realtime_session_billing_settlement_batch_compiled", true],
     ["realtime_session_billing_settlement_retry_compiled", true],
     ["realtime_session_billing_reservation_lease_compiled", true],
+    ["realtime_session_billing_global_orphan_recovery_compiled", true],
+    ["realtime_session_billing_ledger_status_compiled", true],
     ["realtime_session_platform_header_boundary_compiled", true],
     ["realtime_session_platform_admin_auth_compiled", true],
   ]) {
@@ -603,11 +619,25 @@ function validateCapabilities(capabilities, options) {
   }
   if (
     !Number.isInteger(capabilities.realtime_session_billing_reservation_lease_seconds) ||
-    capabilities.realtime_session_billing_reservation_lease_seconds < 30 ||
+    capabilities.realtime_session_billing_reservation_lease_seconds < 900 ||
     capabilities.realtime_session_billing_reservation_lease_seconds > 3600
   ) {
     throw new Error(
-      `platform capabilities realtime_session_billing_reservation_lease_seconds=${capabilities.realtime_session_billing_reservation_lease_seconds} is outside 30..3600`
+      `platform capabilities realtime_session_billing_reservation_lease_seconds=${capabilities.realtime_session_billing_reservation_lease_seconds} is outside 900..3600`
+    );
+  }
+  if (capabilities.realtime_session_billing_orphan_recovery_grace_seconds !== 300) {
+    throw new Error(
+      `platform capabilities realtime_session_billing_orphan_recovery_grace_seconds=${capabilities.realtime_session_billing_orphan_recovery_grace_seconds}, expected 300`
+    );
+  }
+  if (
+    !Number.isInteger(capabilities.realtime_session_billing_orphan_sweep_limit) ||
+    capabilities.realtime_session_billing_orphan_sweep_limit < 1 ||
+    capabilities.realtime_session_billing_orphan_sweep_limit > 64
+  ) {
+    throw new Error(
+      `platform capabilities realtime_session_billing_orphan_sweep_limit=${capabilities.realtime_session_billing_orphan_sweep_limit} is outside 1..64`
     );
   }
   for (const guard of [
@@ -637,6 +667,7 @@ function validateCapabilities(capabilities, options) {
     "billing_settlement_batch",
     "billing_settlement_retry",
     "billing_reservation_lease_recovery",
+    "billing_global_orphan_recovery",
     "d1_migration_ready",
     "billing_settlement_write_gate",
     "platform_upstream_header_boundary",

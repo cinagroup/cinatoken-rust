@@ -1,11 +1,14 @@
-export {
+import {
   RealtimeSession,
   TaskRunner,
   WfpAuthorityReplay,
 } from "../../crates/worker/build/index.js";
+import WorkerEntrypoint from "../../crates/worker/build/index.js";
 
-export default {
-  fetch() {
-    return new Response("DO runtime fixture", { status: 404 });
-  },
-};
+export { RealtimeSession, TaskRunner, WfpAuthorityReplay };
+export function scheduled(controller, env, ctx) {
+  const worker = new WorkerEntrypoint(ctx, env);
+  return worker.scheduled(controller);
+}
+
+export default WorkerEntrypoint;

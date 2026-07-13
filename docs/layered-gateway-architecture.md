@@ -797,3 +797,30 @@ The source contract is not remote proof. Attachment of the outbound service to
 the real dispatch namespace, outbound-only secret ownership, bearer-free tenant
 readback, all four positive routes, negative egress cases, Gateway logs, billing,
 replay, and rollback remain unverified. WFP production is **NO-GO**.
+
+## 2026-07-13 Realtime Recovery Ownership Boundary
+
+The Realtime billing lifecycle now has three intentionally separate layers:
+
+1. `RealtimeSession` Durable Object owns the live client socket, transient
+   provider bridge, private settlement retry collection, and private lease
+   collection. Hibernation attachment metadata can reconstruct the client-side
+   contract, but it never claims the outbound provider socket survived.
+2. D1 owns the durable reservation ledger and terminal quota CAS. Settlement
+   owns the inclusive window through `lease_expires_at + 300`; the scheduled
+   scanner may claim only rows strictly after that deadline.
+3. The root Worker scheduled handler owns the bounded global scan. It runs only
+   behind an explicit default-off gate and migration-0022 readiness, defers
+   failed rows with bounded metadata-only backoff, and then yields to the shared
+   async task pollers.
+
+The admin ledger endpoint reports D1 policy state and terminal outcome, not the
+identity of a running DO. A bridge-segment fingerprint is historical scope, not
+current ownership. Production observability must correlate the global D1 view
+with the redacted per-DO retry/lease aggregate before operators decide to
+intervene.
+
+This design follows the cinaVibeSDK-inspired split: durable session authority
+stays in the DO, global reconciliation stays in the scheduling gateway, WFP
+tenants remain provider transport only, and central D1 billing authority never
+moves into tenant code.

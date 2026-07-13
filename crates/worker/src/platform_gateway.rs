@@ -17,6 +17,7 @@ use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 use cinatoken_storage::RelayAuditLog;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 use worker::{
     D1Database, D1Type, Env, Headers, Request, RequestInit, Response, Result as WorkerResult,
@@ -26,6 +27,8 @@ use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
 };
 use crate::realtime_session::{
+    realtime_billing_global_orphan_recovery_compiled, realtime_billing_orphan_recovery_enabled,
+    realtime_billing_orphan_recovery_grace_seconds, realtime_billing_orphan_sweep_limit,
     realtime_billing_presettlement_snapshot_compiled, realtime_billing_reservation_lease_compiled,
     realtime_billing_reservation_lease_seconds, realtime_billing_settlement_audit_log_compiled,
     realtime_billing_settlement_batch_compiled, realtime_billing_settlement_handoff_compiled,
@@ -100,7 +103,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0021_realtime_billing_bridge_segments.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0022_realtime_billing_global_recovery.sql";
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -123,6 +126,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0019_realtime_billing_reservations.sql",
     "0020_realtime_billing_reservation_leases.sql",
     "0021_realtime_billing_bridge_segments.sql",
+    "0022_realtime_billing_global_recovery.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -303,6 +307,12 @@ struct PlatformCapabilities {
     realtime_session_billing_settlement_retry_compiled: bool,
     realtime_session_billing_reservation_lease_compiled: bool,
     realtime_session_billing_reservation_lease_seconds: u64,
+    realtime_session_billing_global_orphan_recovery_compiled: bool,
+    realtime_session_billing_global_orphan_recovery_enabled: bool,
+    realtime_session_billing_global_orphan_recovery_ready: bool,
+    realtime_session_billing_orphan_recovery_grace_seconds: i64,
+    realtime_session_billing_orphan_sweep_limit: i64,
+    realtime_session_billing_ledger_status_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_enabled: bool,
     realtime_session_billing_settlement_staging_smoke_ready: bool,
@@ -333,6 +343,64 @@ struct PlatformCapabilities {
     task_poller_query_limit: i64,
     task_poller_timeout_minutes: i64,
     task_poller_timeout_sweep_limit: i64,
+}
+
+const REALTIME_BILLING_RECOVERY_STATUS_LIMIT: i64 = 50;
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RealtimeBillingLedgerStatus {
+    contract_version: u32,
+    count: usize,
+    global_sweep: Option<RealtimeBillingGlobalSweepStatus>,
+    records: Vec<RealtimeBillingLedgerStatusMetadata>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RealtimeBillingGlobalSweepStatus {
+    last_started_at: i64,
+    last_completed_at: i64,
+    last_success_at: Option<i64>,
+    last_candidates: i64,
+    last_refunded: i64,
+    last_failed: i64,
+    last_deferred: i64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RealtimeBillingLedgerStatusMetadata {
+    reservation_fingerprint: String,
+    scope_kind: &'static str,
+    scope_fingerprint: String,
+    outcome: RealtimeBillingLedgerOutcome,
+    terminal: bool,
+    reservation_sequence: i64,
+    lease_expires_at: i64,
+    updated_at: i64,
+    settled_at: Option<i64>,
+    refunded_at: Option<i64>,
+    recovery_attempt_count: i64,
+    recovery_next_attempt_at: Option<i64>,
+    recovery_last_attempt_at: Option<i64>,
+    recovery_state: RealtimeBillingRecoveryState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RealtimeBillingLedgerOutcome {
+    Reserved,
+    Settled,
+    Refunded,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RealtimeBillingRecoveryState {
+    SettlementGrace,
+    RecoveryDue,
+    RetryBackoff,
+    Terminal,
+    Unknown,
 }
 
 /// Admin-only capability probe for the production migration cockpit.
@@ -492,6 +560,18 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_billing_reservation_lease_compiled();
     let realtime_session_billing_reservation_lease_seconds =
         realtime_billing_reservation_lease_seconds(&env);
+    let realtime_session_billing_global_orphan_recovery_compiled =
+        realtime_billing_global_orphan_recovery_compiled();
+    let realtime_session_billing_global_orphan_recovery_enabled =
+        realtime_billing_orphan_recovery_enabled(&env);
+    let realtime_session_billing_global_orphan_recovery_ready =
+        realtime_session_billing_global_orphan_recovery_compiled
+            && realtime_session_billing_global_orphan_recovery_enabled
+            && d1_migration_ready;
+    let realtime_session_billing_orphan_recovery_grace_seconds =
+        realtime_billing_orphan_recovery_grace_seconds();
+    let realtime_session_billing_orphan_sweep_limit = realtime_billing_orphan_sweep_limit(&env);
+    let realtime_session_billing_ledger_status_compiled = true;
     let realtime_session_billing_settlement_staging_smoke_compiled =
         realtime_settlement_staging_smoke_compiled();
     let realtime_session_billing_settlement_staging_smoke_enabled =
@@ -551,6 +631,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_batch_compiled,
         realtime_session_billing_settlement_retry_compiled,
         realtime_session_billing_reservation_lease_compiled,
+        realtime_session_billing_global_orphan_recovery_ready,
         d1_migration_ready,
         realtime_session_platform_header_boundary_compiled,
         realtime_session_upstream_bridge_compiled,
@@ -691,6 +772,12 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_settlement_retry_compiled,
         realtime_session_billing_reservation_lease_compiled,
         realtime_session_billing_reservation_lease_seconds,
+        realtime_session_billing_global_orphan_recovery_compiled,
+        realtime_session_billing_global_orphan_recovery_enabled,
+        realtime_session_billing_global_orphan_recovery_ready,
+        realtime_session_billing_orphan_recovery_grace_seconds,
+        realtime_session_billing_orphan_sweep_limit,
+        realtime_session_billing_ledger_status_compiled,
         realtime_session_billing_settlement_staging_smoke_compiled,
         realtime_session_billing_settlement_staging_smoke_enabled,
         realtime_session_billing_settlement_staging_smoke_ready,
@@ -724,6 +811,141 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     };
 
     envelope_ok_response(&capabilities)
+}
+
+pub async fn realtime_billing_ledger_status(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(err) => {
+            worker::console_error!("realtime billing ledger status: D1 unavailable: {err}");
+            return Ok(envelope_error_response(
+                503,
+                "Realtime billing ledger status is unavailable",
+            ));
+        }
+    };
+    let rows = match crate::d1_repositories::recent_realtime_billing_ledger_status(
+        &db,
+        REALTIME_BILLING_RECOVERY_STATUS_LIMIT,
+    )
+    .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            worker::console_error!("realtime billing ledger status query failed: {err}");
+            return Ok(envelope_error_response(
+                503,
+                "Realtime billing ledger status is unavailable",
+            ));
+        }
+    };
+    let records = rows
+        .into_iter()
+        .map(|row| realtime_billing_ledger_status_metadata(row, crate::admin::unix_timestamp()))
+        .collect::<Vec<_>>();
+    let global_sweep = match crate::d1_repositories::realtime_billing_recovery_state(&db).await {
+        Ok(state) => state.map(realtime_billing_global_sweep_status),
+        Err(err) => {
+            worker::console_error!("realtime billing global sweep status query failed: {err}");
+            return Ok(envelope_error_response(
+                503,
+                "Realtime billing ledger status is unavailable",
+            ));
+        }
+    };
+    let status = RealtimeBillingLedgerStatus {
+        contract_version: 1,
+        count: records.len(),
+        global_sweep,
+        records,
+    };
+    let mut response = envelope_ok_response(&status)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
+}
+
+fn realtime_billing_ledger_status_metadata(
+    row: crate::d1_repositories::RealtimeBillingLedgerStatusRow,
+    now: i64,
+) -> RealtimeBillingLedgerStatusMetadata {
+    let owner_seed = format!("{}|{}", row.session, row.bridge_segment);
+    let recovery_state = realtime_billing_recovery_state(&row, now);
+    RealtimeBillingLedgerStatusMetadata {
+        reservation_fingerprint: realtime_recovery_fingerprint(
+            "reservation-v1",
+            &row.reservation_key,
+        ),
+        scope_kind: "realtime_bridge_segment",
+        scope_fingerprint: realtime_recovery_fingerprint("bridge-scope-v1", &owner_seed),
+        outcome: realtime_billing_ledger_outcome(&row.status),
+        terminal: matches!(row.status.as_str(), "settled" | "refunded"),
+        reservation_sequence: row.reservation_sequence,
+        lease_expires_at: row.lease_expires_at,
+        updated_at: row.updated_at,
+        settled_at: (row.settled_at > 0).then_some(row.settled_at),
+        refunded_at: (row.refunded_at > 0).then_some(row.refunded_at),
+        recovery_attempt_count: row.recovery_attempt_count,
+        recovery_next_attempt_at: (row.recovery_next_attempt_at > 0)
+            .then_some(row.recovery_next_attempt_at),
+        recovery_last_attempt_at: (row.recovery_last_attempt_at > 0)
+            .then_some(row.recovery_last_attempt_at),
+        recovery_state,
+    }
+}
+
+fn realtime_billing_global_sweep_status(
+    row: crate::d1_repositories::RealtimeBillingRecoveryStateRow,
+) -> RealtimeBillingGlobalSweepStatus {
+    RealtimeBillingGlobalSweepStatus {
+        last_started_at: row.last_started_at,
+        last_completed_at: row.last_completed_at,
+        last_success_at: (row.last_success_at > 0).then_some(row.last_success_at),
+        last_candidates: row.last_candidates,
+        last_refunded: row.last_refunded,
+        last_failed: row.last_failed,
+        last_deferred: row.last_deferred,
+    }
+}
+
+fn realtime_billing_recovery_state(
+    row: &crate::d1_repositories::RealtimeBillingLedgerStatusRow,
+    now: i64,
+) -> RealtimeBillingRecoveryState {
+    match row.status.as_str() {
+        "settled" | "refunded" => RealtimeBillingRecoveryState::Terminal,
+        "reserved"
+            if now
+                <= row.lease_expires_at.saturating_add(
+                    crate::d1_repositories::REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS,
+                ) =>
+        {
+            RealtimeBillingRecoveryState::SettlementGrace
+        }
+        "reserved" if row.recovery_next_attempt_at > now => {
+            RealtimeBillingRecoveryState::RetryBackoff
+        }
+        "reserved" => RealtimeBillingRecoveryState::RecoveryDue,
+        _ => RealtimeBillingRecoveryState::Unknown,
+    }
+}
+
+fn realtime_billing_ledger_outcome(status: &str) -> RealtimeBillingLedgerOutcome {
+    match status {
+        "reserved" => RealtimeBillingLedgerOutcome::Reserved,
+        "settled" => RealtimeBillingLedgerOutcome::Settled,
+        "refunded" => RealtimeBillingLedgerOutcome::Refunded,
+        _ => RealtimeBillingLedgerOutcome::Unknown,
+    }
+}
+
+fn realtime_recovery_fingerprint(domain: &str, value: &str) -> String {
+    format!(
+        "sha256:{:x}",
+        Sha256::digest(format!("{domain}\0{value}").as_bytes())
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1480,6 +1702,7 @@ async fn seed_realtime_settlement_smoke_fixture(
         D1Type::Text(username.as_str()),
         D1Type::Text(token_name.as_str()),
         D1Type::Text(request_id.as_str()),
+        D1Type::Integer(d1_i32(crate::admin::unix_timestamp().saturating_add(900))),
     ];
     db.prepare(
         r#"
@@ -1488,11 +1711,11 @@ async fn seed_realtime_settlement_smoke_fixture(
           user_id, token_id, channel_id, selected_group, model_name,
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, request_id, endpoint_path,
-          status, created_at, updated_at
+          status, created_at, updated_at, lease_expires_at
         ) VALUES (
           ?1, ?2, 'binding-smoke-client-event', 1,
           ?3, ?4, ?5, ?6, ?7, ?8, '{}', '{}',
-          ?9, ?10, ?11, 'realtime', 'reserved', 0, 0
+          ?9, ?10, ?11, 'realtime', 'reserved', 0, 0, ?12
         )
         "#,
     )
@@ -2236,6 +2459,7 @@ fn is_realtime_session_v1_cutover_ready(
     billing_settlement_batch_compiled: bool,
     billing_settlement_retry_compiled: bool,
     billing_reservation_lease_compiled: bool,
+    billing_global_orphan_recovery_ready: bool,
     d1_migration_ready: bool,
     platform_header_boundary_compiled: bool,
     upstream_bridge_compiled: bool,
@@ -2272,6 +2496,7 @@ fn is_realtime_session_v1_cutover_ready(
         && billing_settlement_batch_compiled
         && billing_settlement_retry_compiled
         && billing_reservation_lease_compiled
+        && billing_global_orphan_recovery_ready
         && d1_migration_ready
         && platform_header_boundary_compiled
         && upstream_bridge_compiled
@@ -2793,6 +3018,7 @@ mod tests {
         assert!(guards.contains(&"billing_settlement_replay_marker"));
         assert!(guards.contains(&"billing_settlement_audit_log"));
         assert!(guards.contains(&"billing_settlement_batch"));
+        assert!(guards.contains(&"billing_global_orphan_recovery"));
         assert!(guards.contains(&"platform_upstream_header_boundary"));
         assert!(guards.contains(&"hibernation_attachment_restore"));
         assert!(guards.contains(&"metadata_only_control_frames"));
@@ -2856,7 +3082,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0021_realtime_billing_bridge_segments.sql"
+            "0022_realtime_billing_global_recovery.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -2873,6 +3099,52 @@ mod tests {
         assert!(
             include_str!("../../../migrations/d1/0021_realtime_billing_bridge_segments.sql")
                 .contains("bridge_segment")
+        );
+        let recovery =
+            include_str!("../../../migrations/d1/0022_realtime_billing_global_recovery.sql");
+        assert!(recovery.contains("idx_realtime_billing_reservations_global_lease"));
+        assert!(recovery.contains("idx_realtime_billing_reservations_recent_outcome"));
+    }
+
+    #[test]
+    fn realtime_ledger_status_hashes_private_reservation_and_bridge_identity() {
+        let metadata = realtime_billing_ledger_status_metadata(
+            crate::d1_repositories::RealtimeBillingLedgerStatusRow {
+                reservation_key: "private-reservation".to_string(),
+                session: "private-session".to_string(),
+                bridge_segment: "private-segment".to_string(),
+                status: "refunded".to_string(),
+                reservation_sequence: 7,
+                lease_expires_at: 900,
+                updated_at: 901,
+                settled_at: 0,
+                refunded_at: 901,
+                recovery_attempt_count: 2,
+                recovery_next_attempt_at: 0,
+                recovery_last_attempt_at: 899,
+            },
+            901,
+        );
+        let encoded = serde_json::to_string(&metadata).unwrap();
+        assert!(!encoded.contains("private-reservation"));
+        assert!(!encoded.contains("private-session"));
+        assert!(!encoded.contains("private-segment"));
+        assert!(metadata.reservation_fingerprint.starts_with("sha256:"));
+        assert!(metadata.scope_fingerprint.starts_with("sha256:"));
+        assert_ne!(metadata.reservation_fingerprint, metadata.scope_fingerprint);
+        assert_eq!(metadata.scope_kind, "realtime_bridge_segment");
+        assert_eq!(metadata.outcome, RealtimeBillingLedgerOutcome::Refunded);
+        assert!(metadata.terminal);
+        assert_eq!(metadata.settled_at, None);
+        assert_eq!(metadata.refunded_at, Some(901));
+        assert_eq!(metadata.recovery_attempt_count, 2);
+        assert_eq!(
+            metadata.recovery_state,
+            RealtimeBillingRecoveryState::Terminal
+        );
+        assert_eq!(
+            realtime_billing_ledger_outcome("unexpected"),
+            RealtimeBillingLedgerOutcome::Unknown
         );
     }
 
@@ -2903,10 +3175,10 @@ mod tests {
 
     #[test]
     fn realtime_v1_cutover_ready_requires_every_runtime_and_environment_gate() {
-        assert!(realtime_v1_ready_with_flags([true; 35]));
+        assert!(realtime_v1_ready_with_flags([true; 36]));
 
-        for false_gate in 0..35 {
-            let mut flags = [true; 35];
+        for false_gate in 0..36 {
+            let mut flags = [true; 36];
             flags[false_gate] = false;
             assert!(
                 !realtime_v1_ready_with_flags(flags),
@@ -2915,13 +3187,13 @@ mod tests {
         }
     }
 
-    fn realtime_v1_ready_with_flags(flags: [bool; 35]) -> bool {
+    fn realtime_v1_ready_with_flags(flags: [bool; 36]) -> bool {
         is_realtime_session_v1_cutover_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
             flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14], flags[15],
             flags[16], flags[17], flags[18], flags[19], flags[20], flags[21], flags[22], flags[23],
             flags[24], flags[25], flags[26], flags[27], flags[28], flags[29], flags[30], flags[31],
-            flags[32], flags[33], flags[34],
+            flags[32], flags[33], flags[34], flags[35],
         )
     }
 

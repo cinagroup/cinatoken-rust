@@ -721,3 +721,20 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   override allow/deny, user quota debit, channel quota/audit rows, token-table
   non-mutation for the synthetic playground token, and logout/disabled/quota
   negative cases.
+
+## 2026-07-13 Realtime Global Recovery Increment
+
+- Added migration 0022 and verified the local D1 chain at 22 migrations, 27
+  required tables, 69 incremental columns, and 17 key indexes.
+- Added a default-off scheduled global orphan scan with an inclusive 300-second
+  settlement deadline, defensive sweep limit 32/max 64, atomic refund reuse,
+  failed-row retry deferral, and aggregate sweep status.
+- Added an admin-only no-store hashed ledger/policy endpoint outside the generic
+  Realtime DO prefix, plus capability-only frontend readiness.
+- Release Workerd evidence now passes 11 lifecycle cases, including concurrent
+  scheduled refund idempotency and failed-head fairness. SQLite settlement
+  evidence passes the exact deadline and delayed-retry race.
+- Phase 1 still does not approve production: remote 0022 application,
+  authenticated reserve/settlement across DO eviction, current DO owner
+  correlation, alerts, billing reconciliation, provider replay, and rollback
+  remain required.

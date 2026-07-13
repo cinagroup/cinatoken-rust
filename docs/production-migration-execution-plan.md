@@ -954,3 +954,42 @@ paid `/v1/realtime` canary, all of the following evidence is required:
 Until every item is archived from isolated staging,
 `realtime_session_billing_settlement_compiled` and
 `realtime_session_v1_cutover_ready` remain false.
+
+## 2026-07-13 Realtime Recovery Subgate Supersession
+
+This addendum supersedes the earlier 21-file Realtime migration wording. The
+target must have the exact 22-file chain through
+`0022_realtime_billing_global_recovery.sql`. Migrations 0020 and 0021 still
+require the documented zero-active-reservation freeze; 0022 is applied only
+after those checks and while every Realtime admission, settlement-write, and
+global-recovery gate is off.
+
+The production sequence is:
+
+1. Rotate the exposed Cloudflare credential, inventory account/resource
+   ownership with a replacement least-privilege credential, and archive no
+   secret values.
+2. Freeze Realtime writes, reconcile the ledger to zero, apply all 22
+   migrations to isolated staging, and verify 27 required tables, 69 key
+   columns, 17 indexes, and exact migration-set readiness.
+3. Deploy with `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED=false`, lease 900,
+   grace 300, and sweep limit 1. Capture admin capabilities and prove cron is
+   inert.
+4. Enable only global recovery for reviewed fixtures and complete every Phase
+   4c case in `docs/staging-smoke-runbook.md`: grace no-op, post-grace refund,
+   concurrent schedules, failed-head fairness, late settlement rejection,
+   no-store hashed status, alert, and rollback.
+5. Repeat with the authenticated public reserve path plus a live DO settlement
+   retry across eviction/redeploy. Correlate D1 policy state with redacted DO
+   status because D1 alone cannot identify the running retry owner.
+6. Expand the limit from 1 toward 32 only after measuring D1 queries, rows read,
+   task-poller headroom, latency, errors, and cost. Values above 64 are rejected
+   by the Worker.
+7. Enable settlement writes and then `/v1/realtime` only after billing shadow,
+   provider replay, observability, security, canary, and rollback approval. No
+   single capability boolean is approval.
+
+Rollback disables new Realtime admission first, then the global recovery gate.
+Do not drop migration 0022 during an incident. Preserve D1 rows, reconcile each
+terminal outcome and quota delta, and keep Go/VPS authoritative until G8 is
+signed off.

@@ -1475,6 +1475,28 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Realtime global orphan recovery'),
+          description: t(
+            'After a {{grace}}-second settlement grace period, scans up to {{limit}} globally expired D1 reservations per cron run, reuses the atomic refund CAS, and exposes only hashed reservation and bridge outcomes to administrators.',
+            {
+              grace:
+                capabilities.realtime_session_billing_orphan_recovery_grace_seconds,
+              limit:
+                capabilities.realtime_session_billing_orphan_sweep_limit,
+            }
+          ),
+          ready:
+            capabilities.realtime_session_billing_global_orphan_recovery_ready &&
+            capabilities.realtime_session_billing_ledger_status_compiled,
+          readyLabel: t('Ready'),
+          missingLabel: capabilities.realtime_session_billing_global_orphan_recovery_enabled
+            ? t('Blocked')
+            : t('Disabled'),
+          missingVariant: capabilities.realtime_session_billing_global_orphan_recovery_enabled
+            ? 'red'
+            : 'grey',
+        },
+        {
           label: t('Realtime settlement retry'),
           description: t(
             'Persists up to 64 independent failed settlements in the session Durable Object and schedules the earliest due item through one bounded-backoff alarm without overwriting another response.'

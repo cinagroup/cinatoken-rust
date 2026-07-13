@@ -69,6 +69,9 @@ pub const REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV: &str =
     "REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED";
 pub const REALTIME_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
     "REALTIME_BILLING_RESERVATION_LEASE_SECONDS";
+pub const REALTIME_BILLING_ORPHAN_SWEEP_LIMIT_ENV: &str = "REALTIME_BILLING_ORPHAN_SWEEP_LIMIT";
+pub const REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED_ENV: &str =
+    "REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED";
 pub const REALTIME_SESSION_PLATFORM_HEADER_BOUNDARY_COMPILED: bool = true;
 pub const REALTIME_SESSION_PLATFORM_ADMIN_AUTH_COMPILED: bool = true;
 pub const REALTIME_UPSTREAM_PLAN_HEADER: &str = "x-cinatoken-realtime-upstream-plan";
@@ -106,6 +109,7 @@ pub const REALTIME_SESSION_CUTOVER_GUARDS: &[&str] = &[
     "billing_bridge_segment_isolation",
     "billing_explicit_response_mode",
     "billing_reservation_lease_recovery",
+    "billing_global_orphan_recovery",
     "d1_migration_ready",
     "billing_settlement_write_gate",
     "platform_upstream_header_boundary",
@@ -142,6 +146,8 @@ const BILLING_RESERVATION_LEASE_DEFAULT_SECONDS: u64 = BILLING_RESERVATION_LEASE
 const BILLING_RESERVATION_LEASE_MAX_SECONDS: u64 = 3_600;
 const BILLING_RESERVATION_LEASE_MAX_RECORDS: usize = 128;
 const BILLING_RESERVATION_LEASE_RETRY_DELAY_MS: u64 = 30_000;
+const BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT: i64 = 32;
+const BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const MAX_STORED_TEXT_CHARS: usize = 160;
 const MAX_PROTOCOL_TOKEN_CHARS: usize = 96;
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
@@ -4712,6 +4718,23 @@ pub(crate) fn realtime_billing_reservation_lease_compiled() -> bool {
             == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
 }
 
+pub(crate) fn realtime_billing_global_orphan_recovery_compiled() -> bool {
+    BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT > 0
+        && BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT <= BILLING_ORPHAN_SWEEP_MAX_LIMIT
+        && crate::d1_repositories::REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS
+            >= i64::from(BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS)
+                * (BILLING_SETTLEMENT_RETRY_MAX_DELAY_MS / 1_000) as i64
+        && REALTIME_SESSION_CUTOVER_GUARDS.contains(&"billing_global_orphan_recovery")
+}
+
+pub(crate) fn realtime_billing_orphan_recovery_enabled(env: &Env) -> bool {
+    env_flag(env, REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED_ENV)
+}
+
+pub(crate) fn realtime_billing_orphan_recovery_grace_seconds() -> i64 {
+    crate::d1_repositories::REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS
+}
+
 fn realtime_billing_bridge_segment_compiled() -> bool {
     let first = realtime_bridge_segment_id("rt-segment-smoke", 1_000.0, &[1; 16]);
     let second = realtime_bridge_segment_id("rt-segment-smoke", 1_000.0, &[2; 16]);
@@ -4837,6 +4860,14 @@ pub(crate) fn realtime_billing_reservation_lease_seconds(env: &Env) -> u64 {
     )
 }
 
+pub(crate) fn realtime_billing_orphan_sweep_limit(env: &Env) -> i64 {
+    normalize_realtime_billing_orphan_sweep_limit(
+        env.var(REALTIME_BILLING_ORPHAN_SWEEP_LIMIT_ENV)
+            .ok()
+            .map(|value| value.to_string()),
+    )
+}
+
 fn normalize_realtime_billing_reservation_lease_seconds(value: Option<String>) -> u64 {
     value
         .as_deref()
@@ -4848,6 +4879,16 @@ fn normalize_realtime_billing_reservation_lease_seconds(value: Option<String>) -
                 .contains(value)
         })
         .unwrap_or(BILLING_RESERVATION_LEASE_DEFAULT_SECONDS)
+}
+
+fn normalize_realtime_billing_orphan_sweep_limit(value: Option<String>) -> i64 {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| (1..=BILLING_ORPHAN_SWEEP_MAX_LIMIT).contains(value))
+        .unwrap_or(BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT)
 }
 
 fn realtime_billing_settlement_write_metadata(
@@ -8480,6 +8521,8 @@ mod tests {
     fn realtime_billing_reservation_lease_contract_is_compiled_and_redacted() {
         assert!(realtime_billing_reservation_lease_compiled());
         assert!(realtime_billing_bridge_segment_compiled());
+        assert!(realtime_billing_global_orphan_recovery_compiled());
+        assert_eq!(realtime_billing_orphan_recovery_grace_seconds(), 300);
         assert_eq!(
             normalize_realtime_billing_reservation_lease_seconds(None),
             BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
@@ -8491,6 +8534,19 @@ mod tests {
         assert_eq!(
             normalize_realtime_billing_reservation_lease_seconds(Some(" 900 ".to_string())),
             900
+        );
+        assert_eq!(normalize_realtime_billing_orphan_sweep_limit(None), 32);
+        assert_eq!(
+            normalize_realtime_billing_orphan_sweep_limit(Some(" 64 ".to_string())),
+            64
+        );
+        assert_eq!(
+            normalize_realtime_billing_orphan_sweep_limit(Some("0".to_string())),
+            32
+        );
+        assert_eq!(
+            normalize_realtime_billing_orphan_sweep_limit(Some("65".to_string())),
+            32
         );
 
         let mut queue = RealtimeBillingReservationLeaseQueue::default();

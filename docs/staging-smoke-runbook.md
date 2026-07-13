@@ -40,8 +40,8 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 21 migrations, 26 required tables, 57
-  incremental key columns, and 15 key indexes, including the 0020 and 0021
+- `bun run verify:sqlite` reports 22 migrations, 27 required tables, 68
+  incremental key columns, and 17 key indexes, including the 0020 and 0021
   active-reservation guards.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
@@ -137,9 +137,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0021 are
-  contiguous; the local SQLite verifier finds all 26 required tables, 57
-  incremental key columns, and 15 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0022 are
+  contiguous; the local SQLite verifier finds all 27 required tables, 68
+  incremental key columns, and 17 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -1389,3 +1389,61 @@ preserving a safe marker such as `x-request-id`. Repeat a WebSocket upgrade and
 prove the preview-header rule does not replace or break upgrade handling.
 Require `wfp_preview_response_security_headers_compiled=true` in the archived
 capability snapshot.
+
+## Phase 4c: Global Realtime Orphan Recovery
+
+Run this phase only in an isolated staging D1 after the exposed credential has
+been revoked and a replacement least-privilege credential is active. Keep
+`REALTIME_SESSION_V1_ENABLED=false` and
+`REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED=false` during initial migration and
+fixture setup.
+
+Preconditions:
+
+1. `bun run check` and `bun run check:do-lifecycle-runtime` pass at the exact
+   candidate commit.
+2. Remote `d1_migrations` is the exact 22-file set through
+   `0022_realtime_billing_global_recovery.sql`; archive redacted Wrangler output
+   and `/api/platform/capabilities` with `d1_migration_ready=true`.
+3. Capabilities report global recovery compiled, grace 300, limit in `1..64`,
+   ledger status compiled, recovery disabled, and v1 cutover false.
+4. Workers Logs and the Realtime recovery dashboard/alert are visible before a
+   money-moving fixture is inserted.
+
+Execution order:
+
+1. Deploy with recovery disabled and sweep limit 1. Trigger cron once; prove no
+   reservation or quota row changes.
+2. Insert one isolated, already-debited reservation whose lease expired less
+   than 300 seconds ago. Enable recovery, trigger cron, and prove it remains
+   reserved with unchanged user/token quota.
+3. Move only that fixture beyond `lease + 300s`, trigger two overlapping
+   schedules, and prove one `reserved -> refunded` CAS, one user credit, one
+   token credit, no replay/audit duplication, and an aggregate successful sweep.
+4. Create an older fixture with an intentionally missing guarded dependency and
+   a newer valid fixture. The first schedule must defer the older row without
+   partial quota changes; the next schedule must recover the newer row. Verify
+   attempt count, `recovery_next_attempt_at`, failed/deferred logs, and no raw
+   key/session/prompt/credential in output.
+5. Run the settlement boundary fixture: settlement succeeds at the exact
+   deadline; at deadline plus one second it is rejected and global recovery is
+   the only terminal winner. Repeat across DO eviction/redeploy with a real
+   authenticated reserve and settlement-retry owner.
+6. Query `GET /api/platform/realtime-billing/ledger/status` with an admin
+   session. Require `Cache-Control: no-store`, only SHA-256 fingerprints,
+   explicit policy/outcome states, and aggregate sweep counters. Unauthenticated
+   access must fail; public status and WebSocket status must contain no records.
+
+Rollback:
+
+1. Disable new Realtime admission.
+2. Set `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED=false` and redeploy; prove a
+   subsequent cron performs no global refund.
+3. Preserve all D1 rows and logs. Reconcile reserved/settled/refunded counts and
+   every fixture quota delta before cleanup.
+4. Route selected traffic back to Go/VPS. Do not reverse migration 0022 during
+   an incident; its columns/indexes are inert while the gate is false.
+
+Any wrong winner, double mutation, stale successful-sweep signal, unbounded
+query count, raw identifier leakage, or unexplained D1/DO ownership state is an
+immediate G7 abort. Local Workerd evidence does not satisfy this remote phase.

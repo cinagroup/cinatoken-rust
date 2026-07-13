@@ -175,6 +175,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             platform_gateway::capabilities(req, ctx.env).await
         })
         .get_async(
+            "/api/platform/realtime-billing/ledger/status",
+            |req, ctx| async move {
+                platform_gateway::realtime_billing_ledger_status(req, ctx.env).await
+            },
+        )
+        .get_async(
             "/api/platform/task-runner/:task_id/status",
             |req, ctx| async move {
                 let task_id = ctx.param("task_id").cloned();
@@ -1387,6 +1393,70 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
+    if realtime_session::realtime_billing_orphan_recovery_enabled(&env) {
+        match d1_repositories::realtime_billing_global_recovery_schema_ready(&db).await {
+            Ok(true) => {
+                let orphan_sweep_limit =
+                    realtime_session::realtime_billing_orphan_sweep_limit(&env);
+                if let Err(err) =
+                    d1_repositories::mark_realtime_billing_recovery_started(&db, now).await
+                {
+                    worker::console_error!(
+                        "realtime billing orphan sweep start status failed: {err}"
+                    );
+                }
+                match d1_repositories::sweep_expired_realtime_billing_reservations(
+                    &db,
+                    now,
+                    orphan_sweep_limit,
+                )
+                .await
+                {
+                    Ok(summary) => {
+                        if let Err(err) = d1_repositories::mark_realtime_billing_recovery_completed(
+                            &db, now, summary,
+                        )
+                        .await
+                        {
+                            worker::console_error!(
+                                "realtime billing orphan sweep completion status failed: {err}"
+                            );
+                        }
+                        if summary.failed > 0 {
+                            worker::console_error!(
+                                "realtime billing orphan sweep: candidates={} refunded={} finalized={} active={} missing={} failed={} deferred={}",
+                                summary.candidates,
+                                summary.refunded,
+                                summary.already_finalized,
+                                summary.lease_active,
+                                summary.not_found,
+                                summary.failed,
+                                summary.deferred
+                            );
+                        } else {
+                            worker::console_log!(
+                                "realtime billing orphan sweep: candidates={} refunded={} finalized={} active={} missing={} failed=0 deferred=0",
+                                summary.candidates,
+                                summary.refunded,
+                                summary.already_finalized,
+                                summary.lease_active,
+                                summary.not_found
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        worker::console_error!("realtime billing orphan sweep failed: {err}")
+                    }
+                }
+            }
+            Ok(false) => worker::console_error!(
+                "realtime billing orphan sweep refused: migration 0022 is not applied"
+            ),
+            Err(err) => worker::console_error!(
+                "realtime billing orphan sweep migration check failed: {err}"
+            ),
+        }
+    }
     let poller_config = task_orchestration::task_poller_config_from_env(&env);
     match task_orchestration::sweep_timed_out_tasks(
         &db,

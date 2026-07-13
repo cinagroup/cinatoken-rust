@@ -111,16 +111,20 @@ Result: local D1/config prerequisites pass, but G1 remains **NO-GO**. No local
 command or local Worker smoke substitutes for authenticated staging deploy,
 remote D1 migration output, `/api/status`, capabilities, logs, or traces.
 
-### 2026-07-12 Bridge-Segment Migration Update
+### 2026-07-13 Global Realtime Recovery Migration Update
 
-- The current compiled and SQLite-verified chain contains 21 migrations through
-  `0021_realtime_billing_bridge_segments.sql`, with 26 required tables, 57
-  incremental key columns, and 15 key indexes.
+- The current compiled and SQLite-verified chain contains 22 migrations through
+  `0022_realtime_billing_global_recovery.sql`, with 27 required tables, 68
+  incremental key columns, and 17 key indexes.
 - Migration 0021 fails closed while any Realtime billing reservation remains
   `reserved`; disable Realtime settlement writes, reconcile the ledger to zero,
   and archive redacted evidence before applying it.
 - The 2026-07-10 local Wrangler 20/20 apply remains historical evidence and
-  must be refreshed through 0021. No authenticated staging apply has occurred.
+  must be refreshed through 0022. No authenticated staging apply has occurred.
+- Migration 0022 adds the indexed global expiry scan, bounded retry-deferral
+  metadata, and a singleton aggregate sweep status. It does not start refunds:
+  `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED` remains `false` in every tracked
+  environment until isolated staging passes the recovery subgate.
 
 ### 2026-07-12 Native Rate Limit Snapshot
 
@@ -390,6 +394,8 @@ captured.
 | `REALTIME_SESSION_V1_ENABLED` | Requests the OpenAI-compatible `/v1/realtime` WebSocket entry after relay-token auth/model/rate-limit checks; the route still fails closed unless settlement writes are enabled | Upstream Realtime bridge, billing/audit settlement, hibernation/resume smoke, persisted metrics smoke, unsupported-control no-echo smoke, and live protocol replay with `bun run smoke:realtime-session -- --mode v1`; keep off until G7 approval |
 | `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` | Permits Realtime D1 quota/replay/audit settlement and allows the public v1 route to proceed past its billing interlock | Isolated staging D1 only until idempotent pre-reserve/refund, per-response replay identity, two-response settlement, bounded alarm retry, rollback, and no-double-charge evidence pass; explicitly false in default/staging/production config |
 | `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` | Plain non-secret var that bounds how long a newly created per-response reservation may remain unsettled before the Durable Object's shared alarm attempts an idempotent D1 refund | Default and minimum `900`; accepted range `900..3600`; missing, unparsable, or out-of-range values fall back to `900`. The minimum is the 840-second bridge lifetime plus a mandatory 60-second close/clock-skew margin, preventing a live response from being refunded before its terminal usage arrives. Changes do not rewrite persisted deadlines. Archive the capability value, prove a not-yet-due lease is untouched and an expired lease refunds once after eviction/restart, and alert on repeated refund attempts before production canary. Expiry refunds continue when the settlement write gate is off |
+| `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED` | Allows the scheduled Worker to scan globally orphaned Realtime reservations after the settlement grace deadline | Default `false` in default/staging/production. Enable only after 0022 exact-set readiness, isolated-staging accounting snapshots, concurrent schedule proof, failed-head fairness, alerting, and rollback rehearsal. Disable immediately to stop new global refund attempts; terminal CAS results remain authoritative. |
+| `REALTIME_BILLING_ORPHAN_SWEEP_LIMIT` | Bounds candidates handled before the shared task pollers run | Default `32`, accepted `1..64`, invalid values fall back to 32. The defensive maximum preserves D1 query/subrequest headroom for per-candidate guarded batches and the other cron workloads; raise only from measured rows-read/query-count evidence. |
 
 ### WFP tenant artifact, relay authority, and outbound service
 
@@ -610,15 +616,17 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-   `d1_migration_status_available=true`, applied count `21`, latest/expected
-   `0021_realtime_billing_bridge_segments.sql`, exact set match, and
+   `d1_migration_status_available=true`, applied count `22`, latest/expected
+   `0022_realtime_billing_global_recovery.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0021 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0022 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
    reconstructed across the lease and bridge-segment schema transitions.
+   Apply 0022 with global recovery disabled, then complete the isolated recovery
+   smoke before enabling its gate.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.

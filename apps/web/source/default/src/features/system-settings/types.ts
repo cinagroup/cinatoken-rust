@@ -494,6 +494,12 @@ export type PlatformCapabilities = {
   realtime_session_billing_settlement_retry_compiled: boolean
   realtime_session_billing_reservation_lease_compiled: boolean
   realtime_session_billing_reservation_lease_seconds: number
+  realtime_session_billing_global_orphan_recovery_compiled: boolean
+  realtime_session_billing_global_orphan_recovery_enabled: boolean
+  realtime_session_billing_global_orphan_recovery_ready: boolean
+  realtime_session_billing_orphan_recovery_grace_seconds: number
+  realtime_session_billing_orphan_sweep_limit: number
+  realtime_session_billing_ledger_status_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_enabled: boolean
   realtime_session_billing_settlement_staging_smoke_ready: boolean

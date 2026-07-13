@@ -363,3 +363,22 @@ gates close. No WFP tenant deployment, outbound-service namespace attachment,
 outbound-secret ownership readback, external replay binding readback,
 signed-authority billing canary, live AI egress, or live replay-race evidence is
 claimed by this status document. Production remains **NO-GO**.
+
+## 2026-07-13 Realtime Orphan Recovery Status
+
+The previously listed absence of a global D1 scanner is now locally addressed.
+Migration 0022 supplies the indexed scan, bounded retry scheduling fields, and
+aggregate sweep state. The root scheduled Worker enforces a 300-second
+settlement grace/deadline, defaults recovery off, limits each pass to 32
+candidates with a hard maximum of 64, and reuses the terminal D1 refund CAS.
+
+Release Workerd tests prove inside-grace no-op, one refund under concurrent
+scheduled delivery, replay no-op, and failed-oldest-row deferral followed by
+newer-row progress. The admin endpoint exposes only hashed scope/outcome and
+policy state with `no-store`; it does not claim to know the running DO owner.
+
+This closes a local implementation gap, not G7. Remote migration 0022,
+authenticated reserve/settlement retry across eviction, D1/DO owner
+correlation, query-budget measurement, alerts, provider/billing reconciliation,
+credential rotation, canary, and rollback remain blockers. Production remains
+**NO-GO**.

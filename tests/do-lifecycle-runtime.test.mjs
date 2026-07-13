@@ -1,12 +1,16 @@
 import {
   applyD1Migrations,
+  createExecutionContext,
+  createScheduledController,
   env,
   evictDurableObject,
   reset,
   runDurableObjectAlarm,
   runInDurableObject,
+  waitOnExecutionContext,
 } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
+import { scheduled as runScheduled } from "./fixtures/do-runtime-worker.mjs";
 
 const authoritySecret = "0123456789abcdef0123456789abcdef";
 const authorityDomain = new Uint8Array([
@@ -272,6 +276,85 @@ describe("Rust Durable Object lifecycle contracts", () => {
       token: { remain_quota: 500, used_quota: 0 },
     });
     second.close(1000, "test complete");
+  }, 30_000);
+
+  it("globally refunds an expired Realtime reservation once through scheduled recovery", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount();
+    const now = Math.floor(Date.now() / 1000);
+    const expiredKey = "rtreserve-runtime-global-expired";
+    await seedRealtimeReservation({
+      reservationKey: expiredKey,
+      session: "runtime-global-expired",
+      bridgeSegment: "rtsegment-runtime-global-expired",
+      leaseExpiresAt: now - 1,
+    });
+
+    await runScheduledRecovery();
+    await expect(realtimeBillingState(expiredKey)).resolves.toMatchObject({
+      reservation: { status: "reserved" },
+      user: { quota: 900 },
+      token: { remain_quota: 400, used_quota: 100 },
+    });
+    await env.DB.prepare(
+      "UPDATE realtime_billing_reservations SET lease_expires_at = ?1 WHERE reservation_key = ?2",
+    )
+      .bind(now - 301, expiredKey)
+      .run();
+
+    await Promise.all([runScheduledRecovery(), runScheduledRecovery()]);
+    await expect(waitForRealtimeRefund(expiredKey)).resolves.toMatchObject({
+      reservation: { status: "refunded" },
+      user: { quota: 1_000 },
+      token: { remain_quota: 500, used_quota: 0 },
+    });
+    await runScheduledRecovery();
+    await expect(realtimeBillingState(expiredKey)).resolves.toMatchObject({
+      reservation: { status: "refunded" },
+      user: { quota: 1_000 },
+      token: { remain_quota: 500, used_quota: 0 },
+    });
+  }, 30_000);
+
+  it("defers a failed orphan so a newer valid reservation can recover", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount({ userQuota: 800, tokenRemainQuota: 300, tokenUsedQuota: 200 });
+    const now = Math.floor(Date.now() / 1000);
+    const blockedKey = "rtreserve-runtime-blocked";
+    const recoverableKey = "rtreserve-runtime-recoverable";
+    await seedRealtimeReservation({
+      reservationKey: blockedKey,
+      session: "runtime-blocked",
+      bridgeSegment: "rtsegment-runtime-blocked",
+      leaseExpiresAt: now - 302,
+    });
+    await env.DB.prepare(
+      "UPDATE realtime_billing_reservations SET user_id = 999 WHERE reservation_key = ?1",
+    )
+      .bind(blockedKey)
+      .run();
+    await seedRealtimeReservation({
+      reservationKey: recoverableKey,
+      session: "runtime-recoverable",
+      bridgeSegment: "rtsegment-runtime-recoverable",
+      leaseExpiresAt: now - 301,
+    });
+
+    await runScheduledRecovery();
+    await expect(realtimeBillingState(blockedKey)).resolves.toMatchObject({
+      reservation: { status: "reserved", recovery_attempt_count: 1 },
+      user: { quota: 800 },
+      token: { remain_quota: 300, used_quota: 200 },
+    });
+    await runScheduledRecovery();
+    await expect(waitForRealtimeRefund(recoverableKey)).resolves.toMatchObject({
+      reservation: { status: "refunded" },
+      user: { quota: 900 },
+      token: { remain_quota: 400, used_quota: 100 },
+    });
+    await expect(realtimeBillingState(blockedKey)).resolves.toMatchObject({
+      reservation: { status: "reserved", recovery_attempt_count: 1 },
+    });
   }, 30_000);
 
   it("rejects tampered authority and a non-canonical replay shard", async () => {
@@ -552,14 +635,18 @@ function providerState() {
   ).then((response) => response.json());
 }
 
-async function seedRealtimeBillingAccount() {
+async function seedRealtimeBillingAccount({
+  userQuota = 900,
+  tokenRemainQuota = 400,
+  tokenUsedQuota = 100,
+} = {}) {
   await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO users (id, username, password, quota) VALUES (1, 'runtime-user', 'x', 900)",
-    ),
+      "INSERT INTO users (id, username, password, quota) VALUES (1, 'runtime-user', 'x', ?1)",
+    ).bind(userQuota),
     env.DB.prepare(
-      "INSERT INTO tokens (id, user_id, key, remain_quota, used_quota) VALUES (1, 1, 'runtime-token', 400, 100)",
-    ),
+      "INSERT INTO tokens (id, user_id, key, remain_quota, used_quota) VALUES (1, 1, 'runtime-token', ?1, ?2)",
+    ).bind(tokenRemainQuota, tokenUsedQuota),
   ]);
 }
 
@@ -585,7 +672,7 @@ async function seedRealtimeReservation({
 async function realtimeBillingState(reservationKey) {
   const [reservation, user, token] = await Promise.all([
     env.DB.prepare(
-      "SELECT status, bridge_segment, refunded_at FROM realtime_billing_reservations WHERE reservation_key = ?1",
+      "SELECT status, bridge_segment, refunded_at, recovery_attempt_count, recovery_next_attempt_at FROM realtime_billing_reservations WHERE reservation_key = ?1",
     )
       .bind(reservationKey)
       .first(),
@@ -634,4 +721,14 @@ function withTimeout(promise, milliseconds, label) {
       throw new Error(`timed out waiting for ${label}`);
     }),
   ]);
+}
+
+async function runScheduledRecovery() {
+  const ctx = createExecutionContext();
+  const controller = createScheduledController({
+    cron: "* * * * *",
+    scheduledTime: Date.now(),
+  });
+  await runScheduled(controller, env, ctx);
+  await waitOnExecutionContext(ctx);
 }

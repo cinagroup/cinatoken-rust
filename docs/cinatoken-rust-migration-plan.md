@@ -11456,3 +11456,64 @@ tests, deployed direct/Gateway/WFP runs beyond the original lease, remote D1
 migration, provider/audit/accounting reconciliation, credential rotation,
 alerts, and rollback. No remote resource, credential, paid provider call, or
 deployment was used. Recovery and production remain **NO-GO**.
+
+### 22.187 2026-07-14 Durable HTTP Billing Finalization Queue
+
+This increment implements the default-off durable finalization transport
+designed in 22.186 without changing financial ownership. The central Rust
+gateway remains the only ordinary HTTP billing writer; WFP tenant/outbound and
+AI Gateway remain transport-only, and ordinary HTTP requests do not move into a
+Durable Object.
+
+Implemented locally:
+
+- Migration `0024_relay_billing_finalization_events.sql` adds
+  `logs.billing_finalization_event_id` and a unique partial index. The exact D1
+  contract is now 24 contiguous migrations, 29 tables, 106 explicitly checked
+  incremental columns, and 21 explicitly checked key indexes.
+- Positive reservation-backed tiered settlement/refund can emit a bounded
+  versioned event to `BILLING_QUEUE`. The event freezes the final action, quota,
+  reason, reservation/expression identity, selected channel/group, and a strict
+  audit projection. It excludes username, token name, client IP, raw request
+  IDs, upstream request IDs, credentials, and request bodies.
+- Queue use requires `RELAY_BILLING_FINALIZATION_QUEUE_ENABLED=true` and a
+  producer binding. Every tracked Wrangler environment keeps the gate false.
+  Producer failure or a disappearing binding falls back to the same idempotent
+  D1 finalizer; flat billing and asynchronous task billing are unchanged.
+- The Worker Queue handler deserializes `serde_json::Value` per message, checks
+  the exact environment queue name and payload family, ACKs only successful or
+  matching CAS replays, and retries malformed, cross-queue, conflicting, or D1-
+  failed messages individually. Environment-specific consumers use bounded
+  batches, ten retries, and dedicated DLQs.
+- Platform capabilities and the React/Bun operations panel expose the enable
+  gate, producer binding, consumer, DLQ contract, idempotent replay, reconcile,
+  runtime readiness, and staging proof separately. A proof bit can no longer
+  display Verified when its prerequisites are false.
+- `tools/audit_billing_queue_config.mjs` enforces the three-environment
+  producer/consumer/DLQ/default-off contract and is part of `bun run check`.
+
+Local evidence:
+
+- `cargo test -p cinatoken-worker --lib`: 640/640.
+- Release Workerd lifecycle suite: 18/18. The real Rust Queue entrypoint proves
+  normal settlement and refund, matching duplicate ACK without repeated quota/
+  request/audit mutation, cross-queue retry, and poison-message isolation in a
+  mixed batch. Controlled stream failures remain intentional fault injection.
+- Frontend readiness: 25/25. Queue config audit and exact D1 config audit pass.
+- `python tools/verify_sqlite.py`: 24 migrations, 29 tables, 106 incremental
+  columns, and 21 key indexes after adding the explicit 0024 assertions.
+- The complete `bun run check` release gate passes, including release
+  main/tenant/outbound Rust/Wasm builds, Workerd 18/18, Playground 1/1,
+  frontend build and audits, D1 verification, local smoke contracts, workspace
+  tests, and all three wasm32 checks.
+
+Production interpretation remains conservative. Consumer, DLQ configuration,
+and CAS replay are locally implemented, but the operator reconcile/DLQ replay
+workflow is not. `relay_billing_finalization_reconcile_compiled=false` therefore
+forces finalization runtime readiness, scheduled orphan recovery, and cutover
+readiness false even when a binding or proof flag is present. Remote Queue/DLQ
+creation and readback, migration 0024 application, duplicate/retry exhaustion,
+DLQ retention/alerting, D1 ambiguity, client cancellation, settlement/recovery
+races, provider/accounting reconciliation, credential rotation, canary, and
+rollback evidence remain required. This is local E3/E4 evidence only;
+production remains **NO-GO**.

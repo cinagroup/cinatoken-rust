@@ -44,10 +44,22 @@ export default defineConfig({
           RELAY_BILLING_ORPHAN_SWEEP_LIMIT: "32",
           RELAY_BILLING_RESERVATION_LEASE_SECONDS: "300",
           RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS: "5",
+          RELAY_BILLING_FINALIZATION_QUEUE_ENABLED: "true",
           RELAY_MISSING_USAGE_ESTIMATE_ENABLED: "true",
           TEST_D1_MIGRATIONS: d1Migrations,
         },
         d1Databases: { DB: "do-runtime-test" },
+        queueProducers: {
+          BILLING_QUEUE: "cinatoken-rust-billing-finalization-runtime",
+        },
+        queueConsumers: {
+          "cinatoken-rust-billing-finalization-runtime": {
+            maxBatchSize: 1,
+            maxBatchTimeout: 0,
+            maxRetries: 3,
+            deadLetterQueue: "cinatoken-rust-billing-finalization-runtime-dlq",
+          },
+        },
         outboundService: "realtime-provider-mock",
         serviceBindings: {
           WFP_TENANT_RUNTIME: "wfp-tenant-runtime",

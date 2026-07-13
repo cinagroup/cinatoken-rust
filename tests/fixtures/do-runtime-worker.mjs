@@ -10,5 +10,9 @@ export function scheduled(controller, env, ctx) {
   const worker = new WorkerEntrypoint(ctx, env);
   return worker.scheduled(controller);
 }
+export function queue(batch, env, ctx) {
+  const worker = new WorkerEntrypoint(ctx, env);
+  return worker.queue(batch);
+}
 
 export default WorkerEntrypoint;

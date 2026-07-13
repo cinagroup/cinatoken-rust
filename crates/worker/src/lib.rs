@@ -31,6 +31,7 @@ mod d1_repositories;
 #[allow(dead_code)]
 mod flow_state;
 mod relay;
+mod relay_billing_queue;
 mod relay_billing_smoke;
 // Provider-independent task lifecycle persistence + CAS settlement guard (item
 // 4.2). Foundation ahead of the task orchestration that consumes it; the module
@@ -57,10 +58,11 @@ mod webauthn;
 mod wfp_authority_replay;
 mod wfp_tenant;
 
-use worker::{event, Context, Env, MessageBatch, Method, Request, Response, Result, Router};
+use worker::{
+    event, Context, Env, MessageBatch, MessageExt, Method, Request, Response, Result, Router,
+};
 
 use cinatoken_gateway::{plan_request, GatewayConfig, GatewayMethod, GatewayOwner, GatewayRequest};
-use cinatoken_storage::AuditLogEvent;
 use worker::D1Type;
 
 /// Re-export the i64→i32 clamp helper for the queue consumer's D1 binding.
@@ -1408,50 +1410,56 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         } else {
             match d1_repositories::relay_billing_reservation_schema_ready(&db).await {
                 Ok(true) => {
-                    if let Err(err) =
-                        d1_repositories::mark_relay_billing_recovery_started(&db, now).await
-                    {
-                        worker::console_error!(
-                            "relay billing orphan sweep start status failed: {err}"
-                        );
-                    }
-                    match d1_repositories::sweep_expired_relay_billing_reservations(
-                        &db,
-                        now,
-                        relay::relay_billing_orphan_sweep_limit(&env),
-                    )
-                    .await
-                    {
-                        Ok(summary) => {
-                            if let Err(err) =
-                                d1_repositories::mark_relay_billing_recovery_completed(
-                                    &db, now, summary,
-                                )
-                                .await
-                            {
-                                worker::console_error!(
-                                    "relay billing orphan sweep completion status failed: {err}"
+                    if relay::relay_billing_orphan_recovery_execution_ready(&env, true) {
+                        if let Err(err) =
+                            d1_repositories::mark_relay_billing_recovery_started(&db, now).await
+                        {
+                            worker::console_error!(
+                                "relay billing orphan sweep start status failed: {err}"
+                            );
+                        }
+                        match d1_repositories::sweep_expired_relay_billing_reservations(
+                            &db,
+                            now,
+                            relay::relay_billing_orphan_sweep_limit(&env),
+                        )
+                        .await
+                        {
+                            Ok(summary) => {
+                                if let Err(err) =
+                                    d1_repositories::mark_relay_billing_recovery_completed(
+                                        &db, now, summary,
+                                    )
+                                    .await
+                                {
+                                    worker::console_error!(
+                                        "relay billing orphan sweep completion status failed: {err}"
+                                    );
+                                }
+                                worker::console_log!(
+                                    "relay billing orphan sweep: candidates={} refunded={} recovery_required={} finalized={} active={} missing={} failed={} deferred={}",
+                                    summary.candidates,
+                                    summary.refunded,
+                                    summary.recovery_required,
+                                    summary.already_finalized,
+                                    summary.lease_active,
+                                    summary.not_found,
+                                    summary.failed,
+                                    summary.deferred
                                 );
                             }
-                            worker::console_log!(
-                            "relay billing orphan sweep: candidates={} refunded={} recovery_required={} finalized={} active={} missing={} failed={} deferred={}",
-                            summary.candidates,
-                            summary.refunded,
-                            summary.recovery_required,
-                            summary.already_finalized,
-                            summary.lease_active,
-                            summary.not_found,
-                            summary.failed,
-                            summary.deferred
+                            Err(err) => {
+                                worker::console_error!("relay billing orphan sweep failed: {err}")
+                            }
+                        }
+                    } else {
+                        worker::console_error!(
+                            "relay billing orphan sweep refused: durable finalization cutover prerequisites are not met"
                         );
-                        }
-                        Err(err) => {
-                            worker::console_error!("relay billing orphan sweep failed: {err}")
-                        }
                     }
                 }
                 Ok(false) => worker::console_error!(
-                    "relay billing orphan sweep refused: migration 0023 is not applied"
+                    "relay billing orphan sweep refused: migrations 0023-0024 are not applied"
                 ),
                 Err(err) => {
                     worker::console_error!(
@@ -1563,14 +1571,20 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
 
 #[event(queue)]
 pub async fn queue(
-    message_batch: MessageBatch<AuditLogEvent>,
+    message_batch: MessageBatch<serde_json::Value>,
     env: Env,
     _ctx: Context,
 ) -> Result<()> {
+    let queue_name = message_batch.queue();
+    let Some(queue_kind) = relay_billing_queue::worker_queue_kind(&queue_name) else {
+        worker::console_error!("queue {queue_name}: queue name is not owned by this Worker");
+        message_batch.retry_all();
+        return Ok(());
+    };
     let messages = match message_batch.messages() {
         Ok(messages) => messages,
         Err(err) => {
-            worker::console_error!("LOG_QUEUE: failed to deserialize batch: {err}");
+            worker::console_error!("queue {queue_name}: failed to deserialize batch: {err}");
             message_batch.retry_all();
             return Ok(());
         }
@@ -1582,11 +1596,66 @@ pub async fn queue(
     let db = match env.d1("DB") {
         Ok(db) => db,
         Err(err) => {
-            worker::console_error!("LOG_QUEUE: D1 binding unavailable: {err}");
+            worker::console_error!("queue {queue_name}: D1 binding unavailable: {err}");
             message_batch.retry_all();
             return Ok(());
         }
     };
+
+    let mut audit_messages = Vec::new();
+    for message in &messages {
+        let event = match serde_json::from_value::<relay_billing_queue::WorkerQueueEvent>(
+            message.body().clone(),
+        ) {
+            Ok(event) => event,
+            Err(err) => {
+                worker::console_error!("queue {queue_name}: invalid message shape: {err}");
+                message.retry();
+                continue;
+            }
+        };
+        match (queue_kind, event) {
+            (
+                relay_billing_queue::WorkerQueueKind::RelayBillingFinalization,
+                relay_billing_queue::WorkerQueueEvent::RelayBillingFinalization(event),
+            ) => {
+                match relay_billing_queue::apply_relay_billing_finalization_event(&db, &event).await
+                {
+                    Ok(outcome) => {
+                        worker::console_log!(
+                            "BILLING_QUEUE: processed {} as {:?}",
+                            event.event_id,
+                            outcome
+                        );
+                        message.ack();
+                    }
+                    Err(err) => {
+                        worker::console_error!(
+                            "BILLING_QUEUE: finalization event {} failed: {err}",
+                            event.event_id
+                        );
+                        message.retry();
+                    }
+                }
+            }
+            (
+                relay_billing_queue::WorkerQueueKind::AuditLog,
+                relay_billing_queue::WorkerQueueEvent::AuditLog(event),
+            ) => {
+                audit_messages.push((message, event));
+            }
+            _ => {
+                worker::console_error!(
+                    "queue {queue_name}: message type does not belong to this queue"
+                );
+                message.retry();
+            }
+        }
+    }
+
+    if audit_messages.is_empty() {
+        return Ok(());
+    }
 
     // Prepare the INSERT once, bind each event's columns, and execute all
     // statements in a single D1 batch round-trip.
@@ -1615,9 +1684,9 @@ pub async fn queue(
         "#,
     );
 
-    let mut stmts = Vec::with_capacity(messages.len());
-    for msg in &messages {
-        let event = msg.body();
+    let mut stmts = Vec::with_capacity(audit_messages.len());
+    let mut bound_messages = Vec::with_capacity(audit_messages.len());
+    for (message, event) in &audit_messages {
         let args = [
             D1Type::Integer(d1_i32(event.user_id)),
             D1Type::Integer(d1_i32(event.created_at)),
@@ -1645,27 +1714,34 @@ pub async fn queue(
             &stmt
         };
         match event_stmt.bind_refs(&args) {
-            Ok(bound) => stmts.push(bound),
+            Ok(bound) => {
+                stmts.push(bound);
+                bound_messages.push(message);
+            }
             Err(err) => {
                 worker::console_error!("LOG_QUEUE: failed to bind event: {err}");
+                message.retry();
             }
         }
     }
 
     if stmts.is_empty() {
-        worker::console_warn!("LOG_QUEUE: no bindable events in batch, acking");
-        message_batch.ack_all();
+        worker::console_warn!("LOG_QUEUE: no bindable events in batch, retrying individually");
         return Ok(());
     }
 
     match db.batch(stmts).await {
         Ok(_) => {
-            message_batch.ack_all();
+            for message in bound_messages {
+                message.ack();
+            }
             Ok(())
         }
         Err(err) => {
             worker::console_error!("LOG_QUEUE: D1 batch insert failed: {err}");
-            message_batch.retry_all();
+            for message in bound_messages {
+                message.retry();
+            }
             Ok(())
         }
     }

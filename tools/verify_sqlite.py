@@ -38,6 +38,7 @@ REQUIRED_TABLES = [
 
 REQUIRED_COLUMNS = {
     "abilities": {"tag"},
+    "logs": {"billing_finalization_event_id"},
     "topups": {"credited", "payment_provider"},
     "subscription_orders": {
         "money",
@@ -159,6 +160,7 @@ REQUIRED_COLUMNS = {
 
 REQUIRED_INDEXES = {
     "abilities": {"uq_abilities_group_model_channel": True},
+    "logs": {"idx_logs_billing_finalization_event_id": True},
     "prefill_groups": {"uk_prefill_name": True},
     "subscription_orders": {"idx_subscription_orders_trade_no": True},
     "topups": {"idx_topups_payment_provider_status": False},

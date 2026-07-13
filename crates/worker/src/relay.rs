@@ -112,6 +112,8 @@ pub(crate) const RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV:
     "RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED";
 pub(crate) const RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV: &str =
     "RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED";
+pub(crate) const RELAY_BILLING_FINALIZATION_QUEUE_ENABLED_ENV: &str =
+    "RELAY_BILLING_FINALIZATION_QUEUE_ENABLED";
 pub(crate) const RELAY_BILLING_ORPHAN_SWEEP_LIMIT_ENV: &str = "RELAY_BILLING_ORPHAN_SWEEP_LIMIT";
 pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_ENABLED_ENV: &str =
     "RELAY_BILLING_ORPHAN_RECOVERY_ENABLED";
@@ -122,7 +124,6 @@ const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_DEFAULT_SECONDS: i64 = 900;
 const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS: i64 = 5;
 const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_RETRY_MAX_SECONDS: i64 = 60;
 const RELAY_BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT: i64 = 32;
-pub(crate) const RELAY_BILLING_FINALIZATION_QUEUE_BINDING: &str = "BILLING_QUEUE";
 const AI_GATEWAY_DIRECT_FALLBACK_AUDIT_HEADER: &str =
     "x-cinatoken-internal-ai-gateway-direct-fallback";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
@@ -5806,7 +5807,83 @@ pub(crate) fn relay_billing_stream_error_usage_recovery_compiled() -> bool {
 }
 
 pub(crate) fn relay_billing_finalization_replay_compiled() -> bool {
+    true
+}
+
+pub(crate) fn relay_billing_finalization_consumer_compiled() -> bool {
+    true
+}
+
+pub(crate) fn relay_billing_finalization_dlq_contract_compiled() -> bool {
+    true
+}
+
+pub(crate) fn relay_billing_finalization_reconcile_compiled() -> bool {
     false
+}
+
+pub(crate) fn relay_billing_finalization_queue_enabled(env: &Env) -> bool {
+    env_flag(optional_env_var(env, RELAY_BILLING_FINALIZATION_QUEUE_ENABLED_ENV).as_deref())
+}
+
+pub(crate) fn relay_billing_finalization_runtime_ready(env: &Env, d1_ready: bool) -> bool {
+    relay_billing_finalization_runtime_contract_ready(
+        relay_billing_finalization_queue_enabled(env),
+        env.queue(crate::relay_billing_queue::BILLING_QUEUE_BINDING)
+            .is_ok(),
+        relay_billing_finalization_consumer_compiled(),
+        relay_billing_finalization_dlq_contract_compiled(),
+        relay_billing_finalization_replay_compiled(),
+        relay_billing_finalization_reconcile_compiled(),
+        d1_ready,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn relay_billing_finalization_runtime_contract_ready(
+    enabled: bool,
+    queue_available: bool,
+    consumer_compiled: bool,
+    dlq_contract_compiled: bool,
+    replay_compiled: bool,
+    reconcile_compiled: bool,
+    d1_ready: bool,
+) -> bool {
+    enabled
+        && queue_available
+        && consumer_compiled
+        && dlq_contract_compiled
+        && replay_compiled
+        && reconcile_compiled
+        && d1_ready
+}
+
+pub(crate) fn relay_billing_orphan_recovery_execution_ready(env: &Env, d1_ready: bool) -> bool {
+    let heartbeat = relay_billing_stream_lease_heartbeat_runtime_status(env);
+    relay_billing_reservation_ledger_compiled()
+        && relay_billing_stream_lease_renewal_compiled()
+        && relay_billing_stream_error_usage_recovery_compiled()
+        && heartbeat.configured
+        && heartbeat.valid
+        && relay_billing_missing_usage_estimate_enabled(env)
+        && relay_billing_orphan_recovery_enabled(env)
+        && d1_ready
+        && env_flag(
+            optional_env_var(env, RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV)
+                .as_deref(),
+        )
+        && env_flag(
+            optional_env_var(
+                env,
+                RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV,
+            )
+            .as_deref(),
+        )
+        && relay_billing_finalization_runtime_ready(env, d1_ready)
+        && env_flag(
+            optional_env_var(env, RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV)
+                .as_deref(),
+        )
 }
 
 pub(crate) fn relay_billing_orphan_recovery_enabled(env: &Env) -> bool {
@@ -8943,6 +9020,102 @@ struct RelayAuditContext {
     attempts: RelayAttemptAuditLedger,
 }
 
+#[derive(Debug, Clone)]
+struct PendingRelayBillingFinalization {
+    reservation_key: String,
+    expr_hash: String,
+    channel_id: i64,
+    selected_group: String,
+    action: crate::relay_billing_queue::RelayBillingFinalizationAction,
+}
+
+impl PendingRelayBillingFinalization {
+    fn settlement(
+        preflight: &TieredBillingPreflight,
+        channel_id: i64,
+        selected_group: &str,
+        final_quota: i64,
+        finalization_reason: &str,
+    ) -> worker::Result<Self> {
+        Ok(Self {
+            reservation_key: preflight
+                .reservation_key
+                .as_deref()
+                .ok_or_else(|| {
+                    worker::Error::RustError("relay billing reservation key is missing".to_string())
+                })?
+                .to_string(),
+            expr_hash: preflight.snapshot.expr_hash.clone(),
+            channel_id,
+            selected_group: selected_group.to_string(),
+            action: crate::relay_billing_queue::RelayBillingFinalizationAction::Settle {
+                final_quota,
+                finalization_reason: finalization_reason.to_string(),
+            },
+        })
+    }
+
+    fn refund(
+        preflight: &TieredBillingPreflight,
+        channel_id: i64,
+        selected_group: &str,
+        finalization_reason: &str,
+        account_request: bool,
+    ) -> worker::Result<Self> {
+        Ok(Self {
+            reservation_key: preflight
+                .reservation_key
+                .as_deref()
+                .ok_or_else(|| {
+                    worker::Error::RustError("relay billing reservation key is missing".to_string())
+                })?
+                .to_string(),
+            expr_hash: preflight.snapshot.expr_hash.clone(),
+            channel_id,
+            selected_group: selected_group.to_string(),
+            action: crate::relay_billing_queue::RelayBillingFinalizationAction::Refund {
+                finalization_reason: finalization_reason.to_string(),
+                account_request,
+            },
+        })
+    }
+
+    fn into_event(
+        self,
+        finalized_at: i64,
+        audit_log: AuditLogEvent,
+    ) -> worker::Result<crate::relay_billing_queue::RelayBillingFinalizationEvent> {
+        match self.action {
+            crate::relay_billing_queue::RelayBillingFinalizationAction::Settle {
+                final_quota,
+                finalization_reason,
+            } => crate::relay_billing_queue::RelayBillingFinalizationEvent::settlement(
+                &self.reservation_key,
+                &self.expr_hash,
+                self.channel_id,
+                &self.selected_group,
+                final_quota,
+                &finalization_reason,
+                finalized_at,
+                audit_log,
+            ),
+            crate::relay_billing_queue::RelayBillingFinalizationAction::Refund {
+                finalization_reason,
+                account_request,
+            } => crate::relay_billing_queue::RelayBillingFinalizationEvent::refund(
+                &self.reservation_key,
+                &self.expr_hash,
+                self.channel_id,
+                &self.selected_group,
+                &finalization_reason,
+                account_request,
+                finalized_at,
+                audit_log,
+            ),
+        }
+    }
+}
+
 async fn record_relay_audit(
     env: &Env,
     db: &D1Database,
@@ -9045,6 +9218,11 @@ async fn record_relay_audit(
         .tiered_billing_preflight
         .as_ref()
         .is_some_and(|preflight| preflight.reserve_applied);
+    let billing_queue_available = relay_billing_finalization_queue_enabled(env)
+        && env
+            .queue(crate::relay_billing_queue::BILLING_QUEUE_BINDING)
+            .is_ok();
+    let mut pending_billing_finalization = None;
     if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
         if let Some(reservation_key) = preflight.reservation_key.as_deref() {
             set_json_string(
@@ -9059,29 +9237,42 @@ async fn record_relay_audit(
                 Ok(outcome) => {
                     let final_quota = outcome.final_quota;
                     let quota_result = if preflight.reserve_applied {
-                        let reservation_key =
-                            preflight.reservation_key.as_deref().ok_or_else(|| {
-                                worker::Error::RustError(
-                                    "relay billing reservation key is missing".to_string(),
-                                )
-                            });
-                        match reservation_key {
-                            Ok(reservation_key) => {
-                                crate::d1_repositories::settle_relay_billing_reservation(
-                                    db,
-                                    reservation_key,
-                                    channel.id,
-                                    group,
-                                    final_quota,
-                                    "usage_settlement",
-                                    now,
-                                )
-                                .await
-                                .and_then(|outcome| {
-                                    require_relay_billing_finalization(outcome, "settlement")
-                                })
+                        if billing_queue_available {
+                            PendingRelayBillingFinalization::settlement(
+                                preflight,
+                                channel.id,
+                                group,
+                                final_quota,
+                                "usage_settlement",
+                            )
+                            .map(|pending| {
+                                pending_billing_finalization = Some(pending);
+                            })
+                        } else {
+                            let reservation_key =
+                                preflight.reservation_key.as_deref().ok_or_else(|| {
+                                    worker::Error::RustError(
+                                        "relay billing reservation key is missing".to_string(),
+                                    )
+                                });
+                            match reservation_key {
+                                Ok(reservation_key) => {
+                                    crate::d1_repositories::settle_relay_billing_reservation(
+                                        db,
+                                        reservation_key,
+                                        channel.id,
+                                        group,
+                                        final_quota,
+                                        "usage_settlement",
+                                        now,
+                                    )
+                                    .await
+                                    .and_then(|outcome| {
+                                        require_relay_billing_finalization(outcome, "settlement")
+                                    })
+                                }
+                                Err(err) => Err(err),
                             }
-                            Err(err) => Err(err),
                         }
                     } else {
                         crate::d1_repositories::apply_relay_quota_usage(
@@ -9139,28 +9330,41 @@ async fn record_relay_audit(
                 }
                 Err(err) => {
                     if preflight.reserve_applied {
-                        let fallback_settlement = match preflight.reservation_key.as_deref() {
-                            Some(reservation_key) => {
-                                crate::d1_repositories::settle_relay_billing_reservation(
-                                    db,
-                                    reservation_key,
-                                    channel.id,
-                                    group,
-                                    preflight.pre_consumed_quota,
-                                    "expression_fallback_settlement",
-                                    now,
-                                )
-                                .await
-                                .and_then(|outcome| {
-                                    require_relay_billing_finalization(
-                                        outcome,
-                                        "fallback settlement",
+                        let fallback_settlement = if billing_queue_available {
+                            PendingRelayBillingFinalization::settlement(
+                                preflight,
+                                channel.id,
+                                group,
+                                preflight.pre_consumed_quota,
+                                "expression_fallback_settlement",
+                            )
+                            .map(|pending| {
+                                pending_billing_finalization = Some(pending);
+                            })
+                        } else {
+                            match preflight.reservation_key.as_deref() {
+                                Some(reservation_key) => {
+                                    crate::d1_repositories::settle_relay_billing_reservation(
+                                        db,
+                                        reservation_key,
+                                        channel.id,
+                                        group,
+                                        preflight.pre_consumed_quota,
+                                        "expression_fallback_settlement",
+                                        now,
                                     )
-                                })
+                                    .await
+                                    .and_then(|outcome| {
+                                        require_relay_billing_finalization(
+                                            outcome,
+                                            "fallback settlement",
+                                        )
+                                    })
+                                }
+                                None => Err(worker::Error::RustError(
+                                    "relay billing reservation key is missing".to_string(),
+                                )),
                             }
-                            None => Err(worker::Error::RustError(
-                                "relay billing reservation key is missing".to_string(),
-                            )),
                         };
                         match fallback_settlement {
                             Ok(()) => {
@@ -9200,16 +9404,23 @@ async fn record_relay_audit(
                 is_stream,
                 audit.missing_usage_estimate_enabled,
             );
-            match refund_tiered_billing_preflight(
-                db,
-                auth,
-                preflight,
-                reason,
-                crate::d1_repositories::RelayBillingRequestAccounting::Account,
-                now,
-            )
-            .await
-            {
+            let refund_result = if billing_queue_available {
+                PendingRelayBillingFinalization::refund(preflight, channel.id, group, reason, true)
+                    .map(|pending| {
+                        pending_billing_finalization = Some(pending);
+                    })
+            } else {
+                refund_tiered_billing_preflight(
+                    db,
+                    auth,
+                    preflight,
+                    reason,
+                    crate::d1_repositories::RelayBillingRequestAccounting::Account,
+                    now,
+                )
+                .await
+            };
+            match refund_result {
                 Ok(()) => {
                     billing_resolved = true;
                     request_count_owned_by_ledger = true;
@@ -9327,6 +9538,27 @@ async fn record_relay_audit(
     // to a synchronous D1 INSERT when the queue binding is not configured
     // (local dev without wrangler queue, or `cargo test`).
     let event = AuditLogEvent::from_relay_audit(now, &content, &audit_log, LOG_TYPE_CONSUME);
+    if let Some(pending) = pending_billing_finalization {
+        let finalization_event = pending.into_event(now, event)?;
+        match env.queue(crate::relay_billing_queue::BILLING_QUEUE_BINDING) {
+            Ok(queue) => match queue.send(&finalization_event).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    worker::console_warn!(
+                        "BILLING_QUEUE send failed, applying idempotent D1 fallback: {err}"
+                    );
+                }
+            },
+            Err(err) => {
+                worker::console_warn!(
+                    "BILLING_QUEUE binding disappeared, applying idempotent D1 fallback: {err}"
+                );
+            }
+        }
+        crate::relay_billing_queue::apply_relay_billing_finalization_event(db, &finalization_event)
+            .await?;
+        return Ok(());
+    }
     persist_audit_log_event(env, db, &event).await
 }
 

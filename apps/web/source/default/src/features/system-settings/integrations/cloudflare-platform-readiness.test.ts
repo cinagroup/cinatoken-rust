@@ -39,8 +39,13 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_billing_stream_error_usage_recovery_compiled: false,
   relay_billing_stream_error_usage_recovery_staging_verified: false,
   relay_billing_missing_usage_estimate_enabled: false,
+  relay_billing_finalization_queue_enabled: false,
   relay_billing_finalization_queue_available: false,
+  relay_billing_finalization_consumer_compiled: false,
+  relay_billing_finalization_dlq_contract_compiled: false,
   relay_billing_finalization_replay_compiled: false,
+  relay_billing_finalization_reconcile_compiled: false,
+  relay_billing_finalization_runtime_ready: false,
   relay_billing_finalization_replay_staging_verified: false,
   relay_billing_orphan_recovery_ready: false,
   relay_billing_stream_lease_renewal_staging_verified: false,
@@ -173,7 +178,10 @@ describe('Cloudflare platform readiness headline', () => {
         relay_billing_stream_lease_renewal_compiled: true,
         relay_billing_stream_lease_heartbeat_configured: true,
         relay_billing_stream_error_usage_recovery_compiled: true,
+        relay_billing_finalization_consumer_compiled: true,
+        relay_billing_finalization_dlq_contract_compiled: true,
         relay_billing_finalization_replay_compiled: true,
+        relay_billing_finalization_reconcile_compiled: true,
         relay_billing_stream_lease_heartbeat_valid: true,
         relay_ai_gateway_rest_routes: ['/v1/chat/completions'],
         relay_ai_gateway_model_prefixes: ['openai/', 'deepseek/'],
@@ -517,8 +525,8 @@ describe('Cloudflare platform readiness headline', () => {
     const smoke = getStage(summary, 'smoke')
 
     assert.equal(smoke.complete, false)
-    assert.equal(smoke.readyCount, 4)
-    assert.equal(smoke.verifiedCount, 1)
+    assert.equal(smoke.readyCount, 3)
+    assert.equal(smoke.verifiedCount, 0)
     assert.deepEqual(
       smoke.signals.map((signal) => signal.status),
       [
@@ -528,7 +536,7 @@ describe('Cloudflare platform readiness headline', () => {
         'ready-to-verify',
         'blocked',
         'ready-to-verify',
-        'verified',
+        'blocked',
         'blocked',
         'blocked',
         'blocked',
@@ -667,31 +675,35 @@ describe('Cloudflare platform readiness headline', () => {
     )
   })
 
-  test('keeps durable finalization replay blocked until queue, code, and proof exist', () => {
-    const missingQueue = buildPlatformReadinessSummary(
-      makeCapabilities({ relay_billing_finalization_replay_compiled: true })
-    )
+  test('keeps durable finalization replay blocked until runtime and proof exist', () => {
+    const missingRuntime = buildPlatformReadinessSummary(makeCapabilities())
     const readyToVerify = buildPlatformReadinessSummary(
       makeCapabilities({
-        relay_billing_finalization_queue_available: true,
-        relay_billing_finalization_replay_compiled: true,
+        relay_billing_finalization_runtime_ready: true,
       })
     )
     const verified = buildPlatformReadinessSummary(
       makeCapabilities({
-        relay_billing_finalization_queue_available: true,
-        relay_billing_finalization_replay_compiled: true,
+        relay_billing_finalization_runtime_ready: true,
         relay_billing_finalization_replay_staging_verified: true,
       })
     )
-    const status = (summary: ReturnType<typeof buildPlatformReadinessSummary>) =>
+    const proofWithoutRuntime = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_finalization_replay_staging_verified: true,
+      })
+    )
+    const status = (
+      summary: ReturnType<typeof buildPlatformReadinessSummary>
+    ) =>
       getStage(summary, 'smoke').signals.find(
         (signal) => signal.id === 'relay-billing-finalization-replay'
       )?.status
 
-    assert.equal(status(missingQueue), 'blocked')
+    assert.equal(status(missingRuntime), 'blocked')
     assert.equal(status(readyToVerify), 'ready-to-verify')
     assert.equal(status(verified), 'verified')
+    assert.equal(status(proofWithoutRuntime), 'blocked')
   })
 
   test('uses only backend cutover readiness fields for cutover success', () => {

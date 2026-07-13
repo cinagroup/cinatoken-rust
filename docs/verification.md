@@ -3925,3 +3925,38 @@ authenticated frontend, and rollback evidence.
 - No remote resource or credential was used. New staging flags remain false,
   `BILLING_QUEUE` is absent, replay reports unimplemented, HTTP orphan recovery
   remains disabled, and production remains **NO-GO**.
+
+## 2026-07-14 Durable HTTP Billing Finalization Queue Verification
+
+- The source billing-expression specification was read before changing the
+  settlement path. Queue events freeze the already computed terminal decision;
+  neither the consumer nor orphan recovery re-evaluates mutable pricing.
+- `cargo test -p cinatoken-worker --lib` passes 640/640. Event tests cover schema
+  identity, bounded size, zero-quota refund audit, strict redaction, and exact
+  environment queue ownership. Runtime-gate tests prove that enablement,
+  producer binding, consumer, DLQ, replay, reconcile, and D1 must all be true.
+- Release Worker/WFP artifacts under Workerd pass 18/18. Billing fixtures
+  traverse the actual Queue broker and Rust `queue` entrypoint for both settle
+  and refund, then manually replay the same events. Matching duplicate delivery
+  ACKs without a second quota/request/audit mutation; a billing event on
+  `LOG_QUEUE` retries; and a poison event retries without preventing a valid
+  event in the same batch from ACKing.
+- `bun run check:cf:billing-queue` passes. It audits default/staging/production
+  producer, consumer, batch bounds, retries, environment-specific DLQ, default-
+  off gate, Rust-owned queue names, and the 64 KiB application event bound.
+- `python tools/verify_sqlite.py` and `bun run check:d1:migration-config` pass for
+  the exact 24-file chain through 0024, 29 required tables, 106 explicitly
+  checked incremental columns, and 21 explicitly checked key indexes.
+- `bun run check:web:readiness` passes 25/25. Capability types and the operations
+  panel expose Queue gate/binding, consumer, DLQ, replay, reconcile, runtime,
+  and proof separately. A regression test proves `verified=true` cannot bypass
+  `ready=false`.
+- The complete `bun run check` release gate passes, including release
+  main/tenant/outbound Rust/Wasm builds, Workerd 18/18, Playground 1/1,
+  frontend build and audits, D1 verification, local smoke contracts, workspace
+  tests, and all three wasm32 checks.
+- Queue transport remains false in every tracked Wrangler environment.
+  Reconcile/DLQ replay reports unimplemented, so runtime readiness, scheduled
+  HTTP orphan recovery, and cutover remain false. No remote migration, Queue,
+  DLQ, credential, provider request, or deployment was used. Production remains
+  **NO-GO**.

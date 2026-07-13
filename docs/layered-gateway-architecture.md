@@ -852,15 +852,18 @@ per request. Its target ownership is:
    never evaluate billing expressions, write D1 quota, decide refunds, or own a
    finalization retry.
 3. D1 is the reservation and terminal financial CAS authority. A dedicated
-   billing Queue carries bounded frozen-snapshot finalization events across
-   response completion, disconnect, or Worker cancellation. The consumer is
-   idempotent and has a DLQ/reconcile path.
+   billing Queue carries bounded frozen-decision finalization events. The local
+   consumer is idempotent, queue-name/payload-family checked per message, and
+   configured with environment-specific DLQs. The operator reconcile/DLQ replay
+   path is not implemented and remains a production gate.
 4. Realtime Durable Objects remain scoped to long-lived WebSocket session
    coordination and hibernation. Their lease/retry collections are not a generic
    HTTP settlement service.
 
-The current clone plus `waitUntil()` parser is an interim implementation. It can
-preserve pre-error usage locally, but it cannot establish durable completion
-after the platform's post-response window. Platform capabilities must report
-Queue/replay absence and keep HTTP recovery cutover false until the target flow
-is implemented and deployed evidence is approved.
+The current clone plus `waitUntil()` parser still owns usage observation, but
+reservation-backed terminal decisions can now cross the dedicated default-off
+Queue. Producer failure uses the same idempotent D1 finalizer. This closes local
+consumer/replay mechanics, not response-lifetime proof: pre-bind ownership,
+client cancellation, buffered parse failure, remote Queue/DLQ readback, retry
+exhaustion, and reconcile remain open. Platform capabilities keep HTTP recovery
+cutover false until every runtime and evidence gate is approved.

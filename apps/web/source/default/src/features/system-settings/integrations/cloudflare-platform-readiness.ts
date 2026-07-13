@@ -72,8 +72,13 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_billing_stream_error_usage_recovery_compiled'
   | 'relay_billing_stream_error_usage_recovery_staging_verified'
   | 'relay_billing_missing_usage_estimate_enabled'
+  | 'relay_billing_finalization_queue_enabled'
   | 'relay_billing_finalization_queue_available'
+  | 'relay_billing_finalization_consumer_compiled'
+  | 'relay_billing_finalization_dlq_contract_compiled'
   | 'relay_billing_finalization_replay_compiled'
+  | 'relay_billing_finalization_reconcile_compiled'
+  | 'relay_billing_finalization_runtime_ready'
   | 'relay_billing_finalization_replay_staging_verified'
   | 'relay_billing_orphan_recovery_ready'
   | 'relay_billing_stream_lease_renewal_staging_verified'
@@ -258,7 +263,10 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_billing_ledger_status_compiled,
     capabilities.relay_billing_stream_lease_renewal_compiled,
     capabilities.relay_billing_stream_error_usage_recovery_compiled,
+    capabilities.relay_billing_finalization_consumer_compiled,
+    capabilities.relay_billing_finalization_dlq_contract_compiled,
     capabilities.relay_billing_finalization_replay_compiled,
+    capabilities.relay_billing_finalization_reconcile_compiled,
     capabilities.relay_billing_stream_lease_heartbeat_valid
   )
   const taskRunnerImplementation = allReady(
@@ -380,10 +388,7 @@ export function buildPlatformReadinessSummary(
     ),
     verificationSignal(
       'relay-billing-finalization-replay',
-      allReady(
-        capabilities.relay_billing_finalization_queue_available,
-        capabilities.relay_billing_finalization_replay_compiled
-      ),
+      capabilities.relay_billing_finalization_runtime_ready,
       capabilities.relay_billing_finalization_replay_staging_verified
     ),
     verificationSignal(
@@ -428,7 +433,7 @@ function verificationSignal(
   ready: boolean,
   verified: boolean
 ): PlatformReadinessSignal {
-  if (verified) return { id, status: 'verified' }
+  if (ready && verified) return { id, status: 'verified' }
   return { id, status: ready ? 'ready-to-verify' : 'blocked' }
 }
 

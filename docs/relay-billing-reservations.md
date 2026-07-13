@@ -7,9 +7,11 @@ tiered-expression pre-consumption a durable D1 owner. It applies to a positive
 tiered reserve only. Flat billing and asynchronous task billing retain their
 existing paths.
 
-This is a locally verified, default-off recovery substrate. It is not evidence
-that migration 0023, the cron trigger, or recovery has run in staging or
-production.
+Migration `0024_relay_billing_finalization_events.sql` adds the unique audit
+event marker used by the idempotent finalization consumer. This is a locally
+verified, default-off recovery substrate. It is not evidence that migrations
+0023-0024, the Queue resources, the cron trigger, or recovery have run in
+staging or production.
 
 ## Invariants
 
@@ -41,6 +43,11 @@ production.
 10. `logs.other` includes the random reservation key, final ledger outcome, and
    bounded stream-heartbeat counters so
    Queue/D1 audit delivery can be reconciled with the authoritative ledger.
+11. A billing Queue event contains only the frozen final decision, identity
+    hashes/keys, and a strict audit projection. It excludes username, token
+    name, client IP, raw request IDs, upstream request IDs, credentials, and
+    request bodies. Duplicate delivery converges through reservation CAS and
+    the unique `logs.billing_finalization_event_id` index.
 
 The expression result and `RequestInput` used for a normal settlement remain the
 frozen request-scoped values produced before the upstream request. Recovery does
@@ -102,15 +109,17 @@ any expected mutation changes a row count other than one.
   every checked-in Wrangler environment.
 - A zero-quota estimate does not create a reservation row and retains the
   weaker legacy post-paid settlement path.
-- Audit transport remains `LOG_QUEUE` with synchronous D1 fallback. Queue is not
-  part of quota correctness; `relay_billing_reservations` is authoritative.
-- The target state is a single instrumented response stream that observes usage
-  while forwarding bytes, followed by a bounded, redacted, idempotency-keyed
-  finalization event on a dedicated `BILLING_QUEUE`. An at-least-once consumer
-  must use the frozen request/expression snapshot and D1 CAS to settle, refund,
-  or quarantine. A DLQ and an operator reconcile path are required. No ordinary
-  HTTP SSE Durable Object is planned; the Rust gateway remains the financial
-  owner while WFP remains transport-only.
+- Ordinary audit transport remains `LOG_QUEUE` with synchronous D1 fallback.
+  Reservation-backed tiered settlement/refund can use the dedicated
+  `BILLING_QUEUE` only when its explicit default-off gate is enabled. A failed
+  producer send falls back to the same idempotent D1 finalizer.
+- The local at-least-once consumer validates queue ownership and each message
+  independently, uses the frozen final decision plus D1 CAS, ACKs matching
+  replays, retries only failed/invalid messages, and has environment-specific
+  DLQ configuration. The operator reconcile/replay workflow is not implemented,
+  so runtime readiness and orphan-recovery execution remain fail-closed.
+- No ordinary HTTP SSE Durable Object is planned; the Rust gateway remains the
+  financial owner while WFP remains transport-only.
 - Pre-bind lease ownership, non-stream clone/read failure, client abort and idle
   timeout classification, bounded streamed-text accumulation, and durable
   finalization replay remain open production blockers.
@@ -124,7 +133,8 @@ any expected mutation changes a row count other than one.
 | `RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED` | `false` | Evidence gate only. Set true after the deployed long-stream and recovery-race matrix is archived; it does not start recovery by itself. |
 | `RELAY_MISSING_USAGE_ESTIMATE_ENABLED` | `false` | Charge-affecting Go-parity gate. Abnormal streams without reported usage cannot pass recovery readiness while this is disabled. |
 | `RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED` | `false` | Evidence gate for reported-usage and partial-output read-error settlement. Local Workerd evidence does not set it. |
-| `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` | `false` | Evidence gate for Queue retry, DLQ, Worker cancellation, and settlement/recovery race replay. It must remain false until `BILLING_QUEUE` and the idempotent consumer exist. |
+| `RELAY_BILLING_FINALIZATION_QUEUE_ENABLED` | `false` | Enables Queue transport only when `BILLING_QUEUE` is also bound. Binding existence alone never changes billing behavior. |
+| `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` | `false` | Evidence gate for Queue retry, DLQ, Worker cancellation, and settlement/recovery race replay. Local duplicate/cross-queue/poison-message evidence does not set it. |
 | `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED` | `false` | Enables bounded scheduled handling only after migration and stream-lifetime evidence. Unbound rows refund; bound rows quarantine. Cutover readiness additionally requires the staging-verification gate. |
 | `RELAY_BILLING_ORPHAN_SWEEP_LIMIT` | `32` | Accepted range 1-64 per cron invocation. |
 
@@ -136,15 +146,17 @@ exponential retry deferral.
 
 1. Rotate any exposed Cloudflare credential. Use a least-privilege deployment
    credential and archive only redacted command output.
-2. With the old Worker still serving and all relay recovery gates false, apply
-   the additive exact 23-file D1 set through migration 0023 to isolated staging.
+2. With the old Worker still serving and all relay recovery/finalization gates
+   false, apply the additive exact 24-file D1 set through migration 0024 to
+   isolated staging.
 3. Deploy the new Worker with relay recovery still false. The new relay writes
-   the ledger on tiered requests, so migration 0023 must exist before code
-   promotion.
+   the ledger on tiered requests and can consume finalization events, so
+   migrations 0023-0024 must exist before code promotion.
 4. Verify `/api/platform/capabilities` reports the exact migration set,
    ledger and stream-renewal contracts compiled, heartbeat explicitly configured
    and valid, missing-usage estimate state, both stream staging proofs false,
-   billing finalization Queue unavailable, replay unimplemented/unverified,
+   billing finalization gate false, producer binding state, consumer/DLQ/CAS
+   compiled, reconcile false, runtime readiness false, replay proof false,
    recovery disabled, and cutover readiness false.
 5. Run reserve, selected bind, settle, explicit refund, matching replay,
    settle-vs-refund race, model fallback, stream-abandonment, heartbeat
@@ -159,26 +171,29 @@ exponential retry deferral.
    and a scheduled recovery overlap. For every fixture prove provider call=1,
    request count=1 where billable, exact user/token/channel deltas, usage source,
    termination reason, and zero unexplained pending rows.
-8. Configure a cron and enable recovery only in isolated staging after the
-   renewal matrix passes. Prove the 300-second boundary, sweep bound, retry
-   deferral, unbound exactly-once refund, bound quarantine, and no double quota
-   mutation.
+8. Create and read back the environment-specific producer Queue, consumer,
+   retry count, and DLQ. Keep `RELAY_BILLING_FINALIZATION_QUEUE_ENABLED=false`
+   until migrations, consumer health, alerts, and rollback are verified.
 9. Reconcile user quota, token remain quota, request count, channel used quota,
    ledger outcomes, and audit rows before any traffic expansion.
-10. Implement and bind `BILLING_QUEUE`, a frozen-snapshot finalization event,
-    idempotent D1 replay consumer, DLQ, lag/failure alerts, and operator reconcile
-    path. Prove D1 ambiguity, Queue retry, duplicate delivery, Worker cancellation,
-    and recovery overlap before setting the replay evidence gate.
-11. Set each staging-verification gate only after signed approval of its own
+10. Implement the missing operator reconcile/DLQ replay workflow, including
+    bounded selection, disposition records, authorization, no-double-mutation
+    checks, lag/failure alerts, and an auditable rollback procedure.
+11. Only then configure cron and enable recovery in isolated staging. Prove the
+    300-second boundary, sweep bound, retry deferral, unbound exactly-once
+    refund, bound quarantine, D1 ambiguity, Worker cancellation, settlement/
+    recovery overlap, and no double quota mutation.
+12. Set each staging-verification gate only after signed approval of its own
     redacted evidence. `relay_billing_orphan_recovery_cutover_ready` must remain
-    false until recovery, both streaming proofs, Queue availability, replay code,
-    and replay staging proof are all true.
+    false until recovery, both streaming proofs, Queue enablement/binding,
+    consumer, DLQ, replay, reconcile, D1 schema, and replay staging proof are all
+    true.
 
 ## Rollback
 
 Disable `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED` first. This stops new automated
 refund attempts without reversing completed CAS transitions. Route traffic back
-to Go/VPS if needed, retain migration 0023 and all ledger rows, then reconcile
+to Go/VPS if needed, retain migrations 0023-0024 and all ledger/audit rows, then reconcile
 every `reserved` and `recovery_required` row before another cutover. Do not drop
 the table or manually credit quota without recording the reservation
 fingerprint, observed state, approved disposition, and resulting quota deltas.
@@ -188,6 +203,7 @@ fingerprint, observed state, approved disposition, and resulting quota deltas.
 ```powershell
 python tools/verify_sqlite.py
 bun run check:d1:migration-config
+bun run check:cf:billing-queue
 cargo test -p cinatoken-worker --lib relay_billing
 cargo test -p cinatoken-worker --lib
 cargo check -p cinatoken-worker --target wasm32-unknown-unknown

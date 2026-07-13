@@ -81,6 +81,7 @@ RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS = "900"
 RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
+RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
 WFP_DISPATCH_ENABLED = "false"
@@ -141,6 +142,10 @@ binding = "LOG_QUEUE"
 queue = "cinatoken-rust-task-events"
 binding = "TASK_QUEUE"
 
+[[queues.producers]]
+queue = "cinatoken-rust-billing-finalization"
+binding = "BILLING_QUEUE"
+
 # LOG_QUEUE consumer: drains relay audit events in batches of up to 100
 # messages or every 5 seconds (whichever comes first), then bulk-INSERTs
 # them into D1 in a single round-trip. Failed batches retry up to 3 times
@@ -153,6 +158,13 @@ max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
 dead_letter_queue = "cinatoken-rust-log-events-dlq"
+
+[[queues.consumers]]
+queue = "cinatoken-rust-billing-finalization"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 10
+dead_letter_queue = "cinatoken-rust-billing-finalization-dlq"
 
 # Channel-affinity (sticky-routing) Durable Object. Inert at runtime unless
 # RELAY_CHANNEL_AFFINITY_ENABLED is set, so deploying the binding alone changes
@@ -248,6 +260,7 @@ RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS = "900"
 RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
+RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
 WFP_DISPATCH_ENABLED = "false"
@@ -317,12 +330,23 @@ binding = "LOG_QUEUE"
 queue = "cinatoken-rust-task-events-staging"
 binding = "TASK_QUEUE"
 
+[[env.staging.queues.producers]]
+queue = "cinatoken-rust-billing-finalization-staging"
+binding = "BILLING_QUEUE"
+
 [[env.staging.queues.consumers]]
 queue = "cinatoken-rust-log-events-staging"
 max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
 dead_letter_queue = "cinatoken-rust-log-events-dlq-staging"
+
+[[env.staging.queues.consumers]]
+queue = "cinatoken-rust-billing-finalization-staging"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 10
+dead_letter_queue = "cinatoken-rust-billing-finalization-dlq-staging"
 
 [[env.staging.durable_objects.bindings]]
 name = "CHANNEL_AFFINITY"
@@ -416,6 +440,7 @@ RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS = "900"
 RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
+RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
 RELAY_BILLING_ORPHAN_SWEEP_LIMIT = "32"
 WFP_DISPATCH_ENABLED = "false"
@@ -486,12 +511,23 @@ binding = "LOG_QUEUE"
 queue = "cinatoken-rust-task-events"
 binding = "TASK_QUEUE"
 
+[[env.production.queues.producers]]
+queue = "cinatoken-rust-billing-finalization"
+binding = "BILLING_QUEUE"
+
 [[env.production.queues.consumers]]
 queue = "cinatoken-rust-log-events"
 max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
 dead_letter_queue = "cinatoken-rust-log-events-dlq"
+
+[[env.production.queues.consumers]]
+queue = "cinatoken-rust-billing-finalization"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 10
+dead_letter_queue = "cinatoken-rust-billing-finalization-dlq"
 
 [[env.production.durable_objects.bindings]]
 name = "CHANNEL_AFFINITY"

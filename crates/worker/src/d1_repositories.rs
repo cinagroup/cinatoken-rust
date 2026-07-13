@@ -17,6 +17,8 @@ pub(crate) const REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
 pub(crate) const REALTIME_BILLING_GLOBAL_RECOVERY_MIGRATION: &str =
     "0022_realtime_billing_global_recovery.sql";
 pub(crate) const RELAY_BILLING_RESERVATION_MIGRATION: &str = "0023_relay_billing_reservations.sql";
+pub(crate) const RELAY_BILLING_FINALIZATION_MIGRATION: &str =
+    "0024_relay_billing_finalization_events.sql";
 pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
 const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
@@ -757,6 +759,56 @@ pub async fn insert_audit_log_event(db: &D1Database, event: &AuditLogEvent) -> w
     Ok(())
 }
 
+pub async fn insert_billing_finalization_audit_log_event(
+    db: &D1Database,
+    event_id: &str,
+    event: &AuditLogEvent,
+) -> worker::Result<()> {
+    let event_id = non_empty_relay_reservation_field(event_id, "finalization event id")?;
+    let args = [
+        D1Type::Integer(d1_i32(event.user_id)),
+        D1Type::Integer(d1_i32(event.created_at)),
+        D1Type::Integer(event.log_type),
+        D1Type::Text(&event.content),
+        D1Type::Text(&event.username),
+        D1Type::Text(&event.token_name),
+        D1Type::Text(&event.model_name),
+        D1Type::Integer(d1_i32(event.quota)),
+        D1Type::Integer(event.prompt_tokens),
+        D1Type::Integer(event.completion_tokens),
+        D1Type::Integer(d1_i32(event.use_time)),
+        D1Type::Integer(event.is_stream),
+        D1Type::Integer(d1_i32(event.channel_id)),
+        D1Type::Integer(d1_i32(event.token_id)),
+        D1Type::Text(&event.group),
+        D1Type::Text(&event.ip),
+        D1Type::Text(&event.request_id),
+        D1Type::Text(&event.upstream_request_id),
+        D1Type::Text(&event.other),
+        D1Type::Text(event_id),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO logs (
+          user_id, created_at, type, content, username, token_name, model_name,
+          quota, prompt_tokens, completion_tokens, use_time, is_stream,
+          channel_id, token_id, "group", ip, request_id, upstream_request_id, other,
+          billing_finalization_event_id
+        ) VALUES (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+          ?20
+        )
+        ON CONFLICT(billing_finalization_event_id)
+          WHERE billing_finalization_event_id <> ''
+        DO NOTHING
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
 fn insert_relay_audit_log_statement(
     db: &D1Database,
     created_at: i64,
@@ -1344,13 +1396,16 @@ pub async fn refund_relay_billing_reservation(
 }
 
 pub async fn relay_billing_reservation_schema_ready(db: &D1Database) -> worker::Result<bool> {
-    let args = [D1Type::Text(RELAY_BILLING_RESERVATION_MIGRATION)];
+    let args = [
+        D1Type::Text(RELAY_BILLING_RESERVATION_MIGRATION),
+        D1Type::Text(RELAY_BILLING_FINALIZATION_MIGRATION),
+    ];
     let row = db
-        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name = ?1")
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2)")
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+    Ok(row.map(|row| row.count == 2).unwrap_or(false))
 }
 
 pub async fn sweep_expired_relay_billing_reservations(
@@ -1842,7 +1897,7 @@ async fn mark_relay_billing_recovery_required(
     }
 }
 
-async fn relay_billing_reservation(
+pub(crate) async fn relay_billing_reservation(
     db: &D1Database,
     reservation_key: &str,
 ) -> worker::Result<Option<RelayBillingReservation>> {

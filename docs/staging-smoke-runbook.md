@@ -25,7 +25,7 @@ Use `docs/cloudflare-production-config-checklist.md` before Phase 1,
 Do not use production secrets in staging. Do not paste secret values into this
 file or any smoke report.
 
-Current gate state (2026-07-10): **NO-GO for remote staging promotion**.
+Current gate state (2026-07-14): **NO-GO for remote staging promotion**.
 Local migration/config checks and a local Worker-binding Realtime settlement
 smoke have passed, but Wrangler is not authenticated and no remote staging
 deploy, migration, binding, log, trace, or smoke result was captured. An
@@ -40,9 +40,10 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 23 migrations, 29 required tables, 105
-  incremental key columns, and 20 key indexes, including the 0020 and 0021
+- `bun run verify:sqlite` reports 24 migrations, 29 required tables, 106
+  incremental key columns, and 21 key indexes, including the 0020 and 0021
   active-reservation guards.
+- `bun run check:cf:billing-queue` passes.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
 - `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passes.
@@ -56,7 +57,8 @@ Required Cloudflare staging resources:
 - Staging D1 database with migrations applied.
 - Staging KV namespaces if still configured.
 - Staging R2 bucket if file/task artifacts are enabled.
-- Staging queues and DLQ if log/task queue producers are enabled.
+- Staging log, billing-finalization, and task queues plus environment-specific
+  DLQs for every enabled producer/consumer.
 - Staging Upstash Redis database or isolated staging key prefix.
 - Workers Logs/Traces enabled with the staging sampling policy.
 - Staging route or custom domain.
@@ -1425,8 +1427,8 @@ Preconditions:
 
 1. `bun run check` and `bun run check:do-lifecycle-runtime` pass at the exact
    candidate commit.
-2. Remote `d1_migrations` is the exact 23-file set through
-   `0023_relay_billing_reservations.sql`; archive redacted Wrangler output
+2. Remote `d1_migrations` is the exact 24-file set through
+   `0024_relay_billing_finalization_events.sql`; archive redacted Wrangler output
    and `/api/platform/capabilities` with `d1_migration_ready=true`.
 3. Capabilities report global recovery compiled, grace 300, limit in `1..64`,
    ledger status compiled, recovery disabled, and v1 cutover false.
@@ -1473,8 +1475,8 @@ immediate G7 abort. Local Workerd evidence does not satisfy this remote phase.
 
 ## Phase 4c.1: HTTP Tiered Billing Reservation Recovery
 
-Apply migration 0023 while the old Worker still serves and both billing
-recovery gates are false. Only then deploy the ledger-writing Worker. Do not
+Apply migrations 0023-0024 while the old Worker still serves and all billing
+recovery/finalization gates are false. Only then deploy the ledger-writing Worker. Do not
 enable HTTP recovery merely because the capability endpoint says it is ready
 to verify.
 
@@ -1519,8 +1521,8 @@ Pass criteria:
     D1 schema, renewal config, enabled recovery gate, and signed staging evidence
     are all present. Without that proof, leave both gates false.
 
-Rollback disables HTTP recovery first, retains migration 0023 and every ledger
-row, routes affected traffic back to Go/VPS, and reconciles all `reserved` and
+Rollback disables HTTP recovery and Queue finalization first, retains migrations
+0023-0024 and every ledger/audit row, routes affected traffic back to Go/VPS, and reconciles all `reserved` and
 `recovery_required` rows before any manual quota correction.
 
 ## Phase 4d: Tencent Hunyuan TC3 Chat
@@ -1565,9 +1567,9 @@ or inability to return traffic to Go is an immediate G3 abort.
 
 ## Phase 4e: HTTP Stream Billing Finalization
 
-Run this phase only after credential rotation and migration 0023 in isolated
-staging. Keep HTTP orphan recovery and all three billing staging-proof flags
-false during discovery.
+Run this phase only after credential rotation and migrations 0023-0024 in
+isolated staging. Keep HTTP orphan recovery, Queue finalization, and all three
+billing staging-proof flags false during discovery.
 
 1. Long-stream lease matrix: direct, AI Gateway, and WFP each run beyond the
    original selected lease. Assert repeated generation-fenced renewal, bounded
@@ -1577,15 +1579,22 @@ false during discovery.
    data, reported usage then read error, partial output then read error, empty
    Responses, Responses output delta, client abort, and idle timeout. Record a
    distinct termination reason and usage source for every case.
-3. Durable replay matrix: inject Worker cancellation after response completion,
+3. Queue resource gate: authenticated readback must prove the staging producer,
+   consumer, bounded batch/retries, environment-specific DLQ, alerts, and no
+   production queue reuse. Enable Queue finalization only for isolated fixtures.
+4. Durable replay matrix: inject Worker cancellation after response completion,
    D1 ambiguous commit, Queue retry and duplicate delivery, DLQ routing, and
-   settlement-versus-recovery overlap. The frozen expression/request snapshot
+   settlement-versus-recovery overlap. The frozen final decision
    must settle through idempotent D1 CAS without re-reading mutable pricing.
-4. Recovery matrix: verify the 300-second boundary, unbound refund, bound
+5. Reconcile gate: exercise the admin-authenticated DLQ/pending-reservation
+   reconcile workflow, prove bounded selection and one recorded disposition per
+   event, then empty all fixture DLQ/pending state. The current implementation
+   lacks this workflow, so this phase is presently blocked.
+6. Recovery matrix: verify the 300-second boundary, unbound refund, bound
    quarantine, pre-bind generation race, failed-oldest deferral, and manual
    reconciliation. No fixture may leave an unexplained `reserved` or
    `recovery_required` row.
-5. For every fixture archive provider call count, user/token/channel before and
+7. For every fixture archive provider call count, user/token/channel before and
    after values, request count, ledger outcome, usage source, termination reason,
    Queue event/retry identity, audit row, trace, and cleanup readback.
 
@@ -1594,4 +1603,5 @@ Attaching clone-stream work to `waitUntil()` is not a pass condition. Do not set
 `RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED`, or
 `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` until the corresponding
 matrix is signed independently. `relay_billing_orphan_recovery_cutover_ready`
-must remain false without `BILLING_QUEUE` and the replay consumer.
+must remain false without Queue enablement/binding, consumer, DLQ, replay,
+reconcile, D1 readiness, and signed staging proof.

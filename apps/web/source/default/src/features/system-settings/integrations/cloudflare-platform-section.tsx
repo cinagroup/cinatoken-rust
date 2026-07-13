@@ -427,11 +427,12 @@ function buildCapabilityGroups(
             capabilities.relay_billing_stream_lease_heartbeat_configured &&
             capabilities.relay_billing_stream_lease_heartbeat_valid,
           readyLabel: t('Compiled'),
-          missingLabel: !capabilities.relay_billing_stream_lease_heartbeat_configured
-            ? t('Not configured')
-            : capabilities.relay_billing_stream_lease_heartbeat_valid
-              ? t('Blocked')
-              : t('Invalid config'),
+          missingLabel:
+            !capabilities.relay_billing_stream_lease_heartbeat_configured
+              ? t('Not configured')
+              : capabilities.relay_billing_stream_lease_heartbeat_valid
+                ? t('Blocked')
+                : t('Invalid config'),
         },
         {
           label: t('Relay stream error usage recovery'),
@@ -445,27 +446,72 @@ function buildCapabilityGroups(
             capabilities.relay_billing_missing_usage_estimate_enabled &&
             capabilities.relay_billing_stream_error_usage_recovery_staging_verified,
           readyLabel: t('Staging verified'),
-          missingLabel: !capabilities.relay_billing_stream_error_usage_recovery_compiled
-            ? t('Blocked')
-            : !capabilities.relay_billing_missing_usage_estimate_enabled
-              ? t('Estimate disabled')
-              : t('Awaiting staging proof'),
+          missingLabel:
+            !capabilities.relay_billing_stream_error_usage_recovery_compiled
+              ? t('Blocked')
+              : !capabilities.relay_billing_missing_usage_estimate_enabled
+                ? t('Estimate disabled')
+                : t('Awaiting staging proof'),
         },
         {
-          label: t('Relay billing finalization replay'),
+          label: t('Relay billing Queue transport'),
           description: t(
-            'Requires a dedicated billing Queue and idempotent replay consumer so settlement survives client disconnects and the post-response execution limit.'
+            'Async finalization is default-off and requires both the explicit runtime gate and the dedicated producer binding.'
           ),
           ready:
-            capabilities.relay_billing_finalization_queue_available &&
-            capabilities.relay_billing_finalization_replay_compiled &&
+            capabilities.relay_billing_finalization_queue_enabled &&
+            capabilities.relay_billing_finalization_queue_available,
+          readyLabel: t('Enabled and bound'),
+          missingLabel: !capabilities.relay_billing_finalization_queue_enabled
+            ? t('Disabled')
+            : !capabilities.relay_billing_finalization_queue_available
+              ? t('Queue missing')
+              : t('Blocked'),
+          missingVariant: capabilities.relay_billing_finalization_queue_enabled
+            ? 'red'
+            : 'grey',
+        },
+        {
+          label: t('Relay billing Queue consumer and DLQ'),
+          description: t(
+            'The consumer validates queue ownership per message, retries failures individually, and routes exhausted delivery attempts to an environment-specific dead-letter Queue.'
+          ),
+          ready:
+            capabilities.relay_billing_finalization_consumer_compiled &&
+            capabilities.relay_billing_finalization_dlq_contract_compiled,
+          readyLabel: t('Implemented'),
+          missingLabel: t('Not implemented'),
+        },
+        {
+          label: t('Relay billing idempotent CAS replay'),
+          description: t(
+            'Duplicate finalization events converge through the reservation CAS and a unique audit-event marker.'
+          ),
+          ready: capabilities.relay_billing_finalization_replay_compiled,
+          readyLabel: t('Implemented'),
+          missingLabel: t('Not implemented'),
+        },
+        {
+          label: t('Relay billing reconciliation'),
+          description: t(
+            'Production recovery requires an operator-visible reconciliation path for pending reservations and dead-lettered finalization events.'
+          ),
+          ready: capabilities.relay_billing_finalization_reconcile_compiled,
+          readyLabel: t('Implemented'),
+          missingLabel: t('Not implemented'),
+        },
+        {
+          label: t('Relay billing finalization replay proof'),
+          description: t(
+            'Requires the complete runtime contract and deployed duplicate-delivery, poison-message, and recovery-race evidence.'
+          ),
+          ready:
+            capabilities.relay_billing_finalization_runtime_ready &&
             capabilities.relay_billing_finalization_replay_staging_verified,
           readyLabel: t('Staging verified'),
-          missingLabel: !capabilities.relay_billing_finalization_queue_available
-            ? t('Queue missing')
-            : !capabilities.relay_billing_finalization_replay_compiled
-              ? t('Not implemented')
-              : t('Awaiting staging proof'),
+          missingLabel: !capabilities.relay_billing_finalization_runtime_ready
+            ? t('Runtime blocked')
+            : t('Awaiting staging proof'),
         },
         {
           label: t('Relay billing orphan recovery'),
@@ -493,10 +539,10 @@ function buildCapabilityGroups(
             !capabilities.relay_billing_stream_lease_renewal_staging_verified ||
             !capabilities.relay_billing_stream_error_usage_recovery_staging_verified ||
             !capabilities.relay_billing_finalization_replay_staging_verified
-            ? t('Awaiting staging proof')
-            : capabilities.relay_billing_orphan_recovery_enabled
-              ? t('Blocked')
-              : t('Disabled'),
+              ? t('Awaiting staging proof')
+              : capabilities.relay_billing_orphan_recovery_enabled
+                ? t('Blocked')
+                : t('Disabled'),
           missingVariant: capabilities.relay_billing_orphan_recovery_enabled
             ? 'red'
             : 'grey',

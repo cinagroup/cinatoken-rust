@@ -963,8 +963,8 @@ Until every item is archived from isolated staging,
 ## 2026-07-13 Realtime Recovery Subgate Supersession
 
 This addendum supersedes the earlier 21-file Realtime migration wording. The
-target must have the exact 23-file chain through
-`0023_relay_billing_reservations.sql`. Migrations 0020 and 0021 still
+target must have the exact 24-file chain through
+`0024_relay_billing_finalization_events.sql`. Migrations 0020 and 0021 still
 require the documented zero-active-reservation freeze; 0022 is applied only
 after those checks and while every Realtime admission, settlement-write, and
 global-recovery gate is off.
@@ -974,13 +974,14 @@ The production sequence is:
 1. Rotate the exposed Cloudflare credential, inventory account/resource
    ownership with a replacement least-privilege credential, and archive no
    secret values.
-2. Freeze Realtime writes, reconcile the ledger to zero, apply all 23
-   migrations to isolated staging, and verify 29 required tables, 105 key
-   columns, 20 indexes, and exact migration-set readiness.
+2. Freeze Realtime writes, reconcile the ledger to zero, apply all 24
+   migrations to isolated staging, and verify 29 required tables, 106 key
+   columns, 21 indexes, and exact migration-set readiness.
 3. Deploy with both Realtime and HTTP relay recovery disabled, Realtime lease
    900, HTTP lease 3600, grace 300, and sweep limit 1. Capture admin
    capabilities and prove cron is inert. Migration 0023 must precede this
-   deployment because tiered HTTP requests write the new ledger immediately.
+   deployment because tiered HTTP requests write the new ledger immediately;
+   migration 0024 must precede any billing Queue consumer delivery.
 4. Enable only global recovery for reviewed fixtures and complete every Phase
    4c case in `docs/staging-smoke-runbook.md`: grace no-op, post-grace refund,
    concurrent schedules, failed-head fairness, late settlement rejection,
@@ -1064,3 +1065,12 @@ No ordinary HTTP request gains a Durable Object in this workstream. The Rust
 gateway owns finance, WFP owns authorized transport, Realtime DO owns stateful
 WebSocket sessions, and D1 plus Queue own durable finalization. Until steps 1-7
 are archived, HTTP orphan recovery and production remain **NO-GO**.
+
+Implementation status on 2026-07-14: step 4's bounded frozen-decision event and
+step 5's default-off producer, per-message consumer, D1 CAS replay, unique audit
+marker, retry policy, and environment-specific DLQ contract are locally
+implemented. Workerd proves matching duplicate ACK/no-double-mutation,
+cross-queue retry, and poison-message isolation. Step 5 remains Partial because
+the admin reconcile/DLQ replay workflow and remote lag/alert evidence are absent;
+the runtime/cutover predicate therefore stays false. Steps 1-3 and the deployed
+fault matrix in steps 6-7 also remain open.

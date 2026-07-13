@@ -878,3 +878,26 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   then replace clone-only finalization with bounded instrumented forwarding plus
   frozen-snapshot Queue/CAS replay, DLQ, reconcile, abort/idle-timeout taxonomy,
   and the deployed direct/Gateway/WFP failure matrix.
+
+## 2026-07-14 Durable HTTP Billing Finalization Queue Increment
+
+- Added migration 0024 with a unique partial index on
+  `logs.billing_finalization_event_id`. The local exact set is now 24
+  migrations, 29 tables, 106 explicitly checked incremental columns, and 21
+  explicitly checked key indexes.
+- Added default-off `BILLING_QUEUE` transport for positive reservation-backed
+  tiered settlement/refund. Events freeze only the terminal decision and a
+  redacted audit projection; flat and task billing paths are unchanged.
+- Added an exact-name/per-message Rust consumer with D1 CAS replay, individual
+  ACK/retry, bounded retries, and environment-specific DLQs. Producer failure
+  uses the same idempotent D1 finalizer synchronously.
+- Added `bun run check:cf:billing-queue` to the full gate. Release Workerd proves
+  normal delivery, matching duplicate ACK/no-double-mutation, cross-queue retry,
+  and mixed-batch poison isolation. Frontend readiness no longer accepts a
+  proof flag when runtime prerequisites are false.
+- Reconcile/DLQ replay remains deliberately unimplemented and visible as false.
+  Therefore scheduled HTTP orphan recovery and final cutover remain fail-closed.
+  Next: implement the bounded operator reconcile workflow, then run authenticated
+  staging migration/Queue readback, retry exhaustion/DLQ alert, cancellation,
+  D1 ambiguity, and settlement/recovery race drills. Production remains
+  **NO-GO**.

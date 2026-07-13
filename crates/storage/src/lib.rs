@@ -167,7 +167,7 @@ pub struct RelayAuditLog<'a> {
 /// relay path (via `Queue::send`) and consumed by the queue handler (via
 /// `MessageBatch<AuditLogEvent>`) which bulk-INSERTs into D1. Covers every
 /// column of the `logs` table that a relay audit row touches.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditLogEvent {
     pub user_id: i64,
     pub created_at: i64,

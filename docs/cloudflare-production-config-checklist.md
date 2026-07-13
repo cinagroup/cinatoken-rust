@@ -111,16 +111,16 @@ Result: local D1/config prerequisites pass, but G1 remains **NO-GO**. No local
 command or local Worker smoke substitutes for authenticated staging deploy,
 remote D1 migration output, `/api/status`, capabilities, logs, or traces.
 
-### 2026-07-13 Billing Recovery Migration Update
+### 2026-07-14 Billing Recovery Migration Update
 
-- The current compiled and SQLite-verified chain contains 23 migrations through
-  `0023_relay_billing_reservations.sql`, with 29 required tables, 105
-  incremental key columns, and 20 key indexes.
+- The current compiled and SQLite-verified chain contains 24 migrations through
+  `0024_relay_billing_finalization_events.sql`, with 29 required tables, 106
+  incremental key columns, and 21 key indexes.
 - Migration 0021 fails closed while any Realtime billing reservation remains
   `reserved`; disable Realtime settlement writes, reconcile the ledger to zero,
   and archive redacted evidence before applying it.
 - The 2026-07-10 local Wrangler 20/20 apply remains historical evidence and
-  must be refreshed through 0023. No authenticated staging apply has occurred.
+  must be refreshed through 0024. No authenticated staging apply has occurred.
 - Migration 0022 adds the indexed global expiry scan, bounded retry-deferral
   metadata, and a singleton aggregate sweep status. It does not start refunds:
   `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED` remains `false` in every tracked
@@ -288,6 +288,7 @@ These must be true for every deployable environment:
 | `CONFIG_KV` | Optional | Real namespace or removed | Real namespace or removed | Platform | Binding decision and generated types |
 | `FILE_BUCKET` R2 | Optional | Real bucket if task/file features enabled | Real bucket before task/file cutover | Platform/Tasks | R2 smoke and retention policy |
 | `LOG_QUEUE` | Optional | Real queue once queue producer is enabled | Real queue plus consumer/DLQ | Platform/SRE | Queue smoke, DLQ alert |
+| `BILLING_QUEUE` | Default-off | Separate staging producer/consumer/DLQ; keep gate false until migration and readback pass | Separate production producer/consumer/DLQ; never reuse staging DLQ | Platform/Billing/SRE | `bun run check:cf:billing-queue`, authenticated create/readback, duplicate/retry exhaustion, DLQ alert, reconcile/rollback drill |
 | `TASK_QUEUE` | Optional | Real queue once async task flow is enabled | Real queue plus consumer/DLQ | Platform/Tasks | Queue smoke, replay test |
 | `EMAIL` send_email | Optional | Required for email verification/reset smoke | Required before enabling `EmailVerificationEnabled` or password reset in production | Platform/Auth | Verified sender, `SMTPFrom`/`SMTPAccount` option, send-code/reset smoke |
 | AI Gateway | Optional | Real ID or direct-provider decision | Real ID or direct-provider decision | Relay | Provider matrix decision |
@@ -650,11 +651,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-   `d1_migration_status_available=true`, applied count `23`, latest/expected
-   `0023_relay_billing_reservations.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `24`, latest/expected
+    `0024_relay_billing_finalization_events.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0023 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0024 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
@@ -701,8 +702,11 @@ armed only when:
   `RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED` remain false
   until their separate deployed matrices pass.
 - A dedicated `BILLING_QUEUE`, idempotent replay consumer, DLQ, lag/failure
-  alerts, frozen snapshot schema, and reconcile path exist before
+  alerts, frozen-decision schema, and reconcile path exist before
   `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` can become true.
+- Local consumer/DLQ/CAS code is not resource evidence. Require authenticated
+  Queue/consumer/DLQ readback and a successful operator reconcile/DLQ replay
+  drill; the checked-in capability currently reports reconcile false.
 - Request abort signaling and a bounded idle-timeout policy are explicitly
   configured and live-smoked. The current checked-in Worker does not yet expose
   these capabilities, so production HTTP stream billing remains NO-GO.

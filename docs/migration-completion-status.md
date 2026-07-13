@@ -477,3 +477,29 @@ cutover remains false. Client disconnect beyond the post-response window,
 request abort/idle timeout, pre-bind ownership, non-stream clone/read failure,
 bounded accumulator memory, Queue/DLQ replay, staging migration, and remote
 accounting evidence remain blockers. Production remains **NO-GO**.
+
+## 2026-07-14 Durable HTTP Billing Finalization Queue Status
+
+Migration 0024 adds a unique finalization event marker to `logs`. The tracked
+Wrangler environments now declare a dedicated billing producer, consumer,
+bounded retry policy, and environment-specific DLQ, while
+`RELAY_BILLING_FINALIZATION_QUEUE_ENABLED=false` keeps transport behavior inert
+by default. Reservation-backed tiered settlement/refund emits a bounded,
+redacted frozen-decision event only when the gate and binding are both present;
+producer failure falls back to the same idempotent D1 finalizer.
+
+The Rust Queue consumer validates the queue name and payload family, parses each
+message independently, ACKs applied/matching CAS outcomes, and retries malformed,
+cross-queue, conflicting, or D1-failed messages individually. Release Workerd
+proves duplicate replay without repeated quota/request/audit mutation,
+cross-queue retry, and poison-message isolation. The frontend and capability API
+separate queue enablement, binding, consumer, DLQ, replay, reconcile, runtime,
+and staging proof; proof cannot override missing prerequisites.
+
+The local chain now verifies as 24 migrations, 29 tables, 106 incremental
+columns, and 21 key indexes. Consumer/DLQ/CAS is Partial E3/E4, not production
+readiness: the operator reconcile/DLQ replay workflow remains absent, so runtime
+readiness, scheduled HTTP orphan recovery, and cutover stay false. Remote
+migration/Queue/DLQ readback, retry exhaustion, alerting, client cancellation,
+D1 ambiguity and recovery-race accounting, credential rotation, canary, and
+rollback remain blockers. Production remains **NO-GO**.

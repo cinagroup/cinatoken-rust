@@ -19,6 +19,7 @@ use cinatoken_relay::{
     token_fingerprint,
 };
 use cinatoken_storage::RelayAuditLog;
+use futures_util::future::{AbortHandle, AbortRegistration, Abortable};
 use futures_util::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -378,6 +379,7 @@ struct RealtimeUpstreamBridgeState {
     upstream: WebSocket,
     upstream_ready: bool,
     closed: bool,
+    lifetime_abort: Option<AbortHandle>,
     pending: RealtimeBridgePendingQueue,
     billing_settlement: Option<RealtimeBillingSettlementHandoff>,
 }
@@ -1851,11 +1853,13 @@ impl RealtimeSession {
         let upstream = connect_realtime_upstream(handoff).await?;
         let bridge_key = realtime_upstream_bridge_key(attachment);
         let context = attachment_context_json(Some(attachment));
+        let (lifetime_abort, lifetime_abort_registration) = AbortHandle::new_pair();
         let runtime = RealtimeUpstreamBridgeRuntime {
             state: Rc::new(RefCell::new(RealtimeUpstreamBridgeState {
                 upstream,
                 upstream_ready: false,
                 closed: false,
+                lifetime_abort: Some(lifetime_abort),
                 pending: RealtimeBridgePendingQueue::default(),
                 billing_settlement: handoff.billing_settlement.clone(),
             })),
@@ -1878,6 +1882,7 @@ impl RealtimeSession {
             self.env.clone(),
             self.state.storage(),
             context,
+            lifetime_abort_registration,
         );
         self.upstream_bridges.insert(bridge_key, runtime);
         Ok(())
@@ -6214,13 +6219,22 @@ fn spawn_realtime_upstream_lifetime_guard(
     env: Env,
     mut metrics_storage: Storage,
     context: Value,
+    abort_registration: AbortRegistration,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
         let Some(deadline_ms) = realtime_upstream_bridge_deadline_ms(&attachment) else {
             return;
         };
         let remaining_ms = (deadline_ms - js_sys::Date::now()).max(0.0).ceil() as u64;
-        Delay::from(Duration::from_millis(remaining_ms)).await;
+        if Abortable::new(
+            Delay::from(Duration::from_millis(remaining_ms)),
+            abort_registration,
+        )
+        .await
+        .is_err()
+        {
+            return;
+        }
 
         let cause = RealtimeBridgeCloseCause::UpstreamLifetimeExceeded;
         let action = realtime_bridge_close_action(cause);
@@ -6267,6 +6281,9 @@ fn mark_realtime_upstream_runtime_closed(runtime_state: &Rc<RefCell<RealtimeUpst
     state.closed = true;
     state.upstream_ready = false;
     state.pending.clear();
+    if let Some(abort) = state.lifetime_abort.take() {
+        abort.abort();
+    }
 }
 
 fn close_realtime_upstream_runtime(
@@ -6280,6 +6297,9 @@ fn close_realtime_upstream_runtime(
     state.closed = true;
     state.upstream_ready = false;
     state.pending.clear();
+    if let Some(abort) = state.lifetime_abort.take() {
+        abort.abort();
+    }
     if let (Some(code), Some(reason)) = (action.upstream_code, action.upstream_reason) {
         let _ = state.upstream.close(Some(code), Some(reason));
     }

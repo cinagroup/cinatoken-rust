@@ -3607,3 +3607,32 @@ authenticated frontend, and rollback evidence.
   rate-limit scoping, logout/disabled/quota-exhausted negatives, deploy
   readback, credential-redaction checks, and rollback. Production remains
   **NO-GO**.
+
+## 2026-07-13 Authenticated Realtime Reservation And Guard Cancellation
+
+- The complete release Rust/Wasm Workerd lifecycle suite passed 11/11.
+- Its reconstruction case now enters through authenticated
+  `GET /v1/realtime`, not a platform-only DO request or a directly seeded
+  reservation. The fixture applies the canonical 22-file D1 chain, seeds one
+  enabled user/token/channel/ability and one tiered expression, then proves D1
+  token auth, model-limited channel selection, one provider handshake, and a
+  positive user/token quota debit from a real `response.create` reservation.
+- The test then observes the controlled upstream runtime detach, evicts the
+  hibernatable DO, sends the first restored business frame, and proves one
+  metadata-only 1011 terminal event, one idempotent refund, exact user/token
+  quota restoration, lease cleanup, a fresh bridge segment, and no second
+  provider call.
+- The first authenticated replay exposed a stale transient task: the bridge's
+  840-second lifetime `Delay` survived after its upstream runtime had closed
+  and prevented timely Workerd eviction. The runtime now owns an abort handle
+  per bridge; both normal close marking and fail-closed shutdown cancel the
+  guard immediately. The deadline behavior is unchanged while a bridge is
+  active.
+- Focused Rust Realtime tests passed 71/71 before the release build. No remote
+  Cloudflare account or provider credential was used, all tracked production
+  Realtime gates remain false, and production remains **NO-GO**.
+- The complete `bun run check` gate also passed: three release Rust/Wasm
+  artifacts, Workerd 11/11, Playground 1/1, frontend readiness 22/22, bundle
+  redaction/budget/lint checks, 217 frontend calls against 320 Worker routes
+  with zero missing calls, the exact 22-file D1 migration chain, all workspace
+  tests, and main/tenant/outbound wasm32 checks.

@@ -10840,3 +10840,50 @@ real browser interaction, synthetic token-table non-mutation, channel quota
 reconciliation, native rate-limit scoping, logout/disabled/quota-exhausted
 negative cases, deploy readback, credential-redaction checks, and rollback.
 This local capability increment does not change production **NO-GO**.
+
+### 22.177 2026-07-13 Authenticated Realtime Reservation Across Eviction
+
+This increment closes the local seeded-reservation limitation recorded in
+22.173 and also removes a transient timer that prevented a closed upstream
+bridge from returning promptly to a hibernatable state. It does not claim
+deployed Durable Object or provider evidence.
+
+Implemented locally:
+
+- The release Rust/Wasm Workerd reconstruction test now enters through
+  authenticated `GET /v1/realtime?model=...`. It applies the canonical D1
+  migration chain and uses an enabled, model-limited token plus an enabled
+  channel/ability, so the test exercises the scheduling gateway, D1 token
+  authentication, channel selection, upstream planning, and the Realtime DO.
+- A real `response.create` creates the reservation through the production D1
+  repository path. The test requires a positive pre-consumed quota, exact user
+  and token debit, a segment-scoped lease, and one controlled provider
+  handshake before eviction. It no longer inserts the reservation or private
+  DO lease directly.
+- The bridge lifetime guard is now abortable. Every upstream close path clears
+  pending frames and cancels the 840-second guard, while an active bridge keeps
+  the original hard deadline. This prevents a closed request-scoped outbound
+  WebSocket runtime from pinning the DO through a stale timer.
+- After hibernatable eviction, the first business frame still fails closed with
+  one metadata-only `upstream_unavailable` event and code 1011. The exact
+  authenticated reservation is refunded once, user/token quota returns to its
+  starting values, the DO lease is removed, a later socket receives a new
+  bridge segment, and provider call count remains one.
+
+Local evidence:
+
+- Focused Realtime Rust tests: 71/71 passed.
+- Release Rust/Wasm Workerd lifecycle suite: 11/11 passed.
+- The authenticated reconstruction case completed after the lifetime guard
+  cancellation; the prior implementation timed out while attempting eviction.
+- The complete `bun run check` release gate passed, including three Rust/Wasm
+  builds, Playground 1/1, frontend readiness 22/22, zero missing frontend
+  calls, the 22-file D1 chain, workspace tests, and all three wasm32 checks.
+
+The default, staging, and production Realtime admission, settlement-write, and
+orphan-recovery gates remain false. Isolated deployed staging must still apply
+and verify migration 0022, repeat authenticated reserve with a real provider,
+prove response-created/done settlement plus eviction/redeploy ownership,
+reconcile provider billing and D1 quota, exercise alerts and rollback, and
+archive redacted evidence. The exposed Cloudflare credential must be revoked
+and replaced before any such work. Production remains **NO-GO**.

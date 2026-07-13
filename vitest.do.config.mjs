@@ -44,6 +44,9 @@ export default defineConfig({
         bindings: {
           WFP_RELAY_AUTHORITY_SECRET: authoritySecret,
           TASK_RUNNER_DO_ENABLED: "false",
+          REALTIME_SESSION_V1_ENABLED: "true",
+          REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED: "true",
+          REALTIME_BILLING_RESERVATION_LEASE_SECONDS: "900",
           REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED: "true",
           REALTIME_BILLING_ORPHAN_SWEEP_LIMIT: "1",
           TEST_D1_MIGRATIONS: d1Migrations,

@@ -979,9 +979,10 @@ The production sequence is:
    4c case in `docs/staging-smoke-runbook.md`: grace no-op, post-grace refund,
    concurrent schedules, failed-head fairness, late settlement rejection,
    no-store hashed status, alert, and rollback.
-5. Repeat with the authenticated public reserve path plus a live DO settlement
-   retry across eviction/redeploy. Correlate D1 policy state with redacted DO
-   status because D1 alone cannot identify the running retry owner.
+5. Repeat the locally proven authenticated public reserve path against deployed
+   staging, then add a live provider settlement retry across eviction/redeploy.
+   Correlate D1 policy state with redacted DO status because neither D1 nor
+   local Workerd can identify the running remote retry owner.
 6. Expand the limit from 1 toward 32 only after measuring D1 queries, rows read,
    task-poller headroom, latency, errors, and cost. Values above 64 are rejected
    by the Worker.

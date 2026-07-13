@@ -7,6 +7,7 @@ import {
   reset,
   runDurableObjectAlarm,
   runInDurableObject,
+  SELF,
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,6 +22,8 @@ const workerName = "tenant-runtime-test";
 const taskRunnerRecordKey = "task_runner_record_v1";
 const wfpRouteHeader = "x-cinatoken-wfp-route";
 const wfpWorkerHeader = "x-cinatoken-wfp-worker";
+const realtimeModel = "gpt-4o-realtime-preview";
+const realtimeToken = "sk-runtime-authenticated-realtime";
 
 afterEach(async () => {
   await reset();
@@ -150,54 +153,47 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "https://realtime-provider-mock/__mock/reset",
       { method: "POST" },
     );
-    await seedRealtimeBillingAccount();
-
-    const providerProofSession = "runtime-upstream-provider-proof";
-    const providerProofStub = env.REALTIME_SESSIONS.getByName(providerProofSession);
-    const providerProofSocket = await openDetachedRealtimeBridge(
-      providerProofStub,
-      providerProofSession,
+    const account = await seedAuthenticatedRealtimeGateway();
+    const first = await openAuthenticatedRealtimeSession();
+    const initialStatusMessage = nextJsonWebSocketMessage(
+      first,
+      "authenticated Realtime attachment status",
     );
-    await waitForDetachedBridge(providerProofSocket, 1);
-    providerProofSocket.close(1000, "provider proof complete");
-
-    const session = "runtime-upstream-reconstruction";
-    const stub = env.REALTIME_SESSIONS.getByName(session);
-    const first = await openRealtimeSession(stub, session);
-    const firstStatusMessage = nextJsonWebSocketMessage(first, "initial attachment status");
     first.send("status");
-    const firstStatus = await firstStatusMessage;
-    const firstSegment = firstStatus.context.bridge_segment;
-    const reservationKey = "rtreserve-runtime-reconstruction";
-    const leaseExpiresAt = Math.floor(Date.now() / 1000) + 300;
+    const initialStatus = await initialStatusMessage;
+    const session = initialStatus.context.session;
+    const firstSegment = initialStatus.context.bridge_segment;
+    const stub = env.REALTIME_SESSIONS.getByName(session);
+    expect(initialStatus.context).toMatchObject({
+      entrypoint: "openai_realtime_v1",
+      auth_state: "gateway_checked",
+      upstream_connect_handoff: true,
+    });
+    expect(session).toMatch(/^rt-[a-f0-9]{16}$/u);
 
-    await seedRealtimeReservation({
-      reservationKey,
-      session,
-      bridgeSegment: firstSegment,
-      leaseExpiresAt,
+    first.send(
+      JSON.stringify({
+        type: "response.create",
+        event_id: "runtime-authenticated-reservation",
+        response: { instructions: "runtime reservation proof" },
+      }),
+    );
+    const reserved = await waitForRealtimeReservation(session);
+    const reservationKey = reserved.reservation.reservation_key;
+    expect(reserved).toMatchObject({
+      reservation: {
+        status: "reserved",
+        bridge_segment: firstSegment,
+        reservation_sequence: 1,
+      },
+      user: { quota: account.userQuota - reserved.reservation.pre_consumed_quota },
+      token: {
+        remain_quota: account.tokenRemainQuota - reserved.reservation.pre_consumed_quota,
+        used_quota: reserved.reservation.pre_consumed_quota,
+      },
     });
-    await runInDurableObject(stub, async (_instance, state) => {
-      const [serverSocket] = state.getWebSockets();
-      const attachment = serverSocket.deserializeAttachment();
-      serverSocket.serializeAttachment({
-        ...attachment,
-        upstream_connect_handoff: true,
-      });
-      await state.storage.put("billing_reservation_leases_v1", {
-        records: [
-          {
-            reservation_key: reservationKey,
-            reservation_sequence: 1,
-            lease_expires_at: leaseExpiresAt,
-            expires_at_ms: leaseExpiresAt * 1_000,
-            attempts: 0,
-            last_error: null,
-          },
-        ],
-      });
-      return new Response(null);
-    });
+    expect(reserved.reservation.pre_consumed_quota).toBeGreaterThan(0);
+    await waitForDetachedBridge(first, 1);
 
     const beforeEviction = await realtimeSessionStatus(stub, session);
     expect(beforeEviction).toMatchObject({
@@ -247,8 +243,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
 
     await expect(waitForRealtimeRefund(reservationKey)).resolves.toMatchObject({
       reservation: { status: "refunded", bridge_segment: firstSegment },
-      user: { quota: 1_000 },
-      token: { remain_quota: 500, used_quota: 0 },
+      user: { quota: account.userQuota },
+      token: { remain_quota: account.tokenRemainQuota, used_quota: 0 },
     });
     expect(await providerState()).toMatchObject({ count: 1, path: "/v1/realtime" });
 
@@ -272,8 +268,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(await providerState()).toMatchObject({ count: 1, path: "/v1/realtime" });
     await expect(realtimeBillingState(reservationKey)).resolves.toMatchObject({
       reservation: { status: "refunded", bridge_segment: firstSegment },
-      user: { quota: 1_000 },
-      token: { remain_quota: 500, used_quota: 0 },
+      user: { quota: account.userQuota },
+      token: { remain_quota: account.tokenRemainQuota, used_quota: 0 },
     });
     second.close(1000, "test complete");
   }, 30_000);
@@ -570,20 +566,14 @@ function nextJsonWebSocketMessage(socket, label) {
   });
 }
 
-async function openDetachedRealtimeBridge(stub, session) {
-  const handoff = JSON.stringify({
-    url: "https://realtime-provider.invalid/v1/realtime",
-    auth_mode: "authorization_bearer",
-    protocol: [],
-    headers: [{ name: "authorization", value: "Bearer runtime-test-secret" }],
-    mock_upstream_fault: "runtime_detached",
-  });
-  const response = await stub.fetch(
-    `https://realtime-session.internal/api/platform/realtime/${session}`,
+async function openAuthenticatedRealtimeSession() {
+  const response = await SELF.fetch(
+    `https://worker.test/v1/realtime?model=${encodeURIComponent(realtimeModel)}`,
     {
       headers: {
+        Authorization: `Bearer ${realtimeToken}`,
         Upgrade: "websocket",
-        "x-cinatoken-realtime-upstream-connect": handoff,
+        "Sec-WebSocket-Key": "cnVudGltZS1yZWFsdGltZQ==",
       },
     },
   );
@@ -635,6 +625,59 @@ function providerState() {
   ).then((response) => response.json());
 }
 
+async function seedAuthenticatedRealtimeGateway() {
+  const now = Math.floor(Date.now() / 1000);
+  const userQuota = 1_000_000;
+  const tokenRemainQuota = 500_000;
+  const otherInfo = JSON.stringify({
+    realtime_mock_upstream: {
+      queue_probe_delay_ms: 100,
+      fault: "runtime_detached",
+    },
+  });
+  const billingExpression = 'tier("runtime_realtime", p * 2 + c * 8)';
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO users
+        (id, username, password, display_name, role, status, email, quota,
+         used_quota, request_count, "group", aff_code, created_at, deleted_at)
+       VALUES (1, 'runtime-user', 'disabled-runtime-user', 'Runtime Realtime',
+         1, 1, '', ?1, 0, 0, 'default', 'runtime1', ?2, NULL)`,
+    ).bind(userQuota, now),
+    env.DB.prepare(
+      `INSERT INTO tokens
+        (id, user_id, "key", status, name, created_time, accessed_time,
+         expired_time, remain_quota, unlimited_quota, model_limits_enabled,
+         model_limits, allow_ips, used_quota, "group", cross_group_retry, deleted_at)
+       VALUES (1, 1, ?1, 1, 'runtime realtime token', ?2, 0, -1, ?3, 0,
+         1, ?4, '', 0, 'default', 0, NULL)`,
+    ).bind(realtimeToken, now, tokenRemainQuota, realtimeModel),
+    env.DB.prepare(
+      `INSERT INTO channels
+        (id, type, "key", status, name, weight, created_time, base_url, other,
+         balance, models, "group", used_quota, model_mapping,
+         status_code_mapping, priority, auto_ban, other_info, channel_info, settings)
+       VALUES (42, 1, 'runtime-upstream-secret', 1, 'runtime realtime upstream',
+         1000, ?1, 'https://realtime-provider.invalid', '', 0, ?2, 'default',
+         0, NULL, '', 1000, 0, ?3, '{}', '')`,
+    ).bind(now, realtimeModel, otherInfo),
+    env.DB.prepare(
+      `INSERT INTO abilities
+        (group_name, model, channel_id, enabled, priority, weight)
+       VALUES ('default', ?1, 42, 1, 1000, 1000)`,
+    ).bind(realtimeModel),
+    env.DB.prepare(
+      `INSERT INTO options ("key", value)
+       VALUES ('billing_setting.billing_mode', ?1)`,
+    ).bind(JSON.stringify({ [realtimeModel]: "tiered_expr" })),
+    env.DB.prepare(
+      `INSERT INTO options ("key", value)
+       VALUES ('billing_setting.billing_expr', ?1)`,
+    ).bind(JSON.stringify({ [realtimeModel]: billingExpression })),
+  ]);
+  return { userQuota, tokenRemainQuota };
+}
+
 async function seedRealtimeBillingAccount({
   userQuota = 900,
   tokenRemainQuota = 400,
@@ -682,6 +725,35 @@ async function realtimeBillingState(reservationKey) {
     ).first(),
   ]);
   return { reservation, user, token };
+}
+
+async function waitForRealtimeReservation(session) {
+  const deadline = Date.now() + 5_000;
+  let state;
+  while (Date.now() < deadline) {
+    const [reservation, user, token] = await Promise.all([
+      env.DB.prepare(
+        `SELECT reservation_key, status, bridge_segment, reservation_sequence,
+                pre_consumed_quota
+         FROM realtime_billing_reservations
+         WHERE session = ?1
+         ORDER BY reservation_sequence DESC
+         LIMIT 1`,
+      )
+        .bind(session)
+        .first(),
+      env.DB.prepare("SELECT quota FROM users WHERE id = 1").first(),
+      env.DB.prepare(
+        "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+      ).first(),
+    ]);
+    state = { reservation, user, token };
+    if (reservation?.status === "reserved") return state;
+    await delay(10);
+  }
+  throw new Error(
+    `authenticated Realtime reservation was not created: ${JSON.stringify(state)}`,
+  );
 }
 
 async function waitForRealtimeRefund(reservationKey) {

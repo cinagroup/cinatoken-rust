@@ -104,12 +104,19 @@ const RELAY_MODEL_FALLBACKS_MAX_ENTRIES: usize = 128;
 const RELAY_MODEL_FALLBACK_NAME_MAX_CHARS: usize = 200;
 pub(crate) const RELAY_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
     "RELAY_BILLING_RESERVATION_LEASE_SECONDS";
+pub(crate) const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS_ENV: &str =
+    "RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS";
+pub(crate) const RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV: &str =
+    "RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED";
 pub(crate) const RELAY_BILLING_ORPHAN_SWEEP_LIMIT_ENV: &str = "RELAY_BILLING_ORPHAN_SWEEP_LIMIT";
 pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_ENABLED_ENV: &str =
     "RELAY_BILLING_ORPHAN_RECOVERY_ENABLED";
 const RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS: i64 = 3_600;
 const RELAY_BILLING_RESERVATION_LEASE_MIN_SECONDS: i64 = 300;
 const RELAY_BILLING_RESERVATION_LEASE_MAX_SECONDS: i64 = 86_400;
+const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_DEFAULT_SECONDS: i64 = 900;
+const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS: i64 = 5;
+const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_RETRY_MAX_SECONDS: i64 = 60;
 const RELAY_BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT: i64 = 32;
 const AI_GATEWAY_DIRECT_FALLBACK_AUDIT_HEADER: &str =
     "x-cinatoken-internal-ai-gateway-direct-fallback";
@@ -3320,17 +3327,18 @@ async fn relay_endpoint_with_auth(
         };
     }
     if let Some(preflight) = tiered_billing_preflight
-        .as_ref()
+        .as_mut()
         .filter(|preflight| preflight.reserve_applied)
     {
         let selected_at = unix_timestamp();
+        let lease_seconds = relay_billing_reservation_lease_seconds(&env);
         if let Err(err) = bind_tiered_billing_selected_attempt(
             &db,
             preflight,
             channel.id,
             &selected_group,
             selected_at,
-            relay_billing_reservation_lease_seconds(&env),
+            lease_seconds,
         )
         .await
         {
@@ -3339,6 +3347,8 @@ async fn relay_endpoint_with_auth(
                 500,
             );
         }
+        preflight.selected_at = Some(selected_at);
+        preflight.selected_lease_expires_at = Some(selected_at.saturating_add(lease_seconds));
     }
     if model_route_audit.wfp_worker.is_some() {
         strip_wfp_internal_response_headers(upstream_response.headers_mut())?;
@@ -3406,6 +3416,7 @@ async fn relay_endpoint_with_auth(
         estimated_prompt_tokens,
         missing_usage_estimate_enabled: missing_usage_estimate_enabled(&env),
         usage_locally_estimated: false,
+        stream_lease_heartbeat: None,
         affinity: affinity_audit,
         model_route: model_route_audit,
         attempts: attempt_audits,
@@ -5772,7 +5783,17 @@ pub(crate) fn relay_billing_reservation_ledger_compiled() -> bool {
     RELAY_BILLING_RESERVATION_LEASE_MIN_SECONDS < RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
         && RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
             <= RELAY_BILLING_RESERVATION_LEASE_MAX_SECONDS
+        && RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS
+            < RELAY_BILLING_STREAM_LEASE_HEARTBEAT_DEFAULT_SECONDS
         && crate::d1_repositories::RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS > 0
+}
+
+pub(crate) fn relay_billing_stream_lease_renewal_compiled() -> bool {
+    relay_billing_reservation_ledger_compiled()
+        && relay_billing_stream_lease_heartbeat_seconds_from_raw(
+            RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS,
+            None,
+        ) < RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
 }
 
 pub(crate) fn relay_billing_orphan_recovery_enabled(env: &Env) -> bool {
@@ -5788,6 +5809,68 @@ pub(crate) fn relay_billing_reservation_lease_seconds(env: &Env) -> i64 {
                 .contains(value)
         })
         .unwrap_or(RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS)
+}
+
+pub(crate) fn relay_billing_stream_lease_heartbeat_seconds(env: &Env) -> i64 {
+    relay_billing_stream_lease_heartbeat_runtime_status(env).effective_seconds
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RelayBillingStreamLeaseHeartbeatRuntimeStatus {
+    pub configured: bool,
+    pub valid: bool,
+    pub effective_seconds: i64,
+}
+
+pub(crate) fn relay_billing_stream_lease_heartbeat_runtime_status(
+    env: &Env,
+) -> RelayBillingStreamLeaseHeartbeatRuntimeStatus {
+    relay_billing_stream_lease_heartbeat_runtime_status_from_raw(
+        relay_billing_reservation_lease_seconds(env),
+        optional_env_var(env, RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS_ENV).as_deref(),
+    )
+}
+
+fn relay_billing_stream_lease_heartbeat_seconds_from_raw(
+    lease_seconds: i64,
+    raw: Option<&str>,
+) -> i64 {
+    relay_billing_stream_lease_heartbeat_runtime_status_from_raw(lease_seconds, raw)
+        .effective_seconds
+}
+
+fn relay_billing_stream_lease_heartbeat_runtime_status_from_raw(
+    lease_seconds: i64,
+    raw: Option<&str>,
+) -> RelayBillingStreamLeaseHeartbeatRuntimeStatus {
+    let maximum = (lease_seconds / 3).max(RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS);
+    let default = RELAY_BILLING_STREAM_LEASE_HEARTBEAT_DEFAULT_SECONDS.min(maximum);
+    let configured = raw.is_some_and(|value| !value.trim().is_empty());
+    let parsed = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<i64>().ok());
+    let accepted = parsed.filter(|value| {
+        (RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS..=maximum).contains(value)
+    });
+    RelayBillingStreamLeaseHeartbeatRuntimeStatus {
+        configured,
+        valid: !configured || accepted.is_some(),
+        effective_seconds: accepted.unwrap_or(default),
+    }
+}
+
+fn relay_billing_stream_lease_heartbeat_interval_seconds(
+    heartbeat_seconds: i64,
+    reservation_key: &str,
+) -> i64 {
+    let spread = (heartbeat_seconds / 10).max(1);
+    let digest = Sha256::digest(reservation_key.as_bytes());
+    let seed = i64::from(u16::from_be_bytes([digest[0], digest[1]]));
+    let offset = seed % spread.saturating_mul(2).saturating_add(1) - spread;
+    heartbeat_seconds
+        .saturating_add(offset)
+        .max(RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS)
 }
 
 pub(crate) fn relay_billing_orphan_sweep_limit(env: &Env) -> i64 {
@@ -8372,6 +8455,48 @@ fn usage_summary_for_provider(
     }
 }
 
+#[derive(Debug, Clone)]
+struct RelayBillingStreamLease {
+    reservation_key: String,
+    channel_id: i64,
+    selected_group: String,
+    selected_at: i64,
+    initial_lease_expires_at: i64,
+    lease_seconds: i64,
+    heartbeat_seconds: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RelayBillingStreamLeaseHeartbeatAudit {
+    interval_seconds: i64,
+    initial_lease_expires_at: i64,
+    final_lease_expires_at: i64,
+    last_renewed_at: Option<i64>,
+    attempt_count: u32,
+    renewed_count: u32,
+    matching_count: u32,
+    failure_count: u32,
+    stopped_reason: Option<&'static str>,
+    completion_reason: Option<&'static str>,
+}
+
+impl RelayBillingStreamLeaseHeartbeatAudit {
+    fn new(interval_seconds: i64, initial_lease_expires_at: i64) -> Self {
+        Self {
+            interval_seconds,
+            initial_lease_expires_at,
+            final_lease_expires_at: initial_lease_expires_at,
+            last_renewed_at: None,
+            attempt_count: 0,
+            renewed_count: 0,
+            matching_count: 0,
+            failure_count: 0,
+            stopped_reason: None,
+            completion_reason: None,
+        }
+    }
+}
+
 async fn complete_streaming_relay_response(
     mut upstream: Response,
     env: Env,
@@ -8415,15 +8540,44 @@ async fn complete_streaming_relay_response(
             return Err(err);
         }
     };
+    let stream_lease = audit
+        .tiered_billing_preflight
+        .as_ref()
+        .filter(|preflight| preflight.reserve_applied)
+        .and_then(|preflight| {
+            let reservation_key = preflight.reservation_key.clone()?;
+            let heartbeat_seconds = relay_billing_stream_lease_heartbeat_interval_seconds(
+                relay_billing_stream_lease_heartbeat_seconds(&env),
+                &reservation_key,
+            );
+            Some(RelayBillingStreamLease {
+                reservation_key,
+                channel_id: channel.id,
+                selected_group: group.clone(),
+                selected_at: preflight.selected_at?,
+                initial_lease_expires_at: preflight.selected_lease_expires_at?,
+                lease_seconds: relay_billing_reservation_lease_seconds(&env),
+                heartbeat_seconds,
+            })
+        });
 
     context.wait_until(async move {
         let mut audit = audit;
+        let mut heartbeat_audit = stream_lease.as_ref().map(|lease| {
+            RelayBillingStreamLeaseHeartbeatAudit::new(
+                lease.heartbeat_seconds,
+                lease.initial_lease_expires_at,
+            )
+        });
         let (usage, usage_locally_estimated) = match streaming_usage_summary(
             &mut audit_response,
             provider,
             &model,
             audit.estimated_prompt_tokens,
             audit.missing_usage_estimate_enabled,
+            &db,
+            stream_lease.as_ref(),
+            heartbeat_audit.as_mut(),
         )
         .await
         {
@@ -8434,6 +8588,7 @@ async fn complete_streaming_relay_response(
             }
         };
         audit.usage_locally_estimated = usage_locally_estimated;
+        audit.stream_lease_heartbeat = heartbeat_audit;
         if let Err(err) = record_relay_audit(
             &env,
             &db,
@@ -8463,6 +8618,9 @@ async fn streaming_usage_summary(
     model: &str,
     estimated_prompt_tokens: i64,
     estimate_enabled: bool,
+    db: &D1Database,
+    stream_lease: Option<&RelayBillingStreamLease>,
+    heartbeat_audit: Option<&mut RelayBillingStreamLeaseHeartbeatAudit>,
 ) -> worker::Result<(UsageSummary, bool)> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
@@ -8485,8 +8643,121 @@ async fn streaming_usage_summary(
         RelayProviderKind::GeminiNative => SseUsageAccumulator::gemini(),
     };
 
-    while let Some(chunk) = stream.next().await {
-        accumulator.push_chunk(&chunk?);
+    let mut heartbeat_audit = heartbeat_audit;
+    let mut heartbeat_active = stream_lease.is_some();
+    let mut expected_lease_expires_at = stream_lease
+        .map(|lease| lease.initial_lease_expires_at)
+        .unwrap_or_default();
+    let mut next_heartbeat_at = stream_lease
+        .map(|lease| unix_timestamp().saturating_add(lease.heartbeat_seconds))
+        .unwrap_or_default();
+    loop {
+        if let Some(lease) = stream_lease.filter(|_| heartbeat_active) {
+            let now = unix_timestamp();
+            if now >= next_heartbeat_at {
+                if let Some(audit) = heartbeat_audit.as_deref_mut() {
+                    audit.attempt_count = audit.attempt_count.saturating_add(1);
+                }
+                use crate::d1_repositories::RelayBillingLeaseRenewalOutcome as Outcome;
+                let requested_lease_expires_at = now.saturating_add(lease.lease_seconds);
+                let mut next_delay_seconds = lease.heartbeat_seconds;
+                match crate::d1_repositories::renew_relay_billing_selected_attempt_lease(
+                    db,
+                    &lease.reservation_key,
+                    lease.channel_id,
+                    &lease.selected_group,
+                    lease.selected_at,
+                    expected_lease_expires_at,
+                    now,
+                    requested_lease_expires_at,
+                )
+                .await
+                {
+                    Ok(Outcome::Applied) => {
+                        expected_lease_expires_at = requested_lease_expires_at;
+                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
+                            audit.renewed_count = audit.renewed_count.saturating_add(1);
+                            audit.final_lease_expires_at = requested_lease_expires_at;
+                            audit.last_renewed_at = Some(now);
+                        }
+                    }
+                    Ok(Outcome::MatchingRenewal) => {
+                        expected_lease_expires_at = requested_lease_expires_at;
+                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
+                            audit.matching_count = audit.matching_count.saturating_add(1);
+                            audit.final_lease_expires_at = requested_lease_expires_at;
+                            audit.last_renewed_at = Some(now);
+                        }
+                    }
+                    Ok(outcome) => {
+                        heartbeat_active = false;
+                        let reason = match outcome {
+                            Outcome::AlreadyFinalized => "already_finalized",
+                            Outcome::StaleGeneration => "stale_generation",
+                            Outcome::DeadlineExpired => "deadline_expired",
+                            Outcome::Conflict => "identity_conflict",
+                            Outcome::NotFound => "not_found",
+                            Outcome::Applied | Outcome::MatchingRenewal => unreachable!(),
+                        };
+                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
+                            audit.stopped_reason = Some(reason);
+                        }
+                        worker::console_warn!(
+                            "relay billing stream lease heartbeat stopped: {reason}"
+                        );
+                    }
+                    Err(err) => {
+                        next_delay_seconds = lease
+                            .heartbeat_seconds
+                            .min(RELAY_BILLING_STREAM_LEASE_HEARTBEAT_RETRY_MAX_SECONDS);
+                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
+                            audit.failure_count = audit.failure_count.saturating_add(1);
+                        }
+                        worker::console_warn!(
+                            "relay billing stream lease heartbeat failed; stream remains active: {err}"
+                        );
+                    }
+                }
+                next_heartbeat_at = now.saturating_add(next_delay_seconds);
+            }
+        }
+
+        if heartbeat_active {
+            let wait_seconds = next_heartbeat_at.saturating_sub(unix_timestamp()).max(1);
+            let next_chunk = Box::pin(stream.next());
+            let heartbeat = Box::pin(Delay::from(Duration::from_secs(
+                u64::try_from(wait_seconds).unwrap_or(1),
+            )));
+            match select(next_chunk, heartbeat).await {
+                Either::Left((Some(chunk), _)) => match chunk {
+                    Ok(chunk) => accumulator.push_chunk(&chunk),
+                    Err(err) => {
+                        if let Some(audit) = heartbeat_audit.as_deref_mut() {
+                            audit.completion_reason = Some("stream_error");
+                        }
+                        return Err(err);
+                    }
+                },
+                Either::Left((None, _)) => break,
+                Either::Right((_, pending_chunk)) => {
+                    drop(pending_chunk);
+                }
+            }
+        } else {
+            match stream.next().await {
+                Some(Ok(chunk)) => accumulator.push_chunk(&chunk),
+                Some(Err(err)) => {
+                    if let Some(audit) = heartbeat_audit.as_deref_mut() {
+                        audit.completion_reason = Some("stream_error");
+                    }
+                    return Err(err);
+                }
+                None => break,
+            }
+        }
+    }
+    if let Some(audit) = heartbeat_audit.as_deref_mut() {
+        audit.completion_reason = Some("stream_completed");
     }
 
     let (usage, response_text, tool_count) = accumulator.into_parts();
@@ -8547,6 +8818,10 @@ struct RelayAuditContext {
     /// missing-usage fallback fired) rather than reported by the upstream. Drives
     /// the `usage_source` audit field (Go `ContextKeyLocalCountTokens`).
     usage_locally_estimated: bool,
+    /// Bounded D1 lease-renewal evidence for positive-reserve SSE requests.
+    /// This is populated by the cloned stream branch and never contains the
+    /// reservation key or account identity.
+    stream_lease_heartbeat: Option<RelayBillingStreamLeaseHeartbeatAudit>,
     /// Fixed-rule channel affinity diagnostics for usage-log UI and upstream
     /// cache-hit stats. `None` when affinity is disabled or unavailable.
     affinity: Option<affinity::AffinityAuditContext>,
@@ -8631,6 +8906,23 @@ async fn record_relay_audit(
         admin_info.insert(
             "relay_attempts_truncated".to_string(),
             json!(audit.attempts.truncated()),
+        );
+    }
+    if let Some(heartbeat) = audit.stream_lease_heartbeat.as_ref() {
+        admin_info.insert(
+            "relay_billing_stream_lease_heartbeat".to_string(),
+            json!({
+                "interval_seconds": heartbeat.interval_seconds,
+                "initial_lease_expires_at": heartbeat.initial_lease_expires_at,
+                "final_lease_expires_at": heartbeat.final_lease_expires_at,
+                "last_renewed_at": heartbeat.last_renewed_at,
+                "attempt_count": heartbeat.attempt_count,
+                "renewed_count": heartbeat.renewed_count,
+                "matching_count": heartbeat.matching_count,
+                "failure_count": heartbeat.failure_count,
+                "stopped_reason": heartbeat.stopped_reason,
+                "completion_reason": heartbeat.completion_reason,
+            }),
         );
     }
     if !admin_info.is_empty() {
@@ -9117,6 +9409,8 @@ struct TieredBillingPreflight {
     candidate_group_count: usize,
     reservation_strategy: &'static str,
     reservation_key: Option<String>,
+    selected_at: Option<i64>,
+    selected_lease_expires_at: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -9142,6 +9436,8 @@ impl TieredBillingGroupPlan {
                 TIERED_BILLING_SELECTED_GROUP_STRATEGY
             },
             reservation_key: self.reservation_key.clone(),
+            selected_at: None,
+            selected_lease_expires_at: None,
         })
     }
 }
@@ -9417,6 +9713,8 @@ fn tiered_billing_preflight_snapshot(
         candidate_group_count: 1,
         reservation_strategy: TIERED_BILLING_SELECTED_GROUP_STRATEGY,
         reservation_key: None,
+        selected_at: None,
+        selected_lease_expires_at: None,
     })
 }
 
@@ -12903,6 +13201,59 @@ mod tests {
         assert!(RelayRetryConfig::from_raw(Some("-1".to_string())).is_err());
         assert!(RelayRetryConfig::from_raw(Some("soon".to_string())).is_err());
         assert!(RelayRetryConfig::from_raw(Some("1.5".to_string())).is_err());
+    }
+
+    #[test]
+    fn relay_billing_stream_heartbeat_is_bounded_by_the_effective_lease() {
+        assert_eq!(
+            relay_billing_stream_lease_heartbeat_runtime_status_from_raw(300, None),
+            RelayBillingStreamLeaseHeartbeatRuntimeStatus {
+                configured: false,
+                valid: true,
+                effective_seconds: 100,
+            }
+        );
+        assert_eq!(
+            relay_billing_stream_lease_heartbeat_runtime_status_from_raw(300, Some("5")),
+            RelayBillingStreamLeaseHeartbeatRuntimeStatus {
+                configured: true,
+                valid: true,
+                effective_seconds: 5,
+            }
+        );
+        assert_eq!(
+            relay_billing_stream_lease_heartbeat_runtime_status_from_raw(300, Some("4")),
+            RelayBillingStreamLeaseHeartbeatRuntimeStatus {
+                configured: true,
+                valid: false,
+                effective_seconds: 100,
+            }
+        );
+        assert_eq!(
+            relay_billing_stream_lease_heartbeat_seconds_from_raw(3_600, None),
+            900
+        );
+        assert_eq!(
+            relay_billing_stream_lease_heartbeat_seconds_from_raw(300, None),
+            100
+        );
+        assert_eq!(
+            relay_billing_stream_lease_heartbeat_seconds_from_raw(300, Some("5")),
+            5
+        );
+        for invalid in ["0", "4", "101", "soon"] {
+            assert_eq!(
+                relay_billing_stream_lease_heartbeat_seconds_from_raw(300, Some(invalid)),
+                100
+            );
+        }
+        let jittered =
+            relay_billing_stream_lease_heartbeat_interval_seconds(900, "relayreserve-jitter-test");
+        assert_eq!(
+            jittered,
+            relay_billing_stream_lease_heartbeat_interval_seconds(900, "relayreserve-jitter-test")
+        );
+        assert!((810..=990).contains(&jittered));
     }
 
     #[test]

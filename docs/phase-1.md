@@ -833,3 +833,28 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   delivery, long-stream lease bounds, accounting reconciliation, alerting,
   fault injection, and rollback remain staging requirements. See
   `docs/relay-billing-reservations.md`.
+
+## 2026-07-13 HTTP SSE Billing Lease Heartbeat Increment
+
+- Selected positive-reserve HTTP SSE now renews its D1 reservation lease while
+  the cloned audit stream remains active. The CAS fences reservation key,
+  selected channel/group/timestamp, and the exact previous lease generation;
+  it does not mutate quota or request count.
+- Heartbeat configuration is bounded to 5 seconds through one third of the
+  effective lease and uses deterministic +/-10% per-reservation jitter. A D1
+  error records a failure and retries within 60 seconds without interrupting
+  the client response. Finalized, stale, expired, conflicting, or missing rows
+  stop renewal without reviving ownership during settlement grace.
+- Capabilities and the React/Bun readiness UI now distinguish compiled renewal,
+  explicit/valid heartbeat configuration, deployed staging verification, and
+  recovery cutover readiness. All tracked environments keep staging proof and
+  recovery false.
+- Release Workerd now uses an explicit provider release barrier to prove one
+  lease growth before stream completion, zero active request-count mutation,
+  one terminal settlement, exact user/token/channel quota, and bounded audit
+  evidence. This remains local E3 evidence.
+- Next: apply migration 0023 to isolated staging after credential rotation and
+  run beyond the original lease with direct/Gateway/WFP transports, disconnect,
+  malformed/provider error, D1 failure, rollout/restart, settlement/recovery
+  races, write-cost/latency measurement, reconciliation, alerts, and rollback.
+  Recovery and production remain **NO-GO** until that evidence is approved.

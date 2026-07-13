@@ -56,10 +56,13 @@ use crate::relay::{
     relay_actual_serving_group_billing_contract_compiled,
     relay_ai_gateway_direct_fallback_contract_compiled, relay_billing_orphan_recovery_enabled,
     relay_billing_orphan_sweep_limit, relay_billing_reservation_lease_seconds,
-    relay_billing_reservation_ledger_compiled, relay_model_fallback_contract_compiled,
+    relay_billing_reservation_ledger_compiled, relay_billing_stream_lease_heartbeat_runtime_status,
+    relay_billing_stream_lease_renewal_compiled, relay_model_fallback_contract_compiled,
     relay_model_fallback_runtime_status, relay_retry_times_from_env,
     relay_terminal_attempt_audit_contract_compiled,
-    relay_wfp_authority_transport_contract_compiled, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
+    relay_wfp_authority_transport_contract_compiled,
+    RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV,
+    RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
 };
 use crate::relay_billing_smoke::{smoke_compiled, smoke_enabled, smoke_ready};
 use crate::task_orchestration::{task_poller_config_from_env, task_timeout_sweep_compiled};
@@ -299,8 +302,14 @@ struct PlatformCapabilities {
     relay_billing_reservation_ledger_compiled: bool,
     relay_billing_ledger_status_compiled: bool,
     relay_billing_reservation_lease_seconds: i64,
+    relay_billing_stream_lease_renewal_compiled: bool,
+    relay_billing_stream_lease_heartbeat_configured: bool,
+    relay_billing_stream_lease_heartbeat_valid: bool,
+    relay_billing_stream_lease_heartbeat_seconds: i64,
+    relay_billing_stream_lease_renewal_staging_verified: bool,
     relay_billing_orphan_recovery_enabled: bool,
     relay_billing_orphan_recovery_ready: bool,
+    relay_billing_orphan_recovery_cutover_ready: bool,
     relay_billing_orphan_recovery_grace_seconds: i64,
     relay_billing_orphan_sweep_limit: i64,
     realtime_session_gateway_enabled: bool,
@@ -541,10 +550,27 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let relay_billing_reservation_ledger_compiled = relay_billing_reservation_ledger_compiled();
     let relay_billing_ledger_status_compiled = true;
     let relay_billing_reservation_lease_seconds = relay_billing_reservation_lease_seconds(&env);
+    let relay_billing_stream_lease_renewal_compiled = relay_billing_stream_lease_renewal_compiled();
+    let relay_billing_stream_lease_heartbeat_runtime =
+        relay_billing_stream_lease_heartbeat_runtime_status(&env);
+    let relay_billing_stream_lease_heartbeat_configured =
+        relay_billing_stream_lease_heartbeat_runtime.configured;
+    let relay_billing_stream_lease_heartbeat_valid =
+        relay_billing_stream_lease_heartbeat_runtime.valid;
+    let relay_billing_stream_lease_heartbeat_seconds =
+        relay_billing_stream_lease_heartbeat_runtime.effective_seconds;
+    let relay_billing_stream_lease_renewal_staging_verified = env_flag(
+        &env,
+        RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV,
+    );
     let relay_billing_orphan_recovery_enabled = relay_billing_orphan_recovery_enabled(&env);
     let relay_billing_orphan_recovery_ready = relay_billing_reservation_ledger_compiled
+        && relay_billing_stream_lease_renewal_compiled
+        && relay_billing_stream_lease_heartbeat_valid
         && relay_billing_orphan_recovery_enabled
         && d1_migration_ready;
+    let relay_billing_orphan_recovery_cutover_ready =
+        relay_billing_orphan_recovery_ready && relay_billing_stream_lease_renewal_staging_verified;
     let relay_billing_orphan_recovery_grace_seconds =
         crate::d1_repositories::RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS;
     let relay_billing_orphan_sweep_limit = relay_billing_orphan_sweep_limit(&env);
@@ -853,8 +879,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_billing_reservation_ledger_compiled,
         relay_billing_ledger_status_compiled,
         relay_billing_reservation_lease_seconds,
+        relay_billing_stream_lease_renewal_compiled,
+        relay_billing_stream_lease_heartbeat_configured,
+        relay_billing_stream_lease_heartbeat_valid,
+        relay_billing_stream_lease_heartbeat_seconds,
+        relay_billing_stream_lease_renewal_staging_verified,
         relay_billing_orphan_recovery_enabled,
         relay_billing_orphan_recovery_ready,
+        relay_billing_orphan_recovery_cutover_ready,
         relay_billing_orphan_recovery_grace_seconds,
         relay_billing_orphan_sweep_limit,
         realtime_session_gateway_enabled,

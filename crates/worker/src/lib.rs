@@ -1400,31 +1400,40 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
     if relay::relay_billing_orphan_recovery_enabled(&env) {
-        match d1_repositories::relay_billing_reservation_schema_ready(&db).await {
-            Ok(true) => {
-                if let Err(err) =
-                    d1_repositories::mark_relay_billing_recovery_started(&db, now).await
-                {
-                    worker::console_error!("relay billing orphan sweep start status failed: {err}");
-                }
-                match d1_repositories::sweep_expired_relay_billing_reservations(
-                    &db,
-                    now,
-                    relay::relay_billing_orphan_sweep_limit(&env),
-                )
-                .await
-                {
-                    Ok(summary) => {
-                        if let Err(err) = d1_repositories::mark_relay_billing_recovery_completed(
-                            &db, now, summary,
-                        )
-                        .await
-                        {
-                            worker::console_error!(
-                                "relay billing orphan sweep completion status failed: {err}"
-                            );
-                        }
-                        worker::console_log!(
+        let heartbeat = relay::relay_billing_stream_lease_heartbeat_runtime_status(&env);
+        if !heartbeat.valid {
+            worker::console_error!(
+                "relay billing orphan sweep refused: stream lease heartbeat configuration is invalid"
+            );
+        } else {
+            match d1_repositories::relay_billing_reservation_schema_ready(&db).await {
+                Ok(true) => {
+                    if let Err(err) =
+                        d1_repositories::mark_relay_billing_recovery_started(&db, now).await
+                    {
+                        worker::console_error!(
+                            "relay billing orphan sweep start status failed: {err}"
+                        );
+                    }
+                    match d1_repositories::sweep_expired_relay_billing_reservations(
+                        &db,
+                        now,
+                        relay::relay_billing_orphan_sweep_limit(&env),
+                    )
+                    .await
+                    {
+                        Ok(summary) => {
+                            if let Err(err) =
+                                d1_repositories::mark_relay_billing_recovery_completed(
+                                    &db, now, summary,
+                                )
+                                .await
+                            {
+                                worker::console_error!(
+                                    "relay billing orphan sweep completion status failed: {err}"
+                                );
+                            }
+                            worker::console_log!(
                             "relay billing orphan sweep: candidates={} refunded={} recovery_required={} finalized={} active={} missing={} failed={} deferred={}",
                             summary.candidates,
                             summary.refunded,
@@ -1435,15 +1444,20 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
                             summary.failed,
                             summary.deferred
                         );
+                        }
+                        Err(err) => {
+                            worker::console_error!("relay billing orphan sweep failed: {err}")
+                        }
                     }
-                    Err(err) => worker::console_error!("relay billing orphan sweep failed: {err}"),
                 }
-            }
-            Ok(false) => worker::console_error!(
-                "relay billing orphan sweep refused: migration 0023 is not applied"
-            ),
-            Err(err) => {
-                worker::console_error!("relay billing orphan sweep migration check failed: {err}")
+                Ok(false) => worker::console_error!(
+                    "relay billing orphan sweep refused: migration 0023 is not applied"
+                ),
+                Err(err) => {
+                    worker::console_error!(
+                        "relay billing orphan sweep migration check failed: {err}"
+                    )
+                }
             }
         }
     }

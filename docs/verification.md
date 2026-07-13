@@ -3861,3 +3861,40 @@ authenticated frontend, and rollback evidence.
 - Recovery remains false in development, staging, and production config. No
   remote D1 migration, cron, provider request, Cloudflare credential, or live
   accounting mutation was used. Production remains **NO-GO**.
+
+## 2026-07-13 HTTP SSE Billing Lease Heartbeat Verification
+
+- Source Go streaming and billing ownership were re-audited after reading the
+  protected billing-expression specification. The Rust change preserves the
+  frozen request-scoped expression snapshot, adds no total stream-duration cap,
+  and keeps one reserve/settlement owner per client request.
+- D1 selected-reservation renewal is an exact generation CAS over reservation
+  key, selected channel/group/timestamp, and prior lease expiry. It renews only
+  before expiry, never during settlement grace, and classifies applied,
+  matching, stale, finalized, expired, conflicting, and missing outcomes.
+- The runtime heartbeat is bounded to 5 seconds through one third of the
+  effective lease, uses deterministic +/-10% jitter, and retries D1 errors in at
+  most 60 seconds without interrupting the client stream or mutating quota or
+  request count. Audit metadata records only interval/timestamps/counters and
+  bounded completion/stop reasons.
+- Release Workerd passed 15/15. The new authenticated SSE fixture uses an
+  explicit provider-release barrier, observes lease growth while request count
+  remains zero, then proves one settlement, exact user/token/channel quota,
+  one request count, one provider call, and the expected heartbeat audit row.
+- `cargo test -p cinatoken-worker --lib` passed 631/631. Frontend readiness
+  passed 23/23 and the production React/Bun build passed. The frontend and
+  capability API distinguish implementation, valid runtime configuration,
+  staging verification, and recovery cutover approval.
+- `python tools/verify_sqlite.py` and `bun run check:d1:migration-config`
+  passed at 23 migrations, 29 tables, 105 incremental columns, and 20 key
+  indexes. `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`
+  passed with only the two pre-existing unused topup repository warnings.
+- The complete `bun run check` gate passed on this worktree: release main,
+  tenant, and outbound Rust/Wasm builds; Workerd 15/15; Playground 1/1;
+  frontend build/readiness/redaction/budget/zero-lint-debt and route audits;
+  D1 config/SQLite checks; all local smoke contracts; workspace tests; and all
+  three wasm32 targets.
+- Local Workerd crosses a heartbeat interval, not the original 300-second test
+  lease. No remote D1 migration, deployed long stream, disconnect/D1/restart
+  fault matrix, provider request, credential, or recovery mutation was used.
+  Staging proof and recovery remain false; production remains **NO-GO**.

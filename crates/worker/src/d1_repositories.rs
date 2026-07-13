@@ -110,6 +110,17 @@ pub enum RelayBillingSelectionOutcome {
     NotFound,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayBillingLeaseRenewalOutcome {
+    Applied,
+    MatchingRenewal,
+    StaleGeneration,
+    AlreadyFinalized,
+    DeadlineExpired,
+    Conflict,
+    NotFound,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RelayBillingExpiredLeaseCandidate {
     pub reservation_key: String,
@@ -1085,6 +1096,83 @@ pub async fn bind_relay_billing_selected_attempt(
     }
 }
 
+pub async fn renew_relay_billing_selected_attempt_lease(
+    db: &D1Database,
+    reservation_key: &str,
+    channel_id: i64,
+    selected_group: &str,
+    selected_at: i64,
+    expected_lease_expires_at: i64,
+    renewed_at: i64,
+    lease_expires_at: i64,
+) -> worker::Result<RelayBillingLeaseRenewalOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let selected_group = non_empty_relay_reservation_field(selected_group, "selected group")?;
+    if channel_id <= 0
+        || selected_at <= 0
+        || expected_lease_expires_at <= selected_at
+        || renewed_at <= 0
+        || lease_expires_at <= renewed_at
+        || lease_expires_at <= expected_lease_expires_at
+    {
+        return Err(worker::Error::RustError(
+            "relay billing lease renewal identity is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(channel_id)),
+        D1Type::Text(selected_group),
+        D1Type::Integer(d1_i32(selected_at)),
+        D1Type::Integer(d1_i32(expected_lease_expires_at)),
+        D1Type::Integer(d1_i32(renewed_at)),
+        D1Type::Integer(d1_i32(lease_expires_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_reservations
+            SET lease_expires_at = ?7, updated_at = MAX(updated_at, ?6)
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND channel_id = ?2 AND selected_group = ?3 AND selected_at = ?4
+              AND lease_expires_at = ?5 AND ?6 <= ?5 AND ?7 > ?5
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    if let Ok(result) = &result {
+        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+            return Ok(RelayBillingLeaseRenewalOutcome::Applied);
+        }
+    }
+    let Some(current) = relay_billing_reservation(db, reservation_key).await? else {
+        return Ok(RelayBillingLeaseRenewalOutcome::NotFound);
+    };
+    let outcome = classify_relay_lease_renewal_outcome(
+        &current,
+        channel_id,
+        selected_group,
+        selected_at,
+        expected_lease_expires_at,
+        renewed_at,
+        lease_expires_at,
+    );
+    match (result, outcome) {
+        (Err(err), RelayBillingLeaseRenewalOutcome::Conflict)
+            if current.status == "reserved"
+                && current.channel_id == channel_id
+                && current.selected_group == selected_group
+                && current.selected_at == selected_at
+                && current.lease_expires_at == expected_lease_expires_at
+                && renewed_at <= expected_lease_expires_at =>
+        {
+            Err(err)
+        }
+        (_, outcome) => Ok(outcome),
+    }
+}
+
 pub async fn settle_relay_billing_reservation(
     db: &D1Database,
     reservation_key: &str,
@@ -1672,6 +1760,36 @@ fn classify_relay_refund_outcome(
         "recovery_required" => RelayBillingReservationFinalizationOutcome::RecoveryRequired,
         _ => RelayBillingReservationFinalizationOutcome::Conflict,
     }
+}
+
+fn classify_relay_lease_renewal_outcome(
+    record: &RelayBillingReservation,
+    channel_id: i64,
+    selected_group: &str,
+    selected_at: i64,
+    expected_lease_expires_at: i64,
+    renewed_at: i64,
+    requested_lease_expires_at: i64,
+) -> RelayBillingLeaseRenewalOutcome {
+    if record.status != "reserved" {
+        return RelayBillingLeaseRenewalOutcome::AlreadyFinalized;
+    }
+    if record.channel_id != channel_id
+        || record.selected_group != selected_group
+        || record.selected_at != selected_at
+    {
+        return RelayBillingLeaseRenewalOutcome::Conflict;
+    }
+    if record.lease_expires_at == requested_lease_expires_at {
+        return RelayBillingLeaseRenewalOutcome::MatchingRenewal;
+    }
+    if record.lease_expires_at != expected_lease_expires_at {
+        return RelayBillingLeaseRenewalOutcome::StaleGeneration;
+    }
+    if renewed_at > expected_lease_expires_at {
+        return RelayBillingLeaseRenewalOutcome::DeadlineExpired;
+    }
+    RelayBillingLeaseRenewalOutcome::Conflict
 }
 
 async fn mark_relay_billing_recovery_required(
@@ -11179,6 +11297,50 @@ mod tests {
                 RelayBillingRequestAccounting::Account,
             ),
             RelayBillingReservationFinalizationOutcome::RecoveryRequired
+        );
+    }
+
+    #[test]
+    fn relay_billing_stream_lease_renewal_is_identity_and_deadline_guarded() {
+        let mut reserved = relay_billing_test_reservation("reserved");
+        reserved.final_quota = 0;
+        reserved.finalization_reason.clear();
+        reserved.request_accounted = 0;
+        assert_eq!(
+            classify_relay_lease_renewal_outcome(&reserved, 7, "vip", 10, 100, 50, 200),
+            RelayBillingLeaseRenewalOutcome::Conflict
+        );
+
+        reserved.lease_expires_at = 200;
+        assert_eq!(
+            classify_relay_lease_renewal_outcome(&reserved, 7, "vip", 10, 100, 50, 200),
+            RelayBillingLeaseRenewalOutcome::MatchingRenewal
+        );
+        assert_eq!(
+            classify_relay_lease_renewal_outcome(&reserved, 8, "vip", 10, 200, 50, 300),
+            RelayBillingLeaseRenewalOutcome::Conflict
+        );
+
+        reserved.lease_expires_at = 250;
+        assert_eq!(
+            classify_relay_lease_renewal_outcome(&reserved, 7, "vip", 10, 200, 50, 300),
+            RelayBillingLeaseRenewalOutcome::StaleGeneration
+        );
+
+        reserved.lease_expires_at = 100;
+        assert_eq!(
+            classify_relay_lease_renewal_outcome(&reserved, 7, "vip", 10, 100, 100, 200),
+            RelayBillingLeaseRenewalOutcome::Conflict
+        );
+        assert_eq!(
+            classify_relay_lease_renewal_outcome(&reserved, 7, "vip", 10, 100, 101, 200),
+            RelayBillingLeaseRenewalOutcome::DeadlineExpired
+        );
+
+        reserved.status = "settled".to_string();
+        assert_eq!(
+            classify_relay_lease_renewal_outcome(&reserved, 7, "vip", 10, 100, 50, 300),
+            RelayBillingLeaseRenewalOutcome::AlreadyFinalized
         );
     }
 

@@ -11324,3 +11324,67 @@ config and SQLite replay, all local smoke contracts, workspace tests, and all
 three wasm32 targets. No remote migration, credential, paid provider request,
 or deployment was used; recovery remains disabled and production remains
 **NO-GO**.
+
+### 22.185 2026-07-13 HTTP Relay Streaming Billing Lease Heartbeat
+
+The durable HTTP ledger in 22.184 still had a fixed selected-attempt lease. A
+valid SSE response could outlive that lease, after which the default-off sweep
+would quarantine the bound reservation even though final usage capture was
+still active. This increment closes the local lease-ownership gap without
+claiming deployed recovery safety.
+
+Implemented locally:
+
+- Positive-reserve SSE streams renew the selected D1 reservation while the
+  cloned audit stream is active. Renewal is an exact generation-fenced CAS over
+  reservation key, channel, selected group, selected timestamp, and prior lease
+  expiry. It never changes user/token/channel quota or request count.
+- Renewal is allowed only before the expected lease expires. Matching replay is
+  a no-op; stale generation, finalization, deadline expiry, identity conflict,
+  and missing-row outcomes stop the heartbeat without reviving ownership in the
+  300-second settlement grace.
+- `RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS` defaults to 900, accepts 5
+  seconds through one third of the effective lease, and uses deterministic
+  per-reservation +/-10% jitter to reduce synchronized D1 writes. A D1 error is
+  counted and retried in at most 60 seconds without interrupting the response,
+  refunding quota, or transferring request ownership.
+- `RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED` remains false in all
+  tracked environments. Platform capabilities and the React/Bun operations
+  panel separately expose compiled renewal, configured/valid heartbeat,
+  staging proof, recovery readiness, and final cutover readiness. Invalid
+  explicit heartbeat configuration prevents the scheduled recovery sweep.
+- Audit metadata records bounded interval, initial/final lease, last-renewed
+  time, attempt/result counters, stop reason, and stream completion reason. It
+  does not add raw account, token, channel-key, request body, prompt, or client
+  network identity.
+- The release Workerd fixture uses a provider-held SSE response and an explicit
+  release barrier. It observes one renewal first, verifies request count remains
+  zero while active, then releases final usage and proves one settlement, exact
+  user/token/channel quota, one request count, one provider call, and the audit
+  heartbeat record.
+
+Local evidence:
+
+- Worker library tests: 631/631.
+- Release Rust/Wasm Workerd lifecycle suite: 15/15.
+- Frontend readiness: 23/23; production React/Bun build passed.
+- D1 verification: 23 migrations, 29 required tables, 105 incremental columns,
+  and 20 key indexes; all three runtime bindings use the contiguous set through
+  0023.
+- Worker wasm32 check passed with only the two pre-existing unused topup
+  repository warnings.
+- The complete `bun run check` gate passed, including release main/tenant/
+  outbound Wasm, Playground 1/1, frontend build/redaction/budget/lint/routes,
+  all smoke contracts, workspace tests, and all three wasm32 targets.
+
+This is E3 local evidence only. The local fixture crosses one heartbeat
+interval, not the original lease. After credential rotation, isolated staging
+must apply 0023 with recovery false and prove repeated renewal beyond the
+original lease on every enabled direct, AI Gateway, and WFP route; client
+disconnect; malformed/provider termination; transient D1 failure; Worker
+rollout/restart; settlement/recovery overlap; latency, backpressure, and D1
+write cost; exact provider/audit/accounting reconciliation; alerts; and
+disable-first rollback. The pre-bind interval and missing final usage after an
+aborted/malformed stream remain explicit reconciliation risks. No credential,
+remote resource, paid provider call, or deployment was used. Recovery remains
+false and production remains **NO-GO**.

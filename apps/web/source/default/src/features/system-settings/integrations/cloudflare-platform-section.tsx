@@ -414,6 +414,23 @@ function buildCapabilityGroups(
           missingLabel: t('Blocked'),
         },
         {
+          label: t('Relay streaming lease heartbeat'),
+          description: t(
+            'Renews selected SSE reservations every {{heartbeat}} seconds while the response stream is active; renewal failures are recorded without interrupting the client stream or changing quota.',
+            {
+              heartbeat:
+                capabilities.relay_billing_stream_lease_heartbeat_seconds,
+            }
+          ),
+          ready:
+            capabilities.relay_billing_stream_lease_renewal_compiled &&
+            capabilities.relay_billing_stream_lease_heartbeat_valid,
+          readyLabel: t('Compiled'),
+          missingLabel: capabilities.relay_billing_stream_lease_heartbeat_valid
+            ? t('Blocked')
+            : t('Invalid config'),
+        },
+        {
           label: t('Relay billing orphan recovery'),
           description: t(
             'Cron processes up to {{limit}} expired reservations per run without recomputing mutable pricing; selected rows are quarantined instead of refunded.',
@@ -424,6 +441,22 @@ function buildCapabilityGroups(
           missingLabel: capabilities.relay_billing_orphan_recovery_enabled
             ? t('Blocked')
             : t('Disabled'),
+          missingVariant: capabilities.relay_billing_orphan_recovery_enabled
+            ? 'red'
+            : 'grey',
+        },
+        {
+          label: t('Relay billing recovery cutover'),
+          description: t(
+            'Requires deployed streaming renewal evidence across the original lease, recovery-race reconciliation, and an enabled recovery gate.'
+          ),
+          ready: capabilities.relay_billing_orphan_recovery_cutover_ready,
+          readyLabel: t('Cutover-ready'),
+          missingLabel: !capabilities.relay_billing_stream_lease_renewal_staging_verified
+            ? t('Awaiting staging proof')
+            : capabilities.relay_billing_orphan_recovery_enabled
+              ? t('Blocked')
+              : t('Disabled'),
           missingVariant: capabilities.relay_billing_orphan_recovery_enabled
             ? 'red'
             : 'grey',

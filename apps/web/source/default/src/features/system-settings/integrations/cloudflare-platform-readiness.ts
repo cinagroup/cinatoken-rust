@@ -28,6 +28,7 @@ export type PlatformReadinessSignalId =
   | 'scheduling-gateway-implementation'
   | 'ai-gateway-implementation'
   | 'wfp-tenant-implementation'
+  | 'relay-billing-implementation'
   | 'realtime-implementation'
   | 'task-runner-implementation'
   | 'ai-gateway-runtime'
@@ -42,7 +43,9 @@ export type PlatformReadinessSignalId =
   | 'wfp-relay-authority-smoke'
   | 'realtime-smoke'
   | 'task-runner-replay'
+  | 'relay-billing-recovery-smoke'
   | 'task-runner-cutover'
+  | 'relay-billing-recovery-cutover'
   | 'ai-gateway-fallback-cutover'
   | 'realtime-v1-cutover'
 
@@ -59,6 +62,13 @@ export type PlatformReadinessCapabilities = Pick<
   | 'scheduling_gateway_route_precedence'
   | 'scheduling_gateway_preview_fail_closed_compiled'
   | 'd1_migration_ready'
+  | 'relay_billing_reservation_ledger_compiled'
+  | 'relay_billing_ledger_status_compiled'
+  | 'relay_billing_stream_lease_renewal_compiled'
+  | 'relay_billing_stream_lease_heartbeat_valid'
+  | 'relay_billing_orphan_recovery_ready'
+  | 'relay_billing_stream_lease_renewal_staging_verified'
+  | 'relay_billing_orphan_recovery_cutover_ready'
   | 'relay_ai_gateway_router_ready'
   | 'relay_ai_gateway_rest_routes'
   | 'relay_ai_gateway_model_prefixes'
@@ -142,6 +152,7 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'scheduling-gateway-implementation': 'Scheduling gateway',
   'ai-gateway-implementation': 'AI Gateway',
   'wfp-tenant-implementation': 'WFP tenant',
+  'relay-billing-implementation': 'Relay billing ledger',
   'realtime-implementation': 'Realtime',
   'task-runner-implementation': 'TaskRunner',
   'ai-gateway-runtime': 'AI Gateway',
@@ -157,7 +168,9 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'wfp-relay-authority-smoke': 'WFP relay authority smoke',
   'realtime-smoke': 'Realtime smoke',
   'task-runner-replay': 'TaskRunner replay',
+  'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
   'task-runner-cutover': 'TaskRunner',
+  'relay-billing-recovery-cutover': 'Relay billing recovery',
   'ai-gateway-fallback-cutover': 'AI Gateway fallback',
   'realtime-v1-cutover': 'Realtime v1',
 } satisfies Record<PlatformReadinessSignalId, string>
@@ -229,6 +242,12 @@ export function buildPlatformReadinessSummary(
     capabilities.realtime_session_billing_settlement_compiled,
     capabilities.realtime_session_billing_settlement_batch_compiled
   )
+  const relayBillingImplementation = allReady(
+    capabilities.relay_billing_reservation_ledger_compiled,
+    capabilities.relay_billing_ledger_status_compiled,
+    capabilities.relay_billing_stream_lease_renewal_compiled,
+    capabilities.relay_billing_stream_lease_heartbeat_valid
+  )
   const taskRunnerImplementation = allReady(
     capabilities.task_runner_do_foundation_compiled,
     capabilities.task_runner_alarm_contract_compiled,
@@ -246,6 +265,7 @@ export function buildPlatformReadinessSummary(
     ),
     readySignal('ai-gateway-implementation', aiGatewayImplementation),
     readySignal('wfp-tenant-implementation', wfpTenantImplementation),
+    readySignal('relay-billing-implementation', relayBillingImplementation),
     readySignal('realtime-implementation', realtimeImplementation),
     readySignal('task-runner-implementation', taskRunnerImplementation),
   ])
@@ -335,6 +355,11 @@ export function buildPlatformReadinessSummary(
       taskRunnerReplayReady,
       capabilities.task_runner_staging_replay_verified
     ),
+    verificationSignal(
+      'relay-billing-recovery-smoke',
+      capabilities.relay_billing_orphan_recovery_ready,
+      capabilities.relay_billing_stream_lease_renewal_staging_verified
+    ),
   ])
 
   const cutover = createReadyStage('cutover', [
@@ -343,6 +368,10 @@ export function buildPlatformReadinessSummary(
       capabilities.relay_ai_gateway_cross_model_fallback_cutover_ready
     ),
     readySignal('task-runner-cutover', capabilities.task_runner_cutover_ready),
+    readySignal(
+      'relay-billing-recovery-cutover',
+      capabilities.relay_billing_orphan_recovery_cutover_ready
+    ),
     readySignal(
       'realtime-v1-cutover',
       capabilities.realtime_session_v1_cutover_ready

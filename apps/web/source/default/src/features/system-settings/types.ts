@@ -466,8 +466,14 @@ export type PlatformCapabilities = {
   relay_billing_reservation_ledger_compiled: boolean
   relay_billing_ledger_status_compiled: boolean
   relay_billing_reservation_lease_seconds: number
+  relay_billing_stream_lease_renewal_compiled: boolean
+  relay_billing_stream_lease_heartbeat_configured: boolean
+  relay_billing_stream_lease_heartbeat_valid: boolean
+  relay_billing_stream_lease_heartbeat_seconds: number
+  relay_billing_stream_lease_renewal_staging_verified: boolean
   relay_billing_orphan_recovery_enabled: boolean
   relay_billing_orphan_recovery_ready: boolean
+  relay_billing_orphan_recovery_cutover_ready: boolean
   relay_billing_orphan_recovery_grace_seconds: number
   relay_billing_orphan_sweep_limit: number
   realtime_session_gateway_enabled: boolean

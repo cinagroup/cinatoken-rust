@@ -31,6 +31,13 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   scheduling_gateway_route_precedence: [],
   scheduling_gateway_preview_fail_closed_compiled: false,
   d1_migration_ready: false,
+  relay_billing_reservation_ledger_compiled: false,
+  relay_billing_ledger_status_compiled: false,
+  relay_billing_stream_lease_renewal_compiled: false,
+  relay_billing_stream_lease_heartbeat_valid: false,
+  relay_billing_orphan_recovery_ready: false,
+  relay_billing_stream_lease_renewal_staging_verified: false,
+  relay_billing_orphan_recovery_cutover_ready: false,
   relay_ai_gateway_router_ready: false,
   relay_ai_gateway_rest_routes: [],
   relay_ai_gateway_model_prefixes: [],
@@ -120,6 +127,7 @@ describe('Cloudflare platform readiness headline', () => {
       'scheduling-gateway-implementation': 'Scheduling gateway',
       'ai-gateway-implementation': 'AI Gateway',
       'wfp-tenant-implementation': 'WFP tenant',
+      'relay-billing-implementation': 'Relay billing ledger',
       'realtime-implementation': 'Realtime',
       'task-runner-implementation': 'TaskRunner',
       'ai-gateway-runtime': 'AI Gateway',
@@ -135,8 +143,10 @@ describe('Cloudflare platform readiness headline', () => {
       'wfp-relay-authority-smoke': 'WFP relay authority smoke',
       'realtime-smoke': 'Realtime smoke',
       'task-runner-replay': 'TaskRunner replay',
+      'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
       'ai-gateway-fallback-cutover': 'AI Gateway fallback',
       'task-runner-cutover': 'TaskRunner',
+      'relay-billing-recovery-cutover': 'Relay billing recovery',
       'realtime-v1-cutover': 'Realtime v1',
     })
   })
@@ -149,6 +159,10 @@ describe('Cloudflare platform readiness headline', () => {
         scheduling_gateway_route_precedence: ['cors_preflight', 'api_router'],
         scheduling_gateway_preview_fail_closed_compiled: true,
         d1_migration_ready: true,
+        relay_billing_reservation_ledger_compiled: true,
+        relay_billing_ledger_status_compiled: true,
+        relay_billing_stream_lease_renewal_compiled: true,
+        relay_billing_stream_lease_heartbeat_valid: true,
         relay_ai_gateway_rest_routes: ['/v1/chat/completions'],
         relay_ai_gateway_model_prefixes: ['openai/', 'deepseek/'],
         relay_ai_gateway_direct_fallback_prefixes: ['openai/', 'deepseek/'],
@@ -503,6 +517,7 @@ describe('Cloudflare platform readiness headline', () => {
         'blocked',
         'ready-to-verify',
         'verified',
+        'blocked',
       ]
     )
   })
@@ -563,19 +578,62 @@ describe('Cloudflare platform readiness headline', () => {
     assert.equal(getStage(summary, 'cutover').complete, false)
   })
 
+  test('separates relay billing recovery verification from cutover approval', () => {
+    const readyToVerify = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_orphan_recovery_ready: true,
+        relay_billing_stream_lease_renewal_staging_verified: false,
+        relay_billing_orphan_recovery_cutover_ready: false,
+      })
+    )
+    const verified = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_orphan_recovery_ready: true,
+        relay_billing_stream_lease_renewal_staging_verified: true,
+        relay_billing_orphan_recovery_cutover_ready: true,
+      })
+    )
+
+    assert.equal(
+      getStage(readyToVerify, 'smoke').signals.find(
+        (signal) => signal.id === 'relay-billing-recovery-smoke'
+      )?.status,
+      'ready-to-verify'
+    )
+    assert.equal(
+      getStage(verified, 'smoke').signals.find(
+        (signal) => signal.id === 'relay-billing-recovery-smoke'
+      )?.status,
+      'verified'
+    )
+    assert.equal(
+      getStage(readyToVerify, 'cutover').signals.find(
+        (signal) => signal.id === 'relay-billing-recovery-cutover'
+      )?.status,
+      'blocked'
+    )
+    assert.equal(
+      getStage(verified, 'cutover').signals.find(
+        (signal) => signal.id === 'relay-billing-recovery-cutover'
+      )?.status,
+      'ready'
+    )
+  })
+
   test('uses only backend cutover readiness fields for cutover success', () => {
     const blocked = buildPlatformReadinessSummary(makeCapabilities())
     const ready = buildPlatformReadinessSummary(
       makeCapabilities({
         relay_ai_gateway_cross_model_fallback_cutover_ready: true,
         task_runner_cutover_ready: true,
+        relay_billing_orphan_recovery_cutover_ready: true,
         realtime_session_v1_cutover_ready: true,
       })
     )
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 3)
+    assert.equal(getStage(ready, 'cutover').readyCount, 4)
   })
 })
 

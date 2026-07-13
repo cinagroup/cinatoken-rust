@@ -436,8 +436,20 @@ only unbound rows; bound rows with missing final usage enter
 `recovery_required`. Buffered tiered settlement is attempted synchronously;
 streaming still depends on asynchronous final-usage capture.
 
+Selected positive-reserve SSE now renews the bound lease through an exact
+generation-fenced D1 CAS. The interval is configuration-bounded and
+deterministically jittered; transient renewal failures are counted and retried
+without interrupting the client stream, refunding quota, or accounting a
+request. Local Workerd proves one renewal, no active-stream quota/request-count
+mutation, one final settlement, exact user/token/channel accounting, and
+redacted audit counters. Platform capabilities and the frontend expose
+implementation, configuration validity, staging verification, and cutover
+readiness separately.
+
 The local chain verifies as 23 migrations, 29 tables, 105 incremental columns,
 and 20 key indexes. Recovery is explicitly false in all Wrangler environments.
-Remote migration, cron proof, long-stream lease policy, failure injection,
-ledger/accounting/audit reconciliation, alerting, and rollback remain blockers.
-This closes a local implementation gap, not the production migration goal.
+Remote migration, cron proof, a deployed stream crossing the original lease,
+pre-bind loss, client disconnect and malformed-stream accounting, D1 failure,
+restart/recovery races, provider/audit reconciliation, alerting, and rollback
+remain blockers. This closes a local implementation gap, not the production
+migration goal.

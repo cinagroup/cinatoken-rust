@@ -99,9 +99,8 @@ for isolated staging, not an all-traffic production declaration.
 
 ### Data, Billing, Auth, Payments, And Tasks
 
-- D1 has 22 contiguous migrations and the local SQLite verifier expects 27
-  business tables plus the two relay-billing tables, 105 incremental columns,
-  and 20 key indexes.
+- D1 has 23 contiguous migrations and the local SQLite verifier expects 29
+  required tables, 105 incremental columns, and 20 key indexes.
 - Deterministic source-to-D1 reconciliation tooling exists for core entities,
   topups, Passkeys, TOTP, and backup codes. No production freeze/export/import/
   hash artifact has been supplied.
@@ -109,6 +108,12 @@ for isolated staging, not an all-traffic production declaration.
   settlement, refunds, image request pricing, task settlement, and Realtime
   reservation ledgers have local tests. Production tokenizer/media shadows and
   provider invoices are not reconciled.
+- Positive ordinary HTTP tiered reserves now have a D1 owner. Selected SSE
+  streams renew their lease through a generation-fenced CAS without changing
+  quota or request count, and the frontend separates compiled, staging-verified,
+  and recovery-cutover states. Local Workerd proves one renewal and exact final
+  accounting; it does not prove a deployed stream crossing the original lease,
+  disconnect/D1 faults, recovery overlap, or provider invoice reconciliation.
 - Session auth, registration, role/status rechecks, OAuth, 2FA, Passkey,
   Turnstile, and secure verification are Worker-owned. Imported authenticator
   login and real-provider OAuth/email/WeChat evidence remain open.

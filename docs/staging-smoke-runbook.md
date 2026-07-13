@@ -1494,10 +1494,30 @@ Pass criteria:
    fingerprints, and reports refund/quarantine/failure/defer counters.
 5. The staging smoke cleanup leaves zero matching reservation, user, token,
    channel, and audit fixture rows.
-6. Recovery remains false until an enforced maximum SSE lifetime is lower than
-   the selected lease minus measured scheduling/settlement margin, or active
-   streams renew their leases. Without that proof, the only passing decision is
-   to leave recovery disabled.
+6. `/api/platform/capabilities` reports the renewal contract compiled, the
+   heartbeat explicitly configured and valid, staging verification false,
+   recovery false, and cutover readiness false before the fault matrix starts.
+7. A real SSE fixture runs beyond the original selected lease, not merely one
+   heartbeat interval. It proves repeated generation-fenced lease growth, no
+   quota or request-count mutation while active, one terminal settlement, exact
+   user/token/channel deltas, and bounded heartbeat audit counters.
+8. Repeat the long-stream fixture for every enabled transport owner: direct,
+   AI Gateway, and WFP authority. WFP must still perform zero billing mutation.
+   Capture latency/backpressure, D1 write count, provider request count, and
+   final audit/provider correlation.
+9. Repeat with client disconnect, malformed/provider-error termination,
+   transient D1 renewal failure, Worker rollout/restart, stale-generation CAS,
+   settlement-vs-renewal, and scheduled recovery overlap. No case may interrupt
+   a healthy client stream solely because renewal failed, revive an expired
+   lease during grace, double settle/refund, or leave an unexplained delta.
+10. Enable recovery only in isolated staging after the matrix passes. Prove the
+    grace boundary and unbound/bound outcomes, disable recovery again, reconcile
+    every fixture, and obtain approval before setting
+    `RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED=true`.
+11. The verification flag alone must not start recovery. The final capability
+    `relay_billing_orphan_recovery_cutover_ready` may become true only when the
+    D1 schema, renewal config, enabled recovery gate, and signed staging evidence
+    are all present. Without that proof, leave both gates false.
 
 Rollback disables HTTP recovery first, retains migration 0023 and every ledger
 row, routes affected traffic back to Go/VPS, and reconciles all `reserved` and

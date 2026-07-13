@@ -127,11 +127,22 @@ remote D1 migration output, `/api/status`, capabilities, logs, or traces.
   environment until isolated staging passes the recovery subgate.
 - Migration 0023 is additive and must be applied while the old Worker still
   serves, before publishing code that writes HTTP tiered reservations. Keep
-  `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED=false`: unbounded SSE has neither a
-  proven maximum lifetime nor lease renewal. The admin-only
+  `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED=false`: selected positive-reserve SSE
+  now has generation-fenced lease renewal, but no deployed stream has crossed
+  its original lease and survived disconnect, D1-failure, restart, and recovery
+  overlap fixtures. The admin-only
   `/api/platform/relay-billing/ledger/status` endpoint must be `no-store` and
   emit only hashed identities. Expired unbound fixtures may refund after grace;
   expired bound fixtures must enter `recovery_required` without quota mutation.
+- All environments explicitly set the selected lease to 3600 seconds, the
+  heartbeat to 900 seconds, staging verification false, and recovery false.
+  Heartbeat accepts 5 seconds through one third of the effective lease and
+  applies deterministic +/-10% jitter. Invalid explicit values are visible as
+  invalid capabilities and must prevent a scheduled recovery sweep.
+- Treat `relay_billing_stream_lease_renewal_compiled` as implementation evidence,
+  `relay_billing_stream_lease_renewal_staging_verified` as deployed evidence,
+  and `relay_billing_orphan_recovery_cutover_ready` as the final conjunction.
+  Do not infer one from another or set the verification flag from a local test.
 
 ### 2026-07-12 Native Rate Limit Snapshot
 

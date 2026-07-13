@@ -146,6 +146,7 @@ any expected mutation changes a row count other than one.
 | `RELAY_BILLING_FINALIZATION_QUEUE_ENABLED` | `false` | Enables Queue transport only when `BILLING_QUEUE` is also bound. Binding existence alone never changes billing behavior. |
 | `RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED` | `false` | Enables the root + step-up single-incident replay command only when D1 migration 0025 and `BILLING_QUEUE` are present. It remains false in every tracked environment. |
 | `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` | `false` | Evidence gate for Queue retry, DLQ, Worker cancellation, and settlement/recovery race replay. Local duplicate/cross-queue/poison-message evidence does not set it. |
+| `RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED` | `false` | Evidence gate for delayed-header, late-bind, D1 ambiguity, terminal/recovery, Queue v2, and rollback race replay. It remains false in every tracked environment. |
 | `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED` | `false` | Enables bounded scheduled handling only after migration and stream-lifetime evidence. Unbound rows refund; bound rows quarantine. Cutover readiness additionally requires the staging-verification gate. |
 | `RELAY_BILLING_ORPHAN_SWEEP_LIMIT` | `32` | Accepted range 1-64 per cron invocation. |
 
@@ -157,12 +158,13 @@ exponential retry deferral.
 
 1. Rotate any exposed Cloudflare credential. Use a least-privilege deployment
    credential and archive only redacted command output.
-2. With the old Worker still serving and all relay recovery/finalization gates
-   false, apply the additive exact 25-file D1 set through migration 0025 to
-   isolated staging.
+2. Freeze old and new Rust admission, prove zero active HTTP `reserved` rows,
+   and keep all relay recovery/finalization gates false. Apply the additive
+   exact 26-file D1 set through migration 0026. Migration 0026 intentionally
+   fails while any active row exists.
 3. Deploy the new Worker with relay recovery still false. The new relay writes
    the ledger on tiered requests and can consume finalization events, so
-   migrations 0023-0025 must exist before code promotion.
+   migrations 0023-0026 must exist before code promotion.
 4. Verify `/api/platform/capabilities` reports the exact migration set,
    ledger and stream-renewal contracts compiled, heartbeat explicitly configured
    and valid, missing-usage estimate state, both stream staging proofs false,
@@ -206,12 +208,15 @@ exponential retry deferral.
 
 ## Rollback
 
-Disable `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED` first. This stops new automated
+Disable `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED` first, then reconcile and
+Queue finalization. This stops new automated
 refund attempts without reversing completed CAS transitions. Route traffic back
-to Go/VPS if needed, retain migrations 0023-0025 and all ledger/audit/incident rows, then reconcile
+to Go/VPS if needed, retain migrations 0023-0026 and all ledger/audit/incident rows, then reconcile
 every `reserved` and `recovery_required` row before another cutover. Do not drop
 the table or manually credit quota without recording the reservation
 fingerprint, observed state, approved disposition, and resulting quota deltas.
+Never decrement or reuse `owner_generation`; Queue schema v1 is valid only for
+draining generation-1 reservations.
 
 ## Local verification
 

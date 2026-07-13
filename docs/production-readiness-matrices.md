@@ -600,7 +600,7 @@ WFP paid-egress output must retain separate
 | Partial output followed by read error | Workerd estimates only when the charge-affecting estimate gate is enabled; exact user/token/channel deltas and one request count are asserted | Prove deployed abort, malformed, idle-timeout, and clean-EOF matrix; keep the staging gate false until approved |
 | Empty/output Responses distinction | Rust unit tests keep empty Responses at zero and estimate only after `response.output_text.delta` | Live Responses matrix with provider usage and disconnect evidence |
 | Durable finalization after response/disconnect | Partial E3/E4: default-off `BILLING_QUEUE`, per-message consumer, environment DLQ contract, D1 CAS replay, unique audit marker, and duplicate/cross-queue/poison Workerd tests are implemented. Operator reconcile/DLQ replay and deployed cancellation/race evidence are absent. | Hard NO-GO for HTTP orphan-recovery cutover until reconcile, authenticated Queue/DLQ readback, retry exhaustion, cancellation, and recovery-race evidence exist |
-| Pre-bind lease ownership | Not implemented: reserve can remain unbound while provider/Gateway fallback fetch is in flight | Add owner generation CAS, bind deadline/generation checks, and recovery-race Workerd coverage |
+| Pre-bind lease ownership | Partial E3/E4: migration 0026 adds owner generation and pre-bind renewal metadata; reserve starts at generation 1, bind CAS advances to generation 2, and terminal/recovery CAS advances again. Direct, AI Gateway, and model-fallback waits renew only the unbound generation. Queue schema v2 freezes the expected generation; legacy v1 is generation-1 drain compatibility only. | Drain all active old-writer reservations before 0026, deploy with recovery/Queue gates false, and replay delayed provider headers, late bind, ambiguous reserve/bind, concurrent recovery, cancellation, Queue duplicate, and rollback in isolated staging. |
 | Buffered success clone/read failure | Not closed: a delivered 2xx can still lose usage parsing and refund | Add bounded durable usage/finalization handling before G4/G5 approval |
 
 Normal missing usage, abnormal termination with partial evidence, and durable
@@ -609,6 +609,21 @@ lease-renewal proof cannot approve all three. The capability API therefore
 keeps final cutover false until explicit heartbeat configuration, estimate
 state, both stream proofs, Queue enablement/binding, consumer, DLQ, replay,
 reconcile, replay staging proof, D1 migration, and recovery admission all agree.
+
+## HTTP Pre-Bind Owner Generation Gate (2026-07-14)
+
+| Gate | Required Evidence | Current Status |
+| --- | --- | --- |
+| Implementation | Exact reserve/bind/finalize/recovery CAS generation; pre-bind heartbeat on direct, AI Gateway, and model fallback; exact ambiguous-write readback | Done locally |
+| Schema | Exact 26-file migration set, 30 tables, 126 checked incremental columns, 23 indexes; 0026 rejects any active `reserved` HTTP ledger row | Done locally; remote absent |
+| Configuration | Explicit valid reservation deadline and heartbeat interval; Queue/recovery gates false during rollout | Done in tracked config |
+| Staging proof | Delayed-header race, late-bind rejection, L+300 settlement, L+301 recovery, D1 ambiguity, Queue v2 replay, no double mutation | Planned |
+| Cutover | All prior gates, durable finalization runtime, provider/accounting reconciliation, alerts, rollback rehearsal, G1-G8 approval | NO-GO |
+
+The capability API and frontend present implementation, configuration, staging
+proof, and cutover as independent states. A compiled bit, an applied migration,
+or an operator-set proof variable cannot authorize scheduled recovery or
+production traffic by itself.
 
 ## Update Rules
 

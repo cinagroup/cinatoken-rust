@@ -29,6 +29,7 @@ export type PlatformReadinessSignalId =
   | 'ai-gateway-implementation'
   | 'wfp-tenant-implementation'
   | 'relay-billing-implementation'
+  | 'relay-billing-owner-generation-compiled'
   | 'realtime-implementation'
   | 'task-runner-implementation'
   | 'ai-gateway-runtime'
@@ -36,6 +37,7 @@ export type PlatformReadinessSignalId =
   | 'wfp-tenant-runtime'
   | 'realtime-runtime'
   | 'task-runner-runtime'
+  | 'relay-billing-owner-generation-configured'
   | 'ai-gateway-canary'
   | 'ai-gateway-actual-group-billing-smoke'
   | 'ai-gateway-fallback-replay'
@@ -46,8 +48,10 @@ export type PlatformReadinessSignalId =
   | 'relay-billing-stream-error-smoke'
   | 'relay-billing-finalization-replay'
   | 'relay-billing-recovery-smoke'
+  | 'relay-billing-owner-generation-staging-proof'
   | 'task-runner-cutover'
   | 'relay-billing-recovery-cutover'
+  | 'relay-billing-owner-generation-cutover'
   | 'ai-gateway-fallback-cutover'
   | 'realtime-v1-cutover'
 
@@ -66,6 +70,10 @@ export type PlatformReadinessCapabilities = Pick<
   | 'd1_migration_ready'
   | 'relay_billing_reservation_ledger_compiled'
   | 'relay_billing_ledger_status_compiled'
+  | 'relay_billing_prebind_owner_generation_compiled'
+  | 'relay_billing_prebind_owner_generation_configured'
+  | 'relay_billing_prebind_owner_generation_staging_verified'
+  | 'relay_billing_prebind_owner_generation_cutover_ready'
   | 'relay_billing_stream_lease_renewal_compiled'
   | 'relay_billing_stream_lease_heartbeat_configured'
   | 'relay_billing_stream_lease_heartbeat_valid'
@@ -170,6 +178,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'ai-gateway-implementation': 'AI Gateway',
   'wfp-tenant-implementation': 'WFP tenant',
   'relay-billing-implementation': 'Relay billing ledger',
+  'relay-billing-owner-generation-compiled':
+    'Relay billing owner generation',
   'realtime-implementation': 'Realtime',
   'task-runner-implementation': 'TaskRunner',
   'ai-gateway-runtime': 'AI Gateway',
@@ -177,6 +187,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'wfp-tenant-runtime': 'WFP tenant',
   'realtime-runtime': 'Realtime',
   'task-runner-runtime': 'TaskRunner',
+  'relay-billing-owner-generation-configured':
+    'Relay billing owner generation',
   'ai-gateway-canary': 'AI Gateway canary',
   'ai-gateway-actual-group-billing-smoke':
     'AI Gateway actual-group billing smoke',
@@ -188,8 +200,12 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
   'relay-billing-finalization-replay': 'Relay billing finalization replay',
   'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
+  'relay-billing-owner-generation-staging-proof':
+    'Relay billing owner race proof',
   'task-runner-cutover': 'TaskRunner',
   'relay-billing-recovery-cutover': 'Relay billing recovery',
+  'relay-billing-owner-generation-cutover':
+    'Relay billing owner generation',
   'ai-gateway-fallback-cutover': 'AI Gateway fallback',
   'realtime-v1-cutover': 'Realtime v1',
 } satisfies Record<PlatformReadinessSignalId, string>
@@ -270,8 +286,7 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_billing_finalization_dlq_contract_compiled,
     capabilities.relay_billing_finalization_dlq_consumer_compiled,
     capabilities.relay_billing_finalization_replay_compiled,
-    capabilities.relay_billing_finalization_reconcile_compiled,
-    capabilities.relay_billing_stream_lease_heartbeat_valid
+    capabilities.relay_billing_finalization_reconcile_compiled
   )
   const taskRunnerImplementation = allReady(
     capabilities.task_runner_do_foundation_compiled,
@@ -291,6 +306,10 @@ export function buildPlatformReadinessSummary(
     readySignal('ai-gateway-implementation', aiGatewayImplementation),
     readySignal('wfp-tenant-implementation', wfpTenantImplementation),
     readySignal('relay-billing-implementation', relayBillingImplementation),
+    readySignal(
+      'relay-billing-owner-generation-compiled',
+      capabilities.relay_billing_prebind_owner_generation_compiled
+    ),
     readySignal('realtime-implementation', realtimeImplementation),
     readySignal('task-runner-implementation', taskRunnerImplementation),
   ])
@@ -328,6 +347,10 @@ export function buildPlatformReadinessSummary(
         capabilities.task_runner_do_available,
         capabilities.task_runner_do_enabled
       )
+    ),
+    readySignal(
+      'relay-billing-owner-generation-configured',
+      capabilities.relay_billing_prebind_owner_generation_configured
     ),
   ])
 
@@ -404,6 +427,11 @@ export function buildPlatformReadinessSummary(
       capabilities.relay_billing_orphan_recovery_ready,
       capabilities.relay_billing_stream_lease_renewal_staging_verified
     ),
+    verificationSignal(
+      'relay-billing-owner-generation-staging-proof',
+      capabilities.relay_billing_prebind_owner_generation_configured,
+      capabilities.relay_billing_prebind_owner_generation_staging_verified
+    ),
   ])
 
   const cutover = createReadyStage('cutover', [
@@ -415,6 +443,10 @@ export function buildPlatformReadinessSummary(
     readySignal(
       'relay-billing-recovery-cutover',
       capabilities.relay_billing_orphan_recovery_cutover_ready
+    ),
+    readySignal(
+      'relay-billing-owner-generation-cutover',
+      capabilities.relay_billing_prebind_owner_generation_cutover_ready
     ),
     readySignal(
       'realtime-v1-cutover',

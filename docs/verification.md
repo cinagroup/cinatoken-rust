@@ -4018,3 +4018,70 @@ route audits (217 frontend calls / 322 Worker routes / zero missing); Queue and
 D1 checks; all local smoke contracts; workspace tests; and all three wasm32
 targets. The Worker library contains 647 tests; the focused billing subset is
 23/23. Only the two pre-existing unused topup repository warnings remain.
+
+## 2026-07-14 HTTP Pre-Bind Owner Generation Verification
+
+Scope: local migration-0026 owner fencing, immutable late-bind deadline,
+pre-bind heartbeat, exact D1 ambiguity classification, Queue schema v2,
+generation-fenced finalization/recovery, capability/frontend evidence stages,
+and production rollout documentation. The source billing-expression contract
+was read before modifying the settlement path; frozen expressions and request
+context remain authoritative and are not re-read during Queue or recovery.
+
+Commands and results:
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 651 passed
+
+bun run check:web:readiness
+# PASS; 27 passed
+
+bun run check:d1:migration-config
+python tools/verify_sqlite.py
+# PASS; 26 migrations, 30 tables, 126 incremental columns, 23 indexes
+# Includes 0026 active-reservation drain guard.
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 20/20, Playground 1/1,
+# frontend build/audits, all local smoke contracts, workspace tests,
+# and main/tenant/outbound wasm32 checks.
+
+bun run check:cf:dry-run
+bun run check:cf:startup
+# PASS with Wrangler 4.110.0; tracked assets and bindings were accepted.
+```
+
+Observed contracts:
+
+- Reserve creates generation 1 with an immutable `owner_deadline_at`. Pre-bind
+  renewal changes only recovery lease metadata. A timely exact bind advances to
+  generation 2; terminal settlement/refund/recovery advances once more.
+- Bind and pre-bind renewal reject timestamps beyond the original deadline even
+  after lease renewal. Heartbeat/deadline failure runs an idempotent cleanup
+  refund instead of leaving pre-consumed quota without an owner.
+- Ambiguous reserve/bind writes accept only exact frozen readback. Recovery CAS
+  repeats generation and grace predicates; settlement allows L+300 and recovery
+  starts at L+301.
+- Queue schema v2 carries owner generation. Legacy v1 defaults to generation 1
+  and migration 0026 normalizes drained legacy terminal rows to generation 2,
+  preserving matching v1 replay while rejecting a forged later generation.
+  Workerd exercises v2 settle, refund, duplicate, cross-queue, poison,
+  DLQ/reconcile, and capability paths.
+- `/api/platform/capabilities` reports migration count 26, compiled/schema/
+  configured true, but staging proof and cutover false. The frontend presents
+  those as four separate operational states.
+- Tracked Wrangler environments keep Queue, reconcile, orphan recovery, and
+  owner-generation proof false. `/api/*` and `/v1/*` run Worker-first before SPA
+  asset fallback in default, staging, and production config.
+
+The full gate also reports 217 frontend calls against 322 Worker routes with
+zero missing, no bundle redaction findings, no lint regression, and no bundle
+budget failure. Only the two pre-existing unused topup repository warnings are
+present.
+
+Evidence classification is local E3/E4. No Cloudflare credential was read, no
+remote migration or resource was changed, and no provider request or deployment
+was made. Credential rotation, migration-0026 drain/application, delayed-header
+and ambiguity fault replay, Queue v2 drain, direct/Gateway/WFP accounting,
+alerts, rollback, and G1-G8 approval remain mandatory. Production is **NO-GO**.

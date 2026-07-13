@@ -33,6 +33,10 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   d1_migration_ready: false,
   relay_billing_reservation_ledger_compiled: false,
   relay_billing_ledger_status_compiled: false,
+  relay_billing_prebind_owner_generation_compiled: false,
+  relay_billing_prebind_owner_generation_configured: false,
+  relay_billing_prebind_owner_generation_staging_verified: false,
+  relay_billing_prebind_owner_generation_cutover_ready: false,
   relay_billing_stream_lease_renewal_compiled: false,
   relay_billing_stream_lease_heartbeat_configured: false,
   relay_billing_stream_lease_heartbeat_valid: false,
@@ -143,6 +147,8 @@ describe('Cloudflare platform readiness headline', () => {
       'ai-gateway-implementation': 'AI Gateway',
       'wfp-tenant-implementation': 'WFP tenant',
       'relay-billing-implementation': 'Relay billing ledger',
+      'relay-billing-owner-generation-compiled':
+        'Relay billing owner generation',
       'realtime-implementation': 'Realtime',
       'task-runner-implementation': 'TaskRunner',
       'ai-gateway-runtime': 'AI Gateway',
@@ -150,6 +156,8 @@ describe('Cloudflare platform readiness headline', () => {
       'wfp-tenant-runtime': 'WFP tenant',
       'realtime-runtime': 'Realtime',
       'task-runner-runtime': 'TaskRunner',
+      'relay-billing-owner-generation-configured':
+        'Relay billing owner generation',
       'ai-gateway-canary': 'AI Gateway canary',
       'ai-gateway-actual-group-billing-smoke':
         'AI Gateway actual-group billing smoke',
@@ -161,9 +169,13 @@ describe('Cloudflare platform readiness headline', () => {
       'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
       'relay-billing-finalization-replay': 'Relay billing finalization replay',
       'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
+      'relay-billing-owner-generation-staging-proof':
+        'Relay billing owner race proof',
       'ai-gateway-fallback-cutover': 'AI Gateway fallback',
       'task-runner-cutover': 'TaskRunner',
       'relay-billing-recovery-cutover': 'Relay billing recovery',
+      'relay-billing-owner-generation-cutover':
+        'Relay billing owner generation',
       'realtime-v1-cutover': 'Realtime v1',
     })
   })
@@ -178,6 +190,7 @@ describe('Cloudflare platform readiness headline', () => {
         d1_migration_ready: true,
         relay_billing_reservation_ledger_compiled: true,
         relay_billing_ledger_status_compiled: true,
+        relay_billing_prebind_owner_generation_compiled: true,
         relay_billing_stream_lease_renewal_compiled: true,
         relay_billing_stream_lease_heartbeat_configured: true,
         relay_billing_stream_error_usage_recovery_compiled: true,
@@ -575,6 +588,7 @@ describe('Cloudflare platform readiness headline', () => {
         'blocked',
         'blocked',
         'blocked',
+        'blocked',
       ]
     )
   })
@@ -648,6 +662,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_billing_orphan_recovery_ready: true,
         relay_billing_stream_lease_renewal_staging_verified: true,
         relay_billing_orphan_recovery_cutover_ready: true,
+        relay_billing_prebind_owner_generation_cutover_ready: true,
       })
     )
 
@@ -755,13 +770,46 @@ describe('Cloudflare platform readiness headline', () => {
         relay_ai_gateway_cross_model_fallback_cutover_ready: true,
         task_runner_cutover_ready: true,
         relay_billing_orphan_recovery_cutover_ready: true,
+        relay_billing_prebind_owner_generation_cutover_ready: true,
         realtime_session_v1_cutover_ready: true,
       })
     )
 
     assert.equal(getStage(blocked, 'cutover').complete, false)
     assert.equal(getStage(ready, 'cutover').complete, true)
-    assert.equal(getStage(ready, 'cutover').readyCount, 4)
+    assert.equal(getStage(ready, 'cutover').readyCount, 5)
+  })
+
+  test('keeps relay owner generation split across all four production stages', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_prebind_owner_generation_compiled: true,
+        relay_billing_prebind_owner_generation_configured: true,
+        relay_billing_prebind_owner_generation_staging_verified: true,
+        relay_billing_prebind_owner_generation_cutover_ready: true,
+      })
+    )
+    const signalStatus = (
+      stage: PlatformReadinessStageId,
+      id: string
+    ) => getStage(summary, stage).signals.find((signal) => signal.id === id)?.status
+
+    assert.equal(
+      signalStatus('implementation', 'relay-billing-owner-generation-compiled'),
+      'ready'
+    )
+    assert.equal(
+      signalStatus('configuration', 'relay-billing-owner-generation-configured'),
+      'ready'
+    )
+    assert.equal(
+      signalStatus('smoke', 'relay-billing-owner-generation-staging-proof'),
+      'verified'
+    )
+    assert.equal(
+      signalStatus('cutover', 'relay-billing-owner-generation-cutover'),
+      'ready'
+    )
   })
 })
 

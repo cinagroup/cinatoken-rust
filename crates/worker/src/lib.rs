@@ -1471,7 +1471,7 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
                     }
                 }
                 Ok(false) => worker::console_error!(
-                    "relay billing orphan sweep refused: migrations 0023-0024 are not applied"
+                    "relay billing orphan sweep refused: migrations 0023-0026 are not applied"
                 ),
                 Err(err) => {
                     worker::console_error!(

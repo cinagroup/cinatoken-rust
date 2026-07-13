@@ -136,6 +136,9 @@ REQUIRED_COLUMNS = {
         "finalization_reason",
         "request_accounted",
         "lease_expires_at",
+        "owner_generation",
+        "owner_deadline_at",
+        "owner_lease_renewed_at",
         "recovery_attempt_count",
         "recovery_next_attempt_at",
         "recovery_last_attempt_at",
@@ -242,11 +245,14 @@ def main() -> int:
 
     lease_guard_verified = False
     segment_guard_verified = False
+    relay_owner_guard_verified = False
     if not args.schema:
         verify_realtime_lease_migration_guard(schema_paths)
         lease_guard_verified = True
         verify_realtime_segment_migration_guard(schema_paths)
         segment_guard_verified = True
+        verify_relay_owner_migration_guard(schema_paths)
+        relay_owner_guard_verified = True
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
@@ -295,6 +301,8 @@ def main() -> int:
         message += " + 0020 active-reservation guard"
     if segment_guard_verified:
         message += " + 0021 bridge-segment guard"
+    if relay_owner_guard_verified:
+        message += " + 0026 relay-owner drain guard"
 
     if args.seed:
         for value in args.seed:
@@ -415,6 +423,62 @@ def verify_realtime_segment_migration_guard(schema_paths: list[Path]) -> None:
             raise SystemExit("0021 migration did not create the segment index")
         return
     raise SystemExit("0021 migration must reject unscoped realtime reserved rows")
+
+
+def verify_relay_owner_migration_guard(schema_paths: list[Path]) -> None:
+    owner_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0026_relay_billing_owner_generation.sql"
+        ),
+        None,
+    )
+    if owner_path is None:
+        raise SystemExit("0026 relay owner-generation migration not found")
+
+    conn = sqlite3.connect(":memory:")
+    for schema_path in schema_paths:
+        if schema_path == owner_path:
+            break
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.execute(
+        """
+        INSERT INTO relay_billing_reservations (
+          reservation_key, user_id, model_name, lease_expires_at, created_at, updated_at
+        ) VALUES ('owner-guard-reservation', 1, 'guard-model', 100, 1, 1)
+        """
+    )
+    try:
+        conn.executescript(owner_path.read_text(encoding="utf-8"))
+    except sqlite3.IntegrityError:
+        # SQLite preserves DDL that ran before an executescript constraint
+        # failure, so clean the migration-local sentinel before retrying.
+        conn.execute("DROP TABLE IF EXISTS migration_0026_relay_owner_guard")
+        conn.execute(
+            "UPDATE relay_billing_reservations "
+            "SET status = 'refunded', finalization_reason = 'migration_drain', "
+            "refunded_at = 2, updated_at = 2 "
+            "WHERE reservation_key = 'owner-guard-reservation'"
+        )
+        conn.executescript(owner_path.read_text(encoding="utf-8"))
+        columns = table_columns(conn, "relay_billing_reservations")
+        if not {
+            "owner_generation",
+            "owner_deadline_at",
+            "owner_lease_renewed_at",
+        }.issubset(columns):
+            raise SystemExit("0026 migration did not add relay owner fencing columns")
+        if table_exists(conn, "migration_0026_relay_owner_guard"):
+            raise SystemExit("0026 migration guard table was not cleaned up")
+        migrated_generation = conn.execute(
+            "SELECT owner_generation FROM relay_billing_reservations "
+            "WHERE reservation_key = 'owner-guard-reservation'"
+        ).fetchone()
+        if migrated_generation != (2,):
+            raise SystemExit("0026 migration did not normalize legacy terminal owner")
+        return
+    raise SystemExit("0026 migration must reject active relay reservations")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

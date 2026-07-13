@@ -11597,3 +11597,76 @@ complete provider/accounting reconciliation. No remote Queue, DLQ, parking
 queue, migration, credential, paid provider request, or deployment was used.
 Credential rotation and all existing G1-G8 gates remain mandatory; production
 remains **NO-GO**.
+
+### 22.189 2026-07-14 HTTP Pre-Bind Owner Generation Fencing
+
+This increment closes the local ordinary-HTTP race in which a scheduled
+recovery could take an unbound tiered reservation while direct provider, AI
+Gateway, or model-fallback response headers were still pending. It preserves
+the established ownership split: the central Rust Worker owns financial
+mutation, WFP Workers own authorized transport, Realtime Durable Objects own
+stateful WebSockets, and D1 plus Queue own durable HTTP finalization.
+
+Implemented locally:
+
+- Migration `0026_relay_billing_owner_generation.sql` refuses to run while any
+  HTTP billing reservation remains `reserved`, preventing a mixed deployment
+  of legacy writers and generation-aware writers. It adds positive
+  `owner_generation`, immutable `owner_deadline_at`, and
+  `owner_lease_renewed_at` metadata. The exact local chain is 26 contiguous
+  migrations, 30 required tables, 126 checked incremental columns, and 23 key
+  indexes.
+- Reserve creates generation 1 and freezes `owner_deadline_at` at the original
+  configured lease boundary. Pre-bind heartbeat can extend the recovery lease
+  while provider headers are pending, but it cannot extend bind authority. A
+  timely selected bind CAS advances to generation 2. Settle, refund, or
+  recovery advances exactly once again.
+- Direct provider, AI Gateway direct fallback, and model fallback all wait
+  behind the same pre-bind heartbeat wrapper. The wrapper stops at the immutable
+  deadline; heartbeat/deadline failure performs an idempotent cleanup refund
+  instead of stranding pre-consumed quota.
+- Reserve and bind ambiguous D1 errors use exact readback of frozen identity,
+  selection, timestamps, lease, deadline, and generation. The presence of any
+  row is no longer treated as successful replay.
+- Recovery candidates carry owner generation and every final CAS repeats its
+  generation and strict grace predicate. Settlement remains legal through
+  `lease_expires_at + 300`; recovery starts only at `+301`.
+- Billing finalization Queue schema v2 freezes the expected generation. Schema
+  v1 remains accepted only for draining generation-1 events; it cannot be used
+  to mutate a generation-2 owner. Event identity remains stable per reservation
+  for duplicate convergence.
+- Because the migration guard requires zero active reservations, legacy
+  terminal rows are normalized to generation 2. This preserves matching v1
+  drain replay without allowing a legacy event to claim a new bound owner.
+- Admin platform capabilities and the Bun/React operations panel expose four
+  separate stages: compiled/schema, explicit valid configuration, staging race
+  proof, and cutover. The tracked proof variable is false, so orphan recovery
+  execution and cutover stay false.
+- Default, staging, and production static assets now route `/api/*` and `/v1/*`
+  through the Worker first, preventing SPA navigation fallback from answering
+  API paths.
+
+Local evidence includes all 651 Worker unit tests, focused owner-generation
+tests, wasm32 compilation, frontend production build, 27 readiness tests, exact
+D1/config/Queue audits, and Workerd capability coverage that reports compiled
+and configured without claiming staging proof. The release-wide gate is rerun
+at the final candidate commit and recorded in `docs/verification.md`.
+
+Production rollout is intentionally stricter than local completion:
+
+1. Rotate the exposed credential and keep Go/VPS authoritative.
+2. Freeze old/new Rust admission and drain all reservations/Queue work.
+3. Apply migration 0026 only at zero active reservations with every financial
+   automation gate false.
+4. Deploy and require compiled/configured true but proof/cutover false.
+5. Execute Phase 4f delayed-header, late-bind, D1 ambiguity, L+300/L+301,
+   Queue-v2 duplicate, Worker interruption, and rollback races on direct,
+   Gateway, and model-fallback paths.
+6. Promote proof metadata only after exact provider-call, quota, request, audit,
+   Queue, and zero-pending-row reconciliation.
+
+Rollback disables recovery, reconcile, and Queue finalization before stopping
+Rust admission and returning traffic to Go/VPS. Migration 0026 and the highest
+owner generation are retained; neither schema nor generation may be rolled
+back or reused. No remote migration, credential, provider call, Queue resource,
+or deployment was used in this increment. Production remains **NO-GO**.

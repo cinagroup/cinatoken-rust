@@ -68,7 +68,7 @@ use futures_util::{
 use js_sys::{Function, Object, Promise, Reflect};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, future::Future, time::Duration};
 use url::Url;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -112,6 +112,8 @@ pub(crate) const RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV:
     "RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED";
 pub(crate) const RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV: &str =
     "RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED";
+pub(crate) const RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED_ENV: &str =
+    "RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED";
 pub(crate) const RELAY_BILLING_FINALIZATION_QUEUE_ENABLED_ENV: &str =
     "RELAY_BILLING_FINALIZATION_QUEUE_ENABLED";
 pub(crate) const RELAY_BILLING_ORPHAN_SWEEP_LIMIT_ENV: &str = "RELAY_BILLING_ORPHAN_SWEEP_LIMIT";
@@ -124,6 +126,7 @@ const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_DEFAULT_SECONDS: i64 = 900;
 const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS: i64 = 5;
 const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_RETRY_MAX_SECONDS: i64 = 60;
 const RELAY_BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT: i64 = 32;
+pub(crate) const RELAY_BILLING_PREBIND_OWNER_GENERATION_CONTRACT_VERSION: u32 = 1;
 const AI_GATEWAY_DIRECT_FALLBACK_AUDIT_HEADER: &str =
     "x-cinatoken-internal-ai-gateway-direct-fallback";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
@@ -2659,107 +2662,144 @@ async fn relay_endpoint_with_auth(
         };
 
         let mut forward_error_kind = RelayAttemptFailureKind::FetchError;
-        let forward_result = match &request_body {
-            RelayRequestBody::Json(_) => {
-                let Some(mut upstream_body) = json_body.clone() else {
-                    break;
-                };
-                if auth_mode == RelayAuthMode::PlaygroundSession {
-                    strip_playground_request_fields(&mut upstream_body);
-                }
-                apply_model_mapping(&mut upstream_body, &model, channel.model_mapping.as_deref());
-                if endpoint.provider == RelayProviderKind::GeminiNative {
-                    if let Some(mapped_model) =
-                        mapped_model_name(&model, channel.model_mapping.as_deref())
-                    {
-                        apply_gemini_native_model_mapping(
-                            &mut upstream_body,
-                            &model,
-                            &mapped_model,
-                        );
-                        if let Some(route) = endpoint.gemini_route.as_mut() {
-                            route.model = mapped_model;
-                            endpoint.upstream_path = route.upstream_path();
+        let forward = async {
+            match &request_body {
+                RelayRequestBody::Json(_) => {
+                    let mut upstream_body = json_body.clone().ok_or_else(|| {
+                        worker::Error::RustError(
+                            "relay JSON body is unavailable during forwarding".to_string(),
+                        )
+                    })?;
+                    if auth_mode == RelayAuthMode::PlaygroundSession {
+                        strip_playground_request_fields(&mut upstream_body);
+                    }
+                    apply_model_mapping(
+                        &mut upstream_body,
+                        &model,
+                        channel.model_mapping.as_deref(),
+                    );
+                    if endpoint.provider == RelayProviderKind::GeminiNative {
+                        if let Some(mapped_model) =
+                            mapped_model_name(&model, channel.model_mapping.as_deref())
+                        {
+                            apply_gemini_native_model_mapping(
+                                &mut upstream_body,
+                                &model,
+                                &mapped_model,
+                            );
+                            if let Some(route) = endpoint.gemini_route.as_mut() {
+                                route.model = mapped_model;
+                                endpoint.upstream_path = route.upstream_path();
+                            }
                         }
                     }
-                }
-                if let Err(error) = apply_endpoint_request_transform(
-                    &mut upstream_body,
-                    &endpoint.upstream_path,
-                    &channel,
-                ) {
-                    let failure = RelayAttemptFailure::configuration_error(
-                        channel.id,
-                        channel.name.clone(),
-                        error.to_string(),
-                        channel.ai_gateway_opted_in(),
-                    );
-                    attempt_audits.push(RelayAttemptAudit::from_failure(
-                        "primary",
-                        &model,
-                        &selected_group,
-                        &failure,
-                    ));
-                    last_failure = Some(failure);
-                    continue;
-                }
-                apply_provider_request_transform(&mut upstream_body, attempt_provider);
-                // Inject/strip `stream_options.include_usage` for OpenAI-compatible
-                // upstreams (Go parity) so supporting channels emit a real usage
-                // chunk instead of forcing the local estimate. Native Anthropic/
-                // Gemini providers carry usage natively and are left untouched.
-                if inject_stream_options && provider_uses_openai_stream_options(attempt_provider) {
-                    cinatoken_relay::openai_compatible::apply_stream_options(
+                    if let Err(error) = apply_endpoint_request_transform(
                         &mut upstream_body,
-                        channel.channel_type,
-                        should_relay_stream,
-                    );
-                }
-                // Workers AI binding channels (type 39, key `internal`) run
-                // in-platform instead of over HTTP. Chat completions only;
-                // streaming is not supported by the synthesized path, so it is
-                // answered with an upstream-shaped 400 (flows the normal
-                // upstream-error handling, unbilled).
-                if is_workers_ai_binding_channel(&channel)
-                    && endpoint.provider == RelayProviderKind::OpenAiCompatible
-                    && endpoint.upstream_path == "chat/completions"
-                {
-                    if should_relay_stream {
-                        let error_body = serde_json::json!({
-                            "error": {
-                                "message": "streaming is not supported for Workers AI binding channels",
-                                "type": "invalid_request_error",
-                            }
-                        });
-                        Response::from_json(&error_body).map(|response| response.with_status(400))
+                        &endpoint.upstream_path,
+                        &channel,
+                    ) {
+                        forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
+                        return Err(error);
+                    }
+                    apply_provider_request_transform(&mut upstream_body, attempt_provider);
+                    // Inject/strip `stream_options.include_usage` for OpenAI-compatible
+                    // upstreams (Go parity) so supporting channels emit a real usage
+                    // chunk instead of forcing the local estimate. Native Anthropic/
+                    // Gemini providers carry usage natively and are left untouched.
+                    if inject_stream_options
+                        && provider_uses_openai_stream_options(attempt_provider)
+                    {
+                        cinatoken_relay::openai_compatible::apply_stream_options(
+                            &mut upstream_body,
+                            channel.channel_type,
+                            should_relay_stream,
+                        );
+                    }
+                    // Workers AI binding channels (type 39, key `internal`) run
+                    // in-platform instead of over HTTP. Chat completions only;
+                    // streaming is not supported by the synthesized path, so it is
+                    // answered with an upstream-shaped 400 (flows the normal
+                    // upstream-error handling, unbilled).
+                    if is_workers_ai_binding_channel(&channel)
+                        && endpoint.provider == RelayProviderKind::OpenAiCompatible
+                        && endpoint.upstream_path == "chat/completions"
+                    {
+                        if should_relay_stream {
+                            let error_body = serde_json::json!({
+                                "error": {
+                                    "message": "streaming is not supported for Workers AI binding channels",
+                                    "type": "invalid_request_error",
+                                }
+                            });
+                            Response::from_json(&error_body)
+                                .map(|response| response.with_status(400))
+                        } else {
+                            let upstream_model = upstream_body
+                                .get("model")
+                                .and_then(Value::as_str)
+                                .unwrap_or(&model)
+                                .to_string();
+                            forward_workers_ai_binding(&env, &upstream_model, &upstream_body).await
+                        }
                     } else {
                         let upstream_model = upstream_body
                             .get("model")
                             .and_then(Value::as_str)
-                            .unwrap_or(&model)
-                            .to_string();
-                        forward_workers_ai_binding(&env, &upstream_model, &upstream_body).await
-                    }
-                } else {
-                    let upstream_model = upstream_body
-                        .get("model")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&model);
-                    match ai_gateway_runtime.as_ref() {
-                        Some(runtime) => {
-                            match plan_relay_ai_gateway_attempt(
-                                runtime,
-                                &endpoint,
-                                &channel,
-                                upstream_model,
-                            ) {
-                                Ok(Some(attempt)) => {
-                                    match forward_ai_gateway_rest(&attempt, runtime, &upstream_body)
+                            .unwrap_or(&model);
+                        match ai_gateway_runtime.as_ref() {
+                            Some(runtime) => {
+                                match plan_relay_ai_gateway_attempt(
+                                    runtime,
+                                    &endpoint,
+                                    &channel,
+                                    upstream_model,
+                                ) {
+                                    Ok(Some(attempt)) => {
+                                        match forward_ai_gateway_rest(
+                                            &attempt,
+                                            runtime,
+                                            &upstream_body,
+                                        )
                                         .await
-                                    {
-                                        Ok(response) => {
-                                            let status = response.status_code();
-                                            if should_ai_gateway_direct_fallback(status) {
+                                        {
+                                            Ok(response) => {
+                                                let status = response.status_code();
+                                                if should_ai_gateway_direct_fallback(status) {
+                                                    if let Some(direct_body) =
+                                                        prepare_ai_gateway_direct_fallback_body(
+                                                            &upstream_body,
+                                                            &attempt,
+                                                        )
+                                                    {
+                                                        worker::console_warn!(
+                                                    "relay AI Gateway returned server status {}; falling back to direct provider for channel {}",
+                                                    status,
+                                                    channel.id
+                                                );
+                                                        forward_relay_request(
+                                                            &env,
+                                                            attempt_provider,
+                                                            &upstream_url,
+                                                            &upstream_key,
+                                                            &channel,
+                                                            &direct_body,
+                                                            &provider_headers,
+                                                        )
+                                                        .await
+                                                        .and_then(|response| {
+                                                            mark_ai_gateway_direct_fallback(
+                                                                response,
+                                                                &format!("gateway_status_{status}"),
+                                                            )
+                                                        })
+                                                    } else {
+                                                        Ok(response)
+                                                    }
+                                                } else {
+                                                    Ok(response)
+                                                }
+                                            }
+                                            Err(err) => {
                                                 if let Some(direct_body) =
                                                     prepare_ai_gateway_direct_fallback_body(
                                                         &upstream_body,
@@ -2767,10 +2807,10 @@ async fn relay_endpoint_with_auth(
                                                     )
                                                 {
                                                     worker::console_warn!(
-                                                    "relay AI Gateway returned server status {}; falling back to direct provider for channel {}",
-                                                    status,
-                                                    channel.id
-                                                );
+                                                "relay AI Gateway fetch failed; falling back to direct provider for channel {}: {}",
+                                                channel.id,
+                                                err
+                                            );
                                                     forward_relay_request(
                                                         &env,
                                                         attempt_provider,
@@ -2784,130 +2824,134 @@ async fn relay_endpoint_with_auth(
                                                     .and_then(|response| {
                                                         mark_ai_gateway_direct_fallback(
                                                             response,
-                                                            &format!("gateway_status_{status}"),
+                                                            "gateway_fetch_error",
                                                         )
                                                     })
                                                 } else {
-                                                    Ok(response)
+                                                    Err(err)
                                                 }
-                                            } else {
-                                                Ok(response)
                                             }
                                         }
-                                        Err(err) => {
-                                            if let Some(direct_body) =
-                                                prepare_ai_gateway_direct_fallback_body(
-                                                    &upstream_body,
-                                                    &attempt,
-                                                )
-                                            {
-                                                worker::console_warn!(
-                                                "relay AI Gateway fetch failed; falling back to direct provider for channel {}: {}",
-                                                channel.id,
-                                                err
-                                            );
+                                    }
+                                    Ok(None) => {
+                                        match prepare_same_channel_direct_body(
+                                            &upstream_body,
+                                            channel.channel_type,
+                                            &endpoint.upstream_path,
+                                        ) {
+                                            Ok(direct_body) => {
                                                 forward_relay_request(
                                                     &env,
                                                     attempt_provider,
                                                     &upstream_url,
                                                     &upstream_key,
                                                     &channel,
-                                                    &direct_body,
+                                                    direct_body.as_ref().unwrap_or(&upstream_body),
                                                     &provider_headers,
                                                 )
                                                 .await
-                                                .and_then(|response| {
-                                                    mark_ai_gateway_direct_fallback(
-                                                        response,
-                                                        "gateway_fetch_error",
-                                                    )
-                                                })
-                                            } else {
+                                            }
+                                            Err(err) => {
+                                                forward_error_kind =
+                                                    RelayAttemptFailureKind::ConfigurationError;
                                                 Err(err)
                                             }
                                         }
                                     }
-                                }
-                                Ok(None) => {
-                                    match prepare_same_channel_direct_body(
-                                        &upstream_body,
-                                        channel.channel_type,
-                                        &endpoint.upstream_path,
-                                    ) {
-                                        Ok(direct_body) => {
-                                            forward_relay_request(
-                                                &env,
-                                                attempt_provider,
-                                                &upstream_url,
-                                                &upstream_key,
-                                                &channel,
-                                                direct_body.as_ref().unwrap_or(&upstream_body),
-                                                &provider_headers,
-                                            )
-                                            .await
-                                        }
-                                        Err(err) => {
-                                            forward_error_kind =
-                                                RelayAttemptFailureKind::ConfigurationError;
-                                            Err(err)
-                                        }
+                                    Err(err) => {
+                                        forward_error_kind =
+                                            RelayAttemptFailureKind::ConfigurationError;
+                                        Err(err)
                                     }
                                 }
-                                Err(err) => {
-                                    forward_error_kind =
-                                        RelayAttemptFailureKind::ConfigurationError;
-                                    Err(err)
-                                }
                             }
-                        }
-                        None => {
-                            match prepare_same_channel_direct_body(
-                                &upstream_body,
-                                channel.channel_type,
-                                &endpoint.upstream_path,
-                            ) {
-                                Ok(direct_body) => {
-                                    forward_relay_request(
-                                        &env,
-                                        attempt_provider,
-                                        &upstream_url,
-                                        &upstream_key,
-                                        &channel,
-                                        direct_body.as_ref().unwrap_or(&upstream_body),
-                                        &provider_headers,
-                                    )
-                                    .await
-                                }
-                                Err(err) => {
-                                    forward_error_kind =
-                                        RelayAttemptFailureKind::ConfigurationError;
-                                    Err(err)
+                            None => {
+                                match prepare_same_channel_direct_body(
+                                    &upstream_body,
+                                    channel.channel_type,
+                                    &endpoint.upstream_path,
+                                ) {
+                                    Ok(direct_body) => {
+                                        forward_relay_request(
+                                            &env,
+                                            attempt_provider,
+                                            &upstream_url,
+                                            &upstream_key,
+                                            &channel,
+                                            direct_body.as_ref().unwrap_or(&upstream_body),
+                                            &provider_headers,
+                                        )
+                                        .await
+                                    }
+                                    Err(err) => {
+                                        forward_error_kind =
+                                            RelayAttemptFailureKind::ConfigurationError;
+                                        Err(err)
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                RelayRequestBody::Raw {
+                    bytes,
+                    content_type,
+                } => {
+                    // Multipart/raw bodies are forwarded verbatim. Model mapping
+                    // is intentionally NOT applied (see docs/relay-mvp.md). All
+                    // upload endpoints are OpenAI-compatible.
+                    if let Err(err) = ensure_wfp_json_body(&channel) {
+                        forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
+                        Err(err)
+                    } else {
+                        forward_raw_openai_compatible(
+                            &upstream_url,
+                            &upstream_key,
+                            &channel,
+                            bytes,
+                            content_type,
+                        )
+                        .await
+                    }
+                }
             }
-            RelayRequestBody::Raw {
-                bytes,
-                content_type,
-            } => {
-                // Multipart/raw bodies are forwarded verbatim. Model mapping
-                // is intentionally NOT applied (see docs/relay-mvp.md). All
-                // upload endpoints are OpenAI-compatible.
-                if let Err(err) = ensure_wfp_json_body(&channel) {
-                    forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
-                    Err(err)
-                } else {
-                    forward_raw_openai_compatible(
-                        &upstream_url,
-                        &upstream_key,
-                        &channel,
-                        bytes,
-                        content_type,
+        };
+        let forward_result = if let Some(plan) = tiered_billing_group_plan
+            .as_mut()
+            .filter(|plan| plan.reserve_applied)
+        {
+            await_with_relay_billing_prebind_lease(
+                &db,
+                plan,
+                relay_billing_reservation_lease_seconds(&env),
+                relay_billing_stream_lease_heartbeat_seconds(&env),
+                forward,
+            )
+            .await
+        } else {
+            Ok(forward.await)
+        };
+        let forward_result = match forward_result {
+            Ok(result) => result,
+            Err(err) => {
+                let cleanup = match tiered_billing_group_plan.as_ref() {
+                    Some(plan) if plan.reserve_applied => refund_tiered_billing_group_plan(
+                        &db,
+                        &auth,
+                        plan,
+                        "prebind_lease_failure",
+                        unix_timestamp(),
                     )
                     .await
-                }
+                    .err()
+                    .map(|error| format!("; cleanup failed: {error}"))
+                    .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                return openai_error_response(
+                    format!("relay billing pre-bind lease renewal failed: {err}{cleanup}"),
+                    500,
+                );
             }
         };
 
@@ -3145,7 +3189,7 @@ async fn relay_endpoint_with_auth(
                 let primary_selected_attempt = selected_attempt.take();
                 let primary_failure = last_failure.take();
                 model_route_audit.fallback_attempted = true;
-                let mut fallback_execution = execute_relay_attempt_plan(
+                let fallback_forward = execute_relay_attempt_plan(
                     fallback_attempt_plan,
                     &env,
                     &mut endpoint,
@@ -3158,8 +3202,47 @@ async fn relay_endpoint_with_auth(
                     keyword_ban_enabled,
                     ai_gateway_runtime.as_ref(),
                     &provider_headers,
-                )
-                .await;
+                );
+                let fallback_execution = if let Some(plan) = fallback_group_plan
+                    .as_mut()
+                    .filter(|plan| plan.reserve_applied)
+                {
+                    await_with_relay_billing_prebind_lease(
+                        &db,
+                        plan,
+                        relay_billing_reservation_lease_seconds(&env),
+                        relay_billing_stream_lease_heartbeat_seconds(&env),
+                        fallback_forward,
+                    )
+                    .await
+                } else {
+                    Ok(fallback_forward.await)
+                };
+                let mut fallback_execution = match fallback_execution {
+                    Ok(execution) => execution,
+                    Err(err) => {
+                        let cleanup = match fallback_group_plan.as_ref() {
+                            Some(plan) if plan.reserve_applied => refund_tiered_billing_group_plan(
+                                &db,
+                                &auth,
+                                plan,
+                                "prebind_lease_failure",
+                                unix_timestamp(),
+                            )
+                            .await
+                            .err()
+                            .map(|error| format!("; cleanup failed: {error}"))
+                            .unwrap_or_default(),
+                            _ => String::new(),
+                        };
+                        return openai_error_response(
+                            format!(
+                                "fallback relay billing pre-bind lease renewal failed: {err}{cleanup}"
+                            ),
+                            500,
+                        );
+                    }
+                };
                 attempt_audits.append(&mut fallback_execution.attempts);
                 if let Some(fallback_selected) = fallback_execution.selected_attempt {
                     let fallback_selected_group = fallback_selected.1.clone();
@@ -3353,8 +3436,6 @@ async fn relay_endpoint_with_auth(
                 500,
             );
         }
-        preflight.selected_at = Some(selected_at);
-        preflight.selected_lease_expires_at = Some(selected_at.saturating_add(lease_seconds));
     }
     if model_route_audit.wfp_worker.is_some() {
         strip_wfp_internal_response_headers(upstream_response.headers_mut())?;
@@ -5802,6 +5883,27 @@ pub(crate) fn relay_billing_stream_lease_renewal_compiled() -> bool {
         ) < RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
 }
 
+pub(crate) fn relay_billing_prebind_owner_generation_compiled() -> bool {
+    let migration = include_str!("../../../migrations/d1/0026_relay_billing_owner_generation.sql");
+    relay_billing_reservation_ledger_compiled()
+        && relay_billing_stream_lease_renewal_compiled()
+        && crate::relay_billing_queue::BILLING_FINALIZATION_SCHEMA_VERSION >= 2
+        && migration.contains("CHECK (active_count = 0)")
+        && migration.contains("ADD COLUMN owner_generation")
+        && migration.contains("ADD COLUMN owner_deadline_at")
+        && migration.contains("ADD COLUMN owner_lease_renewed_at")
+}
+
+pub(crate) fn relay_billing_prebind_owner_generation_staging_verified(env: &Env) -> bool {
+    env_flag(
+        optional_env_var(
+            env,
+            RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED_ENV,
+        )
+        .as_deref(),
+    )
+}
+
 pub(crate) fn relay_billing_stream_error_usage_recovery_compiled() -> bool {
     true
 }
@@ -5878,8 +5980,13 @@ pub(crate) fn relay_billing_finalization_runtime_contract_ready(
 
 pub(crate) fn relay_billing_orphan_recovery_execution_ready(env: &Env, d1_ready: bool) -> bool {
     let heartbeat = relay_billing_stream_lease_heartbeat_runtime_status(env);
+    let owner_deadline = relay_billing_reservation_lease_runtime_status(env);
     relay_billing_reservation_ledger_compiled()
         && relay_billing_stream_lease_renewal_compiled()
+        && relay_billing_prebind_owner_generation_compiled()
+        && owner_deadline.configured
+        && owner_deadline.valid
+        && relay_billing_prebind_owner_generation_staging_verified(env)
         && relay_billing_stream_error_usage_recovery_compiled()
         && heartbeat.configured
         && heartbeat.valid
@@ -5909,14 +6016,46 @@ pub(crate) fn relay_billing_orphan_recovery_enabled(env: &Env) -> bool {
 }
 
 pub(crate) fn relay_billing_reservation_lease_seconds(env: &Env) -> i64 {
-    optional_env_var(env, RELAY_BILLING_RESERVATION_LEASE_SECONDS_ENV)
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .filter(|value| {
+    relay_billing_reservation_lease_runtime_status(env).effective_seconds
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RelayBillingReservationLeaseRuntimeStatus {
+    pub configured: bool,
+    pub valid: bool,
+    pub effective_seconds: i64,
+}
+
+pub(crate) fn relay_billing_reservation_lease_runtime_status(
+    env: &Env,
+) -> RelayBillingReservationLeaseRuntimeStatus {
+    relay_billing_reservation_lease_runtime_status_from_raw(
+        optional_env_var(env, RELAY_BILLING_RESERVATION_LEASE_SECONDS_ENV).as_deref(),
+    )
+}
+
+fn relay_billing_reservation_lease_runtime_status_from_raw(
+    raw: Option<&str>,
+) -> RelayBillingReservationLeaseRuntimeStatus {
+    let configured = raw.is_some_and(|value| !value.trim().is_empty());
+    let parsed = raw.and_then(|value| value.trim().parse::<i64>().ok());
+    let valid = !configured
+        || parsed.is_some_and(|value| {
             (RELAY_BILLING_RESERVATION_LEASE_MIN_SECONDS
                 ..=RELAY_BILLING_RESERVATION_LEASE_MAX_SECONDS)
-                .contains(value)
-        })
-        .unwrap_or(RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS)
+                .contains(&value)
+        });
+    RelayBillingReservationLeaseRuntimeStatus {
+        configured,
+        valid,
+        effective_seconds: parsed
+            .filter(|value| {
+                (RELAY_BILLING_RESERVATION_LEASE_MIN_SECONDS
+                    ..=RELAY_BILLING_RESERVATION_LEASE_MAX_SECONDS)
+                    .contains(value)
+            })
+            .unwrap_or(RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS),
+    }
 }
 
 pub(crate) fn relay_billing_stream_lease_heartbeat_seconds(env: &Env) -> i64 {
@@ -8566,6 +8705,7 @@ fn usage_summary_for_provider(
 #[derive(Debug, Clone)]
 struct RelayBillingStreamLease {
     reservation_key: String,
+    owner_generation: i64,
     channel_id: i64,
     selected_group: String,
     selected_at: i64,
@@ -8669,6 +8809,7 @@ async fn complete_streaming_relay_response(
             );
             Some(RelayBillingStreamLease {
                 reservation_key,
+                owner_generation: preflight.owner_generation?,
                 channel_id: channel.id,
                 selected_group: group.clone(),
                 selected_at: preflight.selected_at?,
@@ -8790,6 +8931,7 @@ async fn streaming_usage_summary(
                 match crate::d1_repositories::renew_relay_billing_selected_attempt_lease(
                     db,
                     &lease.reservation_key,
+                    lease.owner_generation,
                     lease.channel_id,
                     &lease.selected_group,
                     lease.selected_at,
@@ -9041,6 +9183,7 @@ struct RelayAuditContext {
 #[derive(Debug, Clone)]
 struct PendingRelayBillingFinalization {
     reservation_key: String,
+    owner_generation: i64,
     expr_hash: String,
     channel_id: i64,
     selected_group: String,
@@ -9063,6 +9206,7 @@ impl PendingRelayBillingFinalization {
                     worker::Error::RustError("relay billing reservation key is missing".to_string())
                 })?
                 .to_string(),
+            owner_generation: tiered_billing_owner_generation(preflight)?,
             expr_hash: preflight.snapshot.expr_hash.clone(),
             channel_id,
             selected_group: selected_group.to_string(),
@@ -9088,6 +9232,7 @@ impl PendingRelayBillingFinalization {
                     worker::Error::RustError("relay billing reservation key is missing".to_string())
                 })?
                 .to_string(),
+            owner_generation: tiered_billing_owner_generation(preflight)?,
             expr_hash: preflight.snapshot.expr_hash.clone(),
             channel_id,
             selected_group: selected_group.to_string(),
@@ -9109,6 +9254,7 @@ impl PendingRelayBillingFinalization {
                 finalization_reason,
             } => crate::relay_billing_queue::RelayBillingFinalizationEvent::settlement(
                 &self.reservation_key,
+                self.owner_generation,
                 &self.expr_hash,
                 self.channel_id,
                 &self.selected_group,
@@ -9122,6 +9268,7 @@ impl PendingRelayBillingFinalization {
                 account_request,
             } => crate::relay_billing_queue::RelayBillingFinalizationEvent::refund(
                 &self.reservation_key,
+                self.owner_generation,
                 &self.expr_hash,
                 self.channel_id,
                 &self.selected_group,
@@ -9278,6 +9425,7 @@ async fn record_relay_audit(
                                     crate::d1_repositories::settle_relay_billing_reservation(
                                         db,
                                         reservation_key,
+                                        tiered_billing_owner_generation(preflight)?,
                                         channel.id,
                                         group,
                                         final_quota,
@@ -9365,6 +9513,7 @@ async fn record_relay_audit(
                                     crate::d1_repositories::settle_relay_billing_reservation(
                                         db,
                                         reservation_key,
+                                        tiered_billing_owner_generation(preflight)?,
                                         channel.id,
                                         group,
                                         preflight.pre_consumed_quota,
@@ -9769,6 +9918,7 @@ struct TieredBillingPreflight {
     candidate_group_count: usize,
     reservation_strategy: &'static str,
     reservation_key: Option<String>,
+    owner_generation: Option<i64>,
     selected_at: Option<i64>,
     selected_lease_expires_at: Option<i64>,
 }
@@ -9779,6 +9929,9 @@ struct TieredBillingGroupPlan {
     reserved_quota: i64,
     reserve_applied: bool,
     reservation_key: Option<String>,
+    owner_generation: Option<i64>,
+    owner_lease_expires_at: Option<i64>,
+    owner_deadline_at: Option<i64>,
 }
 
 impl TieredBillingGroupPlan {
@@ -9796,6 +9949,7 @@ impl TieredBillingGroupPlan {
                 TIERED_BILLING_SELECTED_GROUP_STRATEGY
             },
             reservation_key: self.reservation_key.clone(),
+            owner_generation: self.owner_generation,
             selected_at: None,
             selected_lease_expires_at: None,
         })
@@ -9945,7 +10099,7 @@ pub(crate) async fn execute_actual_group_billing_smoke_plan(
             })
         }
         ActualGroupBillingSmokeAction::SettleSelectedGroup => {
-            let Some(preflight) = plan.selected_preflight(selected_group) else {
+            let Some(mut preflight) = plan.selected_preflight(selected_group) else {
                 let _ =
                     refund_tiered_billing_group_plan(db, auth, &plan, "staging_smoke_cleanup", now)
                         .await;
@@ -9957,7 +10111,7 @@ pub(crate) async fn execute_actual_group_billing_smoke_plan(
             let selected_group_estimated_quota = preflight.snapshot.estimated_quota_after_group.0;
             bind_tiered_billing_selected_attempt(
                 db,
-                &preflight,
+                &mut preflight,
                 channel_id,
                 selected_group,
                 now,
@@ -9987,10 +10141,16 @@ pub(crate) async fn execute_actual_group_billing_smoke_plan(
             let reservation_key = preflight.reservation_key.as_deref().ok_or_else(|| {
                 worker::Error::RustError("relay billing reservation key is missing".to_string())
             })?;
+            let owner_generation = preflight.owner_generation.ok_or_else(|| {
+                worker::Error::RustError(
+                    "relay billing reservation owner generation is missing".to_string(),
+                )
+            })?;
             require_relay_billing_finalization(
                 crate::d1_repositories::settle_relay_billing_reservation(
                     db,
                     reservation_key,
+                    owner_generation,
                     channel_id,
                     selected_group,
                     outcome.final_quota,
@@ -10042,6 +10202,9 @@ fn tiered_billing_group_plan_from_base(
         reserved_quota,
         reserve_applied: false,
         reservation_key: None,
+        owner_generation: None,
+        owner_lease_expires_at: None,
+        owner_deadline_at: None,
     })
 }
 
@@ -10073,6 +10236,7 @@ fn tiered_billing_preflight_snapshot(
         candidate_group_count: 1,
         reservation_strategy: TIERED_BILLING_SELECTED_GROUP_STRATEGY,
         reservation_key: None,
+        owner_generation: None,
         selected_at: None,
         selected_lease_expires_at: None,
     })
@@ -10133,13 +10297,24 @@ async fn reserve_tiered_billing_group_plan(
         },
     )
     .await?;
-    if outcome != crate::d1_repositories::RelayBillingReservationWriteOutcome::Applied {
-        return Err(worker::Error::RustError(
-            "relay billing reservation key collision".to_string(),
-        ));
-    }
+    let owner_generation = match outcome {
+        crate::d1_repositories::RelayBillingReservationWriteOutcome::Applied {
+            owner_generation,
+        }
+        | crate::d1_repositories::RelayBillingReservationWriteOutcome::MatchingReservation {
+            owner_generation,
+        } => owner_generation,
+        crate::d1_repositories::RelayBillingReservationWriteOutcome::Conflict => {
+            return Err(worker::Error::RustError(
+                "relay billing reservation key collision".to_string(),
+            ));
+        }
+    };
     plan.reserve_applied = true;
     plan.reservation_key = Some(reservation_key);
+    plan.owner_generation = Some(owner_generation);
+    plan.owner_lease_expires_at = Some(now.saturating_add(lease_seconds));
+    plan.owner_deadline_at = Some(now.saturating_add(lease_seconds));
     Ok(())
 }
 
@@ -10153,13 +10328,23 @@ async fn refund_tiered_billing_group_plan(
     if !plan.reserve_applied || plan.reserved_quota == 0 {
         return Ok(());
     }
-    let reservation_key = plan.reservation_key.as_deref().ok_or_else(|| {
-        worker::Error::RustError("relay billing reservation key is missing".to_string())
+    let reservation_key = plan
+        .reservation_key
+        .as_deref()
+        .ok_or_else(|| {
+            worker::Error::RustError("relay billing reservation key is missing".to_string())
+        })?
+        .to_string();
+    let owner_generation = plan.owner_generation.ok_or_else(|| {
+        worker::Error::RustError(
+            "relay billing reservation owner generation is missing".to_string(),
+        )
     })?;
     require_relay_billing_finalization(
         crate::d1_repositories::refund_relay_billing_reservation(
             db,
-            reservation_key,
+            &reservation_key,
+            owner_generation,
             finalization_reason,
             crate::d1_repositories::RelayBillingRequestAccounting::Skip,
             now,
@@ -10167,6 +10352,114 @@ async fn refund_tiered_billing_group_plan(
         .await?,
         "refund",
     )
+}
+
+async fn await_with_relay_billing_prebind_lease<F, T>(
+    db: &D1Database,
+    plan: &mut TieredBillingGroupPlan,
+    lease_seconds: i64,
+    heartbeat_seconds: i64,
+    future: F,
+) -> worker::Result<T>
+where
+    F: Future<Output = T>,
+{
+    if !plan.reserve_applied {
+        return Ok(future.await);
+    }
+    let reservation_key = plan
+        .reservation_key
+        .as_deref()
+        .ok_or_else(|| {
+            worker::Error::RustError("relay billing reservation key is missing".to_string())
+        })?
+        .to_string();
+    let owner_generation = plan.owner_generation.ok_or_else(|| {
+        worker::Error::RustError(
+            "relay billing reservation owner generation is missing".to_string(),
+        )
+    })?;
+    let mut expected_lease_expires_at = plan.owner_lease_expires_at.ok_or_else(|| {
+        worker::Error::RustError("relay billing reservation owner lease is missing".to_string())
+    })?;
+    let owner_deadline_at = plan.owner_deadline_at.ok_or_else(|| {
+        worker::Error::RustError("relay billing reservation owner deadline is missing".to_string())
+    })?;
+    let mut pending = Box::pin(future);
+    loop {
+        let now = unix_timestamp();
+        if now > owner_deadline_at {
+            return Err(worker::Error::RustError(
+                "relay billing pre-bind owner deadline expired".to_string(),
+            ));
+        }
+        let until_deadline = owner_deadline_at.saturating_sub(now).saturating_add(1);
+        let delay_seconds = heartbeat_seconds.max(1).min(until_deadline.max(1));
+        let heartbeat = Box::pin(Delay::from(Duration::from_secs(
+            u64::try_from(delay_seconds).unwrap_or(1),
+        )));
+        match select(pending, heartbeat).await {
+            Either::Left((output, _)) => return Ok(output),
+            Either::Right((_, next_pending)) => {
+                pending = next_pending;
+                let renewed_at = unix_timestamp();
+                if renewed_at > owner_deadline_at {
+                    return Err(worker::Error::RustError(
+                        "relay billing pre-bind owner deadline expired".to_string(),
+                    ));
+                }
+                let requested_lease_expires_at = renewed_at.saturating_add(lease_seconds);
+                use crate::d1_repositories::RelayBillingPrebindLeaseRenewalOutcome as Outcome;
+                match crate::d1_repositories::renew_relay_billing_prebind_owner_lease(
+                    db,
+                    &reservation_key,
+                    owner_generation,
+                    expected_lease_expires_at,
+                    renewed_at,
+                    requested_lease_expires_at,
+                )
+                .await?
+                {
+                    Outcome::Applied | Outcome::MatchingRenewal => {
+                        expected_lease_expires_at = requested_lease_expires_at;
+                        plan.owner_lease_expires_at = Some(requested_lease_expires_at);
+                    }
+                    Outcome::StaleGeneration => {
+                        return Err(worker::Error::RustError(
+                            "relay billing pre-bind owner generation is stale".to_string(),
+                        ))
+                    }
+                    Outcome::AlreadyFinalized => {
+                        return Err(worker::Error::RustError(
+                            "relay billing reservation finalized during pre-bind forwarding"
+                                .to_string(),
+                        ))
+                    }
+                    Outcome::AlreadyBound => {
+                        return Err(worker::Error::RustError(
+                            "relay billing reservation was concurrently bound".to_string(),
+                        ))
+                    }
+                    Outcome::DeadlineExpired => {
+                        return Err(worker::Error::RustError(
+                            "relay billing pre-bind owner lease expired".to_string(),
+                        ))
+                    }
+                    Outcome::Conflict => {
+                        return Err(worker::Error::RustError(
+                            "relay billing pre-bind owner lease conflicts".to_string(),
+                        ))
+                    }
+                    Outcome::NotFound => {
+                        return Err(worker::Error::RustError(
+                            "relay billing reservation was not found during pre-bind renewal"
+                                .to_string(),
+                        ))
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn refund_tiered_billing_preflight(
@@ -10183,10 +10476,16 @@ async fn refund_tiered_billing_preflight(
     let reservation_key = preflight.reservation_key.as_deref().ok_or_else(|| {
         worker::Error::RustError("relay billing reservation key is missing".to_string())
     })?;
+    let owner_generation = preflight.owner_generation.ok_or_else(|| {
+        worker::Error::RustError(
+            "relay billing reservation owner generation is missing".to_string(),
+        )
+    })?;
     require_relay_billing_finalization(
         crate::d1_repositories::refund_relay_billing_reservation(
             db,
             reservation_key,
+            owner_generation,
             finalization_reason,
             request_accounting,
             now,
@@ -10194,6 +10493,14 @@ async fn refund_tiered_billing_preflight(
         .await?,
         "refund",
     )
+}
+
+fn tiered_billing_owner_generation(preflight: &TieredBillingPreflight) -> worker::Result<i64> {
+    preflight.owner_generation.ok_or_else(|| {
+        worker::Error::RustError(
+            "relay billing reservation owner generation is missing".to_string(),
+        )
+    })
 }
 
 fn require_relay_billing_finalization(
@@ -10221,6 +10528,9 @@ fn require_relay_billing_finalization(
         Outcome::DeadlineExpired => Err(worker::Error::RustError(format!(
             "relay billing reservation deadline expired before {action}"
         ))),
+        Outcome::StaleGeneration => Err(worker::Error::RustError(format!(
+            "relay billing reservation owner generation is stale during {action}"
+        ))),
         Outcome::RecoveryRequired => Err(worker::Error::RustError(format!(
             "relay billing reservation requires reconciliation before {action}"
         ))),
@@ -10229,7 +10539,7 @@ fn require_relay_billing_finalization(
 
 async fn bind_tiered_billing_selected_attempt(
     db: &D1Database,
-    preflight: &TieredBillingPreflight,
+    preflight: &mut TieredBillingPreflight,
     channel_id: i64,
     selected_group: &str,
     selected_at: i64,
@@ -10239,19 +10549,44 @@ async fn bind_tiered_billing_selected_attempt(
     let reservation_key = preflight.reservation_key.as_deref().ok_or_else(|| {
         worker::Error::RustError("relay billing reservation key is missing".to_string())
     })?;
-    match crate::d1_repositories::bind_relay_billing_selected_attempt(
+    let owner_generation = preflight.owner_generation.ok_or_else(|| {
+        worker::Error::RustError(
+            "relay billing reservation owner generation is missing".to_string(),
+        )
+    })?;
+    let outcome = crate::d1_repositories::bind_relay_billing_selected_attempt(
         db,
         reservation_key,
+        owner_generation,
         channel_id,
         selected_group,
         selected_at,
         selected_at.saturating_add(lease_seconds),
     )
-    .await?
-    {
-        Outcome::Applied | Outcome::MatchingSelection => Ok(()),
+    .await?;
+    match outcome {
+        Outcome::Applied {
+            owner_generation,
+            lease_expires_at,
+        }
+        | Outcome::MatchingSelection {
+            owner_generation,
+            lease_expires_at,
+        } => {
+            preflight.owner_generation = Some(owner_generation);
+            preflight.selected_at = Some(selected_at);
+            preflight.selected_lease_expires_at = Some(lease_expires_at);
+            Ok(())
+        }
         Outcome::AlreadyFinalized => Err(worker::Error::RustError(
             "relay billing reservation was finalized before selected-attempt binding".to_string(),
+        )),
+        Outcome::DeadlineExpired => Err(worker::Error::RustError(
+            "relay billing reservation lease expired before selected-attempt binding".to_string(),
+        )),
+        Outcome::StaleGeneration => Err(worker::Error::RustError(
+            "relay billing reservation owner generation is stale during selected-attempt binding"
+                .to_string(),
         )),
         Outcome::Conflict => Err(worker::Error::RustError(
             "relay billing reservation selected-attempt conflict".to_string(),
@@ -13574,6 +13909,29 @@ mod tests {
             relay_billing_stream_lease_heartbeat_interval_seconds(900, "relayreserve-jitter-test")
         );
         assert!((810..=990).contains(&jittered));
+    }
+
+    #[test]
+    fn relay_billing_prebind_owner_deadline_is_explicit_and_bounded() {
+        assert_eq!(
+            relay_billing_reservation_lease_runtime_status_from_raw(None),
+            RelayBillingReservationLeaseRuntimeStatus {
+                configured: false,
+                valid: true,
+                effective_seconds: RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS,
+            }
+        );
+        assert_eq!(
+            relay_billing_reservation_lease_runtime_status_from_raw(Some("300")),
+            RelayBillingReservationLeaseRuntimeStatus {
+                configured: true,
+                valid: true,
+                effective_seconds: 300,
+            }
+        );
+        assert!(!relay_billing_reservation_lease_runtime_status_from_raw(Some("299")).valid);
+        assert!(!relay_billing_reservation_lease_runtime_status_from_raw(Some("invalid")).valid);
+        assert!(relay_billing_prebind_owner_generation_compiled());
     }
 
     #[test]

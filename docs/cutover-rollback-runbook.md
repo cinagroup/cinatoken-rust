@@ -302,6 +302,30 @@ Use when Rust applied writes during canary.
    approval.
 5. Preserve the original Rust D1 state for audit until reconciliation closes.
 
+### Ordinary HTTP Billing Rollback Order
+
+Use this order for any pre-bind owner, Queue, or recovery anomaly:
+
+1. Set `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED=false`, then disable reconcile
+   and Queue finalization before changing traffic.
+2. Stop new Rust relay admission and return the selected scope to Go/VPS. Keep
+   the Rust Worker and D1/Queue bindings available for observation.
+3. Drain primary Queue, DLQ, parking, `reserved`, and `recovery_required`
+   records under one named owner. Record the highest generation and terminal
+   disposition for every reservation.
+4. Never downgrade, reset, or reuse `owner_generation`; never emit schema-v1
+   Queue messages for generation-2 reservations. Resolve ambiguity by exact
+   frozen-state readback, not by replay with new pricing.
+5. Reconcile provider calls, user/token/channel quota, request count, billing
+   and manage audits, incident ledger, and Queue attempts. Compensate only after
+   data-owner approval.
+6. Retain migration 0026 and all evidence. Do not drop fencing columns during
+   an incident. A code rollback must understand the schema or remain inactive.
+
+Settlement owns through `lease_expires_at + 300` inclusive; automated recovery
+owns only from `lease_expires_at + 301`. Any boundary violation or unexplained
+generation jump is an immediate G3/G4 abort.
+
 ### Secret Rollback
 
 Use if any secret may have leaked.

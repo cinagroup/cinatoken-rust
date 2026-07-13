@@ -722,6 +722,26 @@ armed only when:
 - Pre-bind owner generation and non-stream successful-response parse failures
   have deterministic recovery tests before HTTP orphan recovery is enabled.
 
+### Pre-Bind Owner Generation Requirements
+
+- Apply migration 0026 only after old and new admission is frozen and the
+  active HTTP reservation count is zero. Its fail-closed drain guard is a
+  deployment invariant.
+- Require `RELAY_BILLING_RESERVATION_LEASE_SECONDS` and
+  `RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS` to be explicit and valid.
+  The first value is also the immutable late-bind owner deadline.
+- Keep `RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED=false` until
+  Phase 4f is executed and signed. This variable records evidence; it is not an
+  execution switch.
+- Require Queue schema v2 for generation-2 events. Accept schema v1 only while
+  draining generation-1 events created before cutover.
+- Require `/api/platform/capabilities` to report compiled, schema-ready,
+  configured, staging-verified, and cutover-ready separately.
+- Preserve `assets.run_worker_first = ["/api/*", "/v1/*"]` in default,
+  staging, and production so SPA navigation fallback cannot answer API paths.
+  Re-audit this on every asset-routing change against the official Cloudflare
+  static-assets routing contract.
+
 ## Config Review Checklist
 
 Before every deploy-affecting config change:

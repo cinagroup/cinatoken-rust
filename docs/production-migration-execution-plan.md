@@ -1098,3 +1098,35 @@ also remain open.
 6. Reconcile provider calls, user/token/channel quota, request count, ledger,
    billing audit, manage audit, Queue attempts, incident state, and cleanup.
    Any unexplained delta or raw payload/secret leakage is an immediate abort.
+
+## 2026-07-14 HTTP Pre-Bind Owner Generation Rollout
+
+This sequence supersedes instructions to apply only migrations 0023-0025 or to
+enable HTTP recovery after stream-heartbeat proof alone.
+
+1. Rotate the exposed Cloudflare credential. Use separate least-privilege
+   deploy and readback credentials and archive names/status only.
+2. Freeze old and new Rust relay admission. Drain Queue/DLQ work and reconcile
+   every HTTP billing row until `status='reserved'` is zero. Keep Go/VPS
+   authoritative.
+3. Apply the exact migration set through 0026 in isolated staging. The 0026
+   guard must reject a nonzero active count. Verify 26 migrations, 30 tables,
+   126 checked incremental columns, 23 indexes, and exact-set capability state.
+4. Deploy with Queue, reconcile, orphan recovery, and staging-proof flags false.
+   Explicitly configure the reservation deadline and heartbeat. Require owner
+   generation compiled/schema/configured true and staging/cutover false.
+5. Execute Phase 4f from `docs/staging-smoke-runbook.md`: delayed headers,
+   timely/late bind, direct/Gateway/model fallback, exact D1 readback,
+   L+300/L+301, terminal/recovery races, Worker interruption, Queue schema-v2
+   duplicate delivery, and disable-first rollback.
+6. Enable Queue only for isolated v2 fixtures after resource readback and
+   alerts. Drain legacy v1 events only at generation 1. Never recreate or
+   downgrade a generation during incident replay.
+7. Promote proof metadata only after signed provider-call and accounting
+   reconciliation with zero pending rows. Recovery and cutover still require
+   finalization, observability, security, performance, and G1-G8 gates.
+
+Rollback order is recovery off, reconcile off, Queue finalization off, new Rust
+admission off, traffic to Go/VPS, then ledger/Queue drain and reconciliation.
+Retain migration 0026 and the highest generation. No remote evidence is
+currently archived, so production remains **NO-GO**.

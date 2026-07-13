@@ -12,7 +12,8 @@ pub(crate) const BILLING_QUEUE_BINDING: &str = "BILLING_QUEUE";
 pub(crate) const BILLING_FINALIZATION_RECONCILE_ENABLED_ENV: &str =
     "RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED";
 pub(crate) const BILLING_FINALIZATION_EVENT_TYPE: &str = "cinatoken.relay_billing_finalization";
-pub(crate) const BILLING_FINALIZATION_SCHEMA_VERSION: u16 = 1;
+pub(crate) const BILLING_FINALIZATION_SCHEMA_VERSION: u16 = 2;
+const BILLING_FINALIZATION_LEGACY_SCHEMA_VERSION: u16 = 1;
 const BILLING_FINALIZATION_MAX_EVENT_BYTES: usize = 64 * 1024;
 const BILLING_FINALIZATION_MAX_RESERVATION_KEY_BYTES: usize = 160;
 const BILLING_FINALIZATION_MAX_GROUP_BYTES: usize = 128;
@@ -139,6 +140,8 @@ pub struct RelayBillingFinalizationEvent {
     pub schema_version: u16,
     pub event_id: String,
     pub reservation_key: String,
+    #[serde(default = "legacy_owner_generation")]
+    pub owner_generation: i64,
     pub expr_hash: String,
     pub channel_id: i64,
     pub selected_group: String,
@@ -170,6 +173,7 @@ impl RelayBillingFinalizationEvent {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn settlement(
         reservation_key: &str,
+        owner_generation: i64,
         expr_hash: &str,
         channel_id: i64,
         selected_group: &str,
@@ -180,6 +184,7 @@ impl RelayBillingFinalizationEvent {
     ) -> worker::Result<Self> {
         Self::new(
             reservation_key,
+            owner_generation,
             expr_hash,
             channel_id,
             selected_group,
@@ -195,6 +200,7 @@ impl RelayBillingFinalizationEvent {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refund(
         reservation_key: &str,
+        owner_generation: i64,
         expr_hash: &str,
         channel_id: i64,
         selected_group: &str,
@@ -205,6 +211,7 @@ impl RelayBillingFinalizationEvent {
     ) -> worker::Result<Self> {
         Self::new(
             reservation_key,
+            owner_generation,
             expr_hash,
             channel_id,
             selected_group,
@@ -219,6 +226,7 @@ impl RelayBillingFinalizationEvent {
 
     fn new(
         reservation_key: &str,
+        owner_generation: i64,
         expr_hash: &str,
         channel_id: i64,
         selected_group: &str,
@@ -235,6 +243,7 @@ impl RelayBillingFinalizationEvent {
             schema_version: BILLING_FINALIZATION_SCHEMA_VERSION,
             event_id,
             reservation_key: reservation_key.to_string(),
+            owner_generation,
             expr_hash: expr_hash.trim().to_string(),
             channel_id,
             selected_group: selected_group.trim().to_string(),
@@ -247,9 +256,10 @@ impl RelayBillingFinalizationEvent {
     }
 
     pub(crate) fn validate(&self) -> worker::Result<()> {
-        if self.event_type != BILLING_FINALIZATION_EVENT_TYPE
-            || self.schema_version != BILLING_FINALIZATION_SCHEMA_VERSION
-        {
+        let schema_supported = self.schema_version == BILLING_FINALIZATION_SCHEMA_VERSION
+            || (self.schema_version == BILLING_FINALIZATION_LEGACY_SCHEMA_VERSION
+                && self.owner_generation == legacy_owner_generation());
+        if self.event_type != BILLING_FINALIZATION_EVENT_TYPE || !schema_supported {
             return Err(finalization_error(
                 "relay billing finalization event schema is unsupported",
             ));
@@ -262,7 +272,8 @@ impl RelayBillingFinalizationEvent {
                 "relay billing finalization event identity is invalid",
             ));
         }
-        if self.expr_hash.is_empty()
+        if self.owner_generation <= 0
+            || self.expr_hash.is_empty()
             || self.expr_hash.len() > 96
             || self.channel_id <= 0
             || self.selected_group.is_empty()
@@ -377,6 +388,7 @@ pub(crate) async fn apply_relay_billing_finalization_event(
             crate::d1_repositories::settle_relay_billing_reservation(
                 db,
                 &event.reservation_key,
+                event.owner_generation,
                 event.channel_id,
                 &event.selected_group,
                 *final_quota,
@@ -392,6 +404,7 @@ pub(crate) async fn apply_relay_billing_finalization_event(
             crate::d1_repositories::refund_relay_billing_reservation(
                 db,
                 &event.reservation_key,
+                event.owner_generation,
                 finalization_reason,
                 if *account_request {
                     RelayBillingRequestAccounting::Account
@@ -520,6 +533,10 @@ fn billing_finalization_event_id(reservation_key: &str) -> String {
     format!("relay-finalization-v1:{reservation_key}")
 }
 
+const fn legacy_owner_generation() -> i64 {
+    1
+}
+
 fn attach_audit_event_identity(
     audit_log: &mut RelayBillingFinalizationAudit,
     event_id: &str,
@@ -582,6 +599,7 @@ mod tests {
     fn settlement_event_is_bounded_and_contains_only_frozen_decision_metadata() {
         let event = RelayBillingFinalizationEvent::settlement(
             "relayreserve-test",
+            2,
             "sha256:expr",
             9,
             "default",
@@ -608,6 +626,7 @@ mod tests {
     fn refund_event_requires_a_zero_quota_audit() {
         let error = RelayBillingFinalizationEvent::refund(
             "relayreserve-test",
+            2,
             "sha256:expr",
             9,
             "default",
@@ -624,6 +643,7 @@ mod tests {
     fn event_identity_is_derived_from_the_reservation() {
         let mut event = RelayBillingFinalizationEvent::settlement(
             "relayreserve-test",
+            2,
             "sha256:expr",
             9,
             "default",
@@ -638,9 +658,42 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v1_events_default_to_the_migration_generation_only() {
+        let event = RelayBillingFinalizationEvent::settlement(
+            "relayreserve-legacy",
+            2,
+            "sha256:expr",
+            9,
+            "default",
+            30,
+            "usage_settlement",
+            1_800_000_000,
+            audit(30),
+        )
+        .expect("event");
+        let mut value = serde_json::to_value(event).expect("value");
+        let object = value.as_object_mut().expect("object");
+        object.insert("schema_version".to_string(), Value::from(1));
+        object.remove("owner_generation");
+        let legacy: RelayBillingFinalizationEvent =
+            serde_json::from_value(value.clone()).expect("legacy event");
+        assert_eq!(legacy.owner_generation, 1);
+        legacy.validate().expect("legacy generation");
+
+        value
+            .as_object_mut()
+            .expect("object")
+            .insert("owner_generation".to_string(), Value::from(2));
+        let forged: RelayBillingFinalizationEvent =
+            serde_json::from_value(value).expect("forged legacy event");
+        assert!(forged.validate().is_err());
+    }
+
+    #[test]
     fn audit_projection_rejects_non_boolean_stream_markers() {
         let mut event = RelayBillingFinalizationEvent::settlement(
             "relayreserve-test",
+            2,
             "sha256:expr",
             9,
             "default",
@@ -675,6 +728,7 @@ mod tests {
     fn dead_letter_projection_persists_only_valid_frozen_events() {
         let event = RelayBillingFinalizationEvent::settlement(
             "relayreserve-test",
+            2,
             "sha256:expr",
             9,
             "default",

@@ -466,6 +466,16 @@ export type PlatformCapabilities = {
   relay_billing_reservation_ledger_compiled: boolean
   relay_billing_ledger_status_compiled: boolean
   relay_billing_reservation_lease_seconds: number
+  relay_billing_prebind_owner_generation_contract_version: number
+  relay_billing_prebind_owner_generation_compiled: boolean
+  relay_billing_prebind_owner_generation_schema_ready: boolean
+  relay_billing_prebind_owner_deadline_configured: boolean
+  relay_billing_prebind_owner_deadline_valid: boolean
+  relay_billing_prebind_owner_deadline_seconds: number
+  relay_billing_prebind_owner_generation_configured: boolean
+  relay_billing_prebind_owner_generation_staging_verified: boolean
+  relay_billing_prebind_owner_generation_cutover_ready: boolean
+  relay_billing_prebind_owner_generation_cutover_guards: string[]
   relay_billing_stream_lease_renewal_compiled: boolean
   relay_billing_stream_lease_heartbeat_configured: boolean
   relay_billing_stream_lease_heartbeat_valid: boolean

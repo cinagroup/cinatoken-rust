@@ -444,6 +444,7 @@ mod tests {
             schema_version: 1,
             event_id: event_id.clone(),
             reservation_key: reservation_key.to_string(),
+            owner_generation: 1,
             expr_hash: "sha256:expr".to_string(),
             channel_id: 9,
             selected_group: "default".to_string(),

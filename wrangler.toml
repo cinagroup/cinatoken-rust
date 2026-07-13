@@ -38,6 +38,7 @@ command = "bun tools/build_worker.mjs --release"
 directory = "apps/web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/v1/*"]
 
 # Workers AI binding: lets type-39 (Cloudflare) relay channels with the
 # `internal` key run models in-platform (no egress, no API token). Inert for
@@ -81,6 +82,7 @@ RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS = "900"
 RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
+RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
@@ -232,6 +234,7 @@ name = "cinatoken-rust-api-staging"
 directory = "apps/web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/v1/*"]
 
 [env.staging.ai]
 binding = "AI"
@@ -268,6 +271,7 @@ RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS = "900"
 RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
+RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"
@@ -420,6 +424,7 @@ name = "cinatoken-rust-api"
 directory = "apps/web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/v1/*"]
 
 [env.production.ai]
 binding = "AI"
@@ -456,6 +461,7 @@ RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS = "900"
 RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED = "false"
 RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED = "false"
+RELAY_BILLING_PREBIND_OWNER_GENERATION_STAGING_VERIFIED = "false"
 RELAY_BILLING_FINALIZATION_QUEUE_ENABLED = "false"
 RELAY_BILLING_FINALIZATION_RECONCILE_ENABLED = "false"
 RELAY_BILLING_ORPHAN_RECOVERY_ENABLED = "false"

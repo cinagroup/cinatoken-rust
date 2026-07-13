@@ -414,6 +414,66 @@ function buildCapabilityGroups(
           missingLabel: t('Blocked'),
         },
         {
+          label: t('Pre-bind owner generation contract'),
+          description: t(
+            'Fences reserve, provider wait, selected-attempt bind, Queue finalization, and recovery with monotonic D1 ownership generation {{version}}.',
+            {
+              version:
+                capabilities.relay_billing_prebind_owner_generation_contract_version,
+            }
+          ),
+          ready:
+            capabilities.relay_billing_prebind_owner_generation_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Blocked'),
+        },
+        {
+          label: t('Pre-bind owner deadline'),
+          description: t(
+            'Requires migration 0026 plus an explicit, valid {{seconds}}-second owner deadline and heartbeat configuration.',
+            {
+              seconds:
+                capabilities.relay_billing_prebind_owner_deadline_seconds,
+            }
+          ),
+          ready:
+            capabilities.relay_billing_prebind_owner_generation_configured,
+          readyLabel: t('Configured'),
+          missingLabel:
+            !capabilities.relay_billing_prebind_owner_generation_schema_ready
+              ? t('Migration missing')
+              : !capabilities.relay_billing_prebind_owner_deadline_configured
+                ? t('Not configured')
+                : capabilities.relay_billing_prebind_owner_deadline_valid
+                  ? t('Blocked')
+                  : t('Invalid config'),
+        },
+        {
+          label: t('Pre-bind owner race proof'),
+          description: t(
+            'Requires deployed direct, AI Gateway, fallback, delayed-bind, Queue replay, and recovery-race evidence; local compilation never satisfies this gate.'
+          ),
+          ready:
+            capabilities.relay_billing_prebind_owner_generation_staging_verified,
+          readyLabel: t('Staging verified'),
+          missingLabel: t('Awaiting staging proof'),
+        },
+        {
+          label: t('Pre-bind owner cutover'),
+          description: t(
+            'Requires all {{count}} generation guards, the exact D1 schema, durable finalization, and staging race proof.',
+            {
+              count:
+                capabilities.relay_billing_prebind_owner_generation_cutover_guards
+                  .length,
+            }
+          ),
+          ready:
+            capabilities.relay_billing_prebind_owner_generation_cutover_ready,
+          readyLabel: t('Cutover-ready'),
+          missingLabel: t('Blocked'),
+        },
+        {
           label: t('Relay streaming lease heartbeat'),
           description: t(
             'Renews selected SSE reservations every {{heartbeat}} seconds while the response stream is active; renewal failures are recorded without interrupting the client stream or changing quota.',
@@ -426,7 +486,7 @@ function buildCapabilityGroups(
             capabilities.relay_billing_stream_lease_renewal_compiled &&
             capabilities.relay_billing_stream_lease_heartbeat_configured &&
             capabilities.relay_billing_stream_lease_heartbeat_valid,
-          readyLabel: t('Compiled'),
+          readyLabel: t('Configured'),
           missingLabel:
             !capabilities.relay_billing_stream_lease_heartbeat_configured
               ? t('Not configured')

@@ -444,6 +444,50 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   }, 30_000);
 
+  it("reports HTTP pre-bind owner fencing without claiming staging cutover", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const { cookie } = await setupAndLoginBillingRoot();
+
+    const response = await SELF.fetch(
+      "https://cinatoken.test/api/platform/capabilities",
+      { headers: { cookie } },
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      success: true,
+      data: {
+        d1_migration_applied_count: 26,
+        d1_expected_migration: "0026_relay_billing_owner_generation.sql",
+        d1_migration_ready: true,
+        relay_billing_prebind_owner_generation_contract_version: 1,
+        relay_billing_prebind_owner_generation_compiled: true,
+        relay_billing_prebind_owner_generation_schema_ready: true,
+        relay_billing_prebind_owner_deadline_configured: true,
+        relay_billing_prebind_owner_deadline_valid: true,
+        relay_billing_prebind_owner_deadline_seconds: 300,
+        relay_billing_prebind_owner_generation_configured: true,
+        relay_billing_prebind_owner_generation_staging_verified: false,
+        relay_billing_prebind_owner_generation_cutover_ready: false,
+        relay_billing_orphan_recovery_ready: false,
+        relay_billing_orphan_recovery_cutover_ready: false,
+      },
+    });
+    expect(
+      payload.data.relay_billing_prebind_owner_generation_cutover_guards,
+    ).toEqual([
+      "migration_0026_applied",
+      "legacy_workers_drained",
+      "active_reservations_drained_before_migration",
+      "prebind_heartbeat",
+      "late_bind_deadline",
+      "owner_generation_cas",
+      "queue_v2_generation",
+      "staging_race_replay",
+    ]);
+  }, 30_000);
+
   it("refunds a bound HTTP reservation exactly once through the billing Queue", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     await seedRealtimeBillingAccount();
@@ -662,6 +706,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
       status: "reserved",
       channel_id: 43,
       selected_group: "default",
+      owner_generation: 2,
     });
     expect(reserved.reservation.pre_consumed_quota).toBeGreaterThan(0);
     expect(reserved.user).toMatchObject({ request_count: 0 });
@@ -672,6 +717,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
       initialLease,
     );
     expect(renewed.reservation.lease_expires_at).toBeGreaterThan(initialLease);
+    expect(renewed.reservation.owner_generation).toBe(2);
     expect(renewed.user).toMatchObject({ request_count: 0 });
 
     const release = await env.REALTIME_PROVIDER_MOCK.fetch(
@@ -686,6 +732,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(settled.reservation).toMatchObject({
       status: "settled",
       request_accounted: 1,
+      owner_generation: 3,
     });
     expect(settled.user.request_count).toBe(1);
     expect(settled.reservation.final_quota).toBeGreaterThan(0);
@@ -1480,16 +1527,25 @@ async function seedRelayBillingReservation({
   const channelId = bound ? 42 : 0;
   const selectedGroup = bound ? "default" : "";
   const selectedAt = bound ? 1 : 0;
+  const ownerGeneration = bound ? 2 : 1;
   await env.DB.prepare(
     `INSERT INTO relay_billing_reservations (
       reservation_key, user_id, token_id, model_name, endpoint_path, expr_hash,
       candidate_group_count, reservation_strategy, pre_consumed_quota,
-      status, channel_id, selected_group, selected_at,
+      status, channel_id, selected_group, selected_at, owner_generation,
+      owner_deadline_at,
       created_at, updated_at, lease_expires_at
     ) VALUES (?1, 1, 1, 'gpt-runtime', 'chat/completions', 'sha256:runtime',
-      1, 'selected_group', 100, 'reserved', ?2, ?3, ?4, 1, 1, ?5)`,
+      1, 'selected_group', 100, 'reserved', ?2, ?3, ?4, ?5, ?6, 1, 1, ?6)`,
   )
-    .bind(reservationKey, channelId, selectedGroup, selectedAt, leaseExpiresAt)
+    .bind(
+      reservationKey,
+      channelId,
+      selectedGroup,
+      selectedAt,
+      ownerGeneration,
+      leaseExpiresAt,
+    )
     .run();
 }
 
@@ -1497,7 +1553,7 @@ async function relayBillingState(reservationKey) {
   const [reservation, user, token] = await Promise.all([
     env.DB.prepare(
       `SELECT status, finalization_reason, request_accounted, refunded_at,
-              recovery_required_at
+              recovery_required_at, owner_generation
        FROM relay_billing_reservations
        WHERE reservation_key = ?1`,
     )
@@ -1569,7 +1625,8 @@ async function waitForRelayBillingReservation(modelName) {
     const [reservation, user] = await Promise.all([
       env.DB.prepare(
         `SELECT reservation_key, status, channel_id, selected_group,
-                pre_consumed_quota, lease_expires_at, request_accounted
+                pre_consumed_quota, lease_expires_at, request_accounted,
+                owner_generation
          FROM relay_billing_reservations
          WHERE model_name = ?1
          ORDER BY created_at DESC
@@ -1595,7 +1652,7 @@ async function waitForRelayLeaseRenewal(reservationKey, previousLease) {
   while (Date.now() < deadline) {
     const [reservation, user] = await Promise.all([
       env.DB.prepare(
-        `SELECT status, lease_expires_at
+        `SELECT status, lease_expires_at, owner_generation
          FROM relay_billing_reservations
          WHERE reservation_key = ?1`,
       )
@@ -1618,7 +1675,8 @@ async function waitForRelaySettlement(reservationKey) {
   while (Date.now() < deadline) {
     const [reservation, user, token, channel, log] = await Promise.all([
       env.DB.prepare(
-        `SELECT status, request_accounted, final_quota, lease_expires_at
+        `SELECT status, request_accounted, final_quota, lease_expires_at,
+                owner_generation
          FROM relay_billing_reservations
          WHERE reservation_key = ?1`,
       )
@@ -1672,7 +1730,7 @@ async function relayBillingFinalizationEvent(reservationKey) {
   const [reservation, log] = await Promise.all([
     env.DB.prepare(
       `SELECT expr_hash, channel_id, selected_group, final_quota,
-              finalization_reason, settled_at
+              finalization_reason, settled_at, owner_generation
        FROM relay_billing_reservations
        WHERE reservation_key = ?1`,
     )
@@ -1697,9 +1755,10 @@ async function relayBillingFinalizationEvent(reservationKey) {
   }
   return {
     event_type: "cinatoken.relay_billing_finalization",
-    schema_version: 1,
+    schema_version: 2,
     event_id: log.billing_finalization_event_id,
     reservation_key: reservationKey,
+    owner_generation: reservation.owner_generation - 1,
     expr_hash: reservation.expr_hash,
     channel_id: reservation.channel_id,
     selected_group: reservation.selected_group,
@@ -1732,9 +1791,10 @@ function relayBillingRefundEvent(reservationKey, finalizedAt) {
   const eventId = `relay-finalization-v1:${reservationKey}`;
   return {
     event_type: "cinatoken.relay_billing_finalization",
-    schema_version: 1,
+    schema_version: 2,
     event_id: eventId,
     reservation_key: reservationKey,
+    owner_generation: 2,
     expr_hash: "sha256:runtime",
     channel_id: 42,
     selected_group: "default",

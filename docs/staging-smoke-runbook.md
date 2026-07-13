@@ -1615,3 +1615,53 @@ queue. Attach lag and oldest-message alerts plus an owner action that completes
 before Cloudflare's four-day DLQ retention. At-least-once delivery means every
 fixture must prove duplicate convergence; an ACK only proves local handling,
 not exactly-once delivery.
+
+## Phase 4f: HTTP Pre-Bind Owner Generation Race
+
+Run only after credential rotation, old-Worker drain, and migration 0026 in an
+isolated staging environment. Keep Queue finalization, reconcile, orphan
+recovery, and every billing staging-proof variable false at deployment time.
+
+Preconditions:
+
+1. Query `relay_billing_reservations` from the frozen old deployment and prove
+   zero `status='reserved'` rows. Migration 0026 must fail if this count is not
+   zero; do not edit around its guard.
+2. Apply the exact 26-file migration set and archive redacted evidence for 30
+   tables, 126 checked incremental columns, 23 indexes, and latest migration
+   `0026_relay_billing_owner_generation.sql`.
+3. Deploy one candidate with explicit reservation deadline and heartbeat
+   values. Require capability state compiled=true, schema-ready=true,
+   configured=true, staging-verified=false, and cutover-ready=false.
+4. Confirm Queue schema v2 is deployed before creating generation-2 events.
+   Legacy v1 messages are drain-only and valid only for owner generation 1.
+
+Execution matrix:
+
+1. Hold provider response headers behind a deterministic barrier. While held,
+   prove pre-bind heartbeats update only lease metadata and preserve generation
+   1, quota, request count, and unbound channel identity.
+2. Release before the original deadline. Exactly one bind CAS selects the
+   channel/group and advances generation 1 to 2. Repeat through direct provider,
+   AI Gateway direct fallback, and model fallback.
+3. Release after the original deadline. Bind fails closed even if a heartbeat
+   recently renewed the observation lease. No provider response is accepted
+   under an expired owner deadline.
+4. Inject ambiguous D1 responses after reserve and bind commits. Exact readback
+   may accept only the identical frozen reservation or selection. Any changed
+   field, generation, deadline, channel, or group is a conflict.
+5. Race settlement/refund, Queue duplicate delivery, and scheduled recovery.
+   The winner advances generation once; losers perform no accounting or audit
+   mutation.
+6. Prove settlement is legal at `lease_expires_at + 300` and recovery is not.
+   At `lease_expires_at + 301`, recovery may win and late settlement/bind is
+   rejected.
+7. Interrupt and redeploy during every phase, then rehearse Go/VPS rollback.
+   Disable recovery and reconcile first, stop Rust admission, drain Queue and
+   ledger ownership, and preserve the highest generation.
+
+Archive hashes and bounded metadata only: candidate SHA, capability response,
+reservation fingerprint, generation transitions, timestamps, Queue attempts,
+provider-call count, accounting before/after, audit identity, and rollback.
+Any raw credential, mutable-price replay, generation reuse, double mutation,
+pending row, or second provider call is an abort.

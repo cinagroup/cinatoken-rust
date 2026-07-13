@@ -426,6 +426,31 @@ correlation, query-budget measurement, alerts, provider/billing reconciliation,
 credential rotation, canary, and rollback remain blockers. Production remains
 **NO-GO**.
 
+## 2026-07-14 HTTP Pre-Bind Owner Generation Status
+
+Migration 0026 adds the missing ordinary-HTTP pre-bind ownership fence. A new
+tiered reservation starts at owner generation 1. Direct provider, AI Gateway,
+and model-fallback waits renew only that unbound owner lease. A timely selected
+bind advances to generation 2; settlement, refund, or recovery advances once
+more, so delayed responses and stale Queue deliveries cannot mutate the new
+owner.
+
+Reserve and bind ambiguity use exact frozen-state readback. Bind cannot cross
+the original owner deadline, and final recovery repeats its grace predicate in
+the CAS: settlement is legal through L+300 and recovery starts at L+301. Queue
+schema v2 freezes owner generation; v1 is generation-1 drain compatibility.
+Migration 0026 refuses to run while an old `reserved` row exists.
+
+The local chain verifies as 26 migrations, 30 tables, 126 checked incremental
+columns, and 23 indexes. Rust, Wasm, frontend, and capability tests distinguish
+compiled, configured, staging proof, and cutover. Staging proof remains false,
+so scheduled HTTP recovery and production cutover remain false.
+
+Credential rotation, isolated remote migration, delayed-header and D1 ambiguity
+fault replay, Queue v2 drain, direct/Gateway/WFP accounting, alerting, rollback,
+and G1-G8 approval remain required. Go/VPS stays authoritative and production
+remains **NO-GO**.
+
 ## 2026-07-13 Ordinary Relay Billing Reservation Status
 
 Migration 0023 now gives positive HTTP tiered pre-consumption an atomic D1

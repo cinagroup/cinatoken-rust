@@ -61,7 +61,9 @@ use crate::relay::{
     relay_billing_finalization_reconcile_ready, relay_billing_finalization_replay_compiled,
     relay_billing_finalization_runtime_contract_ready,
     relay_billing_missing_usage_estimate_enabled, relay_billing_orphan_recovery_enabled,
-    relay_billing_orphan_sweep_limit, relay_billing_reservation_lease_seconds,
+    relay_billing_orphan_sweep_limit, relay_billing_prebind_owner_generation_compiled,
+    relay_billing_prebind_owner_generation_staging_verified,
+    relay_billing_reservation_lease_runtime_status, relay_billing_reservation_lease_seconds,
     relay_billing_reservation_ledger_compiled, relay_billing_stream_error_usage_recovery_compiled,
     relay_billing_stream_lease_heartbeat_runtime_status,
     relay_billing_stream_lease_renewal_compiled, relay_model_fallback_contract_compiled,
@@ -69,6 +71,7 @@ use crate::relay::{
     relay_terminal_attempt_audit_contract_compiled,
     relay_wfp_authority_transport_contract_compiled,
     RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV,
+    RELAY_BILLING_PREBIND_OWNER_GENERATION_CONTRACT_VERSION,
     RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV,
     RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV,
     RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
@@ -135,7 +138,17 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0025_relay_billing_finalization_incidents.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0026_relay_billing_owner_generation.sql";
+const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
+    "migration_0026_applied",
+    "legacy_workers_drained",
+    "active_reservations_drained_before_migration",
+    "prebind_heartbeat",
+    "late_bind_deadline",
+    "owner_generation_cas",
+    "queue_v2_generation",
+    "staging_race_replay",
+];
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -162,6 +175,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0023_relay_billing_reservations.sql",
     "0024_relay_billing_finalization_events.sql",
     "0025_relay_billing_finalization_incidents.sql",
+    "0026_relay_billing_owner_generation.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -314,6 +328,16 @@ struct PlatformCapabilities {
     relay_billing_reservation_ledger_compiled: bool,
     relay_billing_ledger_status_compiled: bool,
     relay_billing_reservation_lease_seconds: i64,
+    relay_billing_prebind_owner_generation_contract_version: u32,
+    relay_billing_prebind_owner_generation_compiled: bool,
+    relay_billing_prebind_owner_generation_schema_ready: bool,
+    relay_billing_prebind_owner_deadline_configured: bool,
+    relay_billing_prebind_owner_deadline_valid: bool,
+    relay_billing_prebind_owner_deadline_seconds: i64,
+    relay_billing_prebind_owner_generation_configured: bool,
+    relay_billing_prebind_owner_generation_staging_verified: bool,
+    relay_billing_prebind_owner_generation_cutover_ready: bool,
+    relay_billing_prebind_owner_generation_cutover_guards: Vec<&'static str>,
     relay_billing_stream_lease_renewal_compiled: bool,
     relay_billing_stream_lease_heartbeat_configured: bool,
     relay_billing_stream_lease_heartbeat_valid: bool,
@@ -575,7 +599,20 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
     let relay_billing_reservation_ledger_compiled = relay_billing_reservation_ledger_compiled();
     let relay_billing_ledger_status_compiled = true;
+    let relay_billing_owner_deadline_runtime = relay_billing_reservation_lease_runtime_status(&env);
     let relay_billing_reservation_lease_seconds = relay_billing_reservation_lease_seconds(&env);
+    let relay_billing_prebind_owner_generation_contract_version =
+        RELAY_BILLING_PREBIND_OWNER_GENERATION_CONTRACT_VERSION;
+    let relay_billing_prebind_owner_generation_compiled =
+        relay_billing_prebind_owner_generation_compiled();
+    let relay_billing_prebind_owner_generation_schema_ready = d1_migration_ready;
+    let relay_billing_prebind_owner_deadline_configured =
+        relay_billing_owner_deadline_runtime.configured;
+    let relay_billing_prebind_owner_deadline_valid = relay_billing_owner_deadline_runtime.valid;
+    let relay_billing_prebind_owner_deadline_seconds =
+        relay_billing_owner_deadline_runtime.effective_seconds;
+    let relay_billing_prebind_owner_generation_staging_verified =
+        relay_billing_prebind_owner_generation_staging_verified(&env);
     let relay_billing_stream_lease_renewal_compiled = relay_billing_stream_lease_renewal_compiled();
     let relay_billing_stream_lease_heartbeat_runtime =
         relay_billing_stream_lease_heartbeat_runtime_status(&env);
@@ -585,6 +622,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_billing_stream_lease_heartbeat_runtime.valid;
     let relay_billing_stream_lease_heartbeat_seconds =
         relay_billing_stream_lease_heartbeat_runtime.effective_seconds;
+    let relay_billing_prebind_owner_generation_configured =
+        relay_billing_prebind_owner_generation_compiled
+            && relay_billing_prebind_owner_generation_schema_ready
+            && relay_billing_prebind_owner_deadline_configured
+            && relay_billing_prebind_owner_deadline_valid
+            && relay_billing_stream_lease_heartbeat_configured
+            && relay_billing_stream_lease_heartbeat_valid;
     let relay_billing_stream_lease_renewal_staging_verified = env_flag(
         &env,
         RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV,
@@ -625,9 +669,15 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         );
     let relay_billing_finalization_replay_staging_verified =
         env_flag(&env, RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV);
+    let relay_billing_prebind_owner_generation_cutover_ready =
+        relay_billing_prebind_owner_generation_configured
+            && relay_billing_prebind_owner_generation_staging_verified
+            && relay_billing_finalization_runtime_ready;
     let relay_billing_orphan_recovery_enabled = relay_billing_orphan_recovery_enabled(&env);
     let relay_billing_orphan_recovery_ready = relay_billing_reservation_ledger_compiled
         && relay_billing_stream_lease_renewal_compiled
+        && relay_billing_prebind_owner_generation_configured
+        && relay_billing_prebind_owner_generation_staging_verified
         && relay_billing_stream_error_usage_recovery_compiled
         && relay_billing_stream_lease_heartbeat_configured
         && relay_billing_stream_lease_heartbeat_valid
@@ -641,6 +691,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             relay_billing_stream_error_usage_recovery_staging_verified,
             relay_billing_finalization_runtime_ready,
             relay_billing_finalization_replay_staging_verified,
+            relay_billing_prebind_owner_generation_cutover_ready,
         );
     let relay_billing_orphan_recovery_grace_seconds =
         crate::d1_repositories::RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS;
@@ -950,6 +1001,17 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_billing_reservation_ledger_compiled,
         relay_billing_ledger_status_compiled,
         relay_billing_reservation_lease_seconds,
+        relay_billing_prebind_owner_generation_contract_version,
+        relay_billing_prebind_owner_generation_compiled,
+        relay_billing_prebind_owner_generation_schema_ready,
+        relay_billing_prebind_owner_deadline_configured,
+        relay_billing_prebind_owner_deadline_valid,
+        relay_billing_prebind_owner_deadline_seconds,
+        relay_billing_prebind_owner_generation_configured,
+        relay_billing_prebind_owner_generation_staging_verified,
+        relay_billing_prebind_owner_generation_cutover_ready,
+        relay_billing_prebind_owner_generation_cutover_guards:
+            RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS.to_vec(),
         relay_billing_stream_lease_renewal_compiled,
         relay_billing_stream_lease_heartbeat_configured,
         relay_billing_stream_lease_heartbeat_valid,
@@ -2779,12 +2841,14 @@ fn is_relay_billing_orphan_recovery_cutover_ready(
     stream_error_usage_recovery_staging_verified: bool,
     finalization_runtime_ready: bool,
     finalization_replay_staging_verified: bool,
+    prebind_owner_generation_cutover_ready: bool,
 ) -> bool {
     ready
         && lease_renewal_staging_verified
         && stream_error_usage_recovery_staging_verified
         && finalization_runtime_ready
         && finalization_replay_staging_verified
+        && prebind_owner_generation_cutover_ready
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3251,14 +3315,14 @@ mod tests {
     #[test]
     fn relay_billing_recovery_cutover_requires_stream_and_durable_replay_proofs() {
         assert!(is_relay_billing_orphan_recovery_cutover_ready(
-            true, true, true, true, true
+            true, true, true, true, true, true
         ));
-        for false_gate in 0..5 {
-            let mut flags = [true; 5];
+        for false_gate in 0..6 {
+            let mut flags = [true; 6];
             flags[false_gate] = false;
             assert!(
                 !is_relay_billing_orphan_recovery_cutover_ready(
-                    flags[0], flags[1], flags[2], flags[3], flags[4]
+                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5]
                 ),
                 "expected relay billing recovery cutover to wait on gate index {false_gate}"
             );
@@ -3569,7 +3633,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0025_relay_billing_finalization_incidents.sql"
+            "0026_relay_billing_owner_generation.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -3606,6 +3670,10 @@ mod tests {
         assert!(relay_incidents.contains("CREATE TABLE relay_billing_finalization_incidents"));
         assert!(relay_incidents.contains("replay_generation"));
         assert!(relay_incidents.contains("idx_relay_billing_finalization_incidents_event"));
+        let relay_owner_generation =
+            include_str!("../../../migrations/d1/0026_relay_billing_owner_generation.sql");
+        assert!(relay_owner_generation.contains("CHECK (active_count = 0)"));
+        assert!(relay_owner_generation.contains("ADD COLUMN owner_generation"));
     }
 
     #[test]

@@ -2443,6 +2443,27 @@ fn resolve_user_usable_groups_from_options(
     cinatoken_core::groups::user_usable_groups(user_group, &base, &special)
 }
 
+/// Resolve every group a user may select, including the user's own group and
+/// any per-user-group `+:`/`-:` overrides from the canonical Go options.
+pub async fn resolve_user_usable_groups(
+    db: &D1Database,
+    user_group: &str,
+) -> worker::Result<HashMap<String, String>> {
+    let values = option_values(
+        db,
+        &[
+            USER_USABLE_GROUPS_OPTION_KEY,
+            GROUP_SPECIAL_USABLE_GROUP_OPTION_KEY,
+        ],
+    )
+    .await?;
+    Ok(resolve_user_usable_groups_from_options(
+        user_group,
+        values[0].as_deref(),
+        values[1].as_deref(),
+    ))
+}
+
 /// Return whether `target_group` is usable for a user in `user_group`, mirroring
 /// Go `service.GroupInUserUsableGroups` over D1-backed options.
 pub async fn user_can_use_group(
@@ -2454,19 +2475,7 @@ pub async fn user_can_use_group(
     if target_group.is_empty() {
         return Ok(false);
     }
-    let values = option_values(
-        db,
-        &[
-            USER_USABLE_GROUPS_OPTION_KEY,
-            GROUP_SPECIAL_USABLE_GROUP_OPTION_KEY,
-        ],
-    )
-    .await?;
-    let usable = resolve_user_usable_groups_from_options(
-        user_group,
-        values[0].as_deref(),
-        values[1].as_deref(),
-    );
+    let usable = resolve_user_usable_groups(db, user_group).await?;
     Ok(usable.contains_key(target_group))
 }
 
@@ -6735,6 +6744,60 @@ pub async fn distinct_enabled_models_for_group(
     .map(|rows| rows.into_iter().map(|row| row.model).collect())
 }
 
+const DISTINCT_CHAT_MODELS_SQL: &str = r#"
+    WITH requested_groups(group_name) AS (
+        SELECT CAST(value AS TEXT) FROM json_each(?1)
+    ),
+    requested_channel_types(channel_type) AS (
+        SELECT CAST(value AS INTEGER) FROM json_each(?2)
+    )
+    SELECT DISTINCT a.model
+    FROM abilities AS a
+    INNER JOIN channels AS c ON c.id = a.channel_id
+    INNER JOIN requested_groups AS rg ON rg.group_name = a.group_name
+    INNER JOIN requested_channel_types AS rt ON rt.channel_type = c.type
+    WHERE a.enabled = 1
+      AND c.status = 1
+      AND TRIM(a.model) != ''
+    ORDER BY a.model
+"#;
+
+/// Distinct models that are usable through at least one enabled channel whose
+/// adapter supports the requested route family. The caller supplies channel
+/// types from the static provider capability registry, while every value is
+/// still D1-bound rather than interpolated into SQL.
+pub async fn distinct_enabled_models_for_groups_and_channel_types(
+    db: &D1Database,
+    groups: &[String],
+    channel_types: &[i32],
+) -> worker::Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct ModelRow {
+        model: String,
+    }
+
+    if groups.is_empty() || channel_types.is_empty() {
+        return Ok(Vec::new());
+    }
+    let groups_json = serde_json::to_string(groups).map_err(|err| {
+        worker::Error::RustError(format!("failed to encode usable groups for D1: {err}"))
+    })?;
+    let channel_types_json = serde_json::to_string(channel_types).map_err(|err| {
+        worker::Error::RustError(format!("failed to encode channel types for D1: {err}"))
+    })?;
+    let args = [
+        D1Type::Text(&groups_json),
+        D1Type::Text(&channel_types_json),
+    ];
+
+    db.prepare(DISTINCT_CHAT_MODELS_SQL)
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<ModelRow>()
+        .map(|rows| rows.into_iter().map(|row| row.model).collect())
+}
+
 /// Read a user's `setting` JSON blob (Go `User.Setting`). `None` when the user
 /// does not exist / is soft-deleted; the column itself defaults to `{}`.
 pub async fn get_user_setting(db: &D1Database, id: i64) -> worker::Result<Option<String>> {
@@ -10132,6 +10195,19 @@ mod tests {
         assert!(fallback.contains_key("default"));
         assert!(fallback.contains_key("vip"));
         assert!(fallback.contains_key("other"));
+    }
+
+    #[test]
+    fn chat_model_discovery_query_is_joined_filtered_and_parameterized() {
+        let sql = DISTINCT_CHAT_MODELS_SQL;
+        assert!(sql.contains("INNER JOIN channels AS c ON c.id = a.channel_id"));
+        assert!(sql.contains("json_each(?1)"));
+        assert!(sql.contains("json_each(?2)"));
+        assert!(sql.contains("a.enabled = 1"));
+        assert!(sql.contains("c.status = 1"));
+        assert!(sql.contains("rg.group_name = a.group_name"));
+        assert!(sql.contains("rt.channel_type = c.type"));
+        assert!(sql.contains("TRIM(a.model) != ''"));
     }
 
     #[test]

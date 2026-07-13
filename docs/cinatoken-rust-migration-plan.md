@@ -10795,3 +10795,48 @@ no Custom Domain, `workers.dev` hostname, or Preview URL before any paid WFP
 canary. Remote namespace attachment, outbound-only secret ownership, tenant
 readback, provider egress, central settlement/audit, route inventory, and
 rollback remain unverified. Production remains **NO-GO**.
+
+### 22.176 2026-07-13 User-Specific Playground Readiness
+
+This increment opens the imported frontend Playground only after closing the
+selector mismatch that could advertise groups or models the chat relay could
+not actually serve. It preserves the source gateway's user-group override
+semantics while using the Rust provider capability registry as the route
+authority.
+
+Implemented locally:
+
+- `GET /api/user/self/groups` now loads the live session user group, resolves
+  `UserUsableGroups` plus canonical special `+:`/`-:` rules, always includes the
+  user's own group, and applies `GroupGroupRatio[user_group][using_group]`
+  before ordinary group ratios. The anonymous `/api/user/groups` contract
+  remains the global/default view.
+- `GET /api/user/models` resolves the same user-specific group set and performs
+  one parameterized D1 query across `abilities` and `channels`. It returns only
+  non-empty enabled abilities attached to enabled channel types that the static
+  Rust provider registry marks as supporting Chat Completions. This avoids a D1
+  query waterfall and prevents task-only, deferred, disabled, or orphaned
+  channels from appearing in the Playground selector.
+- `SidebarModulesAdmin.chat.playground` is enabled by default and preserves an
+  administrator's explicit false value. The existing authenticated route guard,
+  navigation item, and Playground UI require no forked frontend implementation.
+- A dedicated Workerd Vitest configuration runs the complete release Rust
+  Worker with the canonical D1 migration chain and a controlled outbound
+  provider. It proves setup/login, default capability status, user-specific
+  groups and ratios, chat-only model discovery, denied group override,
+  non-stream and SSE forwarding, local-field stripping, quota debit, request
+  counts, and consumption audit rows. The test is part of `bun run check`.
+
+Local evidence:
+
+- `cargo test -p cinatoken-worker --lib`: 612/612 passed.
+- `bun run test:playground-runtime`: 1/1 complete-Worker Workerd test passed.
+- The runtime fixture prices both test models, so the successful JSON and SSE
+  requests prove billing mutation rather than only free/unresolved auditing.
+
+Production remains fail-closed. After the exposed credential is revoked and
+replaced with a least-privilege token, isolated staging must still archive a
+real browser interaction, synthetic token-table non-mutation, channel quota
+reconciliation, native rate-limit scoping, logout/disabled/quota-exhausted
+negative cases, deploy readback, credential-redaction checks, and rollback.
+This local capability increment does not change production **NO-GO**.

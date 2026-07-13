@@ -147,6 +147,13 @@ usage-log read APIs now exist, but navigation remains conservative until
 authenticated browser smoke and the remaining task content/proxy routes are
 proven.
 
+Current-status note (2026-07-13): this paragraph records the 2026-07-02 audit
+boundary. Playground has since gained user-specific group/ratio selectors,
+chat-capability model filtering, and complete-Worker Workerd JSON/SSE evidence,
+so `chat.playground` is now configuration-controlled and enabled by default.
+Wallet/top-up, subscriptions, io.net deployments, task, and Midjourney retain
+their separately documented gates.
+
 ### 2026-07-03 Frontend Contract Delta
 
 An AST-based audit now compares the default frontend's 212 distinct API calls

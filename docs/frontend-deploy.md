@@ -84,9 +84,11 @@ meaning: `true` means initialization is complete.
 
 Until all API families are migrated, the status response clamps
 `HeaderNavModules` and `SidebarModulesAdmin` so unsupported pages are not
-advertised:
+advertised. Playground is now advertised by default because its session-backed
+relay, user-specific selector APIs, and JSON/SSE runtime contract are locally
+verified; an administrator can still disable `chat.playground` explicitly.
+The remaining hidden families are:
 
-- playground;
 - remaining product families not yet owned by Rust; payment provider checkout
   and callback routes used by the default frontend are Worker-owned when their
   provider config is complete;
@@ -94,8 +96,8 @@ advertised:
 - subscriptions;
 - io.net model deployments.
 
-This is a temporary product boundary. It does not replace route migration or
-direct-URL error handling.
+This is a temporary product boundary. It does not replace route migration,
+authenticated staging smoke, or direct-URL error handling.
 
 ## Automated Contract Audit
 

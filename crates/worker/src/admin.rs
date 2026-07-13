@@ -1257,7 +1257,7 @@ fn capability_clamped_sidebar(raw: Option<&str>) -> String {
     serde_json::json!({
         "chat": {
             "enabled": configured_sidebar_bool(configured, "chat", "enabled", true),
-            "playground": false,
+            "playground": configured_sidebar_bool(configured, "chat", "playground", true),
             "chat": configured_sidebar_bool(configured, "chat", "chat", true)
         },
         "console": {
@@ -1654,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_status_never_reenables_unported_modules() {
+    fn sidebar_status_preserves_playground_and_hides_unported_modules() {
         let raw = serde_json::json!({
             "chat": {"enabled": true, "playground": true, "chat": false},
             "console": {
@@ -1682,12 +1682,21 @@ mod tests {
         assert_eq!(clamped["chat"]["chat"], false);
         assert_eq!(clamped["console"]["detail"], false);
         assert_eq!(clamped["console"]["token"], true);
-        assert_eq!(clamped["chat"]["playground"], false);
+        assert_eq!(clamped["chat"]["playground"], true);
         assert_eq!(clamped["console"]["midjourney"], false);
         assert_eq!(clamped["console"]["task"], false);
         assert_eq!(clamped["personal"]["topup"], false);
         assert_eq!(clamped["admin"]["redemption"], true);
         assert_eq!(clamped["admin"]["subscription"], false);
+
+        let disabled: Value = serde_json::from_str(&capability_clamped_sidebar(Some(
+            &serde_json::json!({"chat": {"playground": false}}).to_string(),
+        )))
+        .unwrap();
+        assert_eq!(disabled["chat"]["playground"], false);
+
+        let defaults: Value = serde_json::from_str(&capability_clamped_sidebar(None)).unwrap();
+        assert_eq!(defaults["chat"]["playground"], true);
     }
 
     #[test]

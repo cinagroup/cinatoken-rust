@@ -17,6 +17,7 @@ const spaRoutes = [
   "/setup",
   "/sign-in",
   "/dashboard",
+  "/playground",
   "/keys",
   "/channels",
   "/users",
@@ -109,7 +110,6 @@ const sidebar = parseJsonOption(
   "SidebarModulesAdmin",
 );
 for (const [section, module] of [
-  ["chat", "playground"],
   ["console", "midjourney"],
   ["console", "task"],
   ["personal", "topup"],
@@ -121,12 +121,16 @@ for (const [section, module] of [
   );
 }
 assert(
+  sidebar.chat?.playground === true,
+  "chat.playground must be available by default",
+);
+assert(
   status.data.enable_deployments === false,
   "io.net deployments must remain capability-hidden",
 );
 passed(
   "status capability contract",
-  `${status.data.environment}: rankings available; unsupported modules hidden`,
+  `${status.data.environment}: playground and rankings available; unsupported modules hidden`,
 );
 
 const setup = await jsonEnvelope("/api/setup");

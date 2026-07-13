@@ -52,6 +52,12 @@ implementation readiness only for the covered behavior.
 - Session-backed playground chat relay at `POST /pg/chat/completions`, using a
   synthetic zero-id token context that preserves user quota, group checks, rate
   limits, streaming, and audit logging without mutating the `tokens` table.
+  The selector APIs now apply per-user `+:`/`-:` usable-group rules and
+  `GroupGroupRatio` overrides, and model discovery returns only enabled models
+  backed by an enabled channel whose migrated adapter supports Chat
+  Completions. The default frontend Playground entry is configuration
+  controlled and locally verified against the complete Rust Worker under
+  Workerd; remote authenticated staging evidence remains open.
 - Session auth, registration, core user self-service, 2FA,
   GitHub/Discord/OIDC with browser-bound state, Turnstile, secure
   verification, and live D1 role/status/group rechecks before

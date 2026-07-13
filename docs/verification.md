@@ -3582,3 +3582,28 @@ authenticated frontend, and rollback evidence.
   are local E3 evidence only: migration 0022 has not been applied remotely, no
   provider or authenticated public reserve path was used, and no production
   credential was used. Production remains **NO-GO**.
+
+## 2026-07-13 User-Specific Playground Runtime Evidence
+
+- `GET /api/user/self/groups` now resolves the live user's own and special
+  usable groups and applies per-user `GroupGroupRatio` overrides; the public
+  groups endpoint remains the global/default view.
+- `GET /api/user/models` uses one parameterized abilities/channels query and
+  excludes disabled channels and channel types without Chat Completions
+  capability according to the Rust provider registry.
+- `SidebarModulesAdmin.chat.playground` defaults to true while preserving an
+  operator's explicit false value. The frontend contract includes the
+  authenticated `/playground` SPA route.
+- `cargo test -p cinatoken-worker --lib` passes 612/612, including the new SQL
+  parameterization/filter and capability-clamp tests.
+- `bun run test:playground-runtime` passes 1/1 against the complete release
+  Rust Worker in Workerd with the canonical D1 migrations and a controlled
+  provider. It proves setup/login, status advertisement, user-specific group
+  and ratio responses, chat-only model discovery, denied group override,
+  non-stream and SSE forwarding, upstream `group` stripping, user quota debit,
+  two request-count increments, and two consumption-audit rows.
+- This is local evidence. Isolated staging still requires browser interaction,
+  synthetic token-table non-mutation, channel quota reconciliation, native
+  rate-limit scoping, logout/disabled/quota-exhausted negatives, deploy
+  readback, credential-redaction checks, and rollback. Production remains
+  **NO-GO**.

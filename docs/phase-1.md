@@ -720,11 +720,14 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   source count/hash, remote D1 import, real imported-authenticator login,
   TOTP/backup-code verification, replay/session-isolation, eviction/alarm,
   forced-reset fallback, and rollback evidence.
-- Capture logged-in playground chat completion staging evidence for
-  `POST /pg/chat/completions`: non-stream and stream success, group
-  override allow/deny, user quota debit, channel quota/audit rows, token-table
-  non-mutation for the synthetic playground token, and logout/disabled/quota
-  negative cases.
+- Promote the locally verified Playground contract to isolated staging after
+  credential rotation. The complete Rust Worker Workerd test now proves login,
+  default capability advertisement, user-specific `+:`/`-:` group resolution,
+  `GroupGroupRatio` overrides, chat-capable enabled-model filtering, denied
+  group override, non-stream and SSE success, user quota debit, request counts,
+  and consumption audits. Staging must still archive token-table non-mutation,
+  channel quota reconciliation, native rate-limit scoping, logout/disabled/
+  quota-exhausted negatives, frontend browser interaction, and rollback.
 
 ## 2026-07-13 Realtime Global Recovery Increment
 

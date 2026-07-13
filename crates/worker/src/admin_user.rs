@@ -19,6 +19,7 @@ use cinatoken_auth::{
     hash_password, is_root, outranks, verify_password, ROLE_ADMIN_USER, ROLE_COMMON_USER,
     ROLE_ROOT_USER, USER_STATUS_DISABLED, USER_STATUS_ENABLED,
 };
+use cinatoken_providers::{channel_types_for_relay_route, ProviderRelayRoute};
 use cinatoken_session::build_clear_cookie_value;
 use serde::{Deserialize, Serialize};
 use worker::{Env, Request, Response, Result as WorkerResult};
@@ -1106,11 +1107,7 @@ async fn configured_group_ratios(
     Ok(parse_group_ratios(ratio_option.as_deref()))
 }
 
-/// Shared GetUserGroups body. `user_group` only feeds the per-user-group ratio
-/// overrides / special usable-group `+:`/`-:` rules, both deferred (their Go
-/// defaults are example placeholders), so the default-config result is identical
-/// for the self and public variants.
-async fn user_groups_response(env: &Env) -> WorkerResult<Response> {
+async fn public_user_groups_response(env: &Env) -> WorkerResult<Response> {
     let db = env.d1("DB")?;
     let usable = parse_usable_groups(
         d1_repositories::get_option(&db, "UserUsableGroups")
@@ -1133,39 +1130,50 @@ pub async fn get_groups(req: Request, env: Env) -> WorkerResult<Response> {
 
 /// `GET /api/user/self/groups`: usable groups for the logged-in user.
 pub async fn get_self_groups(req: Request, env: Env) -> WorkerResult<Response> {
-    if let Err(response) = require_user_auth(&req, &env).await? {
-        return Ok(response);
-    }
-    user_groups_response(&env).await
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let user_group = claims.group;
+    let usable = d1_repositories::resolve_user_usable_groups(&db, &user_group).await?;
+    let mut groups = usable
+        .keys()
+        .filter(|group| group.as_str() != "auto")
+        .cloned()
+        .collect::<Vec<_>>();
+    groups.sort();
+    let ratios =
+        d1_repositories::group_ratios_for_user_and_groups(&db, &user_group, &groups).await?;
+    Ok(envelope_ok_response(&build_user_groups(&usable, &ratios))?)
 }
 
 /// `GET /api/user/groups`: usable groups (public; anonymous callers see the
 /// default-config groups).
 pub async fn get_public_groups(_req: Request, env: Env) -> WorkerResult<Response> {
-    user_groups_response(&env).await
+    public_user_groups_response(&env).await
 }
 
 /// `GET /api/user/models`: the distinct enabled models available across the
-/// caller's usable groups (Go `GetUserModels`). Uses the default-config usable
-/// groups (per-user-group special rules deferred, as in GetUserGroups).
+/// caller's usable groups (Go `GetUserModels`), narrowed to enabled channels
+/// whose migrated adapter supports Playground's Chat Completions route.
 pub async fn get_self_models(req: Request, env: Env) -> WorkerResult<Response> {
-    if let Err(response) = require_user_auth(&req, &env).await? {
-        return Ok(response);
-    }
+    let claims = match require_user_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
     let db = env.d1("DB")?;
-    let usable = parse_usable_groups(
-        d1_repositories::get_option(&db, "UserUsableGroups")
-            .await?
-            .as_deref(),
-    );
-    let mut models: Vec<String> = Vec::new();
-    for group in usable.keys() {
-        for model in d1_repositories::distinct_enabled_models_for_group(&db, group).await? {
-            if !models.contains(&model) {
-                models.push(model);
-            }
-        }
-    }
+    let user_group = claims.group;
+    let usable = d1_repositories::resolve_user_usable_groups(&db, &user_group).await?;
+    let mut groups = usable.keys().cloned().collect::<Vec<_>>();
+    groups.sort();
+    let chat_channel_types = channel_types_for_relay_route(ProviderRelayRoute::ChatCompletions);
+    let models = d1_repositories::distinct_enabled_models_for_groups_and_channel_types(
+        &db,
+        &groups,
+        &chat_channel_types,
+    )
+    .await?;
     Ok(envelope_ok_response(&models)?)
 }
 

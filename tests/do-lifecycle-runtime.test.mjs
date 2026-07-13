@@ -349,6 +349,58 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   }, 30_000);
 
+  it("refunds an expired unbound HTTP reservation exactly once", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount();
+    const reservationKey = "relayreserve-runtime-unbound-expired";
+    const now = Math.floor(Date.now() / 1000);
+    await seedRelayBillingReservation({
+      reservationKey,
+      leaseExpiresAt: now - 301,
+    });
+
+    await Promise.all([runScheduledRecovery(), runScheduledRecovery()]);
+    await expect(relayBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: {
+        status: "refunded",
+        finalization_reason: "recovery_expired",
+        request_accounted: 0,
+      },
+      user: { quota: 1_000, request_count: 0 },
+      token: { remain_quota: 500, used_quota: 0 },
+    });
+
+    await runScheduledRecovery();
+    await expect(relayBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: { status: "refunded", request_accounted: 0 },
+      user: { quota: 1_000, request_count: 0 },
+      token: { remain_quota: 500, used_quota: 0 },
+    });
+  }, 30_000);
+
+  it("quarantines an expired bound HTTP reservation without refunding it", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await seedRealtimeBillingAccount();
+    const reservationKey = "relayreserve-runtime-bound-expired";
+    const now = Math.floor(Date.now() / 1000);
+    await seedRelayBillingReservation({
+      reservationKey,
+      leaseExpiresAt: now - 301,
+      bound: true,
+    });
+
+    await Promise.all([runScheduledRecovery(), runScheduledRecovery()]);
+    await expect(relayBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: {
+        status: "recovery_required",
+        finalization_reason: "bound_usage_missing",
+        request_accounted: 0,
+      },
+      user: { quota: 900, request_count: 0 },
+      token: { remain_quota: 400, used_quota: 100 },
+    });
+  }, 30_000);
+
   it("rejects tampered authority and a non-canonical replay shard", async () => {
     const authority = await signedAuthority({ requestId: "runtime-negative" });
     const canonical = replayStub(authority.issuedAt);
@@ -783,6 +835,41 @@ async function seedRealtimeReservation({
   )
     .bind(reservationKey, session, bridgeSegment, leaseExpiresAt)
     .run();
+}
+
+async function seedRelayBillingReservation({ reservationKey, leaseExpiresAt, bound = false }) {
+  const channelId = bound ? 42 : 0;
+  const selectedGroup = bound ? "default" : "";
+  const selectedAt = bound ? 1 : 0;
+  await env.DB.prepare(
+    `INSERT INTO relay_billing_reservations (
+      reservation_key, user_id, token_id, model_name, endpoint_path,
+      candidate_group_count, reservation_strategy, pre_consumed_quota,
+      status, channel_id, selected_group, selected_at,
+      created_at, updated_at, lease_expires_at
+    ) VALUES (?1, 1, 1, 'gpt-runtime', 'chat/completions',
+      1, 'selected_group', 100, 'reserved', ?2, ?3, ?4, 1, 1, ?5)`,
+  )
+    .bind(reservationKey, channelId, selectedGroup, selectedAt, leaseExpiresAt)
+    .run();
+}
+
+async function relayBillingState(reservationKey) {
+  const [reservation, user, token] = await Promise.all([
+    env.DB.prepare(
+      `SELECT status, finalization_reason, request_accounted, refunded_at,
+              recovery_required_at
+       FROM relay_billing_reservations
+       WHERE reservation_key = ?1`,
+    )
+      .bind(reservationKey)
+      .first(),
+    env.DB.prepare("SELECT quota, request_count FROM users WHERE id = 1").first(),
+    env.DB.prepare(
+      "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+    ).first(),
+  ]);
+  return { reservation, user, token };
 }
 
 async function realtimeBillingState(reservationKey) {

@@ -809,3 +809,27 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   channel types. Production remains **NO-GO** until rotated-credential staging
   proves TC3 acceptance, skew/error behavior, usage and billing reconciliation,
   disable/recovery, canary, and Go rollback.
+
+## 2026-07-13 Ordinary Relay Durable Billing Increment
+
+- Added migration 0023 with an ordinary HTTP relay reservation ledger and
+  aggregate recovery state. The verified local chain is now 23 migrations, 29
+  required tables, 105 incremental columns, and 20 key indexes.
+- Positive tiered pre-consumption now inserts its reservation row and debits
+  user/token quota in one D1 batch. Selected channel/group binding extends the
+  lease before fallible response-header processing.
+- Settlement and refund are status-CAS D1 batches. Matching replays are no-ops;
+  conflicting finalization and settle-vs-refund race winners are distinct.
+- Buffered tiered responses attempt settlement synchronously. Streaming usage
+  remains a `waitUntil` branch; after lease expiry plus a 300-second grace, the
+  default-off cron refunds only unbound reservations and moves bound rows with
+  missing final usage to `recovery_required` without changing quota.
+- Admin capabilities and the frontend Cloudflare panel expose ledger compiled,
+  lease, recovery gate/readiness, grace, and sweep-limit state. The admin-only,
+  `no-store` ledger status endpoint exposes only hashed identities and bounded
+  recovery metadata. Audit metadata carries the random reservation key and
+  final ledger outcome for correlation.
+- This is local E3 evidence, not production approval. Migration 0023, cron
+  delivery, long-stream lease bounds, accounting reconciliation, alerting,
+  fault injection, and rollback remain staging requirements. See
+  `docs/relay-billing-reservations.md`.

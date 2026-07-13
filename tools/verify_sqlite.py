@@ -32,6 +32,8 @@ REQUIRED_TABLES = [
     "realtime_settlement_replays",
     "realtime_billing_reservations",
     "realtime_billing_recovery_state",
+    "relay_billing_reservations",
+    "relay_billing_recovery_state",
 ]
 
 REQUIRED_COLUMNS = {
@@ -113,6 +115,46 @@ REQUIRED_COLUMNS = {
         "last_deferred",
         "updated_at",
     },
+    "relay_billing_reservations": {
+        "reservation_key",
+        "user_id",
+        "token_id",
+        "model_name",
+        "endpoint_path",
+        "request_id_hash",
+        "expr_hash",
+        "candidate_group_count",
+        "reservation_strategy",
+        "pre_consumed_quota",
+        "status",
+        "channel_id",
+        "selected_group",
+        "selected_at",
+        "final_quota",
+        "finalization_reason",
+        "request_accounted",
+        "lease_expires_at",
+        "recovery_attempt_count",
+        "recovery_next_attempt_at",
+        "recovery_last_attempt_at",
+        "created_at",
+        "updated_at",
+        "settled_at",
+        "refunded_at",
+        "recovery_required_at",
+    },
+    "relay_billing_recovery_state": {
+        "id",
+        "last_started_at",
+        "last_completed_at",
+        "last_success_at",
+        "last_candidates",
+        "last_refunded",
+        "last_recovery_required",
+        "last_failed",
+        "last_deferred",
+        "updated_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -138,6 +180,11 @@ REQUIRED_INDEXES = {
         "idx_realtime_billing_reservations_segment_status": False,
         "idx_realtime_billing_reservations_global_lease": False,
         "idx_realtime_billing_reservations_recent_outcome": False,
+    },
+    "relay_billing_reservations": {
+        "idx_relay_billing_reservations_global_lease": False,
+        "idx_relay_billing_reservations_recent_outcome": False,
+        "idx_relay_billing_reservations_recovery_required": False,
     },
 }
 

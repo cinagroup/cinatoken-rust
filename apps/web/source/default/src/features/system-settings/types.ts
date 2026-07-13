@@ -463,6 +463,13 @@ export type PlatformCapabilities = {
   wfp_relay_authority_transport_compiled: boolean
   wfp_relay_authority_transport_ready: boolean
   wfp_tenant_smoke_ready: boolean
+  relay_billing_reservation_ledger_compiled: boolean
+  relay_billing_ledger_status_compiled: boolean
+  relay_billing_reservation_lease_seconds: number
+  relay_billing_orphan_recovery_enabled: boolean
+  relay_billing_orphan_recovery_ready: boolean
+  relay_billing_orphan_recovery_grace_seconds: number
+  relay_billing_orphan_sweep_limit: number
   realtime_session_gateway_enabled: boolean
   realtime_session_v1_enabled: boolean
   realtime_session_billing_settlement_write_enabled: boolean

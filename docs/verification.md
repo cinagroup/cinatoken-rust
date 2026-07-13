@@ -3831,3 +3831,33 @@ authenticated frontend, and rollback evidence.
   provider-invoice reconciliation, disable/recovery, and Go rollback. The
   registry reports 16 Ready, 15 Partial, and 22 Deferred channel types.
   Production remains **NO-GO**.
+
+## 2026-07-13 Ordinary Relay Billing Reservation Verification
+
+- Read the source billing-expression contract before changing settlement. The
+  implementation preserves the frozen request-scoped expression snapshot and
+  never reconstructs an orphan charge from live pricing.
+- Migration 0023 adds `relay_billing_reservations` and
+  `relay_billing_recovery_state`. `python tools/verify_sqlite.py` passes at 23
+  migrations, 29 required tables, 105 incremental columns, and 20 key indexes;
+  `bun run check:d1:migration-config` confirms all three bindings use the exact
+  contiguous 23-file set.
+- Repository tests cover the migration contract and matching settle/refund,
+  conflict, and settle-vs-refund classifications. Reserve, selected binding,
+  settlement, and refund use D1 row-count guards that roll back the full batch
+  when an expected mutation does not affect exactly one row.
+- Frontend readiness tests pass 22/22 and `bun run check:web` builds the updated
+  Cloudflare operations panel.
+- `cargo test -p cinatoken-worker --lib` passes 629/629. The final
+  `bun run check` passes on this worktree, including release Rust/Wasm builds,
+  Workerd 14/14 (with concurrent unbound refund and bound quarantine cases),
+  Playground 1/1, frontend build/readiness/redaction/budget/zero-lint-debt and
+  route audits, the 23-migration SQLite/config checks, all local smoke
+  contracts, workspace tests, and Worker/WFP wasm32 checks.
+- The admin-only `GET /api/platform/relay-billing/ledger/status` contract is
+  compiled, `no-store`, and unit-tested to expose hashed reservation/account
+  scope rather than raw keys or numeric identity pairs. The actual-group smoke
+  cleanup now verifies that its ledger fixtures are removed.
+- Recovery remains false in development, staging, and production config. No
+  remote D1 migration, cron, provider request, Cloudflare credential, or live
+  accounting mutation was used. Production remains **NO-GO**.

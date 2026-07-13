@@ -40,6 +40,8 @@ export default defineConfig({
           REALTIME_BILLING_RESERVATION_LEASE_SECONDS: "900",
           REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED: "true",
           REALTIME_BILLING_ORPHAN_SWEEP_LIMIT: "1",
+          RELAY_BILLING_ORPHAN_RECOVERY_ENABLED: "true",
+          RELAY_BILLING_ORPHAN_SWEEP_LIMIT: "32",
           TEST_D1_MIGRATIONS: d1Migrations,
         },
         d1Databases: { DB: "do-runtime-test" },

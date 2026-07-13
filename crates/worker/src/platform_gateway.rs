@@ -54,7 +54,9 @@ use crate::realtime_session::{
 };
 use crate::relay::{
     relay_actual_serving_group_billing_contract_compiled,
-    relay_ai_gateway_direct_fallback_contract_compiled, relay_model_fallback_contract_compiled,
+    relay_ai_gateway_direct_fallback_contract_compiled, relay_billing_orphan_recovery_enabled,
+    relay_billing_orphan_sweep_limit, relay_billing_reservation_lease_seconds,
+    relay_billing_reservation_ledger_compiled, relay_model_fallback_contract_compiled,
     relay_model_fallback_runtime_status, relay_retry_times_from_env,
     relay_terminal_attempt_audit_contract_compiled,
     relay_wfp_authority_transport_contract_compiled, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
@@ -120,7 +122,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0022_realtime_billing_global_recovery.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0023_relay_billing_reservations.sql";
 const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0001_core.sql",
     "0002_admin_tables.sql",
@@ -144,6 +146,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0020_realtime_billing_reservation_leases.sql",
     "0021_realtime_billing_bridge_segments.sql",
     "0022_realtime_billing_global_recovery.sql",
+    "0023_relay_billing_reservations.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -293,6 +296,13 @@ struct PlatformCapabilities {
     wfp_relay_authority_transport_compiled: bool,
     wfp_relay_authority_transport_ready: bool,
     wfp_tenant_smoke_ready: bool,
+    relay_billing_reservation_ledger_compiled: bool,
+    relay_billing_ledger_status_compiled: bool,
+    relay_billing_reservation_lease_seconds: i64,
+    relay_billing_orphan_recovery_enabled: bool,
+    relay_billing_orphan_recovery_ready: bool,
+    relay_billing_orphan_recovery_grace_seconds: i64,
+    relay_billing_orphan_sweep_limit: i64,
     realtime_session_gateway_enabled: bool,
     realtime_session_v1_enabled: bool,
     realtime_session_billing_settlement_write_enabled: bool,
@@ -366,6 +376,67 @@ struct PlatformCapabilities {
 }
 
 const REALTIME_BILLING_RECOVERY_STATUS_LIMIT: i64 = 50;
+const RELAY_BILLING_RECOVERY_STATUS_LIMIT: i64 = 50;
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RelayBillingLedgerStatus {
+    contract_version: u32,
+    count: usize,
+    global_sweep: Option<RelayBillingGlobalSweepStatus>,
+    records: Vec<RelayBillingLedgerStatusMetadata>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RelayBillingGlobalSweepStatus {
+    last_started_at: i64,
+    last_completed_at: i64,
+    last_success_at: Option<i64>,
+    last_candidates: i64,
+    last_refunded: i64,
+    last_recovery_required: i64,
+    last_failed: i64,
+    last_deferred: i64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct RelayBillingLedgerStatusMetadata {
+    reservation_fingerprint: String,
+    account_scope_fingerprint: String,
+    outcome: RelayBillingLedgerOutcome,
+    terminal: bool,
+    selected: bool,
+    request_accounted: bool,
+    lease_expires_at: i64,
+    updated_at: i64,
+    settled_at: Option<i64>,
+    refunded_at: Option<i64>,
+    recovery_required_at: Option<i64>,
+    recovery_attempt_count: i64,
+    recovery_next_attempt_at: Option<i64>,
+    recovery_last_attempt_at: Option<i64>,
+    recovery_state: RelayBillingRecoveryState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RelayBillingLedgerOutcome {
+    Reserved,
+    Settled,
+    Refunded,
+    RecoveryRequired,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RelayBillingRecoveryState {
+    SettlementGrace,
+    RetryBackoff,
+    RecoveryDue,
+    ManualReconciliation,
+    Terminal,
+    Unknown,
+}
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct RealtimeBillingLedgerStatus {
@@ -467,6 +538,16 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_cross_model_fallback_staging_verified,
     );
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
+    let relay_billing_reservation_ledger_compiled = relay_billing_reservation_ledger_compiled();
+    let relay_billing_ledger_status_compiled = true;
+    let relay_billing_reservation_lease_seconds = relay_billing_reservation_lease_seconds(&env);
+    let relay_billing_orphan_recovery_enabled = relay_billing_orphan_recovery_enabled(&env);
+    let relay_billing_orphan_recovery_ready = relay_billing_reservation_ledger_compiled
+        && relay_billing_orphan_recovery_enabled
+        && d1_migration_ready;
+    let relay_billing_orphan_recovery_grace_seconds =
+        crate::d1_repositories::RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS;
+    let relay_billing_orphan_sweep_limit = relay_billing_orphan_sweep_limit(&env);
     let wfp_dispatch_binding_available = env.dynamic_dispatcher(WFP_DISPATCH_BINDING).is_ok();
     let wfp_dispatch_enabled = env_flag(&env, WFP_DISPATCH_ENABLED_ENV);
     let wfp_internal_dispatch_enabled = env_flag(&env, WFP_INTERNAL_DISPATCH_ENABLED_ENV);
@@ -769,6 +850,13 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_relay_authority_transport_compiled,
         wfp_relay_authority_transport_ready,
         wfp_tenant_smoke_ready,
+        relay_billing_reservation_ledger_compiled,
+        relay_billing_ledger_status_compiled,
+        relay_billing_reservation_lease_seconds,
+        relay_billing_orphan_recovery_enabled,
+        relay_billing_orphan_recovery_ready,
+        relay_billing_orphan_recovery_grace_seconds,
+        relay_billing_orphan_sweep_limit,
         realtime_session_gateway_enabled,
         realtime_session_v1_enabled,
         realtime_session_billing_settlement_write_enabled,
@@ -842,6 +930,144 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     };
 
     envelope_ok_response(&capabilities)
+}
+
+pub async fn relay_billing_ledger_status(req: Request, env: Env) -> WorkerResult<Response> {
+    let mut response = relay_billing_ledger_status_response(req, env).await?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
+}
+
+async fn relay_billing_ledger_status_response(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(err) => {
+            worker::console_error!("relay billing ledger status: D1 unavailable: {err}");
+            return Ok(envelope_error_response(
+                503,
+                "Relay billing ledger status is unavailable",
+            ));
+        }
+    };
+    let rows = match crate::d1_repositories::recent_relay_billing_ledger_status(
+        &db,
+        RELAY_BILLING_RECOVERY_STATUS_LIMIT,
+    )
+    .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            worker::console_error!("relay billing ledger status query failed: {err}");
+            return Ok(envelope_error_response(
+                503,
+                "Relay billing ledger status is unavailable",
+            ));
+        }
+    };
+    let now = crate::admin::unix_timestamp();
+    let records = rows
+        .into_iter()
+        .map(|row| relay_billing_ledger_status_metadata(row, now))
+        .collect::<Vec<_>>();
+    let global_sweep = match crate::d1_repositories::relay_billing_recovery_state(&db).await {
+        Ok(state) => state.map(relay_billing_global_sweep_status),
+        Err(err) => {
+            worker::console_error!("relay billing global sweep status query failed: {err}");
+            return Ok(envelope_error_response(
+                503,
+                "Relay billing ledger status is unavailable",
+            ));
+        }
+    };
+    let status = RelayBillingLedgerStatus {
+        contract_version: 1,
+        count: records.len(),
+        global_sweep,
+        records,
+    };
+    envelope_ok_response(&status)
+}
+
+fn relay_billing_ledger_status_metadata(
+    row: crate::d1_repositories::RelayBillingLedgerStatusRow,
+    now: i64,
+) -> RelayBillingLedgerStatusMetadata {
+    let account_scope = format!("{}|{}", row.user_id, row.token_id);
+    let recovery_state = relay_billing_recovery_state(&row, now);
+    RelayBillingLedgerStatusMetadata {
+        reservation_fingerprint: realtime_recovery_fingerprint(
+            "relay-reservation-v1",
+            &row.reservation_key,
+        ),
+        account_scope_fingerprint: realtime_recovery_fingerprint(
+            "relay-account-v1",
+            &account_scope,
+        ),
+        outcome: relay_billing_ledger_outcome(&row.status),
+        terminal: matches!(row.status.as_str(), "settled" | "refunded"),
+        selected: row.channel_id > 0 && row.selected_at > 0,
+        request_accounted: row.request_accounted == 1,
+        lease_expires_at: row.lease_expires_at,
+        updated_at: row.updated_at,
+        settled_at: (row.settled_at > 0).then_some(row.settled_at),
+        refunded_at: (row.refunded_at > 0).then_some(row.refunded_at),
+        recovery_required_at: (row.recovery_required_at > 0).then_some(row.recovery_required_at),
+        recovery_attempt_count: row.recovery_attempt_count,
+        recovery_next_attempt_at: (row.recovery_next_attempt_at > 0)
+            .then_some(row.recovery_next_attempt_at),
+        recovery_last_attempt_at: (row.recovery_last_attempt_at > 0)
+            .then_some(row.recovery_last_attempt_at),
+        recovery_state,
+    }
+}
+
+fn relay_billing_global_sweep_status(
+    row: crate::d1_repositories::RelayBillingRecoveryStateRow,
+) -> RelayBillingGlobalSweepStatus {
+    RelayBillingGlobalSweepStatus {
+        last_started_at: row.last_started_at,
+        last_completed_at: row.last_completed_at,
+        last_success_at: (row.last_success_at > 0).then_some(row.last_success_at),
+        last_candidates: row.last_candidates,
+        last_refunded: row.last_refunded,
+        last_recovery_required: row.last_recovery_required,
+        last_failed: row.last_failed,
+        last_deferred: row.last_deferred,
+    }
+}
+
+fn relay_billing_recovery_state(
+    row: &crate::d1_repositories::RelayBillingLedgerStatusRow,
+    now: i64,
+) -> RelayBillingRecoveryState {
+    match row.status.as_str() {
+        "settled" | "refunded" => RelayBillingRecoveryState::Terminal,
+        "recovery_required" => RelayBillingRecoveryState::ManualReconciliation,
+        "reserved"
+            if now
+                <= row.lease_expires_at.saturating_add(
+                    crate::d1_repositories::RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS,
+                ) =>
+        {
+            RelayBillingRecoveryState::SettlementGrace
+        }
+        "reserved" if row.recovery_next_attempt_at > now => RelayBillingRecoveryState::RetryBackoff,
+        "reserved" => RelayBillingRecoveryState::RecoveryDue,
+        _ => RelayBillingRecoveryState::Unknown,
+    }
+}
+
+fn relay_billing_ledger_outcome(status: &str) -> RelayBillingLedgerOutcome {
+    match status {
+        "reserved" => RelayBillingLedgerOutcome::Reserved,
+        "settled" => RelayBillingLedgerOutcome::Settled,
+        "refunded" => RelayBillingLedgerOutcome::Refunded,
+        "recovery_required" => RelayBillingLedgerOutcome::RecoveryRequired,
+        _ => RelayBillingLedgerOutcome::Unknown,
+    }
 }
 
 pub async fn realtime_billing_ledger_status(req: Request, env: Env) -> WorkerResult<Response> {
@@ -3169,12 +3395,9 @@ mod tests {
         assert!(!d1_migration_set_matches(&substituted));
 
         let mut extra = expected;
-        extra.push("0022_unexpected.sql".to_string());
+        extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(
-            EXPECTED_D1_MIGRATION,
-            "0022_realtime_billing_global_recovery.sql"
-        );
+        assert_eq!(EXPECTED_D1_MIGRATION, "0023_relay_billing_reservations.sql");
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
                 .contains("CREATE TABLE IF NOT EXISTS realtime_settlement_replays")
@@ -3195,6 +3418,61 @@ mod tests {
             include_str!("../../../migrations/d1/0022_realtime_billing_global_recovery.sql");
         assert!(recovery.contains("idx_realtime_billing_reservations_global_lease"));
         assert!(recovery.contains("idx_realtime_billing_reservations_recent_outcome"));
+        let relay_reservations =
+            include_str!("../../../migrations/d1/0023_relay_billing_reservations.sql");
+        assert!(
+            relay_reservations.contains("CREATE TABLE IF NOT EXISTS relay_billing_reservations")
+        );
+        assert!(relay_reservations.contains("idx_relay_billing_reservations_global_lease"));
+    }
+
+    #[test]
+    fn relay_ledger_status_hashes_private_reservation_and_account_identity() {
+        let metadata = relay_billing_ledger_status_metadata(
+            crate::d1_repositories::RelayBillingLedgerStatusRow {
+                reservation_key: "private-relay-reservation".to_string(),
+                user_id: 123,
+                token_id: 456,
+                status: "recovery_required".to_string(),
+                channel_id: 7,
+                selected_at: 800,
+                request_accounted: 0,
+                lease_expires_at: 900,
+                updated_at: 1_201,
+                settled_at: 0,
+                refunded_at: 0,
+                recovery_required_at: 1_201,
+                recovery_attempt_count: 1,
+                recovery_next_attempt_at: 0,
+                recovery_last_attempt_at: 1_201,
+            },
+            1_201,
+        );
+        let encoded = serde_json::to_string(&metadata).unwrap();
+        assert!(!encoded.contains("private-relay-reservation"));
+        assert!(!encoded.contains("123|456"));
+        assert!(metadata.reservation_fingerprint.starts_with("sha256:"));
+        assert!(metadata.account_scope_fingerprint.starts_with("sha256:"));
+        assert_ne!(
+            metadata.reservation_fingerprint,
+            metadata.account_scope_fingerprint
+        );
+        assert_eq!(
+            metadata.outcome,
+            RelayBillingLedgerOutcome::RecoveryRequired
+        );
+        assert!(!metadata.terminal);
+        assert!(metadata.selected);
+        assert!(!metadata.request_accounted);
+        assert_eq!(metadata.recovery_required_at, Some(1_201));
+        assert_eq!(
+            metadata.recovery_state,
+            RelayBillingRecoveryState::ManualReconciliation
+        );
+        assert_eq!(
+            relay_billing_ledger_outcome("unexpected"),
+            RelayBillingLedgerOutcome::Unknown
+        );
     }
 
     #[test]

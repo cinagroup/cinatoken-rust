@@ -398,6 +398,37 @@ function buildCapabilityGroups(
               : t('Migration missing'),
         },
         {
+          label: t('HTTP tiered settlement ledger'),
+          description: t(
+            'Atomically owns tiered quota reservations for up to {{lease}} seconds; after a {{grace}}-second grace, unbound rows can refund while bound rows require reconciliation.',
+            {
+              lease: capabilities.relay_billing_reservation_lease_seconds,
+              grace: capabilities.relay_billing_orphan_recovery_grace_seconds,
+            }
+          ),
+          ready:
+            capabilities.d1_migration_ready &&
+            capabilities.relay_billing_reservation_ledger_compiled &&
+            capabilities.relay_billing_ledger_status_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Blocked'),
+        },
+        {
+          label: t('Relay billing orphan recovery'),
+          description: t(
+            'Cron processes up to {{limit}} expired reservations per run without recomputing mutable pricing; selected rows are quarantined instead of refunded.',
+            { limit: capabilities.relay_billing_orphan_sweep_limit }
+          ),
+          ready: capabilities.relay_billing_orphan_recovery_ready,
+          readyLabel: t('Ready to verify'),
+          missingLabel: capabilities.relay_billing_orphan_recovery_enabled
+            ? t('Blocked')
+            : t('Disabled'),
+          missingVariant: capabilities.relay_billing_orphan_recovery_enabled
+            ? 'red'
+            : 'grey',
+        },
+        {
           label: t('Workers AI binding'),
           description: t('Used for direct Workers AI relay channels.'),
           ready: capabilities.ai_binding_available,

@@ -16,9 +16,158 @@ const BILLING_MODE_TIERED_EXPR: &str = "tiered_expr";
 pub(crate) const REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
 pub(crate) const REALTIME_BILLING_GLOBAL_RECOVERY_MIGRATION: &str =
     "0022_realtime_billing_global_recovery.sql";
+pub(crate) const RELAY_BILLING_RESERVATION_MIGRATION: &str = "0023_relay_billing_reservations.sql";
+pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
+const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
+const RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
+const RELAY_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
 const REALTIME_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const REALTIME_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
 const REALTIME_BILLING_ORPHAN_RETRY_MAX_SECONDS: i64 = 3_600;
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayBillingReservationRecord<'a> {
+    pub reservation_key: &'a str,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub model_name: &'a str,
+    pub endpoint_path: &'a str,
+    pub request_id_hash: &'a str,
+    pub expr_hash: &'a str,
+    pub candidate_group_count: i64,
+    pub reservation_strategy: &'a str,
+    pub pre_consumed_quota: i64,
+    pub created_at: i64,
+    pub lease_expires_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayBillingReservation {
+    pub reservation_key: String,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub model_name: String,
+    pub endpoint_path: String,
+    pub request_id_hash: String,
+    pub expr_hash: String,
+    pub candidate_group_count: i64,
+    pub reservation_strategy: String,
+    pub pre_consumed_quota: i64,
+    pub status: String,
+    pub channel_id: i64,
+    pub selected_group: String,
+    pub selected_at: i64,
+    pub final_quota: i64,
+    pub finalization_reason: String,
+    pub request_accounted: i64,
+    pub lease_expires_at: i64,
+    pub recovery_attempt_count: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayBillingReservationWriteOutcome {
+    Applied,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayBillingReservationFinalizationOutcome {
+    Applied,
+    MatchingSettled,
+    MatchingRefund,
+    SettlementWon,
+    RefundWon,
+    Conflict,
+    NotFound,
+    LeaseActive,
+    DeadlineExpired,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayBillingRequestAccounting {
+    Skip,
+    Account,
+}
+
+impl RelayBillingRequestAccounting {
+    fn value(self) -> i32 {
+        match self {
+            Self::Skip => 0,
+            Self::Account => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayBillingSelectionOutcome {
+    Applied,
+    MatchingSelection,
+    AlreadyFinalized,
+    Conflict,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayBillingExpiredLeaseCandidate {
+    pub reservation_key: String,
+    pub channel_id: i64,
+    pub selected_group: String,
+    pub selected_at: i64,
+    pub lease_expires_at: i64,
+    pub recovery_attempt_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelayBillingOrphanSweepSummary {
+    pub candidates: u32,
+    pub refunded: u32,
+    pub recovery_required: u32,
+    pub already_finalized: u32,
+    pub lease_active: u32,
+    pub not_found: u32,
+    pub failed: u32,
+    pub deferred: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayBillingLedgerStatusRow {
+    pub reservation_key: String,
+    pub user_id: i64,
+    pub token_id: i64,
+    pub status: String,
+    pub channel_id: i64,
+    pub selected_at: i64,
+    pub request_accounted: i64,
+    pub lease_expires_at: i64,
+    pub updated_at: i64,
+    pub settled_at: i64,
+    pub refunded_at: i64,
+    pub recovery_required_at: i64,
+    pub recovery_attempt_count: i64,
+    pub recovery_next_attempt_at: i64,
+    pub recovery_last_attempt_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayBillingRecoveryStateRow {
+    pub last_started_at: i64,
+    pub last_completed_at: i64,
+    pub last_success_at: i64,
+    pub last_candidates: i64,
+    pub last_refunded: i64,
+    pub last_recovery_required: i64,
+    pub last_failed: i64,
+    pub last_deferred: i64,
+}
+
+fn relay_billing_settlement_deadline_allows(lease_expires_at: i64, applied_at: i64) -> bool {
+    lease_expires_at > 0
+        && applied_at
+            <= lease_expires_at.saturating_add(RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)
+}
 
 fn realtime_billing_settlement_deadline_allows(lease_expires_at: i64, applied_at: i64) -> bool {
     lease_expires_at > 0
@@ -542,9 +691,7 @@ pub async fn touch_token(db: &D1Database, token_id: i64, accessed_time: i64) -> 
 }
 
 pub async fn increment_user_request_count(db: &D1Database, user_id: i64) -> worker::Result<()> {
-    let args = [D1Type::Integer(d1_i32(user_id))];
-    db.prepare("UPDATE users SET request_count = request_count + 1 WHERE id = ?1")
-        .bind_refs(&args)?
+    increment_user_request_count_statement(db, user_id)?
         .run()
         .await?;
     Ok(())
@@ -782,91 +929,856 @@ pub async fn refund_reserved_relay_quota(
     require_batch_change(&results, 1, "token no longer exists")
 }
 
-pub async fn settle_reserved_relay_quota_usage(
+pub async fn reserve_relay_billing_quota(
     db: &D1Database,
-    user_id: i64,
-    token_id: i64,
+    record: RelayBillingReservationRecord<'_>,
+) -> worker::Result<RelayBillingReservationWriteOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(record.reservation_key, "key")?;
+    let model_name = non_empty_relay_reservation_field(record.model_name, "model name")?;
+    let reservation_strategy =
+        non_empty_relay_reservation_field(record.reservation_strategy, "strategy")?;
+    if record.user_id <= 0
+        || record.token_id < 0
+        || record.candidate_group_count <= 0
+        || record.lease_expires_at <= record.created_at
+    {
+        return Err(worker::Error::RustError(
+            "relay billing reservation identity is invalid".to_string(),
+        ));
+    }
+    let quota = quota_i32(record.pre_consumed_quota)?;
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(record.user_id)),
+        D1Type::Integer(d1_i32(record.token_id)),
+        D1Type::Text(model_name),
+        D1Type::Text(record.endpoint_path.trim()),
+        D1Type::Text(record.request_id_hash.trim()),
+        D1Type::Text(record.expr_hash.trim()),
+        D1Type::Integer(d1_i32(record.candidate_group_count)),
+        D1Type::Text(reservation_strategy),
+        D1Type::Integer(quota),
+        D1Type::Integer(d1_i32(record.created_at)),
+        D1Type::Integer(d1_i32(record.lease_expires_at)),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, token_id, model_name, endpoint_path, request_id_hash,
+              expr_hash, candidate_group_count, reservation_strategy,
+              pre_consumed_quota, status, created_at, updated_at, lease_expires_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'reserved', ?11, ?11, ?12)
+            "#,
+        )
+        .bind_refs(&args)?;
+
+    let mut statements = vec![insert];
+    let mut checked = vec![(0usize, "relay billing reservation marker failed")];
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        reserve_user_quota_statement(db, record.user_id, quota)?,
+        reservation_key,
+        "user quota is not enough",
+    )?;
+    if record.token_id > 0 {
+        push_relay_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked,
+            debit_token_quota_usage_statement(db, record.token_id, quota, record.created_at)?,
+            reservation_key,
+            "token quota is not enough",
+        )?;
+    }
+
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            if relay_billing_reservation(db, reservation_key)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                return Ok(RelayBillingReservationWriteOutcome::Duplicate);
+            }
+            return Err(err);
+        }
+    };
+    for (index, message) in checked {
+        require_batch_change(&results, index, message)?;
+    }
+    Ok(RelayBillingReservationWriteOutcome::Applied)
+}
+
+pub async fn bind_relay_billing_selected_attempt(
+    db: &D1Database,
+    reservation_key: &str,
     channel_id: i64,
-    pre_consumed_quota: i64,
+    selected_group: &str,
+    selected_at: i64,
+    lease_expires_at: i64,
+) -> worker::Result<RelayBillingSelectionOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let selected_group = non_empty_relay_reservation_field(selected_group, "selected group")?;
+    if channel_id <= 0 || lease_expires_at <= selected_at {
+        return Err(worker::Error::RustError(
+            "relay billing selected-attempt identity is invalid".to_string(),
+        ));
+    }
+    let Some(record) = relay_billing_reservation(db, reservation_key).await? else {
+        return Ok(RelayBillingSelectionOutcome::NotFound);
+    };
+    if record.status != "reserved" {
+        return Ok(RelayBillingSelectionOutcome::AlreadyFinalized);
+    }
+    if record.channel_id == channel_id
+        && record.selected_group == selected_group
+        && record.selected_at > 0
+    {
+        return Ok(RelayBillingSelectionOutcome::MatchingSelection);
+    }
+    if record.channel_id != 0 || !record.selected_group.is_empty() || record.selected_at != 0 {
+        return Ok(RelayBillingSelectionOutcome::Conflict);
+    }
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(channel_id)),
+        D1Type::Text(selected_group),
+        D1Type::Integer(d1_i32(selected_at)),
+        D1Type::Integer(d1_i32(lease_expires_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_reservations
+            SET channel_id = ?2, selected_group = ?3, selected_at = ?4,
+                lease_expires_at = MAX(lease_expires_at, ?5), updated_at = ?4
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND channel_id = 0 AND selected_group = '' AND selected_at = 0
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    match result {
+        Ok(result) if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 => {
+            Ok(RelayBillingSelectionOutcome::Applied)
+        }
+        Ok(_) | Err(_) => match relay_billing_reservation(db, reservation_key).await? {
+            None => Ok(RelayBillingSelectionOutcome::NotFound),
+            Some(current) if current.status != "reserved" => {
+                Ok(RelayBillingSelectionOutcome::AlreadyFinalized)
+            }
+            Some(current)
+                if current.channel_id == channel_id
+                    && current.selected_group == selected_group
+                    && current.selected_at > 0 =>
+            {
+                Ok(RelayBillingSelectionOutcome::MatchingSelection)
+            }
+            Some(_) => Ok(RelayBillingSelectionOutcome::Conflict),
+        },
+    }
+}
+
+pub async fn settle_relay_billing_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+    channel_id: i64,
+    selected_group: &str,
     final_quota: i64,
-    accessed_time: i64,
-) -> worker::Result<()> {
-    let pre_consumed_quota = quota_i32(pre_consumed_quota)?;
+    finalization_reason: &str,
+    settled_at: i64,
+) -> worker::Result<RelayBillingReservationFinalizationOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let selected_group = non_empty_relay_reservation_field(selected_group, "selected group")?;
+    let finalization_reason =
+        non_empty_relay_reservation_field(finalization_reason, "finalization reason")?;
+    if channel_id <= 0 {
+        return Err(worker::Error::RustError(
+            "relay billing settlement channel is invalid".to_string(),
+        ));
+    }
+    let Some(record) = relay_billing_reservation(db, reservation_key).await? else {
+        return Ok(RelayBillingReservationFinalizationOutcome::NotFound);
+    };
+    if record.status != "reserved" {
+        return Ok(classify_relay_settlement_outcome(
+            &record,
+            channel_id,
+            selected_group,
+            final_quota,
+            finalization_reason,
+        ));
+    }
+    if record.channel_id != channel_id || record.selected_group != selected_group {
+        return Ok(RelayBillingReservationFinalizationOutcome::Conflict);
+    }
+    if !relay_billing_settlement_deadline_allows(record.lease_expires_at, settled_at) {
+        return Ok(RelayBillingReservationFinalizationOutcome::DeadlineExpired);
+    }
+    let pre_consumed_quota = quota_i32(record.pre_consumed_quota)?;
     let final_quota = quota_i32(final_quota)?;
     let delta = final_quota.saturating_sub(pre_consumed_quota);
-
-    if token_id <= 0 {
-        let mut statements = Vec::new();
-        if delta > 0 {
-            statements.push(reserve_user_quota_statement(db, user_id, delta)?);
-        } else if delta < 0 {
-            statements.push(credit_user_quota_statement(
-                db,
-                user_id,
-                delta.saturating_abs(),
-            )?);
-        }
-        statements.push(increment_user_used_quota_and_request_count_statement(
-            db,
-            user_id,
-            final_quota,
-        )?);
-        statements.push(increment_channel_used_quota_statement(
-            db,
-            channel_id,
-            final_quota,
-        )?);
-        let results = db.batch(statements).await?;
-        let offset = usize::from(delta != 0);
-        if delta != 0 {
-            require_batch_change(&results, 0, "user quota settlement failed")?;
-        }
-        require_batch_change(&results, offset, "user no longer exists")?;
-        return require_batch_change(&results, offset + 1, "relay channel no longer exists");
-    }
-
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(channel_id)),
+        D1Type::Text(selected_group),
+        D1Type::Integer(final_quota),
+        D1Type::Text(finalization_reason),
+        D1Type::Integer(d1_i32(settled_at)),
+        D1Type::Integer(d1_i32(RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)),
+    ];
+    let status_update = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_reservations
+            SET status = 'settled', final_quota = ?4, finalization_reason = ?5,
+                request_accounted = 1, updated_at = ?6, settled_at = ?6
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND channel_id = ?2 AND selected_group = ?3
+              AND ?6 <= lease_expires_at + ?7
+            "#,
+        )
+        .bind_refs(&args)?;
     let mut statements = Vec::new();
+    let mut checked = Vec::new();
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        status_update,
+        reservation_key,
+        "relay billing reservation settlement state transition failed",
+    )?;
+
     if delta > 0 {
-        statements.push(reserve_user_quota_statement(db, user_id, delta)?);
-        statements.push(debit_token_quota_usage_statement(
+        push_relay_reservation_guarded_statement(
             db,
-            token_id,
-            delta,
-            accessed_time,
-        )?);
+            &mut statements,
+            &mut checked,
+            reserve_user_quota_statement(db, record.user_id, delta)?,
+            reservation_key,
+            "user quota settlement failed",
+        )?;
+        if record.token_id > 0 {
+            push_relay_reservation_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked,
+                debit_token_quota_usage_statement(db, record.token_id, delta, settled_at)?,
+                reservation_key,
+                "token quota settlement failed",
+            )?;
+        }
     } else if delta < 0 {
         let refund = delta.saturating_abs();
-        statements.push(credit_user_quota_statement(db, user_id, refund)?);
-        statements.push(credit_token_quota_usage_statement(
+        push_relay_reservation_guarded_statement(
             db,
-            token_id,
-            refund,
-            accessed_time,
-        )?);
-    } else {
-        statements.push(touch_token_statement(db, token_id, accessed_time)?);
+            &mut statements,
+            &mut checked,
+            credit_user_quota_statement(db, record.user_id, refund)?,
+            reservation_key,
+            "user quota refund failed",
+        )?;
+        if record.token_id > 0 {
+            push_relay_reservation_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked,
+                credit_token_quota_usage_statement(db, record.token_id, refund, settled_at)?,
+                reservation_key,
+                "token quota refund failed",
+            )?;
+        }
+    } else if record.token_id > 0 {
+        push_relay_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked,
+            touch_token_statement(db, record.token_id, settled_at)?,
+            reservation_key,
+            "token touch settlement failed",
+        )?;
     }
-    statements.push(increment_user_used_quota_and_request_count_statement(
+    push_relay_reservation_guarded_statement(
         db,
-        user_id,
-        final_quota,
-    )?);
-    statements.push(increment_channel_used_quota_statement(
+        &mut statements,
+        &mut checked,
+        increment_user_used_quota_and_request_count_statement(db, record.user_id, final_quota)?,
+        reservation_key,
+        "user quota usage settlement failed",
+    )?;
+    push_relay_reservation_guarded_statement(
         db,
-        channel_id,
-        final_quota,
-    )?);
+        &mut statements,
+        &mut checked,
+        increment_channel_used_quota_statement(db, channel_id, final_quota)?,
+        reservation_key,
+        "relay channel quota settlement failed",
+    )?;
 
-    let results = db.batch(statements).await?;
-    let offset = if delta == 0 { 1 } else { 2 };
-    if delta != 0 {
-        require_batch_change(&results, 0, "user quota settlement failed")?;
-        require_batch_change(&results, 1, "token quota settlement failed")?;
-    } else {
-        require_batch_change(&results, 0, "token no longer exists")?;
+    finalize_relay_billing_batch(
+        db,
+        reservation_key,
+        statements,
+        checked,
+        RelayBillingFinalizationExpectation::Settle {
+            channel_id,
+            selected_group,
+            final_quota: i64::from(final_quota),
+            finalization_reason,
+        },
+    )
+    .await
+}
+
+pub async fn refund_relay_billing_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+    finalization_reason: &str,
+    request_accounting: RelayBillingRequestAccounting,
+    refunded_at: i64,
+) -> worker::Result<RelayBillingReservationFinalizationOutcome> {
+    refund_relay_billing_reservation_inner(
+        db,
+        reservation_key,
+        finalization_reason,
+        request_accounting,
+        refunded_at,
+        None,
+    )
+    .await
+}
+
+pub async fn relay_billing_reservation_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [D1Type::Text(RELAY_BILLING_RESERVATION_MIGRATION)];
+    let row = db
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name = ?1")
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+pub async fn sweep_expired_relay_billing_reservations(
+    db: &D1Database,
+    now: i64,
+    limit: i64,
+) -> worker::Result<RelayBillingOrphanSweepSummary> {
+    let cutoff = now.saturating_sub(RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS);
+    let args = [
+        D1Type::Integer(d1_i32(cutoff)),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(limit.clamp(1, RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT))),
+    ];
+    let candidates = db
+        .prepare(
+            r#"
+            SELECT reservation_key, channel_id, selected_group, selected_at,
+                   lease_expires_at, recovery_attempt_count
+            FROM relay_billing_reservations
+            WHERE status = 'reserved'
+              AND lease_expires_at < ?1
+              AND recovery_next_attempt_at <= ?2
+            ORDER BY lease_expires_at ASC, reservation_key ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind_refs(&args)?
+        .all()
+        .await?
+        .results::<RelayBillingExpiredLeaseCandidate>()?;
+    let mut summary = RelayBillingOrphanSweepSummary {
+        candidates: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
+        ..RelayBillingOrphanSweepSummary::default()
+    };
+    for candidate in candidates {
+        if candidate.channel_id > 0
+            && !candidate.selected_group.is_empty()
+            && candidate.selected_at > 0
+        {
+            match mark_relay_billing_recovery_required(db, &candidate, now).await {
+                Ok(RelayBillingReservationFinalizationOutcome::Applied) => {
+                    summary.recovery_required = summary.recovery_required.saturating_add(1)
+                }
+                Ok(
+                    RelayBillingReservationFinalizationOutcome::RecoveryRequired
+                    | RelayBillingReservationFinalizationOutcome::MatchingSettled
+                    | RelayBillingReservationFinalizationOutcome::MatchingRefund,
+                ) => summary.already_finalized = summary.already_finalized.saturating_add(1),
+                Ok(RelayBillingReservationFinalizationOutcome::LeaseActive) => {
+                    summary.lease_active = summary.lease_active.saturating_add(1)
+                }
+                Ok(RelayBillingReservationFinalizationOutcome::NotFound) => {
+                    summary.not_found = summary.not_found.saturating_add(1)
+                }
+                Ok(
+                    RelayBillingReservationFinalizationOutcome::SettlementWon
+                    | RelayBillingReservationFinalizationOutcome::RefundWon
+                    | RelayBillingReservationFinalizationOutcome::DeadlineExpired
+                    | RelayBillingReservationFinalizationOutcome::Conflict,
+                ) => summary.failed = summary.failed.saturating_add(1),
+                Err(_) => {
+                    summary.failed = summary.failed.saturating_add(1);
+                    if defer_relay_billing_orphan_recovery(db, &candidate, now)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        summary.deferred = summary.deferred.saturating_add(1);
+                    }
+                    worker::console_error!(
+                        "relay billing orphan sweep: bound reservation quarantine failed"
+                    );
+                }
+            }
+            continue;
+        }
+        match refund_relay_billing_reservation_inner(
+            db,
+            &candidate.reservation_key,
+            "recovery_expired",
+            RelayBillingRequestAccounting::Skip,
+            now,
+            Some(candidate.lease_expires_at),
+        )
+        .await
+        {
+            Ok(RelayBillingReservationFinalizationOutcome::Applied) => {
+                summary.refunded = summary.refunded.saturating_add(1)
+            }
+            Ok(
+                RelayBillingReservationFinalizationOutcome::MatchingRefund
+                | RelayBillingReservationFinalizationOutcome::SettlementWon,
+            ) => summary.already_finalized = summary.already_finalized.saturating_add(1),
+            Ok(RelayBillingReservationFinalizationOutcome::LeaseActive) => {
+                summary.lease_active = summary.lease_active.saturating_add(1)
+            }
+            Ok(RelayBillingReservationFinalizationOutcome::NotFound) => {
+                summary.not_found = summary.not_found.saturating_add(1)
+            }
+            Ok(
+                RelayBillingReservationFinalizationOutcome::MatchingSettled
+                | RelayBillingReservationFinalizationOutcome::RefundWon
+                | RelayBillingReservationFinalizationOutcome::DeadlineExpired
+                | RelayBillingReservationFinalizationOutcome::RecoveryRequired
+                | RelayBillingReservationFinalizationOutcome::Conflict,
+            ) => summary.failed = summary.failed.saturating_add(1),
+            Err(_) => {
+                summary.failed = summary.failed.saturating_add(1);
+                if defer_relay_billing_orphan_recovery(db, &candidate, now)
+                    .await
+                    .unwrap_or(false)
+                {
+                    summary.deferred = summary.deferred.saturating_add(1);
+                }
+                worker::console_error!("relay billing orphan sweep: candidate refund failed");
+            }
+        }
     }
-    require_batch_change(&results, offset, "user no longer exists")?;
-    require_batch_change(&results, offset + 1, "relay channel no longer exists")
+    Ok(summary)
+}
+
+pub async fn mark_relay_billing_recovery_started(
+    db: &D1Database,
+    started_at: i64,
+) -> worker::Result<()> {
+    let args = [D1Type::Integer(d1_i32(started_at))];
+    db.prepare(
+        "UPDATE relay_billing_recovery_state SET last_started_at = ?1, updated_at = ?1 WHERE id = 1",
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_relay_billing_recovery_completed(
+    db: &D1Database,
+    completed_at: i64,
+    summary: RelayBillingOrphanSweepSummary,
+) -> worker::Result<()> {
+    let successful_at = if summary.failed == 0 { completed_at } else { 0 };
+    let args = [
+        D1Type::Integer(d1_i32(completed_at)),
+        D1Type::Integer(d1_i32(successful_at)),
+        D1Type::Integer(d1_i32(i64::from(summary.candidates))),
+        D1Type::Integer(d1_i32(i64::from(summary.refunded))),
+        D1Type::Integer(d1_i32(i64::from(summary.recovery_required))),
+        D1Type::Integer(d1_i32(i64::from(summary.failed))),
+        D1Type::Integer(d1_i32(i64::from(summary.deferred))),
+    ];
+    db.prepare(
+        r#"
+        UPDATE relay_billing_recovery_state
+        SET last_completed_at = ?1,
+            last_success_at = CASE WHEN ?2 > 0 THEN ?2 ELSE last_success_at END,
+            last_candidates = ?3, last_refunded = ?4,
+            last_recovery_required = ?5, last_failed = ?6,
+            last_deferred = ?7, updated_at = ?1
+        WHERE id = 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .run()
+    .await?;
+    Ok(())
+}
+
+pub async fn relay_billing_recovery_state(
+    db: &D1Database,
+) -> worker::Result<Option<RelayBillingRecoveryStateRow>> {
+    db.prepare(
+        r#"
+        SELECT last_started_at, last_completed_at, last_success_at,
+               last_candidates, last_refunded, last_recovery_required,
+               last_failed, last_deferred
+        FROM relay_billing_recovery_state
+        WHERE id = 1
+        "#,
+    )
+    .first::<RelayBillingRecoveryStateRow>(None)
+    .await
+}
+
+pub async fn recent_relay_billing_ledger_status(
+    db: &D1Database,
+    limit: i64,
+) -> worker::Result<Vec<RelayBillingLedgerStatusRow>> {
+    let args = [D1Type::Integer(d1_i32(limit.clamp(1, 100)))];
+    db.prepare(
+        r#"
+        SELECT reservation_key, user_id, token_id, status, channel_id, selected_at,
+               request_accounted, lease_expires_at, updated_at, settled_at,
+               refunded_at, recovery_required_at, recovery_attempt_count,
+               recovery_next_attempt_at, recovery_last_attempt_at
+        FROM relay_billing_reservations
+        ORDER BY updated_at DESC, reservation_key ASC
+        LIMIT ?1
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayBillingLedgerStatusRow>()
+}
+
+async fn refund_relay_billing_reservation_inner(
+    db: &D1Database,
+    reservation_key: &str,
+    finalization_reason: &str,
+    request_accounting: RelayBillingRequestAccounting,
+    refunded_at: i64,
+    expected_lease_expires_at: Option<i64>,
+) -> worker::Result<RelayBillingReservationFinalizationOutcome> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let finalization_reason =
+        non_empty_relay_reservation_field(finalization_reason, "finalization reason")?;
+    let Some(record) = relay_billing_reservation(db, reservation_key).await? else {
+        return Ok(RelayBillingReservationFinalizationOutcome::NotFound);
+    };
+    if record.status != "reserved" {
+        return Ok(classify_relay_refund_outcome(
+            &record,
+            finalization_reason,
+            request_accounting,
+        ));
+    }
+    if expected_lease_expires_at.is_some_and(|expected| {
+        record.lease_expires_at != expected || record.lease_expires_at > refunded_at
+    }) {
+        return Ok(RelayBillingReservationFinalizationOutcome::LeaseActive);
+    }
+    let quota = quota_i32(record.pre_consumed_quota)?;
+    let args = [
+        D1Type::Text(reservation_key),
+        D1Type::Integer(d1_i32(refunded_at)),
+        D1Type::Integer(d1_i32(expected_lease_expires_at.unwrap_or_default())),
+        D1Type::Text(finalization_reason),
+        D1Type::Integer(request_accounting.value()),
+    ];
+    let status_update = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_reservations
+            SET status = 'refunded', finalization_reason = ?4,
+                request_accounted = ?5, updated_at = ?2, refunded_at = ?2
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND (
+                ?3 = 0 OR (
+                  lease_expires_at = ?3 AND lease_expires_at <= ?2
+                  AND channel_id = 0 AND selected_group = '' AND selected_at = 0
+                )
+              )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let mut statements = Vec::new();
+    let mut checked = Vec::new();
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        status_update,
+        reservation_key,
+        "relay billing reservation refund state transition failed",
+    )?;
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        credit_user_quota_statement(db, record.user_id, quota)?,
+        reservation_key,
+        "user no longer exists",
+    )?;
+    if record.token_id > 0 {
+        push_relay_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked,
+            credit_token_quota_usage_statement(db, record.token_id, quota, refunded_at)?,
+            reservation_key,
+            "token no longer exists",
+        )?;
+    }
+    if request_accounting == RelayBillingRequestAccounting::Account {
+        push_relay_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked,
+            increment_user_request_count_statement(db, record.user_id)?,
+            reservation_key,
+            "user request count refund settlement failed",
+        )?;
+    }
+    finalize_relay_billing_batch(
+        db,
+        reservation_key,
+        statements,
+        checked,
+        RelayBillingFinalizationExpectation::Refund {
+            finalization_reason,
+            request_accounting,
+        },
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum RelayBillingFinalizationExpectation<'a> {
+    Settle {
+        channel_id: i64,
+        selected_group: &'a str,
+        final_quota: i64,
+        finalization_reason: &'a str,
+    },
+    Refund {
+        finalization_reason: &'a str,
+        request_accounting: RelayBillingRequestAccounting,
+    },
+}
+
+async fn finalize_relay_billing_batch(
+    db: &D1Database,
+    reservation_key: &str,
+    statements: Vec<worker::D1PreparedStatement>,
+    checked: Vec<(usize, &'static str)>,
+    expectation: RelayBillingFinalizationExpectation<'_>,
+) -> worker::Result<RelayBillingReservationFinalizationOutcome> {
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            return match relay_billing_reservation(db, reservation_key).await? {
+                None => Ok(RelayBillingReservationFinalizationOutcome::NotFound),
+                Some(current) if current.status != "reserved" => {
+                    Ok(classify_relay_finalization_outcome(&current, expectation))
+                }
+                Some(_) => Err(err),
+            };
+        }
+    };
+    for (index, message) in checked {
+        require_batch_change(&results, index, message)?;
+    }
+    Ok(RelayBillingReservationFinalizationOutcome::Applied)
+}
+
+fn classify_relay_finalization_outcome(
+    record: &RelayBillingReservation,
+    expectation: RelayBillingFinalizationExpectation<'_>,
+) -> RelayBillingReservationFinalizationOutcome {
+    match expectation {
+        RelayBillingFinalizationExpectation::Settle {
+            channel_id,
+            selected_group,
+            final_quota,
+            finalization_reason,
+        } => classify_relay_settlement_outcome(
+            record,
+            channel_id,
+            selected_group,
+            final_quota,
+            finalization_reason,
+        ),
+        RelayBillingFinalizationExpectation::Refund {
+            finalization_reason,
+            request_accounting,
+        } => classify_relay_refund_outcome(record, finalization_reason, request_accounting),
+    }
+}
+
+fn classify_relay_settlement_outcome(
+    record: &RelayBillingReservation,
+    channel_id: i64,
+    selected_group: &str,
+    final_quota: i64,
+    finalization_reason: &str,
+) -> RelayBillingReservationFinalizationOutcome {
+    match record.status.as_str() {
+        "settled"
+            if record.channel_id == channel_id
+                && record.selected_group == selected_group
+                && record.final_quota == final_quota
+                && record.finalization_reason == finalization_reason
+                && record.request_accounted == 1 =>
+        {
+            RelayBillingReservationFinalizationOutcome::MatchingSettled
+        }
+        "settled" => RelayBillingReservationFinalizationOutcome::Conflict,
+        "refunded" => RelayBillingReservationFinalizationOutcome::RefundWon,
+        "recovery_required" => RelayBillingReservationFinalizationOutcome::RecoveryRequired,
+        _ => RelayBillingReservationFinalizationOutcome::Conflict,
+    }
+}
+
+fn classify_relay_refund_outcome(
+    record: &RelayBillingReservation,
+    finalization_reason: &str,
+    request_accounting: RelayBillingRequestAccounting,
+) -> RelayBillingReservationFinalizationOutcome {
+    match record.status.as_str() {
+        "refunded"
+            if record.finalization_reason == finalization_reason
+                && record.request_accounted == i64::from(request_accounting.value()) =>
+        {
+            RelayBillingReservationFinalizationOutcome::MatchingRefund
+        }
+        "refunded" => RelayBillingReservationFinalizationOutcome::Conflict,
+        "settled" => RelayBillingReservationFinalizationOutcome::SettlementWon,
+        "recovery_required" => RelayBillingReservationFinalizationOutcome::RecoveryRequired,
+        _ => RelayBillingReservationFinalizationOutcome::Conflict,
+    }
+}
+
+async fn mark_relay_billing_recovery_required(
+    db: &D1Database,
+    candidate: &RelayBillingExpiredLeaseCandidate,
+    now: i64,
+) -> worker::Result<RelayBillingReservationFinalizationOutcome> {
+    let args = [
+        D1Type::Text(candidate.reservation_key.as_str()),
+        D1Type::Integer(d1_i32(candidate.lease_expires_at)),
+        D1Type::Integer(d1_i32(candidate.channel_id)),
+        D1Type::Text(candidate.selected_group.as_str()),
+        D1Type::Integer(d1_i32(candidate.selected_at)),
+        D1Type::Integer(d1_i32(now)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_reservations
+            SET status = 'recovery_required',
+                finalization_reason = 'bound_usage_missing',
+                recovery_last_attempt_at = ?6,
+                recovery_required_at = ?6,
+                updated_at = ?6
+            WHERE reservation_key = ?1 AND status = 'reserved'
+              AND lease_expires_at = ?2 AND channel_id = ?3
+              AND selected_group = ?4 AND selected_at = ?5
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await;
+    if let Ok(result) = &result {
+        if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+            return Ok(RelayBillingReservationFinalizationOutcome::Applied);
+        }
+    }
+    match relay_billing_reservation(db, &candidate.reservation_key).await? {
+        None => Ok(RelayBillingReservationFinalizationOutcome::NotFound),
+        Some(current) => match current.status.as_str() {
+            "recovery_required" => Ok(RelayBillingReservationFinalizationOutcome::RecoveryRequired),
+            "settled" => Ok(RelayBillingReservationFinalizationOutcome::MatchingSettled),
+            "refunded" => Ok(RelayBillingReservationFinalizationOutcome::MatchingRefund),
+            "reserved" => match result {
+                Ok(_) => Ok(RelayBillingReservationFinalizationOutcome::LeaseActive),
+                Err(err) => Err(err),
+            },
+            _ => Ok(RelayBillingReservationFinalizationOutcome::Conflict),
+        },
+    }
+}
+
+async fn relay_billing_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RelayBillingReservation>> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT reservation_key, user_id, token_id, model_name, endpoint_path, request_id_hash,
+               expr_hash, candidate_group_count, reservation_strategy,
+               pre_consumed_quota, status, channel_id, selected_group,
+               selected_at, final_quota, finalization_reason, request_accounted,
+               lease_expires_at, recovery_attempt_count,
+               created_at, updated_at
+        FROM relay_billing_reservations
+        WHERE reservation_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayBillingReservation>(None)
+    .await
+}
+
+async fn defer_relay_billing_orphan_recovery(
+    db: &D1Database,
+    candidate: &RelayBillingExpiredLeaseCandidate,
+    now: i64,
+) -> worker::Result<bool> {
+    let attempt_count = candidate.recovery_attempt_count.saturating_add(1);
+    let exponent = attempt_count.saturating_sub(1).clamp(0, 6) as u32;
+    let retry_after = RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS
+        .saturating_mul(1_i64 << exponent)
+        .min(RELAY_BILLING_ORPHAN_RETRY_MAX_SECONDS);
+    let args = [
+        D1Type::Text(candidate.reservation_key.as_str()),
+        D1Type::Integer(d1_i32(candidate.lease_expires_at)),
+        D1Type::Integer(d1_i32(now)),
+        D1Type::Integer(d1_i32(now.saturating_add(retry_after))),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE relay_billing_reservations
+            SET recovery_attempt_count = recovery_attempt_count + 1,
+                recovery_last_attempt_at = ?3,
+                recovery_next_attempt_at = ?4,
+                updated_at = MAX(updated_at, ?3)
+            WHERE reservation_key = ?1 AND status = 'reserved' AND lease_expires_at = ?2
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
 }
 
 pub async fn reserve_realtime_billing_quota(
@@ -1953,6 +2865,45 @@ fn push_realtime_settlement_guarded_statement(
     Ok(())
 }
 
+fn non_empty_relay_reservation_field<'a>(value: &'a str, field: &str) -> worker::Result<&'a str> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(worker::Error::RustError(format!(
+            "relay billing reservation {field} is required"
+        )))
+    } else {
+        Ok(value)
+    }
+}
+
+fn push_relay_reservation_guarded_statement(
+    db: &D1Database,
+    statements: &mut Vec<worker::D1PreparedStatement>,
+    checked_statement_indices: &mut Vec<(usize, &'static str)>,
+    statement: worker::D1PreparedStatement,
+    reservation_key: &str,
+    message: &'static str,
+) -> worker::Result<()> {
+    let index = statements.len();
+    statements.push(statement);
+    checked_statement_indices.push((index, message));
+    let args = [D1Type::Text(reservation_key)];
+    statements.push(
+        db.prepare(
+            r#"
+            INSERT INTO relay_billing_reservations (
+              reservation_key, user_id, model_name, pre_consumed_quota,
+              lease_expires_at, created_at, updated_at
+            )
+            SELECT ?1, 0, '', 0, 0, 0, 0
+            WHERE changes() != 1
+            "#,
+        )
+        .bind_refs(&args)?,
+    );
+    Ok(())
+}
+
 fn assert_realtime_settlement_previous_statement_statement(
     db: &D1Database,
     replay_key: &str,
@@ -2115,6 +3066,15 @@ fn increment_user_used_quota_and_request_count_statement(
         "#,
     )
     .bind_refs(&args)
+}
+
+fn increment_user_request_count_statement(
+    db: &D1Database,
+    user_id: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let args = [D1Type::Integer(d1_i32(user_id))];
+    db.prepare("UPDATE users SET request_count = request_count + 1 WHERE id = ?1")
+        .bind_refs(&args)
 }
 
 fn debit_user_quota_usage_and_request_count_statement(
@@ -10110,6 +11070,124 @@ mod tests {
         assert!(recovery_migration.contains("ADD COLUMN recovery_next_attempt_at"));
         assert!(recovery_migration
             .contains("CREATE TABLE IF NOT EXISTS realtime_billing_recovery_state"));
+    }
+
+    fn relay_billing_test_reservation(status: &str) -> RelayBillingReservation {
+        RelayBillingReservation {
+            reservation_key: "relayreserve-test".to_string(),
+            user_id: 1,
+            token_id: 2,
+            model_name: "gpt-test".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            request_id_hash: "sha256:test".to_string(),
+            expr_hash: "expr".to_string(),
+            candidate_group_count: 2,
+            reservation_strategy: "max_candidate_group".to_string(),
+            pre_consumed_quota: 100,
+            status: status.to_string(),
+            channel_id: 7,
+            selected_group: "vip".to_string(),
+            selected_at: 10,
+            final_quota: 80,
+            finalization_reason: "usage_settlement".to_string(),
+            request_accounted: 1,
+            lease_expires_at: 100,
+            recovery_attempt_count: 0,
+            created_at: 1,
+            updated_at: 20,
+        }
+    }
+
+    #[test]
+    fn relay_billing_reservation_migration_has_recovery_and_selection_contract() {
+        let migration = include_str!("../../../migrations/d1/0023_relay_billing_reservations.sql");
+        for field in [
+            "request_id_hash",
+            "selected_at",
+            "finalization_reason",
+            "recovery_next_attempt_at",
+        ] {
+            assert!(
+                migration.contains(field),
+                "missing relay ledger field {field}"
+            );
+        }
+        assert!(migration.contains("idx_relay_billing_reservations_global_lease"));
+        assert!(migration.contains("idx_relay_billing_reservations_recent_outcome"));
+        assert!(migration.contains(
+            "CHECK (status IN ('reserved', 'settled', 'refunded', 'recovery_required'))"
+        ));
+        assert!(migration.contains("idx_relay_billing_reservations_recovery_required"));
+    }
+
+    #[test]
+    fn relay_billing_finalization_classifies_matching_replay_and_race_winners() {
+        let settled = relay_billing_test_reservation("settled");
+        assert_eq!(
+            classify_relay_settlement_outcome(&settled, 7, "vip", 80, "usage_settlement"),
+            RelayBillingReservationFinalizationOutcome::MatchingSettled
+        );
+        assert_eq!(
+            classify_relay_settlement_outcome(&settled, 8, "vip", 80, "usage_settlement"),
+            RelayBillingReservationFinalizationOutcome::Conflict
+        );
+        assert_eq!(
+            classify_relay_refund_outcome(
+                &settled,
+                "missing_usage",
+                RelayBillingRequestAccounting::Account,
+            ),
+            RelayBillingReservationFinalizationOutcome::SettlementWon
+        );
+
+        let mut refunded = relay_billing_test_reservation("refunded");
+        refunded.final_quota = 0;
+        refunded.finalization_reason = "missing_usage".to_string();
+        refunded.request_accounted = 1;
+        assert_eq!(
+            classify_relay_refund_outcome(
+                &refunded,
+                "missing_usage",
+                RelayBillingRequestAccounting::Account,
+            ),
+            RelayBillingReservationFinalizationOutcome::MatchingRefund
+        );
+        assert_eq!(
+            classify_relay_refund_outcome(
+                &refunded,
+                "missing_usage",
+                RelayBillingRequestAccounting::Skip,
+            ),
+            RelayBillingReservationFinalizationOutcome::Conflict
+        );
+        assert_eq!(
+            classify_relay_settlement_outcome(&refunded, 7, "vip", 80, "usage_settlement"),
+            RelayBillingReservationFinalizationOutcome::RefundWon
+        );
+
+        let mut recovery_required = relay_billing_test_reservation("recovery_required");
+        recovery_required.finalization_reason = "bound_usage_missing".to_string();
+        recovery_required.request_accounted = 0;
+        assert_eq!(
+            classify_relay_settlement_outcome(&recovery_required, 7, "vip", 80, "usage_settlement",),
+            RelayBillingReservationFinalizationOutcome::RecoveryRequired
+        );
+        assert_eq!(
+            classify_relay_refund_outcome(
+                &recovery_required,
+                "missing_usage",
+                RelayBillingRequestAccounting::Account,
+            ),
+            RelayBillingReservationFinalizationOutcome::RecoveryRequired
+        );
+    }
+
+    #[test]
+    fn relay_billing_settlement_and_recovery_have_a_deterministic_deadline() {
+        assert!(relay_billing_settlement_deadline_allows(900, 1_200));
+        assert!(!relay_billing_settlement_deadline_allows(900, 1_201));
+        assert!(!relay_billing_settlement_deadline_allows(0, 1));
+        assert_eq!(RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS, 300);
     }
 
     #[test]

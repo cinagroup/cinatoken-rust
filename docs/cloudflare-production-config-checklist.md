@@ -111,20 +111,27 @@ Result: local D1/config prerequisites pass, but G1 remains **NO-GO**. No local
 command or local Worker smoke substitutes for authenticated staging deploy,
 remote D1 migration output, `/api/status`, capabilities, logs, or traces.
 
-### 2026-07-13 Global Realtime Recovery Migration Update
+### 2026-07-13 Billing Recovery Migration Update
 
-- The current compiled and SQLite-verified chain contains 22 migrations through
-  `0022_realtime_billing_global_recovery.sql`, with 27 required tables, 68
-  incremental key columns, and 17 key indexes.
+- The current compiled and SQLite-verified chain contains 23 migrations through
+  `0023_relay_billing_reservations.sql`, with 29 required tables, 105
+  incremental key columns, and 20 key indexes.
 - Migration 0021 fails closed while any Realtime billing reservation remains
   `reserved`; disable Realtime settlement writes, reconcile the ledger to zero,
   and archive redacted evidence before applying it.
 - The 2026-07-10 local Wrangler 20/20 apply remains historical evidence and
-  must be refreshed through 0022. No authenticated staging apply has occurred.
+  must be refreshed through 0023. No authenticated staging apply has occurred.
 - Migration 0022 adds the indexed global expiry scan, bounded retry-deferral
   metadata, and a singleton aggregate sweep status. It does not start refunds:
   `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED` remains `false` in every tracked
   environment until isolated staging passes the recovery subgate.
+- Migration 0023 is additive and must be applied while the old Worker still
+  serves, before publishing code that writes HTTP tiered reservations. Keep
+  `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED=false`: unbounded SSE has neither a
+  proven maximum lifetime nor lease renewal. The admin-only
+  `/api/platform/relay-billing/ledger/status` endpoint must be `no-store` and
+  emit only hashed identities. Expired unbound fixtures may refund after grace;
+  expired bound fixtures must enter `recovery_required` without quota mutation.
 
 ### 2026-07-12 Native Rate Limit Snapshot
 
@@ -632,11 +639,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-   `d1_migration_status_available=true`, applied count `22`, latest/expected
-   `0022_realtime_billing_global_recovery.sql`, exact set match, and
+   `d1_migration_status_available=true`, applied count `23`, latest/expected
+   `0023_relay_billing_reservations.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0022 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0023 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely

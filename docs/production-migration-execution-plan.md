@@ -963,8 +963,8 @@ Until every item is archived from isolated staging,
 ## 2026-07-13 Realtime Recovery Subgate Supersession
 
 This addendum supersedes the earlier 21-file Realtime migration wording. The
-target must have the exact 22-file chain through
-`0022_realtime_billing_global_recovery.sql`. Migrations 0020 and 0021 still
+target must have the exact 23-file chain through
+`0023_relay_billing_reservations.sql`. Migrations 0020 and 0021 still
 require the documented zero-active-reservation freeze; 0022 is applied only
 after those checks and while every Realtime admission, settlement-write, and
 global-recovery gate is off.
@@ -974,12 +974,13 @@ The production sequence is:
 1. Rotate the exposed Cloudflare credential, inventory account/resource
    ownership with a replacement least-privilege credential, and archive no
    secret values.
-2. Freeze Realtime writes, reconcile the ledger to zero, apply all 22
-   migrations to isolated staging, and verify 27 required tables, 69 key
-   columns, 17 indexes, and exact migration-set readiness.
-3. Deploy with `REALTIME_BILLING_ORPHAN_RECOVERY_ENABLED=false`, lease 900,
-   grace 300, and sweep limit 1. Capture admin capabilities and prove cron is
-   inert.
+2. Freeze Realtime writes, reconcile the ledger to zero, apply all 23
+   migrations to isolated staging, and verify 29 required tables, 105 key
+   columns, 20 indexes, and exact migration-set readiness.
+3. Deploy with both Realtime and HTTP relay recovery disabled, Realtime lease
+   900, HTTP lease 3600, grace 300, and sweep limit 1. Capture admin
+   capabilities and prove cron is inert. Migration 0023 must precede this
+   deployment because tiered HTTP requests write the new ledger immediately.
 4. Enable only global recovery for reviewed fixtures and complete every Phase
    4c case in `docs/staging-smoke-runbook.md`: grace no-op, post-grace refund,
    concurrent schedules, failed-head fairness, late settlement rejection,

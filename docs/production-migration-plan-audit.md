@@ -123,9 +123,9 @@ must not be cited as staging or production proof.
 
 ### 2026-07-13 Global Recovery Addendum
 
-The current chain is now 22 migrations through
-`0022_realtime_billing_global_recovery.sql`. Local SQLite replay verifies 27
-tables, 69 incremental columns, and 17 key indexes. Global recovery is
+The current chain is now 23 migrations through
+`0023_relay_billing_reservations.sql`. Local SQLite replay verifies 29
+tables, 105 incremental columns, and 20 key indexes. Global recovery is
 default-off, migration-gated, limited to 32 candidates with a hard maximum of
 64, and may act only after the inclusive settlement deadline at lease plus 300
 seconds. Failed candidates receive bounded retry deferral so they cannot starve

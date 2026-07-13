@@ -102,6 +102,15 @@ pub(crate) const RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV: &str =
     "RELAY_MODEL_FALLBACK_STAGING_VERIFIED";
 const RELAY_MODEL_FALLBACKS_MAX_ENTRIES: usize = 128;
 const RELAY_MODEL_FALLBACK_NAME_MAX_CHARS: usize = 200;
+pub(crate) const RELAY_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
+    "RELAY_BILLING_RESERVATION_LEASE_SECONDS";
+pub(crate) const RELAY_BILLING_ORPHAN_SWEEP_LIMIT_ENV: &str = "RELAY_BILLING_ORPHAN_SWEEP_LIMIT";
+pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_ENABLED_ENV: &str =
+    "RELAY_BILLING_ORPHAN_RECOVERY_ENABLED";
+const RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS: i64 = 3_600;
+const RELAY_BILLING_RESERVATION_LEASE_MIN_SECONDS: i64 = 300;
+const RELAY_BILLING_RESERVATION_LEASE_MAX_SECONDS: i64 = 86_400;
+const RELAY_BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT: i64 = 32;
 const AI_GATEWAY_DIRECT_FALLBACK_AUDIT_HEADER: &str =
     "x-cinatoken-internal-ai-gateway-direct-fallback";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
@@ -2548,8 +2557,17 @@ async fn relay_endpoint_with_auth(
         }
     };
     if let Some(plan) = tiered_billing_group_plan.as_mut() {
-        if let Err(err) =
-            reserve_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await
+        if let Err(err) = reserve_tiered_billing_group_plan(
+            &db,
+            &auth,
+            plan,
+            &model,
+            &endpoint.upstream_path,
+            request_id.as_deref(),
+            relay_billing_reservation_lease_seconds(&env),
+            unix_timestamp(),
+        )
+        .await
         {
             return openai_error_response(
                 format!("tiered billing reserve failed: {err}"),
@@ -2989,8 +3007,14 @@ async fn relay_endpoint_with_auth(
                 .as_ref()
                 .filter(|plan| plan.reserve_applied)
             {
-                if let Err(err) =
-                    refund_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await
+                if let Err(err) = refund_tiered_billing_group_plan(
+                    &db,
+                    &auth,
+                    plan,
+                    "model_fallback",
+                    unix_timestamp(),
+                )
+                .await
                 {
                     return openai_error_response(
                         format!(
@@ -3085,8 +3109,17 @@ async fn relay_endpoint_with_auth(
                     }
                 };
                 if let Some(plan) = fallback_group_plan.as_mut() {
-                    if let Err(err) =
-                        reserve_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await
+                    if let Err(err) = reserve_tiered_billing_group_plan(
+                        &db,
+                        &auth,
+                        plan,
+                        fallback_model,
+                        &endpoint.upstream_path,
+                        request_id.as_deref(),
+                        relay_billing_reservation_lease_seconds(&env),
+                        unix_timestamp(),
+                    )
+                    .await
                     {
                         return openai_error_response(
                             format!("fallback tiered billing reserve failed: {err}"),
@@ -3142,9 +3175,14 @@ async fn relay_endpoint_with_auth(
                         .as_ref()
                         .filter(|plan| plan.reserve_applied)
                     {
-                        if let Err(err) =
-                            refund_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp())
-                                .await
+                        if let Err(err) = refund_tiered_billing_group_plan(
+                            &db,
+                            &auth,
+                            plan,
+                            "fallback_exhausted",
+                            unix_timestamp(),
+                        )
+                        .await
                         {
                             return openai_error_response(
                                 format!(
@@ -3171,7 +3209,15 @@ async fn relay_endpoint_with_auth(
             .as_ref()
             .filter(|plan| plan.reserve_applied)
         {
-            match refund_tiered_billing_group_plan(&db, &auth, plan, unix_timestamp()).await {
+            match refund_tiered_billing_group_plan(
+                &db,
+                &auth,
+                plan,
+                "attempts_exhausted",
+                unix_timestamp(),
+            )
+            .await
+            {
                 Ok(()) => terminal_reserve_refund = "refunded",
                 Err(err) => {
                     terminal_reserve_refund = "refund_failed";
@@ -3257,9 +3303,6 @@ async fn relay_endpoint_with_auth(
     };
     let selected_provider = endpoint.effective_provider(channel.channel_type);
     model_route_audit.wfp_worker = channel.wfp_worker();
-    if model_route_audit.wfp_worker.is_some() {
-        strip_wfp_internal_response_headers(upstream_response.headers_mut())?;
-    }
     if tiered_billing_preflight.is_none() {
         tiered_billing_preflight = match tiered_billing_group_plan.as_ref() {
             Some(plan) => match plan.selected_preflight(&selected_group) {
@@ -3275,6 +3318,30 @@ async fn relay_endpoint_with_auth(
             },
             None => None,
         };
+    }
+    if let Some(preflight) = tiered_billing_preflight
+        .as_ref()
+        .filter(|preflight| preflight.reserve_applied)
+    {
+        let selected_at = unix_timestamp();
+        if let Err(err) = bind_tiered_billing_selected_attempt(
+            &db,
+            preflight,
+            channel.id,
+            &selected_group,
+            selected_at,
+            relay_billing_reservation_lease_seconds(&env),
+        )
+        .await
+        {
+            return openai_error_response(
+                format!("failed to bind selected relay billing attempt: {err}"),
+                500,
+            );
+        }
+    }
+    if model_route_audit.wfp_worker.is_some() {
+        strip_wfp_internal_response_headers(upstream_response.headers_mut())?;
     }
     let ai_gateway_direct_fallback = upstream_response
         .headers()
@@ -5701,6 +5768,35 @@ fn optional_env_var(env: &Env, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+pub(crate) fn relay_billing_reservation_ledger_compiled() -> bool {
+    RELAY_BILLING_RESERVATION_LEASE_MIN_SECONDS < RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        && RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+            <= RELAY_BILLING_RESERVATION_LEASE_MAX_SECONDS
+        && crate::d1_repositories::RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS > 0
+}
+
+pub(crate) fn relay_billing_orphan_recovery_enabled(env: &Env) -> bool {
+    env_flag(optional_env_var(env, RELAY_BILLING_ORPHAN_RECOVERY_ENABLED_ENV).as_deref())
+}
+
+pub(crate) fn relay_billing_reservation_lease_seconds(env: &Env) -> i64 {
+    optional_env_var(env, RELAY_BILLING_RESERVATION_LEASE_SECONDS_ENV)
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| {
+            (RELAY_BILLING_RESERVATION_LEASE_MIN_SECONDS
+                ..=RELAY_BILLING_RESERVATION_LEASE_MAX_SECONDS)
+                .contains(value)
+        })
+        .unwrap_or(RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS)
+}
+
+pub(crate) fn relay_billing_orphan_sweep_limit(env: &Env) -> i64 {
+    optional_env_var(env, RELAY_BILLING_ORPHAN_SWEEP_LIMIT_ENV)
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| (1..=64).contains(value))
+        .unwrap_or(RELAY_BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT)
+}
+
 fn optional_secret_or_env_var(env: &Env, name: &str) -> Option<String> {
     env.secret(name)
         .ok()
@@ -8036,6 +8132,35 @@ async fn record_owned_relay_audit(
     upstream_request_id: Option<String>,
     log_label: &'static str,
 ) {
+    // A tiered reserve has durable financial state and must be finalized before
+    // returning a buffered response. Streaming responses retain waitUntil so
+    // their cloned body can be consumed after the client response starts; the
+    // D1 lease sweep conservatively refunds an abandoned stream reservation.
+    if audit
+        .tiered_billing_preflight
+        .as_ref()
+        .is_some_and(|preflight| preflight.reserve_applied)
+    {
+        if let Err(err) = record_relay_audit(
+            &env,
+            &db,
+            &auth,
+            &channel,
+            &model,
+            &group,
+            &endpoint_path,
+            status,
+            &usage,
+            &audit,
+            upstream_request_id.as_deref(),
+            false,
+        )
+        .await
+        {
+            worker::console_error!("failed to record {} audit: {}", log_label, err);
+        }
+        return;
+    }
     if let Some(context) = context {
         context.wait_until(async move {
             if let Err(err) = record_relay_audit(
@@ -8272,8 +8397,15 @@ async fn complete_streaming_relay_response(
         Ok(response) => response,
         Err(err) => {
             if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
-                if let Err(refund_err) =
-                    refund_tiered_billing_preflight(&db, &auth, preflight, unix_timestamp()).await
+                if let Err(refund_err) = refund_tiered_billing_preflight(
+                    &db,
+                    &auth,
+                    preflight,
+                    "stream_clone_failed",
+                    crate::d1_repositories::RelayBillingRequestAccounting::Skip,
+                    unix_timestamp(),
+                )
+                .await
                 {
                     return Err(worker::Error::RustError(format!(
                         "failed to initialize streaming audit branch: {err}; tiered billing reserve refund failed: {refund_err}"
@@ -8507,22 +8639,48 @@ async fn record_relay_audit(
     let mut quota = 0;
     let mut billing_applied = false;
     let mut billing_resolved = false;
+    let mut request_count_owned_by_ledger = audit
+        .tiered_billing_preflight
+        .as_ref()
+        .is_some_and(|preflight| preflight.reserve_applied);
     if let Some(preflight) = audit.tiered_billing_preflight.as_ref() {
+        if let Some(reservation_key) = preflight.reservation_key.as_deref() {
+            set_json_string(
+                &mut other,
+                "billing_reservation_key",
+                reservation_key.to_string(),
+            );
+            set_json_string(&mut other, "billing_ledger_outcome", "pending".to_string());
+        }
         if upstream_status < 400 && usage_present {
             match tiered_billing_settlement(preflight, usage, &audit.billing_request_input) {
                 Ok(outcome) => {
                     let final_quota = outcome.final_quota;
                     let quota_result = if preflight.reserve_applied {
-                        crate::d1_repositories::settle_reserved_relay_quota_usage(
-                            db,
-                            auth.user_id,
-                            auth.token_id,
-                            channel.id,
-                            preflight.pre_consumed_quota,
-                            final_quota,
-                            now,
-                        )
-                        .await
+                        let reservation_key =
+                            preflight.reservation_key.as_deref().ok_or_else(|| {
+                                worker::Error::RustError(
+                                    "relay billing reservation key is missing".to_string(),
+                                )
+                            });
+                        match reservation_key {
+                            Ok(reservation_key) => {
+                                crate::d1_repositories::settle_relay_billing_reservation(
+                                    db,
+                                    reservation_key,
+                                    channel.id,
+                                    group,
+                                    final_quota,
+                                    "usage_settlement",
+                                    now,
+                                )
+                                .await
+                                .and_then(|outcome| {
+                                    require_relay_billing_finalization(outcome, "settlement")
+                                })
+                            }
+                            Err(err) => Err(err),
+                        }
                     } else {
                         crate::d1_repositories::apply_relay_quota_usage(
                             db,
@@ -8539,7 +8697,13 @@ async fn record_relay_audit(
                             quota = final_quota;
                             billing_applied = true;
                             billing_resolved = true;
+                            request_count_owned_by_ledger = true;
                             set_json_bool(&mut other, "billing_pending", false);
+                            set_json_string(
+                                &mut other,
+                                "billing_ledger_outcome",
+                                "settled".to_string(),
+                            );
                             apply_tiered_log_display_metadata(
                                 &mut other,
                                 &outcome.snapshot,
@@ -8573,22 +8737,41 @@ async fn record_relay_audit(
                 }
                 Err(err) => {
                     if preflight.reserve_applied {
-                        match crate::d1_repositories::settle_reserved_relay_quota_usage(
-                            db,
-                            auth.user_id,
-                            auth.token_id,
-                            channel.id,
-                            preflight.pre_consumed_quota,
-                            preflight.pre_consumed_quota,
-                            now,
-                        )
-                        .await
-                        {
+                        let fallback_settlement = match preflight.reservation_key.as_deref() {
+                            Some(reservation_key) => {
+                                crate::d1_repositories::settle_relay_billing_reservation(
+                                    db,
+                                    reservation_key,
+                                    channel.id,
+                                    group,
+                                    preflight.pre_consumed_quota,
+                                    "expression_fallback_settlement",
+                                    now,
+                                )
+                                .await
+                                .and_then(|outcome| {
+                                    require_relay_billing_finalization(
+                                        outcome,
+                                        "fallback settlement",
+                                    )
+                                })
+                            }
+                            None => Err(worker::Error::RustError(
+                                "relay billing reservation key is missing".to_string(),
+                            )),
+                        };
+                        match fallback_settlement {
                             Ok(()) => {
                                 quota = preflight.pre_consumed_quota;
                                 billing_applied = true;
                                 billing_resolved = true;
+                                request_count_owned_by_ledger = true;
                                 set_json_bool(&mut other, "billing_pending", false);
+                                set_json_string(
+                                    &mut other,
+                                    "billing_ledger_outcome",
+                                    "settled".to_string(),
+                                );
                                 set_json_value(
                                     &mut other,
                                     "tiered_billing_fallback",
@@ -8609,22 +8792,31 @@ async fn record_relay_audit(
                 }
             }
         } else if preflight.reserve_applied {
-            match refund_tiered_billing_preflight(db, auth, preflight, now).await {
+            let reason = refund_reason(
+                upstream_status,
+                usage,
+                is_stream,
+                audit.missing_usage_estimate_enabled,
+            );
+            match refund_tiered_billing_preflight(
+                db,
+                auth,
+                preflight,
+                reason,
+                crate::d1_repositories::RelayBillingRequestAccounting::Account,
+                now,
+            )
+            .await
+            {
                 Ok(()) => {
                     billing_resolved = true;
+                    request_count_owned_by_ledger = true;
                     set_json_bool(&mut other, "billing_pending", false);
+                    set_json_string(&mut other, "billing_ledger_outcome", "refunded".to_string());
                     set_json_value(
                         &mut other,
                         "tiered_billing_refund",
-                        tiered_billing_refund_metadata(
-                            preflight,
-                            refund_reason(
-                                upstream_status,
-                                usage,
-                                is_stream,
-                                audit.missing_usage_estimate_enabled,
-                            ),
-                        ),
+                        tiered_billing_refund_metadata(preflight, reason),
                     );
                 }
                 Err(err) => {
@@ -8694,7 +8886,7 @@ async fn record_relay_audit(
         }
     }
 
-    if !billing_applied {
+    if !billing_applied && !request_count_owned_by_ledger {
         if auth.token_id > 0 {
             crate::d1_repositories::touch_token(db, auth.token_id, now).await?;
         }
@@ -8924,6 +9116,7 @@ struct TieredBillingPreflight {
     selected_group: String,
     candidate_group_count: usize,
     reservation_strategy: &'static str,
+    reservation_key: Option<String>,
 }
 
 #[derive(Clone)]
@@ -8931,6 +9124,7 @@ struct TieredBillingGroupPlan {
     snapshots: HashMap<String, TieredBillingSnapshot>,
     reserved_quota: i64,
     reserve_applied: bool,
+    reservation_key: Option<String>,
 }
 
 impl TieredBillingGroupPlan {
@@ -8947,6 +9141,7 @@ impl TieredBillingGroupPlan {
             } else {
                 TIERED_BILLING_SELECTED_GROUP_STRATEGY
             },
+            reservation_key: self.reservation_key.clone(),
         })
     }
 }
@@ -9066,11 +9261,21 @@ pub(crate) async fn execute_actual_group_billing_smoke_plan(
         TIERED_BILLING_SELECTED_GROUP_STRATEGY
     };
     let reserved_quota = plan.reserved_quota;
-    reserve_tiered_billing_group_plan(db, auth, &mut plan, now).await?;
+    reserve_tiered_billing_group_plan(
+        db,
+        auth,
+        &mut plan,
+        model,
+        "actual-group-billing-smoke",
+        None,
+        RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS,
+        now,
+    )
+    .await?;
 
     match action {
         ActualGroupBillingSmokeAction::RefundExhaustedPlan => {
-            refund_tiered_billing_group_plan(db, auth, &plan, now).await?;
+            refund_tiered_billing_group_plan(db, auth, &plan, "staging_smoke_refund", now).await?;
             Ok(ActualGroupBillingSmokeEvidence {
                 candidate_group_count,
                 reservation_strategy,
@@ -9085,13 +9290,24 @@ pub(crate) async fn execute_actual_group_billing_smoke_plan(
         }
         ActualGroupBillingSmokeAction::SettleSelectedGroup => {
             let Some(preflight) = plan.selected_preflight(selected_group) else {
-                let _ = refund_tiered_billing_group_plan(db, auth, &plan, now).await;
+                let _ =
+                    refund_tiered_billing_group_plan(db, auth, &plan, "staging_smoke_cleanup", now)
+                        .await;
                 return Err(worker::Error::RustError(format!(
                     "actual-group billing smoke snapshot missing for selected group {selected_group}"
                 )));
             };
             let selected_group_ratio = preflight.snapshot.group_ratio;
             let selected_group_estimated_quota = preflight.snapshot.estimated_quota_after_group.0;
+            bind_tiered_billing_selected_attempt(
+                db,
+                &preflight,
+                channel_id,
+                selected_group,
+                now,
+                RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS,
+            )
+            .await?;
             let usage = UsageSummary {
                 prompt_tokens: 100,
                 completion_tokens: 50,
@@ -9101,23 +9317,33 @@ pub(crate) async fn execute_actual_group_billing_smoke_plan(
             let outcome = match tiered_billing_settlement(&preflight, &usage, &request) {
                 Ok(outcome) => outcome,
                 Err(err) => {
-                    let _ = refund_tiered_billing_group_plan(db, auth, &plan, now).await;
+                    let _ = refund_tiered_billing_group_plan(
+                        db,
+                        auth,
+                        &plan,
+                        "staging_smoke_cleanup",
+                        now,
+                    )
+                    .await;
                     return Err(worker::Error::RustError(err));
                 }
             };
-            if let Err(err) = crate::d1_repositories::settle_reserved_relay_quota_usage(
-                db,
-                auth.user_id,
-                auth.token_id,
-                channel_id,
-                preflight.pre_consumed_quota,
-                outcome.final_quota,
-                now,
-            )
-            .await
-            {
-                return Err(err);
-            }
+            let reservation_key = preflight.reservation_key.as_deref().ok_or_else(|| {
+                worker::Error::RustError("relay billing reservation key is missing".to_string())
+            })?;
+            require_relay_billing_finalization(
+                crate::d1_repositories::settle_relay_billing_reservation(
+                    db,
+                    reservation_key,
+                    channel_id,
+                    selected_group,
+                    outcome.final_quota,
+                    "staging_smoke_settlement",
+                    now,
+                )
+                .await?,
+                "staging-smoke settlement",
+            )?;
             Ok(ActualGroupBillingSmokeEvidence {
                 candidate_group_count,
                 reservation_strategy,
@@ -9159,6 +9385,7 @@ fn tiered_billing_group_plan_from_base(
         snapshots,
         reserved_quota,
         reserve_applied: false,
+        reservation_key: None,
     })
 }
 
@@ -9189,6 +9416,7 @@ fn tiered_billing_preflight_snapshot(
         selected_group: String::new(),
         candidate_group_count: 1,
         reservation_strategy: TIERED_BILLING_SELECTED_GROUP_STRATEGY,
+        reservation_key: None,
     })
 }
 
@@ -9196,59 +9424,184 @@ async fn reserve_tiered_billing_group_plan(
     db: &D1Database,
     auth: &AuthenticatedToken,
     plan: &mut TieredBillingGroupPlan,
+    model: &str,
+    endpoint_path: &str,
+    request_id: Option<&str>,
+    lease_seconds: i64,
     now: i64,
 ) -> worker::Result<()> {
     if plan.reserved_quota == 0 {
         return Ok(());
     }
-    crate::d1_repositories::reserve_relay_quota(
+    let reservation_key = format!(
+        "relayreserve-{}",
+        random_terminal_audit_event_id().ok_or_else(|| {
+            worker::Error::RustError(
+                "cryptographic entropy unavailable for relay billing reservation".to_string(),
+            )
+        })?
+    );
+    let expr_hash = plan
+        .snapshots
+        .values()
+        .next()
+        .map(|snapshot| snapshot.expr_hash.as_str())
+        .unwrap_or_default();
+    let reservation_strategy = if plan.snapshots.len() > 1 {
+        TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY
+    } else {
+        TIERED_BILLING_SELECTED_GROUP_STRATEGY
+    };
+    let request_id_hash = request_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("sha256:{:x}", Sha256::digest(value.as_bytes())))
+        .unwrap_or_default();
+    let outcome = crate::d1_repositories::reserve_relay_billing_quota(
         db,
-        auth.user_id,
-        auth.token_id,
-        plan.reserved_quota,
-        now,
+        crate::d1_repositories::RelayBillingReservationRecord {
+            reservation_key: &reservation_key,
+            user_id: auth.user_id,
+            token_id: auth.token_id,
+            model_name: model,
+            endpoint_path,
+            request_id_hash: &request_id_hash,
+            expr_hash,
+            candidate_group_count: i64::try_from(plan.snapshots.len()).unwrap_or(i64::MAX),
+            reservation_strategy,
+            pre_consumed_quota: plan.reserved_quota,
+            created_at: now,
+            lease_expires_at: now.saturating_add(lease_seconds),
+        },
     )
     .await?;
+    if outcome != crate::d1_repositories::RelayBillingReservationWriteOutcome::Applied {
+        return Err(worker::Error::RustError(
+            "relay billing reservation key collision".to_string(),
+        ));
+    }
     plan.reserve_applied = true;
+    plan.reservation_key = Some(reservation_key);
     Ok(())
 }
 
 async fn refund_tiered_billing_group_plan(
     db: &D1Database,
-    auth: &AuthenticatedToken,
+    _auth: &AuthenticatedToken,
     plan: &TieredBillingGroupPlan,
+    finalization_reason: &str,
     now: i64,
 ) -> worker::Result<()> {
     if !plan.reserve_applied || plan.reserved_quota == 0 {
         return Ok(());
     }
-    crate::d1_repositories::refund_reserved_relay_quota(
-        db,
-        auth.user_id,
-        auth.token_id,
-        plan.reserved_quota,
-        now,
+    let reservation_key = plan.reservation_key.as_deref().ok_or_else(|| {
+        worker::Error::RustError("relay billing reservation key is missing".to_string())
+    })?;
+    require_relay_billing_finalization(
+        crate::d1_repositories::refund_relay_billing_reservation(
+            db,
+            reservation_key,
+            finalization_reason,
+            crate::d1_repositories::RelayBillingRequestAccounting::Skip,
+            now,
+        )
+        .await?,
+        "refund",
     )
-    .await
 }
 
 async fn refund_tiered_billing_preflight(
     db: &D1Database,
-    auth: &AuthenticatedToken,
+    _auth: &AuthenticatedToken,
     preflight: &TieredBillingPreflight,
+    finalization_reason: &str,
+    request_accounting: crate::d1_repositories::RelayBillingRequestAccounting,
     now: i64,
 ) -> worker::Result<()> {
     if !preflight.reserve_applied || preflight.pre_consumed_quota == 0 {
         return Ok(());
     }
-    crate::d1_repositories::refund_reserved_relay_quota(
-        db,
-        auth.user_id,
-        auth.token_id,
-        preflight.pre_consumed_quota,
-        now,
+    let reservation_key = preflight.reservation_key.as_deref().ok_or_else(|| {
+        worker::Error::RustError("relay billing reservation key is missing".to_string())
+    })?;
+    require_relay_billing_finalization(
+        crate::d1_repositories::refund_relay_billing_reservation(
+            db,
+            reservation_key,
+            finalization_reason,
+            request_accounting,
+            now,
+        )
+        .await?,
+        "refund",
     )
-    .await
+}
+
+fn require_relay_billing_finalization(
+    outcome: crate::d1_repositories::RelayBillingReservationFinalizationOutcome,
+    action: &str,
+) -> worker::Result<()> {
+    use crate::d1_repositories::RelayBillingReservationFinalizationOutcome as Outcome;
+    match outcome {
+        Outcome::Applied | Outcome::MatchingSettled | Outcome::MatchingRefund => Ok(()),
+        Outcome::SettlementWon => Err(worker::Error::RustError(format!(
+            "relay billing settlement already won before {action}"
+        ))),
+        Outcome::RefundWon => Err(worker::Error::RustError(format!(
+            "relay billing refund already won before {action}"
+        ))),
+        Outcome::Conflict => Err(worker::Error::RustError(format!(
+            "relay billing reservation conflicts with {action}"
+        ))),
+        Outcome::NotFound => Err(worker::Error::RustError(format!(
+            "relay billing reservation was not found during {action}"
+        ))),
+        Outcome::LeaseActive => Err(worker::Error::RustError(format!(
+            "relay billing reservation lease is still active during {action}"
+        ))),
+        Outcome::DeadlineExpired => Err(worker::Error::RustError(format!(
+            "relay billing reservation deadline expired before {action}"
+        ))),
+        Outcome::RecoveryRequired => Err(worker::Error::RustError(format!(
+            "relay billing reservation requires reconciliation before {action}"
+        ))),
+    }
+}
+
+async fn bind_tiered_billing_selected_attempt(
+    db: &D1Database,
+    preflight: &TieredBillingPreflight,
+    channel_id: i64,
+    selected_group: &str,
+    selected_at: i64,
+    lease_seconds: i64,
+) -> worker::Result<()> {
+    use crate::d1_repositories::RelayBillingSelectionOutcome as Outcome;
+    let reservation_key = preflight.reservation_key.as_deref().ok_or_else(|| {
+        worker::Error::RustError("relay billing reservation key is missing".to_string())
+    })?;
+    match crate::d1_repositories::bind_relay_billing_selected_attempt(
+        db,
+        reservation_key,
+        channel_id,
+        selected_group,
+        selected_at,
+        selected_at.saturating_add(lease_seconds),
+    )
+    .await?
+    {
+        Outcome::Applied | Outcome::MatchingSelection => Ok(()),
+        Outcome::AlreadyFinalized => Err(worker::Error::RustError(
+            "relay billing reservation was finalized before selected-attempt binding".to_string(),
+        )),
+        Outcome::Conflict => Err(worker::Error::RustError(
+            "relay billing reservation selected-attempt conflict".to_string(),
+        )),
+        Outcome::NotFound => Err(worker::Error::RustError(
+            "relay billing reservation was not found during selected-attempt binding".to_string(),
+        )),
+    }
 }
 
 fn tiered_billing_settlement(

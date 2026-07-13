@@ -100,7 +100,8 @@ for isolated staging, not an all-traffic production declaration.
 ### Data, Billing, Auth, Payments, And Tasks
 
 - D1 has 22 contiguous migrations and the local SQLite verifier expects 27
-  business tables, 69 incremental columns, and 17 key indexes.
+  business tables plus the two relay-billing tables, 105 incremental columns,
+  and 20 key indexes.
 - Deterministic source-to-D1 reconciliation tooling exists for core entities,
   topups, Passkeys, TOTP, and backup codes. No production freeze/export/import/
   hash artifact has been supplied.
@@ -170,7 +171,7 @@ correct fail-closed state.
 
 1. Rotate the exposed Cloudflare credential and create scoped staging and
    production credentials; do not reuse the exposed value.
-2. Apply and verify all 22 D1 migrations in isolated staging, then run the full
+2. Apply and verify all 23 D1 migrations in isolated staging, then run the full
    production-source reconciliation toolchain against a controlled snapshot.
 3. Deploy the main Worker and frontend to a staging hostname and execute the
    browser/API owner matrix before enabling any paid transport.

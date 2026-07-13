@@ -167,6 +167,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // keeps `cargo test` / wasm check working without a built frontend.
     }
 
+    if req.method() == Method::Get && path == "/api/platform/relay-billing/ledger/status" {
+        let mut response = platform_gateway::relay_billing_ledger_status(req, env).await?;
+        upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
+        return Ok(response);
+    }
+
     let response = Router::with_data(ctx)
         .get_async("/api/status", |req, ctx| async move {
             admin::get_status(req, ctx.env).await
@@ -1360,8 +1366,8 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             relay::image_edits(req, env, event_ctx).await
         })
         .run(req, env)
-        .await;
-    let mut response = response?;
+        .await?;
+    let mut response = response;
     upgrade_cors_for_origin(&mut response, cors_allow_origin.as_deref());
     Ok(response)
 }
@@ -1393,6 +1399,54 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
         .map(|value| value.to_string())
         .unwrap_or_else(|_| "v1beta".to_string());
     let now = (worker::Date::now().as_millis() / 1000) as i64;
+    if relay::relay_billing_orphan_recovery_enabled(&env) {
+        match d1_repositories::relay_billing_reservation_schema_ready(&db).await {
+            Ok(true) => {
+                if let Err(err) =
+                    d1_repositories::mark_relay_billing_recovery_started(&db, now).await
+                {
+                    worker::console_error!("relay billing orphan sweep start status failed: {err}");
+                }
+                match d1_repositories::sweep_expired_relay_billing_reservations(
+                    &db,
+                    now,
+                    relay::relay_billing_orphan_sweep_limit(&env),
+                )
+                .await
+                {
+                    Ok(summary) => {
+                        if let Err(err) = d1_repositories::mark_relay_billing_recovery_completed(
+                            &db, now, summary,
+                        )
+                        .await
+                        {
+                            worker::console_error!(
+                                "relay billing orphan sweep completion status failed: {err}"
+                            );
+                        }
+                        worker::console_log!(
+                            "relay billing orphan sweep: candidates={} refunded={} recovery_required={} finalized={} active={} missing={} failed={} deferred={}",
+                            summary.candidates,
+                            summary.refunded,
+                            summary.recovery_required,
+                            summary.already_finalized,
+                            summary.lease_active,
+                            summary.not_found,
+                            summary.failed,
+                            summary.deferred
+                        );
+                    }
+                    Err(err) => worker::console_error!("relay billing orphan sweep failed: {err}"),
+                }
+            }
+            Ok(false) => worker::console_error!(
+                "relay billing orphan sweep refused: migration 0023 is not applied"
+            ),
+            Err(err) => {
+                worker::console_error!("relay billing orphan sweep migration check failed: {err}")
+            }
+        }
+    }
     if realtime_session::realtime_billing_orphan_recovery_enabled(&env) {
         match d1_repositories::realtime_billing_global_recovery_schema_ready(&db).await {
             Ok(true) => {
@@ -1834,6 +1888,7 @@ mod tests {
             "/api/status",
             "/api/setup",
             "/api/platform/capabilities",
+            "/api/platform/relay-billing/ledger/status",
             "/api/platform/task-runner/task-smoke/status",
             "/api/platform/dispatch/tenant-a",
             "/api/platform/realtime/session-a",

@@ -888,7 +888,7 @@ function buildStagingPlan(options) {
     },
     requiredBeforeRun: [
       "Confirm the target database is an isolated staging D1, not production.",
-      "Apply migrations through migrations/d1/0022_realtime_billing_global_recovery.sql.",
+      "Apply migrations through migrations/d1/0023_relay_billing_reservations.sql.",
       "Write each sqlArtifacts[].sql body to its sqlArtifacts[].path exactly, then review it before running.",
       "Use Wrangler SQL artifacts only for setup, verification, and cleanup; do not treat multi-statement SQL files as D1Database.batch evidence.",
       "Apply the settlement through the deployed Worker binding path, then archive Wrangler stdout/stderr, Worker smoke output, D1 row snapshots, capabilities output, and the matching git commit SHA.",
@@ -964,7 +964,7 @@ function buildBindingSmokePlan(options) {
       "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
       "Keep ENVIRONMENT=staging; the Worker route rejects production.",
       "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
-      "Run against an isolated staging D1 database with migrations through 0022 applied.",
+      "Run against an isolated staging D1 database with migrations through 0023 applied.",
       "Archive /api/platform/capabilities before and after the smoke run.",
     ],
     requests: options.scenarios.map((scenario) => ({

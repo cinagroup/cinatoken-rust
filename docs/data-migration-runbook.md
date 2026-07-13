@@ -55,10 +55,10 @@ bun run verify:sqlite
 
 The config audit requires the top-level, staging, and production D1 binding
 tables to set `migrations_dir = "migrations/d1"`; it also requires a contiguous
-22-file sequence from `0001_core.sql` through
-`0022_realtime_billing_global_recovery.sql`. The SQLite verifier applies all 22
-migrations by default and requires 27 target tables. A real local Wrangler D1
-apply completed through 0020 on 2026-07-10 and must be refreshed through 0022.
+23-file sequence from `0001_core.sql` through
+`0023_relay_billing_reservations.sql`. The SQLite verifier applies all 23
+migrations by default and requires 29 target tables. A real local Wrangler D1
+apply completed through 0020 on 2026-07-10 and must be refreshed through 0023.
 
 The audit also verifies `wrangler.d1-local.toml`, the narrow local management
 shape used by the managed Realtime suite. Wrangler 4.103 can leave a
@@ -185,13 +185,14 @@ field-level defects in `docs/source-d1-schema-parity.md`. In particular
 `abilities` must regain its `tag` column and `(group_name, model, channel_id)`
 uniqueness (verify dedup first), `users` needs its OAuth-id lookup indexes, and
 the `logs` admin-search index/strategy must be decided. The repository now
-carries migrations 0001-0022, including `0004_schema_parity.sql`,
+carries migrations 0001-0023, including `0004_schema_parity.sql`,
 `0008_model_meta.sql`, `0010_custom_oauth.sql`, and
-`0021_realtime_billing_bridge_segments.sql` and
-`0022_realtime_billing_global_recovery.sql`. Apply the complete ordered
+`0021_realtime_billing_bridge_segments.sql`,
+`0022_realtime_billing_global_recovery.sql`, and
+`0023_relay_billing_reservations.sql`. Apply the complete ordered
 migration set to staging D1 and re-run the row/hash verification below before
 treating Wave 0 as passed. Local SQLite schema replay currently succeeds with
-all 22 migrations, 27 required tables, 69 incremental key columns, and 17 key
+all 23 migrations, 29 required tables, 105 incremental key columns, and 20 key
 indexes; that is not a substitute for source-row reconciliation or staging D1
 evidence.
 
@@ -215,7 +216,7 @@ to a segment safely after the fact.
 
 Migration 0022 must be applied while global recovery remains disabled. It adds
 only the global scan/retry/status schema; applying it does not authorize money
-movement. Verify the exact 22-file ledger and capability snapshot before the
+movement. Verify the exact 23-file ledger and capability snapshot before the
 isolated Phase 4c recovery smoke enables the gate.
 
 ## Export And Convert

@@ -40,8 +40,8 @@ Required local state:
 - On Windows, Microsoft Visual C++ 2015-2022 Redistributable (x64) is installed
   so Wrangler's local `workerd` can start.
 - `bun run check:d1:migration-config` passes.
-- `bun run verify:sqlite` reports 22 migrations, 27 required tables, 68
-  incremental key columns, and 17 key indexes, including the 0020 and 0021
+- `bun run verify:sqlite` reports 23 migrations, 29 required tables, 105
+  incremental key columns, and 20 key indexes, including the 0020 and 0021
   active-reservation guards.
 - `bun run check` passes.
 - `cargo test -p cinatoken-worker --lib` passes.
@@ -137,9 +137,9 @@ bun run check:cf:startup
 Pass criteria:
 
 - No test failures.
-- All three D1 binding tables use `migrations/d1`; migrations 0001-0022 are
-  contiguous; the local SQLite verifier finds all 27 required tables, 68
-  incremental key columns, and 17 key indexes.
+- All three D1 binding tables use `migrations/d1`; migrations 0001-0023 are
+  contiguous; the local SQLite verifier finds all 29 required tables, 105
+  incremental key columns, and 20 key indexes.
 - No formatting or whitespace errors.
 - Cloudflare dry-run/startup checks pass, or the missing local dependency is
   recorded as a known local limitation.
@@ -1425,8 +1425,8 @@ Preconditions:
 
 1. `bun run check` and `bun run check:do-lifecycle-runtime` pass at the exact
    candidate commit.
-2. Remote `d1_migrations` is the exact 22-file set through
-   `0022_realtime_billing_global_recovery.sql`; archive redacted Wrangler output
+2. Remote `d1_migrations` is the exact 23-file set through
+   `0023_relay_billing_reservations.sql`; archive redacted Wrangler output
    and `/api/platform/capabilities` with `d1_migration_ready=true`.
 3. Capabilities report global recovery compiled, grace 300, limit in `1..64`,
    ledger status compiled, recovery disabled, and v1 cutover false.
@@ -1470,6 +1470,38 @@ Rollback:
 Any wrong winner, double mutation, stale successful-sweep signal, unbounded
 query count, raw identifier leakage, or unexplained D1/DO ownership state is an
 immediate G7 abort. Local Workerd evidence does not satisfy this remote phase.
+
+## Phase 4c.1: HTTP Tiered Billing Reservation Recovery
+
+Apply migration 0023 while the old Worker still serves and both billing
+recovery gates are false. Only then deploy the ledger-writing Worker. Do not
+enable HTTP recovery merely because the capability endpoint says it is ready
+to verify.
+
+Pass criteria:
+
+1. Direct JSON, SSE, AI Gateway, cross-model fallback, and WFP-authority relay
+   fixtures produce one central D1 reservation owner; WFP performs no billing
+   mutation.
+2. Reserve, selected bind, settle, explicit refund, matching replay, ambiguous
+   commit, and settle/refund race fixtures have exact user/token/channel/request
+   deltas and no half mutation.
+3. A post-grace unbound fixture refunds exactly once under overlapping cron
+   delivery and leaves `request_accounted=0`. A post-grace bound fixture keeps
+   reserved quota and moves exactly once to `recovery_required`.
+4. `GET /api/platform/relay-billing/ledger/status` rejects non-admin access,
+   sends `Cache-Control: no-store`, contains only SHA-256 reservation/account
+   fingerprints, and reports refund/quarantine/failure/defer counters.
+5. The staging smoke cleanup leaves zero matching reservation, user, token,
+   channel, and audit fixture rows.
+6. Recovery remains false until an enforced maximum SSE lifetime is lower than
+   the selected lease minus measured scheduling/settlement margin, or active
+   streams renew their leases. Without that proof, the only passing decision is
+   to leave recovery disabled.
+
+Rollback disables HTTP recovery first, retains migration 0023 and every ledger
+row, routes affected traffic back to Go/VPS, and reconciles all `reserved` and
+`recovery_required` rows before any manual quota correction.
 
 ## Phase 4d: Tencent Hunyuan TC3 Chat
 

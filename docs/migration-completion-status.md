@@ -425,3 +425,19 @@ authenticated reserve/settlement retry across eviction, D1/DO owner
 correlation, query-budget measurement, alerts, provider/billing reconciliation,
 credential rotation, canary, and rollback remain blockers. Production remains
 **NO-GO**.
+
+## 2026-07-13 Ordinary Relay Billing Reservation Status
+
+Migration 0023 now gives positive HTTP tiered pre-consumption an atomic D1
+reservation owner. Selected-attempt binding, matching replay classification,
+guarded settle/refund batches, request-count ownership, audit correlation, and
+a bounded expired-reservation sweep are implemented locally. The sweep refunds
+only unbound rows; bound rows with missing final usage enter
+`recovery_required`. Buffered tiered settlement is attempted synchronously;
+streaming still depends on asynchronous final-usage capture.
+
+The local chain verifies as 23 migrations, 29 tables, 105 incremental columns,
+and 20 key indexes. Recovery is explicitly false in all Wrangler environments.
+Remote migration, cron proof, long-stream lease policy, failure injection,
+ledger/accounting/audit reconciliation, alerting, and rollback remain blockers.
+This closes a local implementation gap, not the production migration goal.

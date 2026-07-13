@@ -656,6 +656,14 @@ async fn cleanup_fixture(db: &D1Database, saved_options: &[SavedOption]) -> Work
 }
 
 async fn cleanup_fixture_rows(db: &D1Database) -> WorkerResult<()> {
+    let reservation_args = [
+        D1Type::Integer(USER_ID as i32),
+        D1Type::Integer(TOKEN_ID as i32),
+    ];
+    db.prepare("DELETE FROM relay_billing_reservations WHERE user_id = ?1 AND token_id = ?2")
+        .bind_refs(&reservation_args)?
+        .run()
+        .await?;
     for (table, id, marker_column, marker) in [
         ("tokens", TOKEN_ID, "key", TOKEN_KEY),
         ("channels", CHANNEL_ID, "name", "actual-group billing smoke"),
@@ -704,7 +712,9 @@ async fn verify_cleanup(db: &D1Database, saved_options: &[SavedOption]) -> Worke
         .prepare(&format!(
             "SELECT ((SELECT COUNT(1) FROM users WHERE id = {USER_ID}) + \
              (SELECT COUNT(1) FROM tokens WHERE id = {TOKEN_ID}) + \
-             (SELECT COUNT(1) FROM channels WHERE id = {CHANNEL_ID})) AS count"
+             (SELECT COUNT(1) FROM channels WHERE id = {CHANNEL_ID}) + \
+             (SELECT COUNT(1) FROM relay_billing_reservations \
+              WHERE user_id = {USER_ID} AND token_id = {TOKEN_ID})) AS count"
         ))
         .first::<CountRow>(None)
         .await?

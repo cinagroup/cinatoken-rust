@@ -381,6 +381,17 @@ mod tests {
             .owner,
             GatewayOwner::ApiRouter
         );
+        assert_eq!(
+            plan_request(
+                request(
+                    GatewayMethod::Other,
+                    "/api/platform/relay-billing/ledger/status",
+                ),
+                config(),
+            )
+            .owner,
+            GatewayOwner::ApiRouter
+        );
     }
 
     #[test]

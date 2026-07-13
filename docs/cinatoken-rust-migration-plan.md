@@ -10708,8 +10708,8 @@ Implemented locally:
 - Migration `0022_realtime_billing_global_recovery.sql` adds a partial global
   lease index matching the oldest-expiry scan, a recent-outcome index, three
   non-secret retry scheduling columns, and a singleton aggregate sweep-state
-  row. The verified chain is now 22 migrations, 27 required tables, 69
-  incremental columns, and 17 key indexes.
+  row. The verified chain at that increment was 22 migrations, 27 required
+  tables, 69 incremental columns, and 17 key indexes.
 - Settlement owns a reservation through the inclusive hard deadline
   `lease_expires_at + 300`. The global scanner selects only rows strictly after
   that boundary, and the settlement update repeats the deadline predicate in
@@ -10751,7 +10751,7 @@ Production rollout remains fail-closed:
 
 1. Rotate the exposed Cloudflare credential and authenticate with a new
    least-privilege credential; do not reuse the exposed value.
-2. Apply and verify the exact 22-file migration set in isolated staging while
+2. Apply and verify the exact 23-file migration set in isolated staging while
    all Realtime write/admission/recovery gates are off.
 3. Capture a capability snapshot, verify migration 0022 and the 300-second
    grace, then enable only global recovery with a sweep limit of 1 for the
@@ -11276,3 +11276,51 @@ credential, G3 staging must prove live TC3 acceptance, UTC and clock-skew
 behavior, direct/enveloped success, provider error and retry classes, response
 bounds, usage, reserve/settle/refund, D1/provider invoice reconciliation,
 disable/recovery, and rollback to Go/VPS. Production remains **NO-GO**.
+
+### 22.184 2026-07-13 Ordinary HTTP Relay Durable Billing Ownership
+
+The HTTP relay tiered pre-consume path previously mutated quota before the
+Worker had any durable reservation owner. Non-stream settlement could be
+deferred through `waitUntil`, and a permanently lost post-response task could
+leave quota stranded. Migration 0023 closes that local architecture gap.
+
+Implemented locally:
+
+- `relay_billing_reservations` owns one random key per positive reserve. Row
+  creation and user/token debit are one D1 batch; raw request bodies, prompts,
+  credentials, IPs, and request IDs are not stored.
+- The first selected response binds channel/group and extends the lease before
+  response-header transforms. Primary and cross-model fallback reserves remain
+  independent rows; interim refunds do not account a second client request.
+- Settlement and refund are guarded state transitions with quota/accounting in
+  the same batch. A lost D1 response is classified as a matching replay,
+  settlement winner, refund winner, or conflict instead of blindly repeating
+  mutations.
+- Buffered tiered responses attempt terminal finalization before return.
+  Streaming still obtains final usage from a cloned stream under `waitUntil`;
+  orphan recovery is a default-off, bounded cron that refunds expired unbound
+  rows but moves bound rows without durable final usage to
+  `recovery_required`, never re-evaluating mutable billing configuration.
+- `logs.other` correlates the ledger key and outcome; Queue remains audit
+  transport, while D1 is authoritative for quota correctness. An admin-only,
+  `no-store` status endpoint exposes hashed reservation/account identities and
+  bounded recovery metadata.
+- The exact local D1 chain is now 23 migrations through 0023, 29 required
+  tables, 105 incremental columns, and 20 key indexes. Platform capabilities
+  and the frontend operations panel expose the new gate state.
+
+The production decision remains **NO-GO**. Before enabling recovery, isolated
+staging must apply migration 0023 before deploying the ledger-writing Worker,
+keep the gate off, enforce and prove a stream lifetime below the lease margin,
+exercise crash/race/fallback cases,
+run a real scheduled event, reconcile all accounting and audit rows, attach
+alerts, and rehearse disable-first rollback. The authoritative runbook is
+`docs/relay-billing-reservations.md`.
+
+Final local evidence for this increment: Worker tests pass 629/629 and the full
+`bun run check` gate passes, including release Worker/WFP builds, Workerd 14/14,
+Playground 1/1, frontend build/readiness/security/budget/route gates, 23-file D1
+config and SQLite replay, all local smoke contracts, workspace tests, and all
+three wasm32 targets. No remote migration, credential, paid provider request,
+or deployment was used; recovery remains disabled and production remains
+**NO-GO**.

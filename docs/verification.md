@@ -3681,3 +3681,42 @@ authenticated frontend, and rollback evidence.
   until isolated staging proves both routes, usage and error handling,
   reservation/settlement/refund, audit/billing reconciliation, and rollback.
   Production remains **NO-GO**.
+
+## 2026-07-13 Zhipu v4 Direct Adapter Verification
+
+- The source type 16/type 26 adapters, billing-expression contract, and current
+  Zhipu documentation were reviewed before implementation. Current official
+  HTTP APIs use the v4 root. Type 26 is now Partial with the exact reviewed
+  `chat/completions`, `embeddings`, `images/generations`, and Anthropic
+  `messages` routes; legacy type 16 remains Deferred with an explicit migrate-
+  to-type-26 decision instead of guessing an obsolete v3 contract.
+- The type 26 request adapter ports the source chat normalization, keeps image
+  payloads to the current documented fields, preserves image URLs instead of
+  downloading arbitrary remote content inside the Worker, and rejects AI
+  Gateway/WFP mode before reservation because Cloudflare has no native Zhipu
+  provider route. Custom Provider staging remains a later, separately gated
+  option.
+- Billing expression changes were made only after reading the protected source
+  expression specification. A successful usage-less image generation now
+  settles by the explicit request contract: fixed-price expressions charge one
+  request without fabricated tokens, while tiered expressions receive the
+  actual zero-token vector and frozen request input. Failed image requests
+  still refund.
+- `cargo test -p cinatoken-providers --lib` passed 64/64 and
+  `cargo test -p cinatoken-billing --lib` passed 80/80. Focused Worker tests
+  cover the type 26 URLs, transforms, direct-only guard, type 16 deferral,
+  Channel Test selection, and image request-contract settlement. Frontend
+  readiness projection passed 2/2 and the broad readiness suite passed 22/22.
+- The complete `bun run check` gate passed at `2026-07-13T11:51:42Z` against
+  the implementation worktree based on
+  `448209f639efb34e6c7532bbefb20a96f5012a22`: release main/tenant/outbound
+  Rust/Wasm builds, Workerd 12/12, Playground 1/1, 217 frontend calls against
+  320 Worker routes with zero missing calls, bundle redaction/budget/lint,
+  22-migration/27-table D1 verification, all workspace tests, and all three
+  wasm32 checks. Only the two pre-existing unused topup repository warnings
+  remain.
+- No provider credential, Cloudflare credential, remote account, or live Zhipu
+  request was used. Type 26 remains Partial until isolated staging proves all
+  four routes, error and streaming behavior, billing/audit reconciliation,
+  rollback, and direct-vs-Custom-Provider deployment policy. Production remains
+  **NO-GO**.

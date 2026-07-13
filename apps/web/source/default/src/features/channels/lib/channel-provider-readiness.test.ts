@@ -102,8 +102,22 @@ describe('channel provider relay readiness', () => {
       ],
       reason: 'direct-only dual-format implementation',
     }
+    const zhipuV4 = {
+      channel_type: 26,
+      name: 'ZhipuV4',
+      adapter: 'zhipu_v4',
+      readiness: 'partial' as const,
+      routes: [
+        { method: 'POST', path: '/v1/chat/completions' },
+        { method: 'POST', path: '/v1/embeddings' },
+        { method: 'POST', path: '/v1/images/generations' },
+        { method: 'POST', path: '/v1/messages' },
+      ],
+      reason: 'direct-only current v4 implementation',
+    }
     const index = indexProviderReadiness([
       moonshot,
+      zhipuV4,
       perplexity,
       jina,
       siliconflow,
@@ -125,6 +139,16 @@ describe('channel provider relay readiness', () => {
       ]
     )
     assert.equal(index.get(27), perplexity)
+    assert.equal(index.get(26), zhipuV4)
+    assert.deepEqual(
+      index.get(26)?.routes.map((route) => route.path),
+      [
+        '/v1/chat/completions',
+        '/v1/embeddings',
+        '/v1/images/generations',
+        '/v1/messages',
+      ]
+    )
     assert.deepEqual(index.get(27)?.routes, [
       { method: 'POST', path: '/v1/chat/completions' },
     ])

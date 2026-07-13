@@ -206,15 +206,18 @@ A full diff of every Go-registered route against the Rust worker closed these
   by Go's generic adapter. DeepSeek type 43 is implemented only for chat
   completions, legacy completions, and Anthropic Messages, with route-specific
   URLs and thinking suffix handling.
-- Dedicated Partial adapters now include Moonshot(25), Perplexity(27),
-  SiliconFlow(40), Mistral(42), DeepSeek(43), xAI(48), and Submodel(53).
+- Dedicated Partial adapters now include Moonshot(25), ZhipuV4(26),
+  Perplexity(27), SiliconFlow(40), Mistral(42), DeepSeek(43), xAI(48), and
+  Submodel(53).
   Moonshot is a direct-only OpenAI/Claude bridge for chat, legacy completions,
   embeddings, rerank, and Messages. SiliconFlow is
   direct-only for chat, legacy completions, embeddings, rerank, and image
   generations; unsupported routes and AI Gateway/WFP configuration fail before
   reserve. Jina(38) is route-explicit for rerank and embeddings; its embedding
   adapter removes OpenAI `encoding_format` while preserving Jina-native fields.
-  The registry has 16 Ready, 10 Partial, and 27 Deferred channel types.
+  ZhipuV4 is direct-only for chat, embeddings, image generations, and Messages;
+  legacy Zhipu type 16 remains Deferred for migration to type 26. The registry
+  has 16 Ready, 11 Partial, and 26 Deferred channel types.
 - Admin `GET /api/channel/provider-readiness` and the channel UI expose
   implementation readiness without claiming provider health or production
   proof. Route cache keys are protocol scoped.

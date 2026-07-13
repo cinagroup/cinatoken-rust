@@ -652,6 +652,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   rejection, billing/refunds, disable, and Go rollback. Keep type 25 off AI
   Gateway and WFP until this repository owns an explicit managed provider
   contract and credential lifecycle.
+- Close ZhipuV4 G3 evidence for chat JSON/SSE, multimodal base64, embeddings,
+  provider-URL image responses, Anthropic Messages JSON/SSE, bounded errors and
+  refunds, audit/billing reconciliation, and Go rollback. Inventory every type
+  16 channel and migrate it explicitly to type 26 before Rust cutover; do not
+  revive the undocumented v3 invoke protocol. Keep type 26 off AI Gateway and
+  WFP until a managed custom-provider slug, deploy/readback, and credential
+  lifecycle are owned by this repository.
 - Deploy and attach the Rust outbound service `cinatoken-wfp-outbound` to the
   staging dispatch namespace. Store `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on
   that service; the tenant must receive only

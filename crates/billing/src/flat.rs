@@ -28,8 +28,10 @@
 //! quota              = round((prompt_quota + completion_quota) * ratio)
 //! ```
 //!
-//! Guards (match Go):
-//! - `total_tokens == 0` → `quota = 0` (free; caller refunds any reserve).
+//! Guards:
+//! - Fixed-price models charge per successful request and do not require token
+//!   usage. The caller remains responsible for admitting only billable success.
+//! - Per-token mode with `total_tokens == 0` returns `quota = 0`.
 //! - `ratio != 0 && quota <= 0` → `quota = 1` (floor for billable models).
 //!
 //! Rounding uses the shared `crate::quota_round` (half-away-from-zero, with
@@ -157,11 +159,13 @@ pub fn compute_flat_quota_with_fixed_price_multiplier(
     let cache_creation_ratio_1h = config.cache_creation_ratio_1h(model);
     let image_ratio = config.image_ratio(model);
 
-    // Zero-usage guard: free request.
-    if usage.total_tokens <= 0 {
+    // Fixed-price mode is request-priced and therefore independent of token
+    // usage. The caller admits only successful billable responses.
+    if let Some(price) = config.model_price(model) {
+        let quota = price * config.quota_per_unit * group_ratio * fixed_price_multiplier;
         return FlatQuotaResult {
-            quota: 0,
-            mode: FlatBillingMode::PerToken,
+            quota: quota_round(quota),
+            mode: FlatBillingMode::FixedPrice,
             model_ratio,
             completion_ratio,
             group_ratio,
@@ -170,12 +174,11 @@ pub fn compute_flat_quota_with_fixed_price_multiplier(
         };
     }
 
-    // Fixed-price mode takes precedence.
-    if let Some(price) = config.model_price(model) {
-        let quota = price * config.quota_per_unit * group_ratio * fixed_price_multiplier;
+    // Per-token mode cannot charge without usage.
+    if usage.total_tokens <= 0 {
         return FlatQuotaResult {
-            quota: quota_round(quota),
-            mode: FlatBillingMode::FixedPrice,
+            quota: 0,
+            mode: FlatBillingMode::PerToken,
             model_ratio,
             completion_ratio,
             group_ratio,
@@ -331,22 +334,7 @@ mod tests {
         config.model_ratios.insert("dall-e-3".to_string(), 99.0); // ignored
         let usage = simple_usage(0, 0);
         let result = compute_flat_quota(&usage, "dall-e-3", "default", &config);
-        // Even with total_tokens=0, fixed-price mode charges because the
-        // upstream returned a successful image. BUT our guard returns 0 for
-        // total_tokens==0 BEFORE the fixed-price branch. To charge for
-        // image gens, the caller must set total_tokens>=1 (the relay does
-        // this: Go forces TotalTokens=1 for image models). Verify the guard
-        // fires here.
-        assert_eq!(result.quota, 0);
-
-        // With total_tokens=1 (caller-set for image gens):
-        let usage = FlatUsage {
-            prompt_tokens: 1,
-            total_tokens: 1,
-            ..FlatUsage::default()
-        };
-        let result = compute_flat_quota(&usage, "dall-e-3", "default", &config);
-        // 0.04 * 500000 * 1 = 20000
+        // Fixed-price billing is per successful request, not per token.
         assert_eq!(result.quota, 20_000);
         assert_eq!(result.mode, FlatBillingMode::FixedPrice);
     }

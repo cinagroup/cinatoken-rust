@@ -475,7 +475,7 @@ pub trait TaskAdapter {
 - OpenAI。
 - OpenRouter。
 - DeepSeek。
-- Zhipu OpenAI compatible。
+- Zhipu v4 dedicated OpenAI/Claude compatible (type 26; type 16 is legacy)。
 - SiliconFlow。
 - xAI。
 - Moonshot OpenAI/Claude compatible。
@@ -11058,3 +11058,67 @@ prove Bearer/header and body redaction, response bounds, usage parsing,
 reservation/settlement/refund, D1 audit output, provider billing reconciliation,
 and rollback to Go/VPS. No remote credential was used, and production remains
 **NO-GO**.
+
+### 22.180 2026-07-13 Zhipu v4 Direct Dual-Format Adapter
+
+This increment separates the source's legacy Zhipu type 16 from the current
+ZhipuV4 type 26 contract. The current official
+[HTTP API guide](https://docs.bigmodel.cn/cn/guide/develop/http/introduction)
+and [API reference index](https://docs.bigmodel.cn/cn/api/introduction) name
+`https://open.bigmodel.cn/api/paas/v4` as the general endpoint. The current
+index does not expose the source type-16 `/api/paas/v3/model-api/.../invoke`
+protocol. Rust therefore does not revive that undocumented protocol: type 16
+remains Deferred and must be inventoried and migrated explicitly to type 26.
+
+Implemented locally for type 26:
+
+- A dedicated provider registry admits only Chat Completions, Embeddings,
+  Image Generations, and Anthropic Messages. The standard roots are
+  `/api/paas/v4/{chat/completions,embeddings,images/generations}` and
+  `/api/anthropic/v1/messages`; source coding-plan sentinels retain their exact
+  OpenAI/Claude roots. Completions, Responses, rerank, audio, Gemini, and
+  realtime fail before billing-plan construction or quota reservation.
+- Chat requests retain the source adapter's narrow field set, clamp explicit
+  `top_p >= 1` to `0.99`, normalize a string stop value to an array, prefer a
+  non-zero `max_completion_tokens` as upstream `max_tokens`, and strip the
+  data-URL prefix from inline image content. Embeddings and Messages stay
+  protocol passthrough.
+- Image requests retain only the currently documented `model`, `prompt`,
+  `quality`, `size`, `watermark_enabled`, and `user_id` fields. Successful
+  responses preserve the provider's documented temporary image URL. Rust does
+  not copy the Go handler's arbitrary provider-URL download and base64 rewrite,
+  avoiding an extra unbounded response and SSRF surface inside the Worker. A
+  successful usage-less image response is billable by request contract and is
+  audited as `usage_source=request_contract`: fixed price remains per request,
+  while a tiered expression receives the real zero-token vector plus its frozen
+  request input instead of hidden synthetic tokens.
+- OpenAI-shaped routes use Bearer auth. Messages uses the current official
+  [Claude-compatible contract](https://docs.bigmodel.cn/cn/guide/develop/claude/introduction)
+  with `x-api-key`. Existing response bounds, usage parsing, reservation,
+  settlement/refund, and audit paths remain authoritative.
+- Cloudflare's current
+  [native provider list](https://developers.cloudflare.com/ai-gateway/usage/providers/)
+  does not include Zhipu. Its
+  [Custom Providers](https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/)
+  feature could support a later managed integration, but this repository does
+  not yet own a Zhipu slug, create/readback/rollback workflow, or credential
+  lifecycle. AI Gateway opt-in and WFP configuration therefore fail before
+  reserve and again at provider dispatch.
+- Admin Channel Test auto-selects Embeddings for embedding models and Image
+  Generations for `glm-image*`/`cogview-*`. Backend and frontend readiness lock
+  the exact four-route Partial contract. The capability registry now reports
+  16 Ready, 11 Partial, and 26 Deferred channel types.
+
+Local focused evidence covers provider URL allowlists, coding-plan roots,
+unsupported-route rejection, chat/multimodal/image transforms, registry
+routing, pre-reserve transport rejection, Channel Test auto-selection, and
+frontend readiness projection. No live Zhipu or Cloudflare credential was
+used.
+
+Production remains **NO-GO**. After credential rotation, isolated staging must
+archive type-16 inventory/conversion approval, chat JSON/SSE, multimodal
+base64, embeddings, provider-URL image JSON, Messages JSON/SSE, bounded
+4xx/429/5xx/timeout/malformed responses, reservation/settlement/refund, D1
+audit and provider billing reconciliation, disable behavior, and rollback to
+Go/VPS. A future AI Gateway custom-provider path is a separate staged change
+and may not be inferred from this direct adapter.

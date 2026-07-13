@@ -96,7 +96,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 13 | AIGC2D | api.aigc2d.com | OpenAI (fallback) | openai | OpenAI-adaptor | A: OpenAI core |
 | 14 | Anthropic | api.anthropic.com | Anthropic | claude | Dedicated (native) | A: Anthropic native |
 | 15 | Baidu | aip.baidubce.com | Baidu | baidu | Dedicated (regional) | B: regional |
-| 16 | Zhipu | open.bigmodel.cn | Zhipu | zhipu | Dedicated (regional) | B: regional |
+| 16 | Zhipu | open.bigmodel.cn | Zhipu | zhipu | Dedicated legacy v3 (Deferred) | Current official docs expose v4 only; migrate channel configuration to type 26 before Rust cutover |
 | 17 | Ali | dashscope.aliyuncs.com | Ali | ali | Dedicated (regional) | B: regional (also Ali task) |
 | 18 | Xunfei | (per-channel) | Xunfei | xunfei | Dedicated (regional) | B: regional |
 | 19 | 360 | api.360.cn | OpenAI (fallback) | openai | OpenAI-adaptor | A: OpenAI core |
@@ -106,7 +106,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 23 | Tencent | hunyuan.tencentcloudapi.com | Tencent | tencent | Dedicated (regional) | B: regional |
 | 24 | Gemini | generativelanguage.googleapis.com | Gemini | gemini | Dedicated (native) | A: Gemini native |
 | 25 | Moonshot | api.moonshot.cn | Moonshot | moonshot | Dedicated Partial (direct Claude+OpenAI bridge) | Implemented locally: chat/completions, completions, embeddings, rerank, Messages; staging evidence open |
-| 26 | ZhipuV4 | open.bigmodel.cn | ZhipuV4 | zhipu_4v | Dedicated (regional) | B: regional |
+| 26 | ZhipuV4 | open.bigmodel.cn | ZhipuV4 | zhipu_4v | Dedicated Partial (direct OpenAI/Claude bridge) | Implemented locally: chat/completions, embeddings, image generations, Messages; staging evidence open |
 | 27 | Perplexity | api.perplexity.ai | Perplexity | perplexity | Dedicated (Sonar chat) | B: chat whitelist + token normalization |
 | 31 | LingYiWanWu | api.lingyiwanwu.com | OpenAI (fallback) | openai | OpenAI-adaptor | A: OpenAI core |
 | 33 | AWS | (per-channel) | Aws | aws | Dedicated (SigV4) | E: complex signing |
@@ -165,6 +165,24 @@ The `kimi-k2.6` explicit non-one temperature normalization and nonstandard
 `choices[].usage.cached_tokens` stream envelope are fixture-tested. Existing AI
 Gateway/WFP paths do not own Moonshot provider configuration or credentials, so
 both transports are rejected before reserve.
+
+ZhipuV4(26) is a direct-only dual-format adapter against the current official
+API surface: OpenAI-shaped chat, embeddings, and image generation use
+`/api/paas/v4`, while Anthropic Messages uses `/api/anthropic/v1/messages` with
+`x-api-key`. The chat transform ports the source `top_p`, stop-array,
+max-token, field-whitelist, and multimodal data-URL behavior. Image requests
+retain only current documented fields. Image responses preserve the provider's
+temporary URL instead of copying the Go handler's unbounded arbitrary-URL
+download and base64 conversion. Usage-less image success is marked as a
+request-contract settlement event rather than synthetic upstream tokens, so
+fixed price is per request and tiered expressions remain self-contained.
+Cloudflare does not list Zhipu as a native AI
+Gateway provider. Although custom providers exist, this repository does not
+own a Zhipu custom-provider slug, deployment/readback, or credential lifecycle
+contract, so AI Gateway/WFP configuration fails before reserve. Zhipu(16)
+remains Deferred because the source adapter targets a legacy v3 invoke/SSE
+protocol absent from the current official API index; migrate and validate those
+channels as type 26 rather than reviving an undocumented API.
 
 Channel type 0 (`Unknown`) and the trailing `Dummy` sentinel are counters, not
 real providers.

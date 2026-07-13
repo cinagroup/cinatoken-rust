@@ -19,6 +19,8 @@ pub enum ProviderKind {
     SiliconFlowOpenAi,
     SubmodelOpenAi,
     XaiOpenAi,
+    ZhipuV4OpenAi,
+    ZhipuV4Messages,
     GeminiNative,
     CloudflareWorkersAi,
     AiGateway,
@@ -37,6 +39,7 @@ impl ProviderKind {
             Self::SiliconFlowOpenAi => None,
             Self::SubmodelOpenAi => None,
             Self::XaiOpenAi => Some(AiGatewayRouteKind::Compat),
+            Self::ZhipuV4OpenAi | Self::ZhipuV4Messages => None,
             Self::GeminiNative => Some(AiGatewayRouteKind::GoogleAiStudio),
             Self::CloudflareWorkersAi => Some(AiGatewayRouteKind::WorkersAi),
             Self::AiGateway => None,
@@ -137,6 +140,11 @@ impl ProviderRegistry {
             ProviderKind::XaiOpenAi => {
                 crate::xai::xai_openai_url(endpoint.base_url, endpoint.endpoint_path)
             }
+            ProviderKind::ZhipuV4OpenAi => {
+                crate::zhipu::zhipu_v4_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
+            ProviderKind::ZhipuV4Messages => crate::zhipu::zhipu_v4_messages_url(endpoint.base_url),
             ProviderKind::GeminiNative => upstream_gemini_native_url(
                 endpoint.base_url,
                 endpoint
@@ -399,6 +407,52 @@ mod tests {
                 channel_type: 25,
                 base_url: None,
                 endpoint_path: "images/generations",
+                upstream_query: None,
+                gemini_route: None,
+            })
+            .unwrap_err(),
+            ProviderRouteError::UnsupportedProviderRoute
+        );
+    }
+
+    #[test]
+    fn registry_resolves_direct_only_zhipu_v4_routes() {
+        let openai = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::ZhipuV4OpenAi,
+            channel_type: 26,
+            base_url: None,
+            endpoint_path: "images/generations",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(
+            openai.upstream_url,
+            "https://open.bigmodel.cn/api/paas/v4/images/generations"
+        );
+        assert_eq!(openai.ai_gateway_route, None);
+
+        let messages = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::ZhipuV4Messages,
+            channel_type: 26,
+            base_url: Some("https://zhipu.example"),
+            endpoint_path: "messages",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(
+            messages.upstream_url,
+            "https://zhipu.example/api/anthropic/v1/messages"
+        );
+        assert_eq!(messages.ai_gateway_route, None);
+
+        assert_eq!(
+            ProviderRegistry::resolve(ProviderEndpoint {
+                provider: ProviderKind::ZhipuV4OpenAi,
+                channel_type: 26,
+                base_url: None,
+                endpoint_path: "responses",
                 upstream_query: None,
                 gemini_route: None,
             })

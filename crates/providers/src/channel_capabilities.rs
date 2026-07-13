@@ -15,6 +15,7 @@ pub enum ChannelAdapterKind {
     SiliconFlowOpenAi,
     SubmodelOpenAi,
     XaiOpenAi,
+    ZhipuV4,
     DedicatedPending,
     TaskOnly,
     Unsupported,
@@ -159,6 +160,12 @@ const XAI_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::Responses,
     ProviderRelayRoute::ImageGenerations,
 ];
+const ZHIPU_V4_ROUTES: &[ProviderRelayRoute] = &[
+    ProviderRelayRoute::ChatCompletions,
+    ProviderRelayRoute::Embeddings,
+    ProviderRelayRoute::ImageGenerations,
+    ProviderRelayRoute::AnthropicMessages,
+];
 const NO_ROUTES: &[ProviderRelayRoute] = &[];
 
 macro_rules! capability {
@@ -301,7 +308,7 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
         DedicatedPending,
         Deferred,
         NO_ROUTES,
-        "dedicated Zhipu adapter is not migrated"
+        "legacy v3 adapter has no current official deployment target; migrate channels to type 26"
     ),
     capability!(
         17,
@@ -378,10 +385,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         26,
         "ZhipuV4",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated Zhipu v4 adapter is not migrated"
+        ZhipuV4,
+        Partial,
+        ZHIPU_V4_ROUTES,
+        "direct-only OpenAI chat, embeddings, image generation, and Claude Messages adapter is implemented"
     ),
     capability!(
         27,
@@ -737,7 +744,7 @@ mod tests {
         ));
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::AnthropicMessages),
-            vec![14, 25, 43]
+            vec![14, 25, 26, 43]
         );
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::Realtime),
@@ -763,6 +770,17 @@ mod tests {
         }
         assert!(!channel_supports_relay_route(
             25,
+            ProviderRelayRoute::Responses
+        ));
+        for route in ZHIPU_V4_ROUTES {
+            assert!(channel_supports_relay_route(26, *route));
+        }
+        assert!(!channel_supports_relay_route(
+            26,
+            ProviderRelayRoute::Completions
+        ));
+        assert!(!channel_supports_relay_route(
+            26,
             ProviderRelayRoute::Responses
         ));
         for route in SILICONFLOW_ROUTES {

@@ -31,6 +31,7 @@ use cinatoken_providers::{
         transform_siliconflow_rerank_response_body,
     },
     xai::apply_xai_request,
+    zhipu::apply_zhipu_v4_request,
     ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry, ProviderRelayRoute,
 };
 use cinatoken_relay::{
@@ -42,7 +43,7 @@ use cinatoken_relay::{
     RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES,
     CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MISTRAL,
     CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
-    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI, RELAY_CACHE_SCHEMA_VERSION,
+    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4, RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -314,6 +315,17 @@ impl RelayEndpoint {
     }
 
     fn registry_provider_kind(&self, channel_type: i32) -> RegistryProviderKind {
+        if channel_type == CHANNEL_TYPE_ZHIPU_V4 {
+            return match self.provider {
+                RelayProviderKind::OpenAiCompatible => RegistryProviderKind::ZhipuV4OpenAi,
+                RelayProviderKind::AnthropicMessages => RegistryProviderKind::ZhipuV4Messages,
+                _ => self.registry_provider_kind_from_effective(channel_type),
+            };
+        }
+        self.registry_provider_kind_from_effective(channel_type)
+    }
+
+    fn registry_provider_kind_from_effective(&self, channel_type: i32) -> RegistryProviderKind {
         match self.effective_provider(channel_type) {
             RelayProviderKind::OpenAiCompatible => RegistryProviderKind::OpenAiCompatible,
             RelayProviderKind::AnthropicMessages => RegistryProviderKind::AnthropicMessages,
@@ -579,6 +591,10 @@ fn model_sensitive_admin_probe_endpoint(channel_type: i32, model: &str) -> Admin
         AdminProbeEndpoint::OpenAiResponse
     } else if model.contains("rerank") {
         AdminProbeEndpoint::JinaRerank
+    } else if channel_type == CHANNEL_TYPE_ZHIPU_V4
+        && (model.starts_with("glm-image") || model.starts_with("cogview-"))
+    {
+        AdminProbeEndpoint::ImageGeneration
     } else if channel_type == CHANNEL_TYPE_MOKAAI
         || ["embedding", "embed", "m3e", "bge"]
             .iter()
@@ -3635,7 +3651,10 @@ fn channel_accepts_endpoint_request_shape(
 fn is_direct_only_provider_channel(channel: &RelayChannel) -> bool {
     matches!(
         channel.channel_type,
-        CHANNEL_TYPE_MOONSHOT | CHANNEL_TYPE_SILICONFLOW | CHANNEL_TYPE_SUBMODEL
+        CHANNEL_TYPE_MOONSHOT
+            | CHANNEL_TYPE_ZHIPU_V4
+            | CHANNEL_TYPE_SILICONFLOW
+            | CHANNEL_TYPE_SUBMODEL
     )
 }
 
@@ -7851,14 +7870,20 @@ async fn record_relay_audit(
     let now = unix_timestamp();
 
     let use_time = now.saturating_sub(audit.started_at);
-    // Whether the upstream reported real usage to settle on. With the Go-parity
-    // estimate fallback enabled, a usage is "present" when it passes Go's
-    // `ValidUsage` gate (prompt or completion non-zero); otherwise the legacy
-    // `total > 0` gate applies so flipping the flag off changes nothing.
-    let usage_present = if audit.missing_usage_estimate_enabled {
-        cinatoken_tokenizer::valid_usage(usage.prompt_tokens as i64, usage.completion_tokens as i64)
+    let reported_usage_present =
+        usage_summary_is_present(usage, audit.missing_usage_estimate_enabled);
+    // Image-generation APIs commonly return a successful URL without token
+    // usage. Treat that response as billable by request contract while keeping
+    // the real zero-token vector for tiered expressions and fixed-price audit.
+    let request_contract_usage =
+        usage_less_request_contract_applies(endpoint_path, reported_usage_present);
+    let usage_present = reported_usage_present || request_contract_usage;
+    let usage_source = if audit.usage_locally_estimated {
+        "local_estimate"
+    } else if request_contract_usage {
+        "request_contract"
     } else {
-        usage.total_tokens > 0
+        "upstream"
     };
     let mut other = json!({
         "billing_pending": true,
@@ -7866,7 +7891,7 @@ async fn record_relay_audit(
         "endpoint": endpoint_path,
         "upstream_status": upstream_status,
         "total_tokens": usage.total_tokens,
-        "usage_source": if audit.usage_locally_estimated { "local_estimate" } else { "upstream" },
+        "usage_source": usage_source,
         "model_route": {
             "requested_model": audit.model_route.requested_model,
             "served_model": audit.model_route.served_model,
@@ -8144,6 +8169,18 @@ fn should_apply_flat_billing(
     usage_present: bool,
 ) -> bool {
     !has_tiered_preflight && !billing_applied && upstream_status < 400 && usage_present
+}
+
+fn usage_summary_is_present(usage: &UsageSummary, estimate_enabled: bool) -> bool {
+    if estimate_enabled {
+        cinatoken_tokenizer::valid_usage(usage.prompt_tokens as i64, usage.completion_tokens as i64)
+    } else {
+        usage.total_tokens > 0
+    }
+}
+
+fn usage_less_request_contract_applies(endpoint_path: &str, reported_usage_present: bool) -> bool {
+    endpoint_path == "images/generations" && !reported_usage_present
 }
 
 fn apply_flat_billing_audit(other: &mut Value, result: &FlatQuotaResult) {
@@ -9262,6 +9299,9 @@ fn apply_endpoint_request_transform(
     }
     if channel.channel_type == CHANNEL_TYPE_XAI {
         apply_xai_request(body, endpoint_path);
+    }
+    if channel.channel_type == CHANNEL_TYPE_ZHIPU_V4 {
+        apply_zhipu_v4_request(body, endpoint_path);
     }
     Ok(())
 }
@@ -12850,6 +12890,127 @@ mod tests {
     }
 
     #[test]
+    fn zhipu_v4_is_route_explicit_and_direct_only() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_ZHIPU_V4), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_ZHIPU_V4;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::ZhipuV4OpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+
+        let mut messages = endpoint(true, None);
+        messages.route = ProviderRelayRoute::AnthropicMessages;
+        messages.provider = RelayProviderKind::AnthropicMessages;
+        messages.upstream_path = "messages".to_string();
+        assert_eq!(
+            messages.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::ZhipuV4Messages
+        );
+        assert_eq!(
+            messages.upstream_url(&channel),
+            "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        );
+
+        let mut body = json!({
+            "model": "glm-4.7",
+            "messages": [{
+                "role": "user",
+                "name": "removed",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"}
+                }]
+            }],
+            "top_p": 1,
+            "stop": "END",
+            "max_completion_tokens": 64,
+            "user": "removed"
+        });
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        assert_eq!(body["top_p"], 0.99);
+        assert_eq!(body["stop"], json!(["END"]));
+        assert_eq!(body["max_tokens"], 64);
+        assert_eq!(
+            body["messages"][0]["content"][0]["image_url"]["url"],
+            "AAAA"
+        );
+        assert!(body["messages"][0].get("name").is_none());
+        assert!(body.get("user").is_none());
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "glm-4.7"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("direct-only provider"));
+
+        for route in [
+            ProviderRelayRoute::ChatCompletions,
+            ProviderRelayRoute::Embeddings,
+            ProviderRelayRoute::ImageGenerations,
+            ProviderRelayRoute::AnthropicMessages,
+        ] {
+            assert!(channel_supports_relay_route(CHANNEL_TYPE_ZHIPU_V4, route));
+        }
+        for route in [
+            ProviderRelayRoute::Completions,
+            ProviderRelayRoute::Responses,
+            ProviderRelayRoute::Rerank,
+            ProviderRelayRoute::AudioSpeech,
+        ] {
+            assert!(!channel_supports_relay_route(CHANNEL_TYPE_ZHIPU_V4, route));
+        }
+        assert!(!channel_supports_relay_route(
+            16,
+            ProviderRelayRoute::ChatCompletions
+        ));
+    }
+
+    #[test]
+    fn zhipu_v4_admin_auto_probe_uses_model_specific_supported_routes() {
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_ZHIPU_V4,
+                AdminProbeEndpoint::Auto,
+                "embedding-3",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::Embeddings
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_ZHIPU_V4,
+                AdminProbeEndpoint::Auto,
+                "glm-image",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::ImageGeneration
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_ZHIPU_V4,
+                AdminProbeEndpoint::ImageGeneration,
+                "glm-image",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::ImageGeneration
+        );
+    }
+
+    #[test]
     fn submodel_is_direct_only_and_keeps_opaque_model_names() {
         let mut channel = test_channel(i64::from(CHANNEL_TYPE_SUBMODEL), 0, 1);
         channel.channel_type = CHANNEL_TYPE_SUBMODEL;
@@ -14053,6 +14214,25 @@ mod tests {
         assert!(!should_apply_flat_billing(false, true, 200, true));
         assert!(!should_apply_flat_billing(false, false, 500, true));
         assert!(!should_apply_flat_billing(false, false, 200, false));
+    }
+
+    #[test]
+    fn usage_less_image_success_is_billable_by_request_contract() {
+        let usage = UsageSummary::default();
+        assert!(!usage_summary_is_present(&usage, false));
+        assert!(!usage_summary_is_present(&usage, true));
+        assert!(usage_less_request_contract_applies(
+            "images/generations",
+            false
+        ));
+        assert!(!usage_less_request_contract_applies(
+            "images/generations",
+            true
+        ));
+        assert!(!usage_less_request_contract_applies(
+            "chat/completions",
+            false
+        ));
     }
 
     #[test]

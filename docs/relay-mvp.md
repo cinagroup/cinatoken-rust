@@ -84,13 +84,16 @@ The Worker:
 - limits generic OpenAI-compatible relay candidates to the Go `openai.Adaptor`
   types `1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47`; dedicated OpenAI-shaped
   providers are admitted only through route-explicit capabilities. Current
-  dedicated Partial adapters include Moonshot(25), Perplexity(27),
+  dedicated Partial adapters include Moonshot(25), ZhipuV4(26), Perplexity(27),
   SiliconFlow(40), Mistral(42), DeepSeek(43), xAI(48), and Submodel(53), while
   their unsupported routes fail before quota reserve. Moonshot is a direct-only
   OpenAI/Claude bridge for chat, completions, embeddings, rerank, and Messages;
   SiliconFlow is direct-only and explicitly
   exposes chat/completions, legacy completions, embeddings, rerank, and image
-  generations;
+  generations; ZhipuV4 is direct-only and exposes chat/completions, embeddings,
+  image generations, and Messages, while legacy type 16 remains Deferred.
+  Usage-less successful image JSON settles under an explicit request-contract
+  audit source without fabricating provider token usage;
 - limits `/v1/rerank` relay candidates to Moonshot provider type `25`, Jina
   provider type `38`, Cohere provider type `34`, and SiliconFlow provider type
   `40`;
@@ -98,7 +101,8 @@ The Worker:
   `encoding_format` field at the provider adapter boundary, and preserves
   Jina-native embedding fields;
 - limits Anthropic Messages relay candidates to native Anthropic provider type
-  `14`, Moonshot bridge type `25`, and DeepSeek bridge type `43`;
+  `14`, Moonshot bridge type `25`, ZhipuV4 bridge type `26`, and DeepSeek bridge
+  type `43`;
 - limits native Gemini relay candidates to Gemini provider type `24`;
 - applies `model_mapping` when it is a JSON object from source model to
   upstream model, including native Gemini path models and nested Gemini

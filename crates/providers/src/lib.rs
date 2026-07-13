@@ -13,6 +13,7 @@ pub mod routing;
 pub mod siliconflow;
 pub mod submodel;
 pub mod xai;
+pub mod zhipu;
 
 pub use channel_capabilities::{
     channel_capabilities, channel_capability, channel_supports_relay_route,

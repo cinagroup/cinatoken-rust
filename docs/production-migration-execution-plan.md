@@ -1026,3 +1026,41 @@ Before deploying or enabling paid WFP traffic:
 Compiled capability state alone cannot satisfy this gate. No remote evidence is
 currently archived, so Go/VPS remains authoritative and production is
 **NO-GO**.
+
+## 2026-07-14 Ordinary HTTP Billing Finalization Workstream
+
+This workstream supersedes any plan that treats clone-stream `waitUntil()` plus
+lease renewal as sufficient HTTP billing durability.
+
+1. Add an unbound reservation owner generation at reserve time. Every provider,
+   AI Gateway, and model-fallback attempt carries that owner; bind requires the
+   expected generation and an unexpired deadline. Recovery cannot refund or
+   revive the same generation concurrently.
+2. Close successful buffered-response clone/read/size failures. A delivered 2xx
+   must produce a durable usage/finalization disposition rather than a silent
+   missing-usage refund.
+3. Replace dual-consumer accounting with one instrumented forwarding stream.
+   Bound memory for text/tool estimation, classify clean EOF, done, malformed,
+   upstream error, client abort, idle timeout, and Worker cancellation, and
+   preserve reported usage before any failure.
+4. Define a versioned `RelayBillingFinalizationEvent` containing only the
+   reservation/event idempotency keys, frozen expression/request snapshot,
+   bounded usage/termination metadata, and timestamps. It contains no prompt,
+   response body, raw request id, credential, or client IP.
+5. Bind a dedicated `BILLING_QUEUE` and DLQ. Its at-least-once consumer uses D1
+   CAS to settle/refund/quarantine, treats matching delivery as success, exposes
+   lag/retry/DLQ metrics, and supports an admin-authenticated reconcile action.
+6. Run deterministic Workerd faults for pre-bind recovery race, D1 ambiguous
+   commit, Queue duplicate/retry/DLQ, Worker cancellation, and recovery overlap.
+   Then repeat the full direct/Gateway/WFP matrix in isolated staging beyond the
+   original lease and post-response execution window.
+7. Promote gates in order: implementation, explicit heartbeat/estimate config,
+   stream renewal proof, abnormal termination proof, finalization replay proof,
+   recovery fixture approval, then limited canary. Any unexplained pending row,
+   double mutation, provider-call mismatch, or mutable-price replay returns
+   traffic to Go/VPS and disables recovery first.
+
+No ordinary HTTP request gains a Durable Object in this workstream. The Rust
+gateway owns finance, WFP owns authorized transport, Realtime DO owns stateful
+WebSocket sessions, and D1 plus Queue own durable finalization. Until steps 1-7
+are archived, HTTP orphan recovery and production remain **NO-GO**.

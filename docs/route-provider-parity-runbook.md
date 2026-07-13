@@ -167,7 +167,7 @@ Default Scenario A first-canary scope:
 | Route | Provider Family | Required Before Canary |
 | --- | --- | --- |
 | `POST /v1/chat/completions` JSON | OpenAI-compatible | Auth rejection, channel selection, model mapping, usage parser, billing shadow, live smoke. |
-| `POST /v1/chat/completions` SSE | OpenAI-compatible | First chunk, final usage or missing-usage refund, stream completion, client disconnect behavior. |
+| `POST /v1/chat/completions` SSE | OpenAI-compatible | First chunk, reported usage, output-gated local estimate, clean completion, upstream read error, client disconnect, idle timeout, durable finalization replay, and exact accounting. |
 | `POST /v1/embeddings` | OpenAI-compatible | Batch-size policy, bounded response, usage parser, billing shadow. |
 | `POST /v1/rerank` | Jina or Cohere | Request validation/transform, response transform if Cohere, billed unit parser. |
 | `POST /v1/messages` JSON/SSE | Anthropic native | Header mapping, cache token usage, stream usage merge, billing shadow. |
@@ -267,8 +267,15 @@ Required failure-mode smoke:
 | Upstream 429 | Error mapped, channel/rate-limit policy recorded. |
 | Upstream 5xx | Error mapped, rollback trigger assessed. |
 | Timeout | Customer-safe error, reserve refund/pending behavior recorded. |
-| Missing final usage | Refund or pending behavior follows billing runbook. |
-| Client disconnect on stream | No double charge; audit behavior recorded. |
+| Missing final usage | Normal empty output, partial billable output, and frozen pending/quarantine behavior are distinguished; no unconditional refund shortcut. |
+| Stream read error | Preserve all pre-error reported usage or partial-output estimate; record usage source and termination reason; exactly one provider call and one terminal ledger outcome. |
+| Client disconnect on stream | Abort/continuation policy is explicit; finalization survives the post-response window through durable replay; no double charge or unexplained pending row. |
+
+Every streaming failure fixture must assert the exact user quota, token remain
+and used quota, channel used quota, request count, provider call count, usage
+source, termination reason, ledger status, audit row, and post-cleanup pending
+row count. A 2xx response or a log row without those accounting assertions is
+not billing evidence.
 
 ## G3 Go/No-Go
 

@@ -690,6 +690,29 @@ armed only when:
    or full cutover.
 11. `docs/cutover-rollback-runbook.md` has named operators and abort criteria.
 
+## HTTP Stream Billing Requirements
+
+- `RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS` is explicitly configured and
+  reports both `configured=true` and `valid=true`; an implicit valid default is
+  not cutover evidence.
+- `RELAY_MISSING_USAGE_ESTIMATE_ENABLED` is reviewed as a charge-affecting gate
+  and enabled only with billing shadow approval.
+- `RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED` and
+  `RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED` remain false
+  until their separate deployed matrices pass.
+- A dedicated `BILLING_QUEUE`, idempotent replay consumer, DLQ, lag/failure
+  alerts, frozen snapshot schema, and reconcile path exist before
+  `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` can become true.
+- Request abort signaling and a bounded idle-timeout policy are explicitly
+  configured and live-smoked. The current checked-in Worker does not yet expose
+  these capabilities, so production HTTP stream billing remains NO-GO.
+- Finalization does not depend solely on clone-stream `waitUntil()` work after
+  the response or client disconnect; Cloudflare may cancel it after 30 seconds.
+- Stream estimation state is bounded per request. Full response text must not
+  grow without a documented memory ceiling under the 128 MB isolate limit.
+- Pre-bind owner generation and non-stream successful-response parse failures
+  have deterministic recovery tests before HTTP orphan recovery is enabled.
+
 ## Config Review Checklist
 
 Before every deploy-affecting config change:

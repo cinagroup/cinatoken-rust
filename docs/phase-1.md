@@ -858,3 +858,23 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   malformed/provider error, D1 failure, rollout/restart, settlement/recovery
   races, write-cost/latency measurement, reconciliation, alerts, and rollback.
   Recovery and production remain **NO-GO** until that evidence is approved.
+
+## 2026-07-14 HTTP SSE Partial Usage Recovery Increment
+
+- Stream chunk errors no longer discard previously parsed usage, text, or tool
+  evidence. Settlement receives the accumulated result plus a bounded terminal
+  error classification instead of a synthetic zero usage.
+- OpenAI Responses deltas now feed the accumulator. Empty Responses remains
+  zero usage; output deltas can use the source-compatible estimate path. Chat
+  and Completions retain the existing text plus tool-count estimate semantics.
+- Workerd covers content then error and reported usage then error, with exact
+  ledger/user/token/channel/request/provider/audit assertions. Malformed then
+  valid Responses accumulation has a Rust unit fixture.
+- Platform/frontend readiness now separates compiled recovery, explicit estimate
+  state, stream staging proof, billing Queue availability, replay code, replay
+  proof, and final cutover. The absent Queue/replay keeps cutover false even if
+  stream evidence flags are changed.
+- Next: close pre-bind owner generation and non-stream parse-failure windows,
+  then replace clone-only finalization with bounded instrumented forwarding plus
+  frozen-snapshot Queue/CAS replay, DLQ, reconcile, abort/idle-timeout taxonomy,
+  and the deployed direct/Gateway/WFP failure matrix.

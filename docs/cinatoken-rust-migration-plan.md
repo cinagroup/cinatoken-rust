@@ -11388,3 +11388,71 @@ disable-first rollback. The pre-bind interval and missing final usage after an
 aborted/malformed stream remain explicit reconciliation risks. No credential,
 remote resource, paid provider call, or deployment was used. Recovery remains
 false and production remains **NO-GO**.
+
+### 22.186 2026-07-14 HTTP SSE Partial Usage Recovery And Durable Finalization Gate
+
+The 22.185 heartbeat retained D1 ownership during a healthy long stream, but a
+later `ReadableStream` error still discarded all accumulated usage and output.
+The outer audit path replaced the failure with zero usage, which could refund a
+billable response. Source Go behavior instead preserves partial text/usage and
+distinguishes empty Responses from Responses that produced output.
+
+Implemented locally:
+
+- The streaming parser returns accumulated usage plus a terminal read-error
+  marker. Chunk errors stop reading but no longer bypass accumulator finalization.
+  Upstream usage remains authoritative; missing usage can use the existing
+  charge-affecting local estimate gate.
+- OpenAI Responses `response.output_text.delta` is accumulated. An empty
+  Responses stream remains zero/no-estimate, while output permits completion
+  estimation and prompt fallback. Chat/Completions keeps text plus
+  `tool_count * 7` behavior.
+- Heartbeat audit metadata adds `usage_recovered_after_error` and preserves
+  `completion_reason=stream_error`. It remains bounded and contains no raw body,
+  prompt, credential, account identity, reservation key, or client IP.
+- Workerd provider fixtures now cover content then error and reported usage then
+  error. They assert one provider call, one terminal settlement, one request
+  count, exact user/token/channel quota, correct usage source, and stream-error
+  audit evidence. Rust accumulator tests cover malformed then valid Responses.
+- Capability and React/Bun readiness contracts separate compiled stream-error
+  recovery, explicit estimate state, stream staging proof, `BILLING_QUEUE`
+  availability, finalization replay implementation, replay staging proof, and
+  final cutover.
+- `RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED` and
+  `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` are false in every tracked
+  environment. The replay capability intentionally reports false and no billing
+  Queue is bound, so recovery cutover cannot become ready from stream flags
+  alone.
+
+Architecture decision:
+
+- The Rust gateway remains the sole ordinary HTTP financial owner. WFP tenant
+  and outbound Workers remain authorized streaming transport and never write D1
+  quota. Realtime WebSocket coordination remains in Durable Objects; ordinary
+  HTTP SSE does not gain a per-request DO.
+- The target finalization path is a single instrumented forwarding stream with
+  bounded estimation state. On termination it emits a redacted,
+  idempotency-keyed event containing the frozen expression/request snapshot to
+  `BILLING_QUEUE`. An at-least-once consumer uses D1 CAS, retry/DLQ, and an
+  operator reconcile path. Queue replay must never re-read mutable pricing.
+
+Local evidence:
+
+- `cinatoken-relay`: 75/75.
+- `cinatoken-worker`: 634/634.
+- Release Workerd lifecycle suite: 17/17.
+- Focused frontend platform readiness: 19/19; broad frontend readiness: 25/25.
+- The complete `bun run check` release gate passes, including release
+  main/tenant/outbound Rust/Wasm builds, Workerd and Playground runtime suites,
+  the frontend production and audit gates, 217 frontend calls against 320
+  Worker routes with zero missing, 23 D1 migrations / 29 tables, all local
+  smoke contracts, workspace tests, and all three wasm32 checks.
+
+This remains E3 local evidence. Production blockers include pre-bind owner
+generation, non-stream successful-response clone/read failure, client abort and
+idle timeout, the 30-second post-response execution boundary, bounded text
+accumulation, billing Queue/replay/DLQ/reconcile, D1 ambiguity and recovery-race
+tests, deployed direct/Gateway/WFP runs beyond the original lease, remote D1
+migration, provider/audit/accounting reconciliation, credential rotation,
+alerts, and rollback. No remote resource, credential, paid provider call, or
+deployment was used. Recovery and production remain **NO-GO**.

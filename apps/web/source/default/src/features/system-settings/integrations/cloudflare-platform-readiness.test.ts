@@ -34,7 +34,14 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_billing_reservation_ledger_compiled: false,
   relay_billing_ledger_status_compiled: false,
   relay_billing_stream_lease_renewal_compiled: false,
+  relay_billing_stream_lease_heartbeat_configured: false,
   relay_billing_stream_lease_heartbeat_valid: false,
+  relay_billing_stream_error_usage_recovery_compiled: false,
+  relay_billing_stream_error_usage_recovery_staging_verified: false,
+  relay_billing_missing_usage_estimate_enabled: false,
+  relay_billing_finalization_queue_available: false,
+  relay_billing_finalization_replay_compiled: false,
+  relay_billing_finalization_replay_staging_verified: false,
   relay_billing_orphan_recovery_ready: false,
   relay_billing_stream_lease_renewal_staging_verified: false,
   relay_billing_orphan_recovery_cutover_ready: false,
@@ -143,6 +150,8 @@ describe('Cloudflare platform readiness headline', () => {
       'wfp-relay-authority-smoke': 'WFP relay authority smoke',
       'realtime-smoke': 'Realtime smoke',
       'task-runner-replay': 'TaskRunner replay',
+      'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
+      'relay-billing-finalization-replay': 'Relay billing finalization replay',
       'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
       'ai-gateway-fallback-cutover': 'AI Gateway fallback',
       'task-runner-cutover': 'TaskRunner',
@@ -162,6 +171,9 @@ describe('Cloudflare platform readiness headline', () => {
         relay_billing_reservation_ledger_compiled: true,
         relay_billing_ledger_status_compiled: true,
         relay_billing_stream_lease_renewal_compiled: true,
+        relay_billing_stream_lease_heartbeat_configured: true,
+        relay_billing_stream_error_usage_recovery_compiled: true,
+        relay_billing_finalization_replay_compiled: true,
         relay_billing_stream_lease_heartbeat_valid: true,
         relay_ai_gateway_rest_routes: ['/v1/chat/completions'],
         relay_ai_gateway_model_prefixes: ['openai/', 'deepseek/'],
@@ -518,6 +530,8 @@ describe('Cloudflare platform readiness headline', () => {
         'ready-to-verify',
         'verified',
         'blocked',
+        'blocked',
+        'blocked',
       ]
     )
   })
@@ -618,6 +632,66 @@ describe('Cloudflare platform readiness headline', () => {
       )?.status,
       'ready'
     )
+  })
+
+  test('keeps stream error recovery staging proof separate from compiled support', () => {
+    const compiled = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_stream_error_usage_recovery_compiled: true,
+        relay_billing_stream_lease_heartbeat_configured: true,
+        relay_billing_stream_lease_heartbeat_valid: true,
+        relay_billing_missing_usage_estimate_enabled: true,
+      })
+    )
+    const verified = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_stream_error_usage_recovery_compiled: true,
+        relay_billing_stream_lease_heartbeat_configured: true,
+        relay_billing_stream_lease_heartbeat_valid: true,
+        relay_billing_missing_usage_estimate_enabled: true,
+        relay_billing_stream_error_usage_recovery_staging_verified: true,
+      })
+    )
+
+    assert.equal(
+      getStage(compiled, 'smoke').signals.find(
+        (signal) => signal.id === 'relay-billing-stream-error-smoke'
+      )?.status,
+      'ready-to-verify'
+    )
+    assert.equal(
+      getStage(verified, 'smoke').signals.find(
+        (signal) => signal.id === 'relay-billing-stream-error-smoke'
+      )?.status,
+      'verified'
+    )
+  })
+
+  test('keeps durable finalization replay blocked until queue, code, and proof exist', () => {
+    const missingQueue = buildPlatformReadinessSummary(
+      makeCapabilities({ relay_billing_finalization_replay_compiled: true })
+    )
+    const readyToVerify = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_finalization_queue_available: true,
+        relay_billing_finalization_replay_compiled: true,
+      })
+    )
+    const verified = buildPlatformReadinessSummary(
+      makeCapabilities({
+        relay_billing_finalization_queue_available: true,
+        relay_billing_finalization_replay_compiled: true,
+        relay_billing_finalization_replay_staging_verified: true,
+      })
+    )
+    const status = (summary: ReturnType<typeof buildPlatformReadinessSummary>) =>
+      getStage(summary, 'smoke').signals.find(
+        (signal) => signal.id === 'relay-billing-finalization-replay'
+      )?.status
+
+    assert.equal(status(missingQueue), 'blocked')
+    assert.equal(status(readyToVerify), 'ready-to-verify')
+    assert.equal(status(verified), 'verified')
   })
 
   test('uses only backend cutover readiness fields for cutover success', () => {

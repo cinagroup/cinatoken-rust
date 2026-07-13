@@ -24,6 +24,10 @@ export class MockRealtimeProvider extends DurableObject {
       if (this.releaseRelayStream) {
         return new Response("Relay stream already active", { status: 409 });
       }
+      const requestBody = await request.json().catch(() => ({}));
+      const failAfterFirstChunk = requestBody.model === "gpt-runtime-stream-error";
+      const failAfterUsageChunk =
+        requestBody.model === "gpt-runtime-stream-usage-error";
       const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
       await this.ctx.storage.put("state", {
         count: previous.count + 1,
@@ -31,6 +35,8 @@ export class MockRealtimeProvider extends DurableObject {
         path: url.pathname,
         authorizationPresent: request.headers.has("authorization"),
         relayStreamHeld: true,
+        relayStreamFailurePlanned: failAfterFirstChunk || failAfterUsageChunk,
+        relayStreamUsageBeforeFailure: failAfterUsageChunk,
       });
       const encoder = new TextEncoder();
       const provider = this;
@@ -40,13 +46,20 @@ export class MockRealtimeProvider extends DurableObject {
         start(controller) {
           controller.enqueue(
             encoder.encode(
-              'data: {"id":"chatcmpl-runtime","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n',
+              failAfterUsageChunk
+                ? 'data: {"id":"chatcmpl-runtime","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n'
+                : 'data: {"id":"chatcmpl-runtime","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n',
             ),
           );
           const release = () => {
             if (released) return false;
             released = true;
             clearTimeout(safetyTimer);
+            if (failAfterFirstChunk || failAfterUsageChunk) {
+              controller.error(new Error("controlled relay stream failure"));
+              provider.releaseRelayStream = null;
+              return true;
+            }
             controller.enqueue(
               encoder.encode(
                 'data: {"id":"chatcmpl-runtime","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',

@@ -197,3 +197,31 @@ tenant/outbound boundary, and AI Gateway planner are real and locally tested.
 It is still not a complete production replacement for Go/VPS. The next proof
 boundary is deployed staging with rotated credentials, not another local flag
 flip. Production remains **NO-GO**.
+
+## 2026-07-14 Streaming Billing Audit Addendum
+
+The read-error evidence-loss defect is locally closed for ordinary HTTP SSE:
+the Rust audit branch now resolves accumulated usage after an upstream stream
+error, including source-compatible empty/output Responses behavior. Workerd
+covers local estimate and upstream-reported usage paths with exact accounting.
+
+The audit also identified higher-order blockers that prevent promoting this
+patch into a production claim:
+
+1. reserve-to-bind has no active owner generation while provider/Gateway/model
+   fallback fetches are in flight;
+2. non-stream 2xx clone/read/size failure can still lose usage and refund;
+3. clone-stream finalization remains dependent on the post-response
+   `waitUntil()` window;
+4. termination taxonomy lacks client abort and idle timeout;
+5. streamed estimate text is not yet bounded;
+6. no durable finalization Queue, replay consumer, DLQ, or operator reconcile
+   path exists.
+
+The capability contract now fails closed on these facts: orphan-recovery
+readiness requires explicit valid heartbeat and the estimate gate, while final
+cutover additionally requires Queue availability, replay implementation, and
+replay staging proof. Those finalization fields are false. The correct next
+implementation order is pre-bind generation CAS, instrumented single-stream
+observation with bounded state, durable frozen-snapshot finalization replay,
+then the deployed termination/recovery matrix. Production remains **NO-GO**.

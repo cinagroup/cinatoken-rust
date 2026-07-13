@@ -592,6 +592,24 @@ WFP paid-egress output must retain separate
 `replayVerified`, `exactlyOneProviderCallVerified`, and
 `productionVerified` fields.
 
+## HTTP Stream Finalization Boundary (2026-07-14)
+
+| Contract | Local Evidence | Production Gate |
+| --- | --- | --- |
+| Reported usage followed by read error | Workerd preserves the pre-error `10/5/15` usage, settles once, and records `usage_source=upstream` plus `completion_reason=stream_error` | Repeat on direct, AI Gateway, and WFP with real provider invoice/audit correlation |
+| Partial output followed by read error | Workerd estimates only when the charge-affecting estimate gate is enabled; exact user/token/channel deltas and one request count are asserted | Prove deployed abort, malformed, idle-timeout, and clean-EOF matrix; keep the staging gate false until approved |
+| Empty/output Responses distinction | Rust unit tests keep empty Responses at zero and estimate only after `response.output_text.delta` | Live Responses matrix with provider usage and disconnect evidence |
+| Durable finalization after response/disconnect | Not implemented: no `BILLING_QUEUE`, replay consumer, DLQ, or reconcile endpoint | Hard NO-GO for HTTP orphan-recovery cutover |
+| Pre-bind lease ownership | Not implemented: reserve can remain unbound while provider/Gateway fallback fetch is in flight | Add owner generation CAS, bind deadline/generation checks, and recovery-race Workerd coverage |
+| Buffered success clone/read failure | Not closed: a delivered 2xx can still lose usage parsing and refund | Add bounded durable usage/finalization handling before G4/G5 approval |
+
+Normal missing usage, abnormal termination with partial evidence, and durable
+finalization replay are separate gates. A single refund-on-missing-usage rule or
+lease-renewal proof cannot approve all three. The capability API therefore
+keeps final cutover false until explicit heartbeat configuration, estimate
+state, both stream proofs, Queue availability, replay implementation, replay
+staging proof, D1 migration, and recovery admission all agree.
+
 ## Update Rules
 
 1. Update this file when adding a route, provider, table, binding, or billing

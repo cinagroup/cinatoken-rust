@@ -72,9 +72,18 @@ any expected mutation changes a row count other than one.
 - Buffered tiered responses attempt terminal billing finalization before
   returning the response. The ledger remains authoritative if that attempt
   fails; audit persistence is a later operation and is not atomic with quota.
-- Streaming responses still use `waitUntil()` to consume the cloned upstream
-  stream and obtain final usage. If that work is permanently lost, the row stays
-  `reserved` until recovery moves the bound row to `recovery_required`.
+- Streaming responses still use `Response::cloned()` plus `waitUntil()` to
+  consume a second upstream branch and obtain final usage. This is a temporary
+  implementation, not the target durability contract. After the response ends
+  or the client disconnects, Cloudflare gives `waitUntil()` at most 30 seconds;
+  permanently lost work leaves a bound row without durable final usage.
+- A cloned-stream read error now preserves all usage and OpenAI-shaped output
+  accumulated before the error. Reported usage settles normally. When
+  `RELAY_MISSING_USAGE_ESTIMATE_ENABLED=true`, partial Chat/Completions output
+  uses the existing local estimate path. Responses estimates only after at
+  least one `response.output_text.delta`; a fully empty Responses stream remains
+  zero usage and refunds. Audit metadata records `completion_reason=stream_error`
+  and whether billable usage was recovered.
 - A selected positive-reserve SSE stream renews its lease at a deterministic,
   reservation-key-derived jitter around the configured heartbeat. This avoids
   synchronized D1 writes while retaining a bounded interval. A D1 error records
@@ -95,6 +104,16 @@ any expected mutation changes a row count other than one.
   weaker legacy post-paid settlement path.
 - Audit transport remains `LOG_QUEUE` with synchronous D1 fallback. Queue is not
   part of quota correctness; `relay_billing_reservations` is authoritative.
+- The target state is a single instrumented response stream that observes usage
+  while forwarding bytes, followed by a bounded, redacted, idempotency-keyed
+  finalization event on a dedicated `BILLING_QUEUE`. An at-least-once consumer
+  must use the frozen request/expression snapshot and D1 CAS to settle, refund,
+  or quarantine. A DLQ and an operator reconcile path are required. No ordinary
+  HTTP SSE Durable Object is planned; the Rust gateway remains the financial
+  owner while WFP remains transport-only.
+- Pre-bind lease ownership, non-stream clone/read failure, client abort and idle
+  timeout classification, bounded streamed-text accumulation, and durable
+  finalization replay remain open production blockers.
 
 ## Configuration
 
@@ -103,6 +122,9 @@ any expected mutation changes a row count other than one.
 | `RELAY_BILLING_RESERVATION_LEASE_SECONDS` | `3600` | Accepted range 300-86400. Applied at reserve and extended from selected-attempt binding. |
 | `RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS` | `900` | Accepted range 5 through one third of the effective lease. Runtime uses deterministic +/-10% jitter (never below 5 seconds). Invalid explicit values fall back safely but report `valid=false` and prevent the scheduled recovery sweep. |
 | `RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED` | `false` | Evidence gate only. Set true after the deployed long-stream and recovery-race matrix is archived; it does not start recovery by itself. |
+| `RELAY_MISSING_USAGE_ESTIMATE_ENABLED` | `false` | Charge-affecting Go-parity gate. Abnormal streams without reported usage cannot pass recovery readiness while this is disabled. |
+| `RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED` | `false` | Evidence gate for reported-usage and partial-output read-error settlement. Local Workerd evidence does not set it. |
+| `RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` | `false` | Evidence gate for Queue retry, DLQ, Worker cancellation, and settlement/recovery race replay. It must remain false until `BILLING_QUEUE` and the idempotent consumer exist. |
 | `RELAY_BILLING_ORPHAN_RECOVERY_ENABLED` | `false` | Enables bounded scheduled handling only after migration and stream-lifetime evidence. Unbound rows refund; bound rows quarantine. Cutover readiness additionally requires the staging-verification gate. |
 | `RELAY_BILLING_ORPHAN_SWEEP_LIMIT` | `32` | Accepted range 1-64 per cron invocation. |
 
@@ -120,8 +142,10 @@ exponential retry deferral.
    the ledger on tiered requests, so migration 0023 must exist before code
    promotion.
 4. Verify `/api/platform/capabilities` reports the exact migration set,
-   ledger and stream-renewal contracts compiled, heartbeat configured and valid,
-   staging verification false, recovery disabled, and cutover readiness false.
+   ledger and stream-renewal contracts compiled, heartbeat explicitly configured
+   and valid, missing-usage estimate state, both stream staging proofs false,
+   billing finalization Queue unavailable, replay unimplemented/unverified,
+   recovery disabled, and cutover readiness false.
 5. Run reserve, selected bind, settle, explicit refund, matching replay,
    settle-vs-refund race, model fallback, stream-abandonment, heartbeat
    generation conflict, and renewal-vs-settlement fixtures.
@@ -129,19 +153,26 @@ exponential retry deferral.
    one heartbeat interval. Prove repeated lease growth, one terminal settlement,
    exact user/token/channel quota, one request count, and bounded audit metadata
    on direct, AI Gateway, and WFP routes that are enabled for the release.
-7. Repeat with client disconnect, malformed/provider-error termination,
-   transient D1 renewal failure, Worker restart/deploy, and a scheduled recovery
-   overlap. Archive latency/backpressure and D1 write-count evidence. Keep the
-   staging-verification and recovery gates false on any unresolved row or delta.
+7. Repeat with clean EOF, malformed then valid data, reported usage then read
+   error, partial output then read error, empty/output Responses streams, client
+   disconnect, idle timeout, transient D1 renewal failure, Worker restart/deploy,
+   and a scheduled recovery overlap. For every fixture prove provider call=1,
+   request count=1 where billable, exact user/token/channel deltas, usage source,
+   termination reason, and zero unexplained pending rows.
 8. Configure a cron and enable recovery only in isolated staging after the
    renewal matrix passes. Prove the 300-second boundary, sweep bound, retry
    deferral, unbound exactly-once refund, bound quarantine, and no double quota
    mutation.
 9. Reconcile user quota, token remain quota, request count, channel used quota,
    ledger outcomes, and audit rows before any traffic expansion.
-10. Set `RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED=true` only after
-    signed approval of the redacted evidence. `relay_billing_orphan_recovery_cutover_ready`
-    must remain false until both this gate and recovery are true.
+10. Implement and bind `BILLING_QUEUE`, a frozen-snapshot finalization event,
+    idempotent D1 replay consumer, DLQ, lag/failure alerts, and operator reconcile
+    path. Prove D1 ambiguity, Queue retry, duplicate delivery, Worker cancellation,
+    and recovery overlap before setting the replay evidence gate.
+11. Set each staging-verification gate only after signed approval of its own
+    redacted evidence. `relay_billing_orphan_recovery_cutover_ready` must remain
+    false until recovery, both streaming proofs, Queue availability, replay code,
+    and replay staging proof are all true.
 
 ## Rollback
 

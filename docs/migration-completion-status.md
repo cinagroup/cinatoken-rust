@@ -453,3 +453,27 @@ pre-bind loss, client disconnect and malformed-stream accounting, D1 failure,
 restart/recovery races, provider/audit reconciliation, alerting, and rollback
 remain blockers. This closes a local implementation gap, not the production
 migration goal.
+
+## 2026-07-14 HTTP SSE Partial Usage Recovery Status
+
+The cloned audit stream now retains all accumulated evidence when a later chunk
+read fails. Upstream-reported usage remains authoritative. With the existing
+missing-usage estimate gate enabled, partial OpenAI Chat/Completions output can
+settle through the local estimate path. Responses follows the source behavior:
+an empty stream remains zero, while `response.output_text.delta` permits an
+output estimate and prompt fallback. Bounded audit metadata records stream
+error completion and whether billable usage survived the failure.
+
+Release Workerd proves both partial-output-then-error and reported-usage-then-
+error paths, exact user/token/channel deltas, one request count, one provider
+call, one terminal ledger state, and upstream versus local-estimate source.
+Capabilities and the frontend expose compiled support, estimate state, staging
+proof, finalization Queue availability, replay implementation, and replay proof
+separately.
+
+This remains local E3 evidence. `BILLING_QUEUE` and replay are intentionally
+reported unavailable/unimplemented, all new proof flags remain false, and
+cutover remains false. Client disconnect beyond the post-response window,
+request abort/idle timeout, pre-bind ownership, non-stream clone/read failure,
+bounded accumulator memory, Queue/DLQ replay, staging migration, and remote
+accounting evidence remain blockers. Production remains **NO-GO**.

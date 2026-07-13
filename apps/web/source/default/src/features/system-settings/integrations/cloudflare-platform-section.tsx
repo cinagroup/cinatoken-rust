@@ -424,11 +424,48 @@ function buildCapabilityGroups(
           ),
           ready:
             capabilities.relay_billing_stream_lease_renewal_compiled &&
+            capabilities.relay_billing_stream_lease_heartbeat_configured &&
             capabilities.relay_billing_stream_lease_heartbeat_valid,
           readyLabel: t('Compiled'),
-          missingLabel: capabilities.relay_billing_stream_lease_heartbeat_valid
+          missingLabel: !capabilities.relay_billing_stream_lease_heartbeat_configured
+            ? t('Not configured')
+            : capabilities.relay_billing_stream_lease_heartbeat_valid
+              ? t('Blocked')
+              : t('Invalid config'),
+        },
+        {
+          label: t('Relay stream error usage recovery'),
+          description: t(
+            'Preserves reported or locally estimated partial usage when an SSE read fails; deployed failure-path evidence remains a separate staging gate.'
+          ),
+          ready:
+            capabilities.relay_billing_stream_error_usage_recovery_compiled &&
+            capabilities.relay_billing_stream_lease_heartbeat_configured &&
+            capabilities.relay_billing_stream_lease_heartbeat_valid &&
+            capabilities.relay_billing_missing_usage_estimate_enabled &&
+            capabilities.relay_billing_stream_error_usage_recovery_staging_verified,
+          readyLabel: t('Staging verified'),
+          missingLabel: !capabilities.relay_billing_stream_error_usage_recovery_compiled
             ? t('Blocked')
-            : t('Invalid config'),
+            : !capabilities.relay_billing_missing_usage_estimate_enabled
+              ? t('Estimate disabled')
+              : t('Awaiting staging proof'),
+        },
+        {
+          label: t('Relay billing finalization replay'),
+          description: t(
+            'Requires a dedicated billing Queue and idempotent replay consumer so settlement survives client disconnects and the post-response execution limit.'
+          ),
+          ready:
+            capabilities.relay_billing_finalization_queue_available &&
+            capabilities.relay_billing_finalization_replay_compiled &&
+            capabilities.relay_billing_finalization_replay_staging_verified,
+          readyLabel: t('Staging verified'),
+          missingLabel: !capabilities.relay_billing_finalization_queue_available
+            ? t('Queue missing')
+            : !capabilities.relay_billing_finalization_replay_compiled
+              ? t('Not implemented')
+              : t('Awaiting staging proof'),
         },
         {
           label: t('Relay billing orphan recovery'),
@@ -448,11 +485,14 @@ function buildCapabilityGroups(
         {
           label: t('Relay billing recovery cutover'),
           description: t(
-            'Requires deployed streaming renewal evidence across the original lease, recovery-race reconciliation, and an enabled recovery gate.'
+            'Requires deployed streaming renewal and abnormal-termination evidence, durable finalization replay, recovery-race reconciliation, and an enabled recovery gate.'
           ),
           ready: capabilities.relay_billing_orphan_recovery_cutover_ready,
           readyLabel: t('Cutover-ready'),
-          missingLabel: !capabilities.relay_billing_stream_lease_renewal_staging_verified
+          missingLabel:
+            !capabilities.relay_billing_stream_lease_renewal_staging_verified ||
+            !capabilities.relay_billing_stream_error_usage_recovery_staging_verified ||
+            !capabilities.relay_billing_finalization_replay_staging_verified
             ? t('Awaiting staging proof')
             : capabilities.relay_billing_orphan_recovery_enabled
               ? t('Blocked')

@@ -3898,3 +3898,30 @@ authenticated frontend, and rollback evidence.
   lease. No remote D1 migration, deployed long stream, disconnect/D1/restart
   fault matrix, provider request, credential, or recovery mutation was used.
   Staging proof and recovery remain false; production remains **NO-GO**.
+
+## 2026-07-14 HTTP SSE Partial Usage Recovery Verification
+
+- `cinatoken-relay` unit tests pass 75/75, including malformed-event recovery
+  and `response.output_text.delta` accumulation.
+- Focused Worker tests pass for endpoint-aware stream usage resolution and the
+  six-gate recovery-cutover predicate. Empty Responses stays zero; output
+  Responses estimates; valid upstream usage remains unchanged.
+- Release Worker/WFP artifacts under Workerd pass 17/17. Two controlled stream
+  failures prove partial local estimate and pre-error upstream usage settle once
+  with exact ledger/user/token/channel/request/provider/audit evidence. The mock
+  intentionally emits controlled stream-error diagnostics.
+- `cinatoken-worker` library tests pass 634/634. The Worker wasm32 check passes
+  with only the two pre-existing unused topup repository warnings.
+- The focused platform readiness file passes 19/19 and the broad frontend
+  readiness command passes 25/25. The panel and capability types expose
+  estimate enablement, stream-error proof, billing Queue availability, replay
+  implementation, replay proof, and final cutover separately.
+- The complete `bun run check` release gate passes: release main/tenant/outbound
+  Rust/Wasm builds; Workerd 17/17; Playground 1/1; frontend production build,
+  readiness, redaction, budget, zero-lint-debt, and route audits (217 frontend
+  calls / 320 Worker routes / 0 missing); 23-migration D1 config and SQLite
+  verification (29 tables / 105 incremental columns / 20 indexes); all local
+  smoke contracts; workspace tests; and all three wasm32 checks.
+- No remote resource or credential was used. New staging flags remain false,
+  `BILLING_QUEUE` is absent, replay reports unimplemented, HTTP orphan recovery
+  remains disabled, and production remains **NO-GO**.

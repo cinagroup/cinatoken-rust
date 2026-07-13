@@ -22,6 +22,10 @@ const realtimeModel = "gpt-4o-realtime-preview";
 const realtimeToken = "sk-runtime-authenticated-realtime";
 const relayStreamModel = "gpt-runtime-stream";
 const relayStreamToken = "sk-runtime-stream-billing";
+const relayStreamErrorModel = "gpt-runtime-stream-error";
+const relayStreamErrorToken = "sk-runtime-stream-error-billing";
+const relayStreamUsageErrorModel = "gpt-runtime-stream-usage-error";
+const relayStreamUsageErrorToken = "sk-runtime-stream-usage-error-billing";
 
 afterEach(async () => {
   await reset();
@@ -473,7 +477,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
       failure_count: 0,
       stopped_reason: null,
       completion_reason: "stream_completed",
+      usage_recovered_after_error: false,
     });
+    expect(settled.log.usageSource).toBe("upstream");
     expect(settled.log.adminHeartbeat.interval_seconds).toBeGreaterThanOrEqual(5);
     expect(settled.log.adminHeartbeat.interval_seconds).toBeLessThanOrEqual(6);
     expect(settled.log.adminHeartbeat.final_lease_expires_at).toBeGreaterThan(
@@ -487,6 +493,134 @@ describe("Rust Durable Object lifecycle contracts", () => {
       path: "/v1/chat/completions",
       authorizationPresent: true,
       relayStreamHeld: true,
+    });
+  }, 30_000);
+
+  it("settles partial HTTP SSE usage exactly once after a stream read error", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayStreamErrorModel,
+      token: relayStreamErrorToken,
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch("https://realtime-provider-mock/__mock/reset", {
+      method: "POST",
+    });
+
+    const response = await SELF.fetch("https://cinatoken.test/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${relayStreamErrorToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: relayStreamErrorModel,
+        stream: true,
+        messages: [{ role: "user", content: "runtime partial usage" }],
+        max_completion_tokens: 20,
+      }),
+    });
+    expect(response.status).toBe(200);
+    const bodyFailure = expect(response.text()).rejects.toThrow();
+    const reserved = await waitForRelayBillingReservation(relayStreamErrorModel);
+
+    const release = await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/release-relay-stream",
+      { method: "POST" },
+    );
+    expect(release.status).toBe(204);
+    await bodyFailure;
+
+    const settled = await waitForRelaySettlement(reserved.reservation.reservation_key);
+    expect(settled.reservation).toMatchObject({
+      status: "settled",
+      request_accounted: 1,
+    });
+    expect(settled.reservation.final_quota).toBeGreaterThan(0);
+    expect(settled.user).toMatchObject({
+      quota: account.userQuota - settled.reservation.final_quota,
+      used_quota: settled.reservation.final_quota,
+      request_count: 1,
+    });
+    expect(settled.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota - settled.reservation.final_quota,
+      used_quota: settled.reservation.final_quota,
+    });
+    expect(settled.channel.used_quota).toBe(settled.reservation.final_quota);
+    expect(settled.log).toMatchObject({
+      usageSource: "local_estimate",
+      adminHeartbeat: {
+        completion_reason: "stream_error",
+        usage_recovered_after_error: true,
+      },
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      relayStreamFailurePlanned: true,
+    });
+  }, 30_000);
+
+  it("preserves reported HTTP SSE usage when a later stream read fails", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayStreamUsageErrorModel,
+      token: relayStreamUsageErrorToken,
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch("https://realtime-provider-mock/__mock/reset", {
+      method: "POST",
+    });
+
+    const response = await SELF.fetch("https://cinatoken.test/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${relayStreamUsageErrorToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: relayStreamUsageErrorModel,
+        stream: true,
+        messages: [{ role: "user", content: "runtime reported usage" }],
+        max_completion_tokens: 20,
+      }),
+    });
+    expect(response.status).toBe(200);
+    const bodyFailure = expect(response.text()).rejects.toThrow();
+    const reserved = await waitForRelayBillingReservation(relayStreamUsageErrorModel);
+
+    const release = await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/release-relay-stream",
+      { method: "POST" },
+    );
+    expect(release.status).toBe(204);
+    await bodyFailure;
+
+    const settled = await waitForRelaySettlement(reserved.reservation.reservation_key);
+    const expectedFinalQuota = 30;
+    expect(settled.reservation).toMatchObject({
+      status: "settled",
+      request_accounted: 1,
+      final_quota: expectedFinalQuota,
+    });
+    expect(settled.user).toMatchObject({
+      quota: account.userQuota - expectedFinalQuota,
+      used_quota: expectedFinalQuota,
+      request_count: 1,
+    });
+    expect(settled.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota - expectedFinalQuota,
+      used_quota: expectedFinalQuota,
+    });
+    expect(settled.channel.used_quota).toBe(expectedFinalQuota);
+    expect(settled.log).toMatchObject({
+      usageSource: "upstream",
+      adminHeartbeat: {
+        completion_reason: "stream_error",
+        usage_recovered_after_error: true,
+      },
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      relayStreamFailurePlanned: true,
+      relayStreamUsageBeforeFailure: true,
     });
   }, 30_000);
 
@@ -892,7 +1026,10 @@ async function seedAuthenticatedRealtimeGateway() {
   return { userQuota, tokenRemainQuota };
 }
 
-async function seedStreamingRelayBillingGateway() {
+async function seedStreamingRelayBillingGateway({
+  model = relayStreamModel,
+  token = relayStreamToken,
+} = {}) {
   const now = Math.floor(Date.now() / 1000);
   const userQuota = 1_000_000;
   const tokenRemainQuota = 500_000;
@@ -912,7 +1049,7 @@ async function seedStreamingRelayBillingGateway() {
          model_limits, allow_ips, used_quota, "group", cross_group_retry, deleted_at)
        VALUES (1, 1, ?1, 1, 'runtime stream token', ?2, 0, -1, ?3, 0,
          1, ?4, '', 0, 'default', 0, NULL)`,
-    ).bind(relayStreamToken, now, tokenRemainQuota, relayStreamModel),
+    ).bind(token, now, tokenRemainQuota, model),
     env.DB.prepare(
       `INSERT INTO channels
         (id, type, "key", status, name, weight, created_time, base_url, other,
@@ -921,20 +1058,20 @@ async function seedStreamingRelayBillingGateway() {
        VALUES (43, 1, 'runtime-stream-upstream-secret', 1, 'runtime stream upstream',
          1000, ?1, 'https://realtime-provider.invalid', '', 0, ?2, 'default',
          0, NULL, '', 1000, 0, '{}', '{}', '')`,
-    ).bind(now, relayStreamModel),
+    ).bind(now, model),
     env.DB.prepare(
       `INSERT INTO abilities
         (group_name, model, channel_id, enabled, priority, weight)
        VALUES ('default', ?1, 43, 1, 1000, 1000)`,
-    ).bind(relayStreamModel),
+    ).bind(model),
     env.DB.prepare(
       `INSERT INTO options ("key", value)
        VALUES ('billing_setting.billing_mode', ?1)`,
-    ).bind(JSON.stringify({ [relayStreamModel]: "tiered_expr" })),
+    ).bind(JSON.stringify({ [model]: "tiered_expr" })),
     env.DB.prepare(
       `INSERT INTO options ("key", value)
        VALUES ('billing_setting.billing_expr', ?1)`,
-    ).bind(JSON.stringify({ [relayStreamModel]: billingExpression })),
+    ).bind(JSON.stringify({ [model]: billingExpression })),
   ]);
   return { userQuota, tokenRemainQuota };
 }
@@ -1079,11 +1216,13 @@ async function waitForRelaySettlement(reservationKey) {
         .first(),
     ]);
     let adminHeartbeat = null;
+    let usageSource = null;
     if (typeof log?.other === "string" && log.other.length > 0) {
-      adminHeartbeat = JSON.parse(log.other)?.admin_info
-        ?.relay_billing_stream_lease_heartbeat;
+      const other = JSON.parse(log.other);
+      adminHeartbeat = other?.admin_info?.relay_billing_stream_lease_heartbeat;
+      usageSource = other?.usage_source ?? null;
     }
-    state = { reservation, user, token, channel, log: { adminHeartbeat } };
+    state = { reservation, user, token, channel, log: { adminHeartbeat, usageSource } };
     if (reservation?.status === "settled" && adminHeartbeat) return state;
     await delay(10);
   }

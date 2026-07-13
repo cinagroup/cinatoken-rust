@@ -1562,3 +1562,36 @@ Execution order:
 Any leaked credential/signing material, unbounded body, mismatched usage,
 retry-after-success, false successful affinity, duplicate terminal mutation,
 or inability to return traffic to Go is an immediate G3 abort.
+
+## Phase 4e: HTTP Stream Billing Finalization
+
+Run this phase only after credential rotation and migration 0023 in isolated
+staging. Keep HTTP orphan recovery and all three billing staging-proof flags
+false during discovery.
+
+1. Long-stream lease matrix: direct, AI Gateway, and WFP each run beyond the
+   original selected lease. Assert repeated generation-fenced renewal, bounded
+   D1 writes, one provider call, one settlement, exact accounting, and no row
+   entering recovery while the stream is active.
+2. Termination matrix: `[DONE]`, clean EOF, malformed event followed by valid
+   data, reported usage then read error, partial output then read error, empty
+   Responses, Responses output delta, client abort, and idle timeout. Record a
+   distinct termination reason and usage source for every case.
+3. Durable replay matrix: inject Worker cancellation after response completion,
+   D1 ambiguous commit, Queue retry and duplicate delivery, DLQ routing, and
+   settlement-versus-recovery overlap. The frozen expression/request snapshot
+   must settle through idempotent D1 CAS without re-reading mutable pricing.
+4. Recovery matrix: verify the 300-second boundary, unbound refund, bound
+   quarantine, pre-bind generation race, failed-oldest deferral, and manual
+   reconciliation. No fixture may leave an unexplained `reserved` or
+   `recovery_required` row.
+5. For every fixture archive provider call count, user/token/channel before and
+   after values, request count, ledger outcome, usage source, termination reason,
+   Queue event/retry identity, audit row, trace, and cleanup readback.
+
+Attaching clone-stream work to `waitUntil()` is not a pass condition. Do not set
+`RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED`,
+`RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED`, or
+`RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED` until the corresponding
+matrix is signed independently. `relay_billing_orphan_recovery_cutover_ready`
+must remain false without `BILLING_QUEUE` and the replay consumer.

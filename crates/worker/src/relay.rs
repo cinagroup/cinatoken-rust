@@ -108,6 +108,10 @@ pub(crate) const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS_ENV: &str =
     "RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS";
 pub(crate) const RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV: &str =
     "RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED";
+pub(crate) const RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV: &str =
+    "RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED";
+pub(crate) const RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV: &str =
+    "RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED";
 pub(crate) const RELAY_BILLING_ORPHAN_SWEEP_LIMIT_ENV: &str = "RELAY_BILLING_ORPHAN_SWEEP_LIMIT";
 pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_ENABLED_ENV: &str =
     "RELAY_BILLING_ORPHAN_RECOVERY_ENABLED";
@@ -118,6 +122,7 @@ const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_DEFAULT_SECONDS: i64 = 900;
 const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_MIN_SECONDS: i64 = 5;
 const RELAY_BILLING_STREAM_LEASE_HEARTBEAT_RETRY_MAX_SECONDS: i64 = 60;
 const RELAY_BILLING_ORPHAN_SWEEP_DEFAULT_LIMIT: i64 = 32;
+pub(crate) const RELAY_BILLING_FINALIZATION_QUEUE_BINDING: &str = "BILLING_QUEUE";
 const AI_GATEWAY_DIRECT_FALLBACK_AUDIT_HEADER: &str =
     "x-cinatoken-internal-ai-gateway-direct-fallback";
 const CLOUDFLARE_ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
@@ -3414,7 +3419,7 @@ async fn relay_endpoint_with_auth(
         billing_request_input,
         tiered_billing_preflight,
         estimated_prompt_tokens,
-        missing_usage_estimate_enabled: missing_usage_estimate_enabled(&env),
+        missing_usage_estimate_enabled: relay_billing_missing_usage_estimate_enabled(&env),
         usage_locally_estimated: false,
         stream_lease_heartbeat: None,
         affinity: affinity_audit,
@@ -5794,6 +5799,14 @@ pub(crate) fn relay_billing_stream_lease_renewal_compiled() -> bool {
             RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS,
             None,
         ) < RELAY_BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+}
+
+pub(crate) fn relay_billing_stream_error_usage_recovery_compiled() -> bool {
+    true
+}
+
+pub(crate) fn relay_billing_finalization_replay_compiled() -> bool {
+    false
 }
 
 pub(crate) fn relay_billing_orphan_recovery_enabled(env: &Env) -> bool {
@@ -8478,6 +8491,7 @@ struct RelayBillingStreamLeaseHeartbeatAudit {
     failure_count: u32,
     stopped_reason: Option<&'static str>,
     completion_reason: Option<&'static str>,
+    usage_recovered_after_error: bool,
 }
 
 impl RelayBillingStreamLeaseHeartbeatAudit {
@@ -8493,8 +8507,16 @@ impl RelayBillingStreamLeaseHeartbeatAudit {
             failure_count: 0,
             stopped_reason: None,
             completion_reason: None,
+            usage_recovered_after_error: false,
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct StreamingUsageResolution {
+    usage: UsageSummary,
+    locally_estimated: bool,
+    terminal_error: Option<String>,
 }
 
 async fn complete_streaming_relay_response(
@@ -8569,9 +8591,10 @@ async fn complete_streaming_relay_response(
                 lease.initial_lease_expires_at,
             )
         });
-        let (usage, usage_locally_estimated) = match streaming_usage_summary(
+        let resolution = match streaming_usage_summary(
             &mut audit_response,
             provider,
+            &endpoint_path,
             &model,
             audit.estimated_prompt_tokens,
             audit.missing_usage_estimate_enabled,
@@ -8583,11 +8606,17 @@ async fn complete_streaming_relay_response(
         {
             Ok(resolved) => resolved,
             Err(err) => {
-                worker::console_error!("failed to parse streaming relay usage: {}", err);
-                (UsageSummary::default(), false)
+                worker::console_error!("failed to initialize streaming relay usage audit: {}", err);
+                StreamingUsageResolution::default()
             }
         };
-        audit.usage_locally_estimated = usage_locally_estimated;
+        if let Some(err) = resolution.terminal_error.as_deref() {
+            worker::console_error!(
+                "streaming relay usage audit recovered partial evidence after read error: {}",
+                err
+            );
+        }
+        audit.usage_locally_estimated = resolution.locally_estimated;
         audit.stream_lease_heartbeat = heartbeat_audit;
         if let Err(err) = record_relay_audit(
             &env,
@@ -8598,7 +8627,7 @@ async fn complete_streaming_relay_response(
             &group,
             &endpoint_path,
             status,
-            &usage,
+            &resolution.usage,
             &audit,
             upstream_request_id.as_deref(),
             true,
@@ -8615,13 +8644,14 @@ async fn complete_streaming_relay_response(
 async fn streaming_usage_summary(
     upstream: &mut Response,
     provider: RelayProviderKind,
+    endpoint_path: &str,
     model: &str,
     estimated_prompt_tokens: i64,
     estimate_enabled: bool,
     db: &D1Database,
     stream_lease: Option<&RelayBillingStreamLease>,
     heartbeat_audit: Option<&mut RelayBillingStreamLeaseHeartbeatAudit>,
-) -> worker::Result<(UsageSummary, bool)> {
+) -> worker::Result<StreamingUsageResolution> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
         RelayProviderKind::AliOpenAi
@@ -8644,6 +8674,7 @@ async fn streaming_usage_summary(
     };
 
     let mut heartbeat_audit = heartbeat_audit;
+    let mut terminal_error = None;
     let mut heartbeat_active = stream_lease.is_some();
     let mut expected_lease_expires_at = stream_lease
         .map(|lease| lease.initial_lease_expires_at)
@@ -8735,7 +8766,8 @@ async fn streaming_usage_summary(
                         if let Some(audit) = heartbeat_audit.as_deref_mut() {
                             audit.completion_reason = Some("stream_error");
                         }
-                        return Err(err);
+                        terminal_error = Some(err.to_string());
+                        break;
                     }
                 },
                 Either::Left((None, _)) => break,
@@ -8750,14 +8782,17 @@ async fn streaming_usage_summary(
                     if let Some(audit) = heartbeat_audit.as_deref_mut() {
                         audit.completion_reason = Some("stream_error");
                     }
-                    return Err(err);
+                    terminal_error = Some(err.to_string());
+                    break;
                 }
                 None => break,
             }
         }
     }
-    if let Some(audit) = heartbeat_audit.as_deref_mut() {
-        audit.completion_reason = Some("stream_completed");
+    if terminal_error.is_none() {
+        if let Some(audit) = heartbeat_audit.as_deref_mut() {
+            audit.completion_reason = Some("stream_completed");
+        }
     }
 
     let (usage, response_text, tool_count) = accumulator.into_parts();
@@ -8782,10 +8817,19 @@ async fn streaming_usage_summary(
         usage,
         &response_text,
         tool_count,
+        endpoint_path,
         model,
         estimated_prompt_tokens,
         estimate_applicable,
     );
+    let usage_recovered_after_error = terminal_error.is_some()
+        && cinatoken_tokenizer::valid_usage(
+            usage.prompt_tokens as i64,
+            usage.completion_tokens as i64,
+        );
+    if let Some(audit) = heartbeat_audit.as_deref_mut() {
+        audit.usage_recovered_after_error = usage_recovered_after_error;
+    }
     if locally_estimated {
         worker::console_log!(
             "relay stream usage missing; locally estimated usage for {} (prompt={}, completion={}, tools={})",
@@ -8795,7 +8839,72 @@ async fn streaming_usage_summary(
             tool_count
         );
     }
-    Ok((usage, locally_estimated))
+    Ok(StreamingUsageResolution {
+        usage,
+        locally_estimated,
+        terminal_error,
+    })
+}
+
+/*
+ * Keep the endpoint-aware resolution below separate from stream I/O. This lets
+ * unit tests lock Go parity without requiring a Worker ReadableStream.
+ */
+fn resolve_stream_usage(
+    usage: UsageSummary,
+    response_text: &str,
+    tool_count: i64,
+    endpoint_path: &str,
+    model: &str,
+    estimated_prompt_tokens: i64,
+    enabled: bool,
+) -> (UsageSummary, bool) {
+    if !enabled {
+        return (usage, false);
+    }
+    if matches!(endpoint_path, "responses" | "responses/compact") {
+        let mut resolved = usage;
+        let mut locally_estimated = false;
+        if resolved.completion_tokens == 0 && !response_text.is_empty() {
+            let estimate = cinatoken_tokenizer::response_text_to_usage(
+                model,
+                response_text,
+                estimated_prompt_tokens,
+                0,
+            );
+            resolved.completion_tokens = estimate.completion_tokens as i32;
+            locally_estimated = resolved.completion_tokens > 0;
+        }
+        if resolved.prompt_tokens == 0 && resolved.completion_tokens != 0 {
+            resolved.prompt_tokens = estimated_prompt_tokens as i32;
+            locally_estimated = true;
+        }
+        if locally_estimated {
+            resolved.total_tokens = resolved
+                .prompt_tokens
+                .saturating_add(resolved.completion_tokens);
+        }
+        return (resolved, locally_estimated);
+    }
+    if cinatoken_tokenizer::valid_usage(usage.prompt_tokens as i64, usage.completion_tokens as i64)
+    {
+        return (usage, false);
+    }
+    let estimate = cinatoken_tokenizer::response_text_to_usage(
+        model,
+        response_text,
+        estimated_prompt_tokens,
+        tool_count,
+    );
+    (
+        UsageSummary {
+            prompt_tokens: estimate.prompt_tokens as i32,
+            completion_tokens: estimate.completion_tokens as i32,
+            total_tokens: estimate.total_tokens as i32,
+            ..UsageSummary::default()
+        },
+        true,
+    )
 }
 
 #[derive(Clone)]
@@ -8922,6 +9031,7 @@ async fn record_relay_audit(
                 "failure_count": heartbeat.failure_count,
                 "stopped_reason": heartbeat.stopped_reason,
                 "completion_reason": heartbeat.completion_reason,
+                "usage_recovered_after_error": heartbeat.usage_recovered_after_error,
             }),
         );
     }
@@ -10187,7 +10297,7 @@ fn tiered_billing_refund_metadata(
     })
 }
 
-fn missing_usage_estimate_enabled(env: &Env) -> bool {
+pub(crate) fn relay_billing_missing_usage_estimate_enabled(env: &Env) -> bool {
     matches!(
         optional_env_var(env, MISSING_USAGE_ESTIMATE_ENV).as_deref(),
         Some("true") | Some("1")
@@ -10212,46 +10322,6 @@ fn affinity_cached_token_rate_mode(endpoint_path: &str, channel_type: i32) -> &'
     } else {
         ""
     }
-}
-
-/// Resolve a streaming chat usage, applying Go's missing-usage estimate fallback
-/// (`OaiStreamHandler`): when the stream carried no valid usage
-/// (`!ValidUsage`, i.e. both prompt and completion are zero), estimate from the
-/// accumulated completion text and `tool_count * 7`
-/// (`ResponseText2Usage` + the tool bump). Returns the (possibly estimated)
-/// usage and whether it was locally estimated. A no-op (returns the upstream
-/// usage) when the fallback is disabled or the usage is already valid.
-fn resolve_stream_usage(
-    usage: UsageSummary,
-    response_text: &str,
-    tool_count: i64,
-    model: &str,
-    estimated_prompt_tokens: i64,
-    enabled: bool,
-) -> (UsageSummary, bool) {
-    if !enabled
-        || cinatoken_tokenizer::valid_usage(
-            usage.prompt_tokens as i64,
-            usage.completion_tokens as i64,
-        )
-    {
-        return (usage, false);
-    }
-    let estimate = cinatoken_tokenizer::response_text_to_usage(
-        model,
-        response_text,
-        estimated_prompt_tokens,
-        tool_count,
-    );
-    (
-        UsageSummary {
-            prompt_tokens: estimate.prompt_tokens as i32,
-            completion_tokens: estimate.completion_tokens as i32,
-            total_tokens: estimate.total_tokens as i32,
-            ..UsageSummary::default()
-        },
-        true,
-    )
 }
 
 /// Resolve a non-stream chat usage, applying Go's missing-usage estimate
@@ -16470,6 +16540,7 @@ mod tests {
             UsageSummary::default(),
             "Hello world",
             2,
+            "chat/completions",
             "gpt-4o",
             100,
             true,
@@ -16488,13 +16559,59 @@ mod tests {
             ..UsageSummary::default()
         };
         // Disabled -> no-op even though usage is invalid.
-        let (r, est) = resolve_stream_usage(UsageSummary::default(), "x", 1, "gpt-4o", 100, false);
+        let (r, est) = resolve_stream_usage(
+            UsageSummary::default(),
+            "x",
+            1,
+            "chat/completions",
+            "gpt-4o",
+            100,
+            false,
+        );
         assert!(!est);
         assert_eq!(r, UsageSummary::default());
         // Enabled but usage already valid (prompt != 0) -> no-op.
-        let (r2, est2) = resolve_stream_usage(valid, "x", 1, "gpt-4o", 100, true);
+        let (r2, est2) =
+            resolve_stream_usage(valid, "x", 1, "chat/completions", "gpt-4o", 100, true);
         assert!(!est2);
         assert_eq!(r2, valid);
+    }
+
+    #[test]
+    fn resolve_stream_usage_keeps_empty_responses_usage_at_zero() {
+        for endpoint in ["responses", "responses/compact"] {
+            let (resolved, estimated) = resolve_stream_usage(
+                UsageSummary::default(),
+                "",
+                0,
+                endpoint,
+                "gpt-4o",
+                100,
+                true,
+            );
+            assert!(!estimated, "unexpected estimate for {endpoint}");
+            assert_eq!(resolved, UsageSummary::default());
+        }
+    }
+
+    #[test]
+    fn resolve_stream_usage_estimates_responses_only_after_output() {
+        let (resolved, estimated) = resolve_stream_usage(
+            UsageSummary::default(),
+            "hi",
+            0,
+            "responses",
+            "gpt-4o",
+            100,
+            true,
+        );
+        assert!(estimated);
+        assert_eq!(resolved.prompt_tokens, 100);
+        assert!(resolved.completion_tokens > 0);
+        assert_eq!(
+            resolved.total_tokens,
+            resolved.prompt_tokens + resolved.completion_tokens
+        );
     }
 
     #[test]

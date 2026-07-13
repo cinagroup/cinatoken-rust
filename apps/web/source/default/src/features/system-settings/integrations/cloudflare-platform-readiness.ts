@@ -43,6 +43,8 @@ export type PlatformReadinessSignalId =
   | 'wfp-relay-authority-smoke'
   | 'realtime-smoke'
   | 'task-runner-replay'
+  | 'relay-billing-stream-error-smoke'
+  | 'relay-billing-finalization-replay'
   | 'relay-billing-recovery-smoke'
   | 'task-runner-cutover'
   | 'relay-billing-recovery-cutover'
@@ -65,7 +67,14 @@ export type PlatformReadinessCapabilities = Pick<
   | 'relay_billing_reservation_ledger_compiled'
   | 'relay_billing_ledger_status_compiled'
   | 'relay_billing_stream_lease_renewal_compiled'
+  | 'relay_billing_stream_lease_heartbeat_configured'
   | 'relay_billing_stream_lease_heartbeat_valid'
+  | 'relay_billing_stream_error_usage_recovery_compiled'
+  | 'relay_billing_stream_error_usage_recovery_staging_verified'
+  | 'relay_billing_missing_usage_estimate_enabled'
+  | 'relay_billing_finalization_queue_available'
+  | 'relay_billing_finalization_replay_compiled'
+  | 'relay_billing_finalization_replay_staging_verified'
   | 'relay_billing_orphan_recovery_ready'
   | 'relay_billing_stream_lease_renewal_staging_verified'
   | 'relay_billing_orphan_recovery_cutover_ready'
@@ -168,6 +177,8 @@ const PLATFORM_READINESS_SIGNAL_LABELS = {
   'wfp-relay-authority-smoke': 'WFP relay authority smoke',
   'realtime-smoke': 'Realtime smoke',
   'task-runner-replay': 'TaskRunner replay',
+  'relay-billing-stream-error-smoke': 'Relay stream error usage recovery',
+  'relay-billing-finalization-replay': 'Relay billing finalization replay',
   'relay-billing-recovery-smoke': 'Relay billing recovery smoke',
   'task-runner-cutover': 'TaskRunner',
   'relay-billing-recovery-cutover': 'Relay billing recovery',
@@ -246,6 +257,8 @@ export function buildPlatformReadinessSummary(
     capabilities.relay_billing_reservation_ledger_compiled,
     capabilities.relay_billing_ledger_status_compiled,
     capabilities.relay_billing_stream_lease_renewal_compiled,
+    capabilities.relay_billing_stream_error_usage_recovery_compiled,
+    capabilities.relay_billing_finalization_replay_compiled,
     capabilities.relay_billing_stream_lease_heartbeat_valid
   )
   const taskRunnerImplementation = allReady(
@@ -354,6 +367,24 @@ export function buildPlatformReadinessSummary(
       'task-runner-replay',
       taskRunnerReplayReady,
       capabilities.task_runner_staging_replay_verified
+    ),
+    verificationSignal(
+      'relay-billing-stream-error-smoke',
+      allReady(
+        capabilities.relay_billing_stream_error_usage_recovery_compiled,
+        capabilities.relay_billing_stream_lease_heartbeat_configured,
+        capabilities.relay_billing_missing_usage_estimate_enabled,
+        capabilities.relay_billing_stream_lease_heartbeat_valid
+      ),
+      capabilities.relay_billing_stream_error_usage_recovery_staging_verified
+    ),
+    verificationSignal(
+      'relay-billing-finalization-replay',
+      allReady(
+        capabilities.relay_billing_finalization_queue_available,
+        capabilities.relay_billing_finalization_replay_compiled
+      ),
+      capabilities.relay_billing_finalization_replay_staging_verified
     ),
     verificationSignal(
       'relay-billing-recovery-smoke',

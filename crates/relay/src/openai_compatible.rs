@@ -931,6 +931,12 @@ fn accumulate_openai_stream_text(data_lines: &[String], text: &mut String, tool_
     let Ok(value) = serde_json::from_str::<Value>(payload) else {
         return;
     };
+    if value.get("type").and_then(Value::as_str) == Some("response.output_text.delta") {
+        if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+            text.push_str(delta);
+        }
+        return;
+    }
     let Some(choices) = value.get("choices").and_then(Value::as_array) else {
         return;
     };
@@ -2217,6 +2223,21 @@ mod tests {
         acc.push_chunk(body.as_bytes());
         let (_usage, text, _tool_count) = acc.into_parts();
         assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn into_parts_accumulates_responses_output_text_after_malformed_event() {
+        let body = concat!(
+            "data: {not-json}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+        );
+        let mut acc = SseUsageAccumulator::default();
+        acc.push_chunk(body.as_bytes());
+        let (usage, text, tool_count) = acc.into_parts();
+        assert_eq!(usage, UsageSummary::default());
+        assert_eq!(text, "hi");
+        assert_eq!(tool_count, 0);
     }
 
     #[test]

@@ -54,13 +54,17 @@ use crate::realtime_session::{
 };
 use crate::relay::{
     relay_actual_serving_group_billing_contract_compiled,
-    relay_ai_gateway_direct_fallback_contract_compiled, relay_billing_orphan_recovery_enabled,
+    relay_ai_gateway_direct_fallback_contract_compiled, relay_billing_finalization_replay_compiled,
+    relay_billing_missing_usage_estimate_enabled, relay_billing_orphan_recovery_enabled,
     relay_billing_orphan_sweep_limit, relay_billing_reservation_lease_seconds,
-    relay_billing_reservation_ledger_compiled, relay_billing_stream_lease_heartbeat_runtime_status,
+    relay_billing_reservation_ledger_compiled, relay_billing_stream_error_usage_recovery_compiled,
+    relay_billing_stream_lease_heartbeat_runtime_status,
     relay_billing_stream_lease_renewal_compiled, relay_model_fallback_contract_compiled,
     relay_model_fallback_runtime_status, relay_retry_times_from_env,
     relay_terminal_attempt_audit_contract_compiled,
-    relay_wfp_authority_transport_contract_compiled,
+    relay_wfp_authority_transport_contract_compiled, RELAY_BILLING_FINALIZATION_QUEUE_BINDING,
+    RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV,
+    RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV,
     RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV,
     RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
 };
@@ -307,6 +311,12 @@ struct PlatformCapabilities {
     relay_billing_stream_lease_heartbeat_valid: bool,
     relay_billing_stream_lease_heartbeat_seconds: i64,
     relay_billing_stream_lease_renewal_staging_verified: bool,
+    relay_billing_stream_error_usage_recovery_compiled: bool,
+    relay_billing_stream_error_usage_recovery_staging_verified: bool,
+    relay_billing_missing_usage_estimate_enabled: bool,
+    relay_billing_finalization_queue_available: bool,
+    relay_billing_finalization_replay_compiled: bool,
+    relay_billing_finalization_replay_staging_verified: bool,
     relay_billing_orphan_recovery_enabled: bool,
     relay_billing_orphan_recovery_ready: bool,
     relay_billing_orphan_recovery_cutover_ready: bool,
@@ -563,14 +573,37 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         &env,
         RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV,
     );
+    let relay_billing_stream_error_usage_recovery_compiled =
+        relay_billing_stream_error_usage_recovery_compiled();
+    let relay_billing_stream_error_usage_recovery_staging_verified = env_flag(
+        &env,
+        RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV,
+    );
+    let relay_billing_missing_usage_estimate_enabled =
+        relay_billing_missing_usage_estimate_enabled(&env);
+    let relay_billing_finalization_queue_available =
+        env.queue(RELAY_BILLING_FINALIZATION_QUEUE_BINDING).is_ok();
+    let relay_billing_finalization_replay_compiled = relay_billing_finalization_replay_compiled();
+    let relay_billing_finalization_replay_staging_verified =
+        env_flag(&env, RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV);
     let relay_billing_orphan_recovery_enabled = relay_billing_orphan_recovery_enabled(&env);
     let relay_billing_orphan_recovery_ready = relay_billing_reservation_ledger_compiled
         && relay_billing_stream_lease_renewal_compiled
+        && relay_billing_stream_error_usage_recovery_compiled
+        && relay_billing_stream_lease_heartbeat_configured
         && relay_billing_stream_lease_heartbeat_valid
+        && relay_billing_missing_usage_estimate_enabled
         && relay_billing_orphan_recovery_enabled
         && d1_migration_ready;
     let relay_billing_orphan_recovery_cutover_ready =
-        relay_billing_orphan_recovery_ready && relay_billing_stream_lease_renewal_staging_verified;
+        is_relay_billing_orphan_recovery_cutover_ready(
+            relay_billing_orphan_recovery_ready,
+            relay_billing_stream_lease_renewal_staging_verified,
+            relay_billing_stream_error_usage_recovery_staging_verified,
+            relay_billing_finalization_queue_available,
+            relay_billing_finalization_replay_compiled,
+            relay_billing_finalization_replay_staging_verified,
+        );
     let relay_billing_orphan_recovery_grace_seconds =
         crate::d1_repositories::RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS;
     let relay_billing_orphan_sweep_limit = relay_billing_orphan_sweep_limit(&env);
@@ -884,6 +917,12 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_billing_stream_lease_heartbeat_valid,
         relay_billing_stream_lease_heartbeat_seconds,
         relay_billing_stream_lease_renewal_staging_verified,
+        relay_billing_stream_error_usage_recovery_compiled,
+        relay_billing_stream_error_usage_recovery_staging_verified,
+        relay_billing_missing_usage_estimate_enabled,
+        relay_billing_finalization_queue_available,
+        relay_billing_finalization_replay_compiled,
+        relay_billing_finalization_replay_staging_verified,
         relay_billing_orphan_recovery_enabled,
         relay_billing_orphan_recovery_ready,
         relay_billing_orphan_recovery_cutover_ready,
@@ -2688,6 +2727,22 @@ fn is_relay_model_fallback_cutover_ready(ready: bool, staging_verified: bool) ->
     ready && staging_verified
 }
 
+fn is_relay_billing_orphan_recovery_cutover_ready(
+    ready: bool,
+    lease_renewal_staging_verified: bool,
+    stream_error_usage_recovery_staging_verified: bool,
+    finalization_queue_available: bool,
+    finalization_replay_compiled: bool,
+    finalization_replay_staging_verified: bool,
+) -> bool {
+    ready
+        && lease_renewal_staging_verified
+        && stream_error_usage_recovery_staging_verified
+        && finalization_queue_available
+        && finalization_replay_compiled
+        && finalization_replay_staging_verified
+}
+
 #[allow(clippy::too_many_arguments)]
 fn is_wfp_tenant_smoke_ready(
     dispatcher_bound: bool,
@@ -3147,6 +3202,23 @@ mod tests {
         assert!(!is_relay_ai_gateway_router_ready(true, false, true, true));
         assert!(!is_relay_ai_gateway_router_ready(true, true, false, true));
         assert!(!is_relay_ai_gateway_router_ready(true, true, true, false));
+    }
+
+    #[test]
+    fn relay_billing_recovery_cutover_requires_stream_and_durable_replay_proofs() {
+        assert!(is_relay_billing_orphan_recovery_cutover_ready(
+            true, true, true, true, true, true
+        ));
+        for false_gate in 0..6 {
+            let mut flags = [true; 6];
+            flags[false_gate] = false;
+            assert!(
+                !is_relay_billing_orphan_recovery_cutover_ready(
+                    flags[0], flags[1], flags[2], flags[3], flags[4], flags[5]
+                ),
+                "expected relay billing recovery cutover to wait on gate index {false_gate}"
+            );
+        }
     }
 
     #[test]

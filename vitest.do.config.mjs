@@ -44,6 +44,7 @@ export default defineConfig({
           RELAY_BILLING_ORPHAN_SWEEP_LIMIT: "32",
           RELAY_BILLING_RESERVATION_LEASE_SECONDS: "300",
           RELAY_BILLING_STREAM_LEASE_HEARTBEAT_SECONDS: "5",
+          RELAY_MISSING_USAGE_ESTIMATE_ENABLED: "true",
           TEST_D1_MIGRATIONS: d1Migrations,
         },
         d1Databases: { DB: "do-runtime-test" },

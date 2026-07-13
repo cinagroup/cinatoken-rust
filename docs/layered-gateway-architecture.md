@@ -839,3 +839,28 @@ This design follows the cinaVibeSDK-inspired split: durable session authority
 stays in the DO, global reconciliation stays in the scheduling gateway, WFP
 tenants remain provider transport only, and central D1 billing authority never
 moves into tenant code.
+
+## 2026-07-14 Ordinary HTTP Stream Billing Boundary
+
+Ordinary HTTP SSE intentionally does not reuse `RealtimeSession` or create a DO
+per request. Its target ownership is:
+
+1. The Rust scheduling/relay gateway authenticates, freezes billing expression
+   and request inputs, reserves quota, selects transport, observes the single
+   forwarding stream, and creates the terminal finalization event.
+2. WFP tenant and outbound Workers validate authority and transport bytes. They
+   never evaluate billing expressions, write D1 quota, decide refunds, or own a
+   finalization retry.
+3. D1 is the reservation and terminal financial CAS authority. A dedicated
+   billing Queue carries bounded frozen-snapshot finalization events across
+   response completion, disconnect, or Worker cancellation. The consumer is
+   idempotent and has a DLQ/reconcile path.
+4. Realtime Durable Objects remain scoped to long-lived WebSocket session
+   coordination and hibernation. Their lease/retry collections are not a generic
+   HTTP settlement service.
+
+The current clone plus `waitUntil()` parser is an interim implementation. It can
+preserve pre-error usage locally, but it cannot establish durable completion
+after the platform's post-response window. Platform capabilities must report
+Queue/replay absence and keep HTTP recovery cutover false until the target flow
+is implemented and deployed evidence is approved.

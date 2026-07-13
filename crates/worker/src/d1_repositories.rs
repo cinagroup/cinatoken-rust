@@ -4927,7 +4927,7 @@ pub async fn list_enabled_channels_after_id(
         r#"
         SELECT {CHANNEL_ADMIN_COLUMNS}
         FROM channels
-        WHERE deleted_at IS NULL AND status = 1 AND id > ?1
+        WHERE status = 1 AND id > ?1
         ORDER BY id ASC
         LIMIT ?2
         "#,
@@ -5191,6 +5191,43 @@ pub async fn record_channel_test(
     Ok(())
 }
 
+/// Persist a bounded set of successful channel probes in one D1 batch. The
+/// return value is the number of channels that still existed when the batch
+/// was applied.
+pub async fn record_channel_tests_batch(
+    db: &D1Database,
+    measurements: &[(i64, i64, i64)],
+) -> worker::Result<usize> {
+    if measurements.is_empty() {
+        return Ok(0);
+    }
+    let mut statements = Vec::with_capacity(measurements.len());
+    for (id, response_time_ms, tested_at) in measurements {
+        let args = [
+            D1Type::Integer(d1_i32(*response_time_ms)),
+            D1Type::Integer(d1_i32(*tested_at)),
+            D1Type::Integer(d1_i32(*id)),
+        ];
+        statements.push(
+            db.prepare(
+                r#"UPDATE channels
+                   SET response_time = ?1, test_time = ?2
+                   WHERE id = ?3"#,
+            )
+            .bind_refs(&args)?,
+        );
+    }
+    let results = db.batch(statements).await?;
+    let mut changed = 0usize;
+    for result in results {
+        changed += result
+            .meta()?
+            .and_then(|metadata| metadata.changes)
+            .unwrap_or(0) as usize;
+    }
+    Ok(changed)
+}
+
 /// Persist a successfully fetched upstream balance and its refresh timestamp.
 /// Returns false when the channel disappeared before the write completed.
 pub async fn update_channel_balance(
@@ -5214,6 +5251,47 @@ pub async fn update_channel_balance(
         .run()
         .await?;
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
+}
+
+/// Persist a bounded set of validated upstream balances in one D1 batch.
+/// Values are never interpolated into SQL, and only finite values are accepted.
+pub async fn update_channel_balances_batch(
+    db: &D1Database,
+    balances: &[(i64, f64, i64)],
+) -> worker::Result<usize> {
+    if balances.is_empty() {
+        return Ok(0);
+    }
+    let mut statements = Vec::with_capacity(balances.len());
+    for (id, balance, updated_at) in balances {
+        if !balance.is_finite() {
+            return Err(worker::Error::RustError(
+                "channel balance batch contains a non-finite value".to_string(),
+            ));
+        }
+        let args = [
+            D1Type::Real(*balance),
+            D1Type::Integer(d1_i32(*updated_at)),
+            D1Type::Integer(d1_i32(*id)),
+        ];
+        statements.push(
+            db.prepare(
+                r#"UPDATE channels
+                   SET balance = ?1, balance_updated_time = ?2
+                   WHERE id = ?3"#,
+            )
+            .bind_refs(&args)?,
+        );
+    }
+    let results = db.batch(statements).await?;
+    let mut changed = 0usize;
+    for result in results {
+        changed += result
+            .meta()?
+            .and_then(|metadata| metadata.changes)
+            .unwrap_or(0) as usize;
+    }
+    Ok(changed)
 }
 
 /// Atomically replace a multi-key channel's key payload and channel-info JSON.
@@ -5544,6 +5622,56 @@ pub async fn create_channel(db: &D1Database, params: CreateChannel<'_>) -> worke
     Ok(row
         .map(|r| r.id)
         .ok_or_else(|| worker::Error::RustError("channel insert not found after create".into()))?)
+}
+
+const COPY_CHANNEL_SQL: &str = r#"
+    INSERT INTO channels (
+      type, "key", openai_organization, test_model, status, name, weight,
+      created_time, test_time, response_time, base_url, other, balance,
+      balance_updated_time, models, "group", used_quota, model_mapping,
+      status_code_mapping, priority, auto_ban, other_info, tag, setting,
+      param_override, header_override, remark, channel_info, settings
+    )
+    SELECT
+      type, "key", openai_organization, test_model, status, ?2, weight,
+      ?3, 0, 0, base_url, other,
+      CASE WHEN ?4 = 1 THEN 0 ELSE balance END,
+      balance_updated_time, models, "group",
+      CASE WHEN ?4 = 1 THEN 0 ELSE used_quota END,
+      model_mapping, status_code_mapping, priority, auto_ban, other_info, tag,
+      setting, param_override, header_override, remark, channel_info, settings
+    FROM channels
+    WHERE id = ?1
+"#;
+
+/// Clone one channel with its encrypted/plain upstream key retained in D1 but
+/// never returned to the handler. The SQL copies every Go-compatible channel
+/// field while resetting test latency metadata and optionally balance/quota.
+pub async fn copy_channel(
+    db: &D1Database,
+    source_id: i64,
+    new_name: &str,
+    created_time: i64,
+    reset_balance: bool,
+) -> worker::Result<Option<i64>> {
+    let args = [
+        D1Type::Integer(d1_i32(source_id)),
+        D1Type::Text(new_name),
+        D1Type::Integer(d1_i32(created_time)),
+        D1Type::Integer(if reset_balance { 1 } else { 0 }),
+    ];
+    let result = db.prepare(COPY_CHANNEL_SQL).bind_refs(&args)?.run().await?;
+    let Some(metadata) = result.meta()? else {
+        return Err(worker::Error::RustError(
+            "channel copy did not return D1 metadata".to_string(),
+        ));
+    };
+    if metadata.changes.unwrap_or(0) == 0 {
+        return Ok(None);
+    }
+    metadata.last_row_id.map(Some).ok_or_else(|| {
+        worker::Error::RustError("channel copy did not return the inserted id".to_string())
+    })
 }
 
 /// Update fields for an existing channel. Only provided fields are updated.
@@ -9857,6 +9985,19 @@ mod tests {
     fn channel_type_filter_sql_accepts_internal_type_lists_only() {
         assert_eq!(channel_type_filter_sql(&[1, 20, 53]).unwrap(), "1, 20, 53");
         assert!(channel_type_filter_sql(&[]).is_err());
+    }
+
+    #[test]
+    fn channel_copy_sql_is_parameterized_and_preserves_go_reset_semantics() {
+        for parameter in ["?1", "?2", "?3", "?4"] {
+            assert!(COPY_CHANNEL_SQL.contains(parameter));
+        }
+        assert!(COPY_CHANNEL_SQL.contains("type, \"key\", openai_organization"));
+        assert!(COPY_CHANNEL_SQL.contains("?3, 0, 0, base_url"));
+        assert!(COPY_CHANNEL_SQL.contains("CASE WHEN ?4 = 1 THEN 0 ELSE balance END"));
+        assert!(COPY_CHANNEL_SQL.contains("CASE WHEN ?4 = 1 THEN 0 ELSE used_quota END"));
+        assert!(COPY_CHANNEL_SQL.contains("channel_info, settings"));
+        assert!(COPY_CHANNEL_SQL.contains("WHERE id = ?1"));
     }
 
     #[test]

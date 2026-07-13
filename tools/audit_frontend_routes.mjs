@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -463,12 +464,94 @@ function pathMatches(registered, requested) {
   const registeredParts = registered.split("/").filter(Boolean);
   const requestedParts = requested.split("/").filter(Boolean);
   if (registeredParts.length !== requestedParts.length) return false;
-  return registeredParts.every(
-    (part, index) =>
-      part.startsWith(":") ||
-      part.startsWith("*") ||
-      requestedParts[index] === ":param" ||
-      part === requestedParts[index],
+  return registeredParts.every((registeredPart, index) => {
+    const requestedPart = requestedParts[index];
+    const registeredIsDynamic =
+      registeredPart.startsWith(":") || registeredPart.startsWith("*");
+    const requestedIsDynamic = requestedPart === ":param";
+
+    // The audit compares route declarations, not runtime URL acceptance. A
+    // literal frontend operation therefore needs the same literal Worker
+    // route, while an interpolated frontend value needs a Worker parameter.
+    if (registeredIsDynamic || requestedIsDynamic) {
+      return registeredIsDynamic && requestedIsDynamic;
+    }
+    return registeredPart === requestedPart;
+  });
+}
+
+function runPathMatcherSelfTests() {
+  const matching = [
+    ["/api/channel/:id", "/api/channel/:param"],
+    ["/api/channel/test/:id", "/api/channel/test/:param"],
+    ["/api/channel/*rest", "/api/channel/:param"],
+    ["/api/channel/models", "/api/channel/models"],
+  ];
+  const nonMatching = [
+    ["/api/channel/:id", "/api/channel/models"],
+    ["/api/channel/:id", "/api/channel/test"],
+    ["/api/channel/:id", "/api/channel/update_balance"],
+    ["/api/channel/:id/key", "/api/channel/copy/:param"],
+    ["/api/channel/copy/:id", "/api/channel/:param/key"],
+    ["/api/channel/models", "/api/channel/:param"],
+  ];
+
+  for (const [registered, requested] of matching) {
+    assert.equal(
+      pathMatches(registered, requested),
+      true,
+      `expected ${registered} to satisfy ${requested}`,
+    );
+  }
+  for (const [registered, requested] of nonMatching) {
+    assert.equal(
+      pathMatches(registered, requested),
+      false,
+      `expected ${registered} not to satisfy ${requested}`,
+    );
+  }
+
+  const channelRoutes = [
+    { method: "GET", path: "/api/channel/models" },
+    { method: "GET", path: "/api/channel/test" },
+    { method: "GET", path: "/api/channel/update_balance" },
+    { method: "POST", path: "/api/channel/copy/:id" },
+  ];
+  for (const call of [
+    "GET /api/channel/models",
+    "GET /api/channel/test",
+    "GET /api/channel/update_balance",
+    "POST /api/channel/copy/:param",
+  ]) {
+    assert.equal(
+      isRegistered(call, channelRoutes),
+      true,
+      `expected explicit Worker route to satisfy ${call}`,
+    );
+  }
+  assert.equal(
+    isRegistered("POST /api/channel/copy/:param", [
+      { method: "POST", path: "/api/channel/:id/key" },
+    ]),
+    false,
+    "an unrelated dynamic route must not satisfy channel copy",
+  );
+  assert.equal(
+    classifyMissing("GET /api/user/logout", [
+      { method: "POST", path: "/api/user/logout" },
+      { method: "GET", path: "/api/user/:id" },
+    ]),
+    "method-mismatch",
+    "a wrong-method literal route must be reported as contract debt",
+  );
+
+  console.log(
+    JSON.stringify({
+      path_matcher_self_test: "passed",
+      matching_cases: matching.length,
+      non_matching_cases: nonMatching.length,
+      registration_cases: 6,
+    }),
   );
 }
 
@@ -491,10 +574,13 @@ function startsWithAny(value, prefixes) {
   );
 }
 
-function classifyMissing(call) {
+function classifyMissing(call, routes) {
   const [method] = call.split(" ", 1);
   const route = routePath(call);
   if (method === "ANY") return "parser-limitation";
+  if (routes.some((registered) => pathMatches(registered.path, route))) {
+    return "method-mismatch";
+  }
 
   if (
     startsWithAny(route, [
@@ -568,6 +654,11 @@ function sha256(values) {
   return createHash("sha256").update(values.join("\n")).digest("hex");
 }
 
+if (process.argv.includes("--self-test")) {
+  runPathMatcherSelfTests();
+  process.exit(0);
+}
+
 const { calls, detectionKinds } = await frontendCalls();
 const routerSource = await readFile(workerRouterPath, "utf8");
 const routes = workerRoutes(routerSource);
@@ -575,7 +666,7 @@ const missing = [...calls.entries()]
   .filter(([call]) => !isRegistered(call, routes))
   .map(([call, locations]) => ({
     call,
-    category: classifyMissing(call),
+    category: classifyMissing(call, routes),
     locations,
   }))
   .sort((left, right) => left.call.localeCompare(right.call));

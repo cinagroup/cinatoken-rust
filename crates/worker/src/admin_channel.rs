@@ -11,10 +11,10 @@
 //! `admin_codex_channel`; Ollama model management lives in `admin_ollama`.
 
 use futures_util::future::{select, Either};
-use futures_util::TryStreamExt;
+use futures_util::{stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use wasm_bindgen::JsValue;
@@ -104,6 +104,19 @@ pub async fn enabled_list_models(req: Request, env: Env) -> WorkerResult<Respons
     envelope_ok_response(&models)
 }
 
+/// `GET /api/channel/models`: Go-compatible model objects used by the channel
+/// editor. The catalog combines Rust's built-in billing model names with every
+/// custom model currently enabled in D1, so operator-defined models are never
+/// hidden by a static list.
+pub async fn list_channel_models(req: Request, env: Env) -> WorkerResult<Response> {
+    if let Err(response) = require_admin_auth(&req, &env).await? {
+        return Ok(response);
+    }
+    let db = env.d1("DB")?;
+    let configured = d1_repositories::distinct_all_enabled_models(&db).await?;
+    envelope_ok_response(&channel_model_catalog(configured))
+}
+
 /// `GET /api/channel/update_balance/:id`: query the provider's authoritative
 /// balance and persist it only after a fully validated response. AdminAuth.
 pub async fn update_channel_balance(
@@ -175,6 +188,84 @@ pub async fn update_channel_balance(
     .with_status(200);
     crate::set_cors_headers(&mut response)?;
     Ok(response)
+}
+
+/// `GET /api/channel/update_balance`: refresh all enabled, single-key channels
+/// that fit in one bounded Worker maintenance slice. Unlike the Go goroutine,
+/// this request awaits every operation and never silently leaves background
+/// promises behind.
+pub async fn update_all_channel_balances(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let rows = d1_repositories::list_enabled_channels_after_id(
+        &db,
+        0,
+        (CHANNEL_BATCH_SCAN_LIMIT + 1) as u32,
+    )
+    .await?;
+    let batch = match prepare_channel_batch(rows) {
+        Ok(batch) => batch,
+        Err(message) => return Ok(envelope_error_response(409, &message)),
+    };
+    let attempted = batch.channels.len() + batch.failed;
+    let skipped = batch.skipped;
+    let initial_failed = batch.failed;
+    let results = stream::iter(batch.channels.into_iter().map(|channel| {
+        let db = &db;
+        async move {
+            let id = channel.id;
+            (id, fetch_channel_balance(db, &channel).await)
+        }
+    }))
+    .buffer_unordered(CHANNEL_BATCH_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    let now = unix_timestamp();
+    let mut failed = initial_failed;
+    let mut updates = Vec::new();
+    for (id, result) in results {
+        match result {
+            Ok(balance) if balance.is_finite() => updates.push((id, balance, now)),
+            _ => failed += 1,
+        }
+    }
+    let persisted = d1_repositories::update_channel_balances_batch(&db, &updates).await?;
+    failed += updates.len().saturating_sub(persisted);
+    if persisted > 0 {
+        invalidate_channel_cache(&env).await?;
+    }
+    let data = ChannelBatchOperationData {
+        attempted,
+        succeeded: persisted,
+        failed,
+        skipped,
+        max_channels: CHANNEL_BATCH_OPERATION_LIMIT,
+    };
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "channel.balance_update_all",
+        &format!(
+            "admin {} refreshed {} channel balances ({} failed, {} skipped)",
+            claims.username, persisted, failed, skipped
+        ),
+        &serde_json::json!({
+            "attempted": attempted,
+            "succeeded": persisted,
+            "failed": failed,
+            "skipped": skipped
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+    envelope_ok_response(&data)
 }
 
 /// `POST /api/channel/multi_key/manage`: complete compatibility surface for
@@ -290,80 +381,93 @@ pub async fn test_channel(
         return Ok(envelope_error_response(404, "channel not found"));
     };
     let query_model = parse_query_string(&req, "model");
-    let test_model = query_model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            channel
-                .test_model
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-        .or_else(|| {
-            channel
-                .models
-                .split(',')
-                .map(str::trim)
-                .find(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "gpt-4o-mini".to_string());
-
-    let url = format!(
-        "{}/v1/chat/completions",
-        channel.base_url.trim_end_matches('/')
-    );
-    let body = serde_json::json!({
-        "model": test_model,
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 1,
-    });
-    let mut headers = worker::Headers::new();
-    headers.set("Content-Type", "application/json")?;
-    headers.set("Authorization", &format!("Bearer {}", channel.key))?;
-    let mut init = worker::RequestInit::new();
-    init.with_method(worker::Method::Post)
-        .with_headers(headers)
-        .with_body(Some(body.to_string().into()));
-    let outbound = Request::new_with_init(&url, &init)?;
-
-    let started = js_sys::Date::now();
-    let result = worker::Fetch::Request(outbound).send().await;
-    let elapsed_ms = (js_sys::Date::now() - started).max(0.0);
-    let mut upstream = match result {
-        Ok(response) => response,
-        Err(err) => {
-            return Response::from_json(&serde_json::json!({
-                "success": false,
-                "message": format!("channel request failed: {err}"),
-                "time": 0.0,
-            }));
+    match probe_channel(&channel, query_model.as_deref()).await {
+        Ok(elapsed_ms) => {
+            d1_repositories::record_channel_test(&db, id, elapsed_ms as i64, unix_timestamp())
+                .await?;
+            Response::from_json(&serde_json::json!({
+                "success": true,
+                "message": "",
+                "time": elapsed_ms / 1000.0,
+            }))
         }
-    };
-    if upstream.status_code() < 200 || upstream.status_code() >= 300 {
-        let detail = upstream.text().await.unwrap_or_default();
-        let truncated: String = detail.chars().take(300).collect();
-        return Response::from_json(&serde_json::json!({
+        Err(message) => Response::from_json(&serde_json::json!({
             "success": false,
-            "message": format!(
-                "upstream status {}: {truncated}",
-                upstream.status_code()
-            ),
+            "message": message,
             "time": 0.0,
-        }));
+        })),
     }
-    // Record the measured latency on the channel (Go updates response_time in
-    // ms + test_time).
-    d1_repositories::record_channel_test(&db, id, elapsed_ms as i64, unix_timestamp()).await?;
-    Response::from_json(&serde_json::json!({
-        "success": true,
-        "message": "",
-        "time": elapsed_ms / 1000.0,
+}
+
+/// `GET /api/channel/test`: synchronously test a bounded set of enabled,
+/// single-key channels. The response keeps Go's `success/message` fields and
+/// adds non-sensitive aggregate counts for operator visibility.
+pub async fn test_all_channels(req: Request, env: Env) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let db = env.d1("DB")?;
+    let rows = d1_repositories::list_enabled_channels_after_id(
+        &db,
+        0,
+        (CHANNEL_BATCH_SCAN_LIMIT + 1) as u32,
+    )
+    .await?;
+    let batch = match prepare_channel_batch(rows) {
+        Ok(batch) => batch,
+        Err(message) => return Ok(envelope_error_response(409, &message)),
+    };
+    let attempted = batch.channels.len() + batch.failed;
+    let skipped = batch.skipped;
+    let initial_failed = batch.failed;
+    let results = stream::iter(batch.channels.into_iter().map(|channel| async move {
+        let id = channel.id;
+        (id, probe_channel(&channel, None).await)
     }))
+    .buffer_unordered(CHANNEL_BATCH_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    let now = unix_timestamp();
+    let mut failed = initial_failed;
+    let mut measurements = Vec::new();
+    for (id, result) in results {
+        match result {
+            Ok(elapsed_ms) => measurements.push((id, elapsed_ms as i64, now)),
+            Err(_) => failed += 1,
+        }
+    }
+    let persisted = d1_repositories::record_channel_tests_batch(&db, &measurements).await?;
+    failed += measurements.len().saturating_sub(persisted);
+    let data = ChannelBatchOperationData {
+        attempted,
+        succeeded: persisted,
+        failed,
+        skipped,
+        max_channels: CHANNEL_BATCH_OPERATION_LIMIT,
+    };
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "channel.test_all",
+        &format!(
+            "admin {} tested {} channels ({} failed, {} skipped)",
+            claims.username, persisted, failed, skipped
+        ),
+        &serde_json::json!({
+            "attempted": attempted,
+            "succeeded": persisted,
+            "failed": failed,
+            "skipped": skipped
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+    envelope_ok_response(&data)
 }
 
 /// `GET /api/channel/fetch_models/:id`: list the upstream's available model ids
@@ -879,6 +983,81 @@ pub async fn create_channel(mut req: Request, env: Env) -> WorkerResult<Response
     })?)
 }
 
+/// `POST /api/channel/copy/:id`: clone a channel without exposing its upstream
+/// key. Query parameters match Go: `suffix` uses the source-compatible default
+/// and `reset_balance` defaults to true (including malformed boolean values).
+pub async fn copy_channel(
+    req: Request,
+    env: Env,
+    id_param: Option<&String>,
+) -> WorkerResult<Response> {
+    let claims = match require_admin_auth(&req, &env).await? {
+        Ok(claims) => claims,
+        Err(response) => return Ok(response),
+    };
+    let Some(source_id) = parse_id_param(id_param).filter(|id| *id > 0 && *id <= i32::MAX as i64)
+    else {
+        return Ok(envelope_error_response(400, "invalid channel id"));
+    };
+    let db = env.d1("DB")?;
+    let Some(source) = d1_repositories::find_channel_by_id(&db, source_id).await? else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+    let suffix = parse_query_string(&req, "suffix").unwrap_or_else(|| default_copy_suffix().into());
+    let new_name = match copied_channel_name(&source.name, &suffix) {
+        Ok(name) => name,
+        Err(message) => return Ok(envelope_error_response(400, message)),
+    };
+    let reset_balance =
+        parse_go_bool_default_true(parse_query_string(&req, "reset_balance").as_deref());
+    let now = unix_timestamp();
+    let Some(channel_id) =
+        d1_repositories::copy_channel(&db, source_id, &new_name, now, reset_balance).await?
+    else {
+        return Ok(envelope_error_response(404, "channel not found"));
+    };
+
+    if let Err(err) = d1_repositories::add_abilities_for_channel(
+        &db,
+        channel_id,
+        &source.models,
+        &source.channel_group,
+        source.status,
+        source.priority,
+        source.weight,
+    )
+    .await
+    {
+        worker::console_warn!(
+            "copy_channel: abilities sync failed for channel {channel_id}: {err}"
+        );
+    }
+    if let Err(err) = invalidate_channel_cache(&env).await {
+        worker::console_warn!("copy_channel: cache invalidation failed: {err}");
+    }
+    let _ = d1_repositories::insert_admin_audit_log(
+        &db,
+        None,
+        None,
+        &claims.username,
+        "channel.copy",
+        &format!(
+            "admin {} copied channel {} to {}",
+            claims.username, source_id, channel_id
+        ),
+        &serde_json::json!({
+            "source_id": source_id,
+            "id": channel_id,
+            "name": new_name,
+            "reset_balance": reset_balance
+        }),
+        &crate::admin::admin_audit_info(&claims, &req),
+        now,
+    )
+    .await;
+    envelope_ok_response(&ChannelCopyResult { id: channel_id })
+}
+
 /// `PUT /api/channel/`: update a channel. AdminAuth.
 pub async fn update_channel(mut req: Request, env: Env) -> WorkerResult<Response> {
     let claims = match require_admin_auth(&req, &env).await? {
@@ -1151,7 +1330,228 @@ pub async fn fix_abilities(req: Request, env: Env) -> WorkerResult<Response> {
 
 const CHANNEL_OUTBOUND_TIMEOUT: Duration = Duration::from_secs(15);
 const CHANNEL_BALANCE_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+const CHANNEL_BATCH_SCAN_LIMIT: usize = 100;
+const CHANNEL_BATCH_OPERATION_LIMIT: usize = 12;
+const CHANNEL_BATCH_CONCURRENCY: usize = 3;
+const CHANNEL_COPY_NAME_MAX_CHARS: usize = 256;
+const CHANNEL_MODEL_CREATED: i64 = 1_626_777_600;
 const MULTI_KEY_PAGE_SIZE_MAX: i64 = 200;
+
+#[derive(Debug, Serialize, PartialEq)]
+struct ChannelModelObject {
+    id: String,
+    object: &'static str,
+    created: i64,
+    owned_by: &'static str,
+    supported_endpoint_types: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct ChannelBatchOperationData {
+    attempted: usize,
+    succeeded: usize,
+    failed: usize,
+    skipped: usize,
+    max_channels: usize,
+}
+
+struct PreparedChannelBatch {
+    channels: Vec<ChannelRow>,
+    skipped: usize,
+    failed: usize,
+}
+
+fn channel_model_catalog(configured: Vec<String>) -> Vec<ChannelModelObject> {
+    let mut names = BTreeSet::new();
+    for (name, _) in cinatoken_core::default_ratios::DEFAULT_MODEL_RATIO
+        .iter()
+        .chain(cinatoken_core::default_ratios::DEFAULT_MODEL_PRICE.iter())
+    {
+        if !name.trim().is_empty() {
+            names.insert((*name).to_string());
+        }
+    }
+    for name in configured {
+        let name = name.trim();
+        if !name.is_empty() {
+            names.insert(name.to_string());
+        }
+    }
+    names
+        .into_iter()
+        .map(|id| ChannelModelObject {
+            owned_by: channel_model_owner(&id),
+            id,
+            object: "model",
+            created: CHANNEL_MODEL_CREATED,
+            supported_endpoint_types: Vec::new(),
+        })
+        .collect()
+}
+
+fn channel_model_owner(model: &str) -> &'static str {
+    let model = model.to_ascii_lowercase();
+    if model.starts_with("claude") {
+        "anthropic"
+    } else if model.starts_with("gemini") || model.starts_with("imagen") {
+        "google"
+    } else if model.starts_with("deepseek") {
+        "deepseek"
+    } else if model.starts_with("grok") {
+        "xai"
+    } else if model.starts_with("qwen") || model.contains("/qwen") {
+        "alibaba"
+    } else if model.starts_with("glm") || model.contains("/glm") {
+        "zhipu"
+    } else if model.starts_with("mj_") {
+        "midjourney"
+    } else if model.starts_with("suno_") {
+        "suno"
+    } else if model.starts_with("gpt-")
+        || model.starts_with("chatgpt-")
+        || model.starts_with('o') && model.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
+        || model.starts_with("dall-e")
+        || model.starts_with("whisper")
+        || model.starts_with("tts-")
+        || model.starts_with("openai/")
+    {
+        "openai"
+    } else {
+        "custom"
+    }
+}
+
+fn prepare_channel_batch(rows: Vec<ChannelRow>) -> Result<PreparedChannelBatch, String> {
+    if rows.len() > CHANNEL_BATCH_SCAN_LIMIT {
+        return Err(format!(
+            "more than {CHANNEL_BATCH_SCAN_LIMIT} enabled channels exist; use per-channel operations or a scheduled maintenance workflow"
+        ));
+    }
+    let mut channels = Vec::new();
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    for channel in rows {
+        match parse_channel_info(&channel.channel_info) {
+            Ok(info) if is_multi_key_info(&info) => skipped += 1,
+            Ok(_) => channels.push(channel),
+            Err(_) => failed += 1,
+        }
+    }
+    if channels.len() > CHANNEL_BATCH_OPERATION_LIMIT {
+        return Err(format!(
+            "{} eligible channels exceed the per-request limit of {CHANNEL_BATCH_OPERATION_LIMIT}; use per-channel operations or a scheduled maintenance workflow",
+            channels.len()
+        ));
+    }
+    Ok(PreparedChannelBatch {
+        channels,
+        skipped,
+        failed,
+    })
+}
+
+fn select_channel_test_model(
+    query_model: Option<&str>,
+    configured_test_model: Option<&str>,
+    channel_models: &str,
+) -> String {
+    query_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            configured_test_model
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            channel_models
+                .split(',')
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+        })
+        .unwrap_or("gpt-4o-mini")
+        .to_string()
+}
+
+async fn probe_channel(channel: &ChannelRow, query_model: Option<&str>) -> Result<f64, String> {
+    if channel.key.trim().is_empty() {
+        return Err("channel key is empty".to_string());
+    }
+    let base_url = if channel.base_url.trim().is_empty() && channel.kind == 1 {
+        "https://api.openai.com"
+    } else {
+        channel.base_url.trim()
+    };
+    let url = validated_channel_url(base_url, "/v1/chat/completions")?;
+    let test_model =
+        select_channel_test_model(query_model, channel.test_model.as_deref(), &channel.models);
+    let body = serde_json::json!({
+        "model": test_model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    });
+    let mut headers = worker::Headers::new();
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(|_| "failed to build channel test request".to_string())?;
+    headers
+        .set("Authorization", &format!("Bearer {}", channel.key))
+        .map_err(|_| "channel key is not valid for an HTTP header".to_string())?;
+    let mut init = worker::RequestInit::new();
+    init.with_method(worker::Method::Post)
+        .with_headers(headers)
+        .with_redirect(RequestRedirect::Error)
+        .with_body(Some(body.to_string().into()));
+    let request = Request::new_with_init(&url, &init)
+        .map_err(|_| "failed to build channel test request".to_string())?;
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let outbound = worker::Fetch::Request(request);
+    let fetch = outbound.send_with_signal(&signal);
+    let delay = Delay::from(CHANNEL_OUTBOUND_TIMEOUT);
+    futures_util::pin_mut!(fetch);
+    futures_util::pin_mut!(delay);
+    let started = js_sys::Date::now();
+    let response = match select(fetch, delay).await {
+        Either::Left((result, _)) => result.map_err(|_| "channel request failed".to_string())?,
+        Either::Right(((), _)) => {
+            controller.abort();
+            return Err("channel request timed out".to_string());
+        }
+    };
+    let elapsed_ms = (js_sys::Date::now() - started).max(0.0);
+    if !(200..300).contains(&response.status_code()) {
+        return Err(format!(
+            "upstream returned status {}",
+            response.status_code()
+        ));
+    }
+    Ok(elapsed_ms)
+}
+
+fn default_copy_suffix() -> &'static str {
+    "_\u{590d}\u{5236}"
+}
+
+fn parse_go_bool_default_true(value: Option<&str>) -> bool {
+    value
+        .and_then(|value| value.trim().parse::<bool>().ok())
+        .unwrap_or(true)
+}
+
+fn copied_channel_name(source: &str, suffix: &str) -> Result<String, &'static str> {
+    if suffix.chars().count() > CHANNEL_COPY_NAME_MAX_CHARS {
+        return Err("channel copy suffix is too long");
+    }
+    let name = format!("{source}{suffix}");
+    if name.trim().is_empty() {
+        return Err("copied channel name must not be empty");
+    }
+    if name.chars().count() > CHANNEL_COPY_NAME_MAX_CHARS {
+        return Err("copied channel name is too long");
+    }
+    Ok(name)
+}
 
 #[derive(Debug, Serialize)]
 struct ChannelBalanceResponse<'a> {
@@ -2051,6 +2451,11 @@ struct ChannelCreateResult {
 }
 
 #[derive(Debug, Serialize)]
+struct ChannelCopyResult {
+    id: i64,
+}
+
+#[derive(Debug, Serialize)]
 struct ChannelBatchDeleteResult {
     count: i64,
 }
@@ -2211,6 +2616,134 @@ fn validate_wfp_channel_other_info(value: Option<&str>) -> Result<(), &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn batch_channel(id: i64, channel_info: &str) -> ChannelRow {
+        ChannelRow {
+            id,
+            kind: 1,
+            key: "test-key-not-returned".to_string(),
+            openai_organization: None,
+            test_model: None,
+            status: 1,
+            name: format!("channel-{id}"),
+            weight: 1,
+            created_time: 1,
+            test_time: 0,
+            response_time: 0,
+            base_url: "https://api.openai.com".to_string(),
+            other: String::new(),
+            balance: 0.0,
+            balance_updated_time: 0,
+            models: "gpt-4o".to_string(),
+            channel_group: "default".to_string(),
+            used_quota: 0,
+            model_mapping: None,
+            status_code_mapping: String::new(),
+            priority: 0,
+            auto_ban: 1,
+            other_info: String::new(),
+            tag: None,
+            setting: None,
+            param_override: None,
+            header_override: None,
+            remark: None,
+            channel_info: channel_info.to_string(),
+            settings: String::new(),
+        }
+    }
+
+    #[test]
+    fn channel_model_catalog_merges_static_and_configured_models_in_go_shape() {
+        let catalog = channel_model_catalog(vec![
+            "custom-live-model".to_string(),
+            "gpt-4o".to_string(),
+            " custom-live-model ".to_string(),
+        ]);
+        let ids = catalog
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"gpt-4o"));
+        assert!(ids.contains(&"claude-3-haiku-20240307"));
+        assert_eq!(
+            ids.iter()
+                .filter(|model| **model == "custom-live-model")
+                .count(),
+            1
+        );
+        let custom = catalog
+            .iter()
+            .find(|model| model.id == "custom-live-model")
+            .unwrap();
+        assert_eq!(custom.object, "model");
+        assert_eq!(custom.created, CHANNEL_MODEL_CREATED);
+        assert_eq!(custom.owned_by, "custom");
+        assert!(custom.supported_endpoint_types.is_empty());
+        assert_eq!(channel_model_owner("gemini-2.5-pro"), "google");
+        assert_eq!(channel_model_owner("o3-mini"), "openai");
+    }
+
+    #[test]
+    fn channel_test_model_precedence_matches_go() {
+        assert_eq!(
+            select_channel_test_model(Some("requested"), Some("configured"), "first,second"),
+            "requested"
+        );
+        assert_eq!(
+            select_channel_test_model(Some(" "), Some("configured"), "first,second"),
+            "configured"
+        );
+        assert_eq!(
+            select_channel_test_model(None, None, " , first,second"),
+            "first"
+        );
+        assert_eq!(select_channel_test_model(None, None, ""), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn channel_batch_is_bounded_and_redacts_per_channel_details() {
+        let batch = prepare_channel_batch(vec![
+            batch_channel(1, "{}"),
+            batch_channel(2, r#"{"is_multi_key":true}"#),
+            batch_channel(3, "not-json"),
+        ])
+        .unwrap();
+        assert_eq!(batch.channels.len(), 1);
+        assert_eq!(batch.skipped, 1);
+        assert_eq!(batch.failed, 1);
+
+        let too_many = (0..=CHANNEL_BATCH_OPERATION_LIMIT)
+            .map(|id| batch_channel(id as i64 + 1, "{}"))
+            .collect();
+        assert!(prepare_channel_batch(too_many).is_err());
+        let too_many_to_scan = (0..=CHANNEL_BATCH_SCAN_LIMIT)
+            .map(|id| batch_channel(id as i64 + 1, "{}"))
+            .collect();
+        assert!(prepare_channel_batch(too_many_to_scan).is_err());
+
+        let encoded = serde_json::to_string(&ChannelBatchOperationData {
+            attempted: 3,
+            succeeded: 1,
+            failed: 1,
+            skipped: 1,
+            max_channels: CHANNEL_BATCH_OPERATION_LIMIT,
+        })
+        .unwrap();
+        assert!(!encoded.contains("test-key-not-returned"));
+        assert!(!encoded.contains("channel-1"));
+    }
+
+    #[test]
+    fn channel_copy_options_match_go_defaults_and_are_bounded() {
+        assert!(parse_go_bool_default_true(None));
+        assert!(parse_go_bool_default_true(Some("invalid")));
+        assert!(!parse_go_bool_default_true(Some("false")));
+        assert_eq!(
+            copied_channel_name("primary", default_copy_suffix()).unwrap(),
+            "primary_\u{590d}\u{5236}"
+        );
+        assert!(copied_channel_name("primary", &"x".repeat(CHANNEL_COPY_NAME_MAX_CHARS)).is_err());
+    }
 
     #[test]
     fn wfp_channel_other_info_requires_normalized_exclusive_transport() {

@@ -10282,3 +10282,60 @@ Completed local verification:
   audits, 21-file D1 migration verification, smoke contracts, workspace tests,
   and main/tenant/outbound wasm32 checks.
 - `bun audit --json`: no known dependency advisories.
+
+### 22.166 2026-07-13 Full Import Reconciliation And Channel Admin Compatibility
+
+This increment resolves the two local P0 gaps identified by the cross-worker
+audit while preserving the distinction between implementation and production
+evidence.
+
+Data migration hardening:
+
+- The deterministic reconciliation set now equals all 23 import targets:
+  core/control-plane, relay history/tasks, check-in/redemption/topup,
+  subscriptions, model/vendor/prefill, custom OAuth, Passkey/2FA, and
+  Midjourney families. A Rust invariant fails whenever import tables,
+  reconciliation tables, or table projections drift.
+- The reconciler now mirrors source table names, compatibility columns,
+  computed redemption/order fields, SQLite affinity, and declared JSON
+  semantics. It compares canonical counts, logical-key ranges, full hashes,
+  deterministic samples, domain constraints, and user/channel/token/plan/
+  subscription/vendor/provider relationships without putting raw rows or
+  credentials in the manifest.
+- `quota_data`, `setups`, and `perf_metrics` remain explicit versioned
+  exclusions/rebuild decisions. Local 23/23 fixture proof does not replace a
+  frozen production snapshot, reviewed import SQL, remote D1 reconciliation,
+  rollback rehearsal, or owner sign-off.
+
+Admin/frontend compatibility:
+
+- Added exact AdminAuth routes for `GET /api/channel/models`, bounded
+  `GET /api/channel/test`, bounded `GET /api/channel/update_balance`, and
+  `POST /api/channel/copy/:id`. Test/balance batches scan at most 100 enabled
+  rows, process at most 12 eligible single-key channels with concurrency 3,
+  await all fetches, persist successful results through D1 batch, expose only
+  aggregate counts, and reject work that belongs in Queue/Workflow automation.
+- Copy uses parameterized `INSERT ... SELECT`, never returns the upstream key,
+  resets test metadata, defaults to resetting balance/used quota, rebuilds
+  abilities, invalidates channel cache, and writes a redacted audit event.
+- Added source/frontend-compatible `GET /api/user/logout` while preserving the
+  existing POST method and cookie-clearing implementation.
+- Fixed the route auditor so a registered dynamic segment cannot masquerade as
+  a missing literal operation. A built-in matcher contract covers positive,
+  negative, route-registration, and method-mismatch cases. The integrated audit
+  now reports 217 frontend calls and zero missing routes.
+
+Local evidence:
+
+- `cargo test -p cinatoken-migration`: 47/47.
+- `cargo test -p cinatoken-worker --lib`: 586/586.
+- Worker wasm32 check, route matcher self-test, zero-missing frontend route
+  audit, Rust formatting, and `git diff --check`: passed.
+- The complete `bun run check` release gate passed, including three optimized
+  Worker builds, multi-service Workerd 7/7, frontend readiness 16/16, bundle
+  redaction/budget/lint/route audits, 21-file D1 replay, workspace tests, and
+  main/tenant/outbound wasm32 checks.
+
+No exposed credential was used. Authenticated staging import/browser/provider
+maintenance, remote evidence archival, Queue/Workflow full-fleet orchestration,
+rollback, capacity, and cost proof remain open. Production remains **NO-GO**.

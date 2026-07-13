@@ -142,6 +142,89 @@ TABLE_SPECS = (
         "columns": ("key", "value"),
     },
     {
+        "name": "logs",
+        "logical_pk": ("id",),
+        "json_columns": ("other",),
+        "boolean_columns": ("is_stream",),
+        "columns": (
+            "id",
+            "user_id",
+            "created_at",
+            "type",
+            "content",
+            "username",
+            "token_name",
+            "model_name",
+            "quota",
+            "prompt_tokens",
+            "completion_tokens",
+            "use_time",
+            "is_stream",
+            "channel_id",
+            "token_id",
+            "group",
+            "ip",
+            "request_id",
+            "upstream_request_id",
+            "other",
+        ),
+    },
+    {
+        "name": "tasks",
+        "logical_pk": ("id",),
+        "json_columns": ("properties", "private_data", "data"),
+        "columns": (
+            "id",
+            "task_id",
+            "upstream_task_id",
+            "platform",
+            "user_id",
+            "username",
+            "group",
+            "channel_id",
+            "quota",
+            "action",
+            "status",
+            "fail_reason",
+            "progress",
+            "submit_time",
+            "start_time",
+            "finish_time",
+            "properties",
+            "private_data",
+            "data",
+            "created_at",
+            "updated_at",
+        ),
+    },
+    {
+        "name": "checkins",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "columns": ("id", "user_id", "checkin_date", "quota_awarded", "created_at"),
+    },
+    {
+        "name": "redemptions",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "boolean_columns": ("credited",),
+        "computed_source_columns": ("credited",),
+        "columns": (
+            "id",
+            "user_id",
+            "key",
+            "status",
+            "name",
+            "quota",
+            "created_time",
+            "redeemed_time",
+            "used_user_id",
+            "expired_time",
+            "deleted_at",
+            "credited",
+        ),
+    },
+    {
         "name": "topups",
         "source_name": "top_ups",
         "logical_pk": ("trade_no",),
@@ -160,6 +243,180 @@ TABLE_SPECS = (
             "credited",
         ),
         "computed_source_columns": ("payment_provider", "status", "credited"),
+    },
+    {
+        "name": "subscription_plans",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "boolean_columns": ("enabled", "allow_balance_pay"),
+        "columns": (
+            "id",
+            "title",
+            "subtitle",
+            "price_amount",
+            "currency",
+            "duration_unit",
+            "duration_value",
+            "custom_seconds",
+            "enabled",
+            "sort_order",
+            "allow_balance_pay",
+            "stripe_price_id",
+            "creem_product_id",
+            "waffo_pancake_product_id",
+            "max_purchase_per_user",
+            "upgrade_group",
+            "total_amount",
+            "quota_reset_period",
+            "quota_reset_custom_seconds",
+            "created_at",
+            "updated_at",
+        ),
+    },
+    {
+        "name": "subscription_orders",
+        "logical_pk": ("trade_no",),
+        "json_columns": (),
+        "text_affinity_columns": ("amount",),
+        "source_columns": {
+            "provider": "payment_provider",
+            "order_no": "trade_no",
+            "amount": "money",
+            "created_at": "create_time",
+            "updated_at": "complete_time",
+        },
+        "columns": (
+            "id",
+            "user_id",
+            "provider",
+            "order_no",
+            "plan_id",
+            "status",
+            "amount",
+            "currency",
+            "created_at",
+            "updated_at",
+            "money",
+            "trade_no",
+            "payment_method",
+            "payment_provider",
+            "create_time",
+            "complete_time",
+            "provider_payload",
+        ),
+    },
+    {
+        "name": "user_subscriptions",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "columns": (
+            "id",
+            "user_id",
+            "plan_id",
+            "amount_total",
+            "amount_used",
+            "start_time",
+            "end_time",
+            "status",
+            "source",
+            "last_reset_time",
+            "next_reset_time",
+            "upgrade_group",
+            "prev_user_group",
+            "created_at",
+            "updated_at",
+        ),
+    },
+    {
+        "name": "subscription_pre_consume_records",
+        "logical_pk": ("request_id",),
+        "json_columns": (),
+        "columns": (
+            "id",
+            "request_id",
+            "user_id",
+            "user_subscription_id",
+            "pre_consumed",
+            "status",
+            "created_at",
+            "updated_at",
+        ),
+    },
+    {
+        "name": "vendors",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "columns": (
+            "id",
+            "name",
+            "description",
+            "icon",
+            "status",
+            "created_time",
+            "updated_time",
+            "deleted_at",
+        ),
+    },
+    {
+        "name": "models",
+        "logical_pk": ("id",),
+        "json_columns": ("endpoints",),
+        "columns": (
+            "id",
+            "model_name",
+            "description",
+            "icon",
+            "tags",
+            "vendor_id",
+            "endpoints",
+            "status",
+            "sync_official",
+            "created_time",
+            "updated_time",
+            "name_rule",
+            "deleted_at",
+        ),
+    },
+    {
+        "name": "custom_oauth_providers",
+        "logical_pk": ("id",),
+        "json_columns": ("access_policy",),
+        "boolean_columns": ("enabled",),
+        "columns": (
+            "id",
+            "name",
+            "slug",
+            "icon",
+            "enabled",
+            "client_id",
+            "client_secret",
+            "authorization_endpoint",
+            "token_endpoint",
+            "user_info_endpoint",
+            "scopes",
+            "user_id_field",
+            "username_field",
+            "display_name_field",
+            "email_field",
+            "well_known",
+            "auth_style",
+            "access_policy",
+            "access_denied_message",
+            "created_at",
+            "updated_at",
+        ),
+    },
+    {
+        "name": "user_oauth_bindings",
+        "logical_pk": ("id",),
+        "json_columns": (),
+        "columns": (
+            "id",
+            "user_id",
+            "provider_id",
+            "provider_user_id",
+            "created_at",
+        ),
     },
     {
         "name": "passkey_credentials",
@@ -574,6 +831,15 @@ def project_row(spec, role, names, raw_row, target_schema):
     row = dict(zip(names, raw_row))
     projected = {}
     for target_column in spec["columns"]:
+        if (
+            role == "source"
+            and spec["name"] == "redemptions"
+            and target_column == "credited"
+            and "credited" not in row
+        ):
+            projected[target_column] = int(row.get("status") == 3)
+            continue
+
         if role == "source" and spec["name"] == "topups":
             if target_column == "status":
                 projected[target_column] = map_topup_status(row.get("status"))
@@ -598,6 +864,10 @@ def project_row(spec, role, names, raw_row, target_schema):
                 value = normalize_integer(value, spec["name"], target_column)
             elif target_column in spec.get("json_text_columns", ()):
                 value = normalize_json_text(value, spec["name"], target_column)
+            elif target_column in spec.get("text_affinity_columns", ()) and isinstance(
+                value, (int, float)
+            ):
+                value = repr(value) if isinstance(value, float) else str(value)
             projected[target_column] = value
             continue
 
@@ -693,6 +963,15 @@ def table_manifest(conn, spec, role, schema, target_schema, sample_size):
     }
     if role == "source":
         manifest["source_defaulted_columns"] = defaulted_columns
+        manifest["source_table"] = table_name(spec, role)
+        manifest["source_column_map"] = {
+            target: source
+            for target, source in spec.get("source_columns", {}).items()
+            if target != source
+        }
+        manifest["computed_source_columns"] = list(
+            spec.get("computed_source_columns", ())
+        )
     return manifest
 
 
@@ -706,6 +985,30 @@ def condition_count(conn, table, role_filter, condition):
         conn,
         f"SELECT COUNT(*) FROM {quote_ident(table)} WHERE {where}",
     )
+
+
+def invalid_json_count(conn, table, role_filter, columns, allow_empty=True):
+    selected = ", ".join(quote_ident(column) for column in columns)
+    where_sql = f" WHERE {role_filter}" if role_filter else ""
+    violations = 0
+    for row in conn.execute(f"SELECT {selected} FROM {quote_ident(table)}{where_sql}"):
+        for value in row:
+            if value is None or (allow_empty and value == ""):
+                continue
+            if isinstance(value, bytes):
+                try:
+                    value = value.decode("utf-8")
+                except UnicodeDecodeError:
+                    violations += 1
+                    continue
+            if not isinstance(value, str):
+                violations += 1
+                continue
+            try:
+                json.loads(value)
+            except (TypeError, ValueError):
+                violations += 1
+    return violations
 
 
 def logical_key_checks(conn, role):
@@ -747,6 +1050,171 @@ def logical_key_checks(conn, role):
             conn,
             f"SELECT COUNT(*) FROM {quote_ident('options')} "
             f"WHERE TRIM({option_key}) = ''",
+        ),
+    }
+
+    checks["logs.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "logs",
+            None,
+            "id <= 0 OR created_at < 0 OR prompt_tokens < 0 OR completion_tokens < 0 "
+            "OR use_time < 0 OR is_stream IS NULL OR is_stream NOT IN (0, 1)",
+        )
+        + invalid_json_count(conn, "logs", None, ("other",)),
+    }
+    checks["tasks.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "tasks",
+            None,
+            "id <= 0 OR task_id IS NULL OR submit_time < 0 "
+            "OR start_time < 0 OR finish_time < 0 OR created_at < 0 OR updated_at < 0",
+        )
+        + invalid_json_count(
+            conn, "tasks", None, ("properties", "private_data", "data"), False
+        ),
+    }
+    checks["checkins.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "checkins",
+            None,
+            "id <= 0 OR user_id <= 0 OR quota_awarded < 0 OR created_at < 0 "
+            "OR checkin_date IS NULL OR LENGTH(checkin_date) <> 10 "
+            "OR DATE(checkin_date) IS NULL OR DATE(checkin_date) <> checkin_date",
+        ),
+    }
+
+    redemption_table = "redemptions"
+    checks["redemptions.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            redemption_table,
+            None,
+            "id <= 0 OR \"key\" IS NULL OR TRIM(\"key\") = '' OR status IS NULL "
+            "OR status NOT IN (1, 2, 3) OR quota < 0 OR created_time < 0 "
+            "OR redeemed_time < 0 OR expired_time < 0",
+        ),
+    }
+    if role == "source" and "credited" not in table_schema(conn, redemption_table):
+        redemption_credited_violations = 0
+    else:
+        redemption_credited_violations = condition_count(
+            conn,
+            redemption_table,
+            None,
+            "credited IS NULL OR credited NOT IN (0, 1) "
+            "OR credited <> CASE WHEN status = 3 THEN 1 ELSE 0 END",
+        )
+    checks["redemptions.credited_matches_status"] = {
+        "kind": "computed_invariant",
+        "violations": redemption_credited_violations,
+    }
+
+    checks["subscription_plans.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "subscription_plans",
+            None,
+            "id <= 0 OR title IS NULL OR TRIM(title) = '' OR price_amount < 0 "
+            "OR currency IS NULL OR TRIM(currency) = '' "
+            "OR duration_unit NOT IN ('year', 'month', 'day', 'hour', 'custom') "
+            "OR (duration_unit <> 'custom' AND duration_value <= 0) "
+            "OR (duration_unit = 'custom' AND custom_seconds <= 0) "
+            "OR enabled IS NULL OR enabled NOT IN (0, 1) "
+            "OR allow_balance_pay IS NULL OR allow_balance_pay NOT IN (0, 1) "
+            "OR max_purchase_per_user < 0 OR total_amount < 0 "
+            "OR quota_reset_period NOT IN ('never', 'daily', 'weekly', 'monthly', 'custom') "
+            "OR (quota_reset_period = 'custom' AND quota_reset_custom_seconds <= 0) "
+            "OR created_at < 0 OR updated_at < 0",
+        ),
+    }
+
+    order_spec = next(spec for spec in TABLE_SPECS if spec["name"] == "subscription_orders")
+    order_table = table_name(order_spec, role)
+    order_trade_no = source_column(order_spec, "trade_no") if role == "source" else "trade_no"
+    checks["subscription_orders.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            order_table,
+            None,
+            f"{quote_ident(order_trade_no)} IS NULL OR TRIM({quote_ident(order_trade_no)}) = '' "
+            "OR user_id <= 0 OR plan_id <= 0 OR money < 0 OR create_time < 0 "
+            "OR complete_time < 0 OR status IS NULL OR TRIM(status) = ''",
+        ),
+    }
+    checks["user_subscriptions.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "user_subscriptions",
+            None,
+            "id <= 0 OR user_id <= 0 OR plan_id <= 0 OR amount_total < 0 "
+            "OR amount_used < 0 OR amount_used > amount_total OR start_time < 0 "
+            "OR end_time < start_time OR status NOT IN ('active', 'expired', 'cancelled') "
+            "OR source NOT IN ('order', 'admin') OR last_reset_time < 0 "
+            "OR next_reset_time < 0 OR created_at < 0 OR updated_at < 0",
+        ),
+    }
+    checks["subscription_pre_consume_records.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "subscription_pre_consume_records",
+            None,
+            "id <= 0 OR request_id IS NULL OR TRIM(request_id) = '' OR user_id <= 0 "
+            "OR user_subscription_id <= 0 OR pre_consumed <= 0 "
+            "OR status NOT IN ('consumed', 'refunded') OR created_at < 0 OR updated_at < 0",
+        ),
+    }
+    checks["vendors.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "vendors",
+            None,
+            "id <= 0 OR name IS NULL OR TRIM(name) = '' OR status < 0 "
+            "OR created_time < 0 OR updated_time < 0",
+        ),
+    }
+    checks["models.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "models",
+            None,
+            "id <= 0 OR model_name IS NULL OR TRIM(model_name) = '' OR vendor_id < 0 "
+            "OR status < 0 OR sync_official NOT IN (0, 1) OR name_rule NOT IN (0, 1, 2, 3) "
+            "OR created_time < 0 OR updated_time < 0",
+        )
+        + invalid_json_count(conn, "models", None, ("endpoints",)),
+    }
+    checks["custom_oauth_providers.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "custom_oauth_providers",
+            None,
+            "id <= 0 OR name IS NULL OR TRIM(name) = '' OR slug IS NULL OR TRIM(slug) = '' "
+            "OR enabled IS NULL OR enabled NOT IN (0, 1) OR auth_style NOT IN (0, 1, 2)",
+        )
+        + invalid_json_count(conn, "custom_oauth_providers", None, ("access_policy",)),
+    }
+    checks["user_oauth_bindings.value_domain"] = {
+        "kind": "domain_integrity",
+        "violations": condition_count(
+            conn,
+            "user_oauth_bindings",
+            None,
+            "id <= 0 OR user_id <= 0 OR provider_id <= 0 OR provider_user_id IS NULL "
+            "OR TRIM(provider_user_id) = ''",
         ),
     }
 
@@ -947,12 +1415,165 @@ def relationship_checks(conn, role):
                 "WHERE parent.id IS NULL",
             ),
         },
+        "logs.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM logs child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE child.user_id <> 0 AND parent.id IS NULL",
+            ),
+        },
+        "logs.channel_id->channels.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM logs child "
+                "LEFT JOIN channels parent ON child.channel_id = parent.id "
+                "WHERE child.channel_id <> 0 AND parent.id IS NULL",
+            ),
+        },
+        "logs.token_id->tokens.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM logs child "
+                "LEFT JOIN tokens parent ON child.token_id = parent.id "
+                "WHERE child.token_id <> 0 AND parent.id IS NULL",
+            ),
+        },
+        "tasks.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM tasks child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE child.user_id <> 0 AND parent.id IS NULL",
+            ),
+        },
+        "tasks.channel_id->channels.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM tasks child "
+                "LEFT JOIN channels parent ON child.channel_id = parent.id "
+                "WHERE child.channel_id <> 0 AND parent.id IS NULL",
+            ),
+        },
+        "checkins.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM checkins child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "redemptions.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM redemptions child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE child.user_id <> 0 AND parent.id IS NULL",
+            ),
+        },
+        "redemptions.used_user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM redemptions child "
+                "LEFT JOIN users parent ON child.used_user_id = parent.id "
+                "WHERE child.used_user_id <> 0 AND parent.id IS NULL",
+            ),
+        },
         "topups.user_id->users.id": {
             "kind": "foreign_key",
             "violations": count_query(
                 conn,
                 f"SELECT COUNT(*) FROM {quote_ident(topups_table)} child "
                 "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "subscription_orders.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM subscription_orders child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "subscription_orders.plan_id->subscription_plans.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM subscription_orders child "
+                "LEFT JOIN subscription_plans parent ON child.plan_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "user_subscriptions.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM user_subscriptions child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "user_subscriptions.plan_id->subscription_plans.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM user_subscriptions child "
+                "LEFT JOIN subscription_plans parent ON child.plan_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "subscription_pre_consume_records.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM subscription_pre_consume_records child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "subscription_pre_consume_records.user_subscription_id->user_subscriptions.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM subscription_pre_consume_records child "
+                "LEFT JOIN user_subscriptions parent ON child.user_subscription_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "models.vendor_id->vendors.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM models child "
+                "LEFT JOIN vendors parent ON child.vendor_id = parent.id "
+                "WHERE child.vendor_id <> 0 AND parent.id IS NULL",
+            ),
+        },
+        "user_oauth_bindings.user_id->users.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM user_oauth_bindings child "
+                "LEFT JOIN users parent ON child.user_id = parent.id "
+                "WHERE parent.id IS NULL",
+            ),
+        },
+        "user_oauth_bindings.provider_id->custom_oauth_providers.id": {
+            "kind": "foreign_key",
+            "violations": count_query(
+                conn,
+                "SELECT COUNT(*) FROM user_oauth_bindings child "
+                "LEFT JOIN custom_oauth_providers parent ON child.provider_id = parent.id "
                 "WHERE parent.id IS NULL",
             ),
         },

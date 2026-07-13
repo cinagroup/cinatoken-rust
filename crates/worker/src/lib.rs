@@ -341,6 +341,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             let id = ctx.param("id").cloned();
             admin_custom_oauth::delete(req, ctx.env, id.as_ref()).await
         })
+        .get_async("/api/user/logout", |req, ctx| async move {
+            admin::logout_handler(req, ctx.env).await
+        })
         .post_async("/api/user/logout", |req, ctx| async move {
             admin::logout_handler(req, ctx.env).await
         })
@@ -815,6 +818,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/channel/search", |req, ctx| async move {
             admin_channel::search_channels(req, ctx.env).await
         })
+        .get_async("/api/channel/models", |req, ctx| async move {
+            admin_channel::list_channel_models(req, ctx.env).await
+        })
         .get_async("/api/channel/models_enabled", |req, ctx| async move {
             admin_channel::enabled_list_models(req, ctx.env).await
         })
@@ -824,6 +830,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/api/channel/update_balance/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_channel::update_channel_balance(req, ctx.env, id.as_ref()).await
+        })
+        .get_async("/api/channel/update_balance", |req, ctx| async move {
+            admin_channel::update_all_channel_balances(req, ctx.env).await
         })
         .post_async("/api/channel/multi_key/manage", |req, ctx| async move {
             admin_channel::manage_multi_keys(req, ctx.env).await
@@ -869,9 +878,16 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             admin_channel::get_tag_models(req, ctx.env).await
         })
         // Channel connectivity ops (use the channel's own stored key).
+        .get_async("/api/channel/test", |req, ctx| async move {
+            admin_channel::test_all_channels(req, ctx.env).await
+        })
         .get_async("/api/channel/test/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
             admin_channel::test_channel(req, ctx.env, id.as_ref()).await
+        })
+        .post_async("/api/channel/copy/:id", |req, ctx| async move {
+            let id = ctx.param("id").cloned();
+            admin_channel::copy_channel(req, ctx.env, id.as_ref()).await
         })
         .get_async("/api/channel/fetch_models/:id", |req, ctx| async move {
             let id = ctx.param("id").cloned();
@@ -1681,6 +1697,31 @@ mod tests {
     }
 
     #[test]
+    fn go_compatible_channel_and_logout_routes_are_registered_with_exact_methods() {
+        let source = include_str!("lib.rs");
+        let router_source = source.split("#[cfg(test)]").next().unwrap();
+        for registration in [
+            ".get_async(\"/api/channel/models\"",
+            ".get_async(\"/api/channel/test\"",
+            ".get_async(\"/api/channel/update_balance\"",
+            ".post_async(\"/api/channel/copy/:id\"",
+            ".get_async(\"/api/user/logout\"",
+            ".post_async(\"/api/user/logout\"",
+        ] {
+            assert!(
+                router_source.contains(registration),
+                "missing route registration {registration}"
+            );
+        }
+        assert_eq!(
+            router_source
+                .matches("admin::logout_handler(req, ctx.env).await")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn static_asset_path_routes_known_admin_spa_routes_to_assets() {
         // Frontend SPA routes the React dashboard uses (TanStack Router paths
         // from web/default/src/routes).
@@ -1724,6 +1765,7 @@ mod tests {
             "/api/platform/realtime/settlement-batch/smoke",
             "/api/platform/relay/actual-group-billing/smoke",
             "/api/user/login",
+            "/api/user/logout",
             "/api/user/self",
             "/api/user/checkin",
             "/api/token/",

@@ -1,6 +1,6 @@
 # Verification
 
-Last checked: 2026-07-12
+Last checked: 2026-07-13
 
 ## Realtime Local Runtime Suite
 
@@ -3330,3 +3330,34 @@ rollback. No exposed Cloudflare token was used.
 - Completed result: Worker 580/580, WFP tenant 16/16, WFP outbound 4/4,
   multi-service Workerd 7/7, frontend readiness 16/16, complete
   `bun run check`, and `bun audit --json` all passed locally.
+
+## 2026-07-13 Full Import Reconciliation And Channel Compatibility
+
+- `D1_RECONCILE_TABLES` now equals the complete 23-table import set. Rust tests
+  require set and projection equality so adding an import target without a
+  reconciliation specification fails the migration crate gate.
+- Representative source/target fixtures now cover logs, tasks, check-ins,
+  redemptions, all four subscription tables, vendors/models, custom OAuth,
+  Passkey/2FA, Midjourney, and prefill groups. Canonical comparison includes
+  source-name/column transformations, computed fields, SQLite affinity, JSON,
+  status/domain checks, and cross-family relationships without emitting raw
+  rows or credentials.
+- Exact Worker routes now serve the frontend's channel model catalog, bounded
+  test-all, bounded balance-refresh-all, and copy operations. Batch maintenance
+  is capped at 12 eligible channels with concurrency 3 and fully awaited work;
+  larger fleets fail closed pending Queue/Workflow orchestration. Channel copy
+  retains the source key only inside D1, resets test metadata, optionally resets
+  balance/quota, rebuilds abilities, invalidates caches, and writes redacted
+  audit metadata.
+- `GET /api/user/logout` now shares the existing cookie-clearing handler with
+  `POST`. The frontend route auditor distinguishes literal and dynamic segments,
+  self-tests the matcher, and reports 217 frontend calls with zero missing.
+- Focused verification passed: migration 47/47, Worker 586/586, Worker wasm32,
+  route matcher self-test, zero-missing route audit, formatting, and diff checks.
+  The complete `bun run check` release gate also passed, including the three
+  release Worker builds, multi-service Workerd 7/7, frontend readiness 16/16,
+  21-file D1 replay, workspace tests, and main/tenant/outbound wasm32 checks.
+- This remains local implementation evidence. No production SQLite snapshot,
+  remote D1 import, authenticated browser operation, provider maintenance run,
+  Cloudflare deployment, or cutover was performed. Credential rotation and all
+  G2/G5/G7/G8 evidence remain blocking; production is **NO-GO**.

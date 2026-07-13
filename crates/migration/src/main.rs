@@ -849,19 +849,7 @@ const D1_IMPORT_TABLES: &[&str] = &[
 ];
 
 const D1_CORE_IMPORT_TABLES: &[&str] = &["users", "tokens", "channels", "abilities", "options"];
-const D1_RECONCILE_TABLES: &[&str] = &[
-    "users",
-    "tokens",
-    "channels",
-    "abilities",
-    "options",
-    "topups",
-    "passkey_credentials",
-    "two_fa",
-    "two_fa_backup_codes",
-    "midjourneys",
-    "prefill_groups",
-];
+const D1_RECONCILE_TABLES: &[&str] = D1_IMPORT_TABLES;
 
 const RECONCILIATION_RESULT_FORMAT: &str = "cinatoken-source-to-d1-reconciliation-result-v1";
 const RECONCILE_SQLITE_SCRIPT: &str = include_str!("../scripts/reconcile_sqlite.py");
@@ -2877,6 +2865,64 @@ mod tests {
     const D1_MIDJOURNEYS_SCHEMA: &str = include_str!("../../../migrations/d1/0007_midjourneys.sql");
     const D1_PREFILL_GROUPS_SCHEMA: &str =
         include_str!("../../../migrations/d1/0009_prefill_groups.sql");
+    const D1_MODEL_META_SCHEMA: &str = include_str!("../../../migrations/d1/0008_model_meta.sql");
+    const D1_CUSTOM_OAUTH_SCHEMA: &str =
+        include_str!("../../../migrations/d1/0010_custom_oauth.sql");
+    const D1_CHECKINS_SCHEMA: &str = include_str!("../../../migrations/d1/0011_checkins.sql");
+    const D1_REDEMPTIONS_SCHEMA: &str = include_str!("../../../migrations/d1/0012_redemptions.sql");
+    const D1_SUBSCRIPTIONS_SCHEMA: &str =
+        include_str!("../../../migrations/d1/0013_subscriptions.sql");
+    const D1_REDEMPTIONS_CREDITED: &str =
+        include_str!("../../../migrations/d1/0014_redemptions_credited.sql");
+
+    #[test]
+    fn every_import_target_has_a_reconciliation_spec() {
+        use std::collections::BTreeSet;
+
+        let import = D1_IMPORT_TABLES.iter().copied().collect::<BTreeSet<_>>();
+        let reconcile = D1_RECONCILE_TABLES.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(import.len(), 23);
+        assert_eq!(
+            import, reconcile,
+            "D1 imports and reconciliation must cover the same tables"
+        );
+        for table in D1_IMPORT_TABLES {
+            assert_eq!(d1_table_spec(table).unwrap().target_name, *table);
+        }
+
+        let (temp, config) = p0_reconciliation_fixture("reconcile-import-set-invariant");
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let manifest_tables = result["source_manifest"]["tables"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            import, manifest_tables,
+            "Python reconciliation specs must cover every D1 import target"
+        );
+        for table in D1_IMPORT_TABLES {
+            let spec = d1_table_spec(table).unwrap();
+            let expected_columns = spec
+                .target_columns
+                .iter()
+                .copied()
+                .filter(|column| !(matches!(*table, "abilities" | "options") && *column == "id"))
+                .collect::<Vec<_>>();
+            let manifest_columns = result["source_manifest"]["tables"][*table]["columns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|column| column.as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                expected_columns, manifest_columns,
+                "reconciliation columns must match the D1 import projection for {table}"
+            );
+        }
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn sql_string_escapes_single_quotes() {
@@ -3404,6 +3450,29 @@ mod tests {
         assert_eq!(manifest["tables"]["two_fa_backup_codes"]["count"], 2);
         assert_eq!(manifest["tables"]["midjourneys"]["count"], 1);
         assert_eq!(manifest["tables"]["prefill_groups"]["count"], 2);
+        assert_eq!(manifest["tables"]["topups"]["source_table"], "top_ups");
+        assert_eq!(manifest["tables"]["two_fa"]["source_table"], "two_fas");
+        assert_eq!(
+            manifest["tables"]["subscription_orders"]["source_column_map"]["order_no"],
+            "trade_no"
+        );
+        assert_eq!(
+            manifest["tables"]["subscription_orders"]["source_column_map"]["amount"],
+            "money"
+        );
+        assert_eq!(
+            manifest["tables"]["redemptions"]["computed_source_columns"],
+            serde_json::json!(["credited"])
+        );
+        for table in D1_IMPORT_TABLES {
+            let table_manifest = &manifest["tables"][*table];
+            assert!(
+                table_manifest["count"].as_u64().unwrap() > 0,
+                "fixture table {table} must exercise row reconciliation"
+            );
+            assert_eq!(table_manifest["sha256"].as_str().unwrap().len(), 64);
+            assert!(!table_manifest["samples"].as_array().unwrap().is_empty());
+        }
         assert_eq!(
             manifest["tables"]["users"]["pk_min"],
             serde_json::json!([["number", "1"]])
@@ -3451,6 +3520,12 @@ mod tests {
             manifest["integrity_checks"]["topups.credited_matches_status"]["violations"],
             0
         );
+        for (name, check) in manifest["relationships"].as_object().unwrap() {
+            assert_eq!(check["violations"], 0, "relationship {name} must hold");
+        }
+        for (name, check) in manifest["integrity_checks"].as_object().unwrap() {
+            assert_eq!(check["violations"], 0, "integrity check {name} must hold");
+        }
         let options_samples = manifest["tables"]["options"]["samples"].as_array().unwrap();
         assert_eq!(options_samples.len(), 2);
 
@@ -3495,6 +3570,7 @@ mod tests {
         assert!(!manifest.contains("JBSWY3DPEHPK3PXP"));
         assert!(!manifest.contains("pk\\raw'quote"));
         assert!(!manifest.contains("$2a$10$opaque/hash"));
+        assert!(!manifest.contains("client-secret-opaque"));
         assert!(!manifest.contains("go-vps-legacy"));
         assert!(!manifest.contains("gpt-test', 'default"));
         fs::remove_dir_all(temp).unwrap();
@@ -3626,6 +3702,31 @@ mod tests {
         assert!(differences.contains("table topups: canonical SHA-256 differs"));
         assert!(differences
             .contains("target integrity_check topups.credited_matches_status: 1 violation(s)"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reconcile_detects_expanded_family_domain_and_relationship_drift() {
+        let (temp, config) = p0_reconciliation_fixture("reconcile-expanded-family-drift");
+        execute_sqlite(
+            &config.target,
+            "UPDATE models SET vendor_id = 999 WHERE id = 1901;\n\
+             UPDATE subscription_plans SET duration_unit = 'invalid' WHERE id = 1401;",
+        );
+
+        let result = reconcile_sqlite_databases(&config).unwrap();
+        let differences = result["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(differences.contains("table models: canonical SHA-256 differs"));
+        assert!(differences
+            .contains("target relationship models.vendor_id->vendors.id: 1 violation(s)"));
+        assert!(differences
+            .contains("target integrity_check subscription_plans.value_domain: 1 violation(s)"));
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -4347,8 +4448,10 @@ CREATE TABLE options (id INTEGER PRIMARY KEY);
             &format!(
                 "{D1_CORE_SCHEMA}\n{D1_TOPUPS_SCHEMA}\n{D1_SCHEMA_PARITY}\n\
                  {D1_TOPUPS_CREDITED}\n{D1_TWO_FA_SCHEMA}\n{D1_TOPUPS_PAYMENT_PROVIDER}\n\
-                 {D1_PASSKEY_SCHEMA}\n{D1_MIDJOURNEYS_SCHEMA}\n\
-                 {D1_PREFILL_GROUPS_SCHEMA}\n{P0_TARGET_ROWS_FIXTURE}"
+                 {D1_PASSKEY_SCHEMA}\n{D1_MIDJOURNEYS_SCHEMA}\n{D1_MODEL_META_SCHEMA}\n\
+                 {D1_PREFILL_GROUPS_SCHEMA}\n{D1_CUSTOM_OAUTH_SCHEMA}\n{D1_CHECKINS_SCHEMA}\n\
+                 {D1_REDEMPTIONS_SCHEMA}\n{D1_SUBSCRIPTIONS_SCHEMA}\n\
+                 {D1_REDEMPTIONS_CREDITED}\n{P0_TARGET_ROWS_FIXTURE}"
             ),
         );
         let config = ReconcileConfig {

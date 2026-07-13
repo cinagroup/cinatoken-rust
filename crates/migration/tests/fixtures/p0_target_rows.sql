@@ -79,3 +79,110 @@ INSERT INTO prefill_groups (
    'primary models', 1710002000, 1710002010, NULL),
   (602, 'retired-endpoints', 'endpoint', '{"old":"https://old.example.test"}',
    'soft deleted', 1710002100, 1710002110, 1710000600);
+
+INSERT INTO logs (
+  id, user_id, created_at, type, content, username, token_name, model_name,
+  quota, prompt_tokens, completion_tokens, use_time, is_stream, channel_id,
+  token_id, "group", ip, request_id, upstream_request_id, other
+) VALUES (
+  1001, 1, 1710003000, 2, 'relay complete', 'alice', 'primary', 'gpt-test',
+  42, 12, 8, 250, 1, 20, 10, 'default', '203.0.113.5',
+  'req-log-1', 'upstream-log-1', '{"trace":{"a":1,"b":2}}'
+);
+
+INSERT INTO tasks (
+  id, task_id, upstream_task_id, platform, user_id, username, "group",
+  channel_id, quota, action, status, fail_reason, progress, submit_time,
+  start_time, finish_time, properties, private_data, data, created_at, updated_at
+) VALUES (
+  1101, 'task-source-1', '', 'suno', 1, '', 'default', 20, 80, 'music',
+  'SUCCESS', '', '100%', 1710003100, 1710003101, 1710003110,
+  '{"model":"v3","input":"song"}', '{"key_ref":"opaque"}',
+  '{"clips":[1,2]}', 1710003100, 1710003110
+);
+
+INSERT INTO checkins (
+  id, user_id, checkin_date, quota_awarded, created_at
+) VALUES (1201, 1, '2024-03-10', 100, 1710028800);
+
+INSERT INTO redemptions (
+  id, user_id, "key", status, name, quota, created_time, redeemed_time,
+  used_user_id, expired_time, deleted_at, credited
+) VALUES (
+  1301, 1, 'redeem-used-1', 3, 'launch code', 500,
+  1710003200, 1710003300, 1, 0, NULL, 1
+);
+
+INSERT INTO subscription_plans (
+  id, title, subtitle, price_amount, currency, duration_unit, duration_value,
+  custom_seconds, enabled, sort_order, allow_balance_pay, stripe_price_id,
+  creem_product_id, waffo_pancake_product_id, max_purchase_per_user,
+  upgrade_group, total_amount, quota_reset_period, quota_reset_custom_seconds,
+  created_at, updated_at
+) VALUES (
+  1401, 'Pro', 'Monthly plan', 12.5, 'USD', 'month', 1, 0, 1, 10, 1,
+  'price_pro', 'creem_pro', 'waffo_pro', 0, 'pro', 100000,
+  'monthly', 0, 1710003400, 1710003401
+);
+
+INSERT INTO subscription_orders (
+  id, user_id, provider, order_no, plan_id, status, amount, currency,
+  created_at, updated_at, money, trade_no, payment_method, payment_provider,
+  create_time, complete_time, provider_payload
+) VALUES (
+  1501, 1, 'stripe', 'sub-order-1', 1401, 'success', '12.5', '',
+  1710003500, 1710003510, 12.5, 'sub-order-1', 'card', 'stripe',
+  1710003500, 1710003510, '{"event":"paid","attempt":1}'
+);
+
+INSERT INTO user_subscriptions (
+  id, user_id, plan_id, amount_total, amount_used, start_time, end_time,
+  status, source, last_reset_time, next_reset_time, upgrade_group,
+  prev_user_group, created_at, updated_at
+) VALUES (
+  1601, 1, 1401, 100000, 500, 1710003510, 1712595510, 'active', 'order',
+  1710003510, 1712595510, 'pro', 'default', 1710003510, 1710003510
+);
+
+INSERT INTO subscription_pre_consume_records (
+  id, request_id, user_id, user_subscription_id, pre_consumed, status,
+  created_at, updated_at
+) VALUES (
+  1701, 'req-sub-1', 1, 1601, 100, 'consumed', 1710003600, 1710003600
+);
+
+INSERT INTO vendors (
+  id, name, description, icon, status, created_time, updated_time, deleted_at
+) VALUES (
+  1801, 'OpenAI', 'model vendor', 'OpenAI', 1, 1710003700, 1710003701, NULL
+);
+
+INSERT INTO models (
+  id, model_name, description, icon, tags, vendor_id, endpoints, status,
+  sync_official, created_time, updated_time, name_rule, deleted_at
+) VALUES (
+  1901, 'gpt-test', 'test model', 'OpenAI', 'chat,reasoning', 1801,
+  '{"responses":true,"chat":["/v1/chat/completions"]}',
+  1, 1, 1710003800, 1710003801, 0, NULL
+);
+
+INSERT INTO custom_oauth_providers (
+  id, name, slug, icon, enabled, client_id, client_secret,
+  authorization_endpoint, token_endpoint, user_info_endpoint, scopes,
+  user_id_field, username_field, display_name_field, email_field, well_known,
+  auth_style, access_policy, access_denied_message, created_at, updated_at
+) VALUES (
+  2001, 'Corporate OIDC', 'corp-oidc', 'KeyRound', 1, 'client-id',
+  'client-secret-opaque', 'https://id.example.test/authorize',
+  'https://id.example.test/token', 'https://id.example.test/userinfo',
+  'openid profile email', 'sub', 'preferred_username', 'name', 'email',
+  'https://id.example.test/.well-known/openid-configuration', 2,
+  '{"conditions":[],"logic":"and"}', 'Access denied',
+  '2024-03-09 16:30:00+00:00', '2024-03-09 16:31:00+00:00'
+);
+
+INSERT INTO user_oauth_bindings (
+  id, user_id, provider_id, provider_user_id, created_at
+) VALUES (
+  2101, 1, 2001, 'corp-user-1', '2024-03-09 16:32:00+00:00'
+);

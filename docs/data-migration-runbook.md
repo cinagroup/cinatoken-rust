@@ -267,9 +267,20 @@ bun run reconcile:migration -- `
   --manifest-output exports\YYYYMMDD-HHMM-core\p0-reconciliation-manifest.json
 ```
 
-`reconcile:migration` is a hard gate for `users`, `tokens`, `channels`,
-`abilities`, `options`, `topups`, `passkey_credentials`, `two_fa`, and
-`two_fa_backup_codes`. The versioned
+`reconcile:migration` is a hard gate for all 23 importable tables. The set is
+defined once by `D1_IMPORT_TABLES`, and a Rust invariant test requires the
+reconciliation set and every table projection to remain identical:
+
+- core/control plane: `users`, `tokens`, `channels`, `abilities`, `options`;
+- relay history and async work: `logs`, `tasks`, `midjourneys`;
+- quota/payment state: `checkins`, `redemptions`, `topups`;
+- subscriptions: `subscription_plans`, `subscription_orders`,
+  `user_subscriptions`, `subscription_pre_consume_records`;
+- model catalog: `vendors`, `models`, `prefill_groups`;
+- authentication: `custom_oauth_providers`, `user_oauth_bindings`,
+  `passkey_credentials`, `two_fa`, `two_fa_backup_codes`.
+
+The versioned
 `cinatoken-source-to-d1-reconciliation-v1` manifest records, per table:
 
 - row count and logical primary-key minimum/maximum;
@@ -280,7 +291,13 @@ bun run reconcile:migration -- `
   `abilities.channel_id -> channels.id` relationship checks;
 - `top_ups` string status to D1 integer mapping (`pending=0`, `success=1`,
   `failed=2`, `expired=3`), provider-domain validation, success-only
-  `credited=1`, and `topups.user_id -> users.id` checks.
+  `credited=1`, and `topups.user_id -> users.id` checks;
+- log/task user, channel, and token ownership; check-in/redemption user
+  ownership; subscription user/plan/subscription ownership; model/vendor
+  ownership; and OAuth user/provider ownership;
+- redemption credited derivation, subscription order compatibility columns,
+  non-negative quota/amount/count domains, status/provider/source/reset-period
+  domains, boolean domains, and declared JSON column validity;
 - Passkey credential/public-key/sign-counter/flag domains, TOTP secret and
   lockout domains, backup-code hash/used-at consistency, unique user and
   credential IDs, and all auth-table user/2FA relationships. Sensitive values
@@ -296,6 +313,12 @@ when their text happens to parse as JSON. Synthetic target IDs for `abilities` a
 contain logical keys and row hashes, not token/channel secrets or raw rows.
 Any count, logical-key range, full hash, sample, or relationship/integrity drift
 returns a non-zero process exit and must block staging/cutover.
+
+`quota_data`, `setups`, and `perf_metrics` remain intentionally excluded and
+must be represented by the versioned exclusion/rebuild manifest. Full local
+23/23 reconciliation is implementation evidence only: G2 still requires a
+frozen production SQLite snapshot, reviewed import SQL, remote D1 application,
+redacted manifest archival, rollback rehearsal, and owner sign-off.
 
 Review the SQL before applying it to D1. Use `--truncate` only for a fresh
 target or a deliberate overwrite with documented rollback approval.

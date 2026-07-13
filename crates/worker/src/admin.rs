@@ -643,7 +643,7 @@ pub(crate) async fn require_secure_verification_method(
     }
 }
 
-/// `POST /api/user/logout`: clear the session cookie.
+/// `GET|POST /api/user/logout`: clear the session cookie.
 pub async fn logout(_req: Request, _env: Env) -> WorkerResult<Response> {
     let mut response = envelope_ok_response(&Value::Null)?;
     response

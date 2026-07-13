@@ -129,6 +129,7 @@ export type PlatformReadinessCapabilities = Pick<
   | 'quota_coordinator_finalization_observation_compiled'
   | 'quota_coordinator_recovery_observation_compiled'
   | 'quota_coordinator_relay_observation_compiled'
+  | 'quota_coordinator_retention_compaction_compiled'
   | 'quota_coordinator_storage_retention_ready'
   | 'quota_coordinator_shadow_token_allowlist_configured'
   | 'quota_coordinator_shadow_token_allowlist_valid'
@@ -276,18 +277,23 @@ export function getQuotaCoordinatorReadiness(
     capabilities.quota_coordinator_reserve_observation_compiled,
     capabilities.quota_coordinator_finalization_observation_compiled,
     capabilities.quota_coordinator_recovery_observation_compiled,
-    capabilities.quota_coordinator_relay_observation_compiled
+    capabilities.quota_coordinator_relay_observation_compiled,
+    capabilities.quota_coordinator_retention_compaction_compiled
   )
   const shadowScope = allReady(
     capabilities.quota_coordinator_shadow_token_allowlist_configured,
     capabilities.quota_coordinator_shadow_token_allowlist_valid,
     capabilities.quota_coordinator_shadow_token_count > 0
   )
+  const storageRetention = allReady(
+    capabilities.quota_coordinator_retention_compaction_compiled,
+    capabilities.quota_coordinator_storage_retention_ready
+  )
   const shadowRuntime = allReady(
     shadowGate,
     relayObserver,
     shadowScope,
-    capabilities.quota_coordinator_storage_retention_ready,
+    storageRetention,
     capabilities.quota_coordinator_shadow_runtime_ready
   )
   const stagingBake = allReady(
@@ -309,7 +315,9 @@ export function getQuotaCoordinatorReadiness(
     binding,
     shadowGate,
     shadowScope,
-    storageRetention: capabilities.quota_coordinator_storage_retention_ready,
+    retentionCompaction:
+      capabilities.quota_coordinator_retention_compaction_compiled,
+    storageRetention,
     relayObserver,
     shadowRuntime,
     stagingBake,

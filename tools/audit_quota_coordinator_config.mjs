@@ -11,6 +11,13 @@ const coordinatorPath = path.join(
   "src",
   "quota_coordinator.rs",
 );
+const coordinatorCorePath = path.join(
+  repoRoot,
+  "crates",
+  "coordinator",
+  "src",
+  "lib.rs",
+);
 const platformGatewayPath = path.join(
   repoRoot,
   "crates",
@@ -38,6 +45,7 @@ const workerPath = path.join(repoRoot, "crates", "worker", "src", "lib.rs");
 const [
   wranglerSource,
   coordinatorSource,
+  coordinatorCoreSource,
   platformGatewaySource,
   relaySource,
   queueSource,
@@ -46,6 +54,7 @@ const [
 ] = await Promise.all([
   readFile(wranglerPath, "utf8"),
   readFile(coordinatorPath, "utf8"),
+  readFile(coordinatorCorePath, "utf8"),
   readFile(platformGatewayPath, "utf8"),
   readFile(relayPath, "utf8"),
   readFile(queuePath, "utf8"),
@@ -129,6 +138,7 @@ for (const expected of [
 }
 for (const expected of [
   "quota_coordinator_relay_observation_compiled",
+  "quota_coordinator_retention_compaction_compiled",
   "quota_coordinator_write_authority_enabled",
   "quota_coordinator_cutover_ready",
   "quota_coordinator_cutover_guards",
@@ -136,6 +146,17 @@ for (const expected of [
   assert(
     platformGatewaySource.includes(expected),
     `platform capability is missing ${expected}`,
+  );
+}
+for (const expected of [
+  "MAX_PERSISTED_STATE_JSON_BYTES",
+  "compact_terminal_history",
+  "RetentionWindowExpired",
+  "retention_watermark_committed_at",
+]) {
+  assert(
+    coordinatorCoreSource.includes(expected),
+    `quota coordinator retention contract is missing ${expected}`,
   );
 }
 
@@ -172,6 +193,7 @@ const report = {
   shadowDefaultOff: true,
   shadowTokenAllowlistDefaultEmpty: true,
   retentionVerifiedDefaultOff: true,
+  retentionCompactionCompiled: true,
   fetchObservationDeferred: true,
   stagingProofDefaultOff: true,
   producerCoverage: Object.keys(producerCoverage),

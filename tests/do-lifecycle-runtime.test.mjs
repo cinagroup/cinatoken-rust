@@ -139,6 +139,90 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(afterEviction.status).toEqual(afterSettle.status);
   });
 
+  it("compacts quota terminal history and rejects expired replays", async () => {
+    const tokenId = 704;
+    const stub = quotaCoordinatorStub(tokenId);
+    const firstReserve = {
+      contract_version: 1,
+      kind: "reserve",
+      operation_id: quotaHex("1"),
+      reservation_fingerprint: quotaHex("a"),
+      generation: 1,
+      reserved_quota: 10,
+      final_quota: 0,
+      request_count: 0,
+      source_committed_at: 100,
+    };
+    const firstSettle = {
+      ...firstReserve,
+      kind: "settle",
+      operation_id: quotaHex("2"),
+      generation: 2,
+      final_quota: 8,
+      request_count: 1,
+      source_committed_at: 200,
+    };
+    expect((await observeQuota(stub, tokenId, firstReserve)).status).toBe(204);
+    expect((await observeQuota(stub, tokenId, firstSettle)).status).toBe(204);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const persisted = await state.storage.get(quotaCoordinatorStateKey);
+      persisted.max_active_reservations = 1;
+      persisted.max_terminal_reservations = 1;
+      await state.storage.put(quotaCoordinatorStateKey, persisted);
+      return new Response(null);
+    });
+
+    const secondReserve = {
+      ...firstReserve,
+      operation_id: quotaHex("3"),
+      reservation_fingerprint: quotaHex("b"),
+      reserved_quota: 20,
+      source_committed_at: 300,
+    };
+    const secondRefund = {
+      ...secondReserve,
+      kind: "refund",
+      operation_id: quotaHex("4"),
+      generation: 2,
+      request_count: 0,
+      source_committed_at: 400,
+    };
+    expect((await observeQuota(stub, tokenId, secondReserve)).status).toBe(204);
+    expect((await observeQuota(stub, tokenId, secondRefund)).status).toBe(204);
+
+    let result = await quotaCoordinatorStatus(stub, tokenId);
+    expect(result.status).toMatchObject({
+      observation_count: 4,
+      applied_count: 4,
+      terminal_reservations: 2,
+      retained_terminal_reservations: 1,
+      compacted_terminal_reservations: 1,
+      legacy_terminal_reservations: 0,
+      retention_watermark_committed_at: 200,
+      persisted_state_json_limit_bytes: 1_500_000,
+    });
+    expect(result.status.persisted_state_json_bytes).toBeLessThan(1_500_000);
+
+    expect((await observeQuota(stub, tokenId, firstReserve)).status).toBe(409);
+    expect((await observeQuota(stub, tokenId, secondRefund)).status).toBe(204);
+    result = await quotaCoordinatorStatus(stub, tokenId);
+    expect(result.status).toMatchObject({
+      observation_count: 6,
+      applied_count: 4,
+      replay_count: 1,
+      conflict_count: 1,
+      reserved_quota: 30,
+      final_quota: 8,
+      refunded_quota: 22,
+    });
+
+    await evictDurableObject(stub);
+    expect((await quotaCoordinatorStatus(stub, tokenId)).status).toEqual(
+      result.status,
+    );
+  });
+
   it("serializes concurrent quota observations for one token", async () => {
     const tokenId = 703;
     const stub = quotaCoordinatorStub(tokenId);
@@ -731,6 +815,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
         quota_coordinator_finalization_observation_compiled: true,
         quota_coordinator_recovery_observation_compiled: true,
         quota_coordinator_relay_observation_compiled: true,
+        quota_coordinator_retention_compaction_compiled: true,
         quota_coordinator_storage_retention_ready: true,
         quota_coordinator_shadow_token_allowlist_configured: true,
         quota_coordinator_shadow_token_allowlist_valid: true,
@@ -1474,13 +1559,17 @@ function quotaHex(character) {
 }
 
 async function observeQuota(stub, tokenId, observation) {
+  const retainedObservation = {
+    source_committed_at: 100,
+    ...observation,
+  };
   const response = await stub.fetch("https://quota-coordinator.internal/observe", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       [quotaTokenIdHeader]: `${tokenId}`,
     },
-    body: JSON.stringify(observation),
+    body: JSON.stringify(retainedObservation),
   });
   await response.arrayBuffer();
   return response;

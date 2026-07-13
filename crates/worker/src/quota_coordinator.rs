@@ -1,10 +1,13 @@
 //! Internal, observation-only Durable Object adapter for the pure quota coordinator.
 
 use cinatoken_coordinator::{
-    apply, summary, ApplyOutcome, QuotaCoordinatorError, QuotaCoordinatorState, QuotaObservation,
+    apply, summary, ApplyOutcome, QuotaCoordinatorError, QuotaCoordinatorState,
+    QuotaCoordinatorSummary, QuotaObservation, DEFAULT_MAX_ACTIVE_RESERVATIONS,
+    DEFAULT_MAX_TERMINAL_RESERVATIONS, MAX_PERSISTED_STATE_JSON_BYTES,
     QUOTA_COORDINATOR_CONTRACT_VERSION, QUOTA_COORDINATOR_MODE,
 };
 use futures_util::StreamExt;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use wasm_bindgen::JsValue;
@@ -26,6 +29,7 @@ const STATE_KEY: &str = "quota_coordinator_state_v1";
 const MAX_JSON_BODY_BYTES: usize = 16 * 1024;
 const MAX_SHADOW_TOKEN_IDS: usize = 64;
 const APPLY_VALIDATION_MARKER: &str = "cinatoken_quota_observation_validation:";
+const STATE_SIZE_MARKER: &str = "cinatoken_quota_state_size:";
 const RESERVATION_FINGERPRINT_DOMAIN: &str = "cinatoken-quota-reservation-v1";
 const OPERATION_ID_DOMAIN: &str = "cinatoken-quota-operation-v1";
 
@@ -40,6 +44,14 @@ pub(crate) struct QuotaCoordinatorShadowScopeStatus {
 struct QuotaCoordinatorShadowScope {
     token_ids: BTreeSet<i64>,
     valid: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct QuotaCoordinatorStatus {
+    #[serde(flatten)]
+    summary: QuotaCoordinatorSummary,
+    persisted_state_json_bytes: usize,
+    persisted_state_json_limit_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +174,16 @@ impl QuotaCoordinator {
                     };
                 }
 
+                let persisted_bytes = serde_json::to_vec(&coordinator_state).map_err(|error| {
+                    Error::RustError(format!("failed to size QuotaCoordinator storage: {error}"))
+                })?;
+                if persisted_bytes.len() > MAX_PERSISTED_STATE_JSON_BYTES {
+                    return Err(Error::RustError(format!(
+                        "{STATE_SIZE_MARKER}{} exceeds {MAX_PERSISTED_STATE_JSON_BYTES}",
+                        persisted_bytes.len()
+                    )));
+                }
+
                 transaction.put(STATE_KEY, coordinator_state).await
             })
             .await;
@@ -216,8 +238,16 @@ impl QuotaCoordinator {
                         "failed to decode QuotaCoordinator storage: {error}"
                     ))
                 })?;
-
-        Response::from_json(&summary(&coordinator_state))
+        let persisted_state_json_bytes = serde_json::to_vec(&coordinator_state)
+            .map_err(|error| {
+                Error::RustError(format!("failed to size QuotaCoordinator storage: {error}"))
+            })?
+            .len();
+        Response::from_json(&QuotaCoordinatorStatus {
+            summary: summary(&coordinator_state).clone(),
+            persisted_state_json_bytes,
+            persisted_state_json_limit_bytes: MAX_PERSISTED_STATE_JSON_BYTES,
+        })
     }
 }
 
@@ -231,7 +261,15 @@ pub(crate) fn quota_coordinator_foundation_compiled() -> bool {
 }
 
 pub(crate) fn quota_coordinator_observer_contract_compiled() -> bool {
-    MAX_JSON_BODY_BYTES == 16 * 1024 && STATE_KEY == "quota_coordinator_state_v1"
+    MAX_JSON_BODY_BYTES == 16 * 1024
+        && STATE_KEY == "quota_coordinator_state_v1"
+        && quota_coordinator_retention_compaction_compiled()
+}
+
+pub(crate) fn quota_coordinator_retention_compaction_compiled() -> bool {
+    DEFAULT_MAX_ACTIVE_RESERVATIONS == 512
+        && DEFAULT_MAX_TERMINAL_RESERVATIONS == 1_536
+        && MAX_PERSISTED_STATE_JSON_BYTES == 1_500_000
 }
 
 pub(crate) fn quota_coordinator_reserve_observation_compiled() -> bool {
@@ -431,10 +469,15 @@ fn relay_observations_for_reservation(
     }
     let fingerprint =
         quota_identity_hash(RESERVATION_FINGERPRINT_DOMAIN, &[&record.reservation_key]);
+    let reserve_committed_at = u64::try_from(record.created_at)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "reservation created_at is outside the retention domain".to_string())?;
     let reserve = QuotaObservation::reserve(
         quota_identity_hash(OPERATION_ID_DOMAIN, &["reserve", &record.reservation_key]),
         fingerprint.clone(),
         record.pre_consumed_quota,
+        reserve_committed_at,
     )
     .map_err(|error| error.to_string())?;
     let mut observations = vec![reserve];
@@ -444,6 +487,10 @@ fn relay_observations_for_reservation(
         .ok_or_else(|| "reservation request accounting is outside the v1 domain".to_string())?;
     let generation = u64::try_from(record.owner_generation)
         .map_err(|_| "reservation owner generation is outside the v1 domain".to_string())?;
+    let terminal_committed_at = u64::try_from(record.updated_at)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "reservation updated_at is outside the retention domain".to_string())?;
     let terminal = match record.status.as_str() {
         "reserved" | "recovery_required" => None,
         "settled" => Some(
@@ -461,6 +508,7 @@ fn relay_observations_for_reservation(
                 record.pre_consumed_quota,
                 record.final_quota,
                 request_count,
+                terminal_committed_at,
             )
             .map_err(|error| error.to_string())?,
         ),
@@ -478,6 +526,7 @@ fn relay_observations_for_reservation(
                 generation,
                 record.pre_consumed_quota,
                 request_count,
+                terminal_committed_at,
             )
             .map_err(|error| error.to_string())?,
         ),

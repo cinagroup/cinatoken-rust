@@ -254,3 +254,20 @@ evidence for at least 30 days. Read or write authority remains out of scope.
 
 No credential, remote namespace, migration, provider request, or deployment was
 used. Production remains **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Retention Addendum
+
+The previously open local compaction design now exists. Terminal history no
+longer hard-stops at capacity: oldest commit-ordered records roll into
+cumulative redacted totals, while a monotonic watermark rejects stale unknown
+observations instead of treating them as new financial events. The default
+512-active/1,536-terminal state serializes to 1,234,821 bytes at its configured
+maximum and is guarded at 1,500,000 bytes before storage.
+
+This improves the M4 implementation rating but does not satisfy the production
+retention gate. The measurement is local JSON evidence, the exact replay window
+is count-bounded, and its time duration depends on per-token throughput. Staging
+must prove that duration, latency, cost, eviction, expired-window alerting, and
+zero-diff reconciliation on the deployed candidate. Compiled compaction and
+operator-approved retention are separate capability fields; all runtime/proof
+gates remain false. Production remains **NO-GO**.

@@ -11768,3 +11768,61 @@ D1 remains authoritative throughout.
 
 No remote resource, credential, provider request, migration, or deployment was
 used. Production remains **NO-GO**.
+
+### 22.192 2026-07-14 QuotaCoordinator Bounded Retention
+
+This increment replaces the terminal-capacity hard stop with bounded,
+fail-closed retention. It does not enable shadow traffic and does not change
+financial ownership: D1 remains the sole writer and the coordinator remains an
+observation-only projection of frozen reservation facts.
+
+Implemented locally:
+
+- Every producer now attaches the authoritative D1 commit time: `created_at`
+  for reserve and `updated_at` for settle/refund. The coordinator never
+  recomputes expressions, normalized request variables, prices, quota, or
+  request counts.
+- The per-token state retains at most 512 active and 1,536 exact terminal
+  records by default. A combined weighted-capacity invariant is enforced, and
+  Worker storage rejects JSON state above the internal 1,500,000-byte limit
+  before attempting a Durable Object write.
+- When the terminal window is full, the oldest `(source_committed_at,
+  reservation_fingerprint)` record is folded into cumulative redacted totals.
+  The exact replay window remains bounded while reserve/final/refund/user/token/
+  channel/request aggregates remain cumulative.
+- Compaction advances a monotonic watermark. An unknown observation at or
+  before that watermark is an explicit `retention_window_expired` conflict; it
+  is never reapplied as a new reservation. Retained exact operations continue
+  to replay idempotently. Legacy records without commit time can be read but
+  cannot be compacted automatically; capacity reports an explicit migration
+  requirement instead of guessing event order.
+- `GET /status` reports retained, compacted, legacy, and cumulative terminal
+  counts, the commit-time watermark, current JSON size, and the internal size
+  limit without exposing operation or reservation identifiers. Capabilities
+  expose `quota_coordinator_retention_compaction_compiled` separately from the
+  operator-controlled `quota_coordinator_storage_retention_ready` proof gate.
+
+Local evidence:
+
+- The configured maximum state serializes to 1,234,821 JSON bytes, below the
+  1,500,000-byte internal guard and with margin below Cloudflare's 2 MiB
+  SQLite-backed key/value entry limit.
+- Pure Rust tests cover source-order rotation, cumulative accounting,
+  transactional overflow, exact recent replay, expired replay rejection, and
+  maximum-state size. Workerd covers transaction persistence, compaction,
+  expired replay, status sizing, eviction, producer replay, and corruption.
+- The config audit requires the compaction contract while retaining false
+  shadow/retention/staging gates and an empty token allowlist in every tracked
+  environment. The frontend distinguishes compiled compaction from reviewed
+  capacity evidence.
+
+This is bounded local implementation evidence, not retention approval. The
+1,234,821-byte measurement is a JSON surrogate for the stored value, not an
+authenticated remote storage reading. Before setting
+`QUOTA_COORD_RETENTION_VERIFIED=true`, staging must measure hot-token throughput,
+window duration, p50/p95/p99 transaction latency, eviction, storage/cost,
+expired-window conflict rate, alert thresholds, and rollback against the exact
+deployed candidate. Any legacy record, size-guard failure, unexplained expired
+event, or reconciliation delta blocks the gate. Off-path reconciliation,
+authenticated namespace readback, alerts, and the signed 30-day bake remain
+open. Production remains **NO-GO**.

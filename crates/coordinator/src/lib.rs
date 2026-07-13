@@ -12,10 +12,14 @@ use thiserror::Error;
 
 pub const QUOTA_COORDINATOR_CONTRACT_VERSION: u32 = 1;
 pub const QUOTA_COORDINATOR_MODE: &str = "tiered_expression_shadow_only";
-pub const DEFAULT_MAX_ACTIVE_RESERVATIONS: u32 = 1_024;
-pub const DEFAULT_MAX_TERMINAL_RESERVATIONS: u32 = 4_096;
-pub const MAX_ACTIVE_RESERVATIONS: u32 = 65_536;
-pub const MAX_TERMINAL_RESERVATIONS: u32 = 65_536;
+pub const DEFAULT_MAX_ACTIVE_RESERVATIONS: u32 = 512;
+pub const DEFAULT_MAX_TERMINAL_RESERVATIONS: u32 = 1_536;
+pub const MAX_ACTIVE_RESERVATIONS: u32 = 2_048;
+pub const MAX_TERMINAL_RESERVATIONS: u32 = 2_048;
+pub const MAX_PERSISTED_STATE_JSON_BYTES: usize = 1_500_000;
+
+const ACTIVE_RESERVATION_BUDGET_BYTES: u64 = 512;
+const TERMINAL_RESERVATION_BUDGET_BYTES: u64 = 768;
 
 const MAX_QUOTA: i64 = i32::MAX as i64;
 
@@ -38,6 +42,9 @@ pub struct QuotaObservation {
     pub reserved_quota: i64,
     pub final_quota: i64,
     pub request_count: u64,
+    /// D1 commit time for retention ordering. Zero is accepted only while
+    /// decoding legacy persisted state and cannot be applied as a new event.
+    pub source_committed_at: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +58,8 @@ struct QuotaObservationWire {
     reserved_quota: i64,
     final_quota: i64,
     request_count: u64,
+    #[serde(default)]
+    source_committed_at: u64,
 }
 
 impl TryFrom<QuotaObservationWire> for QuotaObservation {
@@ -66,8 +75,9 @@ impl TryFrom<QuotaObservationWire> for QuotaObservation {
             reserved_quota: value.reserved_quota,
             final_quota: value.final_quota,
             request_count: value.request_count,
+            source_committed_at: value.source_committed_at,
         };
-        observation.validate()?;
+        observation.validate_persisted()?;
         Ok(observation)
     }
 }
@@ -77,6 +87,7 @@ impl QuotaObservation {
         operation_id: impl Into<String>,
         reservation_fingerprint: impl Into<String>,
         reserved_quota: i64,
+        source_committed_at: u64,
     ) -> Result<Self, QuotaObservationValidationError> {
         Self::validated(
             QuotaObservationKind::Reserve,
@@ -86,6 +97,7 @@ impl QuotaObservation {
             reserved_quota,
             0,
             0,
+            source_committed_at,
         )
     }
 
@@ -96,6 +108,7 @@ impl QuotaObservation {
         reserved_quota: i64,
         final_quota: i64,
         request_count: u64,
+        source_committed_at: u64,
     ) -> Result<Self, QuotaObservationValidationError> {
         Self::validated(
             QuotaObservationKind::Settle,
@@ -105,6 +118,7 @@ impl QuotaObservation {
             reserved_quota,
             final_quota,
             request_count,
+            source_committed_at,
         )
     }
 
@@ -114,6 +128,7 @@ impl QuotaObservation {
         generation: u64,
         reserved_quota: i64,
         request_count: u64,
+        source_committed_at: u64,
     ) -> Result<Self, QuotaObservationValidationError> {
         Self::validated(
             QuotaObservationKind::Refund,
@@ -123,6 +138,7 @@ impl QuotaObservation {
             reserved_quota,
             0,
             request_count,
+            source_committed_at,
         )
     }
 
@@ -135,6 +151,7 @@ impl QuotaObservation {
         reserved_quota: i64,
         final_quota: i64,
         request_count: u64,
+        source_committed_at: u64,
     ) -> Result<Self, QuotaObservationValidationError> {
         let observation = Self {
             contract_version: QUOTA_COORDINATOR_CONTRACT_VERSION,
@@ -145,12 +162,21 @@ impl QuotaObservation {
             reserved_quota,
             final_quota,
             request_count,
+            source_committed_at,
         };
         observation.validate()?;
         Ok(observation)
     }
 
     pub fn validate(&self) -> Result<(), QuotaObservationValidationError> {
+        self.validate_persisted()?;
+        if self.source_committed_at == 0 {
+            return Err(QuotaObservationValidationError::InvalidSourceCommittedAt);
+        }
+        Ok(())
+    }
+
+    fn validate_persisted(&self) -> Result<(), QuotaObservationValidationError> {
         if self.contract_version != QUOTA_COORDINATOR_CONTRACT_VERSION {
             return Err(
                 QuotaObservationValidationError::UnsupportedContractVersion {
@@ -215,6 +241,17 @@ impl QuotaObservation {
         }
         Ok(())
     }
+
+    fn same_accounting_payload(&self, other: &Self) -> bool {
+        self.contract_version == other.contract_version
+            && self.kind == other.kind
+            && self.operation_id == other.operation_id
+            && self.reservation_fingerprint == other.reservation_fingerprint
+            && self.generation == other.generation
+            && self.reserved_quota == other.reserved_quota
+            && self.final_quota == other.final_quota
+            && self.request_count == other.request_count
+    }
 }
 
 fn validate_hex_id(
@@ -265,6 +302,8 @@ pub enum QuotaObservationValidationError {
         kind: QuotaObservationKind,
         actual: u64,
     },
+    #[error("source_committed_at must be a positive D1 commit timestamp")]
+    InvalidSourceCommittedAt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,7 +322,16 @@ pub struct QuotaCoordinatorSummary {
     pub settle_count: u64,
     pub refund_count: u64,
     pub active_reservations: u64,
+    /// Cumulative terminal reservations, including compacted history.
     pub terminal_reservations: u64,
+    #[serde(default)]
+    pub retained_terminal_reservations: u64,
+    #[serde(default)]
+    pub compacted_terminal_reservations: u64,
+    #[serde(default)]
+    pub legacy_terminal_reservations: u64,
+    #[serde(default)]
+    pub retention_watermark_committed_at: u64,
     pub outstanding_quota: i64,
     pub reserved_quota: i64,
     pub final_quota: i64,
@@ -307,6 +355,10 @@ impl Default for QuotaCoordinatorSummary {
             refund_count: 0,
             active_reservations: 0,
             terminal_reservations: 0,
+            retained_terminal_reservations: 0,
+            compacted_terminal_reservations: 0,
+            legacy_terminal_reservations: 0,
+            retention_watermark_committed_at: 0,
             outstanding_quota: 0,
             reserved_quota: 0,
             final_quota: 0,
@@ -391,8 +443,12 @@ pub enum QuotaConflict {
     ActiveCapacityExceeded {
         limit: u32,
     },
-    TerminalCapacityExceeded {
-        limit: u32,
+    RetentionWindowExpired {
+        source_committed_at: u64,
+        watermark_committed_at: u64,
+    },
+    LegacyRetentionMigrationRequired {
+        terminal_reservations: u64,
     },
 }
 
@@ -409,6 +465,29 @@ struct TerminalReservation {
     terminal: QuotaObservation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompactedTerminalRollup {
+    terminal_reservations: u64,
+    reserve_count: u64,
+    settle_count: u64,
+    refund_count: u64,
+    reserved_quota: i64,
+    final_quota: i64,
+    refunded_quota: i64,
+    user_net_delta: i64,
+    token_net_delta: i64,
+    channel_used_quota: i64,
+    request_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetentionWatermark {
+    source_committed_at: u64,
+    reservation_fingerprint: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "QuotaCoordinatorStateWire")]
 pub struct QuotaCoordinatorState {
@@ -417,6 +496,8 @@ pub struct QuotaCoordinatorState {
     max_terminal_reservations: u32,
     active_reservations: BTreeMap<String, ActiveReservation>,
     terminal_reservations: VecDeque<TerminalReservation>,
+    compacted_terminal_rollup: CompactedTerminalRollup,
+    retention_watermark: Option<RetentionWatermark>,
     summary: QuotaCoordinatorSummary,
 }
 
@@ -428,6 +509,10 @@ struct QuotaCoordinatorStateWire {
     max_terminal_reservations: u32,
     active_reservations: BTreeMap<String, ActiveReservation>,
     terminal_reservations: VecDeque<TerminalReservation>,
+    #[serde(default)]
+    compacted_terminal_rollup: CompactedTerminalRollup,
+    #[serde(default)]
+    retention_watermark: Option<RetentionWatermark>,
     summary: QuotaCoordinatorSummary,
 }
 
@@ -435,13 +520,35 @@ impl TryFrom<QuotaCoordinatorStateWire> for QuotaCoordinatorState {
     type Error = QuotaCoordinatorError;
 
     fn try_from(value: QuotaCoordinatorStateWire) -> Result<Self, Self::Error> {
+        let mut summary = value.summary;
+        if summary.terminal_reservations > 0
+            && summary.retained_terminal_reservations == 0
+            && summary.compacted_terminal_reservations == 0
+            && value.compacted_terminal_rollup.terminal_reservations == 0
+        {
+            summary.retained_terminal_reservations = usize_to_u64(
+                value.terminal_reservations.len(),
+                "summary.retained_terminal_reservations",
+            )?;
+            summary.legacy_terminal_reservations = value
+                .terminal_reservations
+                .iter()
+                .filter(|record| record.terminal.source_committed_at == 0)
+                .count()
+                .try_into()
+                .map_err(|_| QuotaCoordinatorError::ArithmeticOverflow {
+                    field: "summary.legacy_terminal_reservations",
+                })?;
+        }
         let state = Self {
             contract_version: value.contract_version,
             max_active_reservations: value.max_active_reservations,
             max_terminal_reservations: value.max_terminal_reservations,
             active_reservations: value.active_reservations,
             terminal_reservations: value.terminal_reservations,
-            summary: value.summary,
+            compacted_terminal_rollup: value.compacted_terminal_rollup,
+            retention_watermark: value.retention_watermark,
+            summary,
         };
         state.validate()?;
         Ok(state)
@@ -456,6 +563,8 @@ impl Default for QuotaCoordinatorState {
             max_terminal_reservations: DEFAULT_MAX_TERMINAL_RESERVATIONS,
             active_reservations: BTreeMap::new(),
             terminal_reservations: VecDeque::new(),
+            compacted_terminal_rollup: CompactedTerminalRollup::default(),
+            retention_watermark: None,
             summary: QuotaCoordinatorSummary::default(),
         }
     }
@@ -540,6 +649,7 @@ impl QuotaCoordinatorState {
             self.max_terminal_reservations,
             MAX_TERMINAL_RESERVATIONS,
         )?;
+        validate_combined_capacity(self.max_active_reservations, self.max_terminal_reservations)?;
         if self.active_reservations.len() > self.max_active_reservations as usize {
             return Err(invalid_state(
                 "active_reservations",
@@ -561,13 +671,32 @@ impl QuotaCoordinatorState {
 
         let mut operation_ids = BTreeSet::new();
         let mut reservation_fingerprints = BTreeSet::new();
-        let mut expected = QuotaCoordinatorSummary::default();
+        validate_compacted_rollup(&self.compacted_terminal_rollup)?;
+        if let Some(watermark) = &self.retention_watermark {
+            if watermark.source_committed_at == 0 {
+                return Err(invalid_state(
+                    "retention_watermark",
+                    "watermark commit time must be positive",
+                ));
+            }
+            validate_hex_id(
+                "retention_watermark.reservation_fingerprint",
+                &watermark.reservation_fingerprint,
+            )?;
+        } else if self.compacted_terminal_rollup.terminal_reservations != 0 {
+            return Err(invalid_state(
+                "retention_watermark",
+                "compacted history requires a watermark",
+            ));
+        }
+
+        let mut expected = summary_from_compacted_rollup(&self.compacted_terminal_rollup)?;
         expected.observation_count = self.summary.observation_count;
         expected.replay_count = self.summary.replay_count;
         expected.conflict_count = self.summary.conflict_count;
 
         for (fingerprint, active) in &self.active_reservations {
-            active.reserve.validate()?;
+            active.reserve.validate_persisted()?;
             if active.reserve.kind != QuotaObservationKind::Reserve {
                 return Err(invalid_state(
                     "active_reservations",
@@ -591,8 +720,8 @@ impl QuotaCoordinatorState {
         }
 
         for terminal in &self.terminal_reservations {
-            terminal.reserve.validate()?;
-            terminal.terminal.validate()?;
+            terminal.reserve.validate_persisted()?;
+            terminal.terminal.validate_persisted()?;
             if terminal.reserve.kind != QuotaObservationKind::Reserve
                 || terminal.terminal.kind == QuotaObservationKind::Reserve
             {
@@ -622,6 +751,16 @@ impl QuotaCoordinatorState {
             }
             insert_operation_id(&mut operation_ids, &terminal.reserve.operation_id)?;
             insert_operation_id(&mut operation_ids, &terminal.terminal.operation_id)?;
+            if self
+                .retention_watermark
+                .as_ref()
+                .is_some_and(|watermark| terminal_retention_key(terminal) <= *watermark)
+            {
+                return Err(invalid_state(
+                    "terminal_reservations",
+                    "retained terminal record is at or before the compaction watermark",
+                ));
+            }
             accumulate_reserve(&mut expected, terminal.reserve.reserved_quota)?;
             accumulate_terminal(&mut expected, &terminal.terminal)?;
         }
@@ -630,10 +769,28 @@ impl QuotaCoordinatorState {
             self.active_reservations.len(),
             "summary.active_reservations",
         )?;
-        expected.terminal_reservations = usize_to_u64(
+        expected.retained_terminal_reservations = usize_to_u64(
             self.terminal_reservations.len(),
+            "summary.retained_terminal_reservations",
+        )?;
+        expected.compacted_terminal_reservations =
+            self.compacted_terminal_rollup.terminal_reservations;
+        expected.terminal_reservations = checked_add_u64(
+            expected.retained_terminal_reservations,
+            expected.compacted_terminal_reservations,
             "summary.terminal_reservations",
         )?;
+        expected.legacy_terminal_reservations = usize_to_u64(
+            self.terminal_reservations
+                .iter()
+                .filter(|record| record.terminal.source_committed_at == 0)
+                .count(),
+            "summary.legacy_terminal_reservations",
+        )?;
+        expected.retention_watermark_committed_at = self
+            .retention_watermark
+            .as_ref()
+            .map_or(0, |watermark| watermark.source_committed_at);
         expected.applied_count = checked_add_u64(
             expected.reserve_count,
             expected.terminal_reservations,
@@ -676,7 +833,7 @@ impl QuotaCoordinatorState {
             .observation_for_operation_id(&observation.operation_id)
             .cloned()
         {
-            if existing == observation {
+            if existing.same_accounting_payload(&observation) {
                 increment_u64(&mut self.summary.replay_count, "summary.replay_count")?;
                 return Ok(ApplyOutcome::Replay {
                     summary: self.summary.clone(),
@@ -706,6 +863,9 @@ impl QuotaCoordinatorState {
             return self.conflict(QuotaConflict::RepeatedReserve {
                 reservation_fingerprint: fingerprint,
             });
+        }
+        if self.observation_is_expired(&observation) {
+            return self.retention_window_expired(&observation);
         }
         if self.active_reservations.len() >= self.max_active_reservations as usize {
             return self.conflict(QuotaConflict::ActiveCapacityExceeded {
@@ -759,6 +919,9 @@ impl QuotaCoordinatorState {
         }
 
         let Some(active) = self.active_reservations.get(&fingerprint).cloned() else {
+            if self.observation_is_expired(&observation) {
+                return self.retention_window_expired(&observation);
+            }
             return self.conflict(QuotaConflict::MissingReserve {
                 reservation_fingerprint: fingerprint,
             });
@@ -770,9 +933,17 @@ impl QuotaCoordinatorState {
                 actual_reserved_quota: observation.reserved_quota,
             });
         }
-        if self.terminal_reservations.len() >= self.max_terminal_reservations as usize {
-            return self.conflict(QuotaConflict::TerminalCapacityExceeded {
-                limit: self.max_terminal_reservations,
+        if self.terminal_reservations.len() >= self.max_terminal_reservations as usize
+            && self
+                .terminal_reservations
+                .iter()
+                .any(|record| record.terminal.source_committed_at == 0)
+        {
+            return self.conflict(QuotaConflict::LegacyRetentionMigrationRequired {
+                terminal_reservations: usize_to_u64(
+                    self.terminal_reservations.len(),
+                    "terminal_reservations",
+                )?,
             });
         }
 
@@ -807,6 +978,7 @@ impl QuotaCoordinatorState {
             reserve: removed.reserve,
             terminal: observation,
         });
+        self.compact_terminal_history()?;
         self.refresh_collection_counts()?;
 
         Ok(ApplyOutcome::Applied {
@@ -855,15 +1027,95 @@ impl QuotaCoordinatorState {
             .find(|record| record.reserve.reservation_fingerprint == fingerprint)
     }
 
+    fn observation_is_expired(&self, observation: &QuotaObservation) -> bool {
+        self.retention_watermark
+            .as_ref()
+            .is_some_and(|watermark| observation_retention_key(observation) <= *watermark)
+    }
+
+    fn retention_window_expired(
+        &mut self,
+        observation: &QuotaObservation,
+    ) -> Result<ApplyOutcome, QuotaCoordinatorError> {
+        let watermark_committed_at = self
+            .retention_watermark
+            .as_ref()
+            .map_or(0, |watermark| watermark.source_committed_at);
+        self.conflict(QuotaConflict::RetentionWindowExpired {
+            source_committed_at: observation.source_committed_at,
+            watermark_committed_at,
+        })
+    }
+
+    fn compact_terminal_history(&mut self) -> Result<(), QuotaCoordinatorError> {
+        while self.terminal_reservations.len() > self.max_terminal_reservations as usize {
+            let oldest_index = self
+                .terminal_reservations
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, record)| terminal_retention_key(record))
+                .map(|(index, _)| index)
+                .ok_or_else(|| {
+                    invalid_state(
+                        "terminal_reservations",
+                        "terminal history disappeared during compaction",
+                    )
+                })?;
+            let compacted = self
+                .terminal_reservations
+                .remove(oldest_index)
+                .ok_or_else(|| {
+                    invalid_state(
+                        "terminal_reservations",
+                        "oldest terminal record disappeared during compaction",
+                    )
+                })?;
+            if compacted.terminal.source_committed_at == 0 {
+                return Err(invalid_state(
+                    "terminal_reservations",
+                    "legacy terminal history cannot be compacted automatically",
+                ));
+            }
+            accumulate_compacted_terminal(&mut self.compacted_terminal_rollup, &compacted)?;
+            let watermark = terminal_retention_key(&compacted);
+            if self
+                .retention_watermark
+                .as_ref()
+                .is_none_or(|current| watermark > *current)
+            {
+                self.retention_watermark = Some(watermark);
+            }
+        }
+        Ok(())
+    }
+
     fn refresh_collection_counts(&mut self) -> Result<(), QuotaCoordinatorError> {
         self.summary.active_reservations = usize_to_u64(
             self.active_reservations.len(),
             "summary.active_reservations",
         )?;
-        self.summary.terminal_reservations = usize_to_u64(
+        self.summary.retained_terminal_reservations = usize_to_u64(
             self.terminal_reservations.len(),
+            "summary.retained_terminal_reservations",
+        )?;
+        self.summary.compacted_terminal_reservations =
+            self.compacted_terminal_rollup.terminal_reservations;
+        self.summary.terminal_reservations = checked_add_u64(
+            self.summary.retained_terminal_reservations,
+            self.summary.compacted_terminal_reservations,
             "summary.terminal_reservations",
         )?;
+        self.summary.legacy_terminal_reservations = usize_to_u64(
+            self.terminal_reservations
+                .iter()
+                .filter(|record| record.terminal.source_committed_at == 0)
+                .count(),
+            "summary.legacy_terminal_reservations",
+        )?;
+        self.summary.retention_watermark_committed_at = self
+            .retention_watermark
+            .as_ref()
+            .map_or(0, |watermark| watermark.source_committed_at);
         Ok(())
     }
 }
@@ -892,6 +1144,177 @@ fn validate_limit(
     } else {
         Ok(())
     }
+}
+
+fn validate_combined_capacity(
+    max_active_reservations: u32,
+    max_terminal_reservations: u32,
+) -> Result<(), QuotaCoordinatorError> {
+    let active_budget = u64::from(max_active_reservations)
+        .checked_mul(ACTIVE_RESERVATION_BUDGET_BYTES)
+        .ok_or(QuotaCoordinatorError::ArithmeticOverflow {
+            field: "reservation_capacity",
+        })?;
+    let terminal_budget = u64::from(max_terminal_reservations)
+        .checked_mul(TERMINAL_RESERVATION_BUDGET_BYTES)
+        .ok_or(QuotaCoordinatorError::ArithmeticOverflow {
+            field: "reservation_capacity",
+        })?;
+    let estimated = checked_add_u64(active_budget, terminal_budget, "reservation_capacity")?;
+    if estimated > MAX_PERSISTED_STATE_JSON_BYTES as u64 {
+        return Err(invalid_state(
+            "reservation_capacity",
+            format!(
+                "estimated retained state budget {estimated} exceeds {MAX_PERSISTED_STATE_JSON_BYTES} bytes"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn observation_retention_key(observation: &QuotaObservation) -> RetentionWatermark {
+    RetentionWatermark {
+        source_committed_at: observation.source_committed_at,
+        reservation_fingerprint: observation.reservation_fingerprint.clone(),
+    }
+}
+
+fn terminal_retention_key(record: &TerminalReservation) -> RetentionWatermark {
+    observation_retention_key(&record.terminal)
+}
+
+fn validate_compacted_rollup(
+    rollup: &CompactedTerminalRollup,
+) -> Result<(), QuotaCoordinatorError> {
+    let terminal_kinds = checked_add_u64(
+        rollup.settle_count,
+        rollup.refund_count,
+        "compacted_terminal_rollup.terminal_reservations",
+    )?;
+    if rollup.terminal_reservations != rollup.reserve_count
+        || rollup.terminal_reservations != terminal_kinds
+    {
+        return Err(invalid_state(
+            "compacted_terminal_rollup",
+            "reserve and terminal counters must describe complete pairs",
+        ));
+    }
+    if rollup.reserved_quota < 0
+        || rollup.final_quota < 0
+        || rollup.refunded_quota < 0
+        || rollup.channel_used_quota < 0
+        || rollup.refunded_quota > rollup.reserved_quota
+        || rollup.request_count > rollup.terminal_reservations
+    {
+        return Err(invalid_state(
+            "compacted_terminal_rollup",
+            "quota or request totals are outside the terminal-pair domain",
+        ));
+    }
+    let expected_net = checked_neg_i64(
+        rollup.final_quota,
+        "compacted_terminal_rollup.user_net_delta",
+    )?;
+    if rollup.user_net_delta != expected_net
+        || rollup.token_net_delta != expected_net
+        || rollup.channel_used_quota != rollup.final_quota
+    {
+        return Err(invalid_state(
+            "compacted_terminal_rollup",
+            "net and channel totals do not match finalized quota",
+        ));
+    }
+    Ok(())
+}
+
+fn summary_from_compacted_rollup(
+    rollup: &CompactedTerminalRollup,
+) -> Result<QuotaCoordinatorSummary, QuotaCoordinatorError> {
+    validate_compacted_rollup(rollup)?;
+    Ok(QuotaCoordinatorSummary {
+        applied_count: checked_add_u64(
+            rollup.reserve_count,
+            rollup.terminal_reservations,
+            "summary.applied_count",
+        )?,
+        reserve_count: rollup.reserve_count,
+        settle_count: rollup.settle_count,
+        refund_count: rollup.refund_count,
+        terminal_reservations: rollup.terminal_reservations,
+        compacted_terminal_reservations: rollup.terminal_reservations,
+        reserved_quota: rollup.reserved_quota,
+        final_quota: rollup.final_quota,
+        refunded_quota: rollup.refunded_quota,
+        user_net_delta: rollup.user_net_delta,
+        token_net_delta: rollup.token_net_delta,
+        channel_used_quota: rollup.channel_used_quota,
+        request_count: rollup.request_count,
+        ..QuotaCoordinatorSummary::default()
+    })
+}
+
+fn accumulate_compacted_terminal(
+    rollup: &mut CompactedTerminalRollup,
+    record: &TerminalReservation,
+) -> Result<(), QuotaCoordinatorError> {
+    let mut pair = QuotaCoordinatorSummary::default();
+    accumulate_reserve(&mut pair, record.reserve.reserved_quota)?;
+    accumulate_terminal(&mut pair, &record.terminal)?;
+
+    increment_u64(
+        &mut rollup.terminal_reservations,
+        "compacted_terminal_rollup.terminal_reservations",
+    )?;
+    increment_u64(
+        &mut rollup.reserve_count,
+        "compacted_terminal_rollup.reserve_count",
+    )?;
+    add_u64(
+        &mut rollup.settle_count,
+        pair.settle_count,
+        "compacted_terminal_rollup.settle_count",
+    )?;
+    add_u64(
+        &mut rollup.refund_count,
+        pair.refund_count,
+        "compacted_terminal_rollup.refund_count",
+    )?;
+    add_i64(
+        &mut rollup.reserved_quota,
+        pair.reserved_quota,
+        "compacted_terminal_rollup.reserved_quota",
+    )?;
+    add_i64(
+        &mut rollup.final_quota,
+        pair.final_quota,
+        "compacted_terminal_rollup.final_quota",
+    )?;
+    add_i64(
+        &mut rollup.refunded_quota,
+        pair.refunded_quota,
+        "compacted_terminal_rollup.refunded_quota",
+    )?;
+    add_i64(
+        &mut rollup.user_net_delta,
+        pair.user_net_delta,
+        "compacted_terminal_rollup.user_net_delta",
+    )?;
+    add_i64(
+        &mut rollup.token_net_delta,
+        pair.token_net_delta,
+        "compacted_terminal_rollup.token_net_delta",
+    )?;
+    add_i64(
+        &mut rollup.channel_used_quota,
+        pair.channel_used_quota,
+        "compacted_terminal_rollup.channel_used_quota",
+    )?;
+    add_u64(
+        &mut rollup.request_count,
+        pair.request_count,
+        "compacted_terminal_rollup.request_count",
+    )?;
+    validate_compacted_rollup(rollup)
 }
 
 fn insert_operation_id<'a>(
@@ -1079,7 +1502,7 @@ mod tests {
     }
 
     fn reserve(operation: char, fingerprint: char, quota: i64) -> QuotaObservation {
-        QuotaObservation::reserve(hex(operation), hex(fingerprint), quota).unwrap()
+        QuotaObservation::reserve(hex(operation), hex(fingerprint), quota, 100).unwrap()
     }
 
     fn settle(
@@ -1096,6 +1519,7 @@ mod tests {
             reserved_quota,
             final_quota,
             1,
+            200,
         )
         .unwrap()
     }
@@ -1113,6 +1537,7 @@ mod tests {
             generation,
             reserved_quota,
             request_count,
+            200,
         )
         .unwrap()
     }
@@ -1137,6 +1562,18 @@ mod tests {
 
         let with_unknown = json.replacen("{", r#"{"model":"forbidden","#, 1);
         assert!(serde_json::from_str::<QuotaObservation>(&with_unknown).is_err());
+
+        let mut legacy = serde_json::to_value(&observation).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("source_committed_at");
+        let legacy: QuotaObservation = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.source_committed_at, 0);
+        assert!(matches!(
+            legacy.validate(),
+            Err(QuotaObservationValidationError::InvalidSourceCommittedAt)
+        ));
     }
 
     #[test]
@@ -1337,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn active_and_terminal_capacity_conflicts_preserve_state() {
+    fn active_capacity_conflicts_and_terminal_capacity_compacts() {
         let mut state = QuotaCoordinatorState::with_limits(1, 1).unwrap();
         state.apply(reserve('a', 'b', 10)).unwrap();
         assert!(matches!(
@@ -1348,20 +1785,77 @@ mod tests {
             }
         ));
         state.apply(settle('e', 'b', 2, 10, 10)).unwrap();
-        state.apply(reserve('f', 'd', 20)).unwrap();
+        let mut second_reserve = reserve('f', 'd', 20);
+        second_reserve.source_committed_at = 300;
+        state.apply(second_reserve).unwrap();
+        let mut second_refund = refund('1', 'd', 2, 20, 0);
+        second_refund.source_committed_at = 400;
+        state.apply(second_refund).unwrap();
+
+        assert!(!state.has_active_reservation(&hex('d')));
+        assert_eq!(state.summary().active_reservations, 0);
+        assert_eq!(state.summary().terminal_reservations, 2);
+        assert_eq!(state.summary().retained_terminal_reservations, 1);
+        assert_eq!(state.summary().compacted_terminal_reservations, 1);
+        assert_eq!(state.summary().retention_watermark_committed_at, 200);
+        assert_eq!(state.summary().outstanding_quota, 0);
+        assert_eq!(state.summary().reserved_quota, 30);
+        assert_eq!(state.summary().final_quota, 10);
+        assert_eq!(state.summary().refunded_quota, 20);
+        assert_eq!(state.summary().conflict_count, 1);
 
         assert!(matches!(
-            state.apply(refund('1', 'd', 2, 20, 0)).unwrap(),
+            state.apply(reserve('a', 'b', 10)).unwrap(),
             ApplyOutcome::Conflict {
-                reason: QuotaConflict::TerminalCapacityExceeded { limit: 1 },
+                reason: QuotaConflict::RetentionWindowExpired {
+                    source_committed_at: 100,
+                    watermark_committed_at: 200,
+                },
                 ..
             }
         ));
-        assert!(state.has_active_reservation(&hex('d')));
-        assert_eq!(state.summary().active_reservations, 1);
-        assert_eq!(state.summary().terminal_reservations, 1);
-        assert_eq!(state.summary().outstanding_quota, 20);
-        assert_eq!(state.summary().conflict_count, 2);
+        assert!(matches!(
+            state.apply(settle('e', 'b', 2, 10, 10)).unwrap(),
+            ApplyOutcome::Conflict {
+                reason: QuotaConflict::RetentionWindowExpired { .. },
+                ..
+            }
+        ));
+        assert_eq!(state.summary().conflict_count, 3);
+        assert_eq!(state.summary().reserved_quota, 30);
+        assert_eq!(state.summary().final_quota, 10);
+    }
+
+    #[test]
+    fn compaction_uses_source_order_and_keeps_exact_recent_replays() {
+        let mut state = QuotaCoordinatorState::with_limits(2, 2).unwrap();
+        for (operation, fingerprint, source) in [('1', 'a', 300), ('2', 'b', 100), ('3', 'c', 200)]
+        {
+            let mut reserve = reserve(operation, fingerprint, 10);
+            reserve.source_committed_at = source;
+            state.apply(reserve).unwrap();
+            let mut terminal = settle(
+                char::from_digit(operation.to_digit(16).unwrap() + 3, 16).unwrap(),
+                fingerprint,
+                2,
+                10,
+                10,
+            );
+            terminal.source_committed_at = source + 1;
+            state.apply(terminal).unwrap();
+        }
+
+        assert_eq!(state.summary().terminal_reservations, 3);
+        assert_eq!(state.summary().retained_terminal_reservations, 2);
+        assert_eq!(state.summary().compacted_terminal_reservations, 1);
+        assert_eq!(state.summary().retention_watermark_committed_at, 101);
+
+        let mut recent = settle('4', 'a', 2, 10, 10);
+        recent.source_committed_at = 301;
+        assert!(matches!(
+            state.apply(recent).unwrap(),
+            ApplyOutcome::Replay { .. }
+        ));
     }
 
     #[test]
@@ -1413,6 +1907,114 @@ mod tests {
         assert!(json.contains(r#""max_active_reservations":2"#));
         let restored: QuotaCoordinatorState = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, state);
+    }
+
+    #[test]
+    fn legacy_state_is_readable_but_cannot_compact_without_migration() {
+        let mut state = QuotaCoordinatorState::with_limits(2, 1).unwrap();
+        state.apply(reserve('a', 'b', 10)).unwrap();
+        state.apply(settle('c', 'b', 2, 10, 8)).unwrap();
+        let mut legacy = serde_json::to_value(&state).unwrap();
+        let root = legacy.as_object_mut().unwrap();
+        root.remove("compacted_terminal_rollup");
+        root.remove("retention_watermark");
+        let summary = root["summary"].as_object_mut().unwrap();
+        for field in [
+            "retained_terminal_reservations",
+            "compacted_terminal_reservations",
+            "legacy_terminal_reservations",
+            "retention_watermark_committed_at",
+        ] {
+            summary.remove(field);
+        }
+        for record in root["terminal_reservations"].as_array_mut().unwrap() {
+            let record = record.as_object_mut().unwrap();
+            record["reserve"]
+                .as_object_mut()
+                .unwrap()
+                .remove("source_committed_at");
+            record["terminal"]
+                .as_object_mut()
+                .unwrap()
+                .remove("source_committed_at");
+        }
+
+        let mut restored: QuotaCoordinatorState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.summary().retained_terminal_reservations, 1);
+        assert_eq!(restored.summary().legacy_terminal_reservations, 1);
+        let mut second_reserve = reserve('d', 'e', 20);
+        second_reserve.source_committed_at = 300;
+        restored.apply(second_reserve).unwrap();
+        let mut second_terminal = refund('f', 'e', 2, 20, 0);
+        second_terminal.source_committed_at = 400;
+        assert!(matches!(
+            restored.apply(second_terminal).unwrap(),
+            ApplyOutcome::Conflict {
+                reason: QuotaConflict::LegacyRetentionMigrationRequired {
+                    terminal_reservations: 1
+                },
+                ..
+            }
+        ));
+        assert!(restored.has_active_reservation(&hex('e')));
+    }
+
+    #[test]
+    fn configured_maximum_state_stays_below_internal_json_budget() {
+        let mut state = QuotaCoordinatorState::default();
+        for index in 0..state.max_active_reservations {
+            let observation = QuotaObservation::reserve(
+                format!("{index:064x}"),
+                format!("{:064x}", 100_000_u64 + u64::from(index)),
+                MAX_QUOTA,
+                1 + u64::from(index),
+            )
+            .unwrap();
+            accumulate_reserve(&mut state.summary, observation.reserved_quota).unwrap();
+            state.active_reservations.insert(
+                observation.reservation_fingerprint.clone(),
+                ActiveReservation {
+                    reserve: observation,
+                },
+            );
+        }
+        for index in 0..state.max_terminal_reservations {
+            let base = 10_000_u64 + u64::from(index) * 2;
+            let fingerprint = format!("{:064x}", 200_000_u64 + u64::from(index));
+            let reserve = QuotaObservation::reserve(
+                format!("{base:064x}"),
+                fingerprint.clone(),
+                MAX_QUOTA,
+                10_000 + u64::from(index),
+            )
+            .unwrap();
+            let terminal = QuotaObservation::settle(
+                format!("{:064x}", base + 1),
+                fingerprint,
+                2,
+                MAX_QUOTA,
+                MAX_QUOTA,
+                1,
+                20_000 + u64::from(index),
+            )
+            .unwrap();
+            accumulate_reserve(&mut state.summary, reserve.reserved_quota).unwrap();
+            accumulate_terminal(&mut state.summary, &terminal).unwrap();
+            state
+                .terminal_reservations
+                .push_back(TerminalReservation { reserve, terminal });
+        }
+        state.refresh_collection_counts().unwrap();
+        state.summary.observation_count = state.summary.applied_count;
+        state.validate().unwrap();
+
+        let json = serde_json::to_vec(&state).unwrap();
+        println!("maximum configured coordinator state: {} bytes", json.len());
+        assert!(
+            json.len() <= MAX_PERSISTED_STATE_JSON_BYTES,
+            "serialized state is {} bytes",
+            json.len()
+        );
     }
 
     #[test]

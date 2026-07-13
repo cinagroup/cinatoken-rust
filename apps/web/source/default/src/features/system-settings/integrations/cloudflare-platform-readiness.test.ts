@@ -85,6 +85,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   quota_coordinator_finalization_observation_compiled: false,
   quota_coordinator_recovery_observation_compiled: false,
   quota_coordinator_relay_observation_compiled: false,
+  quota_coordinator_retention_compaction_compiled: false,
   quota_coordinator_storage_retention_ready: false,
   quota_coordinator_shadow_token_allowlist_configured: false,
   quota_coordinator_shadow_token_allowlist_valid: true,
@@ -245,6 +246,7 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_finalization_observation_compiled: true,
         quota_coordinator_recovery_observation_compiled: true,
         quota_coordinator_relay_observation_compiled: true,
+        quota_coordinator_retention_compaction_compiled: true,
         quota_coordinator_tiered_only: true,
         wfp_dispatch_binding_available: true,
         wfp_tenant_supported_routes: ['/v1/responses'],
@@ -834,6 +836,31 @@ describe('Cloudflare platform readiness headline', () => {
     )
   })
 
+  test('blocks the QuotaCoordinator observer without bounded retention', () => {
+    const summary = buildPlatformReadinessSummary(
+      makeCapabilities({
+        quota_coordinator_contract_version: 1,
+        quota_coordinator_foundation_compiled: true,
+        quota_coordinator_tiered_only: true,
+        quota_coordinator_observer_contract_compiled: true,
+        quota_coordinator_reserve_observation_compiled: true,
+        quota_coordinator_finalization_observation_compiled: true,
+        quota_coordinator_recovery_observation_compiled: true,
+        quota_coordinator_relay_observation_compiled: true,
+        quota_coordinator_retention_compaction_compiled: false,
+      })
+    )
+
+    assert.equal(
+      getSignalStatus(
+        summary,
+        'implementation',
+        'quota-coordinator-relay-observer'
+      ),
+      'blocked'
+    )
+  })
+
   test('rejects forged QuotaCoordinator staging proof without observer and write authority', () => {
     const summary = buildPlatformReadinessSummary(
       makeCapabilities({
@@ -885,6 +912,7 @@ describe('Cloudflare platform readiness headline', () => {
       quota_coordinator_finalization_observation_compiled: true,
       quota_coordinator_recovery_observation_compiled: true,
       quota_coordinator_relay_observation_compiled: true,
+      quota_coordinator_retention_compaction_compiled: true,
       quota_coordinator_storage_retention_ready: true,
       quota_coordinator_shadow_token_allowlist_configured: true,
       quota_coordinator_shadow_token_allowlist_valid: true,
@@ -948,6 +976,7 @@ describe('Cloudflare platform readiness headline', () => {
         quota_coordinator_finalization_observation_compiled: true,
         quota_coordinator_recovery_observation_compiled: true,
         quota_coordinator_relay_observation_compiled: true,
+        quota_coordinator_retention_compaction_compiled: true,
         quota_coordinator_storage_retention_ready: true,
         quota_coordinator_shadow_token_allowlist_configured: true,
         quota_coordinator_shadow_token_allowlist_valid: true,

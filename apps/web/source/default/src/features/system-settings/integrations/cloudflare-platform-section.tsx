@@ -455,13 +455,24 @@ function buildCapabilityGroups(
               : 'neutral',
         },
         {
+          label: t('Retention compaction'),
+          description: t(
+            'Terminal replay history must rotate into cumulative redacted totals without reapplying observations outside the retained watermark.'
+          ),
+          ready: quotaCoordinator.retentionCompaction,
+          readyLabel: t('Bounded'),
+          missingLabel: t('Not compiled'),
+        },
+        {
           label: t('Storage retention'),
           description: t(
             'Long-lived hot-token retention must stay below Durable Object storage limits under measured load and eviction.'
           ),
           ready: quotaCoordinator.storageRetention,
           readyLabel: t('Verified'),
-          missingLabel: t('Capacity proof blocked'),
+          missingLabel: quotaCoordinator.retentionCompaction
+            ? t('Capacity proof blocked')
+            : t('Compaction blocked'),
           missingVariant: capabilities.quota_coordinator_shadow_enabled
             ? 'red'
             : 'neutral',

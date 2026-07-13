@@ -344,7 +344,7 @@ Corrected production rules:
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
 | Data migration | Partial: local 20/20 Wrangler apply and 26-table SQLite replay pass | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 20/20 staging apply, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
-| Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers but no retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, bounded hot-token storage/load report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
+| Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers plus bounded commit-watermark compaction and a 1.5 MB local JSON guard, but no deployed retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, deployed hot-token window/structured-clone/load/cost report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
 | Observability/SRE | Partial | Logs, traces, metrics, alerts, runbooks, and incident ownership | Dashboard and alert checklist |
 | Security/compliance | Partial | Secret isolation, CORS/WAF/rate limits, SSRF controls, admin audit, OAuth/webhook checks | Security checklist and smoke evidence |
@@ -1159,9 +1159,12 @@ Rollback is `QUOTA_COORD_SHADOW_ENABLED=false` first, followed by observer
 emission off and reconciliation drain. Preserve DO evidence for audit; do not
 compensate quota from observer state. D1 and Go/VPS ownership are unchanged.
 
-Current local status: producer coverage is complete and config-audited. Every
-tracked environment keeps `QUOTA_COORD_RETENTION_VERIFIED=false`,
+Current local status: producer coverage and bounded commit-watermark compaction
+are complete and config-audited. The configured maximum fixture is 1,234,821
+JSON bytes behind a 1,500,000-byte write guard. Every tracked environment keeps
+`QUOTA_COORD_RETENTION_VERIFIED=false`,
 `QUOTA_COORD_SHADOW_ENABLED=false`, and `QUOTA_COORD_SHADOW_TOKEN_IDS` empty.
-Shadow enablement is blocked until step 3 produces reviewed retention evidence;
+Shadow enablement is blocked until step 3 produces deployed load, window-
+duration, structured-clone-size, cost, eviction, and alert evidence;
 then staging may set a bounded allowlist before opening the shadow gate. This is
 not staging evidence and does not change the production **NO-GO** decision.

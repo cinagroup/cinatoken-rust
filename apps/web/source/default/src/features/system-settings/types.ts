@@ -442,6 +442,7 @@ export type PlatformCapabilities = {
   quota_coordinator_finalization_observation_compiled: boolean
   quota_coordinator_recovery_observation_compiled: boolean
   quota_coordinator_relay_observation_compiled: boolean
+  quota_coordinator_retention_compaction_compiled: boolean
   quota_coordinator_storage_retention_ready: boolean
   quota_coordinator_shadow_token_allowlist_configured: boolean
   quota_coordinator_shadow_token_allowlist_valid: boolean

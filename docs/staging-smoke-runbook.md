@@ -1677,15 +1677,20 @@ Preconditions:
 1. Authenticated configuration readback proves one SQLite-backed
    `QuotaCoordinator` class in staging and no namespace reuse with production.
    Capabilities must report foundation/binding and all producer families true,
-   but retention, shadow runtime, write authority, staging proof, and cutover
-   false while the token allowlist remains empty.
+   plus `quota_coordinator_retention_compaction_compiled=true`, but operator
+   retention readiness, shadow runtime, write authority, staging proof, and
+   cutover false while the token allowlist remains empty.
 2. A producer-coverage audit maps tiered reserve, synchronous settle/refund,
    billing Queue finalize/replay, and orphan recovery to exactly one observer
    emission after the corresponding D1 outcome. Flat billing emits none.
-3. Load evidence defines safe active/terminal capacity, serialized state-size
-   headroom, compaction/retention behavior, alert thresholds, and expected cost
-   for long-lived hot tokens. Capacity saturation before that evidence is an
-   abort, not a successful shadow result.
+3. Start from the local baseline: 512 active, 1,536 retained terminal records,
+   a 1,500,000-byte JSON write guard, and a 1,234,821-byte configured-maximum
+   fixture. Load evidence must measure the deployed structured-clone size,
+   p50/p95/p99 transaction latency, per-token terminal rate, resulting replay-
+   window duration, eviction, compaction rate, expired-window conflicts, alert
+   thresholds, and expected cost. The local JSON measurement is not remote
+   proof. Any legacy terminal count, size-guard failure, unexplained expired
+   event, or capacity saturation is an abort.
 
 Execution:
 
@@ -1696,8 +1701,10 @@ Execution:
    configure `QUOTA_COORD_SHADOW_TOKEN_IDS` with isolated staging tokens, and
    open `QUOTA_COORD_SHADOW_ENABLED` last. Exercise reserve, exact replay,
    payload conflict, settle-above/below reserve, refund, Queue duplicate,
-   orphan recovery, Worker replacement, DO eviction, and malformed/corrupt
-   state. D1 must remain the sole mutation source in every case.
+   orphan recovery, terminal-window rotation, replay before/after the watermark,
+   Worker replacement, DO eviction, and malformed/corrupt state. Before-window
+   replay must be idempotent; after-window replay must be an explicit conflict
+   and alert without any D1 mutation. D1 remains the sole mutation source.
 3. Reconcile user/token quota, channel used quota, request count, reservation
    generation, terminal disposition, and audit identity off the request path.
    Archive only hashes and aggregate deltas.

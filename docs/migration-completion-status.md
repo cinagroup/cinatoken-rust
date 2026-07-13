@@ -579,3 +579,25 @@ Long-lived-token retention/compaction, bounded storage/load evidence, off-path
 reconciliation/observability, a signed disable-first rollback drill, and
 at least 30 days of staging zero-diff reconciliation remain required before even
 read authority can be discussed. Production remains **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Bounded Retention Status
+
+The local terminal-capacity blocker is now reduced: the coordinator rotates a
+bounded exact replay window into cumulative redacted totals and advances a
+monotonic D1 commit-time watermark. Replays outside the retained window are
+explicit conflicts and cannot be silently applied again. Legacy records with
+no commit-time metadata remain readable but require an explicit observer-state
+migration before compaction.
+
+Defaults are 512 active and 1,536 terminal records. The combined capacity
+contract and a 1,500,000-byte write guard bound the single persisted value; the
+maximum configured fixture is 1,234,821 JSON bytes. Status and platform
+capabilities expose compaction separately from retention approval, and Workerd
+passes compaction, expired replay, sizing, and eviction recovery.
+
+This closes implementation of local bounded rotation, not the production
+retention gate. Real hot-token load/window-duration, structured-clone storage
+size, latency, cost, alert, authenticated remote readback, reconciliation, and
+rollback evidence are absent. `QUOTA_COORD_RETENTION_VERIFIED`, shadow, and
+staging proof remain false with an empty scope. D1 remains authoritative and
+production remains **NO-GO**.

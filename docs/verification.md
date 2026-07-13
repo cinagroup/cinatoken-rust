@@ -4200,3 +4200,73 @@ post-commit diagnostics and cannot change the authoritative outcome.
 This evidence is local E3/E4 only. Retention/load approval, off-path
 reconciliation, authenticated namespace readback, alerts, disable-first
 rollback, and the 30-day staging bake are still absent. Production is **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Bounded Retention Verification
+
+The billing-expression source contract was re-read before this increment. No
+expression, normalization, price, quota, or request-count calculation changed;
+the observer consumes only frozen D1 reservation facts and adds commit-time
+retention metadata.
+
+```powershell
+cargo test -p cinatoken-coordinator -- --nocapture
+# PASS; 15 passed; configured maximum serialized state = 1,234,821 bytes
+
+cargo test -p cinatoken-worker --lib
+# PASS; 657 passed; only two pre-existing unused topup repository warnings
+
+bun run check:do-lifecycle-runtime
+# PASS; 24 passed, including terminal compaction, expired replay rejection,
+# status size reporting, and identical state after DO eviction
+
+bun run check:web:readiness
+# PASS; 31 passed; compiled compaction is distinct from operator retention proof
+
+bun run check:cf:quota-coordinator
+# PASS; compaction contract and all producer families present; retention/shadow/
+# staging gates false and token scope empty in every tracked environment
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 24/24, Playground 1/1, frontend
+# production build and audits, 217 frontend calls / 322 Worker routes / zero
+# missing, 26 D1 migrations, workspace tests, and all three wasm32 checks
+
+bun run check:cf:dry-run
+bun run check:cf:startup
+# PASS with Wrangler 4.110.0; dry-run reports QUOTA_COORD and all default-off
+# gates, and serial startup analysis completes locally without deployment
+```
+
+Verified local contracts:
+
+- New observations require a positive D1 commit timestamp. Reserve uses
+  `created_at`; settle/refund use `updated_at`. Legacy persisted observations
+  deserialize with zero only for migration compatibility and cannot be applied
+  or automatically compacted.
+- Default state limits are 512 active and 1,536 terminal records. Combined
+  weighted capacity is validated, and the Worker sizes the complete state in
+  the transaction before rejecting writes above 1,500,000 JSON bytes.
+- Terminal overflow removes the minimum `(source_committed_at, fingerprint)`
+  record, folds its complete reserve/terminal accounting into a validated
+  cumulative rollup, and advances a monotonic watermark. Cumulative totals do
+  not shrink when exact replay records rotate.
+- An unknown reserve or terminal observation at or before the watermark is a
+  persisted conflict, not a new application. Exact retained operation IDs
+  remain replays. Workerd confirms both classifications survive eviction.
+- Status exposes cumulative/retained/compacted/legacy counts, the timestamp
+  watermark, current JSON bytes, and the internal limit, but no operation or
+  reservation identifier.
+
+This is local size and behavior evidence only. Cloudflare's SQLite-backed
+key/value limit applies to the combined stored key/value representation, while
+the 1,234,821-byte result is a JSON surrogate. No authenticated remote state,
+hot-token window duration, structured-clone size, load latency, cost, alert, or
+rollback evidence was collected. `QUOTA_COORD_RETENTION_VERIFIED` therefore
+remains false; shadow/read/write authority and production cutover remain
+**NO-GO**.
+
+Operational note: the first startup-analysis attempt overlapped another
+Wrangler custom build and failed while reading an in-progress worker-build
+metadata file. Running the two build-writing checks serially passed. CI and
+operator scripts must keep Wrangler custom builds for the same checkout
+serialized.

@@ -1872,12 +1872,12 @@ baseline above.
   observability sampling (staging 1.0, production 0.1), and staging-suffixed
   resource names. The top-level block still describes the local development
   shape. See `docs/cloudflare-production-config-checklist.md` for the SOP.
-- `OPENAI_COMPATIBLE_CHANNEL_TYPES` now covers 12 providers: OpenAI(1),
-  Zhipu(16), OpenRouter(20), Moonshot(25), Perplexity(27), LingYiWanWu(31),
-  SiliconFlow(40), Mistral(42), DeepSeek(43), MokaAI(44), xAI(48),
-  Submodel(53). `default_base_url` returns each provider's documented
-  upstream root, and `upstream_v1_url` now honors any trailing `/v<digit>`
-  segment (including Zhipu's `/v4`) instead of always appending `/v1`.
+- Historical note: this checkpoint temporarily widened
+  `OPENAI_COMPATIBLE_CHANNEL_TYPES` to 12 OpenAI-shaped providers. The later Go
+  dispatch audit superseded that classification: the canonical generic set is
+  now `1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47`, and dedicated types require
+  route-explicit adapters and fixtures. `default_base_url` still inventories
+  provider roots, but URL inventory is not relay readiness.
 - Relay now walks the full ordered channel candidate list and retries against
   the next candidate when an upstream returns a retryable status (Go-default
   `AutomaticRetryStatusCodeRanges` minus 504/524) or fetch fails. Reserve is
@@ -3405,3 +3405,27 @@ rollback. No exposed Cloudflare token was used.
   only this timestamp/base evidence line was added after that successful gate.
 - The capability registry now reports 31 Deferred channel types. No live
   Mistral/xAI or Cloudflare credential was used; production remains **NO-GO**.
+
+## 2026-07-13 Dedicated Perplexity And Submodel Verification
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo test -p cinatoken-providers`: 46/46 passed, including Perplexity Sonar
+  URL/whitelist/token normalization/Gateway contracts and Submodel route
+  allowlist/direct-only routing contracts.
+- `cargo clippy -p cinatoken-providers --no-deps -- -D warnings`: passed.
+- `cargo test -p cinatoken-worker --lib`: 593/593 passed. The Worker tests prove
+  Perplexity chat-only capability, pre-reserve FIM rejection, dedicated request
+  shaping, Gateway planning/direct fallback, and unsupported Responses; they
+  also prove Submodel chat/completions routing, stream-options support, opaque
+  model preservation, and Gateway exclusion.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+- Frontend channel provider readiness: 2/2 passed; platform readiness: 16/16.
+- The complete `bun run check` gate passed, including three release Worker
+  builds, Workerd 7/7, frontend build/redaction/budget/lint/route audits, 21-file
+  D1 replay, workspace tests, and main/tenant/outbound wasm32 checks.
+- Evidence anchor: the full gate completed at `2026-07-13T03:58:06Z` against the
+  implementation worktree based on `1c3cb5ed3a21107b9a5d7715d627d95f03d8c89d`.
+- The capability registry now reports 29 Deferred channel types. No live
+  Perplexity/Submodel or Cloudflare credential was used; production remains
+  **NO-GO** pending credential rotation and archived provider-specific staging,
+  billing, Gateway/WFP where applicable, and rollback evidence.

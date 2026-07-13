@@ -3171,6 +3171,29 @@ mod tests {
             mistral["routes"],
             serde_json::json!([{"method": "POST", "path": "/v1/chat/completions"}])
         );
+        let perplexity = entries
+            .iter()
+            .find(|entry| entry["channel_type"] == 27)
+            .unwrap();
+        assert_eq!(perplexity["adapter"], "perplexity_open_ai");
+        assert_eq!(perplexity["readiness"], "partial");
+        assert_eq!(
+            perplexity["routes"],
+            serde_json::json!([{"method": "POST", "path": "/v1/chat/completions"}])
+        );
+        let submodel = entries
+            .iter()
+            .find(|entry| entry["channel_type"] == 53)
+            .unwrap();
+        assert_eq!(submodel["adapter"], "submodel_open_ai");
+        assert_eq!(submodel["readiness"], "partial");
+        assert_eq!(
+            submodel["routes"],
+            serde_json::json!([
+                {"method": "POST", "path": "/v1/chat/completions"},
+                {"method": "POST", "path": "/v1/completions"}
+            ])
+        );
         let xai = entries
             .iter()
             .find(|entry| entry["channel_type"] == 48)

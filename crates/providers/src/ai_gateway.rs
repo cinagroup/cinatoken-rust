@@ -2,7 +2,7 @@ use std::fmt;
 
 use cinatoken_relay::{
     openai_compatible::{CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_OPENAI},
-    CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_XAI,
+    CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_XAI,
 };
 
 use crate::routing::ProviderKind;
@@ -91,6 +91,11 @@ pub const MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS: &[AiGatewayRestRoutePlan] = &[
     },
     AiGatewayRestRoutePlan {
         provider: ProviderKind::MistralOpenAi,
+        relay_path: "chat/completions",
+        rest_endpoint: AiGatewayRestEndpoint::ChatCompletions,
+    },
+    AiGatewayRestRoutePlan {
+        provider: ProviderKind::PerplexityOpenAi,
         relay_path: "chat/completions",
         rest_endpoint: AiGatewayRestEndpoint::ChatCompletions,
     },
@@ -185,6 +190,7 @@ const OPENAI_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_OPENAI];
 const ANTHROPIC_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_ANTHROPIC];
 const DEEPSEEK_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_DEEPSEEK];
 const MISTRAL_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_MISTRAL];
+const PERPLEXITY_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_PERPLEXITY];
 const XAI_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_XAI];
 const NO_DIRECT_CHANNEL_TYPES: &[i32] = &[];
 
@@ -258,8 +264,8 @@ pub const AI_GATEWAY_MODEL_PROVIDERS: &[AiGatewayModelProvider] = &[
     AiGatewayModelProvider {
         author: AiGatewayModelAuthor::Perplexity,
         prefix: "perplexity/",
-        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
-        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        direct_model_policy: AiGatewayDirectModelPolicy::StripPrefix,
+        direct_channel_types: PERPLEXITY_DIRECT_CHANNEL_TYPES,
         messages_schema_supported: true,
     },
     AiGatewayModelProvider {
@@ -429,6 +435,7 @@ pub fn rest_endpoint_for_relay_route(
                 ProviderKind::OpenAiCompatible
                     | ProviderKind::AnthropicMessages
                     | ProviderKind::MistralOpenAi
+                    | ProviderKind::PerplexityOpenAi
                     | ProviderKind::XaiOpenAi
             ) {
                 AiGatewayRestPlanError::UnsupportedEndpointPath
@@ -690,6 +697,11 @@ mod tests {
             AiGatewayRestEndpoint::ChatCompletions
         );
         assert_eq!(
+            rest_endpoint_for_relay_route(ProviderKind::PerplexityOpenAi, "chat/completions")
+                .unwrap(),
+            AiGatewayRestEndpoint::ChatCompletions
+        );
+        assert_eq!(
             rest_endpoint_for_relay_route(ProviderKind::XaiOpenAi, "chat/completions").unwrap(),
             AiGatewayRestEndpoint::ChatCompletions
         );
@@ -717,6 +729,10 @@ mod tests {
         );
         assert_eq!(
             rest_endpoint_for_relay_route(ProviderKind::MistralOpenAi, "responses").unwrap_err(),
+            AiGatewayRestPlanError::UnsupportedEndpointPath
+        );
+        assert_eq!(
+            rest_endpoint_for_relay_route(ProviderKind::PerplexityOpenAi, "responses").unwrap_err(),
             AiGatewayRestPlanError::UnsupportedEndpointPath
         );
         assert_eq!(
@@ -794,6 +810,14 @@ mod tests {
                 CHANNEL_TYPE_MISTRAL
             ),
             Some("mistral-large-latest")
+        );
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "perplexity/sonar-pro",
+                AiGatewayModelAuthor::Perplexity,
+                CHANNEL_TYPE_PERPLEXITY
+            ),
+            Some("sonar-pro")
         );
         assert_eq!(
             direct_provider_model_for_channel(

@@ -10,6 +10,8 @@ pub enum ChannelAdapterKind {
     CloudflareWorkersAi,
     DeepSeek,
     MistralOpenAi,
+    PerplexityOpenAi,
+    SubmodelOpenAi,
     XaiOpenAi,
     DedicatedPending,
     TaskOnly,
@@ -128,6 +130,11 @@ const DEEPSEEK_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::AnthropicMessages,
 ];
 const MISTRAL_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
+const PERPLEXITY_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
+const SUBMODEL_ROUTES: &[ProviderRelayRoute] = &[
+    ProviderRelayRoute::ChatCompletions,
+    ProviderRelayRoute::Completions,
+];
 const XAI_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ChatCompletions,
     ProviderRelayRoute::Completions,
@@ -361,10 +368,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         27,
         "Perplexity",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated Perplexity adapter is not migrated"
+        PerplexityOpenAi,
+        Partial,
+        PERPLEXITY_ROUTES,
+        "dedicated Go-compatible Sonar chat adapter is implemented"
     ),
     capability!(
         31,
@@ -537,10 +544,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         53,
         "Submodel",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated Submodel adapter is not migrated"
+        SubmodelOpenAi,
+        Partial,
+        SUBMODEL_ROUTES,
+        "direct-only chat and legacy completions adapter is implemented"
     ),
     capability!(
         54,
@@ -667,6 +674,18 @@ mod tests {
             ProviderRelayRoute::Embeddings
         ));
         assert!(channel_supports_relay_route(
+            27,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(!channel_supports_relay_route(
+            27,
+            ProviderRelayRoute::Responses
+        ));
+        assert!(!channel_supports_relay_route(
+            27,
+            ProviderRelayRoute::Embeddings
+        ));
+        assert!(channel_supports_relay_route(
             48,
             ProviderRelayRoute::ChatCompletions
         ));
@@ -681,6 +700,18 @@ mod tests {
         assert!(!channel_supports_relay_route(
             48,
             ProviderRelayRoute::Embeddings
+        ));
+        assert!(channel_supports_relay_route(
+            53,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(channel_supports_relay_route(
+            53,
+            ProviderRelayRoute::Completions
+        ));
+        assert!(!channel_supports_relay_route(
+            53,
+            ProviderRelayRoute::Responses
         ));
         assert!(!channel_supports_relay_route(
             21,

@@ -6,7 +6,9 @@ pub mod ai_gateway;
 pub mod channel_capabilities;
 pub mod deepseek;
 pub mod mistral;
+pub mod perplexity;
 pub mod routing;
+pub mod submodel;
 pub mod xai;
 
 pub use channel_capabilities::{

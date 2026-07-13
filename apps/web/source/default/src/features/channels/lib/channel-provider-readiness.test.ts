@@ -36,7 +36,36 @@ describe('channel provider relay readiness', () => {
       routes: [{ method: 'POST', path: '/v1/chat/completions' }],
       reason: 'dedicated Go-compatible chat implementation',
     }
-    const index = indexProviderReadiness([mistral, deepseek, xai])
+    const perplexity = {
+      channel_type: 27,
+      name: 'Perplexity',
+      adapter: 'perplexity_open_ai',
+      readiness: 'partial' as const,
+      routes: [{ method: 'POST', path: '/v1/chat/completions' }],
+      reason: 'dedicated Sonar chat implementation',
+    }
+    const submodel = {
+      channel_type: 53,
+      name: 'Submodel',
+      adapter: 'submodel_open_ai',
+      readiness: 'partial' as const,
+      routes: [
+        { method: 'POST', path: '/v1/chat/completions' },
+        { method: 'POST', path: '/v1/completions' },
+      ],
+      reason: 'direct-only opaque-model implementation',
+    }
+    const index = indexProviderReadiness([
+      perplexity,
+      mistral,
+      deepseek,
+      xai,
+      submodel,
+    ])
+    assert.equal(index.get(27), perplexity)
+    assert.deepEqual(index.get(27)?.routes, [
+      { method: 'POST', path: '/v1/chat/completions' },
+    ])
     assert.equal(index.get(42), mistral)
     assert.deepEqual(index.get(42)?.routes, [
       { method: 'POST', path: '/v1/chat/completions' },
@@ -52,6 +81,11 @@ describe('channel provider relay readiness', () => {
         '/v1/responses',
         '/v1/images/generations',
       ]
+    )
+    assert.equal(index.get(53), submodel)
+    assert.deepEqual(
+      index.get(53)?.routes.map((route) => route.path),
+      ['/v1/chat/completions', '/v1/completions']
     )
     assert.equal(index.get(15), undefined)
   })

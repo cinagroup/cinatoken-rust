@@ -10421,3 +10421,43 @@ tool calling, but provider capability is not migration proof. Staging must still
 archive direct and Gateway non-stream/stream/tool-call/error usage, exactly-once
 billing and audit correlation, fallback, and rollback evidence. No exposed
 Cloudflare token is used; production remains **NO-GO**.
+
+### 22.169 2026-07-13 Dedicated Perplexity And Submodel Adapters
+
+This increment advances the G3 provider program with two deliberately different
+contracts. Neither adapter is admitted to the generic OpenAI-compatible set.
+
+Implemented locally:
+
+- Perplexity channel type 27 is Partial for Sonar chat completions only. The
+  direct URL follows the Go and documented `/chat/completions` alias, the request
+  transform ports the Go field whitelist, `top_p >= 1` normalization, and
+  `max_completion_tokens` precedence. FIM-only requests without messages are
+  removed before quota reserve. Responses, embeddings, and every other route
+  remain fail-closed.
+- Perplexity chat may use the default-off, channel-opt-in AI Gateway route with
+  `perplexity/{model}` and audited same-channel direct fallback. Perplexity Agent
+  Responses is intentionally not folded into this adapter: its full
+  provider-qualified model IDs require a separate model-routing and input
+  contract.
+- Submodel channel type 53 is Partial for direct-only chat completions and
+  legacy completions. Its model identifiers are opaque, including values such
+  as `openai/gpt-oss-120b`; the relay bypasses Gateway prefix classification and
+  preserves the mapped model exactly. OpenAI JSON/SSE usage and the Go-declared
+  stream-options behavior remain on the central settlement path.
+- Backend and frontend readiness contracts expose only these exact routes. The
+  capability registry now reports 29 Deferred channel types.
+- The renewed source audit reclassifies SiliconFlow(40) as a dedicated
+  multi-route adapter requiring FIM, image, rerank response, usage, and billing
+  fixtures. It is the next provider batch, not a generic fallback.
+- MokaAI(44) remains Deferred. The reachable Go path is embeddings-only, the Go
+  response bridge contains a hard-coded model-name defect that Rust must not
+  copy, and no official public hosted API contract was found. Implementation
+  requires official or staging-verifiable request/response evidence first.
+
+Production status remains **NO-GO**. Perplexity staging must archive direct and
+Gateway JSON/SSE, search-result preservation, upstream errors, usage, search and
+request charge treatment, billing/audit correlation, fallback, and rollback.
+Submodel staging must archive both routes, opaque model namespaces, JSON/SSE
+usage, errors, billing, and rollback. No exposed Cloudflare credential may be
+used; rotate it before any remote evidence collection.

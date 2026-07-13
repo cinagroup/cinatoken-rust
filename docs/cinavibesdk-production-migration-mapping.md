@@ -830,7 +830,23 @@ multimodal conversion, and tool-call ID consistency; the Worker supplies
 Web Crypto-backed entropy and keeps central billing/retry/audit authority.
 Mistral chat and xAI chat/Responses can use the default-off AI Gateway planner,
 and both now have same-channel provider-direct fallback without bypassing their
-dedicated request transforms. Router-unavailable, channel-opt-out, and other
-planner-direct main-relay paths apply the same provider-native model
-normalization; a recognized prefix cannot egress through a mismatched channel.
-The explicit Deferred count is now 31.
+dedicated request transforms. Perplexity Sonar chat now joins that bounded set:
+its direct path uses `/chat/completions`, while Gateway transport uses the
+standard chat route and `perplexity/{model}`. Agent Responses stays outside this
+adapter because its provider-qualified model IDs require a separate policy.
+Router-unavailable, channel-opt-out, and other planner-direct main-relay paths
+apply the same provider-native model normalization; a recognized prefix cannot
+egress through a mismatched channel.
+
+Submodel channel type 53 uses the same provider-registry ownership boundary but
+is deliberately direct-only. Model IDs such as `openai/gpt-oss-120b`,
+`deepseek-ai/...`, and `Qwen/...` are opaque Submodel names, not Gateway routing
+instructions, so neither central relay nor WFP may classify or strip them.
+Only chat and legacy completions are enabled. WFP channels whose resolved
+provider path is outside the reviewed WFP path allowlist continue to fail before
+quota reserve.
+
+The safe same-channel Gateway-direct provider set is now OpenAI, Anthropic,
+DeepSeek, Mistral, Perplexity, and xAI. The explicit Deferred count is now 29.
+SiliconFlow remains the next dedicated multi-route adapter; MokaAI remains
+Deferred pending hosted API evidence.

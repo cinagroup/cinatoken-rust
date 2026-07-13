@@ -23,6 +23,7 @@ use cinatoken_providers::{
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
     mistral::apply_mistral_chat_request,
+    perplexity::apply_perplexity_chat_request,
     xai::apply_xai_request,
     ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry, ProviderRelayRoute,
 };
@@ -33,7 +34,7 @@ use cinatoken_relay::{
     usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
     ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL,
-    CHANNEL_TYPE_XAI, RELAY_CACHE_SCHEMA_VERSION,
+    CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_XAI, RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -128,6 +129,8 @@ enum RelayProviderKind {
     DeepSeekOpenAi,
     DeepSeekMessages,
     MistralOpenAi,
+    PerplexityOpenAi,
+    SubmodelOpenAi,
     XaiOpenAi,
     GeminiNative,
 }
@@ -254,6 +257,16 @@ impl RelayEndpoint {
         {
             return RelayProviderKind::MistralOpenAi;
         }
+        if channel_type == CHANNEL_TYPE_PERPLEXITY
+            && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::PerplexityOpenAi;
+        }
+        if channel_type == CHANNEL_TYPE_SUBMODEL
+            && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::SubmodelOpenAi;
+        }
         if channel_type == CHANNEL_TYPE_XAI && self.provider == RelayProviderKind::OpenAiCompatible
         {
             return RelayProviderKind::XaiOpenAi;
@@ -275,6 +288,8 @@ impl RelayEndpoint {
             RelayProviderKind::DeepSeekOpenAi => RegistryProviderKind::DeepSeekOpenAi,
             RelayProviderKind::DeepSeekMessages => RegistryProviderKind::DeepSeekMessages,
             RelayProviderKind::MistralOpenAi => RegistryProviderKind::MistralOpenAi,
+            RelayProviderKind::PerplexityOpenAi => RegistryProviderKind::PerplexityOpenAi,
+            RelayProviderKind::SubmodelOpenAi => RegistryProviderKind::SubmodelOpenAi,
             RelayProviderKind::XaiOpenAi => RegistryProviderKind::XaiOpenAi,
             RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
         }
@@ -301,6 +316,8 @@ impl RelayEndpoint {
             | RelayProviderKind::DeepSeekOpenAi
             | RelayProviderKind::DeepSeekMessages
             | RelayProviderKind::MistralOpenAi
+            | RelayProviderKind::PerplexityOpenAi
+            | RelayProviderKind::SubmodelOpenAi
             | RelayProviderKind::XaiOpenAi => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
         }
     }
@@ -1197,7 +1214,12 @@ async fn relay_endpoint_with_auth(
         Err(response) => return response,
     };
     retain_route_capable_channels(&mut group_pools, Some(endpoint.route));
-    retain_pre_reserve_capable_channels(&mut group_pools, &endpoint, should_relay_stream);
+    retain_pre_reserve_capable_channels(
+        &mut group_pools,
+        &endpoint,
+        should_relay_stream,
+        json_body.as_ref(),
+    );
 
     // Go applies the per-token cross-group switch only to `auto` tokens. Empty
     // groups can still be skipped during initial selection, but retry
@@ -1387,6 +1409,7 @@ async fn relay_endpoint_with_auth(
                         attempt_provider,
                         RelayProviderKind::OpenAiCompatible
                             | RelayProviderKind::DeepSeekOpenAi
+                            | RelayProviderKind::SubmodelOpenAi
                             | RelayProviderKind::XaiOpenAi
                     )
                 {
@@ -1735,6 +1758,7 @@ async fn relay_endpoint_with_auth(
                 &mut fallback_group_pools,
                 &endpoint,
                 should_relay_stream,
+                json_body.as_ref(),
             );
             for (_, candidates) in &mut fallback_group_pools {
                 candidates.retain(RelayChannel::ai_gateway_opted_in);
@@ -2269,6 +2293,11 @@ pub(crate) fn relay_ai_gateway_direct_fallback_contract_compiled() -> bool {
             CHANNEL_TYPE_MISTRAL,
         ) == Some("mistral-large-latest")
         && direct_provider_model_for_channel(
+            "perplexity/sonar-pro",
+            AiGatewayModelAuthor::Perplexity,
+            CHANNEL_TYPE_PERPLEXITY,
+        ) == Some("sonar-pro")
+        && direct_provider_model_for_channel(
             "xai/grok-4.5",
             AiGatewayModelAuthor::Xai,
             CHANNEL_TYPE_XAI,
@@ -2408,6 +2437,7 @@ fn retain_pre_reserve_capable_channels(
     group_pools: &mut [(String, Vec<RelayChannel>)],
     endpoint: &RelayEndpoint,
     should_relay_stream: bool,
+    request_body: Option<&Value>,
 ) {
     for (_, channels) in group_pools {
         channels.retain(|channel| {
@@ -2420,12 +2450,31 @@ fn retain_pre_reserve_capable_channels(
             if is_workers_ai_binding_channel(channel) && should_relay_stream {
                 return false;
             }
+            if !channel_accepts_endpoint_request_shape(channel, endpoint, request_body) {
+                return false;
+            }
             let Ok(url) = endpoint.try_upstream_url(channel) else {
                 return false;
             };
             channel.wfp_worker().is_none() || wfp_relay_path(&url).is_ok()
         });
     }
+}
+
+fn channel_accepts_endpoint_request_shape(
+    channel: &RelayChannel,
+    endpoint: &RelayEndpoint,
+    request_body: Option<&Value>,
+) -> bool {
+    if channel.channel_type == CHANNEL_TYPE_PERPLEXITY
+        && endpoint.route == ProviderRelayRoute::ChatCompletions
+    {
+        return request_body
+            .and_then(|body| body.get("messages"))
+            .and_then(Value::as_array)
+            .is_some_and(|messages| !messages.is_empty());
+    }
+    true
 }
 
 struct RelayAttemptExecution {
@@ -2550,6 +2599,7 @@ async fn execute_relay_attempt_plan(
                         attempt_provider,
                         RelayProviderKind::OpenAiCompatible
                             | RelayProviderKind::DeepSeekOpenAi
+                            | RelayProviderKind::SubmodelOpenAi
                             | RelayProviderKind::XaiOpenAi
                     )
                 {
@@ -4226,6 +4276,11 @@ fn prepare_same_channel_direct_body(
     channel_type: i32,
     endpoint_path: &str,
 ) -> worker::Result<Option<Value>> {
+    // Submodel model IDs are opaque provider-native namespaces. Values such as
+    // `openai/gpt-oss-120b` are model names, not AI Gateway routing prefixes.
+    if channel_type == CHANNEL_TYPE_SUBMODEL {
+        return Ok(None);
+    }
     let Some(gateway_model) = body.get("model").and_then(Value::as_str) else {
         return Ok(None);
     };
@@ -5233,6 +5288,8 @@ async fn forward_relay_request(
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
+        | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => {
             forward_openai_compatible(url, upstream_key, channel, body).await
         }
@@ -6073,6 +6130,8 @@ async fn response_usage_summary(
             RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
+                | RelayProviderKind::PerplexityOpenAi
+                | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
         )
         && endpoint_path != "rerank";
@@ -6106,6 +6165,8 @@ fn usage_summary_for_provider(
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
+        | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => usage_summary_from_body(body),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
             usage_summary_from_anthropic_body(body)
@@ -6204,6 +6265,8 @@ async fn streaming_usage_summary(
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
+        | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi => SseUsageAccumulator::default(),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
             SseUsageAccumulator::anthropic()
@@ -6224,6 +6287,8 @@ async fn streaming_usage_summary(
             RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
+                | RelayProviderKind::PerplexityOpenAi
+                | RelayProviderKind::SubmodelOpenAi
                 | RelayProviderKind::XaiOpenAi
         );
     let (usage, locally_estimated) = resolve_stream_usage(
@@ -7562,7 +7627,7 @@ fn validate_chat_completions_request(body: &Value) -> Option<&'static str> {
         Some(_) => return Some("field messages must be an array"),
     }
 
-    for field in ["stream"] {
+    for field in ["stream", "return_images", "return_related_questions"] {
         if request
             .get(field)
             .is_some_and(|value| !value.is_null() && !value.is_boolean())
@@ -7570,7 +7635,12 @@ fn validate_chat_completions_request(body: &Value) -> Option<&'static str> {
             return Some("chat completions boolean field has an invalid type");
         }
     }
-    for field in ["temperature", "top_p"] {
+    for field in [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty",
+    ] {
         if request
             .get(field)
             .is_some_and(|value| !value.is_null() && !value.is_number())
@@ -7642,6 +7712,9 @@ fn apply_endpoint_request_transform(
             worker::Error::RustError(format!("Mistral request transform failed: {error}"))
         })?;
     }
+    if endpoint_path == "chat/completions" && channel.channel_type == CHANNEL_TYPE_PERPLEXITY {
+        apply_perplexity_chat_request(body);
+    }
     if channel.channel_type == CHANNEL_TYPE_XAI {
         apply_xai_request(body, endpoint_path);
     }
@@ -7659,6 +7732,8 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::AnthropicMessages
         | RelayProviderKind::MistralOpenAi
+        | RelayProviderKind::PerplexityOpenAi
+        | RelayProviderKind::SubmodelOpenAi
         | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::GeminiNative => {}
     }
@@ -9341,6 +9416,8 @@ mod tests {
             json!({"model": "m", "messages": ["invalid"]}),
             json!({"model": "m", "messages": [{}], "max_tokens": 1.5}),
             json!({"model": "m", "messages": [{}], "temperature": "0.5"}),
+            json!({"model": "m", "messages": [{}], "frequency_penalty": "0.5"}),
+            json!({"model": "m", "messages": [{}], "return_images": "yes"}),
             json!({"model": "m", "messages": [{}], "tools": "invalid"}),
             json!({"model": "m", "messages": [{}], "tools": [{"type": 1}]}),
         ] {
@@ -10524,6 +10601,146 @@ mod tests {
     }
 
     #[test]
+    fn perplexity_uses_a_dedicated_provider_and_chat_gateway_only() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_PERPLEXITY), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_PERPLEXITY;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::PerplexityOpenAi
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::PerplexityOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://api.perplexity.ai/chat/completions"
+        );
+
+        let mut body = json!({
+            "model": "perplexity/sonar-pro",
+            "messages": [{"role": "user", "content": "search", "name": "removed"}],
+            "top_p": 1,
+            "max_completion_tokens": 32,
+            "tools": [{"type": "function"}],
+            "search_recency_filter": "week"
+        });
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        assert_eq!(body["top_p"], 0.99);
+        assert_eq!(body["max_tokens"], 32);
+        assert!(body.get("tools").is_none());
+        assert!(body["messages"][0].get("name").is_none());
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        let gateway = plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "perplexity/sonar-pro",
+        )
+        .unwrap()
+        .unwrap();
+        let direct = prepare_ai_gateway_direct_fallback_body(&body, &gateway).unwrap();
+        assert_eq!(direct["model"], "sonar-pro");
+
+        let mut responses = ai_gateway_chat_endpoint_for_tests();
+        responses.route = ProviderRelayRoute::Responses;
+        responses.upstream_path = "responses".to_string();
+        assert!(responses.try_upstream_url(&channel).is_err());
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &responses,
+            &channel,
+            "perplexity/sonar-pro"
+        )
+        .unwrap()
+        .is_none());
+
+        assert!(channel_supports_relay_route(
+            CHANNEL_TYPE_PERPLEXITY,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(!channel_supports_relay_route(
+            CHANNEL_TYPE_PERPLEXITY,
+            ProviderRelayRoute::Responses
+        ));
+        assert!(!channel_supports_relay_route(
+            CHANNEL_TYPE_PERPLEXITY,
+            ProviderRelayRoute::Embeddings
+        ));
+    }
+
+    #[test]
+    fn submodel_is_direct_only_and_keeps_opaque_model_names() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_SUBMODEL), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_SUBMODEL;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::SubmodelOpenAi
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::SubmodelOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://llm.submodel.ai/v1/chat/completions"
+        );
+
+        let mut body = json!({
+            "model": "openai/gpt-oss-120b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true
+        });
+        cinatoken_relay::openai_compatible::apply_stream_options(
+            &mut body,
+            channel.channel_type,
+            true,
+        );
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert!(
+            prepare_same_channel_direct_body(&body, channel.channel_type, "chat/completions")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(body["model"], "openai/gpt-oss-120b");
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "openai/gpt-oss-120b"
+        )
+        .unwrap()
+        .is_none());
+
+        let mut completions = ai_gateway_chat_endpoint_for_tests();
+        completions.route = ProviderRelayRoute::Completions;
+        completions.upstream_path = "completions".to_string();
+        assert_eq!(
+            completions.upstream_url(&channel),
+            "https://llm.submodel.ai/v1/completions"
+        );
+        assert!(channel_supports_relay_route(
+            CHANNEL_TYPE_SUBMODEL,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(channel_supports_relay_route(
+            CHANNEL_TYPE_SUBMODEL,
+            ProviderRelayRoute::Completions
+        ));
+        assert!(!channel_supports_relay_route(
+            CHANNEL_TYPE_SUBMODEL,
+            ProviderRelayRoute::Responses
+        ));
+    }
+
+    #[test]
     fn xai_uses_a_dedicated_provider_with_route_specific_transforms() {
         let mut channel = test_channel(i64::from(CHANNEL_TYPE_XAI), 0, 1);
         channel.channel_type = CHANNEL_TYPE_XAI;
@@ -10635,7 +10852,7 @@ mod tests {
             ],
         )];
         retain_route_capable_channels(&mut pools, Some(endpoint.route));
-        retain_pre_reserve_capable_channels(&mut pools, &endpoint, true);
+        retain_pre_reserve_capable_channels(&mut pools, &endpoint, true, None);
 
         let remaining = pools[0]
             .1
@@ -10643,6 +10860,27 @@ mod tests {
             .map(|channel| channel.channel_type)
             .collect::<Vec<_>>();
         assert_eq!(remaining, vec![43]);
+    }
+
+    #[test]
+    fn perplexity_fim_without_messages_is_filtered_before_reserve() {
+        let endpoint = ai_gateway_chat_endpoint_for_tests();
+        let mut perplexity = test_channel(i64::from(CHANNEL_TYPE_PERPLEXITY), 0, 1);
+        perplexity.channel_type = CHANNEL_TYPE_PERPLEXITY;
+
+        assert!(!channel_accepts_endpoint_request_shape(
+            &perplexity,
+            &endpoint,
+            Some(&json!({"model": "sonar", "prefix": "fn main() {"}))
+        ));
+        assert!(channel_accepts_endpoint_request_shape(
+            &perplexity,
+            &endpoint,
+            Some(&json!({
+                "model": "sonar",
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+        ));
     }
 
     #[test]

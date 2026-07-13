@@ -567,8 +567,9 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   and actual-serving-group settlement against staging D1. The model-prefix
   registry now covers the documented Cloudflare REST provider set, while safe
   same-channel direct fallback is deliberately limited to matching OpenAI,
-  Anthropic, DeepSeek, Mistral, and xAI channels until other dedicated adapters
-  land. The all-fetch-failed path emits a bounded, secret-free Go-compatible
+  Anthropic, DeepSeek, Mistral, Perplexity, and xAI channels. Submodel model IDs
+  remain direct-only opaque values and never enter prefix routing. The
+  all-fetch-failed path emits a bounded, secret-free Go-compatible
   type-5 attempt ledger through
   `LOG_QUEUE`/D1; prove queue delivery, synchronous fallback, refund ordering,
   and admin-log visibility in staging before production cutover.
@@ -629,9 +630,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond the currently implemented OpenAI,
-  Anthropic, Mistral, DeepSeek, xAI, Gemini-native, Workers AI, and rerank
-  surfaces. A
-  Cloudflare Gateway prefix does not make its same-channel Rust adapter ready.
+  Anthropic, Perplexity Sonar chat, Mistral, DeepSeek, xAI, direct-only
+  Submodel, Gemini-native, Workers AI, and rerank surfaces. Implement
+  SiliconFlow next as a dedicated multi-route adapter with FIM, image, rerank,
+  usage, and billing fixtures. Keep MokaAI Deferred until an official or
+  staging-verifiable hosted embeddings contract exists. A Cloudflare Gateway
+  prefix does not make its same-channel Rust adapter ready.
 - Deploy and attach the Rust outbound service `cinatoken-wfp-outbound` to the
   staging dispatch namespace. Store `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on
   that service; the tenant must receive only

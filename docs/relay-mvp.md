@@ -81,10 +81,12 @@ The Worker:
   exceeds `RELAY_CHANNEL_AUTOBAN_THRESHOLD` (default 5) rolling errors in a
   60s Upstash Redis window, marks the channel auto-disabled best-effort via
   `disable_channel_best_effort`;
-- limits OpenAI-compatible relay candidates to provider types
-  `1, 16, 20, 25, 27, 31, 40, 42, 43, 44, 48, 53` (OpenAI, Zhipu, OpenRouter,
-  Moonshot, Perplexity, LingYiWanWu, SiliconFlow, Mistral, DeepSeek, MokaAI,
-  xAI, Submodel);
+- limits generic OpenAI-compatible relay candidates to the Go `openai.Adaptor`
+  types `1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47`; dedicated OpenAI-shaped
+  providers are admitted only through route-explicit capabilities. Current
+  dedicated Partial adapters include Perplexity(27), Mistral(42),
+  DeepSeek(43), xAI(48), and Submodel(53), while their unsupported routes fail
+  before quota reserve;
 - limits `/v1/rerank` relay candidates to Jina provider type `38` and
   Cohere provider type `34`;
 - limits Anthropic Messages relay candidates to native Anthropic provider type

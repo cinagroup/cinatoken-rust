@@ -13,6 +13,8 @@ pub enum ProviderKind {
     DeepSeekOpenAi,
     DeepSeekMessages,
     MistralOpenAi,
+    PerplexityOpenAi,
+    SubmodelOpenAi,
     XaiOpenAi,
     GeminiNative,
     CloudflareWorkersAi,
@@ -27,6 +29,8 @@ impl ProviderKind {
             Self::DeepSeekOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::DeepSeekMessages => Some(AiGatewayRouteKind::Anthropic),
             Self::MistralOpenAi => Some(AiGatewayRouteKind::Compat),
+            Self::PerplexityOpenAi => Some(AiGatewayRouteKind::Compat),
+            Self::SubmodelOpenAi => None,
             Self::XaiOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::GeminiNative => Some(AiGatewayRouteKind::GoogleAiStudio),
             Self::CloudflareWorkersAi => Some(AiGatewayRouteKind::WorkersAi),
@@ -104,6 +108,14 @@ impl ProviderRegistry {
             }
             ProviderKind::MistralOpenAi => {
                 crate::mistral::mistral_openai_url(endpoint.base_url, endpoint.endpoint_path)
+            }
+            ProviderKind::PerplexityOpenAi => {
+                crate::perplexity::perplexity_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
+            ProviderKind::SubmodelOpenAi => {
+                crate::submodel::submodel_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
             }
             ProviderKind::XaiOpenAi => {
                 crate::xai::xai_openai_url(endpoint.base_url, endpoint.endpoint_path)
@@ -251,6 +263,57 @@ mod tests {
             "https://api.mistral.ai/v1/chat/completions"
         );
         assert_eq!(route.ai_gateway_route, Some(AiGatewayRouteKind::Compat));
+    }
+
+    #[test]
+    fn registry_resolves_dedicated_perplexity_without_generic_classification() {
+        let route = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::PerplexityOpenAi,
+            channel_type: 27,
+            base_url: None,
+            endpoint_path: "chat/completions",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            route.upstream_url,
+            "https://api.perplexity.ai/chat/completions"
+        );
+        assert_eq!(route.ai_gateway_route, Some(AiGatewayRouteKind::Compat));
+
+        assert_eq!(
+            ProviderRegistry::resolve(ProviderEndpoint {
+                provider: ProviderKind::PerplexityOpenAi,
+                channel_type: 27,
+                base_url: None,
+                endpoint_path: "responses",
+                upstream_query: None,
+                gemini_route: None,
+            })
+            .unwrap_err(),
+            ProviderRouteError::UnsupportedProviderRoute
+        );
+    }
+
+    #[test]
+    fn registry_resolves_direct_only_submodel_routes() {
+        let route = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::SubmodelOpenAi,
+            channel_type: 53,
+            base_url: None,
+            endpoint_path: "chat/completions",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            route.upstream_url,
+            "https://llm.submodel.ai/v1/chat/completions"
+        );
+        assert_eq!(route.ai_gateway_route, None);
     }
 
     #[test]

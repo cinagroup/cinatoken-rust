@@ -107,7 +107,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 24 | Gemini | generativelanguage.googleapis.com | Gemini | gemini | Dedicated (native) | A: Gemini native |
 | 25 | Moonshot | api.moonshot.cn | Moonshot | moonshot | Dedicated (Claude+OpenAI bridge) | B: dual-protocol |
 | 26 | ZhipuV4 | open.bigmodel.cn | ZhipuV4 | zhipu_4v | Dedicated (regional) | B: regional |
-| 27 | Perplexity | api.perplexity.ai | Perplexity | perplexity | Dedicated (OpenAI-like) | B: thin OpenAI-like |
+| 27 | Perplexity | api.perplexity.ai | Perplexity | perplexity | Dedicated (Sonar chat) | B: chat whitelist + token normalization |
 | 31 | LingYiWanWu | api.lingyiwanwu.com | OpenAI (fallback) | openai | OpenAI-adaptor | A: OpenAI core |
 | 33 | AWS | (per-channel) | Aws | aws | Dedicated (SigV4) | E: complex signing |
 | 34 | Cohere | api.cohere.ai | Cohere | cohere | Dedicated (rerank/text) | A: Cohere rerank |
@@ -116,11 +116,11 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 37 | Dify | api.dify.ai | Dify | dify | Dedicated (app) | C: app |
 | 38 | Jina | api.jina.ai | Jina | jina | Dedicated (rerank/embed) | A: Jina rerank |
 | 39 | Cloudflare | api.cloudflare.com | Cloudflare | cloudflare | Dedicated (Workers AI) | A: Cloudflare Workers AI |
-| 40 | SiliconFlow | api.siliconflow.cn | SiliconFlow | siliconflow | Dedicated (OpenAI-like) | B: thin OpenAI-like |
+| 40 | SiliconFlow | api.siliconflow.cn | SiliconFlow | siliconflow | Dedicated (multi-route) | B: FIM + image/rerank transforms |
 | 41 | VertexAI | (per-channel) | VertexAi | vertex (+ vertex task) | Dedicated + Task | E: complex auth + video task |
 | 42 | Mistral | api.mistral.ai | Mistral | mistral | Dedicated | B: thin OpenAI-like |
 | 43 | DeepSeek | api.deepseek.com | DeepSeek | deepseek | Dedicated (OpenAI-like) | B: thin OpenAI-like |
-| 44 | MokaAI | api.moka.ai | MokaAI | mokaai | Dedicated | B: thin OpenAI-like |
+| 44 | MokaAI | api.moka.ai | MokaAI | mokaai | Dedicated (embeddings bridge) | B: embeddings-only; contract unverified |
 | 45 | VolcEngine | ark.cn-beijing.volces.com | VolcEngine | volcengine (+ doubao task) | Dedicated + Task | B/D: text + video task |
 | 46 | BaiduV2 | qianfan.baidubce.com | BaiduV2 | baidu_v2 | Dedicated (regional) | B: regional |
 | 47 | Xinference | (per-channel) | Xinference | openai | OpenAI-adaptor | C: self-hosted (OpenAI-shaped) |
@@ -129,18 +129,25 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 50 | Kling | api.klingai.com | (task) | kling task | Task/media | D: media task |
 | 51 | Jimeng | visual.volcengineapi.com | Jimeng | jimeng (+ jimeng task) | Dedicated + Task | D: media task |
 | 52 | Vidu | api.vidu.cn | (task) | vidu task | Task/media | D: media task |
-| 53 | Submodel | llm.submodel.ai | Submodel | submodel | Dedicated (OpenAI-like) | B: thin OpenAI-like |
+| 53 | Submodel | llm.submodel.ai | Submodel | submodel | Dedicated (direct OpenAI-like) | B: chat/completions; opaque model IDs |
 | 54 | DoubaoVideo | ark.cn-beijing.volces.com | (task) | doubao task | Task/media | D: media task |
 | 55 | Sora | api.openai.com | OpenAI (fallback) | openai + sora task | Task/media | D: media task (video) |
 | 56 | Replicate | api.replicate.com | Replicate | replicate | Dedicated (text+media) | D: media + text |
 | 57 | Codex | chatgpt.com | Codex | codex | Dedicated (subscription) | E: subscription credential |
 
-Rust implementation note (2026-07-13): channels 42 and 48 now have dedicated,
-route-explicit adapters and remain outside the generic OpenAI-compatible set.
-Mistral(42) exposes only chat completions because its Go embedding and Responses
-methods are unimplemented. xAI(48) exposes chat completions, legacy completions,
-Responses, and image generations. This is local implementation evidence only;
-live staging and billing evidence remain open under G3.
+Rust implementation note (2026-07-13): channels 27, 42, 48, and 53 now have
+dedicated, route-explicit adapters and remain outside the generic
+OpenAI-compatible set. Perplexity(27) exposes only Sonar chat completions with
+the Go field whitelist and token normalization; Agent Responses remains a
+separate future adapter because its provider-qualified model IDs have different
+semantics. Mistral(42) exposes only chat completions. xAI(48) exposes chat
+completions, legacy completions, Responses, and image generations.
+Submodel(53) exposes direct-only chat and legacy completions and treats model
+IDs such as `openai/gpt-oss-120b` as opaque values, never Gateway prefixes.
+SiliconFlow(40) is the next audited multi-route adapter; MokaAI(44) remains
+Deferred until an official or staging-verifiable hosted API contract exists.
+This is local implementation evidence only; live staging and billing evidence
+remain open under G3.
 
 Channel type 0 (`Unknown`) and the trailing `Dummy` sentinel are counters, not
 real providers.
@@ -181,11 +188,11 @@ closed instead of falling through to the generic OpenAI adapter.
 
 The generic set is locked to source adapter dispatch by tests: 1, 3, 6, 7, 8,
 9, 10, 12, 13, 19, 20, 22, 31, and 47. Type 21 remains Deferred because Go
-resolves no text adapter. Type 43 (DeepSeek) is Partial with only chat
-completions, legacy completions, and Anthropic Messages. Types 14/43 are the
-only native Messages candidates; types 34/38 are the rerank candidates; type
-24 is the native Gemini candidate. Async task/media routing remains a separate
-authority and is not implied by this text-relay registry.
+resolves no text adapter. Types 27, 42, 43, 48, and 53 are Partial only for
+their explicit routes; unsupported routes fail before quota reserve. Types
+14/43 are the only native Messages candidates; types 34/38 are the rerank
+candidates; type 24 is the native Gemini candidate. Async task/media routing
+remains a separate authority and is not implied by this text-relay registry.
 
 The admin API and frontend deliberately call this contract "Relay
 implementation readiness". It does not report credentials, reachability,

@@ -148,6 +148,20 @@ maturity levels are used:
 | M4 QuotaCoordinator | — | **Pending** | — | Build the shadow-first per-token DO (§4 M4) | no `crates/coordinator` yet |
 | M5 Task correctness / TaskRunner | — | **Partial (timeout sweep + refund replay + TaskRunner alarm probe compiled)** | Scheduled Worker poller now runs a Go-compatible timeout sweep before provider polling, uses per-task CAS for timeout failure, preserves the legacy imported-task no-refund cutoff, hardens malformed `private_data` during task CAS updates, batches timeout/video/Suno failure refunds behind a CAS-winner marker, normalizes Suno fail-reason rows to terminal failure, locally replays no-duplicate-refund/legacy/stale-window semantics with `bun run check:task-refund-batch`, wires the default-off `TASK_RUNNER` DO alarm foundation plus submit-path arming for video/remix/Suno shared task rows, lets alarm fire reuse the shared `poll_one_task` provider poll + D1 CAS settlement path, and exposes an admin-only per-task status probe with frontend UI, replay-evidence classifier, and smoke replay plan | Finish staging timeout/refund replay, provider failure replay, live TaskRunner alarm replay using the status probe, rollback, cron fallback, and no-double-poll evidence before enabling the DO fast path | `crates/worker/src/task_repository.rs`: timed-out query/CAS timeout apply/refund marker batch; `crates/worker/src/task_orchestration.rs`: config + sweep before provider poll + default-off TaskRunner arming; `crates/worker/src/task_runner.rs`: alarm foundation, submit handoff, gated poll handoff, status probe helper, and replay evidence classifier; `crates/worker/src/lib.rs`: scheduled handler, platform status route, and DO module; `tools/smoke_task_refund_batch.mjs`: local replay contract; `tools/smoke_task_runner_alarm_replay.mjs`: TaskRunner read-only replay probe; `platform_gateway.rs` + frontend Cloudflare Platform panel: capability and status probe surface |
 
+**M6 reconstruction and lease-safety update (2026-07-13):** release Rust/Wasm
+now has deterministic Workerd evidence for attachment-only reconstruction. A
+mock provider records exactly one outbound handshake; after a separate
+hibernatable client attachment is restored with `upstream_connect_handoff=true`
+and no in-memory bridge, the DO makes no provider reconnect, emits
+metadata-only `upstream_unavailable`, closes with 1011, atomically refunds the
+segment-owned D1 reservation once, restores user/token quota once, clears the
+private lease, and gives the next client a new segment. This deliberately does
+not claim outbound WebSocket hibernation. Reservation lease configuration now
+defaults to and rejects values below 900 seconds, covering the 840-second
+bridge cap plus a mandatory 60-second safety margin. G7 remains blocked on
+remote evidence, a global D1 orphan scan, and per-reservation owner/outcome
+observability.
+
 **M6 settlement update (2026-07-08):** the default-off Realtime writer now also
 has a guarded D1 batch foundation for replay marker, quota mutation, and audit
 row creation, exposed as `realtime_session_billing_settlement_batch_compiled`.

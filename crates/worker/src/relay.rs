@@ -5233,6 +5233,9 @@ fn realtime_mock_upstream_fault(
             Some(crate::realtime_session::RealtimeMockUpstreamFault::EventStreamFailed)
         }
         "accept_failed" => Some(crate::realtime_session::RealtimeMockUpstreamFault::AcceptFailed),
+        "runtime_detached" => {
+            Some(crate::realtime_session::RealtimeMockUpstreamFault::RuntimeDetached)
+        }
         _ => None,
     }
 }
@@ -10696,6 +10699,12 @@ mod tests {
         assert_eq!(
             realtime_mock_upstream_fault(r#"{"realtime_mock_upstream":{"fault":"accept_failed"}}"#),
             Some(crate::realtime_session::RealtimeMockUpstreamFault::AcceptFailed)
+        );
+        assert_eq!(
+            realtime_mock_upstream_fault(
+                r#"{"realtime_mock_upstream":{"fault":"runtime_detached"}}"#
+            ),
+            Some(crate::realtime_session::RealtimeMockUpstreamFault::RuntimeDetached)
         );
         assert_eq!(
             realtime_mock_upstream_fault(

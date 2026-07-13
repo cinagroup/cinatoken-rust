@@ -730,7 +730,7 @@ a staging-only Worker binding smoke probe.
 
 The six Worker-binding scenarios exercise the settlement batch itself; they do
 not prove Durable Object alarm recovery. Archive separate staging evidence that
-uses a deliberately short approved test lease to show: an alarm before expiry
+uses the minimum safe 900-second test lease to show: an alarm before expiry
 does not refund, expiry after DO eviction/restart refunds once, a forced D1
 refund failure leaves one redacted lease and re-arms the alarm, settlement-retry
 ownership suppresses lease refund, and the shared alarm selects the earliest
@@ -747,10 +747,10 @@ HTTP/WS status plus D1 snapshots before and after every transition:
 1. Confirm exact D1 readiness through 0021 and zero `reserved` rows before both
    0020 and 0021.
    Record the current capability value, deploy a temporary staging-only
-   `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="30"`, and keep production
+   `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="900"`, and keep production
    unchanged.
 2. Create one response reservation without a terminal `response.done`. Before
-   30 seconds, prove the D1 row is still `reserved`, `due_count=0`, and no quota
+   900 seconds, prove the D1 row is still `reserved`, `due_count=0`, and no quota
    refund occurred.
 3. Let the DO hibernate or restart the staging Worker without deleting DO/D1
    state. After expiry, prove one CAS refund, zero duplicate quota changes, and
@@ -816,7 +816,10 @@ smoke tool never writes D1 by itself. After applying the SQL, use the emitted
 `channels.other_info.realtime_mock_upstream.queue_probe_delay_ms` for the
 dedicated mock channel. The mock-fault dry-runs intentionally write
 `channels.other_info.realtime_mock_upstream.fault` as `event_stream_failed` or
-`accept_failed`. Do not copy any `realtime_mock_upstream` fault/delay metadata
+`accept_failed`. The release Workerd lifecycle suite also recognizes
+`runtime_detached` to close the mock outbound socket while preserving the
+hibernatable client for attachment-only reconstruction evidence. Do not copy
+any `realtime_mock_upstream` fault/delay metadata
 onto production channels.
 
 Also run the local platform header-boundary validator self-test. It proves the

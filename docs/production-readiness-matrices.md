@@ -564,6 +564,7 @@ and G9 decisions.
 | --- | --- | --- |
 | WFP authority atomic consume | Release Rust/Wasm artifact under Workerd: exactly one concurrent winner, duplicate 409s | Deployed namespace race, provider/Gateway correlation, throughput and cost |
 | WFP replay persistence | Duplicate rejected after local DO eviction | Worker version rollout/redeploy, namespace binding readback, expiry cleanup alarm |
+| Realtime attachment reconstruction | Release Rust/Wasm under Workerd: exactly one mock-provider handshake; restored handoff attachment has no in-memory upstream bridge; no implicit provider reconnect; first business frame emits metadata-only `upstream_unavailable`, closes with 1011, refunds one D1 reservation atomically, restores user/token quota once, clears its lease, and reconnects with a new segment | Deployed staging eviction/redeploy capture, real reserve path rather than seeded state, global D1 orphan recovery, per-reservation lease owner/outcome observability, alerting, and billing reconciliation |
 | WFP authority negatives | Tampered signature and non-canonical shard rejected locally | Full worker/method/path/body/channel/time matrix against staging tenant |
 | TaskRunner corrupt state | Alarm and status propagate decode failure locally | Cloudflare alarm retry count/backoff, alerting, D1/provider outage drill |
 | TaskRunner missing state | Explicit alarm completes as a local no-op | Deployed cleanup/race observation and cron fallback reconciliation |

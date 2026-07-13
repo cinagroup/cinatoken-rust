@@ -942,7 +942,9 @@ paid `/v1/realtime` canary, all of the following evidence is required:
    One alarm is always scheduled for the earliest deadline across both queues.
 10. `REALTIME_BILLING_RESERVATION_LEASE_SECONDS` is derived from measured
    staging response-duration p99 plus approved retry/clock-skew margin, remains
-   within `30..3600`, and has an alert for repeated expiry-refund attempts.
+   within `900..3600`, never falls below the 840-second bridge lifetime plus
+   the mandatory 60-second safety margin, and has an alert for repeated
+   expiry-refund attempts.
 11. Public status, frontend capability output, Worker logs, and archived smoke
    artifacts contain hashes/metadata only, never raw prompts, event IDs,
    billing expressions, token IDs, or credentials.

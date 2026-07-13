@@ -7189,8 +7189,11 @@ Implemented locally:
   expiry and settlement retry deadline, matching Cloudflare's one-alarm-per-DO
   execution model.
 - Lease duration is configured by
-  `REALTIME_BILLING_RESERVATION_LEASE_SECONDS`, defaults explicitly to 600 in
-  every Wrangler environment, and accepts only 30-3600 seconds.
+  `REALTIME_BILLING_RESERVATION_LEASE_SECONDS`, defaults explicitly to 900 in
+  every Wrangler environment, and accepts only 900-3600 seconds. The lower
+  bound is the 840-second upstream bridge lifetime plus a mandatory 60-second
+  close/clock-skew margin, so an active long response cannot be refunded before
+  its terminal usage is eligible to settle.
 - An expired lease uses the existing reservation refund CAS. Applied,
   already-finalized, and missing rows remove the work item; a transient D1
   failure retains it and retries after 30 seconds without a fixed refund retry
@@ -8308,13 +8311,16 @@ Implemented:
 - Added `RealtimeMockUpstreamFault` to the Realtime selected-upstream plan and
   request-scoped connect handoff. The value is metadata-only and round-trips in
   the redacted plan without exposing upstream API keys.
-- `channels.other_info.realtime_mock_upstream.fault` now accepts only two
+- `channels.other_info.realtime_mock_upstream.fault` now accepts only three
   explicit values:
   - `event_stream_failed`, which drives the DO's
     `upstream_event_stream_failed` terminal event path before any client probe
     is forwarded;
   - `accept_failed`, which drives the `upstream_accept_failed` terminal event
-    path before accepting the upstream socket.
+    path before accepting the upstream socket;
+  - `runtime_detached`, which accepts and then closes only the mock outbound
+    socket without closing the hibernatable client, allowing Workerd to test
+    attachment-only reconstruction without claiming outbound hibernation.
 - The parser still requires `realtime_mock_upstream` to be an object. Legacy
   boolean mock markers, invalid strings, numeric values, and ordinary channel
   metadata cannot enable fault injection.
@@ -10613,3 +10619,61 @@ revoked, a least-privilege replacement is issued, authenticated staging probes
 archive direct/Gateway/WFP JSON and SSE evidence, active-upstream eviction and
 billing idempotency pass, and rollback is rehearsed. Production remains
 **NO-GO**.
+
+### 22.173 2026-07-13 Realtime Attachment Reconstruction And Lease Safety
+
+This increment closes the deterministic local lifecycle case requested in
+22.172 and fixes a billing release blocker found by a parallel lease audit. It
+does not use the exposed Cloudflare credential and does not change remote
+readiness fields.
+
+Implemented locally:
+
+- Added an isolated Workerd WebSocket provider Worker backed by a Durable
+  Object counter. The release Rust/Wasm Realtime bridge completes exactly one
+  upstream handshake while the mock records only method, path, auth presence,
+  and count; it never stores the credential value or payload.
+- Added the strict `runtime_detached` mock fault. After upstream accept it
+  closes the mock outbound runtime without closing the hibernatable client.
+  This is channel-admin test metadata and is explicitly forbidden on
+  production channels.
+- The reconstruction phase uses a separate hibernatable DO because Cloudflare
+  outbound WebSockets are instance-local and prevent deterministic eviction.
+  The test persists `upstream_connect_handoff=true` in the client attachment,
+  evicts the DO through Workerd, and reconstructs a new Rust instance with an
+  empty upstream bridge map. It does not pretend the provider socket survived.
+- The first restored business frame emits metadata-only
+  `upstream_unavailable`, closes the client with actual code 1011 and reason
+  `upstream_bridge_unavailable`, and never performs a second provider request.
+  A later client receives a different `bridge_segment` while provider count
+  remains one.
+- The test applies the canonical D1 migration chain, seeds one segment-owned
+  reservation plus its private DO lease, and verifies the terminal path moves
+  the row from `reserved` to `refunded`, restores user quota once, restores
+  token remaining/used quota once, and removes the lease. The close callback
+  may replay cleanup, but the D1 CAS prevents a second credit.
+- The audit found that the previous 600-second lease could expire before the
+  840-second bridge lifetime. A late `response.done` would then see an already
+  terminal reservation and could be under-billed. All Wrangler environments
+  now use 900 seconds, and runtime normalization rejects values outside
+  `900..3600`; 900 is the bridge cap plus a mandatory 60-second safety margin.
+
+Local evidence:
+
+- `bunx vitest run --config vitest.do.config.mjs`: 9/9 passed against the
+  release Rust/Wasm exports.
+- The focused Rust lease and mock-fault parser tests passed.
+- `cargo fmt --all --check` and `git diff --check` passed before the full gate.
+- The complete `bun run check` release gate passed: optimized Worker/WFP builds,
+  Workerd 9/9, frontend readiness 22/22, bundle redaction/budget/lint checks,
+  217 frontend calls against 319 Worker routes with zero static misses, all 21
+  D1 migrations, workspace tests, and main/tenant/outbound wasm32 checks.
+
+Remaining G7 blockers are explicit. The Workerd reservation is seeded rather
+than created through the full authenticated reserve path; D1 has no global
+scanner that can recover an expired orphan if the private DO lease queue is
+lost; public status exposes aggregate lease counts rather than a safe
+per-reservation owner/outcome identity; and no remote eviction/redeploy,
+provider, billing reconciliation, alert, or rollback evidence is archived.
+Settlement writes and `/v1/realtime` therefore remain default-off and
+production remains **NO-GO**.

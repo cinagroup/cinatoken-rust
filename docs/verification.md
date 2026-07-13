@@ -122,7 +122,9 @@ Last checked: 2026-07-13
   and production Wrangler variable tables explicitly keep
   `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED="false"`; v1 smoke preflight
   requires it to be true before attempting a live WebSocket. All environments
-  set `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="600"` explicitly.
+  set `REALTIME_BILLING_RESERVATION_LEASE_SECONDS="900"` explicitly. The
+  accepted `900..3600` range cannot undercut the 840-second upstream bridge
+  lifetime; the extra 60 seconds is a mandatory close/clock-skew margin.
 - Evidence boundary: a fresh localhost Worker request for the new structured
   503 interlock was not captured. `wrangler dev` could not run because
   `worker-build` was absent; installing it failed under the default GNU host
@@ -131,6 +133,21 @@ Last checked: 2026-07-13
   linker. No dev server was left running. The compiled route guard and cutover
   tests are local contract evidence only; live Worker alarm/interlock and DO
   eviction evidence remain staging requirements.
+- `bunx vitest run --config vitest.do.config.mjs` passed 9/9 on 2026-07-13
+  against the release Rust/Wasm artifact. The added reconstruction case proves
+  one real mock-provider WebSocket handshake, a persisted handoff attachment
+  restored with no in-memory upstream bridge, no implicit second provider
+  request, metadata-only `upstream_unavailable`, actual client close
+  `1011/upstream_bridge_unavailable`, one atomic D1 reservation refund, one
+  user/token quota restoration, lease removal, and a distinct segment on the
+  next client connection. This is deterministic Workerd evidence; outbound
+  WebSockets are not hibernatable and are not claimed to survive eviction.
+- The complete `bun run check` gate passed on 2026-07-13 after the lease and
+  reconstruction changes. It rebuilt the release Worker/WFP artifacts, reran
+  Workerd 9/9 and frontend readiness 22/22, found zero missing frontend routes
+  across 217 calls and 319 Worker routes, replayed all 21 D1 migrations, passed
+  workspace tests, and completed the main Worker, WFP tenant, and WFP outbound
+  wasm32 checks. Only the two existing unused topup repository warnings remain.
 - Production audit boundary: Realtime settlement remains NO-GO for paid
   traffic, but the audited local correctness defects are now closed by
   migrations 0019-0020: every `response.create` receives an idempotent D1 reserve,

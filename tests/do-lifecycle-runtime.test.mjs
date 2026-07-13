@@ -1,4 +1,5 @@
 import {
+  applyD1Migrations,
   env,
   evictDurableObject,
   reset,
@@ -138,6 +139,140 @@ describe("Rust Durable Object lifecycle contracts", () => {
 
     socket.close(1000, "test complete");
   });
+
+  it("reconstructs attachment state and refunds once without reconnecting the provider", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+    await seedRealtimeBillingAccount();
+
+    const providerProofSession = "runtime-upstream-provider-proof";
+    const providerProofStub = env.REALTIME_SESSIONS.getByName(providerProofSession);
+    const providerProofSocket = await openDetachedRealtimeBridge(
+      providerProofStub,
+      providerProofSession,
+    );
+    await waitForDetachedBridge(providerProofSocket, 1);
+    providerProofSocket.close(1000, "provider proof complete");
+
+    const session = "runtime-upstream-reconstruction";
+    const stub = env.REALTIME_SESSIONS.getByName(session);
+    const first = await openRealtimeSession(stub, session);
+    const firstStatusMessage = nextJsonWebSocketMessage(first, "initial attachment status");
+    first.send("status");
+    const firstStatus = await firstStatusMessage;
+    const firstSegment = firstStatus.context.bridge_segment;
+    const reservationKey = "rtreserve-runtime-reconstruction";
+    const leaseExpiresAt = Math.floor(Date.now() / 1000) + 300;
+
+    await seedRealtimeReservation({
+      reservationKey,
+      session,
+      bridgeSegment: firstSegment,
+      leaseExpiresAt,
+    });
+    await runInDurableObject(stub, async (_instance, state) => {
+      const [serverSocket] = state.getWebSockets();
+      const attachment = serverSocket.deserializeAttachment();
+      serverSocket.serializeAttachment({
+        ...attachment,
+        upstream_connect_handoff: true,
+      });
+      await state.storage.put("billing_reservation_leases_v1", {
+        records: [
+          {
+            reservation_key: reservationKey,
+            reservation_sequence: 1,
+            lease_expires_at: leaseExpiresAt,
+            expires_at_ms: leaseExpiresAt * 1_000,
+            attempts: 0,
+            last_error: null,
+          },
+        ],
+      });
+      return new Response(null);
+    });
+
+    const beforeEviction = await realtimeSessionStatus(stub, session);
+    expect(beforeEviction).toMatchObject({
+      active_websockets: 1,
+      active_upstream_bridges: 0,
+      billing_reservation_lease: { record_count: 1, due_count: 0 },
+      attachments: [
+        {
+          session,
+          bridge_segment: firstSegment,
+          upstream_connect_handoff: true,
+        },
+      ],
+    });
+
+    await withTimeout(
+      evictDurableObject(stub, { webSockets: "hibernate" }),
+      10_000,
+      "upstream-detached Durable Object eviction",
+    );
+
+    const terminalMessage = nextJsonWebSocketMessage(
+      first,
+      "reconstructed upstream-unavailable event",
+    );
+    const terminalClose = nextWebSocketClose(first, "reconstructed upstream close");
+    first.send(JSON.stringify({ type: "session.update", session: { modalities: ["text"] } }));
+
+    await expect(terminalMessage).resolves.toMatchObject({
+      type: "realtime_session_bridge_event",
+      status: "upstream_unavailable",
+      event: {
+        direction: "upstream_to_client",
+        client_code: 1011,
+        client_reason: "upstream_bridge_unavailable",
+      },
+      context: {
+        session,
+        bridge_segment: firstSegment,
+        upstream_connect_handoff: true,
+      },
+    });
+    await expect(terminalClose).resolves.toMatchObject({
+      code: 1011,
+      reason: "upstream_bridge_unavailable",
+    });
+
+    await expect(waitForRealtimeRefund(reservationKey)).resolves.toMatchObject({
+      reservation: { status: "refunded", bridge_segment: firstSegment },
+      user: { quota: 1_000 },
+      token: { remain_quota: 500, used_quota: 0 },
+    });
+    expect(await providerState()).toMatchObject({ count: 1, path: "/v1/realtime" });
+
+    const afterTerminal = await realtimeSessionStatus(stub, session);
+    expect(afterTerminal).toMatchObject({
+      active_upstream_bridges: 0,
+      billing_reservation_lease: null,
+      metrics: {
+        last_bridge_terminal_event: {
+          event: "upstream_unavailable",
+          client_code: 1011,
+        },
+      },
+    });
+
+    const second = await openRealtimeSession(stub, session);
+    const secondStatusMessage = nextJsonWebSocketMessage(second, "new bridge segment status");
+    second.send("status");
+    const secondStatus = await secondStatusMessage;
+    expect(secondStatus.context.bridge_segment).not.toBe(firstSegment);
+    expect(await providerState()).toMatchObject({ count: 1, path: "/v1/realtime" });
+    await expect(realtimeBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: { status: "refunded", bridge_segment: firstSegment },
+      user: { quota: 1_000 },
+      token: { remain_quota: 500, used_quota: 0 },
+    });
+    second.close(1000, "test complete");
+  }, 30_000);
 
   it("rejects tampered authority and a non-canonical replay shard", async () => {
     const authority = await signedAuthority({ requestId: "runtime-negative" });
@@ -350,4 +485,153 @@ function nextJsonWebSocketMessage(socket, label) {
     };
     socket.addEventListener("message", onMessage);
   });
+}
+
+async function openDetachedRealtimeBridge(stub, session) {
+  const handoff = JSON.stringify({
+    url: "https://realtime-provider.invalid/v1/realtime",
+    auth_mode: "authorization_bearer",
+    protocol: [],
+    headers: [{ name: "authorization", value: "Bearer runtime-test-secret" }],
+    mock_upstream_fault: "runtime_detached",
+  });
+  const response = await stub.fetch(
+    `https://realtime-session.internal/api/platform/realtime/${session}`,
+    {
+      headers: {
+        Upgrade: "websocket",
+        "x-cinatoken-realtime-upstream-connect": handoff,
+      },
+    },
+  );
+  expect(response.status).toBe(101);
+  expect(response.webSocket).toBeDefined();
+  response.webSocket.accept();
+  return response.webSocket;
+}
+
+async function openRealtimeSession(stub, session) {
+  const response = await stub.fetch(
+    `https://realtime-session.internal/api/platform/realtime/${session}`,
+    { headers: { Upgrade: "websocket" } },
+  );
+  expect(response.status).toBe(101);
+  expect(response.webSocket).toBeDefined();
+  response.webSocket.accept();
+  return response.webSocket;
+}
+
+async function waitForDetachedBridge(socket, expectedProviderCount) {
+  const deadline = Date.now() + 5_000;
+  let lastStatus;
+  while (Date.now() < deadline) {
+    const message = nextJsonWebSocketMessage(socket, "detached bridge status");
+    socket.send("status");
+    lastStatus = await message;
+    const provider = await providerState();
+    if (
+      lastStatus.active_upstream_bridges === 0 &&
+      provider.count === expectedProviderCount
+    ) {
+      return lastStatus;
+    }
+    await delay(10);
+  }
+  throw new Error(`runtime bridge did not detach: ${JSON.stringify(lastStatus)}`);
+}
+
+function realtimeSessionStatus(stub, session) {
+  return stub
+    .fetch(`https://realtime-session.internal/api/platform/realtime/${session}/status`)
+    .then((response) => response.json());
+}
+
+function providerState() {
+  return env.REALTIME_PROVIDER_MOCK.fetch(
+    "https://realtime-provider-mock/__mock/state",
+  ).then((response) => response.json());
+}
+
+async function seedRealtimeBillingAccount() {
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO users (id, username, password, quota) VALUES (1, 'runtime-user', 'x', 900)",
+    ),
+    env.DB.prepare(
+      "INSERT INTO tokens (id, user_id, key, remain_quota, used_quota) VALUES (1, 1, 'runtime-token', 400, 100)",
+    ),
+  ]);
+}
+
+async function seedRealtimeReservation({
+  reservationKey,
+  session,
+  bridgeSegment,
+  leaseExpiresAt,
+}) {
+  await env.DB.prepare(
+    `INSERT INTO realtime_billing_reservations (
+      reservation_key, session, bridge_segment, client_event_id_hash,
+      reservation_sequence, user_id, token_id, channel_id, selected_group,
+      model_name, pre_consumed_quota, snapshot_json, request_json,
+      status, created_at, updated_at, lease_expires_at
+    ) VALUES (?1, ?2, ?3, 'runtime-event-hash', 1, 1, 1, 42, 'default',
+      'gpt-4o-realtime-preview', 100, '{}', '{}', 'reserved', 1, 1, ?4)`,
+  )
+    .bind(reservationKey, session, bridgeSegment, leaseExpiresAt)
+    .run();
+}
+
+async function realtimeBillingState(reservationKey) {
+  const [reservation, user, token] = await Promise.all([
+    env.DB.prepare(
+      "SELECT status, bridge_segment, refunded_at FROM realtime_billing_reservations WHERE reservation_key = ?1",
+    )
+      .bind(reservationKey)
+      .first(),
+    env.DB.prepare("SELECT quota FROM users WHERE id = 1").first(),
+    env.DB.prepare(
+      "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+    ).first(),
+  ]);
+  return { reservation, user, token };
+}
+
+async function waitForRealtimeRefund(reservationKey) {
+  const deadline = Date.now() + 5_000;
+  let state;
+  while (Date.now() < deadline) {
+    state = await realtimeBillingState(reservationKey);
+    if (state.reservation?.status === "refunded") return state;
+    await delay(10);
+  }
+  throw new Error(`realtime reservation was not refunded: ${JSON.stringify(state)}`);
+}
+
+function nextWebSocketClose(socket, label) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.removeEventListener("close", onClose);
+      reject(new Error(`timed out waiting for ${label}`));
+    }, 15_000);
+    const onClose = (event) => {
+      clearTimeout(timeout);
+      socket.removeEventListener("close", onClose);
+      resolve({ code: event.code, reason: event.reason, wasClean: event.wasClean });
+    };
+    socket.addEventListener("close", onClose);
+  });
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function withTimeout(promise, milliseconds, label) {
+  return Promise.race([
+    promise,
+    delay(milliseconds).then(() => {
+      throw new Error(`timed out waiting for ${label}`);
+    }),
+  ]);
 }

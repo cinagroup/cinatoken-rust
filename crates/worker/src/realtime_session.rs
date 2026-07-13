@@ -135,8 +135,10 @@ const BILLING_SETTLEMENT_RETRY_INITIAL_DELAY_MS: u64 = 1_000;
 const BILLING_SETTLEMENT_RETRY_MAX_DELAY_MS: u64 = 30_000;
 const BILLING_SETTLEMENT_RETRY_MAX_ATTEMPTS: u8 = 7;
 const BILLING_SETTLEMENT_RETRY_MAX_RECORDS: usize = 64;
-const BILLING_RESERVATION_LEASE_DEFAULT_SECONDS: u64 = 600;
-const BILLING_RESERVATION_LEASE_MIN_SECONDS: u64 = 30;
+const BILLING_RESERVATION_LEASE_SAFETY_MARGIN_SECONDS: u64 = 60;
+const BILLING_RESERVATION_LEASE_MIN_SECONDS: u64 =
+    REALTIME_UPSTREAM_BRIDGE_MAX_LIFETIME_SECONDS + BILLING_RESERVATION_LEASE_SAFETY_MARGIN_SECONDS;
+const BILLING_RESERVATION_LEASE_DEFAULT_SECONDS: u64 = BILLING_RESERVATION_LEASE_MIN_SECONDS;
 const BILLING_RESERVATION_LEASE_MAX_SECONDS: u64 = 3_600;
 const BILLING_RESERVATION_LEASE_MAX_RECORDS: usize = 128;
 const BILLING_RESERVATION_LEASE_RETRY_DELAY_MS: u64 = 30_000;
@@ -250,6 +252,7 @@ enum RealtimeUpstreamAuthMode {
 pub(crate) enum RealtimeMockUpstreamFault {
     EventStreamFailed,
     AcceptFailed,
+    RuntimeDetached,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4696,11 +4699,14 @@ pub(crate) fn realtime_billing_reservation_lease_compiled() -> bool {
     REALTIME_BILLING_RESERVATION_LEASE_COMPILED
         && realtime_billing_bridge_segment_compiled()
         && BILLING_RESERVATION_LEASE_MAX_RECORDS > BILLING_SETTLEMENT_RETRY_MAX_RECORDS
-        && BILLING_RESERVATION_LEASE_MIN_SECONDS < BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        && BILLING_RESERVATION_LEASE_MIN_SECONDS <= BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
         && BILLING_RESERVATION_LEASE_DEFAULT_SECONDS < BILLING_RESERVATION_LEASE_MAX_SECONDS
+        && BILLING_RESERVATION_LEASE_MIN_SECONDS > REALTIME_UPSTREAM_BRIDGE_MAX_LIFETIME_SECONDS
         && normalize_realtime_billing_reservation_lease_seconds(None)
             == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
-        && normalize_realtime_billing_reservation_lease_seconds(Some("30".to_string())) == 30
+        && normalize_realtime_billing_reservation_lease_seconds(Some("899".to_string()))
+            == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
+        && normalize_realtime_billing_reservation_lease_seconds(Some("900".to_string())) == 900
         && normalize_realtime_billing_reservation_lease_seconds(Some("3600".to_string())) == 3_600
         && normalize_realtime_billing_reservation_lease_seconds(Some("0".to_string()))
             == BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
@@ -5941,6 +5947,13 @@ fn spawn_realtime_upstream_event_pump(
             close_realtime_upstream_runtime(&runtime_state, action);
             send_realtime_bridge_terminal_event(&client, &context, cause, action, None);
             let _ = client.close(Some(action.client_code), Some(action.client_reason));
+            return;
+        }
+        if mock_upstream_fault == Some(RealtimeMockUpstreamFault::RuntimeDetached) {
+            close_realtime_upstream_runtime(
+                &runtime_state,
+                realtime_bridge_close_action(RealtimeBridgeCloseCause::ClientClosed),
+            );
             return;
         }
         if billing_settlement.is_some() && realtime_billing_settlement_write_enabled(&env) {
@@ -8282,7 +8295,7 @@ mod tests {
             billing_snapshot: None,
             billing_settlement: None,
             startup_queue_probe_delay_ms: None,
-            mock_upstream_fault: Some(RealtimeMockUpstreamFault::AcceptFailed),
+            mock_upstream_fault: Some(RealtimeMockUpstreamFault::RuntimeDetached),
         })
         .unwrap();
         let plan_header = realtime_upstream_plan_header_value(&selected.plan).unwrap();
@@ -8294,11 +8307,11 @@ mod tests {
 
         assert_eq!(
             decoded_plan.mock_upstream_fault,
-            Some(RealtimeMockUpstreamFault::AcceptFailed)
+            Some(RealtimeMockUpstreamFault::RuntimeDetached)
         );
         assert_eq!(
             decoded_handoff.mock_upstream_fault,
-            Some(RealtimeMockUpstreamFault::AcceptFailed)
+            Some(RealtimeMockUpstreamFault::RuntimeDetached)
         );
         assert!(!plan_header.contains(secret));
         assert!(connect_header.contains(secret));
@@ -8472,12 +8485,12 @@ mod tests {
             BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
         );
         assert_eq!(
-            normalize_realtime_billing_reservation_lease_seconds(Some("29".to_string())),
+            normalize_realtime_billing_reservation_lease_seconds(Some("899".to_string())),
             BILLING_RESERVATION_LEASE_DEFAULT_SECONDS
         );
         assert_eq!(
-            normalize_realtime_billing_reservation_lease_seconds(Some(" 120 ".to_string())),
-            120
+            normalize_realtime_billing_reservation_lease_seconds(Some(" 900 ".to_string())),
+            900
         );
 
         let mut queue = RealtimeBillingReservationLeaseQueue::default();

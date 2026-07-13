@@ -1,4 +1,7 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import {
+  cloudflareTest,
+  readD1Migrations,
+} from "@cloudflare/vitest-pool-workers";
 import { createHmac } from "node:crypto";
 import { defineConfig } from "vitest/config";
 
@@ -20,6 +23,7 @@ const compiledWasmModules = [
     fallthrough: true,
   },
 ];
+const d1Migrations = await readD1Migrations("./migrations/d1");
 const auxiliaryModuleRules = [
   {
     type: "ESModule",
@@ -40,10 +44,14 @@ export default defineConfig({
         bindings: {
           WFP_RELAY_AUTHORITY_SECRET: authoritySecret,
           TASK_RUNNER_DO_ENABLED: "false",
+          TEST_D1_MIGRATIONS: d1Migrations,
         },
+        d1Databases: { DB: "do-runtime-test" },
+        outboundService: "realtime-provider-mock",
         serviceBindings: {
           WFP_TENANT_RUNTIME: "wfp-tenant-runtime",
           WFP_PROVIDER_MOCK: "wfp-provider-mock",
+          REALTIME_PROVIDER_MOCK: "realtime-provider-mock",
         },
         durableObjects: {
           REALTIME_SESSIONS: {
@@ -113,6 +121,15 @@ export default defineConfig({
             compatibilityFlags: ["nodejs_compat"],
             durableObjects: {
               MOCK_EGRESS_COUNTER: "MockEgressCounter",
+            },
+          },
+          {
+            name: "realtime-provider-mock",
+            scriptPath: "./tests/fixtures/realtime-provider-mock.mjs",
+            modules: true,
+            compatibilityDate: "2026-07-13",
+            durableObjects: {
+              MOCK_REALTIME_PROVIDER: "MockRealtimeProvider",
             },
           },
         ],

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-const schemaVersion = 1;
+const schemaVersion = 2;
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
 const replacementTokenEnv = "CINATOKEN_WFP_READBACK_TOKEN";
 const expectedOutboundSecret = "CINATOKEN_WFP_OUTBOUND_AI_TOKEN";
@@ -164,6 +164,8 @@ function buildDryRun(identity) {
       "dispatcher-secrets",
       "outbound-settings",
       "outbound-secrets",
+      "outbound-subdomain",
+      "outbound-domains",
       "namespace-after",
     ],
     limits: { jsonBytes: maxJsonBytes, timeoutMs: requestTimeoutMs },
@@ -229,6 +231,24 @@ async function collectReadback(options, dependencies = {}) {
     ),
     "outbound",
   );
+  const outboundSubdomain = validateOutboundSubdomain(
+    await fetchJson(
+      urls.outboundSubdomain,
+      "outbound-subdomain",
+      options.apiToken,
+      fetchImpl,
+      "object",
+    ),
+  );
+  const outboundDomains = validateOutboundDomains(
+    await fetchJson(
+      urls.outboundDomains,
+      "outbound-domains",
+      options.apiToken,
+      fetchImpl,
+      "array",
+    ),
+  );
   validateSecretOwnership(dispatcherSecrets, outboundSecrets, outbound);
   const namespaceAfter = validateNamespace(
     await fetchJson(
@@ -262,6 +282,11 @@ async function collectReadback(options, dependencies = {}) {
       accountIdBindingVerified: true,
       secretBindingNames: outbound.secretBindingNames,
       secretNames: outboundSecrets.map((secret) => secret.name),
+      publicIngress: {
+        workersDevEnabled: outboundSubdomain.workersDevEnabled,
+        previewUrlsEnabled: outboundSubdomain.previewUrlsEnabled,
+        customDomainCount: outboundDomains.customDomainCount,
+      },
     },
     checks: [
       "namespace-untrusted",
@@ -272,6 +297,9 @@ async function collectReadback(options, dependencies = {}) {
       "outbound-secret-present",
       "dispatcher-outbound-secret-absent",
       "deploy-readback-secrets-absent",
+      "outbound-workers-dev-disabled",
+      "outbound-preview-urls-disabled",
+      "outbound-custom-domains-absent",
     ],
   };
   assertCredentialAbsent(evidence, options.apiToken);
@@ -287,6 +315,8 @@ function buildUrls(options) {
     dispatcherSecrets: `${workerBase}/${encodeURIComponent(options.dispatcherScript)}/secrets`,
     outboundSettings: `${workerBase}/${encodeURIComponent(options.outboundScript)}/settings`,
     outboundSecrets: `${workerBase}/${encodeURIComponent(options.outboundScript)}/secrets`,
+    outboundSubdomain: `${workerBase}/${encodeURIComponent(options.outboundScript)}/subdomain`,
+    outboundDomains: `${accountBase}/workers/domains?service=${encodeURIComponent(options.outboundScript)}`,
   };
 }
 
@@ -507,6 +537,27 @@ function validateOutboundSettings(envelope, expected) {
   return { secretBindingNames: secretBindings };
 }
 
+function validateOutboundSubdomain(envelope) {
+  const result = requireObject(
+    envelope.result,
+    "[outbound-subdomain] result",
+  );
+  if (result.enabled !== false) {
+    throw new Error("[security] outbound workers.dev ingress must be disabled");
+  }
+  if (result.previews_enabled !== false) {
+    throw new Error("[security] outbound preview URLs must be disabled");
+  }
+  return { workersDevEnabled: false, previewUrlsEnabled: false };
+}
+
+function validateOutboundDomains(envelope) {
+  if (envelope.result.length !== 0) {
+    throw new Error("[security] outbound Worker must not own custom domains");
+  }
+  return { customDomainCount: 0 };
+}
+
 function validateSecretInventory(envelope, owner) {
   const result = envelope.result;
   const secrets = result.map((entry, index) => {
@@ -693,6 +744,9 @@ async function runSelfTest() {
     valid.verified !== true ||
     valid.dispatcher.binding.outboundService !== fixture.options.outboundScript ||
     valid.outbound.secretNames[0] !== expectedOutboundSecret ||
+    valid.outbound.publicIngress.workersDevEnabled !== false ||
+    valid.outbound.publicIngress.previewUrlsEnabled !== false ||
+    valid.outbound.publicIngress.customDomainCount !== 0 ||
     JSON.stringify(valid).includes(fixture.options.accountId) ||
     JSON.stringify(valid).includes(fixture.options.apiToken) ||
     JSON.stringify(valid).includes(fixture.secretValue)
@@ -716,7 +770,7 @@ async function runSelfTest() {
     responses[0].value.result.trusted_workers = true;
   }, /must remain untrusted/, cases);
   await expectFailure("namespace-drift", fixture, (responses) => {
-    responses[5].value.result.script_count += 1;
+    responses[7].value.result.script_count += 1;
   }, /namespace changed/, cases);
   await expectFailure("missing-dispatch-binding", fixture, (responses) => {
     responses[1].value.result.bindings = [];
@@ -754,6 +808,19 @@ async function runSelfTest() {
       type: "secret_text",
     });
   }, /forbidden deploy\/readback bearer/, cases);
+  await expectFailure("workers-dev-enabled", fixture, (responses) => {
+    responses[5].value.result.enabled = true;
+  }, /workers\.dev ingress must be disabled/, cases);
+  await expectFailure("preview-urls-enabled", fixture, (responses) => {
+    responses[5].value.result.previews_enabled = true;
+  }, /preview URLs must be disabled/, cases);
+  await expectFailure("custom-domain-attached", fixture, (responses) => {
+    responses[6].value.result.push({
+      id: "11111111-2222-3333-4444-555555555555",
+      hostname: "outbound.example.com",
+      service: fixture.options.outboundScript,
+    });
+  }, /must not own custom domains/, cases);
   await expectFailure("redirect", fixture, (responses) => {
     responses[0] = rawResponse("", { status: 302, contentType: "text/plain" });
   }, /redirects are forbidden/, cases);
@@ -861,6 +928,11 @@ function selfTestFixture() {
       text: secretValue,
     },
   ]);
+  const outboundSubdomain = envelope({
+    enabled: false,
+    previews_enabled: false,
+  });
+  const outboundDomains = envelope([]);
   return {
     options,
     secretValue,
@@ -870,6 +942,8 @@ function selfTestFixture() {
       jsonResponse(dispatcherSecrets),
       jsonResponse(outboundSettings),
       jsonResponse(outboundSecrets),
+      jsonResponse(outboundSubdomain),
+      jsonResponse(outboundDomains),
       jsonResponse(namespace),
     ],
   };

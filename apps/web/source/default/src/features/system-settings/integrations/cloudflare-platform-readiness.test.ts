@@ -69,6 +69,7 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   wfp_preview_response_security_headers_compiled: false,
   wfp_tenant_ai_gateway_policy_compiled: false,
   wfp_outbound_egress_policy_compiled: false,
+  wfp_outbound_private_ingress_config_compiled: false,
   wfp_relay_authority_transport_compiled: false,
   wfp_relay_authority_transport_ready: false,
   wfp_tenant_smoke_ready: false,
@@ -169,6 +170,7 @@ describe('Cloudflare platform readiness headline', () => {
         wfp_preview_response_security_headers_compiled: true,
         wfp_tenant_ai_gateway_policy_compiled: true,
         wfp_outbound_egress_policy_compiled: true,
+        wfp_outbound_private_ingress_config_compiled: true,
         wfp_authority_replay_do_compiled: true,
         wfp_relay_authority_transport_compiled: true,
         wfp_dispatch_failure_contract_compiled: true,
@@ -332,7 +334,7 @@ describe('Cloudflare platform readiness headline', () => {
     )
   })
 
-  test('requires the outbound egress policy for WFP implementation readiness', () => {
+  test('requires outbound egress and private ingress for WFP implementation readiness', () => {
     const wfpImplementationCapabilities = {
       wfp_tenant_supported_routes: ['/v1/responses'],
       wfp_tenant_cutover_guards: ['outbound-worker-egress-policy'],
@@ -344,6 +346,7 @@ describe('Cloudflare platform readiness headline', () => {
       wfp_tenant_response_header_guard_compiled: true,
       wfp_preview_response_security_headers_compiled: true,
       wfp_tenant_ai_gateway_policy_compiled: true,
+      wfp_outbound_private_ingress_config_compiled: true,
       wfp_authority_replay_do_compiled: true,
       wfp_relay_authority_transport_compiled: true,
       wfp_dispatch_failure_contract_compiled: true,
@@ -362,6 +365,16 @@ describe('Cloudflare platform readiness headline', () => {
         makeCapabilities({
           ...wfpImplementationCapabilities,
           wfp_outbound_egress_policy_compiled: false,
+        })
+      ),
+      'blocked'
+    )
+    assert.equal(
+      getWfpImplementationStatus(
+        makeCapabilities({
+          ...wfpImplementationCapabilities,
+          wfp_outbound_egress_policy_compiled: true,
+          wfp_outbound_private_ingress_config_compiled: false,
         })
       ),
       'blocked'

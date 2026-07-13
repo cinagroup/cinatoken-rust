@@ -10083,7 +10083,7 @@ credential-safe remote evidence contract without claiming a deployment.
 
 - Added `tools/collect_wfp_outbound_readback.mjs` and root package commands
   `check:wfp-outbound:readback-collector` and
-  `collect:wfp-outbound:readback`. The self-test passes 21 positive and negative
+  `collect:wfp-outbound:readback`. The self-test now passes 24 positive and negative
   cases and the contract is part of `bun run check`.
 - Live collection performs six read-only Cloudflare requests: dispatch namespace
   before/after, dispatcher settings/secrets, and outbound settings/secrets. It
@@ -10752,3 +10752,46 @@ Production rollout remains fail-closed:
 The exposed credential, absent authenticated staging migration, absent live DO
 owner correlation, provider billing reconciliation, alert drill, and rollback
 rehearsal keep G1/G2/G4/G6/G7/G8 and production **NO-GO**.
+
+### 22.175 2026-07-13 WFP Outbound Public-Ingress Isolation
+
+This increment closes the local configuration defect that allowed the
+secret-bearing WFP outbound Worker to inherit Cloudflare's public deployment
+defaults. It does not use the exposed credential and does not claim that an
+already deployed Worker has changed.
+
+Implemented locally:
+
+- `crates/wfp-outbound/wrangler.toml` now sets `workers_dev=false` and
+  `preview_urls=false` explicitly. It declares no `route` or `routes`; the
+  outbound Worker remains a service-binding target for the dispatch namespace,
+  not a public application entry point.
+- The platform capability
+  `wfp_outbound_private_ingress_config_compiled` fail-closes WFP tenant smoke
+  and signed-authority transport readiness when either public subdomain setting
+  is absent/enabled or a top-level route is declared. The React/Bun Cloudflare
+  panel exposes this as compiled configuration evidence only.
+- `collect_wfp_outbound_readback.mjs` schema 2 reads the official script
+  subdomain endpoint and the account Worker Domains endpoint filtered by the
+  outbound service. A verified artifact now requires `enabled=false`,
+  `previews_enabled=false`, and zero Custom Domains, in addition to the
+  namespace, attachment, account-binding, and secret-ownership contract.
+- The collector remains read-only, accepts no token argument, rejects redirects
+  and credential echoes, and passes 24 positive/negative self-test cases.
+  WFP dispatch and paid egress smokes now require the compiled private-ingress
+  capability.
+
+Local release evidence passed the complete `bun run check` gate: three
+Rust/Wasm release builds, Workerd 11/11, frontend readiness 22/22, bundle
+redaction/budget/lint checks, 217 frontend calls against 320 Worker routes with
+zero static misses, the exact 22-file D1 migration set, workspace tests, and all
+three wasm32 checks.
+
+Production evidence remains deliberately stricter than the compiled flag. After
+the exposed credential is revoked, deploy with a rotated least-privilege token,
+archive schema-2 readback, and separately enumerate every account Zone Worker
+route to prove none points at `cinatoken-wfp-outbound`. The Worker must also have
+no Custom Domain, `workers.dev` hostname, or Preview URL before any paid WFP
+canary. Remote namespace attachment, outbound-only secret ownership, tenant
+readback, provider egress, central settlement/audit, route inventory, and
+rollback remain unverified. Production remains **NO-GO**.

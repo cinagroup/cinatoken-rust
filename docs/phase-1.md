@@ -674,9 +674,13 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   latter with explicit account, namespace, dispatcher, and outbound identities
   plus both confirmation flags. Archive its redacted `verified=true` output
   before any live egress smoke; it fails closed on trusted namespaces, identity
-  drift, wrong/missing outbound attachment, account-var mismatch, outbound-token
-  ownership drift, forbidden deploy/readback bearers, redirects, malformed API
-  envelopes, and oversized responses.
+   drift, wrong/missing outbound attachment, account-var mismatch, outbound-token
+   ownership drift, forbidden deploy/readback bearers, redirects, malformed API
+   envelopes, oversized responses, enabled workers.dev/Preview URLs, and any
+   Custom Domain associated with the outbound service. The tracked outbound
+   Wrangler config also declares no route. After credential rotation, archive a
+   separate account Zone-route inventory because the Domains endpoint does not
+   prove route absence.
   The paid-path preflight is now executable through
   `check:wfp-outbound:egress-contract`, `check:wfp-outbound:egress-plan`, and
   `smoke:wfp-outbound-egress`. Live mode is staging-host-pinned and executes one

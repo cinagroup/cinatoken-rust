@@ -659,6 +659,39 @@ pub(crate) fn wfp_outbound_egress_policy_compiled() -> bool {
         && !source.contains("passThroughOnException")
 }
 
+pub(crate) fn wfp_outbound_private_ingress_config_compiled() -> bool {
+    let config = include_str!("../../wfp-outbound/wrangler.toml");
+    let mut workers_dev = None;
+    let mut preview_urls = None;
+    let mut public_route_declared = false;
+
+    for raw_line in config.lines() {
+        let line = raw_line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            break;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "workers_dev" => {
+                if workers_dev.replace(value.trim()).is_some() {
+                    return false;
+                }
+            }
+            "preview_urls" => {
+                if preview_urls.replace(value.trim()).is_some() {
+                    return false;
+                }
+            }
+            "route" | "routes" => public_route_declared = true,
+            _ => {}
+        }
+    }
+
+    workers_dev == Some("false") && preview_urls == Some("false") && !public_route_declared
+}
+
 pub(crate) fn wfp_tenant_route_manifest_compiled() -> bool {
     let script = tenant_worker_script();
     script.contains("const SUPPORTED_ROUTES = [STATUS_PATH];")

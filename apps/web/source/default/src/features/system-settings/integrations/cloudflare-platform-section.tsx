@@ -905,6 +905,15 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Outbound private ingress config'),
+          description: t(
+            'Disables workers.dev and Preview URLs and declares no public route for the secret-bearing outbound Worker.'
+          ),
+          ready: capabilities.wfp_outbound_private_ingress_config_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
           label: t('Tenant smoke readiness'),
           description: t(
             'Requires DISPATCHER, dispatch gates, route manifest, internal dispatch checks, response-header guard, and AI Gateway policy contract.'
@@ -1481,20 +1490,21 @@ function buildCapabilityGroups(
             {
               grace:
                 capabilities.realtime_session_billing_orphan_recovery_grace_seconds,
-              limit:
-                capabilities.realtime_session_billing_orphan_sweep_limit,
+              limit: capabilities.realtime_session_billing_orphan_sweep_limit,
             }
           ),
           ready:
             capabilities.realtime_session_billing_global_orphan_recovery_ready &&
             capabilities.realtime_session_billing_ledger_status_compiled,
           readyLabel: t('Ready'),
-          missingLabel: capabilities.realtime_session_billing_global_orphan_recovery_enabled
-            ? t('Blocked')
-            : t('Disabled'),
-          missingVariant: capabilities.realtime_session_billing_global_orphan_recovery_enabled
-            ? 'red'
-            : 'grey',
+          missingLabel:
+            capabilities.realtime_session_billing_global_orphan_recovery_enabled
+              ? t('Blocked')
+              : t('Disabled'),
+          missingVariant:
+            capabilities.realtime_session_billing_global_orphan_recovery_enabled
+              ? 'red'
+              : 'grey',
         },
         {
           label: t('Realtime settlement retry'),

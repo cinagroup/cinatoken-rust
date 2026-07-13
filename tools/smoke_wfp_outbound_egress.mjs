@@ -536,6 +536,7 @@ function validateCapabilities(data) {
     "wfp_tenant_relay_authority_verifier_compiled",
     "wfp_tenant_response_header_guard_compiled",
     "wfp_outbound_egress_policy_compiled",
+    "wfp_outbound_private_ingress_config_compiled",
   ];
   for (const field of requiredTrue) {
     if (data?.[field] !== true) {
@@ -1142,6 +1143,7 @@ function capabilityFixture() {
     wfp_tenant_relay_authority_verifier_compiled: true,
     wfp_tenant_response_header_guard_compiled: true,
     wfp_outbound_egress_policy_compiled: true,
+    wfp_outbound_private_ingress_config_compiled: true,
     relay_ai_gateway_cross_model_fallback_enabled: false,
     relay_retry_times: 0,
     wfp_tenant_supported_routes: [

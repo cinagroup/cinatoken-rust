@@ -423,7 +423,10 @@ outbound Worker. That service permits only `POST application/json` with valid
 JSON up to 4 MiB to the exact account-scoped `/ai/run`,
 `/ai/v1/chat/completions`, `/ai/v1/responses`, and `/ai/v1/messages` URLs. It
 injects authentication, rebuilds request/response headers from allowlists, and
-blocks redirects.
+blocks redirects. Its tracked Wrangler config explicitly disables workers.dev
+and Preview URLs and declares no public route. A deploy is not accepted until
+remote readback also proves zero Custom Domains and an account-wide Zone-route
+inventory proves no route targets this service.
 
 | Var/secret | Kind | Required for | Notes |
 | --- | --- | --- | --- |
@@ -493,10 +496,12 @@ Smoke order:
    command line and does not read legacy/general Cloudflare token variables.
    Before the tenant verifier, run the independent outbound-attachment
    collector self-test and capture the dispatch namespace plus both platform
-   Workers through Cloudflare's official namespace, script settings, and script
-   secrets read APIs: [dispatch namespaces](https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/),
+   Workers through Cloudflare's official namespace, script settings, script
+   secrets, script subdomain, and Worker Domains read APIs: [dispatch namespaces](https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/),
    [script settings](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/script_and_version_settings/),
-   and [script secrets](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/).
+   [script secrets](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/),
+   [script subdomain](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/subdomain/methods/get/),
+   and [Worker Domains](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/).
 
    ```powershell
    bun run check:wfp-outbound:readback-collector
@@ -508,9 +513,14 @@ Smoke order:
    `verified=true` document proves the namespace stayed untrusted and stable,
    the exact `DISPATCHER` binding points to the requested namespace and
    `cinatoken-wfp-outbound`, the outbound service has the exact account var and
-   expected secret binding, and deploy/readback bearers are absent. It emits
-   secret names, never values. This is attachment and ownership evidence only;
-   it does not exercise tenant egress or prove that an AI bearer is valid.
+   expected secret binding, and deploy/readback bearers are absent. Schema 2
+   also requires workers.dev and Preview URLs disabled and zero Custom Domains.
+   It emits secret names, never values. Separately enumerate all Zones and
+   Worker routes with the rotated credential and fail if any route names
+   `cinatoken-wfp-outbound`; the service-filtered Domains API does not prove
+   Zone-route absence. This is attachment, ownership, and public-ingress
+   evidence only; it does not exercise tenant egress or prove that an AI bearer
+   is valid.
    Feed the uploader JSON, Cloudflare details/settings/content capture, and live
    dispatch JSON into `bun tools/verify_wfp_post_upload.mjs`. Archive a single
    `verified=true` result with

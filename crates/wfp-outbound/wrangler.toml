@@ -2,6 +2,8 @@ name = "cinatoken-wfp-outbound"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-07-11"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
 
 [build]
 command = "bun ../../tools/build_worker.mjs --crate wfp-outbound --release"

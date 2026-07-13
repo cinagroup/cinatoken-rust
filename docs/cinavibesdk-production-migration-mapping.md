@@ -916,3 +916,20 @@ entrypoint, concurrent schedule idempotency, and failed-row fairness. Remote
 dispatch namespace attachment, deployed DO eviction/redeploy, authenticated
 reserve/settlement ownership, AI Gateway/provider correlation, and rollback
 remain unverified, so the architecture mapping remains production **NO-GO**.
+
+## 2026-07-13 Private WFP Outbound Ingress Alignment
+
+The cinaVibeSDK comparison reinforces that an outbound Worker is an internal
+policy and credential boundary, not another public application origin.
+cinatoken-rust now encodes that ownership in deploy configuration:
+`cinatoken-wfp-outbound` disables workers.dev and Preview URLs and declares no
+route, while the dispatch namespace remains its intended caller.
+
+The root Rust Worker compiles this invariant into WFP readiness and the Bun
+frontend exposes it without claiming remote verification. Readback schema 2
+then checks the deployed script subdomain and service-filtered Custom Domains.
+This is stronger than source inspection but still does not enumerate Zone
+Worker routes. After credential rotation, an account-wide route inventory plus
+schema-2 readback, remote Dynamic Dispatch composition, provider call,
+settlement/audit correlation, and rollback remain required. Production remains
+**NO-GO**.

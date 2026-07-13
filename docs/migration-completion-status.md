@@ -162,6 +162,20 @@ A full diff of every Go-registered route against the Rust worker closed these
   tenant readback, live route/negative egress evidence, billing, and rollback
   are unverified. WFP production remains **NO-GO**.
 
+### WFP outbound public-ingress isolation (2026-07-13)
+
+- The tracked outbound Wrangler config now explicitly disables workers.dev and
+  Preview URLs and declares no public route. Worker capabilities and the
+  Cloudflare settings panel expose this as compiled configuration evidence.
+- Readback schema 2 requires the deployed script subdomain to report both flags
+  false and the service-filtered Worker Domains query to return zero Custom
+  Domains. The collector passes 24 local cases without reading the exposed
+  credential.
+- No deployed-state capture or account-wide Zone-route inventory exists yet.
+  Credential rotation, remote readback, route inventory, namespace attachment,
+  provider/billing canary, and rollback remain required; production is
+  **NO-GO**.
+
 ### Rust scheduling gateway ownership (2026-07-11)
 
 - `cinatoken-gateway` is now the live owner planner used before Worker binding

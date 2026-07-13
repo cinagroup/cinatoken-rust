@@ -993,3 +993,28 @@ Rollback disables new Realtime admission first, then the global recovery gate.
 Do not drop migration 0022 during an incident. Preserve D1 rows, reconcile each
 terminal outcome and quota delta, and keep Go/VPS authoritative until G8 is
 signed off.
+
+## 2026-07-13 WFP Outbound Private-Ingress Deployment Gate
+
+Before deploying or enabling paid WFP traffic:
+
+1. Revoke the exposed Cloudflare token and issue separate least-privilege deploy
+   and readback credentials. Never attach either credential to a tenant or the
+   outbound runtime.
+2. Build from the tracked config with `workers_dev=false`,
+   `preview_urls=false`, and no `route`/`routes`; require
+   `wfp_outbound_private_ingress_config_compiled=true` before smoke execution.
+3. Deploy only to isolated staging, run the schema-2 outbound readback, and
+   require workers.dev disabled, Preview URLs disabled, zero Custom Domains,
+   exact dispatch attachment, and outbound-only runtime secret ownership.
+4. Enumerate all account Zones and Worker routes with the rotated credential;
+   fail the gate if any route points to `cinatoken-wfp-outbound`. Archive only
+   redacted names/status, never credential values.
+5. Complete the remote main Worker -> Dynamic Dispatch -> Rust tenant -> Rust
+   outbound -> AI Gateway/provider -> central settlement/audit canary and the
+   documented negative cases. Rehearse removal of the namespace attachment and
+   disable paid WFP gates before any production decision.
+
+Compiled capability state alone cannot satisfy this gate. No remote evidence is
+currently archived, so Go/VPS remains authoritative and production is
+**NO-GO**.

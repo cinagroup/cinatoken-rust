@@ -644,6 +644,8 @@ function summarizeCapabilities(data) {
       data.wfp_tenant_ai_gateway_policy_compiled === true,
     wfp_outbound_egress_policy_compiled:
       data.wfp_outbound_egress_policy_compiled === true,
+    wfp_outbound_private_ingress_config_compiled:
+      data.wfp_outbound_private_ingress_config_compiled === true,
     wfp_tenant_smoke_ready: data.wfp_tenant_smoke_ready === true,
   };
 }
@@ -704,6 +706,7 @@ function expectedWfpCapabilityBooleans() {
     "wfp_preview_response_security_headers_compiled",
     "wfp_tenant_ai_gateway_policy_compiled",
     "wfp_outbound_egress_policy_compiled",
+    "wfp_outbound_private_ingress_config_compiled",
     "wfp_tenant_smoke_ready",
   ];
 }

@@ -193,12 +193,17 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   `[env.production]` blocks with placeholder resource IDs and environment-
   scoped observability sampling, ready for the first real staging deploy once
   the placeholders are replaced.
-- OpenAI-compatible channel selection now recognizes 12 providers: OpenAI(1),
-  Zhipu(16), OpenRouter(20), Moonshot(25), Perplexity(27), LingYiWanWu(31),
-  SiliconFlow(40), Mistral(42), DeepSeek(43), MokaAI(44), xAI(48),
-  Submodel(53). `default_base_url` returns each provider's documented upstream
-  root, and `upstream_v1_url` honors any trailing `/v<digit>` segment
-  (including Zhipu's `/v4`) instead of always appending `/v1`.
+- Generic OpenAI-compatible channel selection now matches the 14 channel types
+  that the Go source dispatches through `openai.Adaptor`: 1, 3, 6-10, 12, 13,
+  19, 20, 22, 31, and 47. OpenAI-shaped dedicated channel types remain outside
+  that set. DeepSeek(43) and xAI(48) now have explicit Rust adapters and
+  fail-closed route sets; the remaining dedicated types stay deferred.
+- The xAI adapter covers chat completions, legacy completions, Responses, and
+  image generations. It preserves the Go `-search` and
+  `grok-3-mini-{high,low}` compatibility transforms, forwards current Responses
+  tool payloads unchanged, and allows default-off AI Gateway planning only for
+  chat and Responses. Live usage, error, billing, and rollback evidence is
+  still required before an xAI canary.
 - Relay now walks the full ordered channel candidate list and retries against
   the next candidate when the upstream returns a Go-default retryable status
   (excluding 504/524) or fetch fails. `RELAY_RETRY_TIMES` (default 0) controls

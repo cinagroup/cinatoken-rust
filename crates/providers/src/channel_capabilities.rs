@@ -9,6 +9,7 @@ pub enum ChannelAdapterKind {
     Rerank,
     CloudflareWorkersAi,
     DeepSeek,
+    XaiOpenAi,
     DedicatedPending,
     TaskOnly,
     Unsupported,
@@ -124,6 +125,12 @@ const DEEPSEEK_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ChatCompletions,
     ProviderRelayRoute::Completions,
     ProviderRelayRoute::AnthropicMessages,
+];
+const XAI_ROUTES: &[ProviderRelayRoute] = &[
+    ProviderRelayRoute::ChatCompletions,
+    ProviderRelayRoute::Completions,
+    ProviderRelayRoute::Responses,
+    ProviderRelayRoute::ImageGenerations,
 ];
 const NO_ROUTES: &[ProviderRelayRoute] = &[];
 
@@ -488,10 +495,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         48,
         "xAI",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated xAI adapter is not migrated"
+        XaiOpenAi,
+        Partial,
+        XAI_ROUTES,
+        "dedicated chat, legacy completions, Responses, and image generation adapter is implemented"
     ),
     capability!(
         49,
@@ -648,6 +655,22 @@ mod tests {
         assert!(!channel_supports_relay_route(
             15,
             ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(channel_supports_relay_route(
+            48,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(channel_supports_relay_route(
+            48,
+            ProviderRelayRoute::Responses
+        ));
+        assert!(channel_supports_relay_route(
+            48,
+            ProviderRelayRoute::ImageGenerations
+        ));
+        assert!(!channel_supports_relay_route(
+            48,
+            ProviderRelayRoute::Embeddings
         ));
         assert!(!channel_supports_relay_route(
             21,

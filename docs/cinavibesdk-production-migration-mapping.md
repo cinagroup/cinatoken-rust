@@ -805,3 +805,19 @@ outbound Worker can cooperate through service bindings with one replay winner
 and one terminal provider call. This is stronger local runtime evidence than a
 source-only mapping, but it is still not remote dispatch-namespace attachment,
 deployed compatibility, or production evidence.
+
+## 2026-07-13 Dedicated Provider Registry Boundary
+
+The xAI channel migration exercises the same separation of responsibilities as
+the cinaVibeSDK-inspired Worker architecture: the central Rust relay retains
+channel selection, quota reservation, settlement, audit, and fallback policy;
+`crates/providers` owns provider-specific URL, capability, request-transform,
+and AI Gateway route planning; WFP remains an optional transport boundary and
+does not acquire billing authority or provider credentials.
+
+Channel type 48 is deliberately not admitted to the generic OpenAI-compatible
+set. Its explicit capability permits chat completions, legacy completions,
+Responses, and image generations. AI Gateway planning remains default-off,
+channel-opt-in, and narrower: only chat and Responses are eligible. This local
+boundary proof does not replace remote Gateway logs, WFP attachment readback,
+provider usage correlation, or rollback evidence.

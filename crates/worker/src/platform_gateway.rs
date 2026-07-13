@@ -2062,8 +2062,13 @@ fn cloudflare_ai_gateway_token_configured(env: &Env) -> bool {
 fn relay_ai_gateway_rest_routes() -> Vec<&'static str> {
     MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS
         .iter()
-        .map(|plan| plan.rest_endpoint.relay_path())
-        .collect()
+        .fold(Vec::new(), |mut routes, plan| {
+            let route = plan.rest_endpoint.relay_path();
+            if !routes.contains(&route) {
+                routes.push(route);
+            }
+            routes
+        })
 }
 
 fn relay_ai_gateway_cutover_guards() -> Vec<&'static str> {

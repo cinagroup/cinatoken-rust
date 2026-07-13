@@ -10339,3 +10339,30 @@ Local evidence:
 No exposed credential was used. Authenticated staging import/browser/provider
 maintenance, remote evidence archival, Queue/Workflow full-fleet orchestration,
 rollback, capacity, and cost proof remain open. Production remains **NO-GO**.
+
+### 22.167 2026-07-13 Dedicated xAI Provider Adapter
+
+This increment advances the G3 provider program without weakening the audited
+Go dispatch boundary. Channel type 48 remains excluded from the generic
+OpenAI-compatible set and is now owned by a dedicated `XaiOpenAi` provider
+registry path.
+
+Implemented locally:
+
+- Explicit capabilities for chat completions, legacy completions, Responses,
+  and image generations; unsupported routes fail before quota reserve.
+- Source-compatible `-search` and `grok-3-mini-{high,low}` request transforms,
+  including the guarded `max_tokens` to `max_completion_tokens` move.
+- xAI image-generation request shaping and pass-through of current Responses
+  payloads, including native `web_search` tool requests.
+- Central relay integration for Bearer forwarding, JSON/SSE usage extraction,
+  estimate fallback, settlement, audit, retries, and response limits.
+- Default-off, per-channel AI Gateway planning for chat and Responses only.
+  Legacy completions and image generations remain on the direct provider path.
+- Frontend provider-readiness coverage using the backend-owned type-48 Partial
+  capability rather than a UI-specific allowlist.
+
+Production status remains **NO-GO**. A rotated xAI credential must be exercised
+in staging for non-stream, stream, Responses search, image generation, upstream
+errors, usage and billing reconciliation, AI Gateway correlation, direct
+fallback, and per-provider rollback before this adapter can enter a canary.

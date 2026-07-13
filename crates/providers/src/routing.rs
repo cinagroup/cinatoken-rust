@@ -12,6 +12,7 @@ pub enum ProviderKind {
     AnthropicMessages,
     DeepSeekOpenAi,
     DeepSeekMessages,
+    XaiOpenAi,
     GeminiNative,
     CloudflareWorkersAi,
     AiGateway,
@@ -24,6 +25,7 @@ impl ProviderKind {
             Self::AnthropicMessages => Some(AiGatewayRouteKind::Anthropic),
             Self::DeepSeekOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::DeepSeekMessages => Some(AiGatewayRouteKind::Anthropic),
+            Self::XaiOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::GeminiNative => Some(AiGatewayRouteKind::GoogleAiStudio),
             Self::CloudflareWorkersAi => Some(AiGatewayRouteKind::WorkersAi),
             Self::AiGateway => None,
@@ -97,6 +99,9 @@ impl ProviderRegistry {
             }
             ProviderKind::DeepSeekMessages => {
                 crate::deepseek::deepseek_messages_url(endpoint.base_url)
+            }
+            ProviderKind::XaiOpenAi => {
+                crate::xai::xai_openai_url(endpoint.base_url, endpoint.endpoint_path)
             }
             ProviderKind::GeminiNative => upstream_gemini_native_url(
                 endpoint.base_url,
@@ -206,6 +211,22 @@ mod tests {
             route.ai_gateway_route,
             Some(AiGatewayRouteKind::GoogleAiStudio)
         );
+    }
+
+    #[test]
+    fn registry_resolves_dedicated_xai_without_generic_classification() {
+        let route = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::XaiOpenAi,
+            channel_type: 48,
+            base_url: None,
+            endpoint_path: "responses",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+
+        assert_eq!(route.upstream_url, "https://api.x.ai/v1/responses");
+        assert_eq!(route.ai_gateway_route, Some(AiGatewayRouteKind::Compat));
     }
 
     #[test]

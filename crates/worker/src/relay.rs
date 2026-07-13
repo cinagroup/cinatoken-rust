@@ -21,6 +21,7 @@ use cinatoken_providers::{
     },
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
+    xai::apply_xai_request,
     ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry, ProviderRelayRoute,
 };
 use cinatoken_relay::{
@@ -29,7 +30,7 @@ use cinatoken_relay::{
     mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
     usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
-    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK,
+    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_XAI,
     RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
@@ -118,12 +119,13 @@ const ESTIMATED_FILE_INPUT_TOKENS: i64 = 4_096;
 const MODEL_OBJECT_CREATED: i64 = 1_626_777_600;
 const MODEL_LIST_CACHE_MODEL_KEY: &str = "__model_list__";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayProviderKind {
     OpenAiCompatible,
     AnthropicMessages,
     DeepSeekOpenAi,
     DeepSeekMessages,
+    XaiOpenAi,
     GeminiNative,
 }
 
@@ -244,6 +246,10 @@ impl RelayEndpoint {
     }
 
     fn effective_provider(&self, channel_type: i32) -> RelayProviderKind {
+        if channel_type == CHANNEL_TYPE_XAI && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::XaiOpenAi;
+        }
         if channel_type == CHANNEL_TYPE_DEEPSEEK {
             return match self.provider {
                 RelayProviderKind::OpenAiCompatible => RelayProviderKind::DeepSeekOpenAi,
@@ -260,6 +266,7 @@ impl RelayEndpoint {
             RelayProviderKind::AnthropicMessages => RegistryProviderKind::AnthropicMessages,
             RelayProviderKind::DeepSeekOpenAi => RegistryProviderKind::DeepSeekOpenAi,
             RelayProviderKind::DeepSeekMessages => RegistryProviderKind::DeepSeekMessages,
+            RelayProviderKind::XaiOpenAi => RegistryProviderKind::XaiOpenAi,
             RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
         }
     }
@@ -283,7 +290,8 @@ impl RelayEndpoint {
             },
             RelayProviderKind::AnthropicMessages
             | RelayProviderKind::DeepSeekOpenAi
-            | RelayProviderKind::DeepSeekMessages => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+            | RelayProviderKind::DeepSeekMessages
+            | RelayProviderKind::XaiOpenAi => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
         }
     }
 }
@@ -1352,7 +1360,9 @@ async fn relay_endpoint_with_auth(
                 if inject_stream_options
                     && matches!(
                         attempt_provider,
-                        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+                        RelayProviderKind::OpenAiCompatible
+                            | RelayProviderKind::DeepSeekOpenAi
+                            | RelayProviderKind::XaiOpenAi
                     )
                 {
                     cinatoken_relay::openai_compatible::apply_stream_options(
@@ -2462,7 +2472,9 @@ async fn execute_relay_attempt_plan(
                 if inject_stream_options
                     && matches!(
                         attempt_provider,
-                        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+                        RelayProviderKind::OpenAiCompatible
+                            | RelayProviderKind::DeepSeekOpenAi
+                            | RelayProviderKind::XaiOpenAi
                     )
                 {
                     cinatoken_relay::openai_compatible::apply_stream_options(
@@ -5113,7 +5125,9 @@ async fn forward_relay_request(
         return forward_wfp_relay_transport(env, url, &worker_name, channel.id, body).await;
     }
     match provider {
-        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi => {
+        RelayProviderKind::OpenAiCompatible
+        | RelayProviderKind::DeepSeekOpenAi
+        | RelayProviderKind::XaiOpenAi => {
             forward_openai_compatible(url, upstream_key, channel, body).await
         }
         RelayProviderKind::AnthropicMessages => {
@@ -5950,7 +5964,9 @@ async fn response_usage_summary(
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
-            RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+            RelayProviderKind::OpenAiCompatible
+                | RelayProviderKind::DeepSeekOpenAi
+                | RelayProviderKind::XaiOpenAi
         )
         && endpoint_path != "rerank";
     let (usage, locally_estimated) = resolve_non_stream_usage(
@@ -5980,9 +5996,9 @@ fn usage_summary_for_provider(
         RelayProviderKind::OpenAiCompatible if endpoint_path == "rerank" => {
             usage_summary_from_rerank_body(body)
         }
-        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi => {
-            usage_summary_from_body(body)
-        }
+        RelayProviderKind::OpenAiCompatible
+        | RelayProviderKind::DeepSeekOpenAi
+        | RelayProviderKind::XaiOpenAi => usage_summary_from_body(body),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
             usage_summary_from_anthropic_body(body)
         }
@@ -6077,9 +6093,9 @@ async fn streaming_usage_summary(
 ) -> worker::Result<(UsageSummary, bool)> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
-        RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi => {
-            SseUsageAccumulator::default()
-        }
+        RelayProviderKind::OpenAiCompatible
+        | RelayProviderKind::DeepSeekOpenAi
+        | RelayProviderKind::XaiOpenAi => SseUsageAccumulator::default(),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
             SseUsageAccumulator::anthropic()
         }
@@ -6096,7 +6112,9 @@ async fn streaming_usage_summary(
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
-            RelayProviderKind::OpenAiCompatible | RelayProviderKind::DeepSeekOpenAi
+            RelayProviderKind::OpenAiCompatible
+                | RelayProviderKind::DeepSeekOpenAi
+                | RelayProviderKind::XaiOpenAi
         );
     let (usage, locally_estimated) = resolve_stream_usage(
         usage,
@@ -7388,6 +7406,9 @@ fn apply_endpoint_request_transform(body: &mut Value, endpoint_path: &str, chann
     if endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE {
         apply_cohere_rerank_request_transform(body);
     }
+    if channel.channel_type == CHANNEL_TYPE_XAI {
+        apply_xai_request(body, endpoint_path);
+    }
 }
 
 fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKind) {
@@ -7400,6 +7421,7 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         }
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::GeminiNative => {}
     }
 }
@@ -10132,6 +10154,66 @@ mod tests {
         apply_provider_request_transform(&mut body, RelayProviderKind::DeepSeekOpenAi);
         assert_eq!(body["model"], "deepseek-v4-preview");
         assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn xai_uses_a_dedicated_provider_with_route_specific_transforms() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_XAI), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_XAI;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::XaiOpenAi
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::XaiOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://api.x.ai/v1/chat/completions"
+        );
+
+        let mut chat_body = json!({
+            "model": "grok-3-mini-high",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64
+        });
+        apply_endpoint_request_transform(&mut chat_body, "chat/completions", &channel);
+        assert_eq!(chat_body["model"], "grok-3-mini");
+        assert_eq!(chat_body["reasoning_effort"], "high");
+        assert_eq!(chat_body["max_completion_tokens"], 64);
+
+        let mut responses = ai_gateway_chat_endpoint_for_tests();
+        responses.route = ProviderRelayRoute::Responses;
+        responses.upstream_path = "responses".to_string();
+        assert_eq!(
+            responses.upstream_url(&channel),
+            "https://api.x.ai/v1/responses"
+        );
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        let gateway = plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &responses,
+            &channel,
+            "xai/grok-4.5",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            gateway.plan.endpoint,
+            cinatoken_providers::ai_gateway::AiGatewayRestEndpoint::Responses
+        );
+
+        assert!(channel_supports_relay_route(
+            CHANNEL_TYPE_XAI,
+            ProviderRelayRoute::ImageGenerations
+        ));
+        assert!(!channel_supports_relay_route(
+            CHANNEL_TYPE_XAI,
+            ProviderRelayRoute::Embeddings
+        ));
     }
 
     #[test]

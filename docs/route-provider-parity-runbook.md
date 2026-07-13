@@ -201,7 +201,7 @@ fixtures.
 | Provider Family | Route Cases | Source Channel Types | Rust Status | Live Smoke | Billing Shadow | Rollback |
 | --- | --- | --- | --- | --- | --- | --- |
 | OpenAI-compatible (generic adapter) | Chat JSON/SSE, completions JSON/SSE, responses JSON/SSE, embeddings, images, audio speech | 1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47 | Partial | TBD | TBD | Token/group/channel route back to Go. |
-| Dedicated OpenAI-like adapters | Chat JSON/SSE, embeddings | 27, 40, 42, 43, 44, 48, 53; 25 (Claude+OpenAI bridge) | Planned | TBD | TBD | Per-adapter Rust group disable; route back to Go. |
+| Dedicated OpenAI-like adapters | Per-adapter explicit routes; xAI: chat/completions JSON/SSE, legacy completions JSON/SSE, Responses JSON/SSE, image generations JSON | 27, 40, 42, 43, 44, 48, 53; 25 (Claude+OpenAI bridge) | Partial: DeepSeek(43) and xAI(48) have dedicated Rust adapters; all others fail closed | xAI TBD | xAI TBD | Per-adapter Rust group disable; route back to Go. |
 | Anthropic native | Messages JSON/SSE | 14 | Partial | TBD | TBD | Disable Anthropic Rust channel group. |
 | Gemini native | generate, stream, embed, batch embed, countTokens | 24 | Partial | TBD | TBD | Disable Gemini Rust channel group. |
 | Jina rerank | Rerank JSON | 38 | Partial | TBD | TBD | Disable rerank Rust group. |

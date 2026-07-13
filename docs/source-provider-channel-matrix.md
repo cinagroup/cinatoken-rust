@@ -135,6 +135,12 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 56 | Replicate | api.replicate.com | Replicate | replicate | Dedicated (text+media) | D: media + text |
 | 57 | Codex | chatgpt.com | Codex | codex | Dedicated (subscription) | E: subscription credential |
 
+Rust implementation note (2026-07-13): channel 48 now has a dedicated,
+route-explicit xAI adapter for chat completions, legacy completions, Responses,
+and image generations. It remains outside the generic OpenAI-compatible set.
+This is local implementation evidence only; live staging and billing evidence
+remain open under G3.
+
 Channel type 0 (`Unknown`) and the trailing `Dummy` sentinel are counters, not
 real providers.
 

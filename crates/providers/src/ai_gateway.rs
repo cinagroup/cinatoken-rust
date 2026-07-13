@@ -89,6 +89,16 @@ pub const MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS: &[AiGatewayRestRoutePlan] = &[
         relay_path: "messages",
         rest_endpoint: AiGatewayRestEndpoint::Messages,
     },
+    AiGatewayRestRoutePlan {
+        provider: ProviderKind::XaiOpenAi,
+        relay_path: "chat/completions",
+        rest_endpoint: AiGatewayRestEndpoint::ChatCompletions,
+    },
+    AiGatewayRestRoutePlan {
+        provider: ProviderKind::XaiOpenAi,
+        relay_path: "responses",
+        rest_endpoint: AiGatewayRestEndpoint::Responses,
+    },
 ];
 
 pub const MAIN_RELAY_AI_GATEWAY_CUTOVER_GUARDS: &[&str] = &[
@@ -406,10 +416,12 @@ pub fn rest_endpoint_for_relay_route(
         .iter()
         .find(|plan| plan.provider == provider && plan.relay_path == relay_path)
         .map(|plan| plan.rest_endpoint)
-        .ok_or_else(|| {
+        .ok_or({
             if matches!(
                 provider,
-                ProviderKind::OpenAiCompatible | ProviderKind::AnthropicMessages
+                ProviderKind::OpenAiCompatible
+                    | ProviderKind::AnthropicMessages
+                    | ProviderKind::XaiOpenAi
             ) {
                 AiGatewayRestPlanError::UnsupportedEndpointPath
             } else {
@@ -666,6 +678,14 @@ mod tests {
             AiGatewayRestEndpoint::Messages
         );
         assert_eq!(
+            rest_endpoint_for_relay_route(ProviderKind::XaiOpenAi, "chat/completions").unwrap(),
+            AiGatewayRestEndpoint::ChatCompletions
+        );
+        assert_eq!(
+            rest_endpoint_for_relay_route(ProviderKind::XaiOpenAi, "responses").unwrap(),
+            AiGatewayRestEndpoint::Responses
+        );
+        assert_eq!(
             rest_endpoint_for_relay_route(ProviderKind::CloudflareWorkersAi, "ai/run").unwrap(),
             AiGatewayRestEndpoint::Run
         );
@@ -681,6 +701,10 @@ mod tests {
         assert_eq!(
             rest_endpoint_for_relay_route(ProviderKind::OpenAiCompatible, "completions")
                 .unwrap_err(),
+            AiGatewayRestPlanError::UnsupportedEndpointPath
+        );
+        assert_eq!(
+            rest_endpoint_for_relay_route(ProviderKind::XaiOpenAi, "completions").unwrap_err(),
             AiGatewayRestPlanError::UnsupportedEndpointPath
         );
         assert_eq!(

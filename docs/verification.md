@@ -3361,3 +3361,21 @@ rollback. No exposed Cloudflare token was used.
   remote D1 import, authenticated browser operation, provider maintenance run,
   Cloudflare deployment, or cutover was performed. Credential rotation and all
   G2/G5/G7/G8 evidence remain blocking; production is **NO-GO**.
+
+## 2026-07-13 Dedicated xAI Adapter Verification
+
+- `cargo test -p cinatoken-providers`: 32/32 passed.
+- `cargo clippy -p cinatoken-providers --no-deps -- -D warnings`: passed.
+- The focused Worker xAI provider, transform, capability, and AI Gateway test
+  passed.
+- Type 48 fails closed outside chat completions, legacy completions, Responses,
+  and image generations. Its AI Gateway plan is narrower and rejects legacy
+  completions.
+- `cargo test -p cinatoken-worker --lib`: 587/587 passed; Worker wasm32 check
+  passed.
+- Frontend type-48 readiness fixture: 2/2 passed.
+- The complete `bun run check` release gate passed, including three release
+  Worker builds, Workerd 7/7, frontend build/redaction/budget/lint/route audits,
+  21-file D1 replay, workspace tests, and main/tenant/outbound wasm32 checks.
+- No live provider or Cloudflare credential was used; production remains
+  **NO-GO** pending the documented staging evidence.

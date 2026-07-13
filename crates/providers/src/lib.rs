@@ -6,6 +6,7 @@ pub mod ai_gateway;
 pub mod channel_capabilities;
 pub mod deepseek;
 pub mod routing;
+pub mod xai;
 
 pub use channel_capabilities::{
     channel_capabilities, channel_capability, channel_supports_relay_route,

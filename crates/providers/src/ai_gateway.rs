@@ -2,7 +2,7 @@ use std::fmt;
 
 use cinatoken_relay::{
     openai_compatible::{CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_OPENAI},
-    CHANNEL_TYPE_DEEPSEEK,
+    CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_XAI,
 };
 
 use crate::routing::ProviderKind;
@@ -88,6 +88,11 @@ pub const MAIN_RELAY_AI_GATEWAY_REST_ROUTE_PLANS: &[AiGatewayRestRoutePlan] = &[
         provider: ProviderKind::AnthropicMessages,
         relay_path: "messages",
         rest_endpoint: AiGatewayRestEndpoint::Messages,
+    },
+    AiGatewayRestRoutePlan {
+        provider: ProviderKind::MistralOpenAi,
+        relay_path: "chat/completions",
+        rest_endpoint: AiGatewayRestEndpoint::ChatCompletions,
     },
     AiGatewayRestRoutePlan {
         provider: ProviderKind::XaiOpenAi,
@@ -179,6 +184,8 @@ pub struct AiGatewayModelProvider {
 const OPENAI_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_OPENAI];
 const ANTHROPIC_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_ANTHROPIC];
 const DEEPSEEK_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_DEEPSEEK];
+const MISTRAL_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_MISTRAL];
+const XAI_DIRECT_CHANNEL_TYPES: &[i32] = &[CHANNEL_TYPE_XAI];
 const NO_DIRECT_CHANNEL_TYPES: &[i32] = &[];
 
 // Keep this table as the single authority for REST model prefixes and safe
@@ -216,8 +223,8 @@ pub const AI_GATEWAY_MODEL_PROVIDERS: &[AiGatewayModelProvider] = &[
     AiGatewayModelProvider {
         author: AiGatewayModelAuthor::Xai,
         prefix: "xai/",
-        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
-        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        direct_model_policy: AiGatewayDirectModelPolicy::StripPrefix,
+        direct_channel_types: XAI_DIRECT_CHANNEL_TYPES,
         messages_schema_supported: true,
     },
     AiGatewayModelProvider {
@@ -244,8 +251,8 @@ pub const AI_GATEWAY_MODEL_PROVIDERS: &[AiGatewayModelProvider] = &[
     AiGatewayModelProvider {
         author: AiGatewayModelAuthor::Mistral,
         prefix: "mistral/",
-        direct_model_policy: AiGatewayDirectModelPolicy::Unsupported,
-        direct_channel_types: NO_DIRECT_CHANNEL_TYPES,
+        direct_model_policy: AiGatewayDirectModelPolicy::StripPrefix,
+        direct_channel_types: MISTRAL_DIRECT_CHANNEL_TYPES,
         messages_schema_supported: true,
     },
     AiGatewayModelProvider {
@@ -421,6 +428,7 @@ pub fn rest_endpoint_for_relay_route(
                 provider,
                 ProviderKind::OpenAiCompatible
                     | ProviderKind::AnthropicMessages
+                    | ProviderKind::MistralOpenAi
                     | ProviderKind::XaiOpenAi
             ) {
                 AiGatewayRestPlanError::UnsupportedEndpointPath
@@ -678,6 +686,10 @@ mod tests {
             AiGatewayRestEndpoint::Messages
         );
         assert_eq!(
+            rest_endpoint_for_relay_route(ProviderKind::MistralOpenAi, "chat/completions").unwrap(),
+            AiGatewayRestEndpoint::ChatCompletions
+        );
+        assert_eq!(
             rest_endpoint_for_relay_route(ProviderKind::XaiOpenAi, "chat/completions").unwrap(),
             AiGatewayRestEndpoint::ChatCompletions
         );
@@ -701,6 +713,10 @@ mod tests {
         assert_eq!(
             rest_endpoint_for_relay_route(ProviderKind::OpenAiCompatible, "completions")
                 .unwrap_err(),
+            AiGatewayRestPlanError::UnsupportedEndpointPath
+        );
+        assert_eq!(
+            rest_endpoint_for_relay_route(ProviderKind::MistralOpenAi, "responses").unwrap_err(),
             AiGatewayRestPlanError::UnsupportedEndpointPath
         );
         assert_eq!(
@@ -770,6 +786,22 @@ mod tests {
                 CHANNEL_TYPE_DEEPSEEK
             ),
             Some("deepseek-chat")
+        );
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "mistral/mistral-large-latest",
+                AiGatewayModelAuthor::Mistral,
+                CHANNEL_TYPE_MISTRAL
+            ),
+            Some("mistral-large-latest")
+        );
+        assert_eq!(
+            direct_provider_model_for_channel(
+                "xai/grok-4.5",
+                AiGatewayModelAuthor::Xai,
+                CHANNEL_TYPE_XAI
+            ),
+            Some("grok-4.5")
         );
         assert_eq!(
             direct_provider_model_for_channel(

@@ -28,7 +28,19 @@ describe('channel provider relay readiness', () => {
       ],
       reason: 'dedicated route-explicit implementation',
     }
-    const index = indexProviderReadiness([deepseek, xai])
+    const mistral = {
+      channel_type: 42,
+      name: 'Mistral',
+      adapter: 'mistral_open_ai',
+      readiness: 'partial' as const,
+      routes: [{ method: 'POST', path: '/v1/chat/completions' }],
+      reason: 'dedicated Go-compatible chat implementation',
+    }
+    const index = indexProviderReadiness([mistral, deepseek, xai])
+    assert.equal(index.get(42), mistral)
+    assert.deepEqual(index.get(42)?.routes, [
+      { method: 'POST', path: '/v1/chat/completions' },
+    ])
     assert.equal(index.get(43), deepseek)
     assert.equal(index.get(43)?.routes[0]?.path, '/v1/messages')
     assert.equal(index.get(48), xai)

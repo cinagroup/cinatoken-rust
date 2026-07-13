@@ -201,14 +201,14 @@ fixtures.
 | Provider Family | Route Cases | Source Channel Types | Rust Status | Live Smoke | Billing Shadow | Rollback |
 | --- | --- | --- | --- | --- | --- | --- |
 | OpenAI-compatible (generic adapter) | Chat JSON/SSE, completions JSON/SSE, responses JSON/SSE, embeddings, images, audio speech | 1, 3, 6-10, 12, 13, 19, 20, 22, 31, 47 | Partial | TBD | TBD | Token/group/channel route back to Go. |
-| Dedicated OpenAI-like adapters | Per-adapter explicit routes; xAI: chat/completions JSON/SSE, legacy completions JSON/SSE, Responses JSON/SSE, image generations JSON | 27, 40, 42, 43, 44, 48, 53; 25 (Claude+OpenAI bridge) | Partial: DeepSeek(43) and xAI(48) have dedicated Rust adapters; all others fail closed | xAI TBD | xAI TBD | Per-adapter Rust group disable; route back to Go. |
+| Dedicated OpenAI-like adapters | Per-adapter explicit routes; Mistral: chat JSON/SSE; xAI: chat JSON/SSE, legacy completions JSON/SSE, Responses JSON/SSE, image generations JSON | 27, 40, 42, 43, 44, 48, 53; 25 (Claude+OpenAI bridge) | Partial: Mistral(42), DeepSeek(43), and xAI(48) have dedicated Rust adapters; all others fail closed | Mistral/xAI TBD | Mistral/xAI TBD | Per-adapter Rust group disable; route back to Go. |
 | Anthropic native | Messages JSON/SSE | 14 | Partial | TBD | TBD | Disable Anthropic Rust channel group. |
 | Gemini native | generate, stream, embed, batch embed, countTokens | 24 | Partial | TBD | TBD | Disable Gemini Rust channel group. |
 | Jina rerank | Rerank JSON | 38 | Partial | TBD | TBD | Disable rerank Rust group. |
 | Cohere rerank | Rerank JSON transform | 34 | Partial | TBD | TBD | Disable rerank Rust group. |
-| Regional adapters | Baidu, Zhipu, Ali, Tencent, Xunfei, 360, VolcEngine | 15-19, 23, 45, 46 | Planned | Blocked | Blocked | Keep on Go. |
-| Self-hosted/application APIs | Ollama, Xinference, Dify, Coze, FastGPT | 4, 22, 37, 47, 49 | Planned | Blocked | Blocked | Keep on Go or use service/Tunnel decision. |
-| Task/media providers | Midjourney, Suno, Kling, Jimeng, Vidu, Sora, Replicate/video | 2, 5, 36, 50-56 | Planned | Blocked | Blocked | Keep on Go until Queue/R2 task plan passes. |
+| Regional adapters | Baidu, Zhipu, Ali, Tencent, Xunfei, 360, VolcEngine | 15-18, 23, 45, 46 | Planned | Blocked | Blocked | Keep on Go. |
+| Self-hosted/application APIs | Ollama, Dify, FastGPT | 4, 37, 49 | Planned | Blocked | Blocked | Keep on Go or use service/Tunnel decision. |
+| Task/media providers | Midjourney, Suno, Kling, Jimeng, Vidu, Sora, Replicate/video | 2, 5, 36, 50-52, 54-56 | Planned | Blocked | Blocked | Keep on Go until Queue/R2 task plan passes. |
 
 ## Live Smoke Evidence
 

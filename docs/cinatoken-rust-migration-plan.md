@@ -5665,6 +5665,12 @@ Remaining migration gaps:
 
 ### 22.87 2026-07-06 Main Relay AI Gateway Same-Channel Fallback
 
+Historical note: the initial retry-status policy recorded in this section was
+superseded by the hardened contract in 22.168. Current direct fallback is
+limited to Gateway fetch errors and server responses `500-503`, `505-523`, and
+`525-599`; `401`, `403`, `429`, `504`, and `524` never authorize bypassing
+Gateway policy.
+
 This increment closes the local M7 fallback policy decision before staging
 canary. The main relay still uses the default-off AI Gateway forwarder only
 after the runtime gate, channel opt-in, provider-prefix, route, and custom
@@ -5675,13 +5681,11 @@ provider channel before the existing cross-channel retry loop sees the result.
 Implemented:
 
 - Added `should_ai_gateway_direct_fallback` in `crates/worker/src/relay.rs`.
-  It deliberately reuses the existing Go-compatible `is_retryable_status`
-  table instead of inventing a separate Gateway-only status matrix.
+  The current implementation uses the dedicated hardened status matrix above,
+  rather than the broader provider retry table.
 - Updated the JSON relay attempt loop so `forward_ai_gateway_rest` has a
   same-channel direct fallback on:
-  - Gateway responses whose status is retryable under the compiled relay retry
-    policy, for example 401/403/429/5xx ranges except the intentionally
-    non-retried timeout statuses.
+  - Gateway server failures admitted by the hardened status matrix above.
   - Gateway fetch errors before a Gateway response is available.
 - Kept Gateway response bodies unread on fallback. This avoids adding an
   unbounded response read in the Worker hot path and leaves provider response
@@ -9883,10 +9887,10 @@ AI Gateway multi-model routing:
   Mistral, Cohere, Perplexity, Google Vertex AI, Cerebras, Baseten, Parallel,
   and Workers AI `@cf/`. The undocumented `cloudflare/` alias fails closed.
 - Gateway eligibility and same-channel direct fallback are separate facts.
-  Only OpenAI, Anthropic, and DeepSeek currently have a Rust channel adapter
-  that proves the provider-native body rewrite for an implemented route. All
-  other registered prefixes remain Gateway-only until their deferred adapters
-  and provider smokes close.
+  OpenAI, Anthropic, DeepSeek, Mistral, and xAI currently have a matching Rust
+  channel adapter that proves provider-native model recovery for an implemented
+  route. All other registered prefixes remain Gateway-only until their deferred
+  adapters and provider smokes close.
 - `/api/platform/capabilities`, the default frontend readiness panel, and the
   AI Gateway smoke contract expose and validate both prefix sets. The smoke
   rejects a Gateway-only provider appearing in the direct-fallback set.
@@ -10366,3 +10370,54 @@ Production status remains **NO-GO**. A rotated xAI credential must be exercised
 in staging for non-stream, stream, Responses search, image generation, upstream
 errors, usage and billing reconciliation, AI Gateway correlation, direct
 fallback, and per-provider rollback before this adapter can enter a canary.
+
+### 22.168 2026-07-13 Dedicated Mistral Adapter And Gateway Fallback Audit
+
+This increment migrates Mistral channel type 42 through the same provider
+registry boundary as xAI and repairs an xAI direct-fallback gap found during the
+renewed completion audit. Neither type is admitted to the generic
+OpenAI-compatible set.
+
+Implemented locally:
+
+- Mistral chat completions now have an explicit Partial capability; embeddings,
+  Responses, legacy completions, and all other routes fail before quota reserve.
+  This matches the Go adapter, whose embedding and Responses converters return
+  unimplemented errors and whose request converter is chat-specific.
+- The Rust transform ports the Go top-level/message field whitelist, converts
+  image URL objects to Mistral's string form, normalizes supported multimodal
+  parts, preserves empty assistant tool-call content as an array, and applies
+  `max_completion_tokens` precedence through upstream `max_tokens`.
+- Invalid tool-call IDs are remapped to 9-character alphanumeric values with a
+  request-local consistency map. Runtime IDs use unbiased rejection sampling
+  over Worker Web Crypto-backed `getrandom`; entropy or shape failure is a
+  secret-free configuration failure recorded in the bounded attempt audit.
+- The shared chat-completions request boundary now rejects missing/empty
+  messages (except Go-compatible FIM prefix/suffix requests), non-object
+  messages/tools, and invalid boolean/numeric/token field types before quota
+  reserve or provider selection, matching the Go typed-request boundary for the
+  fields consumed by this adapter.
+- Mistral chat is eligible for the default-off, channel-opt-in AI Gateway REST
+  path. Mistral and xAI provider-prefixed models now support audited same-channel
+  direct fallback. It restores the provider-native model, preserves Mistral's
+  already-normalized body, reapplies xAI's model-sensitive transform, and then
+  continues through central relay settlement.
+- Main-channel direct routing applies the same normalization when the Gateway
+  runtime is unavailable or the planner chooses direct because the channel is
+  not opted in, has a custom base URL, or the route is not Gateway-eligible. A
+  recognized provider prefix that is not approved for the selected channel is
+  rejected before egress. Cross-model fallback remains Gateway-required and
+  fail-closed when no plan/runtime is available.
+- Backend and frontend provider-readiness contracts expose Mistral as Partial
+  with exactly `/v1/chat/completions`. The explicit Deferred count is 31.
+- Rust treats a custom Mistral base URL ending in `/v1` as an already-versioned
+  root; Go concatenates its `/v1/chat/completions` suffix literally and can
+  produce `/v1/v1/chat/completions`. Keep the safer Rust normalization, but
+  verify migrated channel base-URL samples in staging and record any proxy-root
+  rewrite before canary.
+
+The current official Mistral API supports Bearer-authenticated JSON/SSE chat and
+tool calling, but provider capability is not migration proof. Staging must still
+archive direct and Gateway non-stream/stream/tool-call/error usage, exactly-once
+billing and audit correlation, fallback, and rollback evidence. No exposed
+Cloudflare token is used; production remains **NO-GO**.

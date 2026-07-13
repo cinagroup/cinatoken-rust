@@ -196,14 +196,27 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Generic OpenAI-compatible channel selection now matches the 14 channel types
   that the Go source dispatches through `openai.Adaptor`: 1, 3, 6-10, 12, 13,
   19, 20, 22, 31, and 47. OpenAI-shaped dedicated channel types remain outside
-  that set. DeepSeek(43) and xAI(48) now have explicit Rust adapters and
-  fail-closed route sets; the remaining dedicated types stay deferred.
+  that set. Mistral(42), DeepSeek(43), and xAI(48) now have explicit Rust
+  adapters and fail-closed route sets; the remaining dedicated types stay
+  deferred.
+- The Mistral adapter exposes only source-supported chat completions. It ports
+  Go's request whitelist, multimodal normalization, 9-character tool-call ID
+  remapping, and `max_completion_tokens` precedence. Worker-side IDs use
+  Web Crypto-backed CSPRNG entropy and fail before upstream dispatch if a valid
+  ID cannot be produced. Mistral embeddings and Responses remain fail-closed
+  because their Go adapter methods are unimplemented.
 - The xAI adapter covers chat completions, legacy completions, Responses, and
   image generations. It preserves the Go `-search` and
   `grok-3-mini-{high,low}` compatibility transforms, forwards current Responses
   tool payloads unchanged, and allows default-off AI Gateway planning only for
   chat and Responses. Live usage, error, billing, and rollback evidence is
   still required before an xAI canary.
+- Mistral chat and xAI chat/Responses have default-off, channel-opt-in AI
+  Gateway plans plus same-channel direct fallback that strips only the audited
+  provider prefix. Provider transforms, central reserve/settlement, and audit
+  still run on the direct path. The same normalization applies when the Gateway
+  runtime is unavailable or the planner selects direct; a known prefix that is
+  not approved for the selected channel fails closed before provider egress.
 - Relay now walks the full ordered channel candidate list and retries against
   the next candidate when the upstream returns a Go-default retryable status
   (excluding 504/524) or fetch fails. `RELAY_RETRY_TIMES` (default 0) controls
@@ -553,9 +566,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   tokens are admitted, prove the locally implemented maximum-candidate reserve
   and actual-serving-group settlement against staging D1. The model-prefix
   registry now covers the documented Cloudflare REST provider set, while safe
-  same-channel direct fallback is deliberately limited to OpenAI, Anthropic,
-  and DeepSeek until other dedicated adapters land. The all-fetch-failed path emits a
-  bounded, secret-free Go-compatible type-5 attempt ledger through
+  same-channel direct fallback is deliberately limited to matching OpenAI,
+  Anthropic, DeepSeek, Mistral, and xAI channels until other dedicated adapters
+  land. The all-fetch-failed path emits a bounded, secret-free Go-compatible
+  type-5 attempt ledger through
   `LOG_QUEUE`/D1; prove queue delivery, synchronous fallback, refund ordering,
   and admin-log visibility in staging before production cutover.
 - Continue TaskRunner M5b only after M5a staging evidence: the `TASK_RUNNER`
@@ -615,7 +629,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Continue defining explicit response buffering limits as each broader
   provider-specific transform is added.
 - Add provider-specific adapters beyond the currently implemented OpenAI,
-  Anthropic, DeepSeek, Gemini-native, Workers AI, and rerank surfaces. A
+  Anthropic, Mistral, DeepSeek, xAI, Gemini-native, Workers AI, and rerank
+  surfaces. A
   Cloudflare Gateway prefix does not make its same-channel Rust adapter ready.
 - Deploy and attach the Rust outbound service `cinatoken-wfp-outbound` to the
   staging dispatch namespace. Store `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on

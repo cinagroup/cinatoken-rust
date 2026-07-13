@@ -9,6 +9,7 @@ pub enum ChannelAdapterKind {
     Rerank,
     CloudflareWorkersAi,
     DeepSeek,
+    MistralOpenAi,
     XaiOpenAi,
     DedicatedPending,
     TaskOnly,
@@ -126,6 +127,7 @@ const DEEPSEEK_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::Completions,
     ProviderRelayRoute::AnthropicMessages,
 ];
+const MISTRAL_ROUTES: &[ProviderRelayRoute] = &[ProviderRelayRoute::ChatCompletions];
 const XAI_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ChatCompletions,
     ProviderRelayRoute::Completions,
@@ -447,10 +449,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         42,
         "Mistral",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated Mistral adapter is not migrated"
+        MistralOpenAi,
+        Partial,
+        MISTRAL_ROUTES,
+        "dedicated Go-compatible chat completions adapter is implemented"
     ),
     capability!(
         43,
@@ -655,6 +657,14 @@ mod tests {
         assert!(!channel_supports_relay_route(
             15,
             ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(channel_supports_relay_route(
+            42,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(!channel_supports_relay_route(
+            42,
+            ProviderRelayRoute::Embeddings
         ));
         assert!(channel_supports_relay_route(
             48,

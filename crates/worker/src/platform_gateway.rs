@@ -2564,6 +2564,8 @@ mod tests {
 
         let direct = relay_ai_gateway_direct_fallback_prefixes();
         assert!(direct.contains(&"deepseek/"));
+        assert!(direct.contains(&"mistral/"));
+        assert!(direct.contains(&"xai/"));
         assert!(!direct.contains(&"@cf/"));
         assert!(!direct.contains(&"cloudflare/"));
     }

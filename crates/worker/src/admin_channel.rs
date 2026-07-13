@@ -3161,5 +3161,21 @@ mod tests {
                 {"method": "POST", "path": "/v1/messages"}
             ])
         );
+        let mistral = entries
+            .iter()
+            .find(|entry| entry["channel_type"] == 42)
+            .unwrap();
+        assert_eq!(mistral["adapter"], "mistral_open_ai");
+        assert_eq!(mistral["readiness"], "partial");
+        assert_eq!(
+            mistral["routes"],
+            serde_json::json!([{"method": "POST", "path": "/v1/chat/completions"}])
+        );
+        let xai = entries
+            .iter()
+            .find(|entry| entry["channel_type"] == 48)
+            .unwrap();
+        assert_eq!(xai["adapter"], "xai_open_ai");
+        assert_eq!(xai["readiness"], "partial");
     }
 }

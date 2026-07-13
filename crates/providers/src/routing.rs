@@ -12,6 +12,7 @@ pub enum ProviderKind {
     AnthropicMessages,
     DeepSeekOpenAi,
     DeepSeekMessages,
+    MistralOpenAi,
     XaiOpenAi,
     GeminiNative,
     CloudflareWorkersAi,
@@ -25,6 +26,7 @@ impl ProviderKind {
             Self::AnthropicMessages => Some(AiGatewayRouteKind::Anthropic),
             Self::DeepSeekOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::DeepSeekMessages => Some(AiGatewayRouteKind::Anthropic),
+            Self::MistralOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::XaiOpenAi => Some(AiGatewayRouteKind::Compat),
             Self::GeminiNative => Some(AiGatewayRouteKind::GoogleAiStudio),
             Self::CloudflareWorkersAi => Some(AiGatewayRouteKind::WorkersAi),
@@ -99,6 +101,9 @@ impl ProviderRegistry {
             }
             ProviderKind::DeepSeekMessages => {
                 crate::deepseek::deepseek_messages_url(endpoint.base_url)
+            }
+            ProviderKind::MistralOpenAi => {
+                crate::mistral::mistral_openai_url(endpoint.base_url, endpoint.endpoint_path)
             }
             ProviderKind::XaiOpenAi => {
                 crate::xai::xai_openai_url(endpoint.base_url, endpoint.endpoint_path)
@@ -226,6 +231,25 @@ mod tests {
         .unwrap();
 
         assert_eq!(route.upstream_url, "https://api.x.ai/v1/responses");
+        assert_eq!(route.ai_gateway_route, Some(AiGatewayRouteKind::Compat));
+    }
+
+    #[test]
+    fn registry_resolves_dedicated_mistral_without_generic_classification() {
+        let route = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::MistralOpenAi,
+            channel_type: 42,
+            base_url: None,
+            endpoint_path: "chat/completions",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            route.upstream_url,
+            "https://api.mistral.ai/v1/chat/completions"
+        );
         assert_eq!(route.ai_gateway_route, Some(AiGatewayRouteKind::Compat));
     }
 

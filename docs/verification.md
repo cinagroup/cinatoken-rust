@@ -3146,8 +3146,9 @@ paid reconciliation, and rollback. No exposed Cloudflare token was used.
   redacted drift reporting, and auth ownership relationships.
 - `cargo test -p cinatoken-providers` passed 26/26. The AI Gateway registry
   recognizes the documented REST prefix set; invalid/empty/undocumented
-  prefixes fail closed. Direct fallback is restricted to provider-matched
-  OpenAI, Anthropic, and DeepSeek channels.
+  prefixes fail closed. At this 2026-07-12 snapshot, direct fallback was
+  restricted to provider-matched OpenAI, Anthropic, and DeepSeek channels; the
+  2026-07-13 Mistral/xAI verification below supersedes that provider set.
 - `cargo test -p cinatoken-worker --lib relay_ai_gateway -- --nocapture`
   passed 11/11. Capabilities expose REST routes, model prefixes, and the smaller
   direct-fallback prefix set; mismatched channels do not receive a rewritten
@@ -3379,3 +3380,28 @@ rollback. No exposed Cloudflare token was used.
   21-file D1 replay, workspace tests, and main/tenant/outbound wasm32 checks.
 - No live provider or Cloudflare credential was used; production remains
   **NO-GO** pending the documented staging evidence.
+
+## 2026-07-13 Dedicated Mistral And Gateway Fallback Verification
+
+- Go source audit covered `relay/channel/mistral/adaptor.go` and `text.go`:
+  only chat conversion is implemented; embeddings and Responses return errors.
+- `cargo test -p cinatoken-providers`: 40/40 passed, including Mistral URL,
+  whitelist, multimodal, max-token, tool-call ID, fail-closed entropy, routing,
+  capability, Gateway route, Mistral/xAI direct-fallback contracts, audio/file/
+  video normalization, and out-of-order tool-call ID consistency.
+- `cargo clippy -p cinatoken-providers --no-deps -- -D warnings`: passed.
+- `cargo test -p cinatoken-worker --lib`: 590/590 passed. The Worker integration
+  proves CSPRNG tool-call IDs, request-local ID consistency, route filtering,
+  Mistral Gateway planning/direct fallback, xAI model-sensitive fallback
+  reapplication, planner-direct normalization, mismatched-prefix rejection, and
+  pre-reserve Go-compatible chat request validation.
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`: passed.
+- Frontend platform readiness: 16/16; channel provider readiness: 2/2.
+- The complete `bun run check` gate passed, including three release Worker
+  builds, Workerd 7/7, frontend build/redaction/budget/lint/route audits,
+  21-file D1 replay, workspace tests, and main/tenant/outbound wasm32 checks.
+- Evidence anchor: the full gate completed at `2026-07-13T03:19:34Z` against
+  the implementation worktree based on `220a4162da1a07f70ace068a4755d000d750b27b`;
+  only this timestamp/base evidence line was added after that successful gate.
+- The capability registry now reports 31 Deferred channel types. No live
+  Mistral/xAI or Cloudflare credential was used; production remains **NO-GO**.

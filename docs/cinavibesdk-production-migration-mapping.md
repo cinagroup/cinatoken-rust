@@ -447,9 +447,10 @@ cinaVibeSDK pattern:
 - On retryable AI Gateway failure, fall back through the same selected provider
   channel before cross-channel retry logic sees the result, but only when the
   model-prefix registry proves that the selected Rust channel adapter belongs
-  to that provider. OpenAI, Anthropic, and DeepSeek currently satisfy this
-  direct-fallback contract. Other documented REST providers remain
-  Gateway-only until their dedicated Rust adapters are no longer deferred.
+  to that provider. OpenAI, Anthropic, DeepSeek, Mistral, and xAI currently
+  satisfy this direct-fallback contract for their implemented routes. Other
+  documented REST providers remain Gateway-only until their dedicated Rust
+  adapters are no longer deferred.
 - The registry now covers the documented OpenAI-compatible REST provider set,
   including `google-ai-studio/`, `deepseek/`, Groq, Mistral, Cohere,
   Perplexity, Google Vertex AI, Cerebras, Baseten, Parallel, and `@cf/`.
@@ -821,3 +822,15 @@ Responses, and image generations. AI Gateway planning remains default-off,
 channel-opt-in, and narrower: only chat and Responses are eligible. This local
 boundary proof does not replace remote Gateway logs, WFP attachment readback,
 provider usage correlation, or rollback evidence.
+
+The same boundary now applies to Mistral channel type 42. Only chat completions
+are enabled, matching the implemented Go adapter rather than the provider's
+broader current API catalog. The provider layer owns message-field reduction,
+multimodal conversion, and tool-call ID consistency; the Worker supplies
+Web Crypto-backed entropy and keeps central billing/retry/audit authority.
+Mistral chat and xAI chat/Responses can use the default-off AI Gateway planner,
+and both now have same-channel provider-direct fallback without bypassing their
+dedicated request transforms. Router-unavailable, channel-opt-out, and other
+planner-direct main-relay paths apply the same provider-native model
+normalization; a recognized prefix cannot egress through a mismatched channel.
+The explicit Deferred count is now 31.

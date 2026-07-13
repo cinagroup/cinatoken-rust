@@ -15,12 +15,14 @@ use cinatoken_core::{
 };
 use cinatoken_providers::{
     ai_gateway::{
-        direct_provider_model_for_channel, has_ai_gateway_provider_prefix, plan_ai_gateway_cutover,
-        rest_gateway_endpoint_url, AiGatewayCutoverDecision, AiGatewayCutoverInput,
-        AiGatewayCutoverPlan, AiGatewayModelAuthor,
+        classify_ai_gateway_model_author, direct_provider_model_for_channel,
+        has_ai_gateway_provider_prefix, plan_ai_gateway_cutover, rest_gateway_endpoint_url,
+        AiGatewayCutoverDecision, AiGatewayCutoverInput, AiGatewayCutoverPlan,
+        AiGatewayModelAuthor,
     },
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
+    mistral::apply_mistral_chat_request,
     xai::apply_xai_request,
     ProviderEndpoint, ProviderKind as RegistryProviderKind, ProviderRegistry, ProviderRelayRoute,
 };
@@ -30,8 +32,8 @@ use cinatoken_relay::{
     mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
     usage_summary_from_gemini_body, usage_summary_from_rerank_body, CachedAuthenticatedToken,
     CachedRelayChannel, GeminiNativePath, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
-    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_XAI,
-    RELAY_CACHE_SCHEMA_VERSION,
+    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MISTRAL,
+    CHANNEL_TYPE_XAI, RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -125,6 +127,7 @@ enum RelayProviderKind {
     AnthropicMessages,
     DeepSeekOpenAi,
     DeepSeekMessages,
+    MistralOpenAi,
     XaiOpenAi,
     GeminiNative,
 }
@@ -246,6 +249,11 @@ impl RelayEndpoint {
     }
 
     fn effective_provider(&self, channel_type: i32) -> RelayProviderKind {
+        if channel_type == CHANNEL_TYPE_MISTRAL
+            && self.provider == RelayProviderKind::OpenAiCompatible
+        {
+            return RelayProviderKind::MistralOpenAi;
+        }
         if channel_type == CHANNEL_TYPE_XAI && self.provider == RelayProviderKind::OpenAiCompatible
         {
             return RelayProviderKind::XaiOpenAi;
@@ -266,6 +274,7 @@ impl RelayEndpoint {
             RelayProviderKind::AnthropicMessages => RegistryProviderKind::AnthropicMessages,
             RelayProviderKind::DeepSeekOpenAi => RegistryProviderKind::DeepSeekOpenAi,
             RelayProviderKind::DeepSeekMessages => RegistryProviderKind::DeepSeekMessages,
+            RelayProviderKind::MistralOpenAi => RegistryProviderKind::MistralOpenAi,
             RelayProviderKind::XaiOpenAi => RegistryProviderKind::XaiOpenAi,
             RelayProviderKind::GeminiNative => RegistryProviderKind::GeminiNative,
         }
@@ -291,6 +300,7 @@ impl RelayEndpoint {
             RelayProviderKind::AnthropicMessages
             | RelayProviderKind::DeepSeekOpenAi
             | RelayProviderKind::DeepSeekMessages
+            | RelayProviderKind::MistralOpenAi
             | RelayProviderKind::XaiOpenAi => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
         }
     }
@@ -519,7 +529,7 @@ pub async fn chat_completions(
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
             request_body_mode: RelayRequestBodyMode::Json,
-            request_validator: None,
+            request_validator: Some(validate_chat_completions_request),
         },
         None,
     )
@@ -550,7 +560,7 @@ pub async fn playground_chat_completions(
             stream_not_implemented_feature: None,
             parse_non_stream_usage: true,
             request_body_mode: RelayRequestBodyMode::Json,
-            request_validator: None,
+            request_validator: Some(validate_chat_completions_request),
         },
         None,
         None,
@@ -1347,11 +1357,26 @@ async fn relay_endpoint_with_auth(
                         }
                     }
                 }
-                apply_endpoint_request_transform(
+                if let Err(error) = apply_endpoint_request_transform(
                     &mut upstream_body,
                     &endpoint.upstream_path,
                     &channel,
-                );
+                ) {
+                    let failure = RelayAttemptFailure::configuration_error(
+                        channel.id,
+                        channel.name.clone(),
+                        error.to_string(),
+                        channel.ai_gateway_opted_in(),
+                    );
+                    attempt_audits.push(RelayAttemptAudit::from_failure(
+                        "primary",
+                        &model,
+                        &selected_group,
+                        &failure,
+                    ));
+                    last_failure = Some(failure);
+                    continue;
+                }
                 apply_provider_request_transform(&mut upstream_body, attempt_provider);
                 // Inject/strip `stream_options.include_usage` for OpenAI-compatible
                 // upstreams (Go parity) so supporting channels emit a real usage
@@ -1485,13 +1510,51 @@ async fn relay_endpoint_with_auth(
                                     }
                                 }
                                 Ok(None) => {
+                                    match prepare_same_channel_direct_body(
+                                        &upstream_body,
+                                        channel.channel_type,
+                                        &endpoint.upstream_path,
+                                    ) {
+                                        Ok(direct_body) => {
+                                            forward_relay_request(
+                                                &env,
+                                                attempt_provider,
+                                                &upstream_url,
+                                                &upstream_key,
+                                                &channel,
+                                                direct_body.as_ref().unwrap_or(&upstream_body),
+                                                &provider_headers,
+                                            )
+                                            .await
+                                        }
+                                        Err(err) => {
+                                            forward_error_kind =
+                                                RelayAttemptFailureKind::ConfigurationError;
+                                            Err(err)
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    forward_error_kind =
+                                        RelayAttemptFailureKind::ConfigurationError;
+                                    Err(err)
+                                }
+                            }
+                        }
+                        None => {
+                            match prepare_same_channel_direct_body(
+                                &upstream_body,
+                                channel.channel_type,
+                                &endpoint.upstream_path,
+                            ) {
+                                Ok(direct_body) => {
                                     forward_relay_request(
                                         &env,
                                         attempt_provider,
                                         &upstream_url,
                                         &upstream_key,
                                         &channel,
-                                        &upstream_body,
+                                        direct_body.as_ref().unwrap_or(&upstream_body),
                                         &provider_headers,
                                     )
                                     .await
@@ -1502,18 +1565,6 @@ async fn relay_endpoint_with_auth(
                                     Err(err)
                                 }
                             }
-                        }
-                        None => {
-                            forward_relay_request(
-                                &env,
-                                attempt_provider,
-                                &upstream_url,
-                                &upstream_key,
-                                &channel,
-                                &upstream_body,
-                                &provider_headers,
-                            )
-                            .await
                         }
                     }
                 }
@@ -2212,6 +2263,16 @@ pub(crate) fn relay_ai_gateway_direct_fallback_contract_compiled() -> bool {
             1,
         )
         .is_none()
+        && direct_provider_model_for_channel(
+            "mistral/mistral-large-latest",
+            AiGatewayModelAuthor::Mistral,
+            CHANNEL_TYPE_MISTRAL,
+        ) == Some("mistral-large-latest")
+        && direct_provider_model_for_channel(
+            "xai/grok-4.5",
+            AiGatewayModelAuthor::Xai,
+            CHANNEL_TYPE_XAI,
+        ) == Some("grok-4.5")
 }
 
 pub(crate) fn relay_terminal_attempt_audit_contract_compiled() -> bool {
@@ -2463,11 +2524,26 @@ async fn execute_relay_attempt_plan(
                         }
                     }
                 }
-                apply_endpoint_request_transform(
+                if let Err(error) = apply_endpoint_request_transform(
                     &mut upstream_body,
                     &endpoint.upstream_path,
                     &channel,
-                );
+                ) {
+                    let failure = RelayAttemptFailure::configuration_error(
+                        channel.id,
+                        channel.name.clone(),
+                        error.to_string(),
+                        channel.ai_gateway_opted_in(),
+                    );
+                    attempts.push(RelayAttemptAudit::from_failure(
+                        "fallback",
+                        model,
+                        &selected_group,
+                        &failure,
+                    ));
+                    last_failure = Some(failure);
+                    continue;
+                }
                 apply_provider_request_transform(&mut upstream_body, attempt_provider);
                 if inject_stream_options
                     && matches!(
@@ -4133,16 +4209,45 @@ fn prepare_ai_gateway_direct_fallback_body(
     attempt: &RelayAiGatewayAttempt,
 ) -> Option<Value> {
     let gateway_model = body.get("model")?.as_str()?;
-    let direct_model = direct_provider_model_for_channel(
-        gateway_model,
-        attempt.plan.model_author,
+    if classify_ai_gateway_model_author(gateway_model) != attempt.plan.model_author {
+        return None;
+    }
+    prepare_same_channel_direct_body(
+        body,
         attempt.direct_channel_type,
-    )?;
+        attempt.plan.endpoint.relay_path(),
+    )
+    .ok()
+    .flatten()
+}
+
+fn prepare_same_channel_direct_body(
+    body: &Value,
+    channel_type: i32,
+    endpoint_path: &str,
+) -> worker::Result<Option<Value>> {
+    let Some(gateway_model) = body.get("model").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let model_author = classify_ai_gateway_model_author(gateway_model);
+    if model_author == AiGatewayModelAuthor::Unknown {
+        return Ok(None);
+    }
+    let direct_model = direct_provider_model_for_channel(gateway_model, model_author, channel_type)
+        .ok_or_else(|| {
+            worker::Error::RustError(format!(
+                "AI Gateway model prefix is not approved for direct channel type {channel_type}"
+            ))
+        })?;
     let mut direct_body = body.clone();
-    direct_body
-        .as_object_mut()?
-        .insert("model".to_string(), Value::String(direct_model.to_string()));
-    Some(direct_body)
+    let direct_object = direct_body.as_object_mut().ok_or_else(|| {
+        worker::Error::RustError("relay request body must be a JSON object".to_string())
+    })?;
+    direct_object.insert("model".to_string(), Value::String(direct_model.to_string()));
+    if channel_type == CHANNEL_TYPE_XAI {
+        apply_xai_request(&mut direct_body, endpoint_path);
+    }
+    Ok(Some(direct_body))
 }
 
 fn mark_ai_gateway_direct_fallback(response: Response, reason: &str) -> worker::Result<Response> {
@@ -5127,6 +5232,7 @@ async fn forward_relay_request(
     match provider {
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
+        | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::XaiOpenAi => {
             forward_openai_compatible(url, upstream_key, channel, body).await
         }
@@ -5966,6 +6072,7 @@ async fn response_usage_summary(
             provider,
             RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
+                | RelayProviderKind::MistralOpenAi
                 | RelayProviderKind::XaiOpenAi
         )
         && endpoint_path != "rerank";
@@ -5998,6 +6105,7 @@ fn usage_summary_for_provider(
         }
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
+        | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::XaiOpenAi => usage_summary_from_body(body),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
             usage_summary_from_anthropic_body(body)
@@ -6095,6 +6203,7 @@ async fn streaming_usage_summary(
     let mut accumulator = match provider {
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
+        | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::XaiOpenAi => SseUsageAccumulator::default(),
         RelayProviderKind::AnthropicMessages | RelayProviderKind::DeepSeekMessages => {
             SseUsageAccumulator::anthropic()
@@ -6114,6 +6223,7 @@ async fn streaming_usage_summary(
             provider,
             RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
+                | RelayProviderKind::MistralOpenAi
                 | RelayProviderKind::XaiOpenAi
         );
     let (usage, locally_estimated) = resolve_stream_usage(
@@ -7402,13 +7512,140 @@ fn validate_rerank_request(body: &Value) -> Option<&'static str> {
     None
 }
 
-fn apply_endpoint_request_transform(body: &mut Value, endpoint_path: &str, channel: &RelayChannel) {
+fn validate_chat_completions_request(body: &Value) -> Option<&'static str> {
+    let Some(request) = body.as_object() else {
+        return Some("chat completions request body must be a JSON object");
+    };
+    if !request
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(|model| !model.trim().is_empty())
+    {
+        return Some("field model is required");
+    }
+
+    match request.get("messages") {
+        Some(Value::Array(messages)) if !messages.is_empty() => {
+            if messages.iter().any(|message| !message.is_object()) {
+                return Some("field messages must contain JSON objects");
+            }
+            for message in messages.iter().filter_map(Value::as_object) {
+                for field in [
+                    "role",
+                    "name",
+                    "reasoning_content",
+                    "reasoning",
+                    "tool_call_id",
+                ] {
+                    if message
+                        .get(field)
+                        .is_some_and(|value| !value.is_null() && !value.is_string())
+                    {
+                        return Some("chat message string field has an invalid type");
+                    }
+                }
+                if message
+                    .get("prefix")
+                    .is_some_and(|value| !value.is_null() && !value.is_boolean())
+                {
+                    return Some("chat message prefix must be a boolean");
+                }
+            }
+        }
+        Some(Value::Array(_)) | None
+            if !request.get("prefix").is_some_and(|value| !value.is_null())
+                && !request.get("suffix").is_some_and(|value| !value.is_null()) =>
+        {
+            return Some("field messages is required");
+        }
+        Some(Value::Array(_)) | None => {}
+        Some(_) => return Some("field messages must be an array"),
+    }
+
+    for field in ["stream"] {
+        if request
+            .get(field)
+            .is_some_and(|value| !value.is_null() && !value.is_boolean())
+        {
+            return Some("chat completions boolean field has an invalid type");
+        }
+    }
+    for field in ["temperature", "top_p"] {
+        if request
+            .get(field)
+            .is_some_and(|value| !value.is_null() && !value.is_number())
+        {
+            return Some("chat completions numeric field has an invalid type");
+        }
+    }
+    for field in ["max_tokens", "max_completion_tokens"] {
+        if request
+            .get(field)
+            .is_some_and(|value| !value.is_null() && value.as_u64().is_none())
+        {
+            return Some("chat completion token limit must be a non-negative integer");
+        }
+    }
+    if request
+        .get("max_tokens")
+        .and_then(Value::as_u64)
+        .is_some_and(|value| value > (i32::MAX as u64) / 2)
+    {
+        return Some("max_tokens is invalid");
+    }
+
+    if let Some(tools) = request.get("tools").filter(|value| !value.is_null()) {
+        let Some(tools) = tools.as_array() else {
+            return Some("field tools must be an array");
+        };
+        if tools.iter().any(|tool| !tool.is_object()) {
+            return Some("field tools must contain JSON objects");
+        }
+        for tool in tools.iter().filter_map(Value::as_object) {
+            for field in ["id", "type"] {
+                if tool
+                    .get(field)
+                    .is_some_and(|value| !value.is_null() && !value.is_string())
+                {
+                    return Some("chat tool string field has an invalid type");
+                }
+            }
+            if let Some(function) = tool.get("function").filter(|value| !value.is_null()) {
+                let Some(function) = function.as_object() else {
+                    return Some("chat tool function must be a JSON object");
+                };
+                for field in ["description", "name", "arguments"] {
+                    if function
+                        .get(field)
+                        .is_some_and(|value| !value.is_null() && !value.is_string())
+                    {
+                        return Some("chat tool function string field has an invalid type");
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn apply_endpoint_request_transform(
+    body: &mut Value,
+    endpoint_path: &str,
+    channel: &RelayChannel,
+) -> worker::Result<()> {
     if endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE {
         apply_cohere_rerank_request_transform(body);
+    }
+    if endpoint_path == "chat/completions" && channel.channel_type == CHANNEL_TYPE_MISTRAL {
+        apply_mistral_chat_request(body, random_mistral_tool_call_id).map_err(|error| {
+            worker::Error::RustError(format!("Mistral request transform failed: {error}"))
+        })?;
     }
     if channel.channel_type == CHANNEL_TYPE_XAI {
         apply_xai_request(body, endpoint_path);
     }
+    Ok(())
 }
 
 fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKind) {
@@ -7421,9 +7658,32 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         }
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::AnthropicMessages
+        | RelayProviderKind::MistralOpenAi
         | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::GeminiNative => {}
     }
+}
+
+fn random_mistral_tool_call_id() -> Option<String> {
+    const ALPHABET: &[u8; 62] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const UNBIASED_BYTE_LIMIT: u8 = 248;
+    const ID_LEN: usize = 9;
+
+    let mut output = String::with_capacity(ID_LEN);
+    let mut entropy = [0_u8; 16];
+    while output.len() < ID_LEN {
+        getrandom::getrandom(&mut entropy).ok()?;
+        for byte in entropy {
+            if byte >= UNBIASED_BYTE_LIMIT {
+                continue;
+            }
+            output.push(ALPHABET[usize::from(byte % 62)] as char);
+            if output.len() == ID_LEN {
+                break;
+            }
+        }
+    }
+    Some(output)
 }
 
 fn should_transform_cohere_rerank_response(endpoint_path: &str, channel: &RelayChannel) -> bool {
@@ -9051,6 +9311,47 @@ mod tests {
     }
 
     #[test]
+    fn chat_completions_request_validation_matches_go_typed_request_boundary() {
+        assert_eq!(
+            validate_chat_completions_request(&json!({
+                "model": "mistral-large-latest",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true,
+                "temperature": 0.5,
+                "top_p": 1,
+                "max_tokens": 64,
+                "tools": [{
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}}
+                }]
+            })),
+            None
+        );
+        assert_eq!(
+            validate_chat_completions_request(&json!({
+                "model": "deepseek-chat",
+                "prefix": "fn main() {",
+                "suffix": "}"
+            })),
+            None
+        );
+
+        for invalid in [
+            json!({"model": "m", "messages": []}),
+            json!({"model": "m", "messages": ["invalid"]}),
+            json!({"model": "m", "messages": [{}], "max_tokens": 1.5}),
+            json!({"model": "m", "messages": [{}], "temperature": "0.5"}),
+            json!({"model": "m", "messages": [{}], "tools": "invalid"}),
+            json!({"model": "m", "messages": [{}], "tools": [{"type": 1}]}),
+        ] {
+            assert!(
+                validate_chat_completions_request(&invalid).is_some(),
+                "invalid request was accepted: {invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn rerank_endpoint_uses_rerank_channel_family() {
         let endpoint = RelayEndpoint {
             display_name: "rerank",
@@ -9192,7 +9493,7 @@ mod tests {
             "stream": false
         });
 
-        apply_endpoint_request_transform(&mut body, "rerank", &channel);
+        apply_endpoint_request_transform(&mut body, "rerank", &channel).unwrap();
 
         assert_eq!(
             body,
@@ -9245,7 +9546,7 @@ mod tests {
         });
         let original = body.clone();
 
-        apply_endpoint_request_transform(&mut body, "rerank", &channel);
+        apply_endpoint_request_transform(&mut body, "rerank", &channel).unwrap();
 
         assert_eq!(body, original);
     }
@@ -10157,6 +10458,72 @@ mod tests {
     }
 
     #[test]
+    fn mistral_uses_a_dedicated_provider_and_csprng_tool_ids() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_MISTRAL), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_MISTRAL;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::MistralOpenAi
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::MistralOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://api.mistral.ai/v1/chat/completions"
+        );
+
+        let mut body = json!({
+            "model": "mistral/mistral-large-latest",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call-too-long",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"}
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call-too-long", "content": "ok"}
+            ],
+            "max_completion_tokens": 32,
+            "user": "removed"
+        });
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        let generated = body["messages"][0]["tool_calls"][0]["id"].as_str().unwrap();
+        assert_eq!(generated.len(), 9);
+        assert!(generated.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+        assert_eq!(body["messages"][1]["tool_call_id"], generated);
+        assert_eq!(body["max_tokens"], 32);
+        assert!(body.get("user").is_none());
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        let gateway = plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "mistral/mistral-large-latest",
+        )
+        .unwrap()
+        .unwrap();
+        let direct = prepare_ai_gateway_direct_fallback_body(&body, &gateway).unwrap();
+        assert_eq!(direct["model"], "mistral-large-latest");
+
+        assert!(channel_supports_relay_route(
+            CHANNEL_TYPE_MISTRAL,
+            ProviderRelayRoute::ChatCompletions
+        ));
+        assert!(!channel_supports_relay_route(
+            CHANNEL_TYPE_MISTRAL,
+            ProviderRelayRoute::Embeddings
+        ));
+    }
+
+    #[test]
     fn xai_uses_a_dedicated_provider_with_route_specific_transforms() {
         let mut channel = test_channel(i64::from(CHANNEL_TYPE_XAI), 0, 1);
         channel.channel_type = CHANNEL_TYPE_XAI;
@@ -10180,7 +10547,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 64
         });
-        apply_endpoint_request_transform(&mut chat_body, "chat/completions", &channel);
+        apply_endpoint_request_transform(&mut chat_body, "chat/completions", &channel).unwrap();
         assert_eq!(chat_body["model"], "grok-3-mini");
         assert_eq!(chat_body["reasoning_effort"], "high");
         assert_eq!(chat_body["max_completion_tokens"], 64);
@@ -10205,6 +10572,27 @@ mod tests {
             gateway.plan.endpoint,
             cinatoken_providers::ai_gateway::AiGatewayRestEndpoint::Responses
         );
+        let gateway_body = json!({"model": "xai/grok-4.5", "input": "hello"});
+        let direct = prepare_ai_gateway_direct_fallback_body(&gateway_body, &gateway).unwrap();
+        assert_eq!(direct["model"], "grok-4.5");
+
+        let chat_gateway = plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "xai/grok-3-mini-high",
+        )
+        .unwrap()
+        .unwrap();
+        let direct = prepare_ai_gateway_direct_fallback_body(
+            &json!({"model": "xai/grok-3-mini-high", "messages": [], "max_tokens": 64}),
+            &chat_gateway,
+        )
+        .unwrap();
+        assert_eq!(direct["model"], "grok-3-mini");
+        assert_eq!(direct["reasoning_effort"], "high");
+        assert_eq!(direct["max_completion_tokens"], 64);
+        assert!(direct.get("max_tokens").is_none());
 
         assert!(channel_supports_relay_route(
             CHANNEL_TYPE_XAI,
@@ -10472,6 +10860,61 @@ mod tests {
                 Some("gateway_status_500")
             );
         }
+    }
+
+    #[test]
+    fn relay_direct_route_normalizes_only_matching_gateway_prefixed_models() {
+        let mistral_body = json!({
+            "model": "mistral/mistral-large-latest",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        });
+        let mistral_direct = prepare_same_channel_direct_body(
+            &mistral_body,
+            CHANNEL_TYPE_MISTRAL,
+            "chat/completions",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mistral_direct["model"], "mistral-large-latest");
+        assert_eq!(mistral_direct["messages"], mistral_body["messages"]);
+        assert_eq!(mistral_body["model"], "mistral/mistral-large-latest");
+
+        let openai_direct = prepare_same_channel_direct_body(
+            &json!({"model": "openai/gpt-4.1", "messages": []}),
+            1,
+            "chat/completions",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(openai_direct["model"], "gpt-4.1");
+
+        let xai_body = json!({
+            "model": "xai/grok-3-mini-high",
+            "messages": [],
+            "max_tokens": 64
+        });
+        let xai_direct =
+            prepare_same_channel_direct_body(&xai_body, CHANNEL_TYPE_XAI, "chat/completions")
+                .unwrap()
+                .unwrap();
+        assert_eq!(xai_direct["model"], "grok-3-mini");
+        assert_eq!(xai_direct["reasoning_effort"], "high");
+        assert_eq!(xai_direct["max_completion_tokens"], 64);
+        assert!(xai_direct.get("max_tokens").is_none());
+
+        assert!(prepare_same_channel_direct_body(
+            &mistral_body,
+            CHANNEL_TYPE_XAI,
+            "chat/completions"
+        )
+        .is_err());
+        assert!(prepare_same_channel_direct_body(
+            &json!({"model": "mistral-large-latest", "messages": []}),
+            CHANNEL_TYPE_MISTRAL,
+            "chat/completions"
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

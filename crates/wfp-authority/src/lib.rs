@@ -6,16 +6,17 @@ use std::fmt;
 
 pub const AUTHORITY_HEADER: &str = "x-cinatoken-wfp-authority";
 pub const AUTHORITY_SECRET_ENV: &str = "WFP_RELAY_AUTHORITY_SECRET";
-pub const AUTHORITY_TENANT_KEY_ENV: &str = "WFP_RELAY_AUTHORITY_KEY";
 pub const AUTHORITY_REPLAY_BINDING: &str = "WFP_AUTHORITY_REPLAY";
 pub const AUTHORITY_REPLAY_CLASS: &str = "WfpAuthorityReplay";
-pub const AUTHORITY_VERSION: u8 = 1;
+pub const OUTBOUND_CONTEXT_BINDING: &str = "CINATOKEN_WFP_OUTBOUND_CONTEXT";
+pub const AUTHORITY_VERSION: u8 = 2;
+pub const OUTBOUND_CONTEXT_VERSION: u8 = 1;
 pub const AUTHORITY_TTL_SECONDS: i64 = 30;
 pub const AUTHORITY_REPLAY_BUCKET_SECONDS: i64 = 60;
 const MAX_CLOCK_SKEW_SECONDS: i64 = 5;
 const MAX_AUTHORITY_LIFETIME_SECONDS: i64 = 60;
 pub const AUTHORITY_REPLAY_CLEANUP_GRACE_SECONDS: i64 = 5;
-const KEY_DOMAIN: &[u8] = b"cinatoken-wfp-authority-key:v1\0";
+const SIGNATURE_DOMAIN: &[u8] = b"cinatoken-wfp-central-authority:v2\0";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -30,6 +31,47 @@ pub struct AuthorityClaims {
     pub channel_id: i64,
     pub issued_at: i64,
     pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboundInvocationContext {
+    pub version: u8,
+    pub route_kind: String,
+    pub public_worker: String,
+    pub dispatch_worker: String,
+}
+
+impl OutboundInvocationContext {
+    pub fn new(
+        route_kind: &str,
+        public_worker: &str,
+        dispatch_worker: &str,
+    ) -> Result<Self, AuthorityError> {
+        validate_worker_name(public_worker)?;
+        validate_worker_name(dispatch_worker)?;
+        let route_kind = route_kind.trim();
+        if route_kind.is_empty()
+            || route_kind.len() > 32
+            || !route_kind
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+        {
+            return Err(AuthorityError::InvalidInput);
+        }
+        Ok(Self {
+            version: OUTBOUND_CONTEXT_VERSION,
+            route_kind: route_kind.to_string(),
+            public_worker: public_worker.to_string(),
+            dispatch_worker: dispatch_worker.to_string(),
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), AuthorityError> {
+        if self.version != OUTBOUND_CONTEXT_VERSION {
+            return Err(AuthorityError::ClaimMismatch);
+        }
+        Self::new(&self.route_kind, &self.public_worker, &self.dispatch_worker).map(|_| ())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,16 +158,7 @@ pub fn verify_authority(
     token: &str,
     expected: AuthorityExpectation<'_>,
 ) -> Result<AuthorityClaims, AuthorityError> {
-    let key = derive_worker_key(secret, expected.worker)?;
-    verify_authority_with_worker_key(&key, token, expected)
-}
-
-pub fn verify_authority_with_worker_key(
-    worker_key: &[u8],
-    token: &str,
-    expected: AuthorityExpectation<'_>,
-) -> Result<AuthorityClaims, AuthorityError> {
-    let claims = verify_claims_with_worker_key(worker_key, token, expected.worker, expected.now)?;
+    let claims = verify_claims_with_secret(secret, token, expected.worker, expected.now)?;
     if claims.method != expected.method.to_ascii_uppercase()
         || claims.path != expected.path
         || claims.body_sha256 != body_sha256(expected.body)
@@ -141,17 +174,37 @@ pub fn verify_authority_claims(
     expected_worker: &str,
     now: i64,
 ) -> Result<AuthorityClaims, AuthorityError> {
-    let key = derive_worker_key(secret, expected_worker)?;
-    verify_claims_with_worker_key(&key, token, expected_worker, now)
+    verify_claims_with_secret(secret, token, expected_worker, now)
 }
 
-fn verify_claims_with_worker_key(
-    worker_key: &[u8],
+fn verify_claims_with_secret(
+    secret: &[u8],
     token: &str,
     expected_worker: &str,
     now: i64,
 ) -> Result<AuthorityClaims, AuthorityError> {
-    validate_worker_key(worker_key)?;
+    validate_secret(secret)?;
+    validate_worker_name(expected_worker)?;
+    let (payload, signature) = decode_authority_token(token)?;
+    verify_signature(secret, expected_worker, &payload, &signature)?;
+    decode_and_validate_claims(&payload, expected_worker, now)
+}
+
+/// Parses bounded authority claims without authenticating the signature.
+///
+/// Callers must complete authentication before treating these claims as
+/// authority. The outbound Worker uses this only to select the canonical replay
+/// object and then delegates signature verification to that platform-owned DO.
+pub fn parse_unverified_authority_claims(
+    token: &str,
+    expected_worker: &str,
+    now: i64,
+) -> Result<AuthorityClaims, AuthorityError> {
+    let (payload, _) = decode_authority_token(token)?;
+    decode_and_validate_claims(&payload, expected_worker, now)
+}
+
+fn decode_authority_token(token: &str) -> Result<(Vec<u8>, Vec<u8>), AuthorityError> {
     let mut parts = token.split('.');
     let payload = parts.next().ok_or(AuthorityError::InvalidToken)?;
     let signature = parts.next().ok_or(AuthorityError::InvalidToken)?;
@@ -164,7 +217,17 @@ fn verify_claims_with_worker_key(
     let signature = URL_SAFE_NO_PAD
         .decode(signature)
         .map_err(|_| AuthorityError::InvalidToken)?;
-    verify_signature_with_worker_key(worker_key, &payload, &signature)?;
+    if payload.len() > 2048 || signature.len() != 32 {
+        return Err(AuthorityError::InvalidToken);
+    }
+    Ok((payload, signature))
+}
+
+fn decode_and_validate_claims(
+    payload: &[u8],
+    expected_worker: &str,
+    now: i64,
+) -> Result<AuthorityClaims, AuthorityError> {
     let claims: AuthorityClaims =
         serde_json::from_slice(&payload).map_err(|_| AuthorityError::InvalidToken)?;
     validate_identity(
@@ -190,24 +253,14 @@ fn verify_claims_with_worker_key(
     Ok(claims)
 }
 
-pub fn derive_worker_key(secret: &[u8], worker: &str) -> Result<[u8; 32], AuthorityError> {
-    validate_secret(secret)?;
-    validate_worker_name(worker)?;
-    let mut mac = HmacSha256::new_from_slice(secret).map_err(|_| AuthorityError::InvalidSecret)?;
-    mac.update(KEY_DOMAIN);
-    mac.update(worker.as_bytes());
-    Ok(mac.finalize().into_bytes().into())
-}
-
-pub fn encode_worker_key(key: &[u8; 32]) -> String {
-    URL_SAFE_NO_PAD.encode(key)
-}
-
-pub fn decode_worker_key(value: &str) -> Result<[u8; 32], AuthorityError> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(value.trim())
-        .map_err(|_| AuthorityError::InvalidSecret)?;
-    bytes.try_into().map_err(|_| AuthorityError::InvalidSecret)
+pub fn expected_ai_egress_path(public_path: &str) -> Result<String, AuthorityError> {
+    match public_path {
+        "/ai/run" => Ok("/ai/run".to_string()),
+        "/v1/chat/completions" | "/v1/responses" | "/v1/messages" => {
+            Ok(format!("/ai{public_path}"))
+        }
+        _ => Err(AuthorityError::ClaimMismatch),
+    }
 }
 
 pub fn authority_replay_bucket(worker: &str, issued_at: i64) -> Result<String, AuthorityError> {
@@ -239,14 +292,6 @@ fn validate_secret(secret: &[u8]) -> Result<(), AuthorityError> {
         Err(AuthorityError::InvalidSecret)
     } else {
         Ok(())
-    }
-}
-
-fn validate_worker_key(worker_key: &[u8]) -> Result<(), AuthorityError> {
-    if worker_key.len() == 32 {
-        Ok(())
-    } else {
-        Err(AuthorityError::InvalidSecret)
     }
 }
 
@@ -291,25 +336,34 @@ fn validate_identity(
 }
 
 fn sign_payload(secret: &[u8], worker: &str, payload: &[u8]) -> Result<[u8; 32], AuthorityError> {
-    let key = derive_worker_key(secret, worker)?;
-    let mut mac = HmacSha256::new_from_slice(&key).map_err(|_| AuthorityError::InvalidSecret)?;
+    validate_secret(secret)?;
+    validate_worker_name(worker)?;
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(|_| AuthorityError::InvalidSecret)?;
+    mac.update(SIGNATURE_DOMAIN);
+    mac.update(worker.as_bytes());
+    mac.update(&[0]);
     mac.update(payload);
     Ok(mac.finalize().into_bytes().into())
 }
 
-fn verify_signature_with_worker_key(
-    worker_key: &[u8],
+fn verify_signature(
+    secret: &[u8],
+    worker: &str,
     payload: &[u8],
     signature: &[u8],
 ) -> Result<(), AuthorityError> {
-    let mut mac =
-        HmacSha256::new_from_slice(worker_key).map_err(|_| AuthorityError::InvalidSecret)?;
+    validate_secret(secret)?;
+    validate_worker_name(worker)?;
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(|_| AuthorityError::InvalidSecret)?;
+    mac.update(SIGNATURE_DOMAIN);
+    mac.update(worker.as_bytes());
+    mac.update(&[0]);
     mac.update(payload);
     mac.verify_slice(signature)
         .map_err(|_| AuthorityError::InvalidSignature)
 }
 
-fn body_sha256(body: &[u8]) -> String {
+pub fn body_sha256(body: &[u8]) -> String {
     Sha256::digest(body)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -348,36 +402,31 @@ mod tests {
     fn signed_authority_round_trips() {
         let token = sign_authority(SECRET, input(b"{}", 100)).unwrap();
         let claims = verify_authority(SECRET, &token, expected(b"{}", 101)).unwrap();
+        assert_eq!(claims.version, 2);
         assert_eq!(claims.channel_id, 42);
         assert_eq!(claims.request_id, "req-1");
-
-        let worker_key = derive_worker_key(SECRET, "tenant-a").unwrap();
-        let encoded = encode_worker_key(&worker_key);
-        let decoded = decode_worker_key(&encoded).unwrap();
-        assert_eq!(decoded, worker_key);
-        assert!(verify_authority_with_worker_key(&decoded, &token, expected(b"{}", 101)).is_ok());
         assert_eq!(
             verify_authority_claims(SECRET, &token, "tenant-a", 101)
                 .unwrap()
                 .request_id,
             "req-1"
         );
+        assert_eq!(
+            parse_unverified_authority_claims(&token, "tenant-a", 101).unwrap(),
+            claims
+        );
     }
 
     #[test]
-    fn derived_keys_are_tenant_scoped() {
-        let tenant_a = derive_worker_key(SECRET, "tenant-a").unwrap();
-        let tenant_b = derive_worker_key(SECRET, "tenant-b").unwrap();
-        assert_ne!(tenant_a, tenant_b);
-
+    fn central_signature_is_worker_scoped_without_tenant_signing_material() {
         let token = sign_authority(SECRET, input(b"{}", 100)).unwrap();
+        let wrong_worker = AuthorityExpectation {
+            worker: "tenant-b",
+            ..expected(b"{}", 101)
+        };
         assert_eq!(
-            verify_authority_with_worker_key(&tenant_b, &token, expected(b"{}", 101)).unwrap_err(),
+            verify_authority(SECRET, &token, wrong_worker).unwrap_err(),
             AuthorityError::InvalidSignature
-        );
-        assert_eq!(
-            decode_worker_key("not-a-worker-key").unwrap_err(),
-            AuthorityError::InvalidSecret
         );
     }
 
@@ -467,6 +516,40 @@ mod tests {
         assert_eq!(
             sign_authority(SECRET, invalid).unwrap_err(),
             AuthorityError::InvalidInput
+        );
+    }
+
+    #[test]
+    fn outbound_context_is_bounded_and_worker_scoped() {
+        let context =
+            OutboundInvocationContext::new("relay-authority", "tenant-a", "staging-tenant-a")
+                .unwrap();
+        assert_eq!(context.version, OUTBOUND_CONTEXT_VERSION);
+        assert_eq!(context.public_worker, "tenant-a");
+        assert!(context.validate().is_ok());
+
+        let mut wrong_version = context.clone();
+        wrong_version.version += 1;
+        assert_eq!(
+            wrong_version.validate().unwrap_err(),
+            AuthorityError::ClaimMismatch
+        );
+        assert_eq!(
+            OutboundInvocationContext::new("relay_authority", "tenant-a", "tenant-a").unwrap_err(),
+            AuthorityError::InvalidInput
+        );
+    }
+
+    #[test]
+    fn public_routes_map_to_exact_cloudflare_ai_egress_paths() {
+        assert_eq!(
+            expected_ai_egress_path("/v1/responses").unwrap(),
+            "/ai/v1/responses"
+        );
+        assert_eq!(expected_ai_egress_path("/ai/run").unwrap(), "/ai/run");
+        assert_eq!(
+            expected_ai_egress_path("/workers/scripts").unwrap_err(),
+            AuthorityError::ClaimMismatch
         );
     }
 }

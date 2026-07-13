@@ -23,6 +23,8 @@ export class MockEgressCounter extends DurableObject {
       authorizationPresent: request.headers.has("authorization"),
       authorizationScheme:
         request.headers.get("authorization")?.split(" ", 1)[0] ?? null,
+      authorityPresent: request.headers.has("x-cinatoken-wfp-authority"),
+      workerMarkerPresent: request.headers.has("x-cinatoken-wfp-worker"),
       cookiePresent: request.headers.has("cookie"),
       contentType: request.headers.get("content-type"),
     };

@@ -16,6 +16,27 @@ head_sampling_rate = 1
 [vars]
 CLOUDFLARE_ACCOUNT_ID = ""
 
+[[durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+script_name = "cinatoken-rust-api"
+
+[env.staging.vars]
+CLOUDFLARE_ACCOUNT_ID = ""
+
+[[env.staging.durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+script_name = "cinatoken-rust-api-staging"
+
+[env.production.vars]
+CLOUDFLARE_ACCOUNT_ID = ""
+
+[[env.production.durable_objects.bindings]]
+name = "WFP_AUTHORITY_REPLAY"
+class_name = "WfpAuthorityReplay"
+script_name = "cinatoken-rust-api-production"
+
 # This secret belongs only to the outbound Worker. It must never be attached to
 # a WFP tenant script or reused as the namespace deployment credential.
 # wrangler secret put CINATOKEN_WFP_OUTBOUND_AI_TOKEN --config crates/wfp-outbound/wrangler.toml

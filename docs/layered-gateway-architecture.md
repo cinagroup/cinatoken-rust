@@ -143,7 +143,7 @@ maturity levels are used:
 | M3 Scheduling gateway | A/B/C | **Wired** | `cinatoken-gateway` is the live, pure owner planner for preflight, WFP host/internal dispatch, Gemini-native relay, RealtimeSession, assets, and the compatibility Router. Tenant preview hosts resolve before central APIs and fail closed when dispatch is disabled. The admin API/frontend expose the contract version and precedence. | Deployed host/path ownership smoke, missing-binding replay, tenant negative tests, and rollback evidence | `crates/gateway/src/lib.rs`; `crates/worker/src/lib.rs`; `crates/worker/src/platform_gateway.rs`; Cloudflare Platform frontend readiness panel |
 | M2 Provider registry | — | **Wired** | `ProviderRegistry::resolve` drives per-endpoint provider routing on the live relay path | Fold remaining private-enum branches into adapters | `crates/providers/src/routing.rs:77-80`; called at `crates/worker/src/relay.rs:194` |
 | M7 AiGateway router | C | **Gated substrate (fallback wired)** | Full cutover decision ladder, security coupling, current REST URL builders, a table-driven documented model-prefix registry, 8 cutover guards, `channels.other_info` opt-in, default-off forwarder, provider/channel-matched direct fallback, and frontend visibility. Gateway-only prefixes cannot silently enter the direct fallback set | Live staging canary per provider family, AI Gateway log capture, usage/billing reconciliation, failure injection, and rollback | `crates/providers/src/ai_gateway.rs`; `crates/storage/src/lib.rs` opt-in parser; `crates/worker/src/relay.rs` runtime/forwarder/fallback; `crates/worker/src/platform_gateway.rs` capabilities; gate `RELAY_AI_GATEWAY_ROUTER_ENABLED` |
-| M8 WFP dispatch | B | **Gated substrate (authority + replay guarded)** | The central relay may select WFP only from `channels.other_info.wfp_worker` after relay-token authentication, D1 selection, and quota reserve. The platform retains `WFP_RELAY_AUTHORITY_SECRET`; the tenant receives a derived key and an external `WfpAuthorityReplay` binding. It verifies the exact-body envelope and atomically consumes the request ID before one of chat, responses, messages, or ai-run can egress. The evidence-only post-upload verifier recomputes module hashes and cross-checks script settings/bindings plus positive dispatch output | Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; run the verifier against real upload/readback/dispatch captures; archive sequential/concurrent duplicate, eviction, cleanup, load, one-provider-call, billing, audit, and redaction evidence | `crates/wfp-authority/src/lib.rs`; `crates/worker/src/wfp_authority_replay.rs`; `crates/worker/src/relay.rs`; `crates/wfp-tenant/src/lib.rs`; `tools/deploy_wfp_tenant_artifact.mjs`; `tools/verify_wfp_post_upload.mjs`; gate `WFP_RELAY_TRANSPORT_ENABLED` |
+| M8 WFP dispatch | B | **Gated substrate (central authority + final-boundary replay guarded)** | The central relay may select WFP only from `channels.other_info.wfp_worker` after relay-token authentication, D1 selection, and quota reserve. The main Worker retains `WFP_RELAY_AUTHORITY_SECRET`; the tenant receives no authority key or replay binding and only forwards the opaque envelope. Cloudflare injects route/public-worker/dispatch-worker context into `cinatoken-wfp-outbound`, which validates context, final path/body, central v2 signature, and platform replay consumption before bearer access. | Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; archive schema-3 attachment readback, live context propagation, sequential/concurrent duplicate, eviction, cleanup, load, one-provider-call, billing, audit, and redaction evidence | `crates/wfp-authority/src/lib.rs`; `crates/worker/src/wfp_authority_replay.rs`; `crates/worker/src/relay.rs`; `crates/wfp-tenant/src/lib.rs`; `crates/wfp-outbound/src/lib.rs`; `tools/collect_wfp_outbound_readback.mjs`; gate `WFP_RELAY_TRANSPORT_ENABLED` |
 | M6 RealtimeSession | A | **Gated substrate (default-off settlement/audit compiled)** | `#[durable_object]` with WS **hibernation** (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`), per-socket `SocketAttachment`, lifecycle metrics persisted to DO storage, upstream URL/handshake planner, `/v1/realtime` D1/cache channel selection with secret-redacted plan summaries in socket attachments, request-scoped upstream connect specs, gateway-to-DO secret handoff with no raw key persistence, Worker-native upstream fetch-upgrade adapter, an in-memory upstream bridge registry that forwards client frames while active and reports `upstream_bridge_not_active` after hibernation/restart, 1 MiB text/binary frame guards with 1009 close handling, deterministic bridge close/error code mapping, fail-closed cleanup when either bridge direction cannot enqueue a frame, a bounded backpressure policy plus transient FIFO client-to-upstream queue before upstream accept, metadata-only overflow events, WebSocket and HTTP status counters for active upstream bridges plus queued frames/bytes, sanitized terminal event trace metadata for close/error/frame-limit/send-failure paths, metadata-only `response.done` usage capture into DO metrics, redacted tiered-billing pre-settlement snapshot metadata in upstream plans and connect metrics, request-scoped settlement handoff with a private user/token/channel/pre-consumed-quota mutation plan plus redacted settlement-preview metrics for final/refund/additional quota calculation from frozen snapshots plus `response.done` usage, a `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` default-off D1 writer foundation that reuses the existing reserve/refund/final helper, a durable replay-marker foundation, and a Go-compatible audit-log row foundation that persists only redacted write/replay/audit status plus quota deltas, smoke-level bridge/upstream replay contract self-tests, and a mock upstream replay harness with review-only D1 seed SQL, active/empty-queue runtime-status proof, controlled startup queue/drain, `response.done` usage-capture plus billing-snapshot/settlement-preview status proof backed by an isolated tiered-expression seed, and early `event_stream_failed`/`accept_failed` fault plans before live probes | Production-grade bridge hardening: archived local/staging queue/drain/fault/usage/billing-snapshot/settlement-handoff/mutation-plan/writer/replay-marker/audit-log evidence, remaining upstream abort/error and upstream-to-client send-failure replay, single-transaction or equivalent CAS settlement idempotency, final Realtime billing/audit settlement, protocol parity | `crates/worker/src/realtime_session.rs`: DO + planners/handoff/fetch-upgrade adapter/transient lifecycle/frame guard/close mapping/send-failure/backpressure guard/runtime queue/event trace/startup queue probe/mock fault handoff/usage metadata capture/billing snapshot metadata/settlement handoff/mutation-plan/preview metrics/default-off writer/replay/audit metrics; `tools/smoke_realtime_session.mjs`: platform/frame-limit/replay-contract/capability smoke; `tools/smoke_realtime_upstream_replay.mjs`: mock upstream replay + D1 seed plan/runtime-status/fault/usage/billing-preview proof; `crates/worker/src/relay.rs`: Realtime channel selection helper plus billing preflight snapshot and settlement/audit handoff; binding **active** `wrangler.toml:117,216,317`; gates `REALTIME_SESSION_V1_ENABLED`/`REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` |
 | M4 QuotaCoordinator | — | **Pending** | — | Build the shadow-first per-token DO (§4 M4) | no `crates/coordinator` yet |
 | M5 Task correctness / TaskRunner | — | **Partial (timeout sweep + refund replay + TaskRunner alarm probe compiled)** | Scheduled Worker poller now runs a Go-compatible timeout sweep before provider polling, uses per-task CAS for timeout failure, preserves the legacy imported-task no-refund cutoff, hardens malformed `private_data` during task CAS updates, batches timeout/video/Suno failure refunds behind a CAS-winner marker, normalizes Suno fail-reason rows to terminal failure, locally replays no-duplicate-refund/legacy/stale-window semantics with `bun run check:task-refund-batch`, wires the default-off `TASK_RUNNER` DO alarm foundation plus submit-path arming for video/remix/Suno shared task rows, lets alarm fire reuse the shared `poll_one_task` provider poll + D1 CAS settlement path, and exposes an admin-only per-task status probe with frontend UI, replay-evidence classifier, and smoke replay plan | Finish staging timeout/refund replay, provider failure replay, live TaskRunner alarm replay using the status probe, rollback, cron fallback, and no-double-poll evidence before enabling the DO fast path | `crates/worker/src/task_repository.rs`: timed-out query/CAS timeout apply/refund marker batch; `crates/worker/src/task_orchestration.rs`: config + sweep before provider poll + default-off TaskRunner arming; `crates/worker/src/task_runner.rs`: alarm foundation, submit handoff, gated poll handoff, status probe helper, and replay evidence classifier; `crates/worker/src/lib.rs`: scheduled handler, platform status route, and DO module; `tools/smoke_task_refund_batch.mjs`: local replay contract; `tools/smoke_task_runner_alarm_replay.mjs`: TaskRunner read-only replay probe; `platform_gateway.rs` + frontend Cloudflare Platform panel: capability and status probe surface |
@@ -589,19 +589,20 @@ by clearing the flag, no redeploy required.
 retained as history and must not be used as an operator procedure. Current M8 is
 the authority-guarded table row above: central token auth, D1 selection, and
 reserve precede `channels.other_info.wfp_worker`; the relay signs the 30-second
-HMAC authority using a key derived from the platform-only master; the uploader
-binds only `WFP_RELAY_AUTHORITY_KEY` into the tenant. The tenant verifies and
-forwards only chat/responses/messages/ai-run through the dispatch namespace's
+central-authority v2 HMAC directly with the platform-only master. The tenant
+receives no authority key or replay binding and forwards only the opaque
+authority plus chat/responses/messages/ai-run through the dispatch namespace's
 `cinatoken-wfp-outbound` service; central settlement/refund and audit follow.
 That outbound Worker alone owns `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` and injects
-the Cloudflare bearer. The tenant receives
+the Cloudflare bearer after validating the Cloudflare-provided invocation
+context, final path/body, central signature, and platform replay DO. The tenant receives
 `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` for outbound auth and
 must never receive `CF_API_TOKEN` or any Cloudflare bearer. Admin dispatch is
 status-only, JS fallback AI deploy is disabled, and
 `WFP_RELAY_TRANSPORT_ENABLED` remains false pending strict Rust/Wasm
 upload/readback, outbound service attachment and secret isolation readback,
-exact replay binding readback, and staging billing plus live replay-race and
-egress-policy evidence. Remote attachment/live evidence is unverified;
+exact context parameter/environment/replay binding readback, and staging billing
+plus live context/replay-race and egress-policy evidence. Remote attachment/live evidence is unverified;
 production remains **NO-GO**. The local DO and outbound contracts are not
 cutover markers.
 - **Status (2026-07-06): Gated substrate, binding still commented.** Dispatch routing
@@ -752,22 +753,25 @@ The paid WFP path now applies the cinaVibeSDK one-time ticket idea at a durable,
 platform-owned boundary:
 
 1. The Rust gateway authenticates, selects the channel, reserves quota, and
-   signs a short-lived exact-body authority with a worker-derived key.
-2. The Rust/Wasm tenant verifies that authority locally.
-3. Before AI Gateway egress, the tenant calls the externally bound
-   `WfpAuthorityReplay` namespace.
-4. The DO verifies the master signature, recomputes the canonical
+   signs a short-lived exact-body central-authority v2 envelope directly with
+   the platform master.
+2. The Rust/Wasm tenant has no verifier or replay binding. It applies bounded
+   route/body checks and forwards the opaque envelope.
+3. Cloudflare passes the exact route/public-worker/dispatch-worker invocation
+   context to `cinatoken-wfp-outbound` through the dispatch outbound parameter.
+4. The outbound Worker validates context, signature claims, final path, and
+   exact body before calling the externally bound `WfpAuthorityReplay`.
+5. The DO verifies the master signature, recomputes the canonical
    worker/issuance-bucket object ID, and atomically stores a hash of the request
    ID. Duplicate is `409`; verifier/storage/binding failure is fail-closed.
-5. The response returns to the gateway for central settlement/refund and audit.
+6. Only after successful consumption does the outbound Worker read and inject
+   its bearer. The response returns for central settlement/refund and audit.
 
-This direct DO binding is acceptable only because tenant artifacts are strict,
-platform-built Rust/Wasm modules. If arbitrary customer code becomes eligible
-for the same namespace, replace direct namespace access with a platform service
-binding that selects the DO shard internally. The current guard prevents reuse
-of one signed envelope; it does not deduplicate a relay retry that deliberately
-creates a fresh signed request ID. The worker/minute shard also needs staging
-load evidence before its throughput assumptions are accepted.
+The tenant is intentionally outside the replay namespace and authority trust
+root. The current guard prevents reuse of one signed envelope; it does not
+deduplicate a relay retry that deliberately creates a fresh signed request ID.
+The worker/minute shard also needs staging load evidence before its throughput
+assumptions are accepted.
 
 ## 11. WFP outbound authentication boundary (2026-07-12)
 
@@ -783,20 +787,31 @@ Internet. For this migration the dispatch namespace must name service
    `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` for outbound auth and
    no Cloudflare bearer. A discovered `CF_API_TOKEN` or equivalent bearer makes
    the tenant not paid-AI-capable.
-3. The outbound Worker accepts only `POST application/json`, validates JSON,
+3. The dispatch attachment declares exactly one parameter,
+   `CINATOKEN_WFP_OUTBOUND_CONTEXT`. The main Worker supplies route kind,
+   public worker, and actual dispatch worker in the Dynamic Dispatch third
+   argument; the outbound Worker rejects missing, malformed, or mismatched
+   context.
+4. The outbound Worker accepts only `POST application/json`, validates JSON,
    and caps the body at 4 MiB. It permits no URL credentials, custom port,
    query, or fragment.
-4. The only allowed targets are the exact account-scoped HTTPS URLs ending in
+5. The only allowed targets are the exact account-scoped HTTPS URLs ending in
    `/ai/run`, `/ai/v1/chat/completions`, `/ai/v1/responses`, and
    `/ai/v1/messages`, matching Cloudflare's
    [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/).
-5. The outbound Worker rebuilds request and response headers from allowlists,
+6. Before reading its bearer, the outbound Worker matches central-authority v2
+   claims to the invocation context, method, final path, and exact body hash,
+   then consumes the request ID through the environment-correct external replay
+   DO binding.
+7. The outbound Worker rebuilds request and response headers from allowlists,
    injects its own `Authorization: Bearer ...`, and rejects redirects.
 
 The source contract is not remote proof. Attachment of the outbound service to
-the real dispatch namespace, outbound-only secret ownership, bearer-free tenant
-readback, all four positive routes, negative egress cases, Gateway logs, billing,
-replay, and rollback remain unverified. WFP production is **NO-GO**.
+the real dispatch namespace, schema-3 environment/parameter/replay readback,
+live Dynamic Dispatch context propagation, outbound-only secret ownership,
+bearer-free and authority-free tenant readback, all four positive routes,
+negative egress cases, Gateway logs, billing, replay, and rollback remain
+unverified. WFP production is **NO-GO**.
 
 ## 2026-07-13 Realtime Recovery Ownership Boundary
 

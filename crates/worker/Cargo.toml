@@ -44,6 +44,7 @@ url.workspace = true
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 worker = { workspace = true, features = ["d1", "queue"] }
+worker-sys = "0.5"
 
 # bcrypt (via cinatoken-auth) pulls getrandom, which on wasm32 must use the
 # JS-based entropy source. Enable the `js` feature so bcrypt can run inside the

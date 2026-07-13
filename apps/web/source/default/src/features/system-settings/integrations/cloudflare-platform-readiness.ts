@@ -92,7 +92,9 @@ export type PlatformReadinessCapabilities = Pick<
   | 'wfp_tenant_rust_wasm_runtime_compiled'
   | 'wfp_tenant_route_manifest_compiled'
   | 'wfp_tenant_internal_dispatch_required_compiled'
-  | 'wfp_tenant_relay_authority_verifier_compiled'
+  | 'wfp_outbound_invocation_context_compiled'
+  | 'wfp_outbound_authority_verifier_compiled'
+  | 'wfp_outbound_replay_guard_compiled'
   | 'wfp_tenant_response_header_guard_compiled'
   | 'wfp_preview_response_security_headers_compiled'
   | 'wfp_tenant_ai_gateway_policy_compiled'
@@ -203,7 +205,9 @@ export function buildPlatformReadinessSummary(
     capabilities.wfp_tenant_rust_wasm_runtime_compiled,
     capabilities.wfp_tenant_route_manifest_compiled,
     capabilities.wfp_tenant_internal_dispatch_required_compiled,
-    capabilities.wfp_tenant_relay_authority_verifier_compiled,
+    capabilities.wfp_outbound_invocation_context_compiled,
+    capabilities.wfp_outbound_authority_verifier_compiled,
+    capabilities.wfp_outbound_replay_guard_compiled,
     capabilities.wfp_tenant_response_header_guard_compiled,
     capabilities.wfp_preview_response_security_headers_compiled,
     capabilities.wfp_tenant_ai_gateway_policy_compiled,

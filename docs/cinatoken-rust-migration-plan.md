@@ -9478,11 +9478,10 @@ Current architecture:
 - `WFP_RELAY_TRANSPORT_ENABLED` is a dedicated default-off gate. Existing WFP
   preview and admin controls do not authorize paid AI traffic.
 - The central relay sends `x-cinatoken-wfp-authority`, an HMAC-SHA256 envelope
-  signed with a per-worker key derived from the platform-only
-  `WFP_RELAY_AUTHORITY_SECRET`. Its 30-second authority binds worker, method,
-  path, body SHA-256, selected channel ID, and request ID. The uploader binds
-  only the derived `WFP_RELAY_AUTHORITY_KEY` into the named Rust/Wasm tenant;
-  the tenant verifies with that key and never receives the platform master.
+  signed directly with the platform-only `WFP_RELAY_AUTHORITY_SECRET`. The
+  current central-authority v2 contract binds public worker, method, path, body
+  SHA-256, selected channel ID, and request ID for 30 seconds. No authority
+  signing or verification material is derived into the Rust/Wasm tenant.
 - The WFP response returns to the central relay for the existing quota
   settlement/refund and audit path. The tenant runtime does not own token auth,
   D1 channel choice, reserve, settlement, or paid-request audit.
@@ -9495,18 +9494,17 @@ Current architecture:
 - The generated JavaScript fallback is status-only and control-plane fallback
   deploy is disabled. Production upload uses the strict Rust/Wasm artifact tool
   `tools/deploy_wfp_tenant_artifact.mjs`.
-- A tenant runtime token is mandatory for real upload and must differ from the
-  Cloudflare deploy token. `WFP_RELAY_AUTHORITY_SECRET` is also mandatory but
-  remains only on the platform Worker and in the uploader derivation context;
-  the tenant receives only `WFP_RELAY_AUTHORITY_KEY` as a secret binding.
+- The tenant receives neither a runtime Cloudflare bearer nor an authority key.
+  `WFP_RELAY_AUTHORITY_SECRET` remains only on the main Worker, while
+  `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` remains only on the outbound service.
 
 Production status remains **not deployed / not proven**. The next evidence is a
 real dispatch-namespace Rust/Wasm upload and REST readback plus a staging relay
 request that proves signed-authority rejection cases and exactly one central
 reserve followed by settlement or refund and the matching audit outcome.
-Replay-resistance evidence is still required: the short-lived, body-bound
-envelope is not claimed to be replay-proof. Keep the transport gate off until
-that evidence is archived.
+Replay-resistance evidence is still required: the local final-boundary replay
+guard does not prove deployed Dynamic Dispatch parameter propagation or a live
+duplicate race. Keep the transport gate off until that evidence is archived.
 
 ### 22.151 2026-07-11 WFP Authority Replay Durable Object
 
@@ -9516,28 +9514,29 @@ moving admission, billing, or audit ownership into the tenant Worker.
 - Added the platform-owned Rust Durable Object `WfpAuthorityReplay`, exposed to
   the main Worker as `WFP_AUTHORITY_REPLAY` with migration
   `v4-wfp-authority-replay` in default, staging, and production configuration.
-- The Rust/Wasm tenant first verifies the worker/method/path/exact-body HMAC,
-  then atomically consumes the signed request ID in the replay DO before any AI
-  Gateway egress. A duplicate returns `409`; invalid authority returns `403`;
-  missing binding, storage failure, or replay-service failure returns `503`.
+- The Rust/Wasm tenant has no authority verifier or replay binding. It enforces
+  bounded route/body handling and forwards the opaque envelope. The outbound
+  Worker validates Cloudflare-provided invocation context, final path/body, and
+  claims, then atomically consumes the signed request ID before bearer access.
+  A duplicate returns `409`; invalid authority returns `403`; missing binding,
+  storage failure, or replay-service failure returns `503`.
 - Replay objects are sharded by worker and 60-second issuance bucket. The DO
   recomputes that bucket from the master-verified claims and rejects a request
   delivered to any non-canonical object ID. Stored keys are SHA-256 digests,
   not raw request IDs; one bucket alarm deletes state only after every authority
   issued in the bucket has expired plus cleanup grace.
-- The artifact uploader now requires `--authority-replay-script` or
-  `WFP_AUTHORITY_REPLAY_SCRIPT_NAME` and uploads an external
-  `durable_object_namespace` binding for `WfpAuthorityReplay`. The tenant still
-  receives only its derived `WFP_RELAY_AUTHORITY_KEY`; the platform master stays
-  in the main Worker and uploader derivation context.
+- Each outbound environment binds the external `WFP_AUTHORITY_REPLAY`
+  namespace to the matching main Worker/class. The artifact uploader rejects
+  authority key/master and replay bindings in tenant metadata.
 - Platform capabilities and the admin frontend distinguish the compiled replay
   contract from the live DO binding. Paid WFP readiness requires both, while
   staging verification and cutover readiness remain separate evidence states.
 
-Local evidence: authority tests 6/6, Rust tenant tests 16/16, Worker WFP tests
-19/19, frontend readiness tests 6/6, both wasm32 checks, deploy-plan self-test,
-route-contract self-test, and response-header self-test passed. This does not
-prove a deployed duplicate race. Staging must still demonstrate one winner for
+Current local evidence: authority 8/8, tenant 15/15, outbound 4/4,
+platform-gateway 26/26, Workerd lifecycle 12/12, frontend readiness 22/22, and
+all WFP collector/smoke self-tests pass. This does not prove remote outbound
+context propagation or a deployed duplicate race. Staging must still
+demonstrate one winner for
 sequential and concurrent duplicate envelopes, canonical binding readback,
 survival across eviction/redeploy, cleanup timing, bucket throughput/latency,
 one provider call, one central reserve and settlement/refund, and secret-free
@@ -10036,6 +10035,11 @@ Authoritative architecture:
   `cinatoken-wfp-outbound`. Cloudflare documents this interception and
   credential-injection pattern in
   [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/).
+- The dispatch binding declares exactly one parameter,
+  `CINATOKEN_WFP_OUTBOUND_CONTEXT`. The main Worker passes route kind, public
+  worker, and actual dispatched script through the Dynamic Dispatch third
+  argument. The outbound Worker rejects absent, malformed, or mismatched
+  context.
 - `cinatoken-wfp-outbound` alone owns the secret
   `CINATOKEN_WFP_OUTBOUND_AI_TOKEN`. The dispatch deploy/readback token,
   authority master, and outbound AI token remain separate platform credentials;
@@ -10058,15 +10062,17 @@ Authoritative architecture:
   documents these four endpoint shapes.
 - The outbound Worker rejects wrong scheme, host, account, port, path, URL
   credentials, query, and fragment. It rebuilds request and response headers
-  from narrow allowlists, injects its own `Authorization: Bearer ...`, and
-  rejects redirects.
+  from narrow allowlists and rejects redirects. Before reading or injecting
+  its bearer, it matches central-authority v2 to the invocation context,
+  method, final path, exact body hash, and one-time platform replay result.
 
 Production evidence boundary:
 
 - Local source, unit tests, Wasm checks, dry-run upload manifests, and commented
   Wrangler outbound configuration are contract evidence only.
 - Still required are remote service deployment, dispatch-namespace outbound
-  attachment readback, proof that `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` exists only
+  service/environment/parameter/replay readback, live context propagation,
+  proof that `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` exists only
   on the outbound service, bearer-free tenant binding readback, positive live
   smoke for all four exact routes, negative method/content/body/URL/header/
   redirect cases, Gateway log reconciliation, signed-authority replay and
@@ -10083,7 +10089,7 @@ credential-safe remote evidence contract without claiming a deployment.
 
 - Added `tools/collect_wfp_outbound_readback.mjs` and root package commands
   `check:wfp-outbound:readback-collector` and
-  `collect:wfp-outbound:readback`. The self-test now passes 24 positive and negative
+  `collect:wfp-outbound:readback`. Schema 3 self-test now passes 30 positive and negative
   cases and the contract is part of `bun run check`.
 - Live collection performs six read-only Cloudflare requests: dispatch namespace
   before/after, dispatcher settings/secrets, and outbound settings/secrets. It
@@ -10091,11 +10097,15 @@ credential-safe remote evidence contract without claiming a deployment.
   oversized bodies, namespace identity drift, and any trusted namespace.
 - The exact named dispatcher binding must be a `dispatch_namespace` for the
   requested namespace. Its outbound worker must be exactly
-  `cinatoken-wfp-outbound`, with no parameter, environment, or entrypoint drift.
+  `cinatoken-wfp-outbound`, with the expected environment and exactly one
+  parameter named `CINATOKEN_WFP_OUTBOUND_CONTEXT`; extra/missing/wrong
+  parameter, environment, or entrypoint drift is rejected.
 - The outbound Worker must expose the exact `CLOUDFLARE_ACCOUNT_ID` plain-text
   binding and the `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` secret in both settings and
-  secret inventory. The dispatcher must not own the outbound token, and neither
-  Worker may own deploy/readback or retired tenant bearer names.
+  secret inventory. It must also expose the environment-correct external
+  `WFP_AUTHORITY_REPLAY` binding to the main Worker/class. The dispatcher must
+  not own the outbound token, and neither Worker may own deploy/readback or
+  retired tenant bearer names.
 - The collector accepts no token CLI argument, uses only the rotated
   `CINATOKEN_WFP_READBACK_TOKEN` after explicit readback and replacement-token
   confirmations, writes no files, redacts the account identifier, emits secret
@@ -10110,7 +10120,8 @@ credential-safe remote evidence contract without claiming a deployment.
 
 Evidence boundary:
 
-- `verified=true` from this tool proves remote attachment and secret ownership
+- `verified=true` from this tool proves remote attachment, declared outbound
+  parameter/environment/replay identity, and secret ownership
   only when collected against staging after the exposed credential has been
   revoked and replaced. It does not prove token validity, tenant artifact
   identity, a provider call, egress policy, billing, or replay behavior.
@@ -10130,8 +10141,9 @@ Evidence boundary:
   failures are rejected.
 - Positive requests now have an executable path through the real authority:
   relay token authentication -> D1 model/group/channel selection -> central
-  billing preparation -> body-bound WFP authority -> replay DO -> Rust tenant ->
-  Rust outbound Worker -> Cloudflare AI REST -> central settlement/audit.
+  billing preparation -> body-bound WFP authority -> Rust tenant -> Cloudflare
+  outbound context -> Rust outbound final verification -> replay DO -> bearer
+  injection -> Cloudflare AI REST -> central settlement/audit.
   Admin dispatch remains status-only.
 - Live safety is deliberately narrower than dry-run planning. One process may
   call only one of chat, responses, messages, or ai-run. It uses the reviewed
@@ -10771,13 +10783,14 @@ Implemented locally:
   and signed-authority transport readiness when either public subdomain setting
   is absent/enabled or a top-level route is declared. The React/Bun Cloudflare
   panel exposes this as compiled configuration evidence only.
-- `collect_wfp_outbound_readback.mjs` schema 2 reads the official script
+- `collect_wfp_outbound_readback.mjs` schema 3 reads the official script
   subdomain endpoint and the account Worker Domains endpoint filtered by the
-  outbound service. A verified artifact now requires `enabled=false`,
-  `previews_enabled=false`, and zero Custom Domains, in addition to the
-  namespace, attachment, account-binding, and secret-ownership contract.
+  outbound service. A verified artifact requires `enabled=false`,
+  `previews_enabled=false`, zero Custom Domains, the exact outbound
+  environment/context parameter, and environment-correct replay binding, in
+  addition to namespace, account, and secret-ownership checks.
 - The collector remains read-only, accepts no token argument, rejects redirects
-  and credential echoes, and passes 24 positive/negative self-test cases.
+  and credential echoes, and passes 30 positive/negative self-test cases.
   WFP dispatch and paid egress smokes now require the compiled private-ingress
   capability.
 
@@ -10789,7 +10802,7 @@ three wasm32 checks.
 
 Production evidence remains deliberately stricter than the compiled flag. After
 the exposed credential is revoked, deploy with a rotated least-privilege token,
-archive schema-2 readback, and separately enumerate every account Zone Worker
+archive schema-3 readback, and separately enumerate every account Zone Worker
 route to prove none points at `cinatoken-wfp-outbound`. The Worker must also have
 no Custom Domain, `workers.dev` hostname, or Preview URL before any paid WFP
 canary. Remote namespace attachment, outbound-only secret ownership, tenant
@@ -10887,3 +10900,105 @@ prove response-created/done settlement plus eviction/redeploy ownership,
 reconcile provider billing and D1 quota, exercise alerts and rollback, and
 archive redacted evidence. The exposed Cloudflare credential must be revoked
 and replaced before any such work. Production remains **NO-GO**.
+
+### 22.178 2026-07-13 WFP Central Authority At The Final Egress Boundary
+
+This increment removes the tenant-derived verifier key and tenant replay-DO
+binding described by earlier implementation logs. Those designs let a tenant
+that obtained its symmetric verifier key mint new authority envelopes. The
+production contract now keeps signing and final authorization entirely in
+platform-owned components.
+
+#### Landed trust boundary
+
+1. The main Worker completes relay-token authentication, D1 channel selection,
+   quota reservation, and WFP worker selection. It signs central-authority v2
+   directly with `WFP_RELAY_AUTHORITY_SECRET`; no derived key is exported.
+2. The tenant receives no Cloudflare bearer, authority key/master, or replay DO
+   binding. It permits only the four reviewed routes, validates bounded JSON,
+   and forwards the opaque request-scoped authority.
+3. The Dynamic Dispatch call passes a third-argument outbound object containing
+   `CINATOKEN_WFP_OUTBOUND_CONTEXT`. The bounded context identifies the
+   `relay-authority` route kind, public tenant worker, and actual dispatched
+   script after configured prefixing.
+4. The dispatch namespace attachment must name the exact outbound service and
+   environment and declare exactly that one parameter. Missing, extra, or
+   renamed parameters fail schema-3 readback.
+5. `cinatoken-wfp-outbound` validates context, authority version/claims,
+   request method, exact public-to-final path mapping, and body SHA-256 before
+   consulting the provider credential. It strips platform authority and worker
+   markers from the provider request.
+6. The outbound Worker calls the environment-correct external
+   `WFP_AUTHORITY_REPLAY` namespace. `WfpAuthorityReplay` authenticates the v2
+   signature with the central master and atomically consumes the canonical
+   worker/time-bucket request digest. Only then may the outbound Worker read and
+   inject `CINATOKEN_WFP_OUTBOUND_AI_TOKEN`.
+7. The provider response returns to the main relay for the existing central
+   settlement/refund and audit path. Neither tenant nor outbound Worker becomes
+   a billing authority.
+
+The narrow three-argument dispatcher adapter exists because the current
+worker-rs high-level wrapper exposes the two-argument form while Cloudflare's
+runtime and generated Workers types support outbound options. The adapter is
+typed around `worker_sys::Fetcher`; it is not a generic JavaScript escape hatch.
+
+#### Local evidence completed
+
+- Authority unit tests: 8/8.
+- Rust/Wasm tenant unit tests: 15/15.
+- Rust/Wasm outbound policy unit tests: 4/4.
+- Main Worker platform-gateway focused tests: 26/26.
+- Release-Wasm Workerd lifecycle suite: 12/12, including missing/wrong context,
+  missing/tampered authority, path/body mismatch, and eight concurrent replay
+  attempts with exactly one provider call.
+- Tenant artifact/readback/post-upload contracts reject authority key/master,
+  replay binding, and every Cloudflare bearer.
+- Outbound schema-3 collector: 30/30 cases for service, environment, physical
+  environment script identity, exact
+  context parameter, account, secret ownership, private ingress, and external
+  replay binding.
+- Outbound egress contract: 17/17; frontend readiness: 22/22; dispatch artifact,
+  failure, route, and response-header contracts pass.
+
+The Workerd suite supplies a static object binding for outbound context because
+the local pool is not a remote Workers for Platforms namespace. It proves the
+Rust boundary behavior, not Cloudflare's deployed Dynamic Dispatch parameter
+propagation. That distinction is a release gate, not a documentation caveat.
+
+#### Staging evidence ladder
+
+Execute these stages in order with a rotated least-privilege credential and
+archive only redacted JSON, IDs, timestamps, counts, and hashes.
+
+| Stage | Operation | Required pass evidence | Immediate rollback |
+| --- | --- | --- | --- |
+| WFP-S0 | Keep transport false; deploy main Worker migration and DO | `v4-wfp-authority-replay`, secret-name inventory, no value exposure | Restore prior main version; leave D1/DO data intact |
+| WFP-S1 | Deploy `cinatoken-wfp-outbound` staging environment | No workers.dev, Preview URL, Custom Domain, or Zone route; bearer only on outbound | Remove namespace attachment before reverting service |
+| WFP-S2 | Attach staging namespace outbound service | Schema-3 readback proves exact service, `staging` environment, one context parameter, and staging replay script/class | Remove attachment; do not enable relay transport |
+| WFP-S3 | Upload strict Rust/Wasm tenant | PUT/GET module hashes match; no bearer, authority key/master, or replay binding; status-only admin smoke passes | Delete only the canary tenant script |
+| WFP-S4 | Run final-boundary negatives | Missing/wrong context, signature, worker, route, final path, body, time, and replay all fail closed with zero provider calls | Detach outbound service and preserve evidence |
+| WFP-S5 | Enable one fixed-group, one-channel route canary | One provider call, one reserve, one settlement/refund, one final type-2 audit row, expected Gateway log | Set `WFP_RELAY_TRANSPORT_ENABLED=false` first |
+| WFP-S6 | Replay, eviction, cleanup, and load | One winner under sequential/concurrent duplicates; persistence across eviction/redeploy; bounded cleanup/storage/latency | Disable transport; detach service if invariants drift |
+
+Do not combine stages or enable production while any prior artifact is absent.
+Run one reviewed route per process with central retries at zero, cross-model
+fallback off, one candidate WFP channel, and tenant Gateway attempts equal to
+one. Repeat the positive canary separately for chat, responses, messages, and
+ai-run only after each previous result is reconciled.
+
+#### Promotion and rollback gates
+
+Staging is promotable only when all WFP-S0 through WFP-S6 evidence is current,
+the exact production script/environment names have a peer-reviewed mapping, the
+authority master and outbound bearer have separate rotation owners, and a
+rollback rehearsal proves transport-disable takes effect before attachment or
+script rollback. Production starts at one tenant, one fixed group, one channel,
+one route, and a bounded request budget; it never starts with wildcard tenants,
+`auto` group selection, retries, fallback, or streaming.
+
+Any context/authority/replay anomaly, provider-call multiplicity, unresolved
+billing, secret marker in evidence, public outbound ingress, or readback drift
+is a stop condition. Disable `WFP_RELAY_TRANSPORT_ENABLED`, preserve quota and
+replay state for reconciliation, detach the outbound service if necessary, and
+keep Go/VPS authoritative. No remote evidence was collected in this increment;
+WFP and the overall production migration remain **NO-GO**.

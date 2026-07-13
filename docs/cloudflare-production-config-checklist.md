@@ -277,7 +277,7 @@ These must be true for every deployable environment:
 | Service bindings | Optional | Use for Worker-to-Worker calls if split | Same | Platform | Binding type and smoke |
 | `CHANNEL_AFFINITY` Durable Object | Optional | Required before channel-affinity canary | Same | Relay/Platform | Migration entry, affinity smoke, fail-open smoke |
 | `REALTIME_SESSIONS` Durable Object | Optional | Required before realtime/session cutover | Same | Platform/Relay | Migration entry, `bun run smoke:realtime-session` hibernation WebSocket smoke, restored attachment + persisted metrics smoke, unsupported-control no-echo probe, protocol bridge smoke |
-| `WFP_AUTHORITY_REPLAY` Durable Object | Optional until WFP canary | Required before any paid WFP tenant route | Required before WFP cutover | Platform/Security | `v4-wfp-authority-replay` migration, main script/class binding, tenant external-binding readback, sequential/concurrent duplicate rejection, eviction and cleanup smoke |
+| `WFP_AUTHORITY_REPLAY` Durable Object | Optional until WFP canary | Required before any paid WFP tenant route | Required before WFP cutover | Platform/Security | `v4-wfp-authority-replay` migration, main script/class plus outbound external-binding readback, tenant binding absence, sequential/concurrent duplicate rejection, eviction and cleanup smoke |
 | `DISPATCHER` WFP dispatch namespace | Optional | Required before tenant/preview WFP traffic | Required before WFP cutover | Platform | Namespace created, binding uncommented, tenant script plan/deploy smoke, admin-authenticated `bun run smoke:wfp-dispatch -- --expect-runtime rust-wasm` status/route smoke |
 | `RELAY_TOKEN_RATE_LIMITER`, `RELAY_IP_RATE_LIMITER` | Declared and locally replayed | Declared; authenticated runtime verification required | Declared; G8 deploy still blocked | Platform/Security | `bun run check:cf:native-rate-limits`, `/api/status`, route-family 429 and Analytics Engine/log evidence |
 | Workflows | Optional | Required before multi-step async cutover | Required before multi-step async cutover | Platform/Tasks | Workflow smoke and retry test |
@@ -435,10 +435,9 @@ inventory proves no route targets this service.
 | `CLOUDFLARE_AI_GATEWAY_TOKEN` | secret | Preferred main-relay AI Gateway REST runtime token once the router is canaried | Prefer this narrower runtime secret over reusing the WFP dispatch deploy token |
 | `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` | outbound Worker secret | AI Gateway REST authentication for `cinatoken-wfp-outbound` | Required only on the outbound service; never attach to a tenant, dispatch Worker, upload manifest, log, or evidence artifact; do not reuse the dispatch deploy token |
 | `CINATOKEN_WFP_OUTBOUND_AUTH_MODE` | tenant plain-text var | Declares platform-owned outbound auth | Must equal `platform-outbound-v1`; this marker replaces tenant runtime Cloudflare tokens and carries no credential |
-| `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central authority signing only | Master secret, minimum 32 bytes; retained only by the platform Worker and local artifact uploader context; never bind it into a tenant Worker or expose it in manifests/logs |
-| `WFP_RELAY_AUTHORITY_KEY` | tenant Worker secret | Verification for one named tenant Worker | The artifact uploader derives this per-worker HMAC key from the platform master and worker name, then binds only this key into that tenant; it must not equal or reveal the platform master |
-| `WFP_AUTHORITY_REPLAY_SCRIPT_NAME` | uploader-only var | External tenant DO binding | Exact environment-specific main Worker script that owns `WfpAuthorityReplay`; pass as `--authority-replay-script`; never point staging tenants at production or vice versa |
-| `WFP_AUTHORITY_REPLAY` | Durable Object binding | One-time authority consumption before tenant AI egress | Main Worker owns the class and master verifier; strict tenant metadata binds the external namespace. Missing/error fails paid AI closed |
+| `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central-authority v2 signing and platform replay verification | Master secret, minimum 32 bytes; retained only by the main Worker script and its DO; never make it available to an uploader, tenant, outbound Worker, manifest, log, or evidence artifact |
+| `CINATOKEN_WFP_OUTBOUND_CONTEXT` | dispatch outbound parameter | Bind route kind plus public and dispatched worker identity to final egress | The dispatch attachment declares exactly this one parameter; the main Worker supplies it in the Dynamic Dispatch third argument; it is not a tenant binding or credential |
+| `WFP_AUTHORITY_REPLAY` | Durable Object binding | One-time central-authority consumption before bearer access | Main Worker owns the class and master verifier; each outbound environment binds the matching main script externally. The tenant must have no replay binding. Missing/error fails paid AI closed |
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
@@ -470,18 +469,18 @@ Smoke order:
    dry-run manifest from `tools/deploy_wfp_tenant_artifact.mjs`, including every
    module hash and the validated Wasm import graph. Verify the manifest binds
    `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1` and contains neither
-   `CF_API_TOKEN` nor any equivalent Cloudflare bearer.
-3. Build and deploy `cinatoken-wfp-outbound`, attach it to the staging dispatch
-   namespace, and archive configuration/readback proving the service name,
-   account ID, and outbound-only secret ownership without exposing the value.
-   Then run the strict tenant uploader with the deploy token and platform master
-   available only to the uploader process. Verify it derives and binds
-   `WFP_RELAY_AUTHORITY_KEY` for the named worker, not
-   `WFP_RELAY_AUTHORITY_SECRET`. Pass the staging main Worker script with
-   `--authority-replay-script`; readback must show `WFP_AUTHORITY_REPLAY` as an
-   external `durable_object_namespace` for class `WfpAuthorityReplay` on that
-   exact script. Archive the redacted PUT result and a GET content/metadata
-   readback that matches the dry-run artifact hashes. Do not use
+   `CF_API_TOKEN` nor any equivalent Cloudflare bearer, authority key/master,
+   or replay DO binding.
+3. Build and deploy `cinatoken-wfp-outbound` with its staging environment,
+   attach it to the staging dispatch namespace with environment `staging` and
+   exactly one `CINATOKEN_WFP_OUTBOUND_CONTEXT` parameter, and archive readback
+   proving service/environment/parameter identity, account ID, outbound-only
+   secret ownership, and the external `WFP_AUTHORITY_REPLAY` binding to class
+   `WfpAuthorityReplay` on the exact staging main Worker. Then run the strict
+   tenant uploader with only its deploy token. Tenant readback must reject
+   `WFP_RELAY_AUTHORITY_KEY`, `WFP_RELAY_AUTHORITY_SECRET`, and
+   `WFP_AUTHORITY_REPLAY`. Archive the redacted PUT result and a GET
+   content/metadata readback that matches the dry-run artifact hashes. Do not use
    `/api/platform/wfp/tenant-script/deploy`; it is intentionally disabled.
    Run `bun run check:wfp-tenant:readback-collector`, then set only a rotated,
    read-scoped `CINATOKEN_WFP_READBACK_TOKEN` and collect the official Details,
@@ -505,16 +504,21 @@ Smoke order:
 
    ```powershell
    bun run check:wfp-outbound:readback-collector
-   bun run collect:wfp-outbound:readback -- --account-id <account> --namespace <namespace> --dispatcher-script <main-worker> --outbound-script cinatoken-wfp-outbound --confirm-readback --confirm-replacement-token > wfp-outbound-readback.json
+   bun run collect:wfp-outbound:readback -- --account-id <account> --namespace <namespace> --dispatcher-script <main-worker> --outbound-script cinatoken-wfp-outbound --outbound-environment staging --confirm-readback --confirm-replacement-token > wfp-outbound-readback.json
    ```
 
    The command reads only the rotated `CINATOKEN_WFP_READBACK_TOKEN`; it accepts
    no credential argument and writes no files itself. A successful
    `verified=true` document proves the namespace stayed untrusted and stable,
    the exact `DISPATCHER` binding points to the requested namespace and
-   `cinatoken-wfp-outbound`, the outbound service has the exact account var and
-   expected secret binding, and deploy/readback bearers are absent. Schema 2
-   also requires workers.dev and Preview URLs disabled and zero Custom Domains.
+   `cinatoken-wfp-outbound`, its expected environment, and the exact single
+   outbound context parameter. The outbound service must have the exact account
+   var, bearer secret, and environment-correct external replay binding, while
+   deploy/readback bearers remain absent. Schema 3 also requires workers.dev and
+   Preview URLs disabled and zero Custom Domains. For Wrangler named
+   environments, script Settings/Secrets/Subdomain and Domains readback targets
+   the physical `<service>-<environment>` script while the dispatch attachment
+   remains the logical service plus environment pair.
    It emits secret names, never values. Separately enumerate all Zones and
    Worker routes with the rotated credential and fail if any route names
    `cinatoken-wfp-outbound`; the service-filtered Domains API does not prove
@@ -548,8 +552,10 @@ Smoke order:
    reviewed staging host and fixed models/bodies; it accepts credentials only
    from `CINATOKEN_WFP_EGRESS_SMOKE_TOKEN` and
    `CINATOKEN_WFP_EGRESS_SMOKE_ADMIN_COOKIE`.
-6. Archive authority rejection cases for wrong worker/method/path/body/channel,
-   stale/expired time, tampering, and non-canonical replay-object selection.
+6. Archive authority and invocation-context rejection cases for missing or
+   tampered signature, wrong public/dispatch worker, route kind, method, final
+   path, body, or channel, stale/expired time, and non-canonical replay-object
+   selection. Require zero provider calls for every negative case.
    Submit the same otherwise-valid envelope sequentially and concurrently;
    require exactly one winner and `409` for every duplicate, including after DO
    eviction or Worker redeploy. Measure bucket latency, throughput, storage,

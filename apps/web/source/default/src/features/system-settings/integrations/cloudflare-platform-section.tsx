@@ -779,11 +779,29 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
-          label: t('Tenant authority verifier'),
+          label: t('Outbound invocation context'),
           description: t(
-            'Verifies the short-lived worker, path, method, and exact-body signature with a tenant-scoped derived key; the platform master secret is never bound to the tenant.'
+            'Binds the actual dispatch worker and relay-authority route to the outbound Worker through the dispatch namespace third-argument context.'
           ),
-          ready: capabilities.wfp_tenant_relay_authority_verifier_compiled,
+          ready: capabilities.wfp_outbound_invocation_context_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Outbound authority verifier'),
+          description: t(
+            'Checks the central v2 signature, worker, path, method, and exact body at the final bearer-injection boundary.'
+          ),
+          ready: capabilities.wfp_outbound_authority_verifier_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Outbound replay guard'),
+          description: t(
+            'Consumes central authority once through the platform-owned Durable Object before reading the outbound bearer.'
+          ),
+          ready: capabilities.wfp_outbound_replay_guard_compiled,
           readyLabel: t('Compiled'),
           missingLabel: t('Missing'),
         },
@@ -826,7 +844,7 @@ function buildCapabilityGroups(
         {
           label: t('WFP authority secret'),
           description: t(
-            'Keeps the WFP_RELAY_AUTHORITY_SECRET master only in the main Worker and uploader; each tenant receives a derived worker-scoped key.'
+            'Keeps WFP_RELAY_AUTHORITY_SECRET only in the main Worker and replay Durable Object; tenant Workers receive no signing or verification secret.'
           ),
           ready: capabilities.wfp_relay_authority_secret_configured,
           readyLabel: t('Configured'),

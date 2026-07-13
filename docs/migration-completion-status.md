@@ -24,7 +24,7 @@ runtime parity, capacity/cost/security evidence, canary, and rollback rehearsal.
 | Frontend migration | React/Bun source, strict lint, bundle redaction/budget, route audit, and production build pass locally | Locally wired | Deployed browser hard-refresh, session/role/CRUD/2FA/Passkey, callback, console, performance, and rollback evidence |
 | Rust scheduling gateway | `cinatoken-gateway` is the live versioned owner planner before Worker execution adapters | Locally wired | Main/API/static/tenant host matrix, negative dispatch, edge-auth parity, and rollback smoke on Cloudflare |
 | Rust Durable Objects | RealtimeSession has a six-scenario local workerd/D1/mock-upstream suite plus an explicit release-Wasm Workerd/SQLite hibernate-evict-restore test for the client socket, attachment/bridge segment, and persisted metrics; reservation binding, settlement, and refund are isolated by bridge segment; TaskRunner, channel affinity, Passkey ceremony, and WFP authority replay have focused tests | Locally exercised substrate | Active-upstream eviction must prove 1011 fail-closed, exactly-once refund/lease handoff, no replacement call, and clean reconnect; deployed eviction/alarm/reconnect/replay/load evidence remains required on Cloudflare staging |
-| WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, signed relay authority, and replay guard are present | Gated substrate | Real staging namespace upload/readback, missing-worker/resource-limit faults, one paid provider call, central billing outcome, and traces |
+| WFP Rust tenant script | Dedicated Rust/Wasm tenant crate, strict artifact manifest/uploader, central-authority v2 transport, outbound invocation context, and final-boundary replay guard are present; tenant has no authority key or replay binding | Gated substrate | Real staging namespace/schema-3 outbound readback, live context propagation, missing-worker/resource-limit/context faults, one paid provider call, central billing outcome, and traces |
 | AI Gateway multi-model forwarding | Default-off direct and cross-model paths, actual-serving-group billing contract, and operator readiness exist | Gated substrate | Deployed provider-route canary, usage/error reconciliation, terminal audit delivery, fault injection, and rollback |
 | `cinatoken.com` production deployment | No current deployment evidence; the credential included in the task is exposed and was not used | Not started | Revoke/rotate the exposed token, issue least-privilege replacement credentials, finish G1-G8, deploy staging, canary, then production DNS/cutover |
 
@@ -173,10 +173,11 @@ A full diff of every Go-registered route against the Rust worker closed these
 - The tracked outbound Wrangler config now explicitly disables workers.dev and
   Preview URLs and declares no public route. Worker capabilities and the
   Cloudflare settings panel expose this as compiled configuration evidence.
-- Readback schema 2 requires the deployed script subdomain to report both flags
-  false and the service-filtered Worker Domains query to return zero Custom
-  Domains. The collector passes 24 local cases without reading the exposed
-  credential.
+- Readback schema 3 requires the deployed script subdomain to report both flags
+  false, the service-filtered Worker Domains query to return zero Custom
+  Domains, the dispatch attachment to expose the exact environment/context
+  parameter, and the outbound service to bind the matching replay DO. The
+  collector passes 30 local cases without reading the exposed credential.
 - No deployed-state capture or account-wide Zone-route inventory exists yet.
   Credential rotation, remote readback, route inventory, namespace attachment,
   provider/billing canary, and rollback remain required; production is
@@ -241,18 +242,19 @@ A full diff of every Go-registered route against the Rust worker closed these
   evidence before production use.
 - Authority-first WFP relay transport and exact-envelope replay prevention are
   locally implemented but remain default-off. After central token auth, D1
-  selection, and reserve, the Rust/Wasm tenant verifies the 30-second
-  worker/method/path/body/channel/request-id HMAC and atomically consumes its
-  request ID in the platform-owned `WfpAuthorityReplay` Durable Object before
-  AI Gateway egress through `cinatoken-wfp-outbound`. Duplicate, invalid, and
-  unavailable replay checks fail closed. The authority master and Cloudflare AI
-  bearer stay platform-side; the tenant receives a derived authority key, an
-  external DO binding, and only the outbound auth marker for outbound
-  authentication. Production still needs strict Rust/Wasm upload and binding
-  readback, remote outbound attachment/secret isolation, plus sequential/
-  concurrent duplicate, eviction, cleanup, throughput, provider-call, billing,
-  audit, and redaction evidence. This is exact-envelope replay protection, not
-  exactly-once upstream execution for a newly signed retry.
+  selection, and reserve, the main Worker signs the 30-second
+  worker/method/path/body/channel/request-id central-authority v2 HMAC. The
+  tenant has no verifier or replay binding and only forwards the opaque
+  authority after bounded route/body checks. Cloudflare passes the exact
+  route/public-worker/dispatch-worker context to `cinatoken-wfp-outbound`,
+  which validates the final request and atomically consumes the request ID in
+  the platform-owned `WfpAuthorityReplay` before reading its bearer. Duplicate,
+  invalid, and unavailable replay checks fail closed. Production still needs
+  strict tenant binding-absence readback, schema-3 outbound attachment/replay
+  readback, remote context propagation, sequential/concurrent duplicate,
+  eviction, cleanup, throughput, provider-call, billing, audit, and redaction
+  evidence. This is exact-envelope replay protection, not exactly-once upstream
+  execution for a newly signed retry.
 - Frontend bundle-size reduction and budget ratchet tightening after heavy
   route-specific chunks are split. Strict lint is now zero-debt gated and
   `check:web:quality` is green locally.
@@ -379,10 +381,11 @@ A full diff of every Go-registered route against the Rust worker closed these
 The current system can support staged and scoped Rust/Cloudflare validation.
 It cannot yet be described as a complete replacement for the Go/VPS deployment,
 and the Go deployment must remain available for rollback until the production
-gates close. No WFP tenant deployment, outbound-service namespace attachment,
-outbound-secret ownership readback, external replay binding readback,
-signed-authority billing canary, live AI egress, or live replay-race evidence is
-claimed by this status document. Production remains **NO-GO**.
+gates close. No WFP tenant deployment, outbound service/environment/context
+attachment, outbound-secret ownership readback, outbound replay binding
+readback, live Dynamic Dispatch parameter propagation, signed-authority billing
+canary, live AI egress, or live replay-race evidence is claimed by this status
+document. Production remains **NO-GO**.
 
 ## 2026-07-13 Realtime Orphan Recovery Status
 

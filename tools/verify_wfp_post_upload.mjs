@@ -4,9 +4,11 @@ import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-const schemaVersion = 1;
+const schemaVersion = 2;
 const expectedRuntime = "rust-wasm";
 const expectedOutboundAuthMode = "platform-outbound-v1";
+const expectedAuthorityVerifier = "platform-outbound-central-hmac-v2";
+const expectedReplayGuard = "platform-outbound-durable-object-once-v2";
 const expectedRoutes = [
   "/__cinatoken/tenant/status",
   "/v1/chat/completions",
@@ -19,13 +21,14 @@ const requiredBindings = new Map([
   ["CF_ACCOUNT_ID", "plain_text"],
   ["CINATOKEN_WFP_WORKER_NAME", "plain_text"],
   ["CINATOKEN_WFP_OUTBOUND_AUTH_MODE", "plain_text"],
-  ["WFP_RELAY_AUTHORITY_KEY", "secret_text"],
-  ["WFP_AUTHORITY_REPLAY", "durable_object_namespace"],
 ]);
 const forbiddenTenantBindings = new Set([
   "CF_API_TOKEN",
   "CLOUDFLARE_AI_GATEWAY_TOKEN",
   "CINATOKEN_WFP_OUTBOUND_AI_TOKEN",
+  "WFP_RELAY_AUTHORITY_KEY",
+  "WFP_RELAY_AUTHORITY_SECRET",
+  "WFP_AUTHORITY_REPLAY",
 ]);
 
 try {
@@ -548,7 +551,10 @@ function validateDispatchEvidence(value, expected) {
     status.tenantId !== expected.tenantId ||
     status.inboundDispatchRoute !== "internal-path" ||
     status.inboundDispatchWorker !== expected.publicScriptName ||
-    status.paidAiCapable !== true
+    status.paidAiCapable !== true ||
+    status.paidAiAuthorityVerifier !== expectedAuthorityVerifier ||
+    status.paidAiReplayGuard !== expectedReplayGuard ||
+    status.tenantAuthorityReplayBindingBound !== false
   ) {
     throw new Error("[dispatch] tenant status identity or runtime mismatch");
   }
@@ -873,13 +879,6 @@ function selfTestFixture() {
       type: "plain_text",
       text: expectedOutboundAuthMode,
     },
-    { name: "WFP_RELAY_AUTHORITY_KEY", type: "secret_text", text: "<redacted>" },
-    {
-      name: "WFP_AUTHORITY_REPLAY",
-      type: "durable_object_namespace",
-      class_name: "WfpAuthorityReplay",
-      script_name: "cinatoken-rust-staging",
-    },
   ];
   const metadata = {
     main_module: "shim.mjs",
@@ -975,6 +974,9 @@ function selfTestFixture() {
         inboundDispatchRoute: "internal-path",
         inboundDispatchWorker: "tenant-smoke",
         paidAiCapable: true,
+        paidAiAuthorityVerifier: expectedAuthorityVerifier,
+        paidAiReplayGuard: expectedReplayGuard,
+        tenantAuthorityReplayBindingBound: false,
         routes: expectedRoutes,
       },
       dispatchHeaders: {

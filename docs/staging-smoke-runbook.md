@@ -249,27 +249,31 @@ audit. Keep `WFP_RELAY_TRANSPORT_ENABLED=false` except for the isolated canary.
 Preconditions:
 
 - Provision a staging-only `WFP_RELAY_AUTHORITY_SECRET` of at least 32 bytes on
-  the platform Worker. The artifact uploader may read it only to derive the
-  named worker's key. Bind only `WFP_RELAY_AUTHORITY_KEY` into the tenant Worker;
-  the tenant must never receive the platform master. Do not record either value.
-- Use a least-privilege Cloudflare deploy token for script PUT/GET and a
-  separate tenant runtime token for AI Gateway/Workers AI. The strict uploader
-  must reject identical deploy and runtime tokens.
+  the platform Worker only. It signs central-authority v2 directly and is also
+  available to the platform-owned replay DO through that script. Do not derive
+  or bind an authority key into any tenant, and do not record the value.
+- Use a least-privilege Cloudflare deploy token for script PUT/GET. Provision a
+  separate `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` only on
+  `cinatoken-wfp-outbound`; no tenant runtime Cloudflare token is allowed.
 - Apply a staging channel row whose `channels.other_info.wfp_worker` names the
   intended dispatch worker. Record the before/after row without channel keys.
 - Keep the generated JavaScript fallback out of the upload path. It is
   status-only, and `/api/platform/wfp/tenant-script/deploy` is disabled.
 - Deploy the staging main Worker with migration `v4-wfp-authority-replay` and
-  binding `WFP_AUTHORITY_REPLAY` to class `WfpAuthorityReplay`. Set
-  `WFP_AUTHORITY_REPLAY_SCRIPT_NAME` to that exact staging script name; never
-  reuse the production owner script.
+  binding `WFP_AUTHORITY_REPLAY` to class `WfpAuthorityReplay`. Deploy the
+  staging outbound environment so its external `WFP_AUTHORITY_REPLAY` binding
+  points to that exact staging main script; never reuse the production owner.
+- Attach the outbound service to `DISPATCHER` with environment `staging` and
+  exactly one parameter, `CINATOKEN_WFP_OUTBOUND_CONTEXT`. The main Worker must
+  invoke Dynamic Dispatch with the third-argument `outbound` object containing
+  that exact parameter.
 
 Build and archive the strict Rust/Wasm dry-run manifest:
 
 ```powershell
 New-Item -ItemType Directory -Force .wrangler/evidence | Out-Null
 bun run build:wfp-tenant
-bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID --authority-replay-script $env:WFP_AUTHORITY_REPLAY_SCRIPT_NAME > .wrangler/evidence/wfp-tenant-artifact-manifest.json
+bun tools/deploy_wfp_tenant_artifact.mjs --dry-run --json --script-name tenant-smoke --tenant-id tenant-smoke --namespace $env:WFP_DISPATCH_NAMESPACE --account-id $env:CLOUDFLARE_ACCOUNT_ID > .wrangler/evidence/wfp-tenant-artifact-manifest.json
 ```
 
 Run the strict uploader only after the dry-run passes. Archive the redacted
@@ -277,6 +281,14 @@ Cloudflare PUT result and GET content/metadata readback; verify the returned
 module set and SHA-256 values match the dry-run manifest. The official endpoint
 contract is the Workers for Platforms Scripts REST API:
 <https://developers.cloudflare.com/api/resources/workers_for_platforms/subresources/dispatch/subresources/namespaces/subresources/scripts/>.
+
+Deploy `cinatoken-wfp-outbound` with `bun run deploy:wfp-outbound:staging` and
+collect schema-3 readback before any paid request. The collector must confirm
+the exact outbound service/environment/context parameter, private ingress,
+outbound-only bearer ownership, account binding, and external platform replay
+DO binding. It derives the physical `cinatoken-wfp-outbound-staging` API target
+from the logical service and environment. A local Workerd object binding does not prove remote Dynamic
+Dispatch parameter propagation.
 
 First run the admin-authenticated status smoke against only
 `/api/platform/dispatch/:worker/__cinatoken/tenant/status`. Then prove that an
@@ -350,17 +362,20 @@ response, and admin evidence bytes and emits no response body or raw headers.
 Record:
 
 - Capability output showing the dispatch binding, transport gate, authority
-  secret readiness, replay DO compiled/bound states, four-route manifest, and
-  Rust/Wasm runtime.
+  secret readiness, outbound invocation-context/verifier/replay compiled
+  states, replay DO availability, four-route manifest, and Rust/Wasm runtime.
 - The dry-run artifact manifest plus real PUT and GET readback evidence. Do not
-  include either token or any secret value. Readback must show that the tenant
-  has `WFP_RELAY_AUTHORITY_KEY` and does not have
-  `WFP_RELAY_AUTHORITY_SECRET`. It must also show `WFP_AUTHORITY_REPLAY` bound
-  to `WfpAuthorityReplay` on the expected staging main Worker script.
+  include either token or any secret value. Readback must prove that the tenant
+  has no `WFP_RELAY_AUTHORITY_KEY`, `WFP_RELAY_AUTHORITY_SECRET`, or
+  `WFP_AUTHORITY_REPLAY` binding. Schema-3 outbound readback must prove the
+  external replay binding targets `WfpAuthorityReplay` on the expected staging
+  main Worker and that the dispatch attachment has the exact context parameter.
 - Admin status success, unauthenticated status rejection, admin AI rejection,
   preview-host AI rejection, and `/v1/embeddings` rejection.
-- Signed-authority negative cases: tampered signature, wrong worker, method,
-  path, body, or channel, and expired or future-invalid timestamps.
+- Signed-authority and invocation-context negative cases: missing/tampered
+  signature, wrong public or dispatch worker, wrong route kind, method, final
+  path, body, or channel, and expired or future-invalid timestamps. Every case
+  must prove zero provider calls and no bearer-dependent upstream response.
 - Replay evidence for the same otherwise-valid authority: sequential and
   concurrent attempts produce exactly one success and `409` duplicates; wrong
   canonical shard is rejected; eviction/redeploy does not reopen consumption;
@@ -376,24 +391,31 @@ Pass criteria:
 - Readback proves the uploaded runtime is exactly the reviewed Rust/Wasm module
   graph; no JavaScript AI fallback is present.
 - The tenant has `CINATOKEN_WFP_OUTBOUND_AUTH_MODE=platform-outbound-v1`, no
-  Cloudflare bearer, and a tenant-scoped authority verification key distinct
-  from the platform master and deploy/readback credentials.
+  Cloudflare bearer, no authority signing or verification material, and no
+  replay DO binding.
 - Admin dispatch reaches status only. No public preview or admin dispatch route
   can invoke tenant AI.
 - Accepted tenant AI traffic has a valid HMAC-SHA256 authority with a 30-second
   lifetime binding worker, method, path, body hash, channel, and request ID.
 - The platform Worker retains the authority master; the tenant receives only
-  its derived `WFP_RELAY_AUTHORITY_KEY`.
-- The tenant status reports `paid_ai_replay_guard=platform-durable-object-once-v1`
-  and `authority_replay_binding_configured=true`.
+  the opaque request-scoped authority and forwards it to the outbound boundary.
+- The tenant status reports
+  `paid_ai_authority_verifier=platform-outbound-central-hmac-v2`,
+  `paid_ai_replay_guard=platform-outbound-durable-object-once-v2`, and
+  `tenant_authority_replay_binding_bound=false`.
+- Remote staging proves that Cloudflare injects the exact outbound context and
+  that the outbound Worker validates context, authority, final path, body, and
+  replay before reading or injecting its bearer.
 - The normal relay path owns token auth, D1 selection, reserve, exactly-once
   settlement/refund, and audit. Tenant forwarding does not duplicate them.
 - The transport gate is returned to `false` after the canary.
 
-Status as of 2026-07-11: the replay DO contract is locally compiled, but the
-signed-authority billing canary, live duplicate race, and real upload/binding
-readback remain pending. This runbook does not claim deployment evidence or
-exactly-once upstream execution across newly signed retries.
+Status as of 2026-07-13: central-authority v2, outbound context binding, final
+verification, and replay consumption pass local Rust and Workerd tests. The
+signed-authority billing canary, real Dynamic Dispatch parameter propagation,
+live duplicate race, and real upload/binding readback remain pending. This
+runbook does not claim deployment evidence or exactly-once upstream execution
+across newly signed retries.
 
 ## Phase 2: Auth And Rejection Smoke
 

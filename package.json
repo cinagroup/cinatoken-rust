@@ -16,6 +16,8 @@
     "build:wfp-tenant": "bun tools/build_worker.mjs --crate wfp-tenant --release",
     "build:wfp-outbound": "bun tools/build_worker.mjs --crate wfp-outbound --release",
     "deploy:wfp-outbound": "wrangler deploy --config crates/wfp-outbound/wrangler.toml",
+    "deploy:wfp-outbound:staging": "wrangler deploy --config crates/wfp-outbound/wrangler.toml --env staging",
+    "deploy:wfp-outbound:production": "wrangler deploy --config crates/wfp-outbound/wrangler.toml --env production",
     "deploy:wfp-tenant": "bun tools/deploy_wfp_tenant_artifact.mjs",
     "smoke:wfp-dispatch": "bun tools/smoke_wfp_dispatch.mjs",
     "smoke:wfp-outbound-egress": "bun tools/smoke_wfp_outbound_egress.mjs",

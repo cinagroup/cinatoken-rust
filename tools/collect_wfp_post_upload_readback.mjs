@@ -389,6 +389,7 @@ function validateSettings(envelope, identity) {
     names.add(name);
     requireSingleLine(binding.type, `[settings] ${name} type`);
   }
+  assertNoTenantAuthorityBindings(result.bindings, "settings");
 }
 
 async function normalizeContent(response, identity, apiToken) {
@@ -414,6 +415,10 @@ async function normalizeContent(response, identity, apiToken) {
     throw new Error("[content] metadata part was not valid UTF-8 JSON");
   }
   requireObject(metadata, "[content] metadata");
+  if (!Array.isArray(metadata.bindings)) {
+    throw new Error("[content] metadata bindings must be an array");
+  }
+  assertNoTenantAuthorityBindings(metadata.bindings, "content metadata");
   validateCompatibility(metadata, identity, "content metadata");
   const mainModule = requireModuleName(
     metadata.main_module,
@@ -469,6 +474,21 @@ async function normalizeContent(response, identity, apiToken) {
     }),
     modules,
   };
+}
+
+function assertNoTenantAuthorityBindings(bindings, label) {
+  const forbidden = new Set([
+    "WFP_RELAY_AUTHORITY_KEY",
+    "WFP_RELAY_AUTHORITY_SECRET",
+    "WFP_AUTHORITY_REPLAY",
+  ]);
+  for (const raw of bindings) {
+    const binding = requireObject(raw, `[${label}] binding`);
+    const name = requireBindingName(binding.name, `[${label}] binding name`);
+    if (forbidden.has(name)) {
+      throw new Error(`[security] tenant authority binding ${name} is forbidden`);
+    }
+  }
 }
 
 function parseMultipart(body, boundary) {
@@ -835,6 +855,18 @@ async function runSelfTest() {
   cases.push({ name: "verifier-readback-contract", passed: true });
 
   await expectCollectionFailure(
+    "tenant-authority-binding-forbidden",
+    fixture,
+    (responses) => {
+      const changed = structuredClone(fixture.settingsEnvelope);
+      changed.result.bindings[0].name = "WFP_RELAY_AUTHORITY_KEY";
+      responses[1] = jsonResponse(changed);
+    },
+    /tenant authority binding WFP_RELAY_AUTHORITY_KEY is forbidden/,
+    cases,
+  );
+
+  await expectCollectionFailure(
     "redirect",
     fixture,
     (responses) => {
@@ -1122,7 +1154,7 @@ function selfTestFixture() {
     ...compatibility,
     bindings: [
       {
-        name: "WFP_RELAY_AUTHORITY_KEY",
+        name: "TENANT_SELF_TEST_SECRET",
         type: "secret_text",
         text: secretValue,
       },
@@ -1133,7 +1165,7 @@ function selfTestFixture() {
     ...compatibility,
     bindings: [
       {
-        name: "WFP_RELAY_AUTHORITY_KEY",
+        name: "TENANT_SELF_TEST_SECRET",
         type: "secret_text",
         text: secretValue,
       },

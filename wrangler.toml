@@ -106,6 +106,7 @@ TASK_TIMEOUT_MINUTES = "1440"
 # namespace = "cinatoken-rust-tenants"
 # [dispatch_namespaces.outbound]
 # service = "cinatoken-wfp-outbound"
+# parameters = ["CINATOKEN_WFP_OUTBOUND_CONTEXT"]
 
 [[d1_databases]]
 binding = "DB"
@@ -260,6 +261,8 @@ TASK_TIMEOUT_MINUTES = "1440"
 # namespace = "cinatoken-rust-tenants-staging"
 # [env.staging.dispatch_namespaces.outbound]
 # service = "cinatoken-wfp-outbound"
+# environment = "staging"
+# parameters = ["CINATOKEN_WFP_OUTBOUND_CONTEXT"]
 
 [env.staging.observability]
 enabled = true
@@ -419,6 +422,8 @@ TASK_TIMEOUT_MINUTES = "1440"
 # namespace = "cinatoken-rust-tenants"
 # [env.production.dispatch_namespaces.outbound]
 # service = "cinatoken-wfp-outbound"
+# environment = "production"
+# parameters = ["CINATOKEN_WFP_OUTBOUND_CONTEXT"]
 
 [env.production.observability]
 enabled = true

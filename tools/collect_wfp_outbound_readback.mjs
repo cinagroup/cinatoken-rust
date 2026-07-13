@@ -1,10 +1,13 @@
 #!/usr/bin/env bun
 
-const schemaVersion = 2;
+const schemaVersion = 3;
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
 const replacementTokenEnv = "CINATOKEN_WFP_READBACK_TOKEN";
 const expectedOutboundSecret = "CINATOKEN_WFP_OUTBOUND_AI_TOKEN";
 const accountBindingName = "CLOUDFLARE_ACCOUNT_ID";
+const outboundContextParameter = "CINATOKEN_WFP_OUTBOUND_CONTEXT";
+const replayBindingName = "WFP_AUTHORITY_REPLAY";
+const replayClassName = "WfpAuthorityReplay";
 const requestTimeoutMs = 30_000;
 const maxJsonBytes = 1024 * 1024;
 
@@ -41,6 +44,7 @@ function parseArgs(argv) {
     "namespace",
     "dispatcher-script",
     "outbound-script",
+    "outbound-environment",
     "dispatcher-binding",
   ]);
   const knownFlags = new Set([
@@ -82,13 +86,14 @@ function usage(exitCode, error) {
   console.error(
     [
       "Usage:",
-      "  bun tools/collect_wfp_outbound_readback.mjs --account-id <id> --namespace <name> --dispatcher-script <name> [--outbound-script <name>] [--dispatcher-binding <name>] --confirm-readback --confirm-replacement-token",
+      "  bun tools/collect_wfp_outbound_readback.mjs --account-id <id> --namespace <name> --dispatcher-script <name> [--outbound-script <name>] [--outbound-environment <name>] [--dispatcher-binding <name>] --confirm-readback --confirm-replacement-token",
       "  bun tools/collect_wfp_outbound_readback.mjs --account-id <id> --namespace <name> --dispatcher-script <name> --dry-run",
       "  bun tools/collect_wfp_outbound_readback.mjs --self-test",
       "",
       "Live collection reads only CINATOKEN_WFP_READBACK_TOKEN. The token must be a rotated replacement credential.",
       "CLOUDFLARE_ACCOUNT_ID, WFP_DISPATCH_NAMESPACE, WFP_DISPATCHER_SCRIPT_NAME, and WFP_OUTBOUND_SCRIPT_NAME may replace identity flags.",
-      "The outbound script defaults to cinatoken-wfp-outbound and the dispatcher binding defaults to DISPATCHER.",
+      "The outbound script is the base service name (default cinatoken-wfp-outbound); an environment targets <service>-<environment> for script API readback.",
+      "The dispatcher binding defaults to DISPATCHER.",
       "The collector is read-only, writes no files, and emits one redacted JSON object to stdout.",
     ].join("\n"),
   );
@@ -96,6 +101,11 @@ function usage(exitCode, error) {
 }
 
 function normalizeIdentity(args) {
+  const dispatcherScript = requireWorkerName(
+    args.values.get("dispatcher-script") ||
+      process.env.WFP_DISPATCHER_SCRIPT_NAME,
+    "dispatcher-script",
+  );
   return {
     accountId: requireAccountId(
       args.values.get("account-id") || process.env.CLOUDFLARE_ACCOUNT_ID,
@@ -103,16 +113,17 @@ function normalizeIdentity(args) {
     namespace: requireNamespace(
       args.values.get("namespace") || process.env.WFP_DISPATCH_NAMESPACE,
     ),
-    dispatcherScript: requireWorkerName(
-      args.values.get("dispatcher-script") ||
-        process.env.WFP_DISPATCHER_SCRIPT_NAME,
-      "dispatcher-script",
-    ),
+    dispatcherScript,
     outboundScript: requireWorkerName(
       args.values.get("outbound-script") ||
         process.env.WFP_OUTBOUND_SCRIPT_NAME ||
         "cinatoken-wfp-outbound",
       "outbound-script",
+    ),
+    outboundEnvironment: optionalEnvironment(
+      args.values.get("outbound-environment") ||
+        process.env.WFP_OUTBOUND_ENVIRONMENT ||
+        inferredEnvironment(dispatcherScript),
     ),
     dispatcherBinding: requireBindingName(
       args.values.get("dispatcher-binding") || "DISPATCHER",
@@ -280,6 +291,7 @@ async function collectReadback(options, dependencies = {}) {
     },
     outbound: {
       accountIdBindingVerified: true,
+      authorityReplayBinding: outbound.replayBinding,
       secretBindingNames: outbound.secretBindingNames,
       secretNames: outboundSecrets.map((secret) => secret.name),
       publicIngress: {
@@ -293,7 +305,10 @@ async function collectReadback(options, dependencies = {}) {
       "namespace-stable",
       "dispatcher-binding-exact",
       "outbound-service-exact",
+      "outbound-deployed-script-exact",
+      "outbound-context-parameter-exact",
       "outbound-account-id-exact",
+      "outbound-authority-replay-binding-exact",
       "outbound-secret-present",
       "dispatcher-outbound-secret-absent",
       "deploy-readback-secrets-absent",
@@ -309,14 +324,15 @@ async function collectReadback(options, dependencies = {}) {
 function buildUrls(options) {
   const accountBase = `${cloudflareApiBase}/accounts/${encodeURIComponent(options.accountId)}`;
   const workerBase = `${accountBase}/workers/scripts`;
+  const outboundDeployedScript = deployedOutboundScript(options);
   return {
     namespace: `${accountBase}/workers/dispatch/namespaces/${encodeURIComponent(options.namespace)}`,
     dispatcherSettings: `${workerBase}/${encodeURIComponent(options.dispatcherScript)}/settings`,
     dispatcherSecrets: `${workerBase}/${encodeURIComponent(options.dispatcherScript)}/secrets`,
-    outboundSettings: `${workerBase}/${encodeURIComponent(options.outboundScript)}/settings`,
-    outboundSecrets: `${workerBase}/${encodeURIComponent(options.outboundScript)}/secrets`,
-    outboundSubdomain: `${workerBase}/${encodeURIComponent(options.outboundScript)}/subdomain`,
-    outboundDomains: `${accountBase}/workers/domains?service=${encodeURIComponent(options.outboundScript)}`,
+    outboundSettings: `${workerBase}/${encodeURIComponent(outboundDeployedScript)}/settings`,
+    outboundSecrets: `${workerBase}/${encodeURIComponent(outboundDeployedScript)}/secrets`,
+    outboundSubdomain: `${workerBase}/${encodeURIComponent(outboundDeployedScript)}/subdomain`,
+    outboundDomains: `${accountBase}/workers/domains?service=${encodeURIComponent(outboundDeployedScript)}`,
   };
 }
 
@@ -484,21 +500,33 @@ function validateDispatcherSettings(envelope, expected) {
   if (worker.service !== expected.outboundScript) {
     throw new Error("[dispatcher] outbound service did not match");
   }
-  if (worker.entrypoint != null || worker.environment != null) {
+  if (worker.entrypoint != null) {
     throw new Error(
-      "[dispatcher] outbound worker must not override entrypoint or environment",
+      "[dispatcher] outbound worker must not override entrypoint",
     );
   }
+  const environment = worker.environment ?? null;
+  if (environment !== expected.outboundEnvironment) {
+    throw new Error("[dispatcher] outbound environment did not match");
+  }
   const params = outbound.params ?? [];
-  if (!Array.isArray(params) || params.length !== 0) {
-    throw new Error("[dispatcher] outbound parameters must remain empty");
+  if (!Array.isArray(params) || params.length !== 1) {
+    throw new Error("[dispatcher] expected exactly one outbound context parameter");
+  }
+  const parameter = requireObject(params[0], "[dispatcher] outbound parameter");
+  if (
+    parameter.name !== outboundContextParameter ||
+    Object.keys(parameter).length !== 1
+  ) {
+    throw new Error("[dispatcher] outbound context parameter did not match");
   }
   return {
     name: binding.name,
     type: binding.type,
     namespace: binding.namespace,
     outboundService: worker.service,
-    outboundParameters: [],
+    outboundEnvironment: environment,
+    outboundParameters: [outboundContextParameter],
   };
 }
 
@@ -533,8 +561,32 @@ function validateOutboundSettings(envelope, expected) {
   if (!secretBindings.includes(expectedOutboundSecret)) {
     throw new Error("[outbound] expected AI token secret binding was absent");
   }
+  const replayBindings = bindings.filter(
+    (binding) => binding && binding.name === replayBindingName,
+  );
+  if (replayBindings.length !== 1) {
+    throw new Error("[outbound] expected exactly one authority replay binding");
+  }
+  const replay = requireObject(replayBindings[0], "[outbound] replay binding");
+  const replayScript = replay.script_name ?? replay.service;
+  if (
+    replay.type !== "durable_object_namespace" ||
+    replay.class_name !== replayClassName ||
+    replayScript !== expected.dispatcherScript
+  ) {
+    throw new Error(
+      `[outbound] authority replay binding did not match type=${String(replay.type)} class=${String(replay.class_name)} script=${String(replayScript)} expected=${expected.dispatcherScript}`,
+    );
+  }
   rejectForbiddenPlatformSecrets(secretBindings, "outbound");
-  return { secretBindingNames: secretBindings };
+  return {
+    secretBindingNames: secretBindings,
+    replayBinding: {
+      name: replayBindingName,
+      className: replayClassName,
+      scriptName: replayScript,
+    },
+  };
 }
 
 function validateOutboundSubdomain(envelope) {
@@ -632,8 +684,17 @@ function normalizeEvidenceIdentity(identity) {
     namespace: identity.namespace,
     dispatcherScript: identity.dispatcherScript,
     outboundScript: identity.outboundScript,
+    outboundEnvironment: identity.outboundEnvironment,
+    outboundDeployedScript: deployedOutboundScript(identity),
     dispatcherBinding: identity.dispatcherBinding,
   };
+}
+
+function deployedOutboundScript(identity) {
+  const name = identity.outboundEnvironment
+    ? `${identity.outboundScript}-${identity.outboundEnvironment}`
+    : identity.outboundScript;
+  return requireWorkerName(name, "deployed outbound script");
 }
 
 function assertCredentialAbsent(value, apiToken) {
@@ -682,6 +743,17 @@ function requireWorkerName(value, label) {
     throw new Error(`[input] ${label} must be a valid Worker name`);
   }
   return value;
+}
+
+function optionalEnvironment(value) {
+  if (value == null || value === "") return null;
+  return requireWorkerName(value, "outbound-environment");
+}
+
+function inferredEnvironment(dispatcherScript) {
+  if (dispatcherScript.endsWith("-staging")) return "staging";
+  if (dispatcherScript.endsWith("-production")) return "production";
+  return null;
 }
 
 function requireBindingName(value, label) {
@@ -743,6 +815,10 @@ async function runSelfTest() {
   if (
     valid.verified !== true ||
     valid.dispatcher.binding.outboundService !== fixture.options.outboundScript ||
+    valid.dispatcher.binding.outboundEnvironment !== "staging" ||
+    valid.identity.outboundDeployedScript !== "cinatoken-wfp-outbound-staging" ||
+    valid.dispatcher.binding.outboundParameters[0] !== outboundContextParameter ||
+    valid.outbound.authorityReplayBinding.scriptName !== fixture.options.dispatcherScript ||
     valid.outbound.secretNames[0] !== expectedOutboundSecret ||
     valid.outbound.publicIngress.workersDevEnabled !== false ||
     valid.outbound.publicIngress.previewUrlsEnabled !== false ||
@@ -754,6 +830,17 @@ async function runSelfTest() {
     throw new Error("[self-test] valid evidence was not normalized and redacted");
   }
   cases.push({ name: "valid-redacted-evidence", passed: true });
+
+  const urls = buildUrls(fixture.options);
+  if (
+    !urls.outboundSettings.includes("cinatoken-wfp-outbound-staging/settings") ||
+    !urls.outboundDomains.includes("service=cinatoken-wfp-outbound-staging")
+  ) {
+    throw new Error(
+      "[self-test] environment deployment name was not used for readback",
+    );
+  }
+  cases.push({ name: "environment-deployed-script-targets", passed: true });
 
   const dryRun = buildDryRun(fixture.options);
   if (
@@ -781,9 +868,18 @@ async function runSelfTest() {
   await expectFailure("wrong-outbound-service", fixture, (responses) => {
     responses[1].value.result.bindings[0].outbound.worker.service = "wrong-service";
   }, /outbound service/, cases);
-  await expectFailure("outbound-parameters", fixture, (responses) => {
+  await expectFailure("missing-outbound-context-parameter", fixture, (responses) => {
+    responses[1].value.result.bindings[0].outbound.params = [];
+  }, /exactly one outbound context/, cases);
+  await expectFailure("wrong-outbound-context-parameter", fixture, (responses) => {
     responses[1].value.result.bindings[0].outbound.params = [{ name: "tenant" }];
-  }, /parameters must remain empty/, cases);
+  }, /context parameter did not match/, cases);
+  await expectFailure("extra-outbound-context-parameter", fixture, (responses) => {
+    responses[1].value.result.bindings[0].outbound.params.push({ name: "extra" });
+  }, /exactly one outbound context/, cases);
+  await expectFailure("wrong-outbound-environment", fixture, (responses) => {
+    responses[1].value.result.bindings[0].outbound.worker.environment = "production";
+  }, /outbound environment did not match/, cases);
   await expectFailure("dispatcher-owns-outbound-token", fixture, (responses) => {
     responses[2].value.result.push({
       name: expectedOutboundSecret,
@@ -797,8 +893,20 @@ async function runSelfTest() {
     responses[3].value.result.bindings[0].text = "f".repeat(32);
   }, /account-id binding did not match/, cases);
   await expectFailure("missing-secret-binding", fixture, (responses) => {
-    responses[3].value.result.bindings.pop();
+    responses[3].value.result.bindings = responses[3].value.result.bindings.filter(
+      (binding) => binding.name !== expectedOutboundSecret,
+    );
   }, /expected AI token secret binding/, cases);
+  await expectFailure("missing-authority-replay-binding", fixture, (responses) => {
+    responses[3].value.result.bindings = responses[3].value.result.bindings.filter(
+      (binding) => binding.name !== replayBindingName,
+    );
+  }, /exactly one authority replay/, cases);
+  await expectFailure("wrong-authority-replay-script", fixture, (responses) => {
+    responses[3].value.result.bindings.find(
+      (binding) => binding.name === replayBindingName,
+    ).script_name = "wrong-platform-script";
+  }, /authority replay binding did not match/, cases);
   await expectFailure("missing-secret-inventory", fixture, (responses) => {
     responses[4].value.result = [];
   }, /inventory omitted the AI token/, cases);
@@ -845,6 +953,9 @@ async function runSelfTest() {
 
   const credentialEcho = selfTestFixture();
   credentialEcho.options.dispatcherScript = credentialEcho.options.apiToken;
+  credentialEcho.responses[3].value.result.bindings.find(
+    (binding) => binding.name === replayBindingName,
+  ).script_name = credentialEcho.options.apiToken;
   try {
     await collectReadback(credentialEcho.options, {
       fetchImpl: queueFetch(credentialEcho.responses),
@@ -884,6 +995,7 @@ function selfTestFixture() {
     namespace: "cinatoken-rust-tenants-staging",
     dispatcherScript: "cinatoken-rust-api-staging",
     outboundScript: "cinatoken-wfp-outbound",
+    outboundEnvironment: "staging",
     dispatcherBinding: "DISPATCHER",
     apiToken: "self-test-replacement-token-value",
   };
@@ -902,8 +1014,11 @@ function selfTestFixture() {
         type: "dispatch_namespace",
         namespace: options.namespace,
         outbound: {
-          params: [],
-          worker: { service: options.outboundScript },
+          params: [{ name: outboundContextParameter }],
+          worker: {
+            service: options.outboundScript,
+            environment: options.outboundEnvironment,
+          },
         },
       },
     ],
@@ -918,6 +1033,12 @@ function selfTestFixture() {
         name: expectedOutboundSecret,
         type: "secret_text",
         text: secretValue,
+      },
+      {
+        name: replayBindingName,
+        type: "durable_object_namespace",
+        class_name: replayClassName,
+        script_name: options.dispatcherScript,
       },
     ],
   });

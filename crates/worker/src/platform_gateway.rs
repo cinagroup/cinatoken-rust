@@ -15,10 +15,11 @@ use cinatoken_providers::ai_gateway::{
 };
 use cinatoken_relay::clamp_i64_to_i32 as d1_i32;
 use cinatoken_storage::RelayAuditLog;
+use cinatoken_wfp_authority::{OutboundInvocationContext, OUTBOUND_CONTEXT_BINDING};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use worker::{
     D1Database, D1Type, Env, Headers, Request, RequestInit, Response, Result as WorkerResult,
 };
@@ -73,12 +74,12 @@ use crate::task_runner::{
 };
 use crate::wfp_authority_replay::replay_contract_compiled as wfp_authority_replay_contract_compiled;
 use crate::wfp_tenant::{
-    wfp_outbound_egress_policy_compiled, wfp_outbound_private_ingress_config_compiled,
+    wfp_outbound_authority_verifier_compiled, wfp_outbound_egress_policy_compiled,
+    wfp_outbound_private_ingress_config_compiled, wfp_outbound_replay_guard_compiled,
     wfp_tenant_ai_gateway_policy_compiled, wfp_tenant_cutover_guards,
-    wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_relay_authority_verifier_compiled,
-    wfp_tenant_response_header_guard_compiled, wfp_tenant_route_manifest_compiled,
-    wfp_tenant_rust_wasm_runtime_compiled, wfp_tenant_script_plan_compiled,
-    wfp_tenant_supported_routes,
+    wfp_tenant_internal_dispatch_required_compiled, wfp_tenant_response_header_guard_compiled,
+    wfp_tenant_route_manifest_compiled, wfp_tenant_rust_wasm_runtime_compiled,
+    wfp_tenant_script_plan_compiled, wfp_tenant_supported_routes,
 };
 
 pub const WFP_DISPATCH_BINDING: &str = "DISPATCHER";
@@ -88,6 +89,21 @@ pub const WFP_RELAY_TRANSPORT_ENABLED_ENV: &str = "WFP_RELAY_TRANSPORT_ENABLED";
 pub const WFP_PREVIEW_HOST_SUFFIX_ENV: &str = "WFP_PREVIEW_HOST_SUFFIX";
 pub const WFP_DISPATCH_WORKER_PREFIX_ENV: &str = "WFP_DISPATCH_WORKER_PREFIX";
 pub const RELAY_AI_GATEWAY_ROUTER_ENABLED_ENV: &str = "RELAY_AI_GATEWAY_ROUTER_ENABLED";
+
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(extends = js_sys::Object)]
+    type ContextAwareDispatcher;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method, catch, js_name = get)]
+    fn get_with_outbound_context(
+        this: &ContextAwareDispatcher,
+        name: String,
+        args: JsValue,
+        options: JsValue,
+    ) -> Result<worker_sys::Fetcher, JsValue>;
+}
+
 const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
     "router_ready",
     "fallback_gate",
@@ -266,7 +282,9 @@ struct PlatformCapabilities {
     wfp_tenant_rust_wasm_runtime_compiled: bool,
     wfp_tenant_route_manifest_compiled: bool,
     wfp_tenant_internal_dispatch_required_compiled: bool,
-    wfp_tenant_relay_authority_verifier_compiled: bool,
+    wfp_outbound_invocation_context_compiled: bool,
+    wfp_outbound_authority_verifier_compiled: bool,
+    wfp_outbound_replay_guard_compiled: bool,
     wfp_tenant_response_header_guard_compiled: bool,
     wfp_preview_response_security_headers_compiled: bool,
     wfp_tenant_ai_gateway_policy_compiled: bool,
@@ -466,8 +484,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let wfp_tenant_route_manifest_compiled = wfp_tenant_route_manifest_compiled();
     let wfp_tenant_internal_dispatch_required_compiled =
         wfp_tenant_internal_dispatch_required_compiled();
-    let wfp_tenant_relay_authority_verifier_compiled =
-        wfp_tenant_relay_authority_verifier_compiled();
+    let wfp_outbound_invocation_context_compiled =
+        wfp_outbound_invocation_context_contract_compiled();
+    let wfp_outbound_authority_verifier_compiled = wfp_outbound_authority_verifier_compiled();
+    let wfp_outbound_replay_guard_compiled = wfp_outbound_replay_guard_compiled();
     let wfp_tenant_response_header_guard_compiled = wfp_tenant_response_header_guard_compiled();
     let wfp_preview_response_security_headers_compiled =
         wfp_preview_response_security_headers_compiled();
@@ -486,7 +506,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_relay_authority_transport_compiled,
         wfp_tenant_rust_wasm_runtime_compiled,
         wfp_tenant_route_manifest_compiled,
-        wfp_tenant_relay_authority_verifier_compiled,
+        wfp_outbound_invocation_context_compiled,
+        wfp_outbound_authority_verifier_compiled,
+        wfp_outbound_replay_guard_compiled,
         wfp_tenant_response_header_guard_compiled,
         wfp_outbound_egress_policy_compiled,
         wfp_outbound_private_ingress_config_compiled,
@@ -736,7 +758,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         wfp_tenant_rust_wasm_runtime_compiled,
         wfp_tenant_route_manifest_compiled,
         wfp_tenant_internal_dispatch_required_compiled,
-        wfp_tenant_relay_authority_verifier_compiled,
+        wfp_outbound_invocation_context_compiled,
+        wfp_outbound_authority_verifier_compiled,
+        wfp_outbound_replay_guard_compiled,
         wfp_tenant_response_header_guard_compiled,
         wfp_preview_response_security_headers_compiled,
         wfp_tenant_ai_gateway_policy_compiled,
@@ -1936,7 +1960,7 @@ async fn dispatch_request_with_env(
             );
         }
     };
-    let fetcher = match dispatcher.get(target.worker_name.clone()) {
+    let fetcher = match dispatcher_fetcher_with_outbound_context(&dispatcher, &target) {
         Ok(fetcher) => fetcher,
         Err(err) => {
             return wfp_dispatch_failure_response(&target, &err.to_string());
@@ -1953,6 +1977,54 @@ async fn dispatch_request_with_env(
     let _ = headers.set(WFP_ROUTE_REQUEST_HEADER, target.route_kind.header_value());
     let _ = headers.set(WFP_WORKER_REQUEST_HEADER, &target.public_name);
     Ok(response)
+}
+
+fn dispatcher_fetcher_with_outbound_context(
+    dispatcher: &worker::DynamicDispatcher,
+    target: &DispatchTarget,
+) -> WorkerResult<worker::Fetcher> {
+    let context = OutboundInvocationContext::new(
+        target.route_kind.header_value(),
+        &target.public_name,
+        &target.worker_name,
+    )
+    .map_err(|err| worker::Error::RustError(format!("invalid WFP outbound context: {err}")))?;
+    let options = serde_wasm_bindgen::to_value(&dispatch_outbound_options_value(&context))?;
+    let raw_dispatcher: &ContextAwareDispatcher = dispatcher.as_ref().unchecked_ref();
+    let fetcher = raw_dispatcher
+        .get_with_outbound_context(
+            target.worker_name.clone(),
+            js_sys::Object::new().into(),
+            options,
+        )
+        .map_err(|err| {
+            worker::Error::JsError(format!("WFP context-aware dispatch get failed: {err:?}"))
+        })?;
+    Ok(fetcher.into())
+}
+
+fn dispatch_outbound_options_value(context: &OutboundInvocationContext) -> serde_json::Value {
+    json!({
+        "outbound": {
+            (OUTBOUND_CONTEXT_BINDING): context,
+        }
+    })
+}
+
+fn wfp_outbound_invocation_context_contract_compiled() -> bool {
+    let Ok(context) = OutboundInvocationContext::new(
+        DispatchRouteKind::RelayAuthority.header_value(),
+        "tenant-a",
+        "staging-tenant-a",
+    ) else {
+        return false;
+    };
+    let options = dispatch_outbound_options_value(&context);
+    cinatoken_wfp_authority::AUTHORITY_VERSION == 2
+        && OUTBOUND_CONTEXT_BINDING == "CINATOKEN_WFP_OUTBOUND_CONTEXT"
+        && options["outbound"][OUTBOUND_CONTEXT_BINDING]["route_kind"] == "relay-authority"
+        && options["outbound"][OUTBOUND_CONTEXT_BINDING]["public_worker"] == "tenant-a"
+        && options["outbound"][OUTBOUND_CONTEXT_BINDING]["dispatch_worker"] == "staging-tenant-a"
 }
 
 fn wfp_preview_response_security_headers_compiled() -> bool {
@@ -2399,7 +2471,9 @@ fn is_wfp_relay_authority_transport_ready(
     relay_transport_compiled: bool,
     rust_wasm_runtime_compiled: bool,
     route_manifest_compiled: bool,
-    relay_authority_verifier_compiled: bool,
+    outbound_invocation_context_compiled: bool,
+    outbound_authority_verifier_compiled: bool,
+    outbound_replay_guard_compiled: bool,
     response_header_guard_compiled: bool,
     outbound_egress_policy_compiled: bool,
     outbound_private_ingress_config_compiled: bool,
@@ -2413,7 +2487,9 @@ fn is_wfp_relay_authority_transport_ready(
         && relay_transport_compiled
         && rust_wasm_runtime_compiled
         && route_manifest_compiled
-        && relay_authority_verifier_compiled
+        && outbound_invocation_context_compiled
+        && outbound_authority_verifier_compiled
+        && outbound_replay_guard_compiled
         && response_header_guard_compiled
         && outbound_egress_policy_compiled
         && outbound_private_ingress_config_compiled
@@ -2880,7 +2956,8 @@ mod tests {
             "central_relay_authority",
             "signed_body_bound_authority",
             "authority_replay_do",
-            "tenant_scoped_authority_key",
+            "central_master_only_authority",
+            "outbound_invocation_context",
             "outbound_worker_egress_policy",
             "outbound_worker_token_injection",
             "no_tenant_cloudflare_token",
@@ -2904,7 +2981,9 @@ mod tests {
         assert!(wfp_tenant_rust_wasm_runtime_compiled());
         assert!(wfp_tenant_route_manifest_compiled());
         assert!(wfp_tenant_internal_dispatch_required_compiled());
-        assert!(wfp_tenant_relay_authority_verifier_compiled());
+        assert!(wfp_outbound_invocation_context_contract_compiled());
+        assert!(wfp_outbound_authority_verifier_compiled());
+        assert!(wfp_outbound_replay_guard_compiled());
         assert!(wfp_authority_replay_contract_compiled());
         assert!(wfp_tenant_response_header_guard_compiled());
         assert!(wfp_preview_response_security_headers_compiled());
@@ -2960,9 +3039,9 @@ mod tests {
     #[test]
     fn wfp_relay_authority_readiness_requires_every_transport_boundary() {
         assert!(relay_wfp_authority_transport_contract_compiled());
-        assert!(wfp_relay_authority_ready_with_flags([true; 13]));
-        for false_gate in 0..13 {
-            let mut flags = [true; 13];
+        assert!(wfp_relay_authority_ready_with_flags([true; 15]));
+        for false_gate in 0..15 {
+            let mut flags = [true; 15];
             flags[false_gate] = false;
             assert!(
                 !wfp_relay_authority_ready_with_flags(flags),
@@ -3216,10 +3295,10 @@ mod tests {
         )
     }
 
-    fn wfp_relay_authority_ready_with_flags(flags: [bool; 13]) -> bool {
+    fn wfp_relay_authority_ready_with_flags(flags: [bool; 15]) -> bool {
         is_wfp_relay_authority_transport_ready(
             flags[0], flags[1], flags[2], flags[3], flags[4], flags[5], flags[6], flags[7],
-            flags[8], flags[9], flags[10], flags[11], flags[12],
+            flags[8], flags[9], flags[10], flags[11], flags[12], flags[13], flags[14],
         )
     }
 }

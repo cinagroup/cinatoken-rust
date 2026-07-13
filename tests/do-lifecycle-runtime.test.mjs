@@ -14,10 +14,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { scheduled as runScheduled } from "./fixtures/do-runtime-worker.mjs";
 
 const authoritySecret = "0123456789abcdef0123456789abcdef";
-const authorityDomain = new Uint8Array([
-  ...new TextEncoder().encode("cinatoken-wfp-authority-key:v1"),
-  0,
-]);
 const workerName = "tenant-runtime-test";
 const taskRunnerRecordKey = "task_runner_record_v1";
 const wfpRouteHeader = "x-cinatoken-wfp-route";
@@ -382,9 +378,62 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(response.headers.get("x-cinatoken-wfp-runtime")).toBe("rust-wasm");
     expect(status.runtime).toBe("rust-wasm");
     expect(status.paid_ai_capable).toBe(true);
-    expect(status.authority_replay_binding_configured).toBe(true);
+    expect(status.tenant_authority_replay_binding_bound).toBe(false);
     expect(status.outbound_auth_mode).toBe("platform-outbound-v1");
     expect(status.tenant_cloudflare_token_bound).toBe(false);
+  });
+
+  it("rejects missing, forged, and exact-request-mismatched outbound authority", async () => {
+    await env.WFP_PROVIDER_MOCK.fetch("https://wfp-provider-mock/__mock/reset", {
+      method: "POST",
+    });
+    const body = new TextEncoder().encode(
+      JSON.stringify({ model: "openai/gpt-4.1-mini", input: "authority negative" }),
+    );
+    const authority = await signedAuthority({
+      requestId: "runtime-outbound-negative",
+      path: "/v1/responses",
+      body,
+    });
+
+    const missing = await tenantRequest(null, body);
+    expect(missing.status).toBe(403);
+
+    const changedBody = new TextEncoder().encode(
+      JSON.stringify({ model: "openai/gpt-4.1-mini", input: "changed" }),
+    );
+    const bodyMismatch = await tenantRequest(authority.token, changedBody);
+    expect(bodyMismatch.status).toBe(403);
+
+    const pathMismatch = await tenantRequest(authority.token, body, "/v1/chat/completions");
+    expect(pathMismatch.status).toBe(403);
+
+    const missingContext = await outboundRequest(
+      env.WFP_OUTBOUND_MISSING_CONTEXT,
+      authority.token,
+      body,
+    );
+    expect(missingContext.status).toBe(503);
+
+    const wrongContext = await outboundRequest(
+      env.WFP_OUTBOUND_WRONG_CONTEXT,
+      authority.token,
+      body,
+    );
+    expect(wrongContext.status).toBe(403);
+
+    const [forgedPayload, originalSignature] = authority.token.split(".");
+    const forgedSignature = `${
+      originalSignature.startsWith("A") ? "B" : "A"
+    }${originalSignature.slice(1)}`;
+    const forged = `${forgedPayload}.${forgedSignature}`;
+    const forgedResponse = await tenantRequest(forged, body);
+    expect(forgedResponse.status).toBe(403);
+
+    const stateResponse = await env.WFP_PROVIDER_MOCK.fetch(
+      "https://wfp-provider-mock/__mock/state",
+    );
+    expect(await stateResponse.json()).toEqual({ count: 0 });
   });
 
   it("allows one concurrent provider egress for one signed authority", async () => {
@@ -430,6 +479,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
       path: "/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1/responses",
       authorizationPresent: true,
       authorizationScheme: "Bearer",
+      authorityPresent: false,
+      workerMarkerPresent: false,
       cookiePresent: false,
       contentType: "application/json",
     });
@@ -480,23 +531,38 @@ function consumeAuthority(stub, token) {
   });
 }
 
-function tenantRequest(token, body) {
-  return env.WFP_TENANT_RUNTIME.fetch("https://tenant-runtime/v1/responses", {
+function tenantRequest(token, body, path = "/v1/responses") {
+  const headers = {
+    "content-type": "application/json",
+    [wfpRouteHeader]: "relay-authority",
+    [wfpWorkerHeader]: workerName,
+  };
+  if (token !== null) headers["x-cinatoken-wfp-authority"] = token;
+  return env.WFP_TENANT_RUNTIME.fetch(`https://tenant-runtime${path}`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-cinatoken-wfp-authority": token,
-      [wfpRouteHeader]: "relay-authority",
-      [wfpWorkerHeader]: workerName,
-    },
+    headers,
     body,
   });
+}
+
+function outboundRequest(binding, token, body) {
+  return binding.fetch(
+    "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1/responses",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-cinatoken-wfp-authority": token,
+      },
+      body,
+    },
+  );
 }
 
 async function signedAuthority({ requestId, path = "/v1/responses", body = new Uint8Array() }) {
   const issuedAt = Math.floor(Date.now() / 1000);
   const claims = {
-    version: 1,
+    version: 2,
     worker: workerName,
     method: "POST",
     path,
@@ -507,11 +573,15 @@ async function signedAuthority({ requestId, path = "/v1/responses", body = new U
     expires_at: issuedAt + 30,
   };
   const payload = new TextEncoder().encode(JSON.stringify(claims));
-  const workerKey = await hmac(
+  const signature = await hmac(
     new TextEncoder().encode(authoritySecret),
-    concatBytes(authorityDomain, new TextEncoder().encode(workerName)),
+    concatBytes(
+      new TextEncoder().encode("cinatoken-wfp-central-authority:v2\0"),
+      new TextEncoder().encode(workerName),
+      new Uint8Array([0]),
+      payload,
+    ),
   );
-  const signature = await hmac(workerKey, payload);
   return {
     issuedAt,
     token: `${base64Url(payload)}.${base64Url(signature)}`,
@@ -534,10 +604,13 @@ async function sha256Hex(value) {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function concatBytes(left, right) {
-  const output = new Uint8Array(left.length + right.length);
-  output.set(left);
-  output.set(right, left.length);
+function concatBytes(...parts) {
+  const output = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
   return output;
 }
 

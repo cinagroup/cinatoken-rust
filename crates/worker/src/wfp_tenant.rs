@@ -67,7 +67,8 @@ pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
     "central_relay_authority",
     "signed_body_bound_authority",
     "authority_replay_do",
-    "tenant_scoped_authority_key",
+    "central_master_only_authority",
+    "outbound_invocation_context",
     "outbound_worker_egress_policy",
     "outbound_worker_token_injection",
     "no_tenant_cloudflare_token",
@@ -635,11 +636,11 @@ pub(crate) fn wfp_tenant_rust_wasm_runtime_compiled() -> bool {
         && RUST_TENANT_BUILD_COMMAND == "bun run build:wfp-tenant"
         && RUST_TENANT_SHIM_PATH == "crates/wfp-tenant/build/worker/shim.mjs"
         && deploy_tool.contains("wasmMagic")
-        && deploy_tool.contains("WFP_RELAY_AUTHORITY_KEY")
-        && deploy_tool.contains("WFP_AUTHORITY_REPLAY")
         && deploy_tool.contains("CINATOKEN_WFP_OUTBOUND_AUTH_MODE")
+        && !deploy_tool.contains("name: \"WFP_RELAY_AUTHORITY_KEY\"")
+        && !deploy_tool.contains("name: \"WFP_RELAY_AUTHORITY_SECRET\"")
+        && !deploy_tool.contains("name: \"WFP_AUTHORITY_REPLAY\"")
         && !deploy_tool.contains("name: \"CF_API_TOKEN\"")
-        && deploy_tool.contains("durable_object_namespace")
         && deploy_tool.contains("--manifest-only is no longer supported")
 }
 
@@ -656,6 +657,10 @@ pub(crate) fn wfp_outbound_egress_policy_compiled() -> bool {
         && source.contains("is_redirect_status(status)")
         && source.contains("FORWARDED_REQUEST_HEADERS")
         && source.contains("FORWARDED_RESPONSE_HEADERS")
+        && source.contains("OUTBOUND_CONTEXT_BINDING")
+        && source.contains("parse_unverified_authority_claims")
+        && source.contains("consume_authority_once")
+        && source.contains("body_sha256(body)")
         && !source.contains("passThroughOnException")
 }
 
@@ -718,15 +723,27 @@ pub(crate) fn wfp_tenant_internal_dispatch_required_compiled() -> bool {
         && script.contains("WFP_RELAY_AUTHORITY_ROUTE")
 }
 
-pub(crate) fn wfp_tenant_relay_authority_verifier_compiled() -> bool {
-    let source = include_str!("../../wfp-tenant/src/lib.rs");
-    source.contains("verify_authority_with_worker_key")
-        && source.contains("decode_worker_key")
-        && source.contains("AUTHORITY_TENANT_KEY_ENV")
-        && source.contains("consume_authority_once")
-        && source.contains("AUTHORITY_REPLAY_BINDING")
-        && source.contains("bounded_verified_json")
-        && !source.contains("secret_or_var(&env, AUTHORITY_SECRET_ENV)")
+pub(crate) fn wfp_outbound_authority_verifier_compiled() -> bool {
+    let tenant = include_str!("../../wfp-tenant/src/lib.rs");
+    let outbound = include_str!("../../wfp-outbound/src/lib.rs");
+    tenant.contains("copy_header(req, &mut headers, AUTHORITY_HEADER)")
+        && tenant.contains("bounded_verified_json")
+        && !tenant.contains("WFP_RELAY_AUTHORITY_KEY")
+        && !tenant.contains("consume_authority_once")
+        && outbound.contains("parse_unverified_authority_claims")
+        && outbound.contains("consume_authority_once")
+        && outbound.contains("OUTBOUND_CONTEXT_BINDING")
+}
+
+pub(crate) fn wfp_outbound_replay_guard_compiled() -> bool {
+    let tenant = include_str!("../../wfp-tenant/src/lib.rs");
+    let outbound = include_str!("../../wfp-outbound/src/lib.rs");
+    let config = include_str!("../../wfp-outbound/wrangler.toml");
+    !tenant.contains("consume_authority_once")
+        && outbound.contains("consume_authority_once")
+        && outbound.contains("AUTHORITY_REPLAY_BINDING")
+        && config.contains("name = \"WFP_AUTHORITY_REPLAY\"")
+        && config.contains("class_name = \"WfpAuthorityReplay\"")
 }
 
 pub(crate) fn wfp_tenant_response_header_guard_compiled() -> bool {
@@ -785,7 +802,7 @@ export default {
         paid_ai_authority_mode: WFP_RELAY_AUTHORITY_ROUTE,
         paid_ai_authority_verifier: "disabled-status-only",
         paid_ai_replay_guard: "disabled-status-only",
-        authority_replay_binding_configured: false,
+        tenant_authority_replay_binding_bound: false,
         paid_ai_capable: false,
         inbound_dispatch_route: headerValue(request.headers, WFP_ROUTE_HEADER),
         inbound_dispatch_worker: headerValue(request.headers, WFP_WORKER_HEADER),

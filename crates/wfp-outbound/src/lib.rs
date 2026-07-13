@@ -4,6 +4,11 @@
 //! admits only the four reviewed Cloudflare AI REST routes, injects its own
 //! least-privilege secret, and returns a bounded public response-header set.
 
+use cinatoken_wfp_authority::{
+    authority_replay_bucket, body_sha256, expected_ai_egress_path,
+    parse_unverified_authority_claims, OutboundInvocationContext, AUTHORITY_HEADER,
+    AUTHORITY_REPLAY_BINDING, OUTBOUND_CONTEXT_BINDING,
+};
 use futures_util::StreamExt;
 use serde_json::json;
 use url::Url;
@@ -16,6 +21,8 @@ use worker::{
 const CLOUDFLARE_AI_HOST: &str = "api.cloudflare.com";
 const ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
 const OUTBOUND_TOKEN_ENV: &str = "CINATOKEN_WFP_OUTBOUND_AI_TOKEN";
+const WFP_WORKER_HEADER: &str = "x-cinatoken-wfp-worker";
+const RELAY_AUTHORITY_ROUTE: &str = "relay-authority";
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const ALLOWED_AI_PATHS: &[&str] = &[
     "/ai/run",
@@ -66,6 +73,10 @@ enum EgressPolicyError {
     BodyTooLarge,
     BodyRead,
     InvalidJson,
+    AuthorityRequired,
+    AuthorityInvalid,
+    AuthorityReplay,
+    AuthorityUnavailable,
 }
 
 #[event(fetch)]
@@ -91,6 +102,10 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> WorkerResult<Re
         Ok(body) => body,
         Err(error) => return policy_error_response(error),
     };
+
+    if let Err(error) = authorize_egress_once(&req, &env, &url, &account_id, &body).await {
+        return policy_error_response(error);
+    }
 
     let token = match env.secret(OUTBOUND_TOKEN_ENV) {
         Ok(value) if !value.to_string().trim().is_empty() => value,
@@ -133,6 +148,93 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> WorkerResult<Re
     Ok(Response::from_stream(upstream.stream()?)?
         .with_status(status)
         .with_headers(response_headers))
+}
+
+async fn authorize_egress_once(
+    req: &Request,
+    env: &Env,
+    url: &Url,
+    account_id: &str,
+    body: &[u8],
+) -> Result<(), EgressPolicyError> {
+    let context: OutboundInvocationContext = env
+        .object_var(OUTBOUND_CONTEXT_BINDING)
+        .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
+    context
+        .validate()
+        .map_err(|_| EgressPolicyError::AuthorityInvalid)?;
+    if context.route_kind != RELAY_AUTHORITY_ROUTE {
+        return Err(EgressPolicyError::AuthorityRequired);
+    }
+
+    let authority = req
+        .headers()
+        .get(AUTHORITY_HEADER)
+        .map_err(|_| EgressPolicyError::AuthorityInvalid)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(EgressPolicyError::AuthorityRequired)?;
+    let now = unix_timestamp();
+    let claims = parse_unverified_authority_claims(&authority, &context.public_worker, now)
+        .map_err(|_| EgressPolicyError::AuthorityInvalid)?;
+    let expected_path =
+        expected_ai_egress_path(&claims.path).map_err(|_| EgressPolicyError::AuthorityInvalid)?;
+    let actual_path =
+        account_relative_path(url, account_id).ok_or(EgressPolicyError::AuthorityInvalid)?;
+    if claims.method != "POST"
+        || expected_path != actual_path
+        || claims.body_sha256 != body_sha256(body)
+    {
+        return Err(EgressPolicyError::AuthorityInvalid);
+    }
+
+    consume_authority_once(env, &context.public_worker, &authority, claims.issued_at).await
+}
+
+fn account_relative_path<'a>(url: &'a Url, account_id: &str) -> Option<&'a str> {
+    let prefix = format!("/client/v4/accounts/{}", account_id.trim());
+    url.path().strip_prefix(&prefix)
+}
+
+async fn consume_authority_once(
+    env: &Env,
+    worker_name: &str,
+    authority: &str,
+    issued_at: i64,
+) -> Result<(), EgressPolicyError> {
+    let namespace = env
+        .durable_object(AUTHORITY_REPLAY_BINDING)
+        .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
+    let bucket = authority_replay_bucket(worker_name, issued_at)
+        .map_err(|_| EgressPolicyError::AuthorityInvalid)?;
+    let stub = namespace
+        .id_from_name(&bucket)
+        .and_then(|id| id.get_stub())
+        .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
+    let mut headers = Headers::new();
+    headers
+        .set(AUTHORITY_HEADER, authority)
+        .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
+    headers
+        .set(WFP_WORKER_HEADER, worker_name)
+        .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_headers(headers);
+    let request = Request::new_with_init("https://wfp-authority-replay.internal/consume", &init)
+        .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
+    let response = stub
+        .fetch_with_request(request)
+        .await
+        .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
+    match response.status_code() {
+        200..=299 => Ok(()),
+        409 => Err(EgressPolicyError::AuthorityReplay),
+        401 | 403 => Err(EgressPolicyError::AuthorityInvalid),
+        _ => Err(EgressPolicyError::AuthorityUnavailable),
+    }
+}
+
+fn unix_timestamp() -> i64 {
+    (js_sys::Date::now() / 1000.0).floor() as i64
 }
 
 fn validate_egress_request(
@@ -262,6 +364,26 @@ fn policy_error_response(error: EgressPolicyError) -> WorkerResult<Response> {
             400,
             "wfp_outbound_invalid_json",
             "outbound request body must be valid JSON",
+        ),
+        EgressPolicyError::AuthorityRequired => (
+            403,
+            "wfp_outbound_authority_required",
+            "outbound request requires central relay authority",
+        ),
+        EgressPolicyError::AuthorityInvalid => (
+            403,
+            "wfp_outbound_authority_invalid",
+            "outbound relay authority did not match the exact request",
+        ),
+        EgressPolicyError::AuthorityReplay => (
+            409,
+            "wfp_outbound_authority_replayed",
+            "outbound relay authority was already consumed",
+        ),
+        EgressPolicyError::AuthorityUnavailable => (
+            503,
+            "wfp_outbound_authority_unavailable",
+            "outbound relay authority verification is unavailable",
         ),
         _ => (
             403,

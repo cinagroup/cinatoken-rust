@@ -205,19 +205,19 @@ Production decisions from the refreshed cinaVibeSDK and Cloudflare audit:
   increment now makes WFP a post-admission transport: the central relay owns
   token auth, D1 channel selection, reserve, settlement/refund, and audit, while
   `channels.other_info.wfp_worker` selects the tenant Worker. A 30-second
-  HMAC-SHA256 authority binds body, path, method, channel, request ID, and
-  worker using a per-worker key derived from platform-only
-  `WFP_RELAY_AUTHORITY_SECRET`. The uploader binds only
-  `WFP_RELAY_AUTHORITY_KEY` into that tenant; the platform master must never
-  enter the tenant binding set. The tenant now atomically consumes the signed
-  request ID through the platform-owned `WfpAuthorityReplay` DO before egress;
-  duplicate/invalid/unavailable checks fail closed. Keep
+  central-authority v2 HMAC binds body, path, method, channel, request ID, and
+  public worker directly with platform-only `WFP_RELAY_AUTHORITY_SECRET`.
+  Tenants receive no signing/verifier key or replay binding. Cloudflare passes
+  a bounded route/public-worker/dispatch-worker context to the outbound Worker,
+  which validates context, final path/body, signature, and one-time consumption
+  through the platform-owned `WfpAuthorityReplay` DO before bearer access.
+  Duplicate/invalid/unavailable checks fail closed. Keep
   `WFP_RELAY_TRANSPORT_ENABLED=false` until staging proves the complete path,
   external binding identity, and sequential/concurrent replay behavior.
 
 ## Best-Practice Anchors
 
-Cloudflare references were refreshed on 2026-07-11:
+Cloudflare references were refreshed on 2026-07-13:
 
 - Workers best practices:
   <https://developers.cloudflare.com/workers/best-practices/workers-best-practices/>
@@ -688,19 +688,24 @@ Required tasks:
 8. Build and upload only the strict Rust/Wasm WFP tenant artifact. The generated
    JavaScript fallback is status-only and
    `/api/platform/wfp/tenant-script/deploy` is disabled. The uploader must
-   validate the main shim, Wasm magic/import graph, and module hashes; require a
-   tenant runtime token distinct from the deploy token; derive the named
-   worker's key from `WFP_RELAY_AUTHORITY_SECRET`; bind only
-   `WFP_RELAY_AUTHORITY_KEY` into the tenant; bind the environment-specific
-   platform `WfpAuthorityReplay` namespace using
-   `--authority-replay-script`; and archive real PUT plus GET content, hash,
-   class, and script readback evidence. The platform master must remain
-   platform-side.
+   validate the main shim, Wasm magic/import graph, and module hashes; bind only
+   reviewed non-secret tenant configuration; reject every Cloudflare bearer,
+   authority key/master, and replay namespace; and archive real PUT plus GET
+   content, hash, and binding readback evidence. The platform master must remain
+   on the main Worker only.
+   Deploy the environment-specific outbound service separately. Its dispatch
+   attachment must name the exact service/environment and declare only
+   `CINATOKEN_WFP_OUTBOUND_CONTEXT`; its external `WFP_AUTHORITY_REPLAY`
+   binding must point to the matching main Worker/class. Archive schema-3
+   readback and prove live Dynamic Dispatch parameter propagation before paid
+   canary. The local static Workerd object is contract evidence only.
    Admin dispatch may prove tenant status only. For paid smoke, seed
    `channels.other_info.wfp_worker`, temporarily arm
    `WFP_RELAY_TRANSPORT_ENABLED`, and call one of chat/responses/messages/ai-run
-   through the normal relay token path. Prove signed-authority rejection cases
-   and exactly one central reserve followed by settlement/refund and audit.
+   through the normal relay token path. Prove signed-authority, missing/wrong
+   invocation-context, final-path, and exact-body rejection cases cause zero
+   provider calls, then prove exactly one central reserve followed by
+   settlement/refund and audit for the accepted request.
    Prove the same envelope has exactly one winner under sequential and
    concurrent replay, alternate DO IDs are rejected, eviction/redeploy does not
    reset consumption, cleanup is late enough, and only one provider call is
@@ -1005,9 +1010,10 @@ Before deploying or enabling paid WFP traffic:
 2. Build from the tracked config with `workers_dev=false`,
    `preview_urls=false`, and no `route`/`routes`; require
    `wfp_outbound_private_ingress_config_compiled=true` before smoke execution.
-3. Deploy only to isolated staging, run the schema-2 outbound readback, and
+3. Deploy only to isolated staging, run the schema-3 outbound readback, and
    require workers.dev disabled, Preview URLs disabled, zero Custom Domains,
-   exact dispatch attachment, and outbound-only runtime secret ownership.
+   exact service/environment/context parameter attachment, environment-correct
+   replay binding, and outbound-only runtime secret ownership.
 4. Enumerate all account Zones and Worker routes with the rotated credential;
    fail the gate if any route points to `cinatoken-wfp-outbound`. Archive only
    redacted names/status, never credential values.

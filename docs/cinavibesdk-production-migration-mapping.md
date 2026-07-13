@@ -353,13 +353,15 @@ cinaVibeSDK pattern:
   sensitive request/response headers by rebuilding allowlists and blocks
   redirects.
 - Before WFP dispatch, the central relay creates an
-  `x-cinatoken-wfp-authority` envelope. It is HMAC-SHA256 signed with a
-  per-worker key derived from the platform-only
-  `WFP_RELAY_AUTHORITY_SECRET`, expires after 30 seconds, and binds the worker,
-  HTTP method, path, request-body SHA-256, selected channel ID, and request ID.
-  The artifact uploader binds only the derived `WFP_RELAY_AUTHORITY_KEY` into
-  that named tenant. The Rust/Wasm tenant verifies with that key and must never
-  receive the platform master.
+  `x-cinatoken-wfp-authority` envelope. Central-authority v2 is HMAC-SHA256
+  signed directly with platform-only `WFP_RELAY_AUTHORITY_SECRET`, expires
+  after 30 seconds, and binds the public worker, HTTP method, path,
+  request-body SHA-256, selected channel ID, and request ID. The artifact
+  uploader binds no authority signing or verification material into the tenant.
+- The tenant applies bounded route/body checks and forwards the opaque
+  authority. Cloudflare injects `CINATOKEN_WFP_OUTBOUND_CONTEXT` into the
+  outbound Worker, which validates route kind, public/dispatch worker, final
+  path/body, central signature, and replay before bearer access.
 - The paid tenant route set is deliberately limited to
   `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, and `/ai/run`.
   `/v1/embeddings` is not a valid WFP tenant route and has been removed.
@@ -486,7 +488,7 @@ and fallback behavior as the direct path.
 | `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, frame guard, close/error mapping, send-failure cleanup, terminal event trace, upstream replay contract, backpressure policy plus runtime FIFO queue, controlled mock startup queue/drain and early fault plans, archived staging evidence, billing settlement, live protocol replay |
 | `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe, forged internal upstream header boundary smoke |
 | Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Capability preflight with tenant route/guard contract, Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
-| Tenant AI routes | Main Rust relay, then WFP Rust tenant transport, then AI Gateway | Post-admission dispatch with signed body-bound authority | Real `DISPATCHER`, `WFP_RELAY_TRANSPORT_ENABLED`, tenant Gateway vars | Central reserve/settlement/audit evidence, tenant-scoped authority-key readback, route-specific Gateway logs, request policy headers, response-header allowlist, and replay-resistance canary |
+| Tenant AI routes | Main Rust relay, then WFP Rust tenant transport, outbound security boundary, then AI Gateway | Post-admission dispatch with signed body-bound central authority | Real `DISPATCHER`, exact outbound environment/context parameter, `WFP_RELAY_TRANSPORT_ENABLED`, tenant Gateway vars | Central reserve/settlement/audit evidence, authority/replay-free tenant readback, schema-3 outbound/replay readback, live context propagation, route-specific Gateway logs, response allowlist, and replay-resistance canary |
 | Admin platform readiness | Main Rust Worker | Capability probe | Admin session | `/api/platform/capabilities` matches bindings, gates, WFP tenant route/guard contracts, and smoke readiness |
 
 ## Migration Stages
@@ -759,14 +761,16 @@ As of 2026-07-12, including the scheduling-gateway and local D1 evidence above:
   reconciliation plus alarm/eviction/multi-response proof required for
   production `/v1/realtime`.
 - WFP dispatch now also has a platform-owned one-time authority Durable Object,
-  canonical shard enforcement, fail-closed tenant consumption, and external DO
-  upload metadata. The new Rust outbound Worker locally defines the required
-  bearer-free tenant boundary and four-route egress allowlist. It still needs a
-  real paid-plan `DISPATCHER` binding with `cinatoken-wfp-outbound` attached,
-  outbound-only secret readback, strict Rust/Wasm artifact plus replay binding
-  readback, and deployed sequential/concurrent replay and egress proof before
-  any paid canary. Remote attachment and live evidence are unverified, so WFP
-  production remains **NO-GO**.
+  canonical shard enforcement, fail-closed outbound consumption, and an
+  environment-specific external DO binding on the outbound service. The Rust
+  outbound Worker locally defines the bearer-free/authority-free tenant
+  boundary, invocation-context checks, and four-route egress allowlist. It
+  still needs a real paid-plan `DISPATCHER` binding with exact service,
+  environment, and context parameter; outbound-only secret/replay readback;
+  strict Rust/Wasm tenant binding-absence proof; and deployed context,
+  sequential/concurrent replay, and egress evidence before any paid canary.
+  Remote attachment and live evidence are unverified, so WFP production remains
+  **NO-GO**.
 - The first production cutover should not depend on WFP. Keep WFP as a later
   multi-tenant extension.
 
@@ -926,10 +930,11 @@ cinatoken-rust now encodes that ownership in deploy configuration:
 route, while the dispatch namespace remains its intended caller.
 
 The root Rust Worker compiles this invariant into WFP readiness and the Bun
-frontend exposes it without claiming remote verification. Readback schema 2
-then checks the deployed script subdomain and service-filtered Custom Domains.
-This is stronger than source inspection but still does not enumerate Zone
-Worker routes. After credential rotation, an account-wide route inventory plus
-schema-2 readback, remote Dynamic Dispatch composition, provider call,
-settlement/audit correlation, and rollback remain required. Production remains
-**NO-GO**.
+frontend exposes it without claiming remote verification. Readback schema 3
+checks the deployed script subdomain, service-filtered Custom Domains, exact
+outbound environment/context parameter, and platform replay binding. This is
+stronger than source inspection but still does not enumerate Zone Worker
+routes or prove live parameter propagation. After credential rotation, an
+account-wide route inventory plus schema-3 readback, remote Dynamic Dispatch
+composition, provider call, settlement/audit correlation, and rollback remain
+required. Production remains **NO-GO**.

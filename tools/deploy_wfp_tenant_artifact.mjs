@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,6 @@ const defaultMainModule = "shim.mjs";
 const defaultCompatibilityDate = "2026-07-11";
 const cloudflareApiBase = "https://api.cloudflare.com/client/v4";
 const wasmMagic = Uint8Array.from([0x00, 0x61, 0x73, 0x6d]);
-const authorityKeyDomain = Buffer.from("cinatoken-wfp-authority-key:v1\0", "utf8");
 const outboundAuthMode = "platform-outbound-v1";
 const routeGatewayBindings = [
   {
@@ -135,15 +134,6 @@ async function main(options) {
   const routeAiGatewayIds = validateRouteGatewayIds(options.routeAiGatewayIds);
   const aiGatewayPolicy = validateAiGatewayPolicy(options.aiGatewayPolicy);
   const apiToken = required(options.apiToken, "api-token");
-  const authoritySecret = resolveAuthoritySecret(options.authoritySecret);
-  const authorityKey = deriveTenantAuthorityKey(authoritySecret, publicScriptName);
-  const authorityReplayScript = normalizeWorkerName(
-    required(options.authorityReplayScript, "authority-replay-script"),
-  );
-  if (!authorityReplayScript) {
-    throw new Error("authority-replay-script must be a valid Worker script name");
-  }
-
   const metadata = uploadMetadata({
     mainModule: options.mainModule,
     compatibilityDate,
@@ -153,8 +143,6 @@ async function main(options) {
     aiGatewayId,
     routeAiGatewayIds,
     aiGatewayPolicy,
-    authorityKey,
-    authorityReplayScript,
   });
   const uploadUrl = dispatchUploadUrl(accountId, namespace, scriptName);
   const modules = await collectArtifactModules(
@@ -289,14 +277,6 @@ function normalizeOptions(args) {
     namespace: value("namespace", "WFP_DISPATCH_NAMESPACE"),
     accountId: value("account-id", "CLOUDFLARE_ACCOUNT_ID"),
     apiToken: value("api-token", "CLOUDFLARE_API_TOKEN"),
-    authoritySecret: value(
-      "authority-secret",
-      "WFP_RELAY_AUTHORITY_SECRET",
-    ),
-    authorityReplayScript: value(
-      "authority-replay-script",
-      "WFP_AUTHORITY_REPLAY_SCRIPT_NAME",
-    ),
     aiGatewayId: value("ai-gateway-id", "AI_GATEWAY_ID"),
     routeAiGatewayIds: Object.fromEntries(
       routeGatewayBindings.map((binding) => [
@@ -332,8 +312,6 @@ function usage(exitCode, error) {
       "Required for deploy:",
       "  --account-id <id>      or CLOUDFLARE_ACCOUNT_ID",
       "  --api-token <token>    or CLOUDFLARE_API_TOKEN",
-      "  --authority-secret <secret> or WFP_RELAY_AUTHORITY_SECRET (minimum 32 bytes)",
-      "  --authority-replay-script <name> or WFP_AUTHORITY_REPLAY_SCRIPT_NAME",
       "",
       "Options:",
       "  --tenant-id <id>",
@@ -454,8 +432,6 @@ function uploadMetadata({
   aiGatewayId,
   routeAiGatewayIds,
   aiGatewayPolicy,
-  authorityKey,
-  authorityReplayScript,
 }) {
   const bindings = [
     {
@@ -506,17 +482,6 @@ function uploadMetadata({
       });
     }
   }
-  bindings.push({
-    name: "WFP_RELAY_AUTHORITY_KEY",
-    type: "secret_text",
-    text: authorityKey,
-  });
-  bindings.push({
-    name: "WFP_AUTHORITY_REPLAY",
-    type: "durable_object_namespace",
-    class_name: "WfpAuthorityReplay",
-    script_name: authorityReplayScript,
-  });
   return {
     main_module: mainModule,
     compatibility_date: compatibilityDate,
@@ -596,25 +561,6 @@ function redactMetadata(metadata) {
       binding.type === "secret_text" ? { ...binding, text: "<redacted>" } : binding,
     ),
   };
-}
-
-function resolveAuthoritySecret(value) {
-  const secret = required(value, "authority-secret").trim();
-  if (new TextEncoder().encode(secret).length < 32) {
-    throw new Error("authority-secret must contain at least 32 UTF-8 bytes");
-  }
-  return secret;
-}
-
-function deriveTenantAuthorityKey(authoritySecret, workerName) {
-  const normalizedWorker = normalizeWorkerName(workerName);
-  if (!normalizedWorker || normalizedWorker !== workerName) {
-    throw new Error("worker name must be normalized before deriving authority key");
-  }
-  return createHmac("sha256", Buffer.from(authoritySecret, "utf8"))
-    .update(authorityKeyDomain)
-    .update(Buffer.from(normalizedWorker, "utf8"))
-    .digest("base64url");
 }
 
 function artifactWarnings() {
@@ -753,58 +699,29 @@ function runDeployPlanSelfTest() {
     );
   }
   cases.push({ name: "outbound-auth-without-tenant-token", passed: true });
-  expectAuthorityResolutionFailure(
-    "missing-authority-secret",
-    null,
-    /authority-secret is required/,
-    cases,
-  );
-  expectAuthorityResolutionFailure(
-    "short-authority-secret",
-    "too-short",
-    /at least 32 UTF-8 bytes/,
-    cases,
-  );
-  const authoritySecret = resolveAuthoritySecret(
-    "0123456789abcdef0123456789abcdef",
-  );
-  const authorityKey = deriveTenantAuthorityKey(authoritySecret, "tenant-smoke");
-  const authorityMetadata = selfTestUploadMetadata(authorityKey);
-  const authorityBinding = authorityMetadata.bindings.find(
-    (binding) => binding.name === "WFP_RELAY_AUTHORITY_KEY",
-  );
-  const replayBinding = authorityMetadata.bindings.find(
-    (binding) => binding.name === "WFP_AUTHORITY_REPLAY",
-  );
+  const authorityMetadata = selfTestUploadMetadata();
   if (
-    authorityBinding?.type !== "secret_text" ||
-    authorityBinding.text !== authorityKey ||
-    authorityBinding.text === authoritySecret ||
     !authorityMetadata.bindings.some(
       (binding) =>
         binding.name === "CINATOKEN_WFP_WORKER_NAME" &&
         binding.text === "tenant-smoke",
-    ) ||
-    replayBinding?.type !== "durable_object_namespace" ||
-    replayBinding.class_name !== "WfpAuthorityReplay" ||
-    replayBinding.script_name !== "cinatoken-rust-api-staging"
+    )
   ) {
-    throw new Error("authority key, worker identity, or replay DO binding is missing");
+    throw new Error("tenant worker identity binding is missing");
   }
-  const otherTenantKey = deriveTenantAuthorityKey(authoritySecret, "tenant-other");
-  if (otherTenantKey === authorityKey) {
-    throw new Error("authority key derivation was not tenant scoped");
+  const forbidden = new Set([
+    "WFP_RELAY_AUTHORITY_KEY",
+    "WFP_RELAY_AUTHORITY_SECRET",
+    "WFP_AUTHORITY_REPLAY",
+  ]);
+  if (authorityMetadata.bindings.some((binding) => forbidden.has(binding.name))) {
+    throw new Error("tenant metadata contains platform authority material");
   }
-  cases.push({ name: "tenant-scoped-authority-binding", passed: true });
+  cases.push({ name: "tenant-authority-material-absent", passed: true });
   return { ok: true, deployPlanSelfTest: true, cases };
 }
 
-function selfTestUploadMetadata(
-  authorityKey = deriveTenantAuthorityKey(
-    "0123456789abcdef0123456789abcdef",
-    "tenant-smoke",
-  ),
-) {
+function selfTestUploadMetadata() {
   return uploadMetadata({
     mainModule: defaultMainModule,
     compatibilityDate: defaultCompatibilityDate,
@@ -814,23 +731,7 @@ function selfTestUploadMetadata(
     aiGatewayId: null,
     routeAiGatewayIds: {},
     aiGatewayPolicy: {},
-    authorityKey,
-    authorityReplayScript: "cinatoken-rust-api-staging",
   });
-}
-
-function expectAuthorityResolutionFailure(name, value, expected, cases) {
-  try {
-    resolveAuthoritySecret(value);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!expected.test(message)) {
-      throw new Error(`${name} failed with unexpected error: ${message}`);
-    }
-    cases.push({ name, passed: true });
-    return;
-  }
-  throw new Error(`${name} unexpectedly passed authority validation`);
 }
 
 function sha256Hex(bytes) {

@@ -60,11 +60,10 @@ Last checked: 2026-07-13
   before `channels.other_info.wfp_worker` selects the tenant Worker. The response
   returns through central settlement/refund and audit.
 - `WFP_RELAY_TRANSPORT_ENABLED` is explicitly false in tracked environments.
-  The platform Worker retains `WFP_RELAY_AUTHORITY_SECRET` and signs with its
-  derived per-worker HMAC key. The uploader binds only
-  `WFP_RELAY_AUTHORITY_KEY` into that tenant; the tenant must never receive the
-  platform master. The 30-second envelope binds worker, method, path, body hash,
-  channel ID, and request ID.
+  The platform Worker alone retains `WFP_RELAY_AUTHORITY_SECRET` and signs the
+  central-authority v2 envelope directly. No authority key or verifier secret
+  is derived into or uploaded with a tenant. The 30-second envelope binds the
+  public worker, method, path, body hash, channel ID, and request ID.
 - Admin dispatch is status-only, generated JavaScript fallback AI deploy is
   disabled, and the strict production artifact path is the Rust/Wasm uploader.
   The dispatch namespace must attach outbound service `cinatoken-wfp-outbound`.
@@ -84,6 +83,11 @@ Last checked: 2026-07-13
   [Outbound Workers](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/)
   architecture and the documented
   [AI Gateway REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/).
+  Under the outbound parameter contract, the dispatcher passes
+  `CINATOKEN_WFP_OUTBOUND_CONTEXT`, and the outbound Worker requires the exact
+  relay-authority route kind, public worker, and dispatched script identity.
+  Before reading its bearer secret it rechecks authority signature/replay,
+  method, final AI REST path, and exact body hash.
 - This section supersedes historical 2026-07-05 WFP entries below that describe
   admin AI dispatch, generated fallback AI parity/deploy, embeddings support,
   or tenant-owned Cloudflare tokens. Those entries remain only as an
@@ -2995,23 +2999,32 @@ bun run check
 
 - Added the platform-owned `WfpAuthorityReplay` SQLite Durable Object and
   `v4-wfp-authority-replay` configuration migration in all Worker environments.
-- The Rust/Wasm tenant verifies the exact-body authority first, then consumes
-  the signed request ID before paid egress. Duplicate, invalid, and unavailable
-  outcomes map to explicit `409`, `403`, and `503` fail-closed responses.
+- The Rust/Wasm tenant receives no authority verifier or replay binding. It
+  enforces route/body bounds and forwards the opaque authority to the outbound
+  boundary. The outbound Worker matches the Cloudflare-provided invocation
+  context and exact final request before replay consumption or bearer access.
+- The outbound Worker calls the platform-owned replay DO. The DO authenticates
+  the central-authority v2 signature and consumes the signed request ID before
+  paid egress. Duplicate, invalid, and unavailable outcomes map to explicit
+  `409`, `403`, and `503` fail-closed responses.
 - The DO re-verifies claims with the platform master and requires its own ID to
   equal the canonical worker/issuance-bucket ID. Storage keys hash request IDs;
   alarm cleanup is scheduled after the whole bucket's token lifetime.
-- The strict uploader binds the external `WFP_AUTHORITY_REPLAY` namespace by
-  expected script and class. Capabilities and the frontend expose compiled and
-  bound states separately.
-- Local checks passed: authority 6/6, tenant 16/16, Worker WFP 19/19, frontend
-  readiness 6/6, Worker and tenant wasm32 checks, deploy-plan, route-contract,
-  and response-header self-tests.
-- No live duplicate was executed. Required staging evidence remains: upload
-  binding readback, sequential and concurrent one-winner replay, wrong-shard
-  rejection, eviction/redeploy persistence, alarm cleanup, load/latency, one
-  provider call, one central billing outcome, and redacted traces. A new signed
-  request ID on a retry is outside this exact-envelope guarantee.
+- The outbound service, not the tenant uploader, binds the external
+  `WFP_AUTHORITY_REPLAY` namespace by expected main script and class. The
+  dispatch binding must expose exactly one outbound parameter named
+  `CINATOKEN_WFP_OUTBOUND_CONTEXT` and the expected environment.
+- Current local checks pass: authority 8/8, tenant 15/15, outbound 4/4,
+  platform-gateway 26/26, Workerd lifecycle 12/12, frontend readiness 22/22,
+  tenant readback 16 cases, outbound readback 30 cases, outbound egress 17
+  cases, and the WFP dispatch contract checks.
+- The local Workerd config supplies a static invocation object and therefore
+  does not prove remote Dynamic Dispatch parameter propagation. Required
+  staging evidence remains: schema-3 attachment/environment/parameter/replay
+  readback, runtime context negatives, sequential and concurrent one-winner
+  replay, eviction/redeploy persistence, alarm cleanup, load/latency, one
+  provider call, one central billing outcome, and redacted traces. A newly
+  signed request ID on a retry is outside this exact-envelope guarantee.
 
 ## Still Pending
 
@@ -3230,18 +3243,19 @@ rollback. No exposed Cloudflare token was used.
 
 ### WFP Outbound Attachment Readback Contract (updated 2026-07-13)
 
-- `bun run check:wfp-outbound:readback-collector` passed 24/24 cases. The
+- `bun run check:wfp-outbound:readback-collector` passed 30/30 cases. The
   read-only collector uses the official dispatch namespace, Worker settings,
   Worker secrets, script subdomain, and service-filtered Worker Domains GET
   endpoints with bounded JSON, a 30-second timeout, manual redirect rejection,
   strict Cloudflare envelopes, and before/after namespace identity comparison.
 - Positive evidence requires an untrusted namespace; one exact `DISPATCHER`
-  binding to the requested namespace and `cinatoken-wfp-outbound`; no outbound
-  parameters, environment, or entrypoint override; the exact plain-text account
-  binding; and `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` in outbound settings and secret
-  inventory but not on the dispatcher. Known deploy, readback, and retired
-  tenant bearer names fail closed.
-- Schema 2 additionally requires deployed `workers.dev` and Preview URL flags
+  binding to the requested namespace and `cinatoken-wfp-outbound`; the expected
+  outbound environment; exactly one `CINATOKEN_WFP_OUTBOUND_CONTEXT` parameter;
+  the exact plain-text account binding; the environment-correct external replay
+  DO binding; and `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` in outbound settings and
+  secret inventory but not on the dispatcher. Known deploy, readback, and
+  retired tenant bearer names fail closed.
+- Schema 3 additionally requires deployed `workers.dev` and Preview URL flags
   to be false and zero Custom Domains for the outbound service. The tracked
   Wrangler config explicitly sets both flags false and declares no route; the
   platform capability and frontend panel report this only as compiled evidence.
@@ -3254,9 +3268,10 @@ rollback. No exposed Cloudflare token was used.
   credential was used. Remote staging must still archive `verified=true`, then
   enumerate every account Zone Worker route and prove none targets the outbound
   script, then
-  prove bearer-free tenant readback, four-route live egress, negative policy,
-  Gateway logs, authority replay, exactly-one provider call, central billing,
-  audit, and rollback. WFP production remains **NO-GO**.
+  prove bearer/authority/replay-free tenant readback, live Dynamic Dispatch
+  context propagation, four-route egress, final-boundary negatives, Gateway
+  logs, authority replay, exactly-one provider call, central billing, audit,
+  and rollback. WFP production remains **NO-GO**.
 - The complete `bun run check` release gate passed after this update: Workerd
   11/11, frontend readiness 22/22, zero missing frontend-to-Worker routes, 22
   D1 migrations, workspace tests, and main/tenant/outbound wasm32 checks.

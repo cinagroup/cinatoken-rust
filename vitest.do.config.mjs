@@ -2,20 +2,11 @@ import {
   cloudflareTest,
   readD1Migrations,
 } from "@cloudflare/vitest-pool-workers";
-import { createHmac } from "node:crypto";
 import { defineConfig } from "vitest/config";
 
 const authoritySecret = "0123456789abcdef0123456789abcdef";
 const authorityWorker = "tenant-runtime-test";
 const accountId = "0123456789abcdef0123456789abcdef";
-const authorityDomain = Buffer.concat([
-  Buffer.from("cinatoken-wfp-authority-key:v1"),
-  Buffer.from([0]),
-  Buffer.from(authorityWorker),
-]);
-const authorityWorkerKey = createHmac("sha256", authoritySecret)
-  .update(authorityDomain)
-  .digest("base64url");
 const compiledWasmModules = [
   {
     type: "CompiledWasm",
@@ -55,6 +46,8 @@ export default defineConfig({
         outboundService: "realtime-provider-mock",
         serviceBindings: {
           WFP_TENANT_RUNTIME: "wfp-tenant-runtime",
+          WFP_OUTBOUND_MISSING_CONTEXT: "wfp-outbound-missing-context",
+          WFP_OUTBOUND_WRONG_CONTEXT: "wfp-outbound-wrong-context",
           WFP_PROVIDER_MOCK: "wfp-provider-mock",
           REALTIME_PROVIDER_MOCK: "realtime-provider-mock",
         },
@@ -92,16 +85,9 @@ export default defineConfig({
               CINATOKEN_TENANT_ID: "tenant-runtime-test",
               CINATOKEN_WFP_WORKER_NAME: authorityWorker,
               CINATOKEN_WFP_OUTBOUND_AUTH_MODE: "platform-outbound-v1",
-              WFP_RELAY_AUTHORITY_KEY: authorityWorkerKey,
               CF_ACCOUNT_ID: accountId,
               AI_GATEWAY_ID: "runtime-gateway",
               AI_GATEWAY_MAX_ATTEMPTS: "1",
-            },
-            durableObjects: {
-              WFP_AUTHORITY_REPLAY: {
-                className: "WfpAuthorityReplay",
-                scriptName: "wfp-platform-runtime",
-              },
             },
             outboundService: "wfp-outbound-runtime",
           },
@@ -115,6 +101,18 @@ export default defineConfig({
             bindings: {
               CLOUDFLARE_ACCOUNT_ID: accountId,
               CINATOKEN_WFP_OUTBOUND_AI_TOKEN: "runtime-outbound-token",
+              CINATOKEN_WFP_OUTBOUND_CONTEXT: {
+                version: 1,
+                route_kind: "relay-authority",
+                public_worker: authorityWorker,
+                dispatch_worker: authorityWorker,
+              },
+            },
+            durableObjects: {
+              WFP_AUTHORITY_REPLAY: {
+                className: "WfpAuthorityReplay",
+                scriptName: "wfp-platform-runtime",
+              },
             },
             outboundService: "wfp-provider-mock",
           },
@@ -127,6 +125,50 @@ export default defineConfig({
             durableObjects: {
               MOCK_EGRESS_COUNTER: "MockEgressCounter",
             },
+          },
+          {
+            name: "wfp-outbound-missing-context",
+            scriptPath: "./crates/wfp-outbound/build/index.js",
+            modules: true,
+            modulesRules: auxiliaryModuleRules,
+            compatibilityDate: "2026-07-11",
+            compatibilityFlags: ["nodejs_compat"],
+            bindings: {
+              CLOUDFLARE_ACCOUNT_ID: accountId,
+              CINATOKEN_WFP_OUTBOUND_AI_TOKEN: "runtime-outbound-token",
+            },
+            durableObjects: {
+              WFP_AUTHORITY_REPLAY: {
+                className: "WfpAuthorityReplay",
+                scriptName: "wfp-platform-runtime",
+              },
+            },
+            outboundService: "wfp-provider-mock",
+          },
+          {
+            name: "wfp-outbound-wrong-context",
+            scriptPath: "./crates/wfp-outbound/build/index.js",
+            modules: true,
+            modulesRules: auxiliaryModuleRules,
+            compatibilityDate: "2026-07-11",
+            compatibilityFlags: ["nodejs_compat"],
+            bindings: {
+              CLOUDFLARE_ACCOUNT_ID: accountId,
+              CINATOKEN_WFP_OUTBOUND_AI_TOKEN: "runtime-outbound-token",
+              CINATOKEN_WFP_OUTBOUND_CONTEXT: {
+                version: 1,
+                route_kind: "preview-host",
+                public_worker: authorityWorker,
+                dispatch_worker: authorityWorker,
+              },
+            },
+            durableObjects: {
+              WFP_AUTHORITY_REPLAY: {
+                className: "WfpAuthorityReplay",
+                scriptName: "wfp-platform-runtime",
+              },
+            },
+            outboundService: "wfp-provider-mock",
           },
           {
             name: "realtime-provider-mock",

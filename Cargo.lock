@@ -323,9 +323,11 @@ dependencies = [
 name = "cinatoken-wfp-outbound"
 version = "0.1.0"
 dependencies = [
+ "cinatoken-wfp-authority",
  "console_error_panic_hook",
  "futures-util",
  "js-sys",
+ "serde",
  "serde_json",
  "url",
  "wasm-bindgen",
@@ -388,6 +390,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "worker",
+ "worker-sys",
 ]
 
 [[package]]

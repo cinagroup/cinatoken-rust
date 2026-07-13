@@ -630,8 +630,12 @@ function summarizeCapabilities(data) {
       data.wfp_tenant_route_manifest_compiled === true,
     wfp_tenant_internal_dispatch_required_compiled:
       data.wfp_tenant_internal_dispatch_required_compiled === true,
-    wfp_tenant_relay_authority_verifier_compiled:
-      data.wfp_tenant_relay_authority_verifier_compiled === true,
+    wfp_outbound_invocation_context_compiled:
+      data.wfp_outbound_invocation_context_compiled === true,
+    wfp_outbound_authority_verifier_compiled:
+      data.wfp_outbound_authority_verifier_compiled === true,
+    wfp_outbound_replay_guard_compiled:
+      data.wfp_outbound_replay_guard_compiled === true,
     wfp_authority_replay_do_available:
       data.wfp_authority_replay_do_available === true,
     wfp_authority_replay_do_compiled:
@@ -699,7 +703,9 @@ function expectedWfpCapabilityBooleans() {
     "wfp_tenant_rust_wasm_runtime_compiled",
     "wfp_tenant_route_manifest_compiled",
     "wfp_tenant_internal_dispatch_required_compiled",
-    "wfp_tenant_relay_authority_verifier_compiled",
+    "wfp_outbound_invocation_context_compiled",
+    "wfp_outbound_authority_verifier_compiled",
+    "wfp_outbound_replay_guard_compiled",
     "wfp_authority_replay_do_available",
     "wfp_authority_replay_do_compiled",
     "wfp_tenant_response_header_guard_compiled",
@@ -725,7 +731,8 @@ function expectedWfpCutoverGuards() {
     "central_relay_authority",
     "signed_body_bound_authority",
     "authority_replay_do",
-    "tenant_scoped_authority_key",
+    "central_master_only_authority",
+    "outbound_invocation_context",
     "outbound_worker_egress_policy",
     "outbound_worker_token_injection",
     "no_tenant_cloudflare_token",
@@ -941,19 +948,19 @@ function validateAuthorityStatus(body, requestedRoute) {
     );
   }
   if (body.runtime === "rust-wasm") {
-    if (body.paid_ai_authority_verifier !== "hmac-sha256-body-bound-v1") {
+    if (body.paid_ai_authority_verifier !== "platform-outbound-central-hmac-v2") {
       throw new Error(
-        "Rust tenant status did not report the shared HMAC authority verifier",
+        "Rust tenant status did not report the outbound central HMAC verifier",
       );
     }
-    if (body.paid_ai_replay_guard !== "platform-durable-object-once-v1") {
+    if (body.paid_ai_replay_guard !== "platform-outbound-durable-object-once-v2") {
       throw new Error(
-        "Rust tenant status did not report the platform replay guard",
+        "Rust tenant status did not report the outbound replay guard",
       );
     }
-    if (body.authority_replay_binding_configured !== true) {
+    if (body.tenant_authority_replay_binding_bound !== false) {
       throw new Error(
-        "Rust tenant status did not report its replay Durable Object binding",
+        "Rust tenant status reported forbidden replay access",
       );
     }
     if (typeof body.paid_ai_capable !== "boolean") {
@@ -963,7 +970,7 @@ function validateAuthorityStatus(body, requestedRoute) {
     }
     if (requestedRoute && body.paid_ai_capable !== true) {
       throw new Error(
-        "Rust tenant route smoke requires both authority bindings",
+        "Rust tenant route smoke requires outbound authority readiness",
       );
     }
   } else {
@@ -977,7 +984,7 @@ function validateAuthorityStatus(body, requestedRoute) {
     }
     if (
       body.paid_ai_replay_guard !== "disabled-status-only" ||
-      body.authority_replay_binding_configured !== false
+      body.tenant_authority_replay_binding_bound !== false
     ) {
       throw new Error(
         "JS fallback must report its disabled replay guard and no binding",
@@ -1186,6 +1193,9 @@ function summarizeTenantStatus(body) {
     statusControlAuthorityModes: body.status_control_authority_modes,
     paidAiAuthorityMode: body.paid_ai_authority_mode,
     paidAiAuthorityVerifier: body.paid_ai_authority_verifier,
+    paidAiReplayGuard: body.paid_ai_replay_guard,
+    tenantAuthorityReplayBindingBound:
+      body.tenant_authority_replay_binding_bound,
     paidAiCapable: body.paid_ai_capable,
     inboundSensitiveHeadersPresent: body.inbound_sensitive_headers_present,
     inboundSensitiveHeaders: body.inbound_sensitive_headers,
@@ -1314,7 +1324,8 @@ function runRouteContractSelfTest() {
     "relay_transport_gate",
     "signed_body_bound_authority",
     "authority_replay_do",
-    "tenant_scoped_authority_key",
+    "central_master_only_authority",
+    "outbound_invocation_context",
     "outbound_worker_egress_policy",
     "outbound_worker_token_injection",
     "no_tenant_cloudflare_token",
@@ -1328,9 +1339,11 @@ function runRouteContractSelfTest() {
   }
   if (
     cutoverGuards.includes("route_smoke") ||
-    !expectedWfpCapabilityBooleans().includes(
-      "wfp_tenant_relay_authority_verifier_compiled",
-    )
+    ![
+      "wfp_outbound_invocation_context_compiled",
+      "wfp_outbound_authority_verifier_compiled",
+      "wfp_outbound_replay_guard_compiled",
+    ].every((field) => expectedWfpCapabilityBooleans().includes(field))
   ) {
     throw new Error("WFP authority readiness contract is stale");
   }

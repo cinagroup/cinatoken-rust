@@ -452,7 +452,9 @@ export type PlatformCapabilities = {
   wfp_tenant_rust_wasm_runtime_compiled: boolean
   wfp_tenant_route_manifest_compiled: boolean
   wfp_tenant_internal_dispatch_required_compiled: boolean
-  wfp_tenant_relay_authority_verifier_compiled: boolean
+  wfp_outbound_invocation_context_compiled: boolean
+  wfp_outbound_authority_verifier_compiled: boolean
+  wfp_outbound_replay_guard_compiled: boolean
   wfp_tenant_response_header_guard_compiled: boolean
   wfp_preview_response_security_headers_compiled: boolean
   wfp_tenant_ai_gateway_policy_compiled: boolean

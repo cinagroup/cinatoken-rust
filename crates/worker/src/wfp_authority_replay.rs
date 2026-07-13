@@ -1,7 +1,11 @@
-//! One-time consumption for WFP paid-request authority envelopes.
+//! Final-boundary one-time consumption for WFP paid-request authority envelopes.
 //!
-//! The tenant verifies the exact request body first, then consumes the signed
-//! request ID in this platform-owned Durable Object before any paid egress.
+//! The outbound Worker selects the canonical shard after exact-request checks;
+//! this platform-owned DO authenticates the central v2 signature and atomically
+//! consumes the request ID before the outbound bearer can be injected.
+//!
+//! The tenant forwards the opaque envelope. The outbound Worker validates the
+//! exact request and invokes this Durable Object before any paid egress.
 
 use cinatoken_wfp_authority::{
     authority_replay_bucket, authority_replay_cleanup_at, verify_authority_claims,

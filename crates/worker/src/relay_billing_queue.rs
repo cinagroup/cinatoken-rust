@@ -360,6 +360,7 @@ impl RelayBillingFinalizationEvent {
 }
 
 pub(crate) async fn apply_relay_billing_finalization_event(
+    env: &Env,
     db: &D1Database,
     event: &RelayBillingFinalizationEvent,
 ) -> worker::Result<RelayBillingFinalizationApplyOutcome> {
@@ -433,6 +434,12 @@ pub(crate) async fn apply_relay_billing_finalization_event(
         &audit_log,
     )
     .await?;
+    crate::quota_coordinator::observe_committed_relay_billing_reservation(
+        env,
+        db,
+        &event.reservation_key,
+    )
+    .await;
     Ok(if replay {
         RelayBillingFinalizationApplyOutcome::Replay
     } else {

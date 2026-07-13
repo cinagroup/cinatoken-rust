@@ -622,15 +622,17 @@ The task pipeline (`/v1/video/generations`, `/suno/submit/:action`,
 
 | Capability probe | `/api/platform/capabilities` must show `task_poller_scheduled_handler_compiled=true`, `task_poller_timeout_sweep_compiled=true`, `task_poller_refund_batch_compiled=true`, `task_poller_refund_replay_contract_compiled=true`, `task_poller_timeout_sweep_enabled=true`, `task_runner_do_available=true`, `task_runner_do_foundation_compiled=true`, `task_runner_alarm_contract_compiled=true`, `task_runner_rearm_contract_compiled=true`, `task_runner_storage_error_retry_contract_compiled=true`, `task_runner_submit_path_compiled=true`, `task_runner_poll_path_compiled=true`, `task_runner_status_probe_compiled=true`, `task_runner_staging_replay_verified=false`, `task_runner_cutover_ready=false`, and the expected query/timeout values before async task canary. Run `bun run check:task-refund-batch`, `bun run check:task-runner:alarm-replay-contract`, `bun run check:task-runner:alarm-replay-plan`, and `bun run check:do-lifecycle-runtime` locally and attach their output before staging D1 replay. |
 
-### QuotaCoordinator shadow foundation
+### QuotaCoordinator shadow observer
 
 | Item | Requirement |
 | --- | --- |
 | `QUOTA_COORD` | SQLite-backed, per-token Durable Object binding for tiered-expression shadow state only. It is not financial authority, and no public route may expose its internal observe/status endpoints. |
-| `QUOTA_COORD_SHADOW_ENABLED` | Plain var, default `false`. Enable only after relay, Queue finalizer, and orphan-recovery observation producers are all compiled and audited. The foundation alone must keep runtime readiness false. |
+| `QUOTA_COORD_SHADOW_ENABLED` | Plain var, default `false`. Open last, only after producer audit, retention approval, and bounded token scope. Closing it is the first rollback action. |
+| `QUOTA_COORD_SHADOW_TOKEN_IDS` | Plain comma-separated canonical positive token IDs, default empty and capped at 64. Populate only with isolated staging tokens after retention approval; duplicates, malformed values, zero, and leading zeroes invalidate the entire scope. |
+| `QUOTA_COORD_RETENTION_VERIFIED` | Plain var, default `false`, enforced by the producer as a runtime hard gate. Set true only from reviewed long-lived-token size/load/compaction evidence; local tests and binding presence are insufficient. |
 | `QUOTA_COORD_STAGING_VERIFIED` | Plain var, default `false`. It is an evidence marker for a bounded zero-diff staging bake and must never be set from local tests, binding presence, or a direct DO smoke. |
-| Capability probe | Require the foundation, binding, observer contract, tiered-only scope, no-write-authority, relay-observation, staging-bake, runtime-readiness, and cutover fields separately. Until the producer is wired, `quota_coordinator_relay_observation_compiled`, `quota_coordinator_shadow_runtime_ready`, and `quota_coordinator_cutover_ready` must remain false. |
-| Local config evidence | `bun run check:cf:quota-coordinator` proves all three environments declare the same v6 SQLite class migration and keep shadow/proof flags false. It is not staging or financial parity evidence. |
+| Capability probe | Require foundation, binding, reserve/finalization/recovery producer coverage, tiered-only scope, token allowlist validity/count, retention, no-write-authority, staging bake, runtime readiness, and cutover separately. Producer coverage may be true while runtime and cutover remain false. |
+| Local config evidence | `bun run check:cf:quota-coordinator` proves all four producer families are present, all three environments declare the same v6 SQLite class, retention/shadow/proof flags are false, and token scope is empty. It is not staging or financial parity evidence. |
 | Storage/load gate | The foundation serializes one bounded state value. Before enabling shadow, measure default and worst-case bytes, CPU, and latency under long-lived hot-token load; retain operational headroom below Cloudflare's [SQLite-backed DO 2 MiB combined key/value limit](https://developers.cloudflare.com/durable-objects/platform/limits/), and define compaction plus saturation alerts. Capacity conflict is a blocker, not successful shadow evidence. |
 
 ## Observability Checklist

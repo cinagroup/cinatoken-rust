@@ -344,7 +344,7 @@ Corrected production rules:
 | Platform/IaC | Partial: local D1 config audit passes; staging IDs remain unauthenticated/unverified | Reproducible staging/prod Cloudflare config with real bindings and generated types | Revoke/rotate leaked token, authenticate replacement credential, verify account/resources, then `wrangler deploy --env staging` plus typed bindings |
 | Data migration | Partial: local 20/20 Wrangler apply and 26-table SQLite replay pass | Reversible source export, D1 import, row/hash verification, and rollback bundle | Authenticated remote 20/20 staging apply, real source inventory, staging import report, and rollback point |
 | Relay/API parity | Partial | P0/P1 routes implemented with correct body mode, streaming behavior, errors, and live smoke | Route matrix and provider smoke log |
-| Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator is a default-off observer foundation with no producer or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, complete tiered observation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, complete producer-coverage audit, bounded hot-token storage/load report, and signed 30-day shadow delta report |
+| Billing/quota | Partial: D1 owner-generation/Queue recovery is local; QuotaCoordinator has default-off tiered reserve/direct-finalization/Queue/recovery producers but no retention proof, shadow reconciliation, or authority | Go-compatible pricing, pre-consume, settlement, refunds, subscriptions, measured tiered shadow operation, and a proven shadow mode while D1 remains authoritative | Golden fixtures, bounded hot-token storage/load report, off-path reconciliation/alerts, disable-first rollback, and signed 30-day shadow delta report |
 | Cache/rate limit | Partial | Hot auth/channel cache, invalidation policy, rate limits, outage fallback | Redis failure-mode smoke |
 | Observability/SRE | Partial | Logs, traces, metrics, alerts, runbooks, and incident ownership | Dashboard and alert checklist |
 | Security/compliance | Partial | Secret isolation, CORS/WAF/rate limits, SSRF controls, admin audit, OAuth/webhook checks | Security checklist and smoke evidence |
@@ -1139,10 +1139,10 @@ used to move financial writes during the shadow phase.
 1. Deploy the `QUOTA_COORD` class and both false gates with Go/VPS and D1 still
    authoritative. Verify binding/migration readback and summary redaction; do
    not infer readiness from class availability.
-2. Implement and audit best-effort observation producers for D1 reserve,
-   synchronous settle/refund, billing Queue finalization/replay, and orphan
-   recovery. A DO failure must be observable but must not change the committed
-   D1 financial outcome.
+2. Audit the compiled best-effort producers for D1 reserve, synchronous
+   settle/refund, billing Queue finalization/replay, and orphan recovery against
+   the exact deployed candidate. Local source and Workerd coverage exist; a DO
+   failure must remain observable without changing the committed D1 outcome.
 3. Prove the per-token storage model under long-lived hot-token load, including
    record-size headroom, capacity/compaction behavior, eviction, duplicate and
    conflict storms, corruption propagation, cost, and alert thresholds.
@@ -1158,3 +1158,10 @@ used to move financial writes during the shadow phase.
 Rollback is `QUOTA_COORD_SHADOW_ENABLED=false` first, followed by observer
 emission off and reconciliation drain. Preserve DO evidence for audit; do not
 compensate quota from observer state. D1 and Go/VPS ownership are unchanged.
+
+Current local status: producer coverage is complete and config-audited. Every
+tracked environment keeps `QUOTA_COORD_RETENTION_VERIFIED=false`,
+`QUOTA_COORD_SHADOW_ENABLED=false`, and `QUOTA_COORD_SHADOW_TOKEN_IDS` empty.
+Shadow enablement is blocked until step 3 produces reviewed retention evidence;
+then staging may set a bounded allowlist before opening the shadow gate. This is
+not staging evidence and does not change the production **NO-GO** decision.

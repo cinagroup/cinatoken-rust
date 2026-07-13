@@ -437,9 +437,39 @@ function buildCapabilityGroups(
             : 'neutral',
         },
         {
+          label: t('Token scope'),
+          description: t(
+            'Shadow observation requires a valid, explicit staging token allowlist; an empty scope cannot become runtime-ready.'
+          ),
+          ready: quotaCoordinator.shadowScope,
+          readyLabel: t('{{count}} tokens', {
+            count: capabilities.quota_coordinator_shadow_token_count,
+          }),
+          missingLabel: !capabilities.quota_coordinator_shadow_token_allowlist_valid
+            ? t('Invalid')
+            : t('Empty'),
+          missingVariant:
+            capabilities.quota_coordinator_shadow_enabled &&
+            !quotaCoordinator.shadowScope
+              ? 'red'
+              : 'neutral',
+        },
+        {
+          label: t('Storage retention'),
+          description: t(
+            'Long-lived hot-token retention must stay below Durable Object storage limits under measured load and eviction.'
+          ),
+          ready: quotaCoordinator.storageRetention,
+          readyLabel: t('Verified'),
+          missingLabel: t('Capacity proof blocked'),
+          missingVariant: capabilities.quota_coordinator_shadow_enabled
+            ? 'red'
+            : 'neutral',
+        },
+        {
           label: t('Relay observer'),
           description: t(
-            'Requires both the observer contract and the relay observation path; neither grants quota write authority.'
+            'Requires reserve, synchronous finalization, Queue replay, and orphan-recovery producers; none grants quota write authority.'
           ),
           ready: quotaCoordinator.relayObserver,
           readyLabel: t('Compiled'),

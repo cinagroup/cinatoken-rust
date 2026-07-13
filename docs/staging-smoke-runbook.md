@@ -1676,8 +1676,9 @@ Preconditions:
 
 1. Authenticated configuration readback proves one SQLite-backed
    `QuotaCoordinator` class in staging and no namespace reuse with production.
-   Capabilities must report foundation/binding true and relay observation,
-   shadow runtime, write authority, staging proof, and cutover false.
+   Capabilities must report foundation/binding and all producer families true,
+   but retention, shadow runtime, write authority, staging proof, and cutover
+   false while the token allowlist remains empty.
 2. A producer-coverage audit maps tiered reserve, synchronous settle/refund,
    billing Queue finalize/replay, and orphan recovery to exactly one observer
    emission after the corresponding D1 outcome. Flat billing emits none.
@@ -1688,18 +1689,22 @@ Preconditions:
 
 Execution:
 
-1. With the gate false, run representative tiered requests and prove zero DO
-   mutation and unchanged D1 accounting.
-2. Enable shadow for isolated tokens only. Exercise reserve, exact replay,
+1. With retention and shadow gates false and the token allowlist empty, run
+   representative tiered requests and prove zero DO mutation and unchanged D1
+   accounting.
+2. After precondition 3 is signed, set `QUOTA_COORD_RETENTION_VERIFIED=true`,
+   configure `QUOTA_COORD_SHADOW_TOKEN_IDS` with isolated staging tokens, and
+   open `QUOTA_COORD_SHADOW_ENABLED` last. Exercise reserve, exact replay,
    payload conflict, settle-above/below reserve, refund, Queue duplicate,
    orphan recovery, Worker replacement, DO eviction, and malformed/corrupt
    state. D1 must remain the sole mutation source in every case.
 3. Reconcile user/token quota, channel used quota, request count, reservation
    generation, terminal disposition, and audit identity off the request path.
    Archive only hashes and aggregate deltas.
-4. Disable shadow before rollback traffic changes. Prove requests and all D1
-   finalizers continue normally, drain observer/reconciliation work, and retain
-   DO state only as non-authoritative evidence.
+4. Disable shadow before rollback traffic changes, then clear retention and
+   token-scope assertions. Prove requests and all D1 finalizers continue
+   normally, drain observer/reconciliation work, and retain DO state only as
+   non-authoritative evidence.
 5. Repeat for at least 30 days. Set `QUOTA_COORD_STAGING_VERIFIED=true` only
    after zero unexplained deltas, no state-size/capacity breach, alert/rollback
    drills, and data/billing/SRE owner signatures.

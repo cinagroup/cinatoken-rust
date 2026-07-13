@@ -239,16 +239,15 @@ aggregate status, restores across local eviction, and is declared as a new
 SQLite-backed class in default, staging, and production configuration.
 
 The capability API and Bun/React operations panel distinguish foundation,
-binding, shadow gate, relay producer, staging bake, write authority, and cutover.
-Both configuration gates are false. Relay observation is explicitly reported
-uncompiled, write authority is false, and no flag combination can make shadow
-runtime or cutover ready. D1 therefore remains the sole financial writer.
+binding, shadow gate, reserve/finalization/recovery producers, token scope,
+retention, staging bake, write authority, and cutover. Producer coverage is now
+compiled, but retention and shadow gates are false and token scope is empty in
+every tracked environment. Write authority is false and no flag combination can
+make cutover ready. D1 therefore remains the sole financial writer.
 
-This closes only the local foundation slice. Before shadow can be enabled, the
-implementation must observe every tiered reservation and every terminal path,
-including synchronous settle/refund, billing Queue finalization, and orphan
-recovery; prove that observation failures cannot alter financial success; move
-diff work off the hot path; and define a measured retention/compaction policy
+This closes the local foundation and producer-coverage slices. Before shadow can
+be enabled, staging must prove that observer failures cannot alter financial
+success, move diff work off the hot path, and define a measured retention/compaction policy
 that cannot saturate a long-lived token. Staging then needs eviction, duplicate,
 race, corruption, storage-size, throughput, alert, rollback, and zero-diff
 evidence for at least 30 days. Read or write authority remains out of scope.

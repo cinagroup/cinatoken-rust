@@ -724,14 +724,21 @@ describe("Rust Durable Object lifecycle contracts", () => {
         relay_billing_orphan_recovery_cutover_ready: false,
         quota_coordinator_contract_version: 1,
         quota_coordinator_do_available: true,
-        quota_coordinator_shadow_enabled: false,
+        quota_coordinator_shadow_enabled: true,
         quota_coordinator_foundation_compiled: true,
         quota_coordinator_observer_contract_compiled: true,
-        quota_coordinator_relay_observation_compiled: false,
+        quota_coordinator_reserve_observation_compiled: true,
+        quota_coordinator_finalization_observation_compiled: true,
+        quota_coordinator_recovery_observation_compiled: true,
+        quota_coordinator_relay_observation_compiled: true,
+        quota_coordinator_storage_retention_ready: true,
+        quota_coordinator_shadow_token_allowlist_configured: true,
+        quota_coordinator_shadow_token_allowlist_valid: true,
+        quota_coordinator_shadow_token_count: 1,
         quota_coordinator_tiered_only: true,
         quota_coordinator_write_authority_enabled: false,
         quota_coordinator_staging_verified: false,
-        quota_coordinator_shadow_runtime_ready: false,
+        quota_coordinator_shadow_runtime_ready: true,
         quota_coordinator_cutover_ready: false,
       },
     });
@@ -741,6 +748,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "tiered_only",
       "observer_contract",
       "relay_observation",
+      "bounded_retention",
       "staging_shadow_bake",
       "write_authority",
     ]);
@@ -1038,6 +1046,20 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(settled.log.adminHeartbeat.last_renewed_at).toBeGreaterThan(0);
     expect(settled.log.adminHeartbeat.attempt_count).toBeGreaterThanOrEqual(1);
     expect(settled.log.adminHeartbeat.renewed_count).toBeGreaterThanOrEqual(1);
+    const observedSettlement = await waitForQuotaCoordinatorSummary(1, 3);
+    expect(observedSettlement).toMatchObject({
+      observation_count: 3,
+      applied_count: 2,
+      replay_count: 1,
+      conflict_count: 0,
+      reserve_count: 1,
+      settle_count: 1,
+      refund_count: 0,
+      active_reservations: 0,
+      terminal_reservations: 1,
+      request_count: 1,
+      final_quota: settled.reservation.final_quota,
+    });
     await expect(providerState()).resolves.toMatchObject({
       count: 1,
       path: "/v1/chat/completions",
@@ -1062,6 +1084,16 @@ describe("Rust Durable Object lifecycle contracts", () => {
       userQuota: account.userQuota - settled.reservation.final_quota,
       tokenRemainQuota:
         account.tokenRemainQuota - settled.reservation.final_quota,
+    });
+    const observedReplay = await waitForQuotaCoordinatorSummary(1, 5);
+    expect(observedReplay).toMatchObject({
+      observation_count: 5,
+      applied_count: 2,
+      replay_count: 3,
+      conflict_count: 0,
+      terminal_reservations: 1,
+      request_count: 1,
+      final_quota: settled.reservation.final_quota,
     });
 
     const wrongQueue = await deliverQueueMessages("cinatoken-rust-log-events", [
@@ -2021,6 +2053,23 @@ async function waitForRelaySettlement(reservationKey) {
   }
   throw new Error(
     `relay reservation was not settled: ${JSON.stringify(state)}`,
+  );
+}
+
+async function waitForQuotaCoordinatorSummary(tokenId, observationCount) {
+  const deadline = Date.now() + 5_000;
+  let summary;
+  while (Date.now() < deadline) {
+    const result = await quotaCoordinatorStatus(
+      quotaCoordinatorStub(tokenId),
+      tokenId,
+    );
+    summary = result.status;
+    if (summary.observation_count >= observationCount) return summary;
+    await delay(10);
+  }
+  throw new Error(
+    `QuotaCoordinator did not reach ${observationCount} observations: ${JSON.stringify(summary)}`,
   );
 }
 

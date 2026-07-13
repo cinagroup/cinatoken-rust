@@ -214,7 +214,7 @@ pub async fn handler(mut req: Request, env: Env) -> WorkerResult<Response> {
     let saved_options = load_saved_options(&db).await?;
     ensure_fixture_slots_owned(&db).await?;
     cleanup_fixture_rows(&db).await?;
-    let result = run_smoke(&db, scenario, cleanup_requested, &saved_options).await;
+    let result = run_smoke(&env, &db, scenario, cleanup_requested, &saved_options).await;
     match result {
         Ok(mut report) => {
             if cleanup_requested {
@@ -282,6 +282,7 @@ fn smoke_scenario(value: &str) -> Option<ActualGroupBillingSmokeScenario> {
 }
 
 async fn run_smoke(
+    env: &Env,
     db: &D1Database,
     scenario: ActualGroupBillingSmokeScenario,
     cleanup_requested: bool,
@@ -311,6 +312,7 @@ async fn run_smoke(
     let (primary_plan, fallback_plan, expected_final_quota) = match scenario {
         ActualGroupBillingSmokeScenario::ActualGroupRefund => {
             let primary = execute_actual_group_billing_smoke_plan(
+                env,
                 db,
                 &auth,
                 CHANNEL_ID,
@@ -325,6 +327,7 @@ async fn run_smoke(
         }
         ActualGroupBillingSmokeScenario::FallbackPlanReplacement => {
             let primary = execute_actual_group_billing_smoke_plan(
+                env,
                 db,
                 &auth,
                 CHANNEL_ID,
@@ -336,6 +339,7 @@ async fn run_smoke(
             )
             .await?;
             let fallback = execute_actual_group_billing_smoke_plan(
+                env,
                 db,
                 &auth,
                 CHANNEL_ID,
@@ -350,6 +354,7 @@ async fn run_smoke(
         }
         ActualGroupBillingSmokeScenario::RetryExhaustionRefund => {
             let primary = execute_actual_group_billing_smoke_plan(
+                env,
                 db,
                 &auth,
                 CHANNEL_ID,

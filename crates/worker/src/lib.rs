@@ -1439,9 +1439,17 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
                         .await
                         {
                             Ok(summary) => {
+                                for reservation_key in &summary.observation_reservation_keys {
+                                    quota_coordinator::observe_committed_relay_billing_reservation(
+                                        &env,
+                                        &db,
+                                        reservation_key,
+                                    )
+                                    .await;
+                                }
                                 if let Err(err) =
                                     d1_repositories::mark_relay_billing_recovery_completed(
-                                        &db, now, summary,
+                                        &db, now, &summary,
                                     )
                                     .await
                                 {
@@ -1659,7 +1667,8 @@ pub async fn queue(
                 relay_billing_queue::WorkerQueueKind::RelayBillingFinalization,
                 relay_billing_queue::WorkerQueueEvent::RelayBillingFinalization(event),
             ) => {
-                match relay_billing_queue::apply_relay_billing_finalization_event(&db, &event).await
+                match relay_billing_queue::apply_relay_billing_finalization_event(&env, &db, &event)
+                    .await
                 {
                     Ok(outcome) => {
                         let resolution = match outcome {

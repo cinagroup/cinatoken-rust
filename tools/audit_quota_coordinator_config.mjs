@@ -18,11 +18,39 @@ const platformGatewayPath = path.join(
   "src",
   "platform_gateway.rs",
 );
+const relayPath = path.join(repoRoot, "crates", "worker", "src", "relay.rs");
+const queuePath = path.join(
+  repoRoot,
+  "crates",
+  "worker",
+  "src",
+  "relay_billing_queue.rs",
+);
+const repositoryPath = path.join(
+  repoRoot,
+  "crates",
+  "worker",
+  "src",
+  "d1_repositories.rs",
+);
+const workerPath = path.join(repoRoot, "crates", "worker", "src", "lib.rs");
 
-const [wranglerSource, coordinatorSource, platformGatewaySource] = await Promise.all([
+const [
+  wranglerSource,
+  coordinatorSource,
+  platformGatewaySource,
+  relaySource,
+  queueSource,
+  repositorySource,
+  workerSource,
+] = await Promise.all([
   readFile(wranglerPath, "utf8"),
   readFile(coordinatorPath, "utf8"),
   readFile(platformGatewayPath, "utf8"),
+  readFile(relayPath, "utf8"),
+  readFile(queuePath, "utf8"),
+  readFile(repositoryPath, "utf8"),
+  readFile(workerPath, "utf8"),
 ]);
 const config = parseTomlSections(wranglerSource);
 const environments = [
@@ -51,6 +79,14 @@ for (const environment of environments) {
   assert(
     vars.QUOTA_COORD_SHADOW_ENABLED === "false",
     `${environment.vars} must keep QuotaCoordinator shadow observation default-off`,
+  );
+  assert(
+    vars.QUOTA_COORD_SHADOW_TOKEN_IDS === "",
+    `${environment.vars} must keep the QuotaCoordinator token allowlist empty by default`,
+  );
+  assert(
+    vars.QUOTA_COORD_RETENTION_VERIFIED === "false",
+    `${environment.vars} must keep QuotaCoordinator retention unverified by default`,
   );
   assert(
     vars.QUOTA_COORD_STAGING_VERIFIED === "false",
@@ -85,6 +121,8 @@ for (const environment of environments) {
 for (const expected of [
   'pub const QUOTA_COORD_BINDING: &str = "QUOTA_COORD";',
   'pub const QUOTA_COORD_SHADOW_ENABLED_ENV: &str = "QUOTA_COORD_SHADOW_ENABLED";',
+  'pub const QUOTA_COORD_SHADOW_TOKEN_IDS_ENV: &str = "QUOTA_COORD_SHADOW_TOKEN_IDS";',
+  'pub const QUOTA_COORD_RETENTION_VERIFIED_ENV: &str = "QUOTA_COORD_RETENTION_VERIFIED";',
   'pub const QUOTA_COORD_STAGING_VERIFIED_ENV: &str = "QUOTA_COORD_STAGING_VERIFIED";',
 ]) {
   assert(coordinatorSource.includes(expected), `QuotaCoordinator source is missing: ${expected}`);
@@ -101,6 +139,30 @@ for (const expected of [
   );
 }
 
+const producerCoverage = {
+  reserve: relaySource.includes("async fn reserve_tiered_billing_group_plan(")
+    && relaySource.includes("plan.reserve_applied = true;")
+    && relaySource.includes("observe_committed_relay_billing_reservation("),
+  directFinalization: relaySource.includes(
+    "async fn require_observed_relay_billing_finalization(",
+  ),
+  queueFinalization: queueSource.includes("observe_committed_relay_billing_reservation("),
+  orphanRecovery: repositorySource.includes("observation_reservation_keys")
+    && workerSource.includes("for reservation_key in &summary.observation_reservation_keys")
+    && workerSource.includes("observe_committed_relay_billing_reservation("),
+};
+for (const [producer, covered] of Object.entries(producerCoverage)) {
+  assert(covered, `QuotaCoordinator ${producer} producer coverage is missing`);
+}
+assert(
+  coordinatorSource.includes("if !quota_coordinator_observation_runtime_enabled(env)"),
+  "QuotaCoordinator producer must enforce the combined shadow and retention runtime gate",
+);
+assert(
+  coordinatorSource.includes("context.wait_until(async move"),
+  "QuotaCoordinator fetch-path observation must be deferred with waitUntil",
+);
+
 const report = {
   ok: true,
   config: "wrangler.toml",
@@ -108,7 +170,11 @@ const report = {
   className: "QuotaCoordinator",
   migrationTag: "v6-quota-coordinator",
   shadowDefaultOff: true,
+  shadowTokenAllowlistDefaultEmpty: true,
+  retentionVerifiedDefaultOff: true,
+  fetchObservationDeferred: true,
   stagingProofDefaultOff: true,
+  producerCoverage: Object.keys(producerCoverage),
   environments: environments.map(({ name }) => name),
 };
 

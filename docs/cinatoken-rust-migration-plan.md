@@ -11713,3 +11713,58 @@ diff bake. Read-from-DO and write-from-DO remain blocked.
 
 No remote resource, credential, provider request, migration, or deployment was
 used. Production remains **NO-GO**.
+
+### 22.191 2026-07-14 QuotaCoordinator Shadow Producer Coverage
+
+This increment completes the local M4 observation-producer slice while keeping
+D1 as the only financial authority. The producer never recomputes a billing
+expression: after a successful D1 mutation it reads the frozen reservation row
+and projects only the committed tiered-expression facts.
+
+Implemented locally:
+
+- Reserve, synchronous settle/refund, billing Queue finalize/replay, and
+  scheduled orphan-recovery paths all invoke the same post-commit projector.
+  Queue and recovery retries therefore use the same immutable reservation key
+  and owner generation as the D1 financial outcome.
+- Terminal projection deterministically emits reserve first, then settle or
+  refund. This reconstructs an evicted or delayed observer without making event
+  order a financial dependency. Reservation fingerprints and operation IDs are
+  SHA-256 domain-separated and stable across retries; raw token, request, and
+  reservation identifiers are not exposed by status.
+- Delivery is deliberately best-effort after commit. Missing rows, invalid
+  scope, projection errors, binding failures, DO conflicts, and transport errors
+  are structured observer failures and cannot roll back or alter D1 quota,
+  request count, channel usage, audit, settlement, or refund results. Fetch-path
+  reserve/refund observation uses `Context::wait_until`, so the provider request
+  or error response does not wait for D1 readback plus DO delivery; Queue, cron,
+  and offline smoke callers await within their own asynchronous lifecycle.
+- `QUOTA_COORD_SHADOW_TOKEN_IDS` is a strict canonical positive-integer
+  allowlist, capped at 64 entries. It is empty in every tracked environment, so
+  accidental broad observation is impossible.
+- `QUOTA_COORD_RETENTION_VERIFIED` is a second runtime hard gate. The producer
+  requires both retention verification and `QUOTA_COORD_SHADOW_ENABLED`; all
+  tracked environments keep both false. This prevents an operator from enabling
+  the observer before long-lived hot-token capacity and compaction evidence
+  exists, even if the binding and producer are compiled.
+- Platform capabilities and the Bun/React operations panel now expose reserve,
+  finalization, Queue/recovery, aggregate producer coverage, token scope, and
+  retention readiness separately. Static config audit verifies all four
+  producer families and every default-off gate.
+
+Local evidence is green: 657 Worker Rust tests, wasm32 compilation, 30 frontend
+readiness tests, the QuotaCoordinator config/producer audit, and the complete
+23-case Workerd lifecycle suite. Workerd proves a tiered SSE reservation reaches
+reserve then settlement, duplicate Queue delivery replays without a second D1
+financial mutation, and observer state remains summary-only and deterministic.
+
+The next M4 slice is not read or write cutover. It must design and measure
+retention/compaction for long-lived hot tokens, add an off-hot-path redacted
+reconciliation pipeline and alerting, archive authenticated staging namespace
+readback, and run the signed 30-day zero-unexplained-delta bake. Enablement order
+is retention evidence, bounded token allowlist, then shadow gate. Rollback order
+starts by disabling the shadow gate, then clearing scope/retention assertions;
+D1 remains authoritative throughout.
+
+No remote resource, credential, provider request, migration, or deployment was
+used. Production remains **NO-GO**.

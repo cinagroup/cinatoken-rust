@@ -28,9 +28,12 @@ use crate::admin::{
     envelope_error_response, envelope_ok_response, read_json_body, require_admin_auth,
 };
 use crate::quota_coordinator::{
-    quota_coordinator_contract_version, quota_coordinator_foundation_compiled,
-    quota_coordinator_observer_contract_compiled, QUOTA_COORD_BINDING,
-    QUOTA_COORD_SHADOW_ENABLED_ENV, QUOTA_COORD_STAGING_VERIFIED_ENV,
+    quota_coordinator_contract_version, quota_coordinator_finalization_observation_compiled,
+    quota_coordinator_foundation_compiled, quota_coordinator_observer_contract_compiled,
+    quota_coordinator_recovery_observation_compiled, quota_coordinator_relay_observation_compiled,
+    quota_coordinator_reserve_observation_compiled, quota_coordinator_shadow_scope_status,
+    QUOTA_COORD_BINDING, QUOTA_COORD_RETENTION_VERIFIED_ENV, QUOTA_COORD_SHADOW_ENABLED_ENV,
+    QUOTA_COORD_STAGING_VERIFIED_ENV,
 };
 use crate::realtime_session::{
     realtime_billing_global_orphan_recovery_compiled, realtime_billing_orphan_recovery_enabled,
@@ -306,7 +309,14 @@ struct PlatformCapabilities {
     quota_coordinator_shadow_enabled: bool,
     quota_coordinator_foundation_compiled: bool,
     quota_coordinator_observer_contract_compiled: bool,
+    quota_coordinator_reserve_observation_compiled: bool,
+    quota_coordinator_finalization_observation_compiled: bool,
+    quota_coordinator_recovery_observation_compiled: bool,
     quota_coordinator_relay_observation_compiled: bool,
+    quota_coordinator_storage_retention_ready: bool,
+    quota_coordinator_shadow_token_allowlist_configured: bool,
+    quota_coordinator_shadow_token_allowlist_valid: bool,
+    quota_coordinator_shadow_token_count: usize,
     quota_coordinator_tiered_only: bool,
     quota_coordinator_write_authority_enabled: bool,
     quota_coordinator_staging_verified: bool,
@@ -620,9 +630,19 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let quota_coordinator_foundation_compiled = quota_coordinator_foundation_compiled();
     let quota_coordinator_observer_contract_compiled =
         quota_coordinator_observer_contract_compiled();
-    // M4 is observation-only until relay emission and the staging shadow bake
-    // are proven. No configuration flag can turn this into write authority.
-    let quota_coordinator_relay_observation_compiled = false;
+    let quota_coordinator_reserve_observation_compiled =
+        quota_coordinator_reserve_observation_compiled();
+    let quota_coordinator_finalization_observation_compiled =
+        quota_coordinator_finalization_observation_compiled();
+    let quota_coordinator_recovery_observation_compiled =
+        quota_coordinator_recovery_observation_compiled();
+    let quota_coordinator_relay_observation_compiled =
+        quota_coordinator_relay_observation_compiled();
+    // This operator assertion remains false in every tracked environment until
+    // long-lived hot-token retention has measured, reviewable evidence.
+    let quota_coordinator_storage_retention_ready =
+        env_flag(&env, QUOTA_COORD_RETENTION_VERIFIED_ENV);
+    let quota_coordinator_shadow_scope = quota_coordinator_shadow_scope_status(&env);
     let quota_coordinator_tiered_only = true;
     let quota_coordinator_write_authority_enabled = false;
     let quota_coordinator_staging_verified = env_flag(&env, QUOTA_COORD_STAGING_VERIFIED_ENV);
@@ -632,6 +652,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_foundation_compiled,
         quota_coordinator_observer_contract_compiled,
         quota_coordinator_relay_observation_compiled,
+        quota_coordinator_storage_retention_ready,
+        quota_coordinator_shadow_scope.configured,
+        quota_coordinator_shadow_scope.valid,
         quota_coordinator_tiered_only,
         quota_coordinator_write_authority_enabled,
     );
@@ -640,6 +663,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_foundation_compiled,
         quota_coordinator_observer_contract_compiled,
         quota_coordinator_relay_observation_compiled,
+        quota_coordinator_storage_retention_ready,
         quota_coordinator_tiered_only,
         quota_coordinator_staging_verified,
         quota_coordinator_write_authority_enabled,
@@ -1020,7 +1044,15 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         quota_coordinator_shadow_enabled,
         quota_coordinator_foundation_compiled,
         quota_coordinator_observer_contract_compiled,
+        quota_coordinator_reserve_observation_compiled,
+        quota_coordinator_finalization_observation_compiled,
+        quota_coordinator_recovery_observation_compiled,
         quota_coordinator_relay_observation_compiled,
+        quota_coordinator_storage_retention_ready,
+        quota_coordinator_shadow_token_allowlist_configured: quota_coordinator_shadow_scope
+            .configured,
+        quota_coordinator_shadow_token_allowlist_valid: quota_coordinator_shadow_scope.valid,
+        quota_coordinator_shadow_token_count: quota_coordinator_shadow_scope.token_count,
         quota_coordinator_tiered_only,
         quota_coordinator_write_authority_enabled,
         quota_coordinator_staging_verified,
@@ -2870,6 +2902,7 @@ fn quota_coordinator_cutover_guards() -> Vec<&'static str> {
         "tiered_only",
         "observer_contract",
         "relay_observation",
+        "bounded_retention",
         "staging_shadow_bake",
         "write_authority",
     ]
@@ -2881,6 +2914,9 @@ fn quota_coordinator_shadow_runtime_ready(
     foundation_compiled: bool,
     observer_contract_compiled: bool,
     relay_observation_compiled: bool,
+    storage_retention_ready: bool,
+    token_allowlist_configured: bool,
+    token_allowlist_valid: bool,
     tiered_only: bool,
     write_authority_enabled: bool,
 ) -> bool {
@@ -2889,6 +2925,9 @@ fn quota_coordinator_shadow_runtime_ready(
         && foundation_compiled
         && observer_contract_compiled
         && relay_observation_compiled
+        && storage_retention_ready
+        && token_allowlist_configured
+        && token_allowlist_valid
         && tiered_only
         && !write_authority_enabled
 }
@@ -2898,6 +2937,7 @@ fn quota_coordinator_cutover_ready(
     foundation_compiled: bool,
     observer_contract_compiled: bool,
     relay_observation_compiled: bool,
+    storage_retention_ready: bool,
     tiered_only: bool,
     staging_verified: bool,
     write_authority_enabled: bool,
@@ -2906,6 +2946,7 @@ fn quota_coordinator_cutover_ready(
         && foundation_compiled
         && observer_contract_compiled
         && relay_observation_compiled
+        && storage_retention_ready
         && tiered_only
         && staging_verified
         && write_authority_enabled
@@ -3660,19 +3701,32 @@ mod tests {
             "tiered_only",
             "observer_contract",
             "relay_observation",
+            "bounded_retention",
             "staging_shadow_bake",
             "write_authority",
         ] {
             assert!(guards.contains(&guard));
         }
         assert!(!quota_coordinator_shadow_runtime_ready(
-            true, true, true, true, false, true, false,
+            true, true, true, true, false, true, true, true, true, false,
+        ));
+        assert!(!quota_coordinator_shadow_runtime_ready(
+            true, true, true, true, true, true, false, true, true, false,
+        ));
+        assert!(!quota_coordinator_shadow_runtime_ready(
+            true, true, true, true, true, false, true, true, true, false,
+        ));
+        assert!(quota_coordinator_shadow_runtime_ready(
+            true, true, true, true, true, true, true, true, true, false,
         ));
         assert!(!quota_coordinator_cutover_ready(
-            true, true, true, false, true, true, true,
+            true, true, true, false, true, true, true, true,
+        ));
+        assert!(!quota_coordinator_cutover_ready(
+            true, true, true, true, false, true, true, true,
         ));
         assert!(quota_coordinator_cutover_ready(
-            true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true,
         ));
     }
 

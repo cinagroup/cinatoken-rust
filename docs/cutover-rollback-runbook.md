@@ -332,8 +332,9 @@ The current QuotaCoordinator is observation-only. It must never be used as a
 quota correction source during rollback.
 
 1. Set `QUOTA_COORD_SHADOW_ENABLED=false` before changing relay traffic.
-2. Stop every reserve/finalize/Queue/recovery observation producer and drain the
-   asynchronous comparison pipeline.
+2. Set `QUOTA_COORD_RETENTION_VERIFIED=false`, clear
+   `QUOTA_COORD_SHADOW_TOKEN_IDS`, stop every reserve/finalize/Queue/recovery
+   observation producer, and drain the asynchronous comparison pipeline.
 3. Confirm D1 reservation, quota, channel usage, request count, audit, Queue,
    and recovery processing continue without consulting the DO.
 4. Preserve redacted DO summaries and mismatch evidence. Do not delete a

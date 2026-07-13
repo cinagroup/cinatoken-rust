@@ -4110,7 +4110,8 @@ bun run check:web:readiness
 # PASS; 30 passed
 
 bun run check:cf:quota-coordinator
-# PASS; default/staging/production have one v6 SQLite class and both gates false
+# PASS; default/staging/production have one v6 SQLite class, retention/shadow/
+# staging flags false, and an empty token allowlist
 
 bun run check
 # PASS; release Worker/WFP builds, Workerd 23/23, Playground 1/1,
@@ -4140,18 +4141,62 @@ Observed contracts:
   after Durable Object eviction. The first eviction run timed out because the
   test client retained an unread `/observe` response body; consuming that body
   made eviction deterministic and the complete 23-test lifecycle suite passed.
-- Capabilities and the React/Bun panel separate foundation, binding, shadow
-  runtime, relay observer, staging bake, write authority, and cutover. Relay
-  observation and write authority are hard-coded false in this increment, so
-  false staging metadata cannot manufacture runtime or cutover readiness.
+- Capabilities and the React/Bun panel separate foundation, binding, reserve,
+  finalization, recovery, aggregate producer coverage, token scope, retention,
+  shadow runtime, staging bake, write authority, and cutover. Producer coverage
+  is true while retention and write authority remain false, so configuration
+  metadata cannot manufacture runtime or cutover readiness.
 - The observer currently persists one bounded JSON value. Cloudflare's
   SQLite-backed Durable Object key/value entry limit is 2 MiB, and the current
   long-lived-token retention/capacity policy has not been load- or size-proven.
-  Shadow enablement therefore remains blocked pending producer coverage,
-  compaction/retention design, serialized-size headroom, latency/cost evidence,
-  alerts, rollback, and a signed 30-day zero-diff bake.
+  Shadow enablement therefore remains blocked pending compaction/retention
+  design, serialized-size headroom, latency/cost evidence, alerts, rollback,
+  and a signed 30-day zero-diff bake.
 
-No relay, Queue, or orphan-recovery producer emits QuotaCoordinator observations.
-No credential, remote namespace, migration, provider request, or deployment was
-used. Both gates remain false; read authority, write authority, and production
-cutover remain **NO-GO**.
+Relay reserve/direct-finalization, Queue replay, and orphan-recovery producers
+are compiled but require both the retention and shadow gates plus an explicit
+token allowlist. Every tracked environment keeps both gates false and scope
+empty. No credential, remote namespace, migration, provider request, or
+deployment was used; read authority, write authority, and production cutover
+remain **NO-GO**.
+
+## 2026-07-14 QuotaCoordinator Producer Coverage Verification
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 657 passed
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+# PASS; only two pre-existing unused topup repository warnings
+
+bun run check:web:readiness
+# PASS; 30 passed
+
+bun run check:cf:quota-coordinator
+# PASS; four producer families present; retention/shadow/proof false and scope
+# empty in default, staging, and production
+
+bun run check:do-lifecycle-runtime
+# PASS; 23 passed, including reserve/settle projection and duplicate Queue replay
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 23/23, Playground 1/1, frontend
+# production build/audits, 217 frontend calls / 322 Worker routes / zero missing,
+# 26 D1 migrations, workspace tests, and all three wasm32 checks
+
+bun run check:cf:dry-run
+bun run check:cf:startup
+# PASS with Wrangler 4.110.0; default config exposes retention/shadow/proof false
+# and empty token scope. Startup was analysed locally; no deployment occurred.
+```
+
+The projector reads committed D1 reservation state and emits reserve before any
+terminal observation. Deterministic fingerprints and operation IDs make
+at-least-once replay idempotent. Workerd confirms the observer can accumulate
+replay evidence without repeating the D1 financial mutation. Fetch-path
+observation is deferred with `Context::wait_until`; observer delivery errors are
+post-commit diagnostics and cannot change the authoritative outcome.
+
+This evidence is local E3/E4 only. Retention/load approval, off-path
+reconciliation, authenticated namespace readback, alerts, disable-first
+rollback, and the 30-day staging bake are still absent. Production is **NO-GO**.

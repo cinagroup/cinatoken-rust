@@ -125,7 +125,14 @@ export type PlatformReadinessCapabilities = Pick<
   | 'quota_coordinator_shadow_enabled'
   | 'quota_coordinator_foundation_compiled'
   | 'quota_coordinator_observer_contract_compiled'
+  | 'quota_coordinator_reserve_observation_compiled'
+  | 'quota_coordinator_finalization_observation_compiled'
+  | 'quota_coordinator_recovery_observation_compiled'
   | 'quota_coordinator_relay_observation_compiled'
+  | 'quota_coordinator_storage_retention_ready'
+  | 'quota_coordinator_shadow_token_allowlist_configured'
+  | 'quota_coordinator_shadow_token_allowlist_valid'
+  | 'quota_coordinator_shadow_token_count'
   | 'quota_coordinator_tiered_only'
   | 'quota_coordinator_write_authority_enabled'
   | 'quota_coordinator_staging_verified'
@@ -266,11 +273,21 @@ export function getQuotaCoordinatorReadiness(
   const relayObserver = allReady(
     foundation,
     capabilities.quota_coordinator_observer_contract_compiled,
+    capabilities.quota_coordinator_reserve_observation_compiled,
+    capabilities.quota_coordinator_finalization_observation_compiled,
+    capabilities.quota_coordinator_recovery_observation_compiled,
     capabilities.quota_coordinator_relay_observation_compiled
+  )
+  const shadowScope = allReady(
+    capabilities.quota_coordinator_shadow_token_allowlist_configured,
+    capabilities.quota_coordinator_shadow_token_allowlist_valid,
+    capabilities.quota_coordinator_shadow_token_count > 0
   )
   const shadowRuntime = allReady(
     shadowGate,
     relayObserver,
+    shadowScope,
+    capabilities.quota_coordinator_storage_retention_ready,
     capabilities.quota_coordinator_shadow_runtime_ready
   )
   const stagingBake = allReady(
@@ -291,6 +308,8 @@ export function getQuotaCoordinatorReadiness(
     foundation,
     binding,
     shadowGate,
+    shadowScope,
+    storageRetention: capabilities.quota_coordinator_storage_retention_ready,
     relayObserver,
     shadowRuntime,
     stagingBake,

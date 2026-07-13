@@ -5,13 +5,18 @@ use cinatoken_coordinator::{
     QUOTA_COORDINATOR_CONTRACT_VERSION, QUOTA_COORDINATOR_MODE,
 };
 use futures_util::StreamExt;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use wasm_bindgen::JsValue;
 use worker::{
-    durable_object, Env, Error, Method, Request, Response, Result as WorkerResult, State,
+    durable_object, Context, D1Database, Env, Error, Headers, Method, Request, RequestInit,
+    Response, Result as WorkerResult, State,
 };
 
 pub const QUOTA_COORD_BINDING: &str = "QUOTA_COORD";
 pub const QUOTA_COORD_SHADOW_ENABLED_ENV: &str = "QUOTA_COORD_SHADOW_ENABLED";
+pub const QUOTA_COORD_SHADOW_TOKEN_IDS_ENV: &str = "QUOTA_COORD_SHADOW_TOKEN_IDS";
+pub const QUOTA_COORD_RETENTION_VERIFIED_ENV: &str = "QUOTA_COORD_RETENTION_VERIFIED";
 pub const QUOTA_COORD_STAGING_VERIFIED_ENV: &str = "QUOTA_COORD_STAGING_VERIFIED";
 
 const OBSERVE_PATH: &str = "/observe";
@@ -19,7 +24,23 @@ const STATUS_PATH: &str = "/status";
 const TOKEN_ID_HEADER: &str = "x-cinatoken-quota-token-id";
 const STATE_KEY: &str = "quota_coordinator_state_v1";
 const MAX_JSON_BODY_BYTES: usize = 16 * 1024;
+const MAX_SHADOW_TOKEN_IDS: usize = 64;
 const APPLY_VALIDATION_MARKER: &str = "cinatoken_quota_observation_validation:";
+const RESERVATION_FINGERPRINT_DOMAIN: &str = "cinatoken-quota-reservation-v1";
+const OPERATION_ID_DOMAIN: &str = "cinatoken-quota-operation-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuotaCoordinatorShadowScopeStatus {
+    pub configured: bool,
+    pub valid: bool,
+    pub token_count: usize,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct QuotaCoordinatorShadowScope {
+    token_ids: BTreeSet<i64>,
+    valid: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
@@ -213,6 +234,315 @@ pub(crate) fn quota_coordinator_observer_contract_compiled() -> bool {
     MAX_JSON_BODY_BYTES == 16 * 1024 && STATE_KEY == "quota_coordinator_state_v1"
 }
 
+pub(crate) fn quota_coordinator_reserve_observation_compiled() -> bool {
+    RESERVATION_FINGERPRINT_DOMAIN == "cinatoken-quota-reservation-v1"
+}
+
+pub(crate) fn quota_coordinator_finalization_observation_compiled() -> bool {
+    OPERATION_ID_DOMAIN == "cinatoken-quota-operation-v1"
+}
+
+pub(crate) fn quota_coordinator_recovery_observation_compiled() -> bool {
+    MAX_SHADOW_TOKEN_IDS == 64
+}
+
+pub(crate) fn quota_coordinator_relay_observation_compiled() -> bool {
+    quota_coordinator_reserve_observation_compiled()
+        && quota_coordinator_finalization_observation_compiled()
+        && quota_coordinator_recovery_observation_compiled()
+}
+
+pub(crate) fn quota_coordinator_shadow_scope_status(
+    env: &Env,
+) -> QuotaCoordinatorShadowScopeStatus {
+    let scope = quota_coordinator_shadow_scope(env);
+    QuotaCoordinatorShadowScopeStatus {
+        configured: !scope.token_ids.is_empty(),
+        valid: scope.valid,
+        token_count: scope.token_ids.len(),
+    }
+}
+
+/// Project one committed tiered reservation into the observation-only DO.
+/// Every error is logged and swallowed: D1 has already committed and remains
+/// the sole financial writer. Terminal projection always replays reserve first
+/// so delayed Queue and recovery delivery can reconstruct a missing observer.
+pub(crate) async fn observe_committed_relay_billing_reservation(
+    env: &Env,
+    db: &D1Database,
+    reservation_key: &str,
+) {
+    if !quota_coordinator_observation_runtime_enabled(env) {
+        return;
+    }
+    let scope = quota_coordinator_shadow_scope(env);
+    if !scope.valid {
+        worker::console_error!(
+            "QuotaCoordinator observation skipped: {} is invalid",
+            QUOTA_COORD_SHADOW_TOKEN_IDS_ENV
+        );
+        return;
+    }
+    if scope.token_ids.is_empty() {
+        return;
+    }
+
+    let record = match crate::d1_repositories::relay_billing_reservation(db, reservation_key).await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            worker::console_error!(
+                "QuotaCoordinator observation skipped: committed reservation is missing"
+            );
+            return;
+        }
+        Err(error) => {
+            worker::console_error!(
+                "QuotaCoordinator observation readback failed after D1 commit: {error}"
+            );
+            return;
+        }
+    };
+    if !scope.token_ids.contains(&record.token_id) {
+        return;
+    }
+
+    let observations = match relay_observations_for_reservation(&record) {
+        Ok(observations) => observations,
+        Err(error) => {
+            worker::console_error!(
+                "QuotaCoordinator observation projection failed after D1 commit: {error}"
+            );
+            return;
+        }
+    };
+    for observation in observations {
+        if let Err(error) = send_observation(env, record.token_id, &observation).await {
+            worker::console_error!(
+                "QuotaCoordinator observation delivery failed after D1 commit: {error}"
+            );
+            return;
+        }
+    }
+}
+
+/// Keep observation off the fetch response path when an execution context is
+/// available. Queue, scheduled, and offline callers pass no fetch context and
+/// await delivery directly within their own already-asynchronous lifecycle.
+pub(crate) async fn observe_or_defer_committed_relay_billing_reservation(
+    context: Option<&Context>,
+    env: &Env,
+    db: &D1Database,
+    reservation_key: &str,
+) {
+    if !quota_coordinator_observation_runtime_enabled(env) {
+        return;
+    }
+    if let Some(context) = context {
+        let env = env.clone();
+        let reservation_key = reservation_key.to_string();
+        context.wait_until(async move {
+            let db = match env.d1("DB") {
+                Ok(db) => db,
+                Err(error) => {
+                    worker::console_error!(
+                        "QuotaCoordinator deferred observation cannot open D1: {error}"
+                    );
+                    return;
+                }
+            };
+            observe_committed_relay_billing_reservation(&env, &db, &reservation_key).await;
+        });
+        return;
+    }
+    observe_committed_relay_billing_reservation(env, db, reservation_key).await;
+}
+
+fn quota_coordinator_observation_runtime_enabled(env: &Env) -> bool {
+    quota_coordinator_observation_gates_open(
+        quota_coordinator_env_flag(env, QUOTA_COORD_SHADOW_ENABLED_ENV),
+        quota_coordinator_env_flag(env, QUOTA_COORD_RETENTION_VERIFIED_ENV),
+    )
+}
+
+fn quota_coordinator_observation_gates_open(
+    shadow_enabled: bool,
+    retention_verified: bool,
+) -> bool {
+    shadow_enabled && retention_verified
+}
+
+fn quota_coordinator_env_flag(env: &Env, name: &str) -> bool {
+    env.var(name)
+        .ok()
+        .map(|value| value.to_string())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+}
+
+fn quota_coordinator_shadow_scope(env: &Env) -> QuotaCoordinatorShadowScope {
+    let Some(raw) = env
+        .var(QUOTA_COORD_SHADOW_TOKEN_IDS_ENV)
+        .ok()
+        .map(|value| value.to_string())
+    else {
+        return QuotaCoordinatorShadowScope {
+            valid: true,
+            ..QuotaCoordinatorShadowScope::default()
+        };
+    };
+    parse_quota_coordinator_shadow_scope(&raw)
+}
+
+fn parse_quota_coordinator_shadow_scope(raw: &str) -> QuotaCoordinatorShadowScope {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return QuotaCoordinatorShadowScope {
+            valid: true,
+            ..QuotaCoordinatorShadowScope::default()
+        };
+    }
+    let mut token_ids = BTreeSet::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        let Some(token_id) = canonical_positive_i64(part) else {
+            return QuotaCoordinatorShadowScope {
+                token_ids,
+                valid: false,
+            };
+        };
+        if !token_ids.insert(token_id) || token_ids.len() > MAX_SHADOW_TOKEN_IDS {
+            return QuotaCoordinatorShadowScope {
+                token_ids,
+                valid: false,
+            };
+        }
+    }
+    QuotaCoordinatorShadowScope {
+        token_ids,
+        valid: true,
+    }
+}
+
+fn relay_observations_for_reservation(
+    record: &crate::d1_repositories::RelayBillingReservation,
+) -> Result<Vec<QuotaObservation>, String> {
+    if record.token_id <= 0 {
+        return Ok(Vec::new());
+    }
+    let fingerprint =
+        quota_identity_hash(RESERVATION_FINGERPRINT_DOMAIN, &[&record.reservation_key]);
+    let reserve = QuotaObservation::reserve(
+        quota_identity_hash(OPERATION_ID_DOMAIN, &["reserve", &record.reservation_key]),
+        fingerprint.clone(),
+        record.pre_consumed_quota,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut observations = vec![reserve];
+    let request_count = u64::try_from(record.request_accounted)
+        .ok()
+        .filter(|value| *value <= 1)
+        .ok_or_else(|| "reservation request accounting is outside the v1 domain".to_string())?;
+    let generation = u64::try_from(record.owner_generation)
+        .map_err(|_| "reservation owner generation is outside the v1 domain".to_string())?;
+    let terminal = match record.status.as_str() {
+        "reserved" | "recovery_required" => None,
+        "settled" => Some(
+            QuotaObservation::settle(
+                quota_identity_hash(
+                    OPERATION_ID_DOMAIN,
+                    &[
+                        "settle",
+                        &record.reservation_key,
+                        &record.owner_generation.to_string(),
+                    ],
+                ),
+                fingerprint,
+                generation,
+                record.pre_consumed_quota,
+                record.final_quota,
+                request_count,
+            )
+            .map_err(|error| error.to_string())?,
+        ),
+        "refunded" => Some(
+            QuotaObservation::refund(
+                quota_identity_hash(
+                    OPERATION_ID_DOMAIN,
+                    &[
+                        "refund",
+                        &record.reservation_key,
+                        &record.owner_generation.to_string(),
+                    ],
+                ),
+                fingerprint,
+                generation,
+                record.pre_consumed_quota,
+                request_count,
+            )
+            .map_err(|error| error.to_string())?,
+        ),
+        _ => return Err("reservation status is outside the observer contract".to_string()),
+    };
+    if let Some(terminal) = terminal {
+        observations.push(terminal);
+    }
+    Ok(observations)
+}
+
+async fn send_observation(
+    env: &Env,
+    token_id: i64,
+    observation: &QuotaObservation,
+) -> WorkerResult<()> {
+    let payload = serde_json::to_string(observation).map_err(|error| {
+        Error::RustError(format!("failed to encode quota observation: {error}"))
+    })?;
+    if payload.len() > MAX_JSON_BODY_BYTES {
+        return Err(Error::RustError(
+            "encoded quota observation exceeds the bounded contract".to_string(),
+        ));
+    }
+    let namespace = env.durable_object(QUOTA_COORD_BINDING)?;
+    let stub = namespace
+        .id_from_name(&format!("token:{token_id}"))?
+        .get_stub()?;
+    let mut headers = Headers::new();
+    headers.set("Content-Type", "application/json")?;
+    headers.set(TOKEN_ID_HEADER, &token_id.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&payload)));
+    let request = Request::new_with_init("https://quota-coordinator.internal/observe", &init)?;
+    let response = stub.fetch_with_request(request).await?;
+    if response.status_code() == 204 {
+        Ok(())
+    } else {
+        Err(Error::RustError(format!(
+            "QuotaCoordinator returned status {}",
+            response.status_code()
+        )))
+    }
+}
+
+fn quota_identity_hash(domain: &str, parts: &[&str]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain.as_bytes());
+    for part in parts {
+        digest.update([0]);
+        digest.update(part.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn canonical_positive_i64(raw: &str) -> Option<i64> {
+    if raw.is_empty() || raw.starts_with('0') || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let value = raw.parse::<i64>().ok()?;
+    (value > 0 && value.to_string() == raw).then_some(value)
+}
+
 fn route_for(req: &Request) -> Result<Route, Response> {
     match (req.path().as_str(), req.method()) {
         (OBSERVE_PATH, Method::Post) => Ok(Route::Observe),
@@ -235,11 +565,7 @@ fn method_not_allowed(allow: &str) -> Response {
 
 fn quota_token_id(req: &Request) -> Option<i64> {
     let raw = req.headers().get(TOKEN_ID_HEADER).ok().flatten()?;
-    if raw.is_empty() || raw.starts_with('0') || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let token_id = raw.parse::<i64>().ok()?;
-    (token_id > 0 && token_id.to_string() == raw).then_some(token_id)
+    canonical_positive_i64(&raw)
 }
 
 fn has_json_content_type(req: &Request) -> bool {
@@ -290,6 +616,21 @@ async fn read_bounded_body(req: &mut Request) -> Result<Vec<u8>, BodyReadError> 
 
 #[cfg(test)]
 mod tests {
+    use cinatoken_coordinator::QuotaObservationKind;
+
+    use super::{
+        parse_quota_coordinator_shadow_scope, quota_coordinator_observation_gates_open,
+        quota_identity_hash, relay_observations_for_reservation, OPERATION_ID_DOMAIN,
+    };
+
+    #[test]
+    fn observation_requires_shadow_and_retention_gates() {
+        assert!(!quota_coordinator_observation_gates_open(false, false));
+        assert!(!quota_coordinator_observation_gates_open(true, false));
+        assert!(!quota_coordinator_observation_gates_open(false, true));
+        assert!(quota_coordinator_observation_gates_open(true, true));
+    }
+
     #[test]
     fn token_identity_is_strictly_canonical() {
         for valid in ["1", "42", "9223372036854775807"] {
@@ -309,6 +650,101 @@ mod tests {
             assert!(invalid
                 .parse::<i64>()
                 .map_or(true, |value| value <= 0 || value.to_string() != invalid));
+        }
+    }
+
+    #[test]
+    fn shadow_scope_is_bounded_canonical_and_duplicate_free() {
+        let scope = parse_quota_coordinator_shadow_scope("7, 11,42");
+        assert!(scope.valid);
+        assert_eq!(scope.token_ids.into_iter().collect::<Vec<_>>(), [7, 11, 42]);
+        for invalid in ["0", "01", "7,7", "-1", "+1", "1,,2", "1, x"] {
+            assert!(!parse_quota_coordinator_shadow_scope(invalid).valid);
+        }
+        let oversized = (1..=65)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(!parse_quota_coordinator_shadow_scope(&oversized).valid);
+    }
+
+    #[test]
+    fn committed_terminal_projection_replays_reserve_first() {
+        let settled = reservation("settled", 3, 75, 1);
+        let observations = relay_observations_for_reservation(&settled).unwrap();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].kind, QuotaObservationKind::Reserve);
+        assert_eq!(observations[0].generation, 1);
+        assert_eq!(observations[0].reserved_quota, 120);
+        assert_eq!(observations[1].kind, QuotaObservationKind::Settle);
+        assert_eq!(observations[1].generation, 3);
+        assert_eq!(observations[1].final_quota, 75);
+        assert_eq!(observations[1].request_count, 1);
+        assert_eq!(
+            observations[0].reservation_fingerprint,
+            observations[1].reservation_fingerprint
+        );
+        assert_eq!(
+            observations[1].operation_id,
+            quota_identity_hash(OPERATION_ID_DOMAIN, &["settle", "reservation-a", "3"])
+        );
+        assert_eq!(
+            observations,
+            relay_observations_for_reservation(&settled).unwrap()
+        );
+    }
+
+    #[test]
+    fn projection_distinguishes_active_refund_and_ineligible_token() {
+        let active =
+            relay_observations_for_reservation(&reservation("recovery_required", 3, 0, 0)).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].kind, QuotaObservationKind::Reserve);
+
+        let refunded =
+            relay_observations_for_reservation(&reservation("refunded", 2, 0, 0)).unwrap();
+        assert_eq!(refunded.len(), 2);
+        assert_eq!(refunded[1].kind, QuotaObservationKind::Refund);
+        assert_eq!(refunded[1].generation, 2);
+
+        let mut tokenless = reservation("settled", 3, 75, 1);
+        tokenless.token_id = 0;
+        assert!(relay_observations_for_reservation(&tokenless)
+            .unwrap()
+            .is_empty());
+    }
+
+    fn reservation(
+        status: &str,
+        owner_generation: i64,
+        final_quota: i64,
+        request_accounted: i64,
+    ) -> crate::d1_repositories::RelayBillingReservation {
+        crate::d1_repositories::RelayBillingReservation {
+            reservation_key: "reservation-a".to_string(),
+            user_id: 9,
+            token_id: 7,
+            model_name: "model-a".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            request_id_hash: String::new(),
+            expr_hash: "expr-a".to_string(),
+            candidate_group_count: 1,
+            reservation_strategy: "selected_group".to_string(),
+            pre_consumed_quota: 120,
+            status: status.to_string(),
+            channel_id: 5,
+            selected_group: "default".to_string(),
+            selected_at: 100,
+            final_quota,
+            finalization_reason: "test".to_string(),
+            request_accounted,
+            lease_expires_at: 200,
+            owner_generation,
+            owner_deadline_at: 200,
+            owner_lease_renewed_at: 0,
+            recovery_attempt_count: 0,
+            created_at: 100,
+            updated_at: 101,
         }
     }
 }

@@ -145,7 +145,7 @@ maturity levels are used:
 | M7 AiGateway router | C | **Gated substrate (fallback wired)** | Full cutover decision ladder, security coupling, current REST URL builders, a table-driven documented model-prefix registry, 8 cutover guards, `channels.other_info` opt-in, default-off forwarder, provider/channel-matched direct fallback, and frontend visibility. Gateway-only prefixes cannot silently enter the direct fallback set | Live staging canary per provider family, AI Gateway log capture, usage/billing reconciliation, failure injection, and rollback | `crates/providers/src/ai_gateway.rs`; `crates/storage/src/lib.rs` opt-in parser; `crates/worker/src/relay.rs` runtime/forwarder/fallback; `crates/worker/src/platform_gateway.rs` capabilities; gate `RELAY_AI_GATEWAY_ROUTER_ENABLED` |
 | M8 WFP dispatch | B | **Gated substrate (central authority + final-boundary replay guarded)** | The central relay may select WFP only from `channels.other_info.wfp_worker` after relay-token authentication, D1 selection, and quota reserve. The main Worker retains `WFP_RELAY_AUTHORITY_SECRET`; the tenant receives no authority key or replay binding and only forwards the opaque envelope. Cloudflare injects route/public-worker/dispatch-worker context into `cinatoken-wfp-outbound`, which validates context, final path/body, central v2 signature, and platform replay consumption before bearer access. | Keep `WFP_RELAY_TRANSPORT_ENABLED=false`; archive schema-3 attachment readback, live context propagation, sequential/concurrent duplicate, eviction, cleanup, load, one-provider-call, billing, audit, and redaction evidence | `crates/wfp-authority/src/lib.rs`; `crates/worker/src/wfp_authority_replay.rs`; `crates/worker/src/relay.rs`; `crates/wfp-tenant/src/lib.rs`; `crates/wfp-outbound/src/lib.rs`; `tools/collect_wfp_outbound_readback.mjs`; gate `WFP_RELAY_TRANSPORT_ENABLED` |
 | M6 RealtimeSession | A | **Gated substrate (default-off settlement/audit compiled)** | `#[durable_object]` with WS **hibernation** (`accept_web_socket`, `websocket_message/close`, `serialize_attachment`), per-socket `SocketAttachment`, lifecycle metrics persisted to DO storage, upstream URL/handshake planner, `/v1/realtime` D1/cache channel selection with secret-redacted plan summaries in socket attachments, request-scoped upstream connect specs, gateway-to-DO secret handoff with no raw key persistence, Worker-native upstream fetch-upgrade adapter, an in-memory upstream bridge registry that forwards client frames while active and reports `upstream_bridge_not_active` after hibernation/restart, 1 MiB text/binary frame guards with 1009 close handling, deterministic bridge close/error code mapping, fail-closed cleanup when either bridge direction cannot enqueue a frame, a bounded backpressure policy plus transient FIFO client-to-upstream queue before upstream accept, metadata-only overflow events, WebSocket and HTTP status counters for active upstream bridges plus queued frames/bytes, sanitized terminal event trace metadata for close/error/frame-limit/send-failure paths, metadata-only `response.done` usage capture into DO metrics, redacted tiered-billing pre-settlement snapshot metadata in upstream plans and connect metrics, request-scoped settlement handoff with a private user/token/channel/pre-consumed-quota mutation plan plus redacted settlement-preview metrics for final/refund/additional quota calculation from frozen snapshots plus `response.done` usage, a `REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` default-off D1 writer foundation that reuses the existing reserve/refund/final helper, a durable replay-marker foundation, and a Go-compatible audit-log row foundation that persists only redacted write/replay/audit status plus quota deltas, smoke-level bridge/upstream replay contract self-tests, and a mock upstream replay harness with review-only D1 seed SQL, active/empty-queue runtime-status proof, controlled startup queue/drain, `response.done` usage-capture plus billing-snapshot/settlement-preview status proof backed by an isolated tiered-expression seed, and early `event_stream_failed`/`accept_failed` fault plans before live probes | Production-grade bridge hardening: archived local/staging queue/drain/fault/usage/billing-snapshot/settlement-handoff/mutation-plan/writer/replay-marker/audit-log evidence, remaining upstream abort/error and upstream-to-client send-failure replay, single-transaction or equivalent CAS settlement idempotency, final Realtime billing/audit settlement, protocol parity | `crates/worker/src/realtime_session.rs`: DO + planners/handoff/fetch-upgrade adapter/transient lifecycle/frame guard/close mapping/send-failure/backpressure guard/runtime queue/event trace/startup queue probe/mock fault handoff/usage metadata capture/billing snapshot metadata/settlement handoff/mutation-plan/preview metrics/default-off writer/replay/audit metrics; `tools/smoke_realtime_session.mjs`: platform/frame-limit/replay-contract/capability smoke; `tools/smoke_realtime_upstream_replay.mjs`: mock upstream replay + D1 seed plan/runtime-status/fault/usage/billing-preview proof; `crates/worker/src/relay.rs`: Realtime channel selection helper plus billing preflight snapshot and settlement/audit handoff; binding **active** `wrangler.toml:117,216,317`; gates `REALTIME_SESSION_V1_ENABLED`/`REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED` |
-| M4 QuotaCoordinator | A | **Gated foundation (default-off, observation-only)** | A pure Rust tiered-expression observer state machine, per-token `QuotaCoordinator` DO, SQLite-backed namespace declarations in all environments, strict bounded URL-RPC, atomic storage transaction, local eviction replay, capability contract, frontend operations visibility, and config audit are compiled. D1 remains the sole financial writer. | Wire reserve/finalize/orphan-recovery observation producers, replace the single-record retention cap with a measured long-lived-token policy, prove bounded storage/load/eviction and zero-diff reconciliation, then complete at least a 30-day staging shadow bake before considering read or write authority | `crates/coordinator/src/lib.rs`; `crates/worker/src/quota_coordinator.rs`; `QUOTA_COORD`; gates `QUOTA_COORD_SHADOW_ENABLED=false` and `QUOTA_COORD_STAGING_VERIFIED=false` |
+| M4 QuotaCoordinator | A | **Gated producer-complete observer (default-off)** | A pure Rust tiered-expression observer state machine and per-token SQLite DO now receive post-D1 reserve, direct-finalization, Queue replay, and orphan-recovery projections through one deterministic projector. Strict token scope and retention gates are default-off; D1 remains the sole financial writer. | Measure and approve long-lived-token retention/compaction, build off-path reconciliation/alerts, prove deployed storage/load/eviction and zero-diff behavior, then complete at least a 30-day staging shadow bake before considering read or write authority | `crates/coordinator/src/lib.rs`; `crates/worker/src/{quota_coordinator,relay,relay_billing_queue,d1_repositories,lib}.rs`; `QUOTA_COORD`; gates `QUOTA_COORD_RETENTION_VERIFIED=false`, `QUOTA_COORD_SHADOW_ENABLED=false`, empty `QUOTA_COORD_SHADOW_TOKEN_IDS`, and `QUOTA_COORD_STAGING_VERIFIED=false` |
 | M5 Task correctness / TaskRunner | — | **Partial (timeout sweep + refund replay + TaskRunner alarm probe compiled)** | Scheduled Worker poller now runs a Go-compatible timeout sweep before provider polling, uses per-task CAS for timeout failure, preserves the legacy imported-task no-refund cutoff, hardens malformed `private_data` during task CAS updates, batches timeout/video/Suno failure refunds behind a CAS-winner marker, normalizes Suno fail-reason rows to terminal failure, locally replays no-duplicate-refund/legacy/stale-window semantics with `bun run check:task-refund-batch`, wires the default-off `TASK_RUNNER` DO alarm foundation plus submit-path arming for video/remix/Suno shared task rows, lets alarm fire reuse the shared `poll_one_task` provider poll + D1 CAS settlement path, and exposes an admin-only per-task status probe with frontend UI, replay-evidence classifier, and smoke replay plan | Finish staging timeout/refund replay, provider failure replay, live TaskRunner alarm replay using the status probe, rollback, cron fallback, and no-double-poll evidence before enabling the DO fast path | `crates/worker/src/task_repository.rs`: timed-out query/CAS timeout apply/refund marker batch; `crates/worker/src/task_orchestration.rs`: config + sweep before provider poll + default-off TaskRunner arming; `crates/worker/src/task_runner.rs`: alarm foundation, submit handoff, gated poll handoff, status probe helper, and replay evidence classifier; `crates/worker/src/lib.rs`: scheduled handler, platform status route, and DO module; `tools/smoke_task_refund_batch.mjs`: local replay contract; `tools/smoke_task_runner_alarm_replay.mjs`: TaskRunner read-only replay probe; `platform_gateway.rs` + frontend Cloudflare Platform panel: capability and status probe surface |
 
 **M6 reconstruction and lease-safety update (2026-07-13):** release Rust/Wasm
@@ -399,15 +399,18 @@ by clearing the flag, no redeploy required.
   traffic continue to have their own default-off runtime gates.
 
 ### M4 — `QuotaCoordinator` DO, shadow-first (2 wk build + ≥30-day bake)
-- **Status (2026-07-14): Gated foundation, not on the relay hot path.** The pure
+- **Status (2026-07-14): Gated producer-complete observer, default-off.** The pure
   state machine and per-token DO now accept strict `reserve`/`settle`/`refund`
   observations, persist replay/conflict counters atomically, restore across
-  local eviction, and expose summary-only status. All environments declare the
-  SQLite-backed class but keep both gates false. The relay observation producer,
-  Queue/recovery producer coverage, storage-retention design for long-lived hot
-  tokens, deployed load evidence, and shadow-diff pipeline do not exist yet.
-  Consequently shadow runtime readiness, write authority, and cutover readiness
-  are hard-coded false; D1 remains the only financial writer.
+  local eviction, and expose summary-only status. Post-commit producers cover
+  tiered reserve, direct settle/refund, Queue finalize/replay, and scheduled
+  orphan recovery by reading frozen D1 reservation facts. Fetch-path producers
+  use `wait_until`; Queue and scheduled handlers await in their own lifecycle.
+  All environments
+  declare the class but keep the shadow and retention gates false and the token
+  allowlist empty. Long-lived-token retention evidence, deployed load evidence,
+  and the shadow-diff pipeline do not exist yet. Shadow runtime, write authority,
+  and cutover therefore remain false; D1 is the only financial writer.
 - **Scope:** Per-token DO (`id_from_name("token:{token_id}")`), **key-value** storage
   (no DO-SQL in 0.5.0), URL-RPC `reserve/settle/refund` mirroring the four D1
   entry points. **Scoped to tiered-expr traffic only** (flat billing stays
@@ -420,11 +423,12 @@ by clearing the flag, no redeploy required.
   Preserve every invariant the map flagged: `touch_token` liveness on zero-quota
   ops, `quota_i32` clamp, half-batch compensation, channel `used_quota` +
   `request_count` atomicity.
-- **Files:** `crates/coordinator/src/lib.rs` (new DO), `crates/worker/src/{lib,relay}.rs`,
+- **Files:** `crates/coordinator/src/lib.rs` (pure state machine),
+  `crates/worker/src/{quota_coordinator,lib,relay,relay_billing_queue,d1_repositories}.rs`,
   `wrangler.toml` (`QUOTA_COORD` binding + `new_sqlite_classes` in all 3 envs).
-- **Verify:** shadow diff rate ≈ 0 over 30 days; `cargo test` for reserve/settle
-  delta math; concurrency test (N parallel reserves on one token) shows no
-  over-spend.
+- **Verify:** local producer/config audit plus Workerd duplicate/replay evidence;
+  then deployed storage/load evidence and shadow diff rate near zero over 30
+  days. Concurrency tests must show observer conflicts never change D1 state.
 - **Rollback:** each stage is a separate flag; revert to the prior stage instantly.
 
 ### M5 — Task-system correctness, then optional `TaskRunner` DO (1 wk + 1 wk)
@@ -681,7 +685,7 @@ shipping a silent correctness gap.
 | `LOG_QUEUE` consumer + DLQ | `LOG_QUEUE` | **Live** |
 | Cron task poller (`* * * * *`) | — | **Live** (staging; prod gated by G8) |
 | `ChannelAffinity` DO | `CHANNEL_AFFINITY` | **Live** (gated) |
-| `QuotaCoordinator` DO | `QUOTA_COORD` | **Gated foundation (M4)** — SQLite-backed class declared in default/staging/production; observer and summary contract compiled; both gates false; no relay producer or financial authority |
+| `QuotaCoordinator` DO | `QUOTA_COORD` | **Gated producer-complete observer (M4)**: SQLite-backed class declared in default/staging/production; post-D1 reserve/direct-finalization/Queue/recovery producers compiled; retention and shadow gates false; token allowlist empty; no financial authority |
 | `TaskRunner` DO | `TASK_RUNNER` | **Alarm poll + status probe compiled, default-off** (`TASK_RUNNER_DO_ENABLED=false`; staging replay, rollback, and no-double-poll evidence pending) |
 | `RealtimeSession` DO | `REALTIME_SESSIONS` | **Substrate live, gated** (binding + `new_sqlite_classes` active; `REALTIME_SESSION_V1_ENABLED=false`) |
 | AI Gateway routing | `AI_GATEWAY_ID` var | **Forwarder wired, gated** (`RELAY_AI_GATEWAY_ROUTER_ENABLED=false`; channel opt-in required) |
@@ -752,8 +756,8 @@ and WFP (M8) are the long-pole, correctly last.
 **Where we actually are (2026-07-14, see §L):** M2 is wired; M7 has a default-off
 request builder in the relay loop; M6/M8 have landed as gated substrate (DO
 hibernation, dispatch layer) but are **not yet on a hot path**. The highest-leverage
-next increment for M4 is complete producer coverage plus a bounded long-lived-
-token retention design, followed by a default-off staging shadow bake. M7 live
+next increment for M4 is a bounded long-lived-token retention design plus
+off-path reconciliation, followed by a default-off staging shadow bake. M7 live
 Gateway proof, M6 bridge/settlement evidence, and M5 TaskRunner replay remain
 parallel production gates.
 

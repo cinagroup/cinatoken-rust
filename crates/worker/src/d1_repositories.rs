@@ -206,7 +206,7 @@ pub struct RelayBillingExpiredLeaseCandidate {
     pub recovery_attempt_count: i64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RelayBillingOrphanSweepSummary {
     pub candidates: u32,
     pub refunded: u32,
@@ -216,6 +216,7 @@ pub struct RelayBillingOrphanSweepSummary {
     pub not_found: u32,
     pub failed: u32,
     pub deferred: u32,
+    pub observation_reservation_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1932,13 +1933,21 @@ pub async fn sweep_expired_relay_billing_reservations(
         {
             match mark_relay_billing_recovery_required(db, &candidate, now).await {
                 Ok(RelayBillingReservationFinalizationOutcome::Applied) => {
-                    summary.recovery_required = summary.recovery_required.saturating_add(1)
+                    summary.recovery_required = summary.recovery_required.saturating_add(1);
+                    summary
+                        .observation_reservation_keys
+                        .push(candidate.reservation_key.clone());
                 }
                 Ok(
                     RelayBillingReservationFinalizationOutcome::RecoveryRequired
                     | RelayBillingReservationFinalizationOutcome::MatchingSettled
                     | RelayBillingReservationFinalizationOutcome::MatchingRefund,
-                ) => summary.already_finalized = summary.already_finalized.saturating_add(1),
+                ) => {
+                    summary.already_finalized = summary.already_finalized.saturating_add(1);
+                    summary
+                        .observation_reservation_keys
+                        .push(candidate.reservation_key.clone());
+                }
                 Ok(
                     RelayBillingReservationFinalizationOutcome::LeaseActive
                     | RelayBillingReservationFinalizationOutcome::StaleGeneration,
@@ -1979,12 +1988,20 @@ pub async fn sweep_expired_relay_billing_reservations(
         .await
         {
             Ok(RelayBillingReservationFinalizationOutcome::Applied) => {
-                summary.refunded = summary.refunded.saturating_add(1)
+                summary.refunded = summary.refunded.saturating_add(1);
+                summary
+                    .observation_reservation_keys
+                    .push(candidate.reservation_key.clone());
             }
             Ok(
                 RelayBillingReservationFinalizationOutcome::MatchingRefund
                 | RelayBillingReservationFinalizationOutcome::SettlementWon,
-            ) => summary.already_finalized = summary.already_finalized.saturating_add(1),
+            ) => {
+                summary.already_finalized = summary.already_finalized.saturating_add(1);
+                summary
+                    .observation_reservation_keys
+                    .push(candidate.reservation_key.clone());
+            }
             Ok(
                 RelayBillingReservationFinalizationOutcome::LeaseActive
                 | RelayBillingReservationFinalizationOutcome::StaleGeneration,
@@ -2031,7 +2048,7 @@ pub async fn mark_relay_billing_recovery_started(
 pub async fn mark_relay_billing_recovery_completed(
     db: &D1Database,
     completed_at: i64,
-    summary: RelayBillingOrphanSweepSummary,
+    summary: &RelayBillingOrphanSweepSummary,
 ) -> worker::Result<()> {
     let successful_at = if summary.failed == 0 { completed_at } else { 0 };
     let args = [

@@ -438,7 +438,14 @@ export type PlatformCapabilities = {
   quota_coordinator_shadow_enabled: boolean
   quota_coordinator_foundation_compiled: boolean
   quota_coordinator_observer_contract_compiled: boolean
+  quota_coordinator_reserve_observation_compiled: boolean
+  quota_coordinator_finalization_observation_compiled: boolean
+  quota_coordinator_recovery_observation_compiled: boolean
   quota_coordinator_relay_observation_compiled: boolean
+  quota_coordinator_storage_retention_ready: boolean
+  quota_coordinator_shadow_token_allowlist_configured: boolean
+  quota_coordinator_shadow_token_allowlist_valid: boolean
+  quota_coordinator_shadow_token_count: number
   quota_coordinator_tiered_only: boolean
   quota_coordinator_write_authority_enabled: boolean
   quota_coordinator_staging_verified: boolean

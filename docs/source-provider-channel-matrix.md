@@ -97,7 +97,7 @@ adapter package; `Task/media` = routed via task/MJ handlers; `Unsupported` =
 | 14 | Anthropic | api.anthropic.com | Anthropic | claude | Dedicated (native) | A: Anthropic native |
 | 15 | Baidu | aip.baidubce.com | Baidu | baidu | Dedicated (regional) | B: regional |
 | 16 | Zhipu | open.bigmodel.cn | Zhipu | zhipu | Dedicated legacy v3 (Deferred) | Current official docs expose v4 only; migrate channel configuration to type 26 before Rust cutover |
-| 17 | Ali | dashscope.aliyuncs.com | Ali | ali | Dedicated (regional) | B: regional (also Ali task) |
+| 17 | Ali | dashscope.aliyuncs.com | Ali | ali | Dedicated Partial (direct DashScope dual-format) | Implemented locally: chat/completions, completions, Responses, embeddings, native Messages, rerank; async image/task staging evidence open |
 | 18 | Xunfei | (per-channel) | Xunfei | xunfei | Dedicated (regional) | B: regional |
 | 19 | 360 | api.360.cn | OpenAI (fallback) | openai | OpenAI-adaptor | A: OpenAI core |
 | 20 | OpenRouter | openrouter.ai/api | OpenRouter | openai | OpenAI-adaptor | A: OpenAI core |
@@ -154,6 +154,24 @@ not yet manage an AI Gateway custom-provider contract, so Gateway/WFP transport
 is rejected before reserve. MokaAI(44) remains Deferred until an official or
 staging-verifiable hosted API contract exists. This is local implementation
 evidence only; live staging and billing evidence remain open under G3.
+
+Ali(17) is a direct-only, route-explicit adapter. OpenAI Chat Completions,
+legacy Completions, Embeddings, and Responses use the current
+`/compatible-mode/v1` root; native Anthropic Messages uses
+`/apps/anthropic/v1/messages`; rerank uses the provider-native
+`/api/v1/services/rerank/text-rerank/text-rerank` contract with bounded
+request/response conversion, currently only for `gte-rerank-v2`; qwen3 rerank
+protocols remain Deferred. Messages is admitted only for the model patterns
+that the source sends natively (`qwen`, `deepseek-v4`, `kimi`, `glm`, and
+`minimax-m`) or a bounded operator override in
+`ALI_ANTHROPIC_MESSAGES_MODELS`. A bounded printable `channels.other` value is
+the only source of `X-DashScope-Plugin`; clients cannot supply that header.
+The source's image generation/edit polling, remote image fetch, audio, Gemini,
+and non-native Claude-to-OpenAI conversion remain Deferred.
+Cloudflare does not list DashScope as a native AI Gateway provider, so existing
+AI Gateway and WFP transports fail before reserve. Local fixtures are E2 only;
+all six routes still require staging usage, billing, error, audit, and rollback
+evidence.
 
 Moonshot(25) is a direct-only dual-format adapter: OpenAI-shaped chat,
 completions, embeddings, and rerank use the provider `/v1` root, while

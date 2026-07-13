@@ -58,14 +58,23 @@ for isolated staging, not an all-traffic production declaration.
 ### Provider Relay
 
 - The capability registry covers all 53 real Go channel types exactly once.
-- After this audit increment it reports **16 Ready, 13 Partial, and 24
+- After this audit increment it reports **16 Ready, 14 Partial, and 23
   Deferred** types.
 - Generic OpenAI compatibility remains restricted to the 14 types that the Go
   dispatcher actually sends through `openai.Adaptor`.
-- Dedicated Partial providers are Moonshot(25), ZhipuV4(26),
+- Dedicated Partial providers are Ali(17), Moonshot(25), ZhipuV4(26),
   Perplexity(27), Jina(38), Cloudflare(39), SiliconFlow(40), Mistral(42),
   DeepSeek(43), VolcEngine(45), BaiduV2(46), xAI(48), and Submodel(53), plus
   Cohere rerank(34).
+- Ali(17) now admits only direct DashScope Chat Completions, legacy
+  Completions, current Responses, Embeddings, model-allowlisted native
+  Messages, and `gte-rerank-v2`. Messages model patterns retain the source
+  operator override through `ALI_ANTHROPIC_MESSAGES_MODELS`. Optional
+  `X-DashScope-Plugin` is generated only from a printable, at-most-4-KiB
+  server-side `channels.other` value; relay cache schema v4 invalidates older
+  cached channels that do not carry it. The source's image polling/remote URL
+  fetch, audio, Gemini, non-native Messages conversion, and qwen3 rerank
+  protocols remain Deferred.
 - VolcEngine(45) now admits only the source/current-official intersection:
   Chat Completions, Embeddings, Image Generations, and Responses at Ark v3.
   `doubao-coding-plan` is chat-only. Bot chat, TTS, rerank, image edits, and

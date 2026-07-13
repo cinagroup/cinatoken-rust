@@ -20,6 +20,10 @@ use cinatoken_providers::{
         AiGatewayCutoverDecision, AiGatewayCutoverInput, AiGatewayCutoverPlan,
         AiGatewayModelAuthor,
     },
+    ali::{
+        ali_plugin_header_value, apply_ali_request, supports_ali_anthropic_messages_with_config,
+        supports_ali_native_rerank, transform_ali_rerank_response_body,
+    },
     baidu_v2::{apply_baidu_v2_request, parse_baidu_v2_key},
     channel_supports_relay_route, channel_types_for_relay_route,
     deepseek::{apply_deepseek_request, DeepSeekRequestFormat},
@@ -42,7 +46,7 @@ use cinatoken_relay::{
     mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
     usage_summary_from_gemini_body, usage_summary_from_moonshot_body,
     usage_summary_from_rerank_body, CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath,
-    RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES,
+    RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI,
     CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA,
     CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
     CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4,
@@ -141,9 +145,12 @@ const ESTIMATED_VIDEO_INPUT_TOKENS: i64 = 4_096 * 2;
 const ESTIMATED_FILE_INPUT_TOKENS: i64 = 4_096;
 const MODEL_OBJECT_CREATED: i64 = 1_626_777_600;
 const MODEL_LIST_CACHE_MODEL_KEY: &str = "__model_list__";
+const ALI_ANTHROPIC_MESSAGES_MODELS_ENV: &str = "ALI_ANTHROPIC_MESSAGES_MODELS";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayProviderKind {
+    AliOpenAi,
+    AliMessages,
     BaiduV2OpenAi,
     OpenAiCompatible,
     AnthropicMessages,
@@ -277,6 +284,13 @@ impl RelayEndpoint {
     }
 
     fn effective_provider(&self, channel_type: i32) -> RelayProviderKind {
+        if channel_type == CHANNEL_TYPE_ALI {
+            return match self.provider {
+                RelayProviderKind::OpenAiCompatible => RelayProviderKind::AliOpenAi,
+                RelayProviderKind::AnthropicMessages => RelayProviderKind::AliMessages,
+                provider => provider,
+            };
+        }
         if channel_type == CHANNEL_TYPE_BAIDU_V2
             && self.provider == RelayProviderKind::OpenAiCompatible
         {
@@ -341,6 +355,8 @@ impl RelayEndpoint {
 
     fn registry_provider_kind_from_effective(&self, channel_type: i32) -> RegistryProviderKind {
         match self.effective_provider(channel_type) {
+            RelayProviderKind::AliOpenAi => RegistryProviderKind::AliOpenAi,
+            RelayProviderKind::AliMessages => RegistryProviderKind::AliMessages,
             RelayProviderKind::BaiduV2OpenAi => RegistryProviderKind::BaiduV2OpenAi,
             RelayProviderKind::OpenAiCompatible => RegistryProviderKind::OpenAiCompatible,
             RelayProviderKind::AnthropicMessages => RegistryProviderKind::AnthropicMessages,
@@ -369,15 +385,16 @@ impl RelayEndpoint {
     fn default_json_response_limit_bytes(&self) -> usize {
         match self.provider {
             RelayProviderKind::GeminiNative => GEMINI_JSON_RESPONSE_LIMIT_BYTES,
-            RelayProviderKind::OpenAiCompatible | RelayProviderKind::SiliconFlowOpenAi => {
-                match self.upstream_path.as_str() {
-                    "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
-                    "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
-                    "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
-                    _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
-                }
-            }
-            RelayProviderKind::AnthropicMessages
+            RelayProviderKind::AliOpenAi
+            | RelayProviderKind::OpenAiCompatible
+            | RelayProviderKind::SiliconFlowOpenAi => match self.upstream_path.as_str() {
+                "embeddings" => EMBEDDINGS_JSON_RESPONSE_LIMIT_BYTES,
+                "images/generations" => IMAGE_JSON_RESPONSE_LIMIT_BYTES,
+                "rerank" => RERANK_JSON_RESPONSE_LIMIT_BYTES,
+                _ => DEFAULT_RELAY_JSON_RESPONSE_LIMIT_BYTES,
+            },
+            RelayProviderKind::AliMessages
+            | RelayProviderKind::AnthropicMessages
             | RelayProviderKind::BaiduV2OpenAi
             | RelayProviderKind::DeepSeekOpenAi
             | RelayProviderKind::DeepSeekMessages
@@ -400,6 +417,7 @@ impl RelayEndpoint {
 pub(crate) enum AdminProbeEndpoint {
     Auto,
     OpenAi,
+    OpenAiCompletions,
     OpenAiResponse,
     OpenAiResponseCompact,
     Anthropic,
@@ -414,6 +432,7 @@ impl AdminProbeEndpoint {
         match value {
             "auto" => Some(Self::Auto),
             "openai" => Some(Self::OpenAi),
+            "openai-completions" => Some(Self::OpenAiCompletions),
             "openai-response" => Some(Self::OpenAiResponse),
             "openai-response-compact" => Some(Self::OpenAiResponseCompact),
             "anthropic" => Some(Self::Anthropic),
@@ -429,6 +448,7 @@ impl AdminProbeEndpoint {
         match self {
             Self::Auto => "auto",
             Self::OpenAi => "openai",
+            Self::OpenAiCompletions => "openai-completions",
             Self::OpenAiResponse => "openai-response",
             Self::OpenAiResponseCompact => "openai-response-compact",
             Self::Anthropic => "anthropic",
@@ -443,6 +463,7 @@ impl AdminProbeEndpoint {
         match self {
             Self::Auto => None,
             Self::OpenAi => Some(ProviderRelayRoute::ChatCompletions),
+            Self::OpenAiCompletions => Some(ProviderRelayRoute::Completions),
             Self::OpenAiResponse => Some(ProviderRelayRoute::Responses),
             Self::OpenAiResponseCompact => Some(ProviderRelayRoute::ResponsesCompact),
             Self::Anthropic => Some(ProviderRelayRoute::AnthropicMessages),
@@ -456,7 +477,11 @@ impl AdminProbeEndpoint {
     const fn supports_stream(self) -> bool {
         matches!(
             self,
-            Self::OpenAi | Self::OpenAiResponse | Self::Anthropic | Self::Gemini
+            Self::OpenAi
+                | Self::OpenAiCompletions
+                | Self::OpenAiResponse
+                | Self::Anthropic
+                | Self::Gemini
         )
     }
 
@@ -494,6 +519,13 @@ impl AdminProbeEndpoint {
                 "chat/completions",
                 RelayProviderKind::OpenAiCompatible,
                 Some(validate_chat_completions_request as fn(&Value) -> Option<&'static str>),
+            ),
+            Self::OpenAiCompletions => (
+                "admin channel legacy Completions probe",
+                ProviderRelayRoute::Completions,
+                "completions",
+                RelayProviderKind::OpenAiCompatible,
+                None,
             ),
             Self::OpenAiResponse => (
                 "admin channel Responses probe",
@@ -683,6 +715,7 @@ fn resolve_admin_probe_endpoint(
 
     const SAFE_AUTO_FALLBACKS: &[AdminProbeEndpoint] = &[
         AdminProbeEndpoint::OpenAiResponse,
+        AdminProbeEndpoint::OpenAiCompletions,
         AdminProbeEndpoint::Anthropic,
         AdminProbeEndpoint::Gemini,
         AdminProbeEndpoint::JinaRerank,
@@ -700,6 +733,7 @@ fn resolve_admin_probe_endpoint(
 
     let has_any_supported_route = [
         AdminProbeEndpoint::OpenAi,
+        AdminProbeEndpoint::OpenAiCompletions,
         AdminProbeEndpoint::OpenAiResponse,
         AdminProbeEndpoint::OpenAiResponseCompact,
         AdminProbeEndpoint::Anthropic,
@@ -732,6 +766,12 @@ fn build_admin_probe_body(endpoint: AdminProbeEndpoint, model: &str, stream: boo
         AdminProbeEndpoint::OpenAi => json!({
             "model": model,
             "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+            "stream": stream,
+        }),
+        AdminProbeEndpoint::OpenAiCompletions => json!({
+            "model": model,
+            "prompt": "hi",
             "max_tokens": 16,
             "stream": stream,
         }),
@@ -787,6 +827,7 @@ fn prepare_admin_channel_probe(
     channel: &RelayChannel,
     request: &AdminChannelProbeRequest,
     inject_stream_options: bool,
+    ali_messages_model_patterns: Option<&str>,
 ) -> Result<PreparedAdminChannelProbe, AdminChannelProbeError> {
     let model = request.model.trim();
     if model.is_empty() {
@@ -828,6 +869,19 @@ fn prepare_admin_channel_probe(
             .to_string()
     };
     let provider = endpoint.effective_provider(channel.channel_type);
+    if channel.channel_type == CHANNEL_TYPE_ALI
+        && !ali_accepts_request_shape(&endpoint, channel, &body, true, ali_messages_model_patterns)
+    {
+        return Err(AdminChannelProbeError::new(
+            422,
+            "channel_test_request_shape_unsupported",
+            format!(
+                "channel type {} rejected the minimal {} probe request shape",
+                channel.channel_type,
+                endpoint_type.as_str()
+            ),
+        ));
+    }
     apply_endpoint_request_transform(&mut body, &endpoint.upstream_path, channel).map_err(
         |err| {
             AdminChannelProbeError::new(
@@ -838,25 +892,16 @@ fn prepare_admin_channel_probe(
         },
     )?;
     apply_provider_request_transform(&mut body, provider);
-    if inject_stream_options
-        && matches!(
-            provider,
-            RelayProviderKind::BaiduV2OpenAi
-                | RelayProviderKind::OpenAiCompatible
-                | RelayProviderKind::DeepSeekOpenAi
-                | RelayProviderKind::MoonshotOpenAi
-                | RelayProviderKind::SubmodelOpenAi
-                | RelayProviderKind::XaiOpenAi
-                | RelayProviderKind::VolcEngineOpenAi
-        )
-    {
+    if inject_stream_options && provider_uses_openai_stream_options(provider) {
         cinatoken_relay::openai_compatible::apply_stream_options(
             &mut body,
             channel.channel_type,
             request.stream,
         );
     }
-    if !channel_accepts_endpoint_request_shape(channel, &endpoint, Some(&body)) {
+    if channel.channel_type != CHANNEL_TYPE_ALI
+        && !channel_accepts_endpoint_request_shape(channel, &endpoint, Some(&body))
+    {
         return Err(AdminChannelProbeError::new(
             422,
             "channel_test_request_shape_unsupported",
@@ -1197,7 +1242,9 @@ fn nonempty_array(value: Option<&Value>) -> bool {
 
 fn admin_probe_json_shape_valid(endpoint: AdminProbeEndpoint, value: &Value) -> bool {
     match endpoint {
-        AdminProbeEndpoint::OpenAi => nonempty_array(value.get("choices")),
+        AdminProbeEndpoint::OpenAi | AdminProbeEndpoint::OpenAiCompletions => {
+            nonempty_array(value.get("choices"))
+        }
         AdminProbeEndpoint::OpenAiResponse | AdminProbeEndpoint::OpenAiResponseCompact => {
             value.is_object()
                 && (nonempty_array(value.get("output"))
@@ -1233,7 +1280,7 @@ fn admin_probe_json_shape_valid(endpoint: AdminProbeEndpoint, value: &Value) -> 
 
 fn admin_probe_sse_event_shape_valid(endpoint: AdminProbeEndpoint, value: &Value) -> bool {
     match endpoint {
-        AdminProbeEndpoint::OpenAi => {
+        AdminProbeEndpoint::OpenAi | AdminProbeEndpoint::OpenAiCompletions => {
             value.get("choices").is_some_and(Value::is_array)
                 || value.get("object").and_then(Value::as_str) == Some("chat.completion.chunk")
         }
@@ -1438,7 +1485,13 @@ async fn execute_admin_channel_probe_inner(
     request: &AdminChannelProbeRequest,
 ) -> Result<AdminChannelProbeResult, AdminChannelProbeError> {
     let inject_stream_options = stream_options_inject_enabled(env);
-    let prepared = prepare_admin_channel_probe(channel, request, inject_stream_options)?;
+    let ali_messages_model_patterns = optional_env_var(env, ALI_ANTHROPIC_MESSAGES_MODELS_ENV);
+    let prepared = prepare_admin_channel_probe(
+        channel,
+        request,
+        inject_stream_options,
+        ali_messages_model_patterns.as_deref(),
+    )?;
     let max_json_response_bytes = RelayJsonResponseConfig::from_env(env)
         .map_err(|err| {
             AdminChannelProbeError::new(
@@ -2376,6 +2429,7 @@ async fn relay_endpoint_with_auth(
     let mut model_route_audit =
         RelayModelRouteAudit::primary(&model, configured_fallback_model.as_deref());
     let mut served_model = model.clone();
+    let ali_messages_model_patterns = optional_env_var(&env, ALI_ANTHROPIC_MESSAGES_MODELS_ENV);
 
     // Resolve the candidate pool(s). For an "auto" token group, walk the user's
     // auto groups (Go `CacheGetRandomSatisfiedChannel`); otherwise a single group.
@@ -2401,6 +2455,7 @@ async fn relay_endpoint_with_auth(
         &endpoint,
         should_relay_stream,
         json_body.as_ref(),
+        ali_messages_model_patterns.as_deref(),
     );
 
     // Go applies the per-token cross-group switch only to `auto` tokens. Empty
@@ -2586,18 +2641,7 @@ async fn relay_endpoint_with_auth(
                 // upstreams (Go parity) so supporting channels emit a real usage
                 // chunk instead of forcing the local estimate. Native Anthropic/
                 // Gemini providers carry usage natively and are left untouched.
-                if inject_stream_options
-                    && matches!(
-                        attempt_provider,
-                        RelayProviderKind::BaiduV2OpenAi
-                            | RelayProviderKind::OpenAiCompatible
-                            | RelayProviderKind::DeepSeekOpenAi
-                            | RelayProviderKind::MoonshotOpenAi
-                            | RelayProviderKind::SubmodelOpenAi
-                            | RelayProviderKind::XaiOpenAi
-                            | RelayProviderKind::VolcEngineOpenAi
-                    )
-                {
+                if inject_stream_options && provider_uses_openai_stream_options(attempt_provider) {
                     cinatoken_relay::openai_compatible::apply_stream_options(
                         &mut upstream_body,
                         channel.channel_type,
@@ -2944,6 +2988,7 @@ async fn relay_endpoint_with_auth(
                 &endpoint,
                 should_relay_stream,
                 json_body.as_ref(),
+                ali_messages_model_patterns.as_deref(),
             );
             for (_, candidates) in &mut fallback_group_pools {
                 candidates.retain(RelayChannel::ai_gateway_opted_in);
@@ -3498,7 +3543,7 @@ pub(crate) fn relay_terminal_attempt_audit_contract_compiled() -> bool {
 }
 
 pub(crate) fn relay_actual_serving_group_billing_contract_compiled() -> bool {
-    RELAY_CACHE_SCHEMA_VERSION == 3
+    RELAY_CACHE_SCHEMA_VERSION == 4
         && TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY == "max_candidate_group"
         && TIERED_BILLING_SELECTED_GROUP_STRATEGY == "selected_group"
         && settle(Quota(20), Quota(10)).refund_quota == Quota(10)
@@ -3623,6 +3668,7 @@ fn retain_pre_reserve_capable_channels(
     endpoint: &RelayEndpoint,
     should_relay_stream: bool,
     request_body: Option<&Value>,
+    ali_messages_model_patterns: Option<&str>,
 ) {
     for (_, channels) in group_pools {
         channels.retain(|channel| {
@@ -3640,7 +3686,20 @@ fn retain_pre_reserve_capable_channels(
             if is_workers_ai_binding_channel(channel) && should_relay_stream {
                 return false;
             }
-            if !channel_accepts_endpoint_request_shape(channel, endpoint, request_body) {
+            let request_shape_supported = if channel.channel_type == CHANNEL_TYPE_ALI {
+                request_body.is_some_and(|body| {
+                    ali_accepts_request_shape(
+                        endpoint,
+                        channel,
+                        body,
+                        false,
+                        ali_messages_model_patterns,
+                    )
+                })
+            } else {
+                channel_accepts_endpoint_request_shape(channel, endpoint, request_body)
+            };
+            if !request_shape_supported {
                 return false;
             }
             let Ok(url) = endpoint.try_upstream_url(channel) else {
@@ -3685,6 +3744,10 @@ fn channel_accepts_endpoint_request_shape(
             return false;
         }
     }
+    if channel.channel_type == CHANNEL_TYPE_ALI {
+        return request_body
+            .is_some_and(|body| ali_accepts_request_shape(endpoint, channel, body, false, None));
+    }
     if channel.channel_type == CHANNEL_TYPE_PERPLEXITY
         && endpoint.route == ProviderRelayRoute::ChatCompletions
     {
@@ -3706,13 +3769,91 @@ fn channel_accepts_endpoint_request_shape(
 fn is_direct_only_provider_channel(channel: &RelayChannel) -> bool {
     matches!(
         channel.channel_type,
-        CHANNEL_TYPE_BAIDU_V2
+        CHANNEL_TYPE_ALI
+            | CHANNEL_TYPE_BAIDU_V2
             | CHANNEL_TYPE_MOONSHOT
             | CHANNEL_TYPE_ZHIPU_V4
             | CHANNEL_TYPE_SILICONFLOW
             | CHANNEL_TYPE_SUBMODEL
             | CHANNEL_TYPE_VOLCENGINE
     )
+}
+
+fn ali_accepts_request_shape(
+    endpoint: &RelayEndpoint,
+    channel: &RelayChannel,
+    body: &Value,
+    model_already_mapped: bool,
+    ali_messages_model_patterns: Option<&str>,
+) -> bool {
+    if ali_plugin_header_value(&channel.other).is_err() {
+        return false;
+    }
+    let Some(model) = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return false;
+    };
+    let effective_model = if model_already_mapped {
+        model.to_string()
+    } else {
+        mapped_model_name(model, channel.model_mapping.as_deref())
+            .unwrap_or_else(|| model.to_string())
+    };
+    let top_p_is_valid = body
+        .get("top_p")
+        .map_or(true, |value| value.is_null() || value.as_f64().is_some());
+
+    match endpoint.route {
+        ProviderRelayRoute::ChatCompletions => {
+            top_p_is_valid
+                && body
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .is_some_and(|messages| !messages.is_empty())
+        }
+        ProviderRelayRoute::Completions => {
+            top_p_is_valid && body.get("prompt").is_some_and(non_empty_string_or_array)
+        }
+        ProviderRelayRoute::Responses => body.get("input").is_some_and(|input| !input.is_null()),
+        ProviderRelayRoute::Embeddings => body.get("input").is_some_and(non_empty_string_or_array),
+        ProviderRelayRoute::AnthropicMessages => {
+            supports_ali_anthropic_messages_with_config(
+                &effective_model,
+                ali_messages_model_patterns,
+            ) && body
+                .get("max_tokens")
+                .and_then(Value::as_u64)
+                .is_some_and(|max_tokens| max_tokens > 0)
+                && body
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .is_some_and(|messages| !messages.is_empty())
+        }
+        ProviderRelayRoute::Rerank => {
+            supports_ali_native_rerank(&effective_model)
+                && body.get("query").is_some_and(Value::is_string)
+                && body
+                    .get("documents")
+                    .and_then(Value::as_array)
+                    .is_some_and(|documents| !documents.is_empty())
+                && body
+                    .get("top_n")
+                    .map_or(true, |value| value.is_null() || value.as_u64().is_some())
+                && body
+                    .get("return_documents")
+                    .map_or(true, |value| value.is_null() || value.is_boolean())
+        }
+        _ => false,
+    }
+}
+
+fn non_empty_string_or_array(value: &Value) -> bool {
+    value.as_str().is_some_and(|value| !value.is_empty())
+        || value.as_array().is_some_and(|values| !values.is_empty())
 }
 
 fn moonshot_accepts_request_shape(
@@ -3949,18 +4090,7 @@ async fn execute_relay_attempt_plan(
                     continue;
                 }
                 apply_provider_request_transform(&mut upstream_body, attempt_provider);
-                if inject_stream_options
-                    && matches!(
-                        attempt_provider,
-                        RelayProviderKind::BaiduV2OpenAi
-                            | RelayProviderKind::OpenAiCompatible
-                            | RelayProviderKind::DeepSeekOpenAi
-                            | RelayProviderKind::MoonshotOpenAi
-                            | RelayProviderKind::SubmodelOpenAi
-                            | RelayProviderKind::XaiOpenAi
-                            | RelayProviderKind::VolcEngineOpenAi
-                    )
-                {
+                if inject_stream_options && provider_uses_openai_stream_options(attempt_provider) {
                     cinatoken_relay::openai_compatible::apply_stream_options(
                         &mut upstream_body,
                         channel.channel_type,
@@ -6663,6 +6793,9 @@ async fn forward_relay_request(
         return forward_wfp_relay_transport(env, url, &worker_name, channel.id, body).await;
     }
     match provider {
+        RelayProviderKind::AliOpenAi | RelayProviderKind::AliMessages => {
+            forward_ali(url, upstream_key, channel, body).await
+        }
         RelayProviderKind::BaiduV2OpenAi => forward_baidu_v2_openai(url, upstream_key, body).await,
         RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
@@ -6943,6 +7076,33 @@ async fn forward_openai_compatible(
     Fetch::Request(outbound).send().await
 }
 
+async fn forward_ali(
+    url: &str,
+    upstream_key: &str,
+    channel: &RelayChannel,
+    body: &Value,
+) -> worker::Result<Response> {
+    let body_text = serde_json::to_string(body)?;
+    let mut headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("authorization", &format!("Bearer {upstream_key}"))?;
+    if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+        headers.set("x-dashscope-sse", "enable")?;
+    }
+    if let Some(plugin) = ali_plugin_header_value(&channel.other)
+        .map_err(|reason| worker::Error::RustError(reason.to_string()))?
+    {
+        headers.set("x-dashscope-plugin", plugin)?;
+    }
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(&body_text)));
+    let outbound = Request::new_with_init(url, &init)?;
+    Fetch::Request(outbound).send().await
+}
+
 async fn forward_baidu_v2_openai(
     url: &str,
     upstream_key: &str,
@@ -7104,6 +7264,25 @@ async fn complete_relay_response(
         .flatten()
         .unwrap_or_else(|| "application/json".to_string());
     let upstream_request_id = response_header(&upstream, &["x-request-id", "cf-ray"]);
+    if status == 200 && provider == RelayProviderKind::AliOpenAi && endpoint_path == "rerank" {
+        return complete_ali_rerank_response(
+            upstream,
+            env,
+            db,
+            context,
+            auth,
+            channel,
+            model,
+            group,
+            endpoint_path,
+            audit,
+            status,
+            upstream_request_id,
+            content_type,
+            max_json_response_bytes,
+        )
+        .await;
+    }
     if status == 200
         && provider == RelayProviderKind::SiliconFlowOpenAi
         && matches!(endpoint_path.as_str(), "rerank" | "images/generations")
@@ -7332,6 +7511,98 @@ async fn complete_passthrough_relay_response_with_usage(
     }
 
     finalize_relay_response(upstream, &content_type)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_ali_rerank_response(
+    mut upstream: Response,
+    env: Env,
+    db: D1Database,
+    context: Option<Context>,
+    auth: AuthenticatedToken,
+    channel: RelayChannel,
+    model: String,
+    group: String,
+    endpoint_path: String,
+    audit: RelayAuditContext,
+    status: u16,
+    upstream_request_id: Option<String>,
+    _content_type: String,
+    max_json_response_bytes: usize,
+) -> worker::Result<Response> {
+    let body = match read_response_text_limited(&mut upstream, max_json_response_bytes).await {
+        Ok(body) => body,
+        Err(err) => {
+            let message = format!(
+                "failed to read Ali rerank response: {}",
+                err.message("Ali rerank response body")
+            );
+            record_owned_relay_audit(
+                context,
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "Ali rerank response validation",
+            )
+            .await;
+            return openai_error_response(message, 502);
+        }
+    };
+    let (body, usage) = match transform_ali_rerank_response_body(&body) {
+        Ok(transformed) => transformed,
+        Err(err) => {
+            worker::console_error!("failed to validate Ali rerank response: {}", err);
+            record_owned_relay_audit(
+                context,
+                env,
+                db,
+                auth,
+                channel,
+                model,
+                group,
+                endpoint_path,
+                502,
+                UsageSummary::default(),
+                audit,
+                upstream_request_id,
+                "Ali rerank response validation",
+            )
+            .await;
+            return openai_error_response("invalid Ali rerank response body".to_string(), 502);
+        }
+    };
+
+    record_owned_relay_audit(
+        context,
+        env,
+        db,
+        auth,
+        channel,
+        model,
+        group,
+        endpoint_path,
+        status,
+        usage,
+        audit,
+        upstream_request_id,
+        "Ali rerank",
+    )
+    .await;
+
+    let mut response = Response::ok(body)?.with_status(status);
+    response
+        .headers_mut()
+        .set("content-type", "application/json")?;
+    set_cors_headers(&mut response)?;
+    Ok(response)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7711,7 +7982,8 @@ async fn response_usage_summary(
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
-            RelayProviderKind::BaiduV2OpenAi
+            RelayProviderKind::AliOpenAi
+                | RelayProviderKind::BaiduV2OpenAi
                 | RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
@@ -7747,6 +8019,11 @@ fn usage_summary_for_provider(
     endpoint_path: &str,
 ) -> UsageSummary {
     match provider {
+        RelayProviderKind::AliOpenAi if endpoint_path == "rerank" => {
+            usage_summary_from_rerank_body(body)
+        }
+        RelayProviderKind::AliOpenAi => usage_summary_from_body(body),
+        RelayProviderKind::AliMessages => usage_summary_from_anthropic_body(body),
         RelayProviderKind::OpenAiCompatible if endpoint_path == "rerank" => {
             usage_summary_from_rerank_body(body)
         }
@@ -7857,7 +8134,8 @@ async fn streaming_usage_summary(
 ) -> worker::Result<(UsageSummary, bool)> {
     let mut stream = upstream.stream()?;
     let mut accumulator = match provider {
-        RelayProviderKind::BaiduV2OpenAi
+        RelayProviderKind::AliOpenAi
+        | RelayProviderKind::BaiduV2OpenAi
         | RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::DeepSeekOpenAi
         | RelayProviderKind::MistralOpenAi
@@ -7867,7 +8145,8 @@ async fn streaming_usage_summary(
         | RelayProviderKind::XaiOpenAi
         | RelayProviderKind::VolcEngineOpenAi => SseUsageAccumulator::default(),
         RelayProviderKind::MoonshotOpenAi => SseUsageAccumulator::moonshot(),
-        RelayProviderKind::AnthropicMessages
+        RelayProviderKind::AliMessages
+        | RelayProviderKind::AnthropicMessages
         | RelayProviderKind::DeepSeekMessages
         | RelayProviderKind::MoonshotMessages => SseUsageAccumulator::anthropic(),
         RelayProviderKind::GeminiNative => SseUsageAccumulator::gemini(),
@@ -7883,7 +8162,8 @@ async fn streaming_usage_summary(
     let estimate_applicable = estimate_enabled
         && matches!(
             provider,
-            RelayProviderKind::BaiduV2OpenAi
+            RelayProviderKind::AliOpenAi
+                | RelayProviderKind::BaiduV2OpenAi
                 | RelayProviderKind::OpenAiCompatible
                 | RelayProviderKind::DeepSeekOpenAi
                 | RelayProviderKind::MistralOpenAi
@@ -9373,6 +9653,9 @@ fn apply_endpoint_request_transform(
     endpoint_path: &str,
     channel: &RelayChannel,
 ) -> worker::Result<()> {
+    if channel.channel_type == CHANNEL_TYPE_ALI {
+        apply_ali_request(body, endpoint_path);
+    }
     if endpoint_path == "rerank" && channel.channel_type == CHANNEL_TYPE_COHERE {
         apply_cohere_rerank_request_transform(body);
     }
@@ -9419,7 +9702,9 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         RelayProviderKind::MoonshotMessages => {
             apply_moonshot_request(body, MoonshotRequestFormat::AnthropicMessages)
         }
-        RelayProviderKind::BaiduV2OpenAi
+        RelayProviderKind::AliOpenAi
+        | RelayProviderKind::AliMessages
+        | RelayProviderKind::BaiduV2OpenAi
         | RelayProviderKind::OpenAiCompatible
         | RelayProviderKind::AnthropicMessages
         | RelayProviderKind::MistralOpenAi
@@ -9430,6 +9715,20 @@ fn apply_provider_request_transform(body: &mut Value, provider: RelayProviderKin
         | RelayProviderKind::VolcEngineOpenAi
         | RelayProviderKind::GeminiNative => {}
     }
+}
+
+fn provider_uses_openai_stream_options(provider: RelayProviderKind) -> bool {
+    matches!(
+        provider,
+        RelayProviderKind::AliOpenAi
+            | RelayProviderKind::BaiduV2OpenAi
+            | RelayProviderKind::OpenAiCompatible
+            | RelayProviderKind::DeepSeekOpenAi
+            | RelayProviderKind::MoonshotOpenAi
+            | RelayProviderKind::SubmodelOpenAi
+            | RelayProviderKind::XaiOpenAi
+            | RelayProviderKind::VolcEngineOpenAi
+    )
 }
 
 fn random_mistral_tool_call_id() -> Option<String> {
@@ -10357,6 +10656,11 @@ mod tests {
                 Some("/v1/chat/completions"),
             ),
             (
+                "openai-completions",
+                AdminProbeEndpoint::OpenAiCompletions,
+                Some("/v1/completions"),
+            ),
+            (
                 "openai-response",
                 AdminProbeEndpoint::OpenAiResponse,
                 Some("/v1/responses"),
@@ -10546,6 +10850,9 @@ mod tests {
         assert_eq!(responses["input"][0]["role"], "user");
         let chat = build_admin_probe_body(AdminProbeEndpoint::OpenAi, "gpt-4.1", false);
         assert_eq!(chat["max_tokens"], 16);
+        let completions =
+            build_admin_probe_body(AdminProbeEndpoint::OpenAiCompletions, "qwen-coder", false);
+        assert_eq!(completions["prompt"], "hi");
         let gemini = build_admin_probe_body(AdminProbeEndpoint::Gemini, "gemini-2.5-flash", false);
         assert_eq!(gemini["generationConfig"]["maxOutputTokens"], 3000);
     }
@@ -10559,6 +10866,10 @@ mod tests {
         assert!(!admin_probe_json_shape_valid(
             AdminProbeEndpoint::OpenAi,
             &json!({"choices": []})
+        ));
+        assert!(admin_probe_json_shape_valid(
+            AdminProbeEndpoint::OpenAiCompletions,
+            &json!({"choices": [{"text": "hi"}]})
         ));
         assert!(admin_probe_json_shape_valid(
             AdminProbeEndpoint::OpenAiResponse,
@@ -10660,7 +10971,7 @@ mod tests {
             endpoint_type: AdminProbeEndpoint::OpenAi,
             stream: false,
         };
-        let prepared = prepare_admin_channel_probe(&channel, &request, false).unwrap();
+        let prepared = prepare_admin_channel_probe(&channel, &request, false, None).unwrap();
         assert_eq!(prepared.upstream_key, "first-key");
         assert_eq!(prepared.body["model"], "provider-model");
         assert_eq!(prepared.effective_model, "provider-model");
@@ -11406,6 +11717,7 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                other: String::new(),
                 other_info: String::new(),
                 priority: 0,
                 weight: 0,
@@ -11451,6 +11763,7 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                other: String::new(),
                 other_info: String::new(),
                 priority: 0,
                 weight: 0,
@@ -11530,7 +11843,7 @@ mod tests {
         assert_eq!(endpoint.route.cache_family(), "route:rerank");
         assert_eq!(
             channel_types_for_relay_route(endpoint.route),
-            vec![25, 34, 38, 40]
+            vec![17, 25, 34, 38, 40]
         );
         assert!(!endpoint.should_relay_stream(&body));
         assert_eq!(endpoint.stream_not_implemented(&body), None);
@@ -11556,6 +11869,7 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                other: String::new(),
                 other_info: String::new(),
                 priority: 0,
                 weight: 0,
@@ -11573,6 +11887,7 @@ mod tests {
                 channel_group: "default".to_string(),
                 model_mapping: None,
                 openai_organization: None,
+                other: String::new(),
                 other_info: String::new(),
                 priority: 0,
                 weight: 0,
@@ -11633,6 +11948,7 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            other: String::new(),
             other_info: String::new(),
             priority: 0,
             weight: 0,
@@ -11688,6 +12004,7 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            other: String::new(),
             other_info: String::new(),
             priority: 0,
             weight: 0,
@@ -11731,6 +12048,7 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            other: String::new(),
             other_info: String::new(),
             priority: 0,
             weight: 0,
@@ -11773,6 +12091,7 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            other: String::new(),
             other_info: String::new(),
             priority: 0,
             weight: 0,
@@ -12618,6 +12937,7 @@ mod tests {
             channel_group: String::new(),
             model_mapping: None,
             openai_organization: None,
+            other: String::new(),
             other_info: String::new(),
             priority,
             weight,
@@ -12911,6 +13231,283 @@ mod tests {
         ] {
             assert!(!channel_supports_relay_route(CHANNEL_TYPE_MOONSHOT, route));
         }
+    }
+
+    #[test]
+    fn ali_is_route_explicit_direct_only_and_dual_format() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_ALI), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_ALI;
+
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert_eq!(
+            chat.effective_provider(channel.channel_type),
+            RelayProviderKind::AliOpenAi
+        );
+        assert_eq!(
+            chat.registry_provider_kind(channel.channel_type),
+            RegistryProviderKind::AliOpenAi
+        );
+        assert_eq!(
+            chat.upstream_url(&channel),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        );
+
+        let mut messages = endpoint(true, None);
+        messages.route = ProviderRelayRoute::AnthropicMessages;
+        messages.provider = RelayProviderKind::AnthropicMessages;
+        messages.upstream_path = "messages".to_string();
+        assert_eq!(
+            messages.effective_provider(channel.channel_type),
+            RelayProviderKind::AliMessages
+        );
+        assert_eq!(
+            messages.upstream_url(&channel),
+            "https://dashscope.aliyuncs.com/apps/anthropic/v1/messages"
+        );
+
+        let mut body = json!({
+            "model": "qwen-plus",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true
+        });
+        apply_endpoint_request_transform(&mut body, "chat/completions", &channel).unwrap();
+        assert_eq!(body["top_p"], 0.001);
+        cinatoken_relay::openai_compatible::apply_stream_options(
+            &mut body,
+            channel.channel_type,
+            true,
+        );
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert!(provider_uses_openai_stream_options(
+            RelayProviderKind::AliOpenAi
+        ));
+        assert!(!provider_uses_openai_stream_options(
+            RelayProviderKind::AliMessages
+        ));
+
+        channel.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        assert!(plan_relay_ai_gateway_attempt(
+            &ai_gateway_runtime_for_tests(),
+            &chat,
+            &channel,
+            "qwen-plus"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("direct-only provider"));
+
+        for route in [
+            ProviderRelayRoute::ChatCompletions,
+            ProviderRelayRoute::Completions,
+            ProviderRelayRoute::Responses,
+            ProviderRelayRoute::Embeddings,
+            ProviderRelayRoute::AnthropicMessages,
+            ProviderRelayRoute::Rerank,
+        ] {
+            assert!(channel_supports_relay_route(CHANNEL_TYPE_ALI, route));
+        }
+        for route in [
+            ProviderRelayRoute::ImageGenerations,
+            ProviderRelayRoute::ImageEdits,
+            ProviderRelayRoute::AudioSpeech,
+            ProviderRelayRoute::GeminiNative,
+        ] {
+            assert!(!channel_supports_relay_route(CHANNEL_TYPE_ALI, route));
+        }
+    }
+
+    #[test]
+    fn ali_shape_guards_and_rerank_transform_run_before_reserve() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_ALI), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_ALI;
+        let chat = ai_gateway_chat_endpoint_for_tests();
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&json!({
+                "model": "qwen-plus",
+                "messages": [{"role": "user", "content": "hello"}],
+                "top_p": 0.5
+            }))
+        ));
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&json!({
+                "model": "qwen-plus",
+                "messages": [{"role": "user", "content": "hello"}],
+                "top_p": "wide"
+            }))
+        ));
+
+        let mut messages = endpoint(true, None);
+        messages.route = ProviderRelayRoute::AnthropicMessages;
+        messages.provider = RelayProviderKind::AnthropicMessages;
+        messages.upstream_path = "messages".to_string();
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &messages,
+            Some(&json!({
+                "model": "qwen3.7-plus",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 64
+            }))
+        ));
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &messages,
+            Some(&json!({
+                "model": "claude-sonnet-4",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 64
+            }))
+        ));
+
+        channel.model_mapping = Some(r#"{"alias":"qwen3.7-plus"}"#.to_string());
+        let already_mapped = json!({
+            "model": "alias",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 64
+        });
+        assert!(!ali_accepts_request_shape(
+            &messages,
+            &channel,
+            &already_mapped,
+            true,
+            None,
+        ));
+        assert!(ali_accepts_request_shape(
+            &messages,
+            &channel,
+            &already_mapped,
+            false,
+            None,
+        ));
+        channel.model_mapping = None;
+
+        let mut rerank = endpoint(false, None);
+        rerank.route = ProviderRelayRoute::Rerank;
+        rerank.upstream_path = "rerank".to_string();
+        let mut rerank_body = json!({
+            "model": "gte-rerank-v2",
+            "query": "hello",
+            "documents": ["a", "b"],
+            "top_n": 1
+        });
+        assert!(channel_accepts_endpoint_request_shape(
+            &channel,
+            &rerank,
+            Some(&rerank_body)
+        ));
+        apply_endpoint_request_transform(&mut rerank_body, "rerank", &channel).unwrap();
+        assert_eq!(rerank_body["input"]["query"], "hello");
+        assert_eq!(rerank_body["parameters"]["return_documents"], true);
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &rerank,
+            Some(&json!({
+                "model": "qwen3-rerank",
+                "query": "hello",
+                "documents": ["a"]
+            }))
+        ));
+
+        channel.other = "invalid\r\nplugin".to_string();
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &chat,
+            Some(&json!({
+                "model": "qwen-plus",
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+        ));
+        channel.other.clear();
+
+        let mut images = endpoint(false, None);
+        images.route = ProviderRelayRoute::ImageGenerations;
+        images.upstream_path = "images/generations".to_string();
+        assert!(!channel_accepts_endpoint_request_shape(
+            &channel,
+            &images,
+            Some(&json!({"model": "wan2.6-t2i", "prompt": "hello"}))
+        ));
+        assert!(images.try_upstream_url(&channel).is_err());
+    }
+
+    #[test]
+    fn ali_admin_probes_cover_the_supported_route_families() {
+        let mut channel = test_channel(i64::from(CHANNEL_TYPE_ALI), 0, 1);
+        channel.channel_type = CHANNEL_TYPE_ALI;
+        let rerank_request = AdminChannelProbeRequest {
+            model: "gte-rerank-v2".to_string(),
+            endpoint_type: AdminProbeEndpoint::JinaRerank,
+            stream: false,
+        };
+        let prepared = prepare_admin_channel_probe(&channel, &rerank_request, false, None).unwrap();
+        assert_eq!(prepared.provider, RelayProviderKind::AliOpenAi);
+        assert_eq!(prepared.body["input"]["query"], "hi");
+        assert_eq!(prepared.body["parameters"]["return_documents"], true);
+        assert_eq!(
+            prepared.upstream_url,
+            "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        );
+
+        channel.model_mapping = Some(r#"{"public-model":"custom-native"}"#.to_string());
+        let messages_request = AdminChannelProbeRequest {
+            model: "public-model".to_string(),
+            endpoint_type: AdminProbeEndpoint::Anthropic,
+            stream: true,
+        };
+        assert!(prepare_admin_channel_probe(&channel, &messages_request, true, None).is_err());
+        let prepared =
+            prepare_admin_channel_probe(&channel, &messages_request, true, Some("custom-native"))
+                .unwrap();
+        assert_eq!(prepared.provider, RelayProviderKind::AliMessages);
+        assert_eq!(prepared.body["model"], "custom-native");
+        assert!(prepared.body.get("stream_options").is_none());
+        channel.model_mapping = None;
+
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_ALI,
+                AdminProbeEndpoint::Auto,
+                "text-embedding-v4",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::Embeddings
+        );
+        assert_eq!(
+            resolve_admin_probe_endpoint(
+                CHANNEL_TYPE_ALI,
+                AdminProbeEndpoint::Auto,
+                "gte-rerank-v2",
+                false,
+            )
+            .unwrap(),
+            AdminProbeEndpoint::JinaRerank
+        );
+        for endpoint in [
+            AdminProbeEndpoint::OpenAi,
+            AdminProbeEndpoint::OpenAiCompletions,
+            AdminProbeEndpoint::OpenAiResponse,
+            AdminProbeEndpoint::Anthropic,
+            AdminProbeEndpoint::Embeddings,
+            AdminProbeEndpoint::JinaRerank,
+        ] {
+            assert_eq!(
+                resolve_admin_probe_endpoint(CHANNEL_TYPE_ALI, endpoint, "qwen-plus", false)
+                    .unwrap(),
+                endpoint
+            );
+        }
+        assert!(resolve_admin_probe_endpoint(
+            CHANNEL_TYPE_ALI,
+            AdminProbeEndpoint::ImageGeneration,
+            "wan2.6-t2i",
+            false,
+        )
+        .is_err());
     }
 
     #[test]
@@ -13479,6 +14076,7 @@ mod tests {
             &ai_gateway_chat_endpoint_for_tests(),
             false,
             Some(&body),
+            None,
         );
         assert!(pools[0].1.is_empty());
 
@@ -13491,6 +14089,7 @@ mod tests {
             &ai_gateway_chat_endpoint_for_tests(),
             false,
             Some(&body),
+            None,
         );
         assert!(pools[0].1.is_empty());
     }
@@ -13607,7 +14206,7 @@ mod tests {
             ],
         )];
         retain_route_capable_channels(&mut pools, Some(endpoint.route));
-        retain_pre_reserve_capable_channels(&mut pools, &endpoint, true, None);
+        retain_pre_reserve_capable_channels(&mut pools, &endpoint, true, None, None);
 
         let remaining = pools[0]
             .1

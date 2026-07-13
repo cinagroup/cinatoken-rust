@@ -3,6 +3,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelAdapterKind {
+    Ali,
     BaiduV2OpenAi,
     GenericOpenAi,
     AnthropicNative,
@@ -175,6 +176,14 @@ const VOLCENGINE_ROUTES: &[ProviderRelayRoute] = &[
     ProviderRelayRoute::ImageGenerations,
     ProviderRelayRoute::Responses,
 ];
+const ALI_ROUTES: &[ProviderRelayRoute] = &[
+    ProviderRelayRoute::ChatCompletions,
+    ProviderRelayRoute::Completions,
+    ProviderRelayRoute::Responses,
+    ProviderRelayRoute::Embeddings,
+    ProviderRelayRoute::AnthropicMessages,
+    ProviderRelayRoute::Rerank,
+];
 const NO_ROUTES: &[ProviderRelayRoute] = &[];
 
 macro_rules! capability {
@@ -322,10 +331,10 @@ pub const CHANNEL_RELAY_CAPABILITIES: &[ChannelRelayCapability] = &[
     capability!(
         17,
         "Ali",
-        DedicatedPending,
-        Deferred,
-        NO_ROUTES,
-        "dedicated Ali adapter is not migrated"
+        Ali,
+        Partial,
+        ALI_ROUTES,
+        "direct-only DashScope OpenAI, Responses, native Messages, and rerank adapter is implemented"
     ),
     capability!(
         18,
@@ -666,6 +675,19 @@ mod tests {
     }
 
     #[test]
+    fn readiness_totals_are_reviewed_explicitly() {
+        let totals = CHANNEL_RELAY_CAPABILITIES.iter().fold(
+            (0usize, 0usize, 0usize),
+            |(ready, partial, deferred), capability| match capability.readiness {
+                ChannelRelayReadiness::Ready => (ready + 1, partial, deferred),
+                ChannelRelayReadiness::Partial => (ready, partial + 1, deferred),
+                ChannelRelayReadiness::Deferred => (ready, partial, deferred + 1),
+            },
+        );
+        assert_eq!(totals, (16, 14, 23));
+    }
+
+    #[test]
     fn generic_openai_set_matches_go_adapter_dispatch() {
         let expected = [1, 3, 6, 7, 8, 9, 10, 12, 13, 19, 20, 22, 31, 47];
         let actual = CHANNEL_RELAY_CAPABILITIES
@@ -753,7 +775,7 @@ mod tests {
         ));
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::AnthropicMessages),
-            vec![14, 25, 26, 43]
+            vec![14, 17, 25, 26, 43]
         );
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::Realtime),
@@ -765,8 +787,15 @@ mod tests {
     fn dedicated_route_sets_are_explicit() {
         assert_eq!(
             channel_types_for_relay_route(ProviderRelayRoute::Rerank),
-            vec![25, 34, 38, 40]
+            vec![17, 25, 34, 38, 40]
         );
+        for route in ALI_ROUTES {
+            assert!(channel_supports_relay_route(17, *route));
+        }
+        assert!(!channel_supports_relay_route(
+            17,
+            ProviderRelayRoute::ImageGenerations
+        ));
         for route in JINA_ROUTES {
             assert!(channel_supports_relay_route(38, *route));
         }

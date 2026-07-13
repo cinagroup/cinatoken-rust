@@ -1703,6 +1703,7 @@ fn relay_channel_from_row(channel: &ChannelRow) -> RelayChannel {
         channel_group: channel.channel_group.clone(),
         model_mapping: channel.model_mapping.clone(),
         openai_organization: channel.openai_organization.clone(),
+        other: channel.other.clone(),
         other_info: channel.other_info.clone(),
         priority: i64::from(channel.priority),
         weight: channel.weight,

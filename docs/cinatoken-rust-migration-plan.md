@@ -11172,3 +11172,69 @@ success/error/stream behavior, usage and request-contract settlement,
 reservation/refund, audit/provider reconciliation, disable behavior, and
 rollback. No live provider or Cloudflare credential was used. Production
 remains **NO-GO**.
+
+### 22.182 2026-07-13 Ali DashScope Direct Multi-Route Adapter
+
+This increment re-audits source channel type 17 against the current DashScope
+contract before moving it out of Deferred. The current official
+[base URL guide](https://help.aliyun.com/en/model-studio/base-url),
+[Responses compatibility guide](https://help.aliyun.com/en/model-studio/compatibility-with-openai-responses-api),
+[Anthropic Messages guide](https://help.aliyun.com/en/model-studio/anthropic-api-messages),
+[Embeddings guide](https://help.aliyun.com/en/model-studio/text-embedding-synchronous-api),
+[Completions guide](https://help.aliyun.com/en/model-studio/completions), and
+[Rerank guide](https://help.aliyun.com/en/model-studio/rerank) provide the
+current route and Bearer contracts. In particular, Rust uses the current
+`/compatible-mode/v1/responses` endpoint instead of preserving the source's
+deprecated `/api/v2/apps/protocols/compatible-mode/v1/responses` prefix.
+
+Implemented locally:
+
+- Type 17 admits exactly Chat Completions, legacy Completions, Responses,
+  Embeddings, Anthropic Messages, and Rerank. OpenAI-shaped routes use
+  `/compatible-mode/v1`; Messages uses `/apps/anthropic/v1/messages`; rerank
+  uses `/api/v1/services/rerank/text-rerank/text-rerank`.
+- Chat and legacy Completions preserve the source `top_p` behavior: missing,
+  null, or non-positive values become `0.001`, and values at least one become
+  `0.999`. Invalid JSON types are filtered before reserve rather than silently
+  normalized.
+- Native Messages defaults to the source's `qwen`, `deepseek-v4`, `kimi`, `glm`,
+  and `minimax-m` model patterns after channel model mapping. The bounded
+  `ALI_ANTHROPIC_MESSAGES_MODELS` environment override preserves the source's
+  operator extension point. Other models fail before reserve; Rust does not
+  silently invoke the source's unported Claude-to-OpenAI conversion.
+- Rerank currently admits only `gte-rerank-v2`, converts the OpenAI-like input
+  to DashScope `input` and `parameters`, defaults `return_documents` to true,
+  and converts `output.results` plus optional `usage.total_tokens` back to the
+  shared response. qwen3 rerank protocols remain Deferred. Success bodies are
+  bounded; malformed provider 200 bodies become an owned 502 audit/refund
+  outcome with a JSON content type.
+- Bearer authorization is request-scoped. Streaming requests add
+  `X-DashScope-SSE: enable`; main-channel, fallback, and Admin OpenAI-shaped
+  streaming share the same usage-option policy while native Messages retains
+  Anthropic usage semantics. Optional `X-DashScope-Plugin` is derived only from
+  a printable, at-most-4-KiB server-side `channels.other` value and is never
+  accepted from the client. Relay cache schema v4 invalidates older channel
+  cache entries that do not carry this field.
+- The source's image generation/edit handling performs multipart buffering,
+  long async polling, and arbitrary provider URL fetch/base64 conversion.
+  Images, audio, Gemini, and non-native Messages therefore remain Deferred for
+  a task/Queue/R2 design instead of running inside one Worker request.
+- Cloudflare's
+  [native provider list](https://developers.cloudflare.com/ai-gateway/usage/providers/)
+  does not include DashScope. Type 17 is direct-only; AI Gateway and WFP
+  configuration fail before quota reservation and again at dispatch.
+- Admin Channel Test supports all admitted route families, including legacy
+  Completions and model-sensitive auto selection for embeddings and rerank.
+  Backend and frontend readiness expose the exact six-route Partial contract.
+  A unit assertion freezes the reviewed registry totals at 16 Ready, 14
+  Partial, and 23 Deferred channel types.
+
+Local fixtures cover current/default/custom URLs, unsupported-route rejection,
+Messages model gating, request transforms, rerank response validation, usage,
+direct-only transport, Channel Test, and frontend projection. This is E2
+implementation evidence only. After credential rotation, isolated staging must
+archive non-stream and SSE behavior where supported, all six success/error
+paths, response bounds, malformed rerank refund, reservation/settlement/refund,
+D1 audit and provider billing reconciliation, disable/recovery behavior, and
+rollback to Go/VPS. No provider or Cloudflare credential was used. Production
+remains **NO-GO**.

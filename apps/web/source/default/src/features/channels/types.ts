@@ -168,6 +168,7 @@ export interface ProviderReadinessResponse {
 export type ChannelTestEndpointType =
   | 'auto'
   | 'openai'
+  | 'openai-completions'
   | 'openai-response'
   | 'openai-response-compact'
   | 'anthropic'

@@ -62,6 +62,10 @@ pub struct RelayChannel {
     pub channel_group: String,
     pub model_mapping: Option<String>,
     pub openai_organization: Option<String>,
+    /// Provider-specific server-owned channel configuration. Ali uses this as
+    /// the optional `X-DashScope-Plugin` value; it is never client supplied.
+    #[serde(default)]
+    pub other: String,
     #[serde(default)]
     pub other_info: String,
     /// Selection priority tier (higher = preferred). Maps to `abilities.priority`

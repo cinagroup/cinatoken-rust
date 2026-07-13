@@ -217,11 +217,14 @@ The MVP expects tables from `migrations/d1/0001_core.sql` and at least:
   `remain_quota` unless `unlimited_quota = 1`, and a valid `user_id`;
 - a `channels` row with `status = 1`, a supported `type`, non-empty `"key"`,
   matching `"group"`, and either empty `models` or a CSV entry for the
-  requested model. OpenAI-compatible endpoints, including image generation and
-  audio speech, currently support types `1, 20, 40, 42, 43, 48, 53`;
-  `/v1/rerank` currently supports Jina type `38` and Cohere type `34`; Jina
+  requested model. Route eligibility comes from the provider capability
+  registry rather than a shared static OpenAI-shaped type list; dedicated type
+  17 is summarized below;
+  `/v1/rerank` currently supports Ali type `17` for `gte-rerank-v2`, Jina type
+  `38`, and Cohere type `34`; Jina
   type `38` is also explicitly supported by `/v1/embeddings`;
-  `/v1/messages` currently supports type `14`; native Gemini
+  `/v1/messages` currently supports native Anthropic type `14` and Ali type
+  `17` for the configured native model patterns; native Gemini
   generate-content, embedding, and token-count endpoints currently support type
   `24`.
 - preferably an `abilities` row with matching `group_name`, `model`,
@@ -260,9 +263,10 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   reader. Raw-bytes and pass-through stream modes are defined but
   intentionally inactive (raw-bytes is available for future binary endpoints;
   pass-through streaming is deferred).
-- Rerank support currently covers Jina JSON passthrough and Cohere JSON
-  request/response adaptation. Other provider-specific rerank transforms plus
-  live upstream coverage are still pending.
+- Rerank support currently covers Ali `gte-rerank-v2` conversion, Jina JSON
+  passthrough, and Cohere JSON request/response adaptation. qwen3 rerank
+  protocols, other provider transforms, and live upstream coverage are still
+  pending.
 - Jina embedding support matches the Go adapter's `/v1/embeddings` URL and
   `encoding_format` removal. Live Jina embedding usage, billing, error, and
   rollback evidence remains pending.
@@ -279,7 +283,8 @@ wrangler d1 execute cinatoken-rust-db --local --file .wrangler/dev-seed.sql
   `img`/`ai` normalization. Exact tokenizer counts plus image dimension/audio
   duration parity are still pending.
 - Non-tiered billing still uses `quota = 0` and `other.billing_pending = true`.
-- Provider-specific request transforms are implemented for Cohere rerank only.
+- Provider-specific request transforms are owned by the dedicated adapters in
+  the capability registry; unlisted provider/route pairs remain fail-closed.
 - Channel retry, fallback, and best-effort auto-disable are implemented (see
   above), but channel weighting (weighted-random selection within a priority
   tier) and live response-time-based health scoring are not implemented yet.
@@ -302,3 +307,28 @@ original billing expression flow:
   estimator (1000 tokens/minute from mp3/wav duration) is the Go behavior
   and remains to be ported; until then operators should configure a flat
   `ModelPrice` for whisper models.
+## 2026-07-13 Ali DashScope Direct Adapter Boundary
+
+Channel type 17 is now Partial through a dedicated direct-only provider
+adapter. The admitted routes are `/v1/chat/completions`, `/v1/completions`,
+`/v1/responses`, `/v1/embeddings`, `/v1/messages`, and `/v1/rerank`.
+OpenAI-shaped routes use the current `/compatible-mode/v1` contract; Messages
+uses `/apps/anthropic/v1/messages` only for source-native model patterns; and
+rerank uses a bounded provider-native request/response conversion.
+
+The adapter preserves the source `top_p` clamp and streaming
+`X-DashScope-SSE: enable` header. OpenAI-shaped main, fallback, and Admin SSE
+paths share the same `stream_options.include_usage` policy; native Messages
+keeps Anthropic usage semantics. Messages defaults to the source-native model
+patterns and accepts a bounded `ALI_ANTHROPIC_MESSAGES_MODELS` operator
+override. Rerank currently admits only `gte-rerank-v2`. Optional
+`X-DashScope-Plugin` is derived only from printable server-side
+`channels.other` up to 4 KiB, and relay cache schema v4 prevents older cached
+channels from omitting that configuration. Unsupported image generation/edit
+polling, remote provider image fetch, audio, Gemini, non-native Messages, and
+qwen3 rerank paths fail before quota reserve. AI Gateway and WFP are also
+rejected because this repository has no managed DashScope provider contract in
+either transport. Admin Channel Test, including legacy Completions, and
+frontend readiness consume the same six-route registry. This is local contract
+evidence only; production remains **NO-GO** pending route-specific staging,
+billing/audit reconciliation, and rollback proof.

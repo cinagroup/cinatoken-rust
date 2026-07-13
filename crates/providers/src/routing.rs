@@ -8,6 +8,8 @@ use crate::ai_gateway::AiGatewayRouteKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
+    AliOpenAi,
+    AliMessages,
     BaiduV2OpenAi,
     OpenAiCompatible,
     AnthropicMessages,
@@ -31,6 +33,7 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub fn ai_gateway_route(self) -> Option<AiGatewayRouteKind> {
         match self {
+            Self::AliOpenAi | Self::AliMessages => None,
             Self::BaiduV2OpenAi => None,
             Self::OpenAiCompatible => Some(AiGatewayRouteKind::Compat),
             Self::AnthropicMessages => Some(AiGatewayRouteKind::Anthropic),
@@ -105,6 +108,12 @@ pub struct ProviderRegistry;
 impl ProviderRegistry {
     pub fn resolve(endpoint: ProviderEndpoint<'_>) -> Result<ProviderRoute, ProviderRouteError> {
         let upstream_url = match endpoint.provider {
+            ProviderKind::AliOpenAi => {
+                crate::ali::ali_openai_url(endpoint.base_url, endpoint.endpoint_path)
+                    .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
+            }
+            ProviderKind::AliMessages => crate::ali::ali_messages_url(endpoint.base_url)
+                .ok_or(ProviderRouteError::UnsupportedProviderRoute)?,
             ProviderKind::BaiduV2OpenAi => {
                 crate::baidu_v2::baidu_v2_openai_url(endpoint.base_url, endpoint.endpoint_path)
                     .ok_or(ProviderRouteError::UnsupportedProviderRoute)?
@@ -417,6 +426,52 @@ mod tests {
             ProviderRegistry::resolve(ProviderEndpoint {
                 provider: ProviderKind::MoonshotOpenAi,
                 channel_type: 25,
+                base_url: None,
+                endpoint_path: "images/generations",
+                upstream_query: None,
+                gemini_route: None,
+            })
+            .unwrap_err(),
+            ProviderRouteError::UnsupportedProviderRoute
+        );
+    }
+
+    #[test]
+    fn registry_resolves_direct_only_ali_dual_format_routes() {
+        let responses = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::AliOpenAi,
+            channel_type: 17,
+            base_url: None,
+            endpoint_path: "responses",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(
+            responses.upstream_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+        );
+        assert_eq!(responses.ai_gateway_route, None);
+
+        let messages = ProviderRegistry::resolve(ProviderEndpoint {
+            provider: ProviderKind::AliMessages,
+            channel_type: 17,
+            base_url: None,
+            endpoint_path: "messages",
+            upstream_query: None,
+            gemini_route: None,
+        })
+        .unwrap();
+        assert_eq!(
+            messages.upstream_url,
+            "https://dashscope.aliyuncs.com/apps/anthropic/v1/messages"
+        );
+        assert_eq!(messages.ai_gateway_route, None);
+
+        assert_eq!(
+            ProviderRegistry::resolve(ProviderEndpoint {
+                provider: ProviderKind::AliOpenAi,
+                channel_type: 17,
                 base_url: None,
                 endpoint_path: "images/generations",
                 upstream_query: None,

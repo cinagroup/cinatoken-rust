@@ -3,6 +3,7 @@ use cinatoken_core::ApiResult;
 use cinatoken_relay::RelayContext;
 
 pub mod ai_gateway;
+pub mod ali;
 pub mod baidu_v2;
 pub mod channel_capabilities;
 pub mod deepseek;

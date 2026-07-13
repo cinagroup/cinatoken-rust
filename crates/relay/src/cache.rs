@@ -1,7 +1,7 @@
 use cinatoken_storage::{AuthenticatedToken, RelayChannel};
 use serde::{Deserialize, Serialize};
 
-pub const RELAY_CACHE_SCHEMA_VERSION: u32 = 3;
+pub const RELAY_CACHE_SCHEMA_VERSION: u32 = 4;
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
@@ -169,6 +169,16 @@ mod tests {
         assert_eq!(decoded.into_current(), Some(channel));
     }
 
+    #[test]
+    fn cached_channel_rejects_previous_schema_without_provider_config() {
+        let cached = CachedRelayChannel {
+            schema_version: RELAY_CACHE_SCHEMA_VERSION - 1,
+            value: fake_channel(),
+        };
+
+        assert!(cached.into_current().is_none());
+    }
+
     fn fake_auth() -> AuthenticatedToken {
         AuthenticatedToken {
             token_id: 1,
@@ -201,6 +211,7 @@ mod tests {
             channel_group: "default".to_string(),
             model_mapping: None,
             openai_organization: None,
+            other: r#"{"plugin":"web-search"}"#.to_string(),
             other_info: String::new(),
             priority: 0,
             weight: 0,

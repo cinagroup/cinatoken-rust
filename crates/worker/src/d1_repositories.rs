@@ -367,6 +367,7 @@ pub async fn find_enabled_relay_channel_by_id(
           "group" AS channel_group,
           model_mapping,
           openai_organization,
+          other,
           other_info,
           COALESCE(priority, 0) AS priority,
           COALESCE(weight, 0) AS weight
@@ -448,6 +449,7 @@ async fn select_channels_from_abilities(
               c."group" AS channel_group,
               c.model_mapping,
               c.openai_organization,
+              c.other,
               c.other_info,
               COALESCE(a.priority, 0) AS priority,
               COALESCE(a.weight, 0) AS weight
@@ -490,6 +492,7 @@ async fn select_channels_from_channel_csv(
               "group" AS channel_group,
               model_mapping,
               openai_organization,
+              other,
               other_info,
               COALESCE(priority, 0) AS priority,
               COALESCE(weight, 0) AS weight

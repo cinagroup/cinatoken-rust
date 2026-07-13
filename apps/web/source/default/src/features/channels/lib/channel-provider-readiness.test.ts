@@ -136,7 +136,23 @@ describe('channel provider relay readiness', () => {
       routes: [{ method: 'POST', path: '/v1/chat/completions' }],
       reason: 'direct-only Qianfan v2 chat implementation',
     }
+    const ali = {
+      channel_type: 17,
+      name: 'Ali',
+      adapter: 'ali',
+      readiness: 'partial' as const,
+      routes: [
+        { method: 'POST', path: '/v1/chat/completions' },
+        { method: 'POST', path: '/v1/completions' },
+        { method: 'POST', path: '/v1/responses' },
+        { method: 'POST', path: '/v1/embeddings' },
+        { method: 'POST', path: '/v1/messages' },
+        { method: 'POST', path: '/v1/rerank' },
+      ],
+      reason: 'direct-only DashScope multi-route implementation',
+    }
     const index = indexProviderReadiness([
+      ali,
       moonshot,
       zhipuV4,
       perplexity,
@@ -150,6 +166,18 @@ describe('channel provider relay readiness', () => {
       xai,
       submodel,
     ])
+    assert.equal(index.get(17), ali)
+    assert.deepEqual(
+      index.get(17)?.routes.map((route) => route.path),
+      [
+        '/v1/chat/completions',
+        '/v1/completions',
+        '/v1/responses',
+        '/v1/embeddings',
+        '/v1/messages',
+        '/v1/rerank',
+      ]
+    )
     assert.equal(index.get(25), moonshot)
     assert.deepEqual(
       index.get(25)?.routes.map((route) => route.path),

@@ -158,6 +158,10 @@ const endpointTypeOptions: Array<{
 }> = [
   { value: 'auto', label: 'Auto detect (default)' },
   { value: 'openai', label: 'OpenAI (/v1/chat/completions)' },
+  {
+    value: 'openai-completions',
+    label: 'OpenAI legacy Completions (/v1/completions)',
+  },
   { value: 'openai-response', label: 'OpenAI Responses (/v1/responses)' },
   {
     value: 'openai-response-compact',

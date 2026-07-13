@@ -765,3 +765,25 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   authenticated reserve/settlement across DO eviction, current DO owner
   correlation, alerts, billing reconciliation, provider replay, and rollback
   remain required.
+## 2026-07-13 Ali Provider Increment
+
+- Ali channel type 17 moved from Deferred to Partial with an explicit
+  six-route direct-only allowlist: Chat Completions, legacy Completions,
+  Responses, Embeddings, Anthropic Messages, and Rerank.
+- URL ownership follows the current DashScope contracts. The obsolete Go
+  Responses prefix is not copied; Rust uses `/compatible-mode/v1/responses`.
+- Messages defaults to the source-native `qwen`, `deepseek-v4`, `kimi`, `glm`,
+  and `minimax-m` model families and retains the bounded
+  `ALI_ANTHROPIC_MESSAGES_MODELS` operator override. Other Claude inputs do not
+  silently enter the source's Claude-to-OpenAI bridge.
+- Rerank request/response conversion is bounded and restricted to
+  `gte-rerank-v2`; qwen3 rerank protocols remain Deferred. Malformed 200 responses
+  become owned 502 audit/refund outcomes. Image polling and arbitrary provider
+  URL downloads remain outside the Worker request path.
+- Optional `X-DashScope-Plugin` comes only from printable, at-most-4-KiB
+  server-side `channels.other`. Relay cache schema v4 invalidates older cached
+  channel rows, and main/fallback/Admin OpenAI SSE paths share one usage-option
+  policy while native Messages remains Anthropic-shaped.
+- The capability registry now reports 16 Ready, 14 Partial, and 23 Deferred
+  channel types. This changes implementation readiness, not the G3 staging or
+  production decision; production remains **NO-GO**.

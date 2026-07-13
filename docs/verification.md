@@ -3757,3 +3757,41 @@ authenticated frontend, and rollback evidence.
   Production remains **NO-GO** pending credential rotation, deployed staging,
   route-specific provider fixtures, billing/audit reconciliation, production
   data migration, canary, and rollback evidence.
+
+## 2026-07-13 Ali DashScope Direct Adapter Verification
+
+- Source type 17 and current DashScope contracts were reviewed before the
+  implementation moved Ali from Deferred to Partial. Rust admits exactly Chat
+  Completions, legacy Completions, current Responses, Embeddings, native
+  Messages, and `gte-rerank-v2`, all direct-only. Images, audio, Gemini,
+  non-native Messages conversion, qwen3 rerank, AI Gateway, and WFP fail closed
+  before quota reservation.
+- Providers tests prove current/default/custom URL ownership, source-compatible
+  `top_p` clamping, bounded Messages model patterns plus
+  `ALI_ANTHROPIC_MESSAGES_MODELS`, `gte-rerank-v2` request/response conversion,
+  missing usage behavior, malformed success rejection, and the printable
+  4-KiB server-owned plugin boundary. Worker tests prove pre-reserve filtering,
+  model mapping without a second mapping pass, direct-only routing, main and
+  fallback SSE usage-option policy, all six Admin probes including legacy
+  Completions, and rerank validation before request conversion. Relay cache
+  schema v4 carries `channels.other` and invalidates older channel entries.
+- `cargo test -p cinatoken-providers --lib` passed 79/79,
+  `cargo clippy -p cinatoken-providers --no-deps -- -D warnings` passed,
+  `cargo test -p cinatoken-relay --lib` passed 74/74, and
+  `cargo test -p cinatoken-worker --lib` passed 623/623. The Worker
+  `wasm32-unknown-unknown` check passed with only the two pre-existing unused
+  topup repository warnings.
+- The complete `bun run check` gate passed at `2026-07-13T13:37:33Z` against
+  the implementation worktree based on
+  `cc03c98eec664a0480cd108c3a8d7b58f32e3b50`: release main/tenant/outbound
+  Rust/Wasm builds, Workerd 12/12, Playground 1/1, frontend readiness 22/22,
+  bundle redaction/budget/zero-lint-debt gates, 217 frontend calls against 320
+  Worker routes with zero missing, the 22-migration/27-table D1 verifier,
+  workspace tests, WFP/Realtime/TaskRunner/AI Gateway contract checks and
+  dry-run plans, and all three wasm32 target checks.
+- No provider credential, Cloudflare credential, remote account, or live Ali
+  request was used. Ali remains Partial until isolated staging proves regional
+  and workspace roots, each admitted route, JSON/SSE usage and errors, plugin
+  channels, response bounds, reserve/settle/refund, D1 audit/provider invoice
+  reconciliation, disable/recovery behavior, and Go rollback. Production
+  remains **NO-GO**.

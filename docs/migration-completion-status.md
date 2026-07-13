@@ -206,7 +206,7 @@ A full diff of every Go-registered route against the Rust worker closed these
   by Go's generic adapter. DeepSeek type 43 is implemented only for chat
   completions, legacy completions, and Anthropic Messages, with route-specific
   URLs and thinking suffix handling.
-- Dedicated Partial adapters now include Moonshot(25), ZhipuV4(26),
+- Dedicated Partial adapters now include Ali(17), Moonshot(25), ZhipuV4(26),
   Perplexity(27), Jina(38), SiliconFlow(40), Mistral(42), DeepSeek(43),
   VolcEngine(45), BaiduV2(46), xAI(48), and Submodel(53), plus Cohere
   rerank(34) and the Cloudflare adapter(39).
@@ -221,7 +221,15 @@ A full diff of every Go-registered route against the Rust worker closed these
   direct-only for chat, embeddings, image generations, and Responses, while
   `doubao-coding-plan` is chat-only. BaiduV2 is direct-only for chat and
   preserves the source `-search` behavior plus `token|appid` separation. The
-  registry has 16 Ready, 13 Partial, and 24 Deferred channel types.
+  Ali adapter is direct-only for chat, legacy completions, current Responses,
+  embeddings, native model-allowlisted Messages, and `gte-rerank-v2`. Its
+  Messages patterns can be operator-configured, its optional plugin header is
+  derived only from bounded server-side `channels.other`, and relay channel
+  cache schema v4 prevents stale cached rows from bypassing that field. Main,
+  fallback, and Admin OpenAI streaming paths use the same usage-option policy.
+  Async images, audio, Gemini, non-native Messages, and qwen3 rerank stay
+  Deferred. The registry has 16 Ready, 14 Partial, and 23 Deferred channel
+  types.
 - Admin `GET /api/channel/provider-readiness` and the channel UI expose
   implementation readiness without claiming provider health or production
   proof. Route cache keys are protocol scoped.

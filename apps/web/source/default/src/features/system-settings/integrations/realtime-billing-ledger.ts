@@ -60,6 +60,104 @@ export type RealtimeBillingLedgerRecord = {
   requires_reconciliation: boolean
   finalization_reason: string | null
   finalization_required_at: number | null
+  reconciliation_id: string | null
+  reconciliation_revision: number
+  reconciliation_resolution: 'settled' | 'refunded' | null
+  reconciliation_resolved_at: number | null
+}
+
+export type RealtimeBillingReconciliationAction = 'settle' | 'refund'
+
+export type RealtimeBillingReconciliationReason =
+  | 'provider_usage_verified'
+  | 'provider_invoice_verified'
+  | 'provider_confirms_no_billable_usage'
+  | 'customer_refund_approved'
+
+export type RealtimeBillingReconciliationUsage = {
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  cache_creation_tokens: number
+  image_input_tokens: number
+  image_output_tokens: number
+  audio_input_tokens: number
+  audio_output_tokens: number
+}
+
+export type RealtimeBillingReconciliationDecision = {
+  action: RealtimeBillingReconciliationAction
+  reason: RealtimeBillingReconciliationReason
+  evidence_reference: string
+  usage: RealtimeBillingReconciliationUsage | null
+}
+
+export type RealtimeBillingReconciliationPreview = {
+  contract_version: number
+  reconciliation_id: string
+  reconciliation_revision: number
+  action: RealtimeBillingReconciliationAction
+  reason: RealtimeBillingReconciliationReason
+  evidence_reference: string
+  quarantine_reason: string
+  preview_token: string
+  pricing_source: 'frozen_tiered_snapshot' | 'reserved_quota_refund'
+  pre_consumed_quota: number
+  final_quota: number
+  refund_quota: number
+  additional_quota: number
+  settlement: Record<string, unknown> | null
+}
+
+export type RealtimeBillingReconciliationApplyRequest =
+  RealtimeBillingReconciliationDecision & {
+    preview_token: string
+    idempotency_key: string
+    confirm_resolution: true
+  }
+
+export type RealtimeBillingReconciliationApplyResult = {
+  contract_version: number
+  reconciliation_id: string
+  action: RealtimeBillingReconciliationAction
+  status: 'applied' | 'duplicate'
+  reconciliation_revision: number
+  resolved_at: number
+}
+
+export type RealtimeBillingReconciliationQueueRecord = {
+  reconciliation_id: string
+  reconciliation_revision: number
+  quarantine_reason: string
+  quarantine_required_at: number
+  pre_consumed_quota: number
+  created_at: number
+}
+
+export type RealtimeBillingReconciliationQueue = {
+  contract_version: number
+  count: number
+  next_cursor: string | null
+  records: RealtimeBillingReconciliationQueueRecord[]
+}
+
+export type RealtimeBillingReconciliationQueueResponse = {
+  success: boolean
+  message?: string
+  data: RealtimeBillingReconciliationQueue
+}
+
+export type RealtimeBillingReconciliationPreviewResponse = {
+  success: boolean
+  message?: string
+  data: RealtimeBillingReconciliationPreview
+}
+
+export type RealtimeBillingReconciliationApplyResponse = {
+  success: boolean
+  message?: string
+  data: RealtimeBillingReconciliationApplyResult
 }
 
 export type RealtimeBillingLedgerStatus = {
@@ -103,6 +201,11 @@ export function compactRealtimeBillingFingerprint(value: string): string {
   return `${value.slice(0, 15)}...${value.slice(-8)}`
 }
 
+export function compactRealtimeBillingReconciliationId(value: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) return 'invalid-reconciliation-id'
+  return `${value.slice(0, 12)}...${value.slice(-8)}`
+}
+
 export function normalizeRealtimeBillingLedgerStatus(
   status: RealtimeBillingLedgerStatus
 ): RealtimeBillingLedgerStatus {
@@ -139,6 +242,10 @@ export function normalizeRealtimeBillingLedgerStatus(
       requires_reconciliation: record.requires_reconciliation,
       finalization_reason: record.finalization_reason,
       finalization_required_at: record.finalization_required_at,
+      reconciliation_id: record.reconciliation_id,
+      reconciliation_revision: record.reconciliation_revision,
+      reconciliation_resolution: record.reconciliation_resolution,
+      reconciliation_resolved_at: record.reconciliation_resolved_at,
     })),
   }
 }

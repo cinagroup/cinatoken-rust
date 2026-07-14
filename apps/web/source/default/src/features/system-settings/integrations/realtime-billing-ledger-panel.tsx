@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@cinagroup.com
 */
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
@@ -29,21 +30,45 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { getRealtimeBillingLedgerStatus } from '../api'
+import {
+  getRealtimeBillingLedgerStatus,
+  getRealtimeBillingReconciliationQueue,
+} from '../api'
 import {
   compactRealtimeBillingFingerprint,
   summarizeRealtimeBillingLedger,
   type RealtimeBillingLedgerOutcome,
+  type RealtimeBillingReconciliationQueueRecord,
   type RealtimeBillingRecoveryState,
 } from './realtime-billing-ledger'
+import { RealtimeBillingReconciliationWorkbench } from './realtime-billing-reconciliation-workbench'
 
-export function RealtimeBillingLedgerPanel(props: { runtimeReady: boolean }) {
-  const { runtimeReady } = props
+export function RealtimeBillingLedgerPanel(props: {
+  runtimeReady: boolean
+  reconciliationMutationEnabled: boolean
+}) {
+  const { runtimeReady, reconciliationMutationEnabled } = props
   const { t } = useTranslation()
+  const [selected, setSelected] =
+    useState<RealtimeBillingReconciliationQueueRecord | null>(null)
+  const [queueCursor, setQueueCursor] = useState<string | undefined>()
+  const [queueHistory, setQueueHistory] = useState<string[]>([])
   const ledger = useQuery({
     queryKey: ['realtime-billing-ledger-status'],
     queryFn: async () => {
       const response = await getRealtimeBillingLedgerStatus()
+      if (!response.success) {
+        throw new Error(response.message || 'Failed to load')
+      }
+      return response.data
+    },
+    enabled: runtimeReady,
+    staleTime: 30 * 1000,
+  })
+  const queue = useQuery({
+    queryKey: ['realtime-billing-reconciliation-queue', queueCursor ?? 'first'],
+    queryFn: async () => {
+      const response = await getRealtimeBillingReconciliationQueue(queueCursor)
       if (!response.success) {
         throw new Error(response.message || 'Failed to load')
       }
@@ -63,7 +88,7 @@ export function RealtimeBillingLedgerPanel(props: { runtimeReady: boolean }) {
           <p className='text-sm font-medium'>{t('Realtime billing ledger')}</p>
           <p className='text-muted-foreground text-xs'>
             {t(
-              'Read-only, redacted reservation outcomes and usage reconciliation ownership from D1.'
+              'Redacted reservation outcomes with a preview-first, step-up protected reconciliation workflow.'
             )}
           </p>
         </div>
@@ -78,10 +103,15 @@ export function RealtimeBillingLedgerPanel(props: { runtimeReady: boolean }) {
             type='button'
             variant='outline'
             size='sm'
-            disabled={!runtimeReady || ledger.isFetching}
-            onClick={() => ledger.refetch()}
+            disabled={!runtimeReady || ledger.isFetching || queue.isFetching}
+            onClick={() => {
+              void ledger.refetch()
+              void queue.refetch()
+            }}
           >
-            {ledger.isFetching ? t('Refreshing...') : t('Refresh')}
+            {ledger.isFetching || queue.isFetching
+              ? t('Refreshing...')
+              : t('Refresh')}
           </Button>
         </div>
       </div>
@@ -90,7 +120,7 @@ export function RealtimeBillingLedgerPanel(props: { runtimeReady: boolean }) {
         <Alert className='mt-3'>
           <AlertDescription>
             {t(
-              'Ledger reads stay disabled until migration 0027 and the usage reconciliation contract are ready.'
+              'Ledger reads stay disabled until migration 0028 and the usage reconciliation contract are ready.'
             )}
           </AlertDescription>
         </Alert>
@@ -102,6 +132,16 @@ export function RealtimeBillingLedgerPanel(props: { runtimeReady: boolean }) {
             {ledger.error instanceof Error
               ? ledger.error.message
               : t('Failed to load Realtime billing ledger')}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {queue.error ? (
+        <Alert className='mt-3' variant='destructive'>
+          <AlertDescription>
+            {queue.error instanceof Error
+              ? queue.error.message
+              : t('Failed to load Realtime reconciliation queue')}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -130,6 +170,93 @@ export function RealtimeBillingLedgerPanel(props: { runtimeReady: boolean }) {
               {t('refunded')}
             </StatusBadge>
           ) : null}
+        </div>
+      ) : null}
+
+      {queue.data ? (
+        <div className='mt-4 border-t pt-3'>
+          <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
+            <p className='text-sm font-medium'>
+              {t('Open reconciliation queue')}
+            </p>
+            <div className='flex items-center gap-2'>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={queueHistory.length === 0 || queue.isFetching}
+                onClick={() => {
+                  const previous = queueHistory.at(-1)
+                  setQueueCursor(previous || undefined)
+                  setQueueHistory((history) => history.slice(0, -1))
+                }}
+              >
+                {t('Previous')}
+              </Button>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={!queue.data.next_cursor || queue.isFetching}
+                onClick={() => {
+                  if (!queue.data.next_cursor) return
+                  setQueueHistory((history) => [
+                    ...history,
+                    queueCursor ?? '',
+                  ])
+                  setQueueCursor(queue.data.next_cursor)
+                }}
+              >
+                {t('Next')}
+              </Button>
+            </div>
+          </div>
+          {queue.data.records.length > 0 ? (
+            <Table aria-label={t('Open Realtime reconciliation queue')}>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('Reconciliation')}</TableHead>
+                  <TableHead>{t('Reason')}</TableHead>
+                  <TableHead className='text-right'>
+                    {t('Reserved quota')}
+                  </TableHead>
+                  <TableHead className='text-right'>{t('Required')}</TableHead>
+                  <TableHead className='text-right'>{t('Action')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {queue.data.records.map((record) => (
+                  <TableRow key={record.reconciliation_id}>
+                    <TableCell className='font-mono text-xs'>
+                      {record.reconciliation_id.slice(0, 12)}...
+                      {record.reconciliation_id.slice(-8)}
+                    </TableCell>
+                    <TableCell>{t(humanizeCode(record.quarantine_reason))}</TableCell>
+                    <TableCell className='text-right'>
+                      {record.pre_consumed_quota}
+                    </TableCell>
+                    <TableCell className='text-right'>
+                      {formatEpochSeconds(record.quarantine_required_at)}
+                    </TableCell>
+                    <TableCell className='text-right'>
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        onClick={() => setSelected(record)}
+                      >
+                        {t('Resolve')}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className='text-muted-foreground text-xs'>
+              {t('No open Realtime billing reconciliations were found.')}
+            </p>
+          )}
         </div>
       ) : null}
 
@@ -194,6 +321,15 @@ export function RealtimeBillingLedgerPanel(props: { runtimeReady: boolean }) {
             {t('No Realtime billing reservations were found.')}
           </p>
         )
+      ) : null}
+
+      {selected ? (
+        <RealtimeBillingReconciliationWorkbench
+          key={`${selected.reconciliation_id}:${selected.reconciliation_revision}`}
+          target={selected}
+          mutationEnabled={reconciliationMutationEnabled}
+          onClose={() => setSelected(null)}
+        />
       ) : null}
     </div>
   )

@@ -3,6 +3,7 @@ use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_co
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use worker::{D1Database, D1Result, D1Type};
 
@@ -25,6 +26,8 @@ pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
     "0026_relay_billing_owner_generation.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
     "0027_realtime_usage_reconciliation.sql";
+pub(crate) const REALTIME_USAGE_RECONCILIATION_RESOLUTION_MIGRATION: &str =
+    "0028_realtime_usage_reconciliation_resolution.sql";
 pub(crate) const REALTIME_USAGE_RECONCILIATION_OWNER: &str = "usage_reconciliation";
 pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
 const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
@@ -373,6 +376,13 @@ pub struct RealtimeBillingReservation {
     pub finalization_owner: String,
     pub finalization_reason: String,
     pub finalization_required_at: i64,
+    pub reconciliation_id: String,
+    pub reconciliation_revision: i64,
+    pub reconciliation_resolution: String,
+    pub reconciliation_resolution_key: String,
+    pub reconciliation_resolved_at: i64,
+    pub reconciliation_operator_id: i64,
+    pub reconciliation_evidence_sha256: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,6 +457,50 @@ pub struct RealtimeBillingLedgerStatusRow {
     pub finalization_owner: String,
     pub finalization_reason: String,
     pub finalization_required_at: i64,
+    pub reconciliation_id: String,
+    pub reconciliation_revision: i64,
+    pub reconciliation_resolution: String,
+    pub reconciliation_resolution_key: String,
+    pub reconciliation_resolved_at: i64,
+    pub reconciliation_operator_id: i64,
+    pub reconciliation_evidence_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RealtimeBillingReconciliationQueueRow {
+    pub reconciliation_id: String,
+    pub reconciliation_revision: i64,
+    pub finalization_reason: String,
+    pub finalization_required_at: i64,
+    pub pre_consumed_quota: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeBillingReconciliationMutationOutcome {
+    Applied,
+    Duplicate,
+    Conflict,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RealtimeBillingReconciliationMutation<'a> {
+    pub reconciliation_id: &'a str,
+    pub expected_revision: i64,
+    pub resolution_key: &'a str,
+    pub evidence_sha256: &'a str,
+    pub operator_id: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RealtimeBillingReconciliationAdminAudit<'a> {
+    pub actor_username: &'a str,
+    pub action: &'a str,
+    pub content: &'a str,
+    pub params: &'a serde_json::Value,
+    pub admin_info: &'a AdminAuditInfo,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -994,7 +1048,9 @@ pub async fn list_relay_billing_finalization_incidents(
 ) -> worker::Result<Vec<RelayBillingFinalizationIncidentSummary>> {
     let args = [
         D1Type::Text(status),
-        D1Type::Integer(d1_i32(limit.clamp(1, 50))),
+        // The API reads one extra row to distinguish a full final page from a
+        // page with a real continuation cursor.
+        D1Type::Integer(d1_i32(limit.clamp(1, 51))),
     ];
     db.prepare(
         r#"
@@ -2771,7 +2827,10 @@ pub async fn reserved_realtime_billing_for_segment(
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
           final_quota, created_at, updated_at, lease_expires_at,
-          finalization_owner, finalization_reason, finalization_required_at
+          finalization_owner, finalization_reason, finalization_required_at,
+          reconciliation_id, reconciliation_revision, reconciliation_resolution,
+          reconciliation_resolution_key, reconciliation_resolved_at,
+          reconciliation_operator_id, reconciliation_evidence_sha256
         FROM realtime_billing_reservations
         WHERE session = ?1
           AND bridge_segment = ?2
@@ -2813,7 +2872,10 @@ pub async fn realtime_billing_reservation_for_response(
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
           final_quota, created_at, updated_at, lease_expires_at,
-          finalization_owner, finalization_reason, finalization_required_at
+          finalization_owner, finalization_reason, finalization_required_at,
+          reconciliation_id, reconciliation_revision, reconciliation_resolution,
+          reconciliation_resolution_key, reconciliation_resolved_at,
+          reconciliation_operator_id, reconciliation_evidence_sha256
         FROM realtime_billing_reservations
         WHERE session = ?1 AND bridge_segment = ?2 AND upstream_response_id_hash = ?3
         LIMIT 1
@@ -2940,6 +3002,11 @@ pub async fn mark_realtime_billing_usage_recovery_required(
     if !current.finalization_owner.is_empty() {
         return Ok(RealtimeBillingUsageRecoveryOutcome::AlreadyFinalized);
     }
+    let reconciliation_id = if current.reconciliation_id.is_empty() {
+        realtime_billing_reconciliation_id(&current.reservation_key)
+    } else {
+        current.reconciliation_id.clone()
+    };
     let args = [
         D1Type::Text(session),
         D1Type::Text(bridge_segment),
@@ -2947,6 +3014,7 @@ pub async fn mark_realtime_billing_usage_recovery_required(
         D1Type::Text(REALTIME_USAGE_RECONCILIATION_OWNER),
         D1Type::Text(reason),
         D1Type::Integer(d1_i32(required_at)),
+        D1Type::Text(reconciliation_id.as_str()),
     ];
     let result = db
         .prepare(
@@ -2955,6 +3023,8 @@ pub async fn mark_realtime_billing_usage_recovery_required(
             SET finalization_owner = ?4,
                 finalization_reason = ?5,
                 finalization_required_at = ?6,
+                reconciliation_id = ?7,
+                reconciliation_revision = reconciliation_revision + 1,
                 updated_at = MAX(updated_at, ?6)
             WHERE session = ?1
               AND bridge_segment = ?2
@@ -3012,6 +3082,11 @@ pub async fn mark_realtime_billing_segment_usage_recovery_required(
             SET finalization_owner = ?3,
                 finalization_reason = ?4,
                 finalization_required_at = ?5,
+                reconciliation_id = CASE
+                  WHEN reconciliation_id = '' THEN lower(hex(randomblob(32)))
+                  ELSE reconciliation_id
+                END,
+                reconciliation_revision = reconciliation_revision + 1,
                 updated_at = MAX(updated_at, ?5)
             WHERE session = ?1
               AND bridge_segment = ?2
@@ -3080,6 +3155,156 @@ pub async fn refund_realtime_billing_reservation(
     refunded_at: i64,
 ) -> worker::Result<RealtimeBillingReservationRefundOutcome> {
     refund_realtime_billing_reservation_inner(db, reservation_key, "", refunded_at, None).await
+}
+
+pub async fn refund_realtime_usage_reconciliation(
+    db: &D1Database,
+    reconciliation: RealtimeBillingReconciliationMutation<'_>,
+    refunded_at: i64,
+    admin_audit: RealtimeBillingReconciliationAdminAudit<'_>,
+) -> worker::Result<RealtimeBillingReconciliationMutationOutcome> {
+    let Some(record) =
+        realtime_billing_reconciliation(db, reconciliation.reconciliation_id).await?
+    else {
+        return Ok(RealtimeBillingReconciliationMutationOutcome::NotFound);
+    };
+    if record.status != "reserved" {
+        return Ok(
+            if record.reconciliation_resolution_key == reconciliation.resolution_key {
+                RealtimeBillingReconciliationMutationOutcome::Duplicate
+            } else {
+                RealtimeBillingReconciliationMutationOutcome::Conflict
+            },
+        );
+    }
+    if record.finalization_owner != REALTIME_USAGE_RECONCILIATION_OWNER
+        || record.reconciliation_revision != reconciliation.expected_revision
+        || !record.reconciliation_resolution.is_empty()
+    {
+        return Ok(RealtimeBillingReconciliationMutationOutcome::Conflict);
+    }
+    let admin_audit = admin_audit_log_statement(
+        db,
+        Some(record.user_id),
+        Some(&record.username),
+        admin_audit.actor_username,
+        admin_audit.action,
+        admin_audit.content,
+        admin_audit.params,
+        admin_audit.admin_info,
+        admin_audit.created_at,
+    )?;
+    let quota = quota_i32(record.pre_consumed_quota)?;
+    let status_args = [
+        D1Type::Text(record.reservation_key.as_str()),
+        D1Type::Integer(d1_i32(refunded_at)),
+        D1Type::Text(reconciliation.reconciliation_id),
+        D1Type::Integer(d1_i32(reconciliation.expected_revision)),
+        D1Type::Text(reconciliation.resolution_key),
+        D1Type::Integer(d1_i32(reconciliation.operator_id)),
+        D1Type::Text(reconciliation.evidence_sha256),
+    ];
+    let status_update = db
+        .prepare(
+            r#"
+            UPDATE realtime_billing_reservations
+            SET status = 'refunded',
+                snapshot_json = '{}',
+                request_json = '{}',
+                username = '',
+                token_name = '',
+                client_ip = '',
+                request_id = '',
+                finalization_owner = '',
+                reconciliation_revision = reconciliation_revision + 1,
+                reconciliation_resolution = 'refunded',
+                reconciliation_resolution_key = ?5,
+                reconciliation_resolved_at = ?2,
+                reconciliation_operator_id = ?6,
+                reconciliation_evidence_sha256 = ?7,
+                updated_at = ?2,
+                refunded_at = ?2
+            WHERE reservation_key = ?1
+              AND reconciliation_id = ?3
+              AND reconciliation_revision = ?4
+              AND status = 'reserved'
+              AND finalization_owner = 'usage_reconciliation'
+              AND reconciliation_resolution = ''
+            "#,
+        )
+        .bind_refs(&status_args)?;
+    let mut statements = Vec::new();
+    let mut checked_statement_indices = Vec::new();
+    push_realtime_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked_statement_indices,
+        status_update,
+        &record.reservation_key,
+        "realtime reconciliation refund state transition failed",
+    )?;
+    if quota > 0 {
+        push_realtime_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            credit_user_quota_statement(db, record.user_id, quota)?,
+            &record.reservation_key,
+            "user no longer exists",
+        )?;
+        if record.token_id > 0 {
+            push_realtime_reservation_guarded_statement(
+                db,
+                &mut statements,
+                &mut checked_statement_indices,
+                credit_token_quota_usage_statement(db, record.token_id, quota, refunded_at)?,
+                &record.reservation_key,
+                "token no longer exists",
+            )?;
+        }
+    } else if record.token_id > 0 {
+        push_realtime_reservation_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            touch_token_statement(db, record.token_id, refunded_at)?,
+            &record.reservation_key,
+            "token no longer exists",
+        )?;
+    }
+    push_realtime_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked_statement_indices,
+        admin_audit,
+        &record.reservation_key,
+        "realtime reconciliation admin audit failed",
+    )?;
+
+    let results = match db.batch(statements).await {
+        Ok(results) => results,
+        Err(err) => {
+            let current =
+                realtime_billing_reconciliation(db, reconciliation.reconciliation_id).await?;
+            if current.as_ref().is_some_and(|current| {
+                current.reconciliation_resolution_key == reconciliation.resolution_key
+            }) {
+                return Ok(RealtimeBillingReconciliationMutationOutcome::Duplicate);
+            }
+            if current.as_ref().is_some_and(|current| {
+                current.status != "reserved"
+                    || current.finalization_owner != REALTIME_USAGE_RECONCILIATION_OWNER
+                    || current.reconciliation_revision != reconciliation.expected_revision
+            }) {
+                return Ok(RealtimeBillingReconciliationMutationOutcome::Conflict);
+            }
+            return Err(err);
+        }
+    };
+    for (index, message) in checked_statement_indices {
+        require_batch_change(&results, index, message)?;
+    }
+    Ok(RealtimeBillingReconciliationMutationOutcome::Applied)
 }
 
 pub async fn expired_realtime_billing_reservations(
@@ -3334,7 +3559,10 @@ pub async fn recent_realtime_billing_ledger_status(
           reservation_key, session, bridge_segment, status,
           reservation_sequence, lease_expires_at, updated_at, settled_at, refunded_at,
           recovery_attempt_count, recovery_next_attempt_at, recovery_last_attempt_at,
-          finalization_owner, finalization_reason, finalization_required_at
+          finalization_owner, finalization_reason, finalization_required_at,
+          reconciliation_id, reconciliation_revision, reconciliation_resolution,
+          reconciliation_resolution_key, reconciliation_resolved_at,
+          reconciliation_operator_id, reconciliation_evidence_sha256
         FROM realtime_billing_reservations
         ORDER BY updated_at DESC, reservation_sequence DESC, reservation_key ASC
         LIMIT ?1
@@ -3344,6 +3572,42 @@ pub async fn recent_realtime_billing_ledger_status(
     .all()
     .await?
     .results::<RealtimeBillingLedgerStatusRow>()
+}
+
+pub async fn list_realtime_billing_reconciliations(
+    db: &D1Database,
+    after_required_at: i64,
+    after_reconciliation_id: &str,
+    limit: i64,
+) -> worker::Result<Vec<RealtimeBillingReconciliationQueueRow>> {
+    let args = [
+        D1Type::Integer(d1_i32(after_required_at.max(0))),
+        D1Type::Text(after_reconciliation_id.trim()),
+        D1Type::Integer(d1_i32(limit.clamp(1, 50))),
+    ];
+    db.prepare(
+        r#"
+        SELECT reconciliation_id, reconciliation_revision,
+               finalization_reason, finalization_required_at,
+               pre_consumed_quota, created_at
+        FROM realtime_billing_reservations
+        WHERE status = 'reserved'
+          AND finalization_owner = 'usage_reconciliation'
+          AND reconciliation_resolution = ''
+          AND reconciliation_id <> ''
+          AND (
+            ?1 = 0
+            OR finalization_required_at > ?1
+            OR (finalization_required_at = ?1 AND reconciliation_id > ?2)
+          )
+        ORDER BY finalization_required_at ASC, reconciliation_id ASC
+        LIMIT ?3
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RealtimeBillingReconciliationQueueRow>()
 }
 
 pub async fn refund_expired_realtime_billing_reservation(
@@ -3561,7 +3825,10 @@ async fn realtime_billing_reservation(
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
           final_quota, created_at, updated_at, lease_expires_at,
-          finalization_owner, finalization_reason, finalization_required_at
+          finalization_owner, finalization_reason, finalization_required_at,
+          reconciliation_id, reconciliation_revision, reconciliation_resolution,
+          reconciliation_resolution_key, reconciliation_resolved_at,
+          reconciliation_operator_id, reconciliation_evidence_sha256
         FROM realtime_billing_reservations
         WHERE reservation_key = ?1
         LIMIT 1
@@ -3570,6 +3837,50 @@ async fn realtime_billing_reservation(
     .bind_refs(&args)?
     .first::<RealtimeBillingReservation>(None)
     .await
+}
+
+pub async fn realtime_billing_reconciliation(
+    db: &D1Database,
+    reconciliation_id: &str,
+) -> worker::Result<Option<RealtimeBillingReservation>> {
+    let reconciliation_id =
+        non_empty_realtime_reservation_field(reconciliation_id, "reconciliation id")?;
+    let args = [D1Type::Text(reconciliation_id)];
+    db.prepare(
+        r#"
+        SELECT
+          reservation_key, session, bridge_segment,
+          client_event_id_hash, reservation_sequence,
+          user_id, token_id, channel_id, selected_group, model_name,
+          pre_consumed_quota, snapshot_json, request_json,
+          username, token_name, client_ip, request_id, started_at,
+          endpoint_path, status, upstream_response_id_hash, replay_key,
+          final_quota, created_at, updated_at, lease_expires_at,
+          finalization_owner, finalization_reason, finalization_required_at,
+          reconciliation_id, reconciliation_revision, reconciliation_resolution,
+          reconciliation_resolution_key, reconciliation_resolved_at,
+          reconciliation_operator_id, reconciliation_evidence_sha256
+        FROM realtime_billing_reservations
+        WHERE reconciliation_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RealtimeBillingReservation>(None)
+    .await
+}
+
+pub async fn realtime_billing_reconciliation_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(REALTIME_USAGE_RECONCILIATION_MIGRATION),
+        D1Type::Text(REALTIME_USAGE_RECONCILIATION_RESOLUTION_MIGRATION),
+    ];
+    let row = db
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2)")
+        .bind_refs(&args)?
+        .first::<CountRow>(None)
+        .await?;
+    Ok(row.is_some_and(|row| row.count == 2))
 }
 
 pub async fn realtime_settlement_replay_applied(
@@ -3620,6 +3931,11 @@ pub async fn apply_realtime_reserved_settlement_batch(
             reservation.status
         )));
     }
+    if !reservation.finalization_owner.is_empty() {
+        return Err(worker::Error::RustError(
+            "realtime billing reservation is owned by recovery".to_string(),
+        ));
+    }
     if !realtime_billing_settlement_deadline_allows(reservation.lease_expires_at, record.applied_at)
     {
         return Err(worker::Error::RustError(
@@ -3645,8 +3961,106 @@ pub async fn apply_realtime_reserved_settlement_batch(
         record,
         audit_content,
         audit_log,
+        None,
+        None,
     )
     .await
+}
+
+pub async fn apply_realtime_usage_reconciliation_settlement_batch(
+    db: &D1Database,
+    reconciliation: RealtimeBillingReconciliationMutation<'_>,
+    record: RealtimeSettlementReplayRecord<'_>,
+    audit_content: &str,
+    audit_log: &RelayAuditLog<'_>,
+    admin_audit: RealtimeBillingReconciliationAdminAudit<'_>,
+) -> worker::Result<RealtimeBillingReconciliationMutationOutcome> {
+    let Some(reservation) =
+        realtime_billing_reconciliation(db, reconciliation.reconciliation_id).await?
+    else {
+        return Ok(RealtimeBillingReconciliationMutationOutcome::NotFound);
+    };
+    if reservation.status != "reserved" {
+        return Ok(
+            if reservation.reconciliation_resolution_key == reconciliation.resolution_key {
+                RealtimeBillingReconciliationMutationOutcome::Duplicate
+            } else {
+                RealtimeBillingReconciliationMutationOutcome::Conflict
+            },
+        );
+    }
+    if reservation.finalization_owner != REALTIME_USAGE_RECONCILIATION_OWNER
+        || reservation.reconciliation_revision != reconciliation.expected_revision
+        || !reservation.reconciliation_resolution.is_empty()
+        || reservation.session != record.session
+        || reservation.user_id != record.user_id
+        || reservation.token_id != record.token_id
+        || reservation.channel_id != record.channel_id
+        || reservation.model_name != record.model_name
+        || reservation.pre_consumed_quota != record.pre_consumed_quota
+    {
+        return Ok(RealtimeBillingReconciliationMutationOutcome::Conflict);
+    }
+    let admin_audit = admin_audit_log_statement(
+        db,
+        Some(reservation.user_id),
+        Some(&reservation.username),
+        admin_audit.actor_username,
+        admin_audit.action,
+        admin_audit.content,
+        admin_audit.params,
+        admin_audit.admin_info,
+        admin_audit.created_at,
+    )?;
+    let upstream_response_id_hash = if reservation.upstream_response_id_hash.is_empty() {
+        format!(
+            "{:x}",
+            Sha256::digest(
+                format!(
+                    "cinatoken:realtime-billing-reconciliation-response:v1:{}",
+                    reconciliation.reconciliation_id
+                )
+                .as_bytes()
+            )
+        )
+    } else {
+        reservation.upstream_response_id_hash.clone()
+    };
+    match apply_realtime_settlement_batch_inner(
+        db,
+        (&reservation.reservation_key, &upstream_response_id_hash),
+        record,
+        audit_content,
+        audit_log,
+        Some(reconciliation),
+        Some(admin_audit),
+    )
+    .await
+    {
+        Ok(RealtimeSettlementBatchOutcome::Applied) => {
+            Ok(RealtimeBillingReconciliationMutationOutcome::Applied)
+        }
+        Ok(RealtimeSettlementBatchOutcome::DuplicateReplay) => {
+            Ok(RealtimeBillingReconciliationMutationOutcome::Duplicate)
+        }
+        Err(err) => {
+            let current =
+                realtime_billing_reconciliation(db, reconciliation.reconciliation_id).await?;
+            if current.as_ref().is_some_and(|current| {
+                current.reconciliation_resolution_key == reconciliation.resolution_key
+            }) {
+                Ok(RealtimeBillingReconciliationMutationOutcome::Duplicate)
+            } else if current.as_ref().is_some_and(|current| {
+                current.status != "reserved"
+                    || current.finalization_owner != REALTIME_USAGE_RECONCILIATION_OWNER
+                    || current.reconciliation_revision != reconciliation.expected_revision
+            }) {
+                Ok(RealtimeBillingReconciliationMutationOutcome::Conflict)
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 async fn apply_realtime_settlement_batch_inner(
@@ -3655,6 +4069,8 @@ async fn apply_realtime_settlement_batch_inner(
     record: RealtimeSettlementReplayRecord<'_>,
     audit_content: &str,
     audit_log: &RelayAuditLog<'_>,
+    reconciliation: Option<RealtimeBillingReconciliationMutation<'_>>,
+    admin_audit: Option<worker::D1PreparedStatement>,
 ) -> worker::Result<RealtimeSettlementBatchOutcome> {
     let replay_key = non_empty_realtime_replay_key(record.replay_key)?;
     let pre_consumed_quota = quota_i32(record.pre_consumed_quota)?;
@@ -3677,16 +4093,60 @@ async fn apply_realtime_settlement_batch_inner(
     let mut checked_statement_indices = vec![(0usize, "realtime settlement replay marker failed")];
     {
         let (reservation_key, upstream_response_id_hash) = reservation;
-        let reservation_args = [
-            D1Type::Text(reservation_key),
-            D1Type::Text(upstream_response_id_hash),
-            D1Type::Text(replay_key),
-            D1Type::Integer(final_quota),
-            D1Type::Integer(d1_i32(record.applied_at)),
-            D1Type::Integer(d1_i32(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)),
-        ];
-        let reservation_update = db
-            .prepare(
+        let reservation_update = if let Some(reconciliation) = reconciliation {
+            let reservation_args = [
+                D1Type::Text(reservation_key),
+                D1Type::Text(upstream_response_id_hash),
+                D1Type::Text(replay_key),
+                D1Type::Integer(final_quota),
+                D1Type::Integer(d1_i32(record.applied_at)),
+                D1Type::Text(reconciliation.reconciliation_id),
+                D1Type::Integer(d1_i32(reconciliation.expected_revision)),
+                D1Type::Text(reconciliation.resolution_key),
+                D1Type::Integer(d1_i32(reconciliation.operator_id)),
+                D1Type::Text(reconciliation.evidence_sha256),
+            ];
+            db.prepare(
+                r#"
+                UPDATE realtime_billing_reservations
+                SET status = 'settled',
+                    upstream_response_id_hash = ?2,
+                    replay_key = ?3,
+                    final_quota = ?4,
+                    snapshot_json = '{}',
+                    request_json = '{}',
+                    username = '',
+                    token_name = '',
+                    client_ip = '',
+                    request_id = '',
+                    finalization_owner = '',
+                    reconciliation_revision = reconciliation_revision + 1,
+                    reconciliation_resolution = 'settled',
+                    reconciliation_resolution_key = ?8,
+                    reconciliation_resolved_at = ?5,
+                    reconciliation_operator_id = ?9,
+                    reconciliation_evidence_sha256 = ?10,
+                    updated_at = ?5,
+                    settled_at = ?5
+                WHERE reservation_key = ?1
+                  AND reconciliation_id = ?6
+                  AND reconciliation_revision = ?7
+                  AND status = 'reserved'
+                  AND finalization_owner = 'usage_reconciliation'
+                  AND reconciliation_resolution = ''
+                "#,
+            )
+            .bind_refs(&reservation_args)?
+        } else {
+            let reservation_args = [
+                D1Type::Text(reservation_key),
+                D1Type::Text(upstream_response_id_hash),
+                D1Type::Text(replay_key),
+                D1Type::Integer(final_quota),
+                D1Type::Integer(d1_i32(record.applied_at)),
+                D1Type::Integer(d1_i32(REALTIME_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS)),
+            ];
+            db.prepare(
                 r#"
                 UPDATE realtime_billing_reservations
                 SET status = 'settled',
@@ -3712,7 +4172,8 @@ async fn apply_realtime_settlement_batch_inner(
                   AND ?5 <= lease_expires_at + ?6
                 "#,
             )
-            .bind_refs(&reservation_args)?;
+            .bind_refs(&reservation_args)?
+        };
         push_realtime_reservation_guarded_statement(
             db,
             &mut statements,
@@ -3832,6 +4293,16 @@ async fn apply_realtime_settlement_batch_inner(
         replay_key,
         "realtime settlement audit log failed",
     )?;
+    if let Some(admin_audit) = admin_audit {
+        push_realtime_settlement_guarded_statement(
+            db,
+            &mut statements,
+            &mut checked_statement_indices,
+            admin_audit,
+            replay_key,
+            "realtime reconciliation admin audit failed",
+        )?;
+    }
 
     let results = match db.batch(statements).await {
         Ok(results) => results,
@@ -4276,6 +4747,19 @@ fn non_empty_realtime_reservation_key(reservation_key: &str) -> worker::Result<&
     non_empty_realtime_reservation_field(reservation_key, "reservation key")
 }
 
+pub(crate) fn realtime_billing_reconciliation_id(reservation_key: &str) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "cinatoken:realtime-billing-reconciliation:v1:{}",
+                reservation_key.trim()
+            )
+            .as_bytes()
+        )
+    )
+}
+
 fn non_empty_realtime_reservation_field<'a>(
     value: &'a str,
     field: &str,
@@ -4674,6 +5158,33 @@ pub async fn insert_admin_audit_log(
     admin_info: &AdminAuditInfo,
     now: i64,
 ) -> worker::Result<()> {
+    admin_audit_log_statement(
+        db,
+        target_user_id,
+        target_username,
+        actor_username,
+        action,
+        content,
+        params,
+        admin_info,
+        now,
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
+pub fn admin_audit_log_statement(
+    db: &D1Database,
+    target_user_id: Option<i64>,
+    target_username: Option<&str>,
+    actor_username: &str,
+    action: &str,
+    content: &str,
+    params: &serde_json::Value,
+    admin_info: &AdminAuditInfo,
+    now: i64,
+) -> worker::Result<worker::D1PreparedStatement> {
     let user_id = target_user_id.unwrap_or(admin_info.admin_id);
     let username = target_username.unwrap_or(actor_username);
     let other = serde_json::json!({
@@ -4707,10 +5218,7 @@ pub async fn insert_admin_audit_log(
         )
         "#,
     )
-    .bind_refs(&args)?
-    .run()
-    .await?;
-    Ok(())
+    .bind_refs(&args)
 }
 
 // ---------------------------------------------------------------------------
@@ -12098,6 +12606,9 @@ mod tests {
             include_str!("../../../migrations/d1/0022_realtime_billing_global_recovery.sql");
         let usage_reconciliation_migration =
             include_str!("../../../migrations/d1/0027_realtime_usage_reconciliation.sql");
+        let reconciliation_resolution_migration = include_str!(
+            "../../../migrations/d1/0028_realtime_usage_reconciliation_resolution.sql"
+        );
         assert!(migration.contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations"));
         assert!(migration.contains("CHECK (status IN ('reserved', 'settled', 'refunded'))"));
         assert!(migration.contains("reservation_sequence"));
@@ -12141,6 +12652,24 @@ mod tests {
         assert!(usage_reconciliation_migration
             .contains("idx_realtime_billing_reservations_finalization_owner"));
         assert!(usage_reconciliation_migration.contains("usage_reconciliation"));
+        for field in [
+            "reconciliation_id",
+            "reconciliation_revision",
+            "reconciliation_resolution_key",
+            "reconciliation_evidence_sha256",
+        ] {
+            assert!(
+                reconciliation_resolution_migration.contains(field),
+                "missing realtime reconciliation resolution field {field}"
+            );
+        }
+        assert!(reconciliation_resolution_migration
+            .contains("idx_realtime_billing_reconciliation_operator_queue"));
+        let first = realtime_billing_reconciliation_id("reservation-a");
+        let second = realtime_billing_reconciliation_id("reservation-b");
+        assert_eq!(first.len(), 64);
+        assert_ne!(first, second);
+        assert!(!first.contains("reservation-a"));
     }
 
     fn relay_billing_test_reservation(status: &str) -> RelayBillingReservation {

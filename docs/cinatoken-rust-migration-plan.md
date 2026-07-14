@@ -12120,3 +12120,50 @@ usage and disconnect/redeploy races, provider invoice correlation, alert and
 retention ownership, a separately approved reconciliation workflow, and
 disable-first rollback. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+### 22.200 2026-07-14 Realtime Billing Reconciliation Control Plane
+
+This increment closes the local operator-action gap left deliberately open by
+22.199. It does not enable the action remotely, apply a remote migration, call
+a paid provider, or change the Go/VPS production authority.
+
+Implemented locally:
+
+- Migration `0028_realtime_usage_reconciliation_resolution.sql` adds a random
+  public reconciliation id, monotonic revision, terminal resolution, unique
+  resolution key, operator/evidence digests, and resolution timestamp. Only
+  open `usage_reconciliation` rows are backfilled; ordinary reservations do not
+  receive operator identifiers.
+- `GET /api/platform/realtime-billing/reconciliations` is an admin-only,
+  no-store, stable-cursor queue. It returns only the public reconciliation id,
+  revision, controlled quarantine reason/timestamps, and reserved quota.
+- Root-only preview accepts exactly one controlled settle or refund decision.
+  Settlement usage must be complete, non-negative, and internally consistent.
+  The server recomputes the result from the frozen tiered-expression snapshot;
+  clients cannot submit quota, pricing rules, model identity, or ledger keys.
+- Apply additionally requires fresh secure verification, an explicit
+  confirmation, the exact preview digest, and a bounded idempotency key.
+  `REALTIME_BILLING_RECONCILIATION_ENABLED=false` in every tracked environment
+  keeps mutation fail-closed until an isolated staging approval.
+- Refund and settlement use revision/owner CAS and one D1 batch. The batch
+  updates reservation state, user/token/channel accounting as applicable,
+  replay state, type-2 billing audit for settlement, and type-3 root audit.
+  Duplicate requests read back the canonical terminal row; conflicting action,
+  preview, revision, or ownership returns 409.
+- The React/Bun operations panel now presents a paginated open queue,
+  preview-only quota delta, controlled evidence classification, typed risk
+  acknowledgement, and the existing secure-verification dialog. It exposes no
+  raw reservation key, session, bridge segment, provider identity, operator id,
+  resolution key, or evidence digest.
+
+The SQLite verifier now covers all 28 migrations, 30 tables, 137 checked
+incremental columns, and 27 key indexes. Local Rust tests, release-Wasm Workerd
+refund/settlement cases, frontend readiness, and Wasm compilation are required
+gates for this increment.
+
+Production promotion still requires credential rotation, an isolated remote
+0028 apply with all Realtime mutation/recovery flags false, dual-control policy
+and evidence-retention ownership, actual-provider invoice correlation,
+concurrent duplicate/revision races, D1 failure and rollback drills, alerts,
+and signed G1-G8 approval. Go/VPS remains authoritative and production remains
+**NO-GO**.

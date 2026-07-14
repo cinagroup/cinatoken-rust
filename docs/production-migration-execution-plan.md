@@ -330,8 +330,8 @@ Corrected production rules:
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0027, `/api/status`, generated binding types, logs visible | Live smoke and canary |
-| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 26/26 and 30-table replay are prerequisites only | Any data cutover |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0028, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 28/28 and 30-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
 | G5 | Admin/frontend parity | Admin can operate staging without direct DB edits | G5 report from `docs/admin-frontend-parity-runbook.md`, login/current-user/logout, token/channel/user/log/settings smoke, cache invalidation, admin audit, frontend build/deploy evidence | Operator cutover |
@@ -1112,9 +1112,9 @@ enable HTTP recovery after stream-heartbeat proof alone.
 2. Freeze old and new Rust relay admission. Drain Queue/DLQ work and reconcile
    every HTTP billing row until `status='reserved'` is zero. Keep Go/VPS
    authoritative.
-3. Apply the exact migration set through 0027 in isolated staging. The 0026
-   guard must reject a nonzero active count. Verify 27 migrations, 30 tables,
-   130 checked incremental columns, 24 indexes, and exact-set capability state.
+3. Apply the exact migration set through 0028 in isolated staging. The 0026
+   guard must reject a nonzero active count. Verify 28 migrations, 30 tables,
+   137 checked incremental columns, 27 indexes, and exact-set capability state.
 4. Deploy with Queue, reconcile, orphan recovery, and staging-proof flags false.
    Explicitly configure the reservation deadline and heartbeat. Require owner
    generation compiled/schema/configured true and staging/cutover false.
@@ -1131,7 +1131,7 @@ enable HTTP recovery after stream-heartbeat proof alone.
 
 Rollback order is recovery off, reconcile off, Queue finalization off, new Rust
 admission off, traffic to Go/VPS, then ledger/Queue drain and reconciliation.
-Retain migrations 0026-0027 and the highest generation/Realtime finalization
+Retain migrations 0026-0028 and the highest generation/Realtime finalization
 owner. No remote evidence is
 currently archived, so production remains **NO-GO**.
 
@@ -1141,9 +1141,10 @@ currently archived, so production remains **NO-GO**.
    a separate scoped deploy identity from the readback identity.
 2. Freeze new Realtime admission, drain or explicitly classify every active
    reservation, and archive redacted counts by status/finalization owner.
-3. Apply 0027 with `REALTIME_SESSION_V1_ENABLED=false`, settlement writes false,
-   and global orphan recovery false. Require exact 27-file migration readback
-   and `realtime_session_usage_reconciliation_compiled=true`.
+3. Apply 0027 then 0028 with `REALTIME_SESSION_V1_ENABLED=false`, settlement
+   writes false, reconciliation mutation false, and global orphan recovery
+   false. Require exact 28-file migration readback, 137 checked columns, 27
+   indexes, and both reconciliation capability signals compiled/schema-ready.
 4. Enable one isolated fixture. Replay valid completed/cancelled/failed/
    incomplete usage plus missing identity, missing/null/malformed/negative/
    inconsistent/completed-zero usage, D1 ambiguity, client disconnect, provider
@@ -1151,10 +1152,11 @@ currently archived, so production remains **NO-GO**.
 5. For every ambiguous case require one retained pre-consumption, owner
    `usage_reconciliation`, no terminal refund/settlement/replay/audit mutation,
    no raw identity in API/UI/logs, an alert, and provider invoice correlation.
-6. Design and separately approve an operator resolution contract with fresh
-   step-up, immutable evidence, one financial CAS, audit, dual control, bounded
-   retention, replay rejection, and rollback. Quarantine rows must not be
-   mutated by ad hoc SQL or by the read-only frontend.
+6. Review the landed operator resolution contract before enabling it: root plus
+   fresh step-up, frozen-expression preview, controlled evidence, revision and
+   idempotency fences, one financial/audit batch, replay convergence, and
+   disable-first rollback. Add the production dual-control and bounded evidence
+   retention policy; quarantine rows must never be mutated by ad hoc SQL.
 7. Promote Realtime traffic only after zero unexplained rows, signed accounting
    reconciliation, alert/retention ownership, load/cost evidence, disable-first
    rollback rehearsal, and G1-G8 approval.

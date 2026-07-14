@@ -1020,3 +1020,27 @@ Local Workerd proves persistence against a forced-overdue scheduled sweep, but
 remote eviction/redeploy, actual-provider invoice correlation, alerts,
 retention, and a dual-control operator resolution workflow remain absent.
 Production remains **NO-GO**.
+
+## 2026-07-14 Realtime Reconciliation Control-Plane Alignment
+
+The local operator workflow now applies the same ownership split without
+copying cinaVibeSDK application lifecycle code. `RealtimeSession` remains the
+socket/order owner, D1 remains the financial writer, and the root frontend is a
+preview/confirmation surface. Neither the WFP tenant nor outbound Worker can
+discover or mutate reconciliation state.
+
+Migration 0028 persists revision-fenced resolution and idempotency in D1. A
+root decision is recomputed from the frozen billing expression and applied in
+one financial/audit batch after secure verification. This removes the local
+"no operator resolution" gap, but it is not dual-control production proof: the
+tracked runtime mutation gate remains false.
+
+cinaVibeSDK's inference helper performs explicit primary/fallback choice above
+AI Gateway, and its app proxy is single-model. It is design evidence for
+separation and fallback policy, not evidence that Gateway itself provides
+cinatoken's multi-model billing authority. Provider selection and
+actual-serving-model accounting remain centralized in cinatoken-rust.
+
+Remote 0028, two-person approval policy, evidence retention, provider invoice
+correlation, D1/concurrent-operator faults, alerts, rollback, and staging
+readback remain required. Production remains **NO-GO**.

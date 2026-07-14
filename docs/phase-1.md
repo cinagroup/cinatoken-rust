@@ -980,3 +980,23 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   remote 0027 application, live provider usage/invoice reconciliation, fault
   and redeploy races, alert/retention ownership, and an independently approved
   operator resolution workflow. Production remains **NO-GO**.
+
+## 2026-07-14 Realtime Reconciliation Operator Increment
+
+- Migration 0028 adds public reconciliation identity, revision fencing,
+  terminal resolution, idempotency, operator attribution, and evidence hashing
+  only for the quarantined Realtime billing workflow.
+- The Worker now exposes an admin no-store queue and root preview/apply APIs.
+  Preview recomputes quota from the frozen tiered expression; apply requires
+  fresh secure verification and a matching preview/idempotency contract.
+- Settle/refund mutations are one D1 batch across terminal reservation state,
+  quota counters, replay where applicable, and audit. Quarantine reason/time is
+  retained after terminal resolution.
+- The React/Bun operations panel provides pagination, controlled decision and
+  evidence inputs, server preview, risk acknowledgement, and step-up. Mutation
+  stays disabled by default in base, staging, and production Wrangler config.
+- Current local schema proof is 28 migrations, 30 tables, 137 checked
+  incremental columns, and 27 indexes. Next: rotate the credential, apply 0028
+  in isolated staging with all Realtime writers off, establish dual-control and
+  retention policy, replay provider/D1/concurrency/rollback faults, and archive
+  invoice-to-ledger reconciliation. Production remains **NO-GO**.

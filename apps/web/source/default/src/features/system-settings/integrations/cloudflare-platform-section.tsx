@@ -173,6 +173,9 @@ export function CloudflarePlatformSection() {
                 capabilities.realtime_session_billing_ledger_status_compiled &&
                 capabilities.realtime_session_usage_reconciliation_compiled
               }
+              reconciliationMutationEnabled={
+                capabilities.realtime_session_billing_reconciliation_ready
+              }
             />
 
             <WfpTenantPlanPanel

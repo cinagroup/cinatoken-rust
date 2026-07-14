@@ -108,6 +108,13 @@ REQUIRED_COLUMNS = {
         "finalization_owner",
         "finalization_reason",
         "finalization_required_at",
+        "reconciliation_id",
+        "reconciliation_revision",
+        "reconciliation_resolution",
+        "reconciliation_resolution_key",
+        "reconciliation_resolved_at",
+        "reconciliation_operator_id",
+        "reconciliation_evidence_sha256",
     },
     "realtime_billing_recovery_state": {
         "id",
@@ -210,6 +217,9 @@ REQUIRED_INDEXES = {
         "idx_realtime_billing_reservations_global_lease": False,
         "idx_realtime_billing_reservations_recent_outcome": False,
         "idx_realtime_billing_reservations_finalization_owner": False,
+        "idx_realtime_billing_reconciliation_id": True,
+        "idx_realtime_billing_reconciliation_resolution_key": True,
+        "idx_realtime_billing_reconciliation_operator_queue": False,
     },
     "relay_billing_reservations": {
         "idx_relay_billing_reservations_global_lease": False,

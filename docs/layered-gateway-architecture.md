@@ -258,10 +258,12 @@ supports.
 | `isDispatcherAvailable(env)` graceful degrade | `dispatcher_available()` gate; default-tenant fallback = the in-gateway pipeline |
 | Tenant scripts PUT to `.../dispatch/namespaces/<ns>/scripts/<name>` | Tenant-script SDK crate reusing `crates/relay` + `crates/billing`, deployed via the dispatch API |
 
-> **SDK caveat (verified):** `0.5.0`'s `DynamicDispatcher::get` hard-codes
-> `JsValue::undefined()` for options (`dynamic_dispatch.rs:23`), so per-tenant
-> outbound-params/limits are not expressible from Rust without `js_sys`
-> reflection — the same workaround already used for the 3-arg AI-Gateway `run`.
+> **SDK caveat (verified):** `0.5.0`'s typed `DynamicDispatcher::get` wrapper
+> hard-codes `JsValue::undefined()` for options (`dynamic_dispatch.rs:23`). The
+> current cinatoken-rust platform dispatcher therefore uses reviewed `js_sys`
+> reflection for Cloudflare's three-argument dispatcher form and passes a
+> platform-owned outbound context. This is a deliberate extension, not a claim
+> that cinaVibeSDK already provides the same boundary.
 
 ### Paradigm C — AI Gateway multi-model routing → `AiGatewayRouter`
 
@@ -592,9 +594,12 @@ by clearing the flag, no redeploy required.
   model prefixes to support the Anthropic schema and rejects Workers AI before
   any reserve refund. Usage still settles through `crates/billing`.
 - **Current Cloudflare constraint:** do not implement this with the deprecated
-  Universal Endpoint. The landed router uses `/compat` or provider-specific
-  endpoint forms. Cloudflare Dynamic Routing remains a later option only after
-  central billing can reconcile the actual selected provider and model.
+  Universal Endpoint. The active relay calls the AI Gateway REST endpoint
+  builder (`rest_gateway_endpoint_url`) after resolving one explicit provider
+  and model. The retained `/compat` provider URL helper and its unit tests are
+  not active-path or multi-model-routing evidence. Cloudflare Dynamic Routing
+  remains a later option only after central billing can reconcile the actual
+  selected provider and model.
 - **Files:** `crates/providers/src/ai_gateway.rs`, `crates/worker/src/relay.rs`,
   `crates/worker/src/platform_gateway.rs`, and the Cloudflare platform readiness UI.
 - **Verify:** echo-upstream staging smoke (`verification.md:834-852`); fallback
@@ -933,3 +938,13 @@ It follows the cinaVibeSDK lesson that hibernation-safe coordination keeps
 durable state outside transient memory and uses internal bindings rather than a
 public HTTP loop. WFP tenant/outbound code never sees the incident ledger or
 acquires replay/settlement authority.
+
+### Realtime usage-reconciliation control plane
+
+Ambiguous Realtime provider usage remains owned by D1, not by a singleton DO.
+Migration 0028 adds revision-fenced terminal resolution. Admin queue reads are
+redacted and no-store; root preview re-evaluates the frozen tiered expression;
+root apply requires fresh step-up and commits financial state plus audit in one
+D1 batch. `RealtimeSession`, WFP tenant, and WFP outbound cannot execute this
+operator action. `REALTIME_BILLING_RECONCILIATION_ENABLED=false` keeps the
+control plane mutation-disabled until isolated staging approval.

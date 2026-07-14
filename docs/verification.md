@@ -4467,3 +4467,69 @@ This is local implementation evidence only. Remote migration 0027, live
 provider usage/invoice reconciliation, D1/disconnect/eviction/redeploy races,
 alerts, retention, operator resolution, rollback, and production approval are
 absent. Go/VPS remains authoritative; production is **NO-GO**.
+
+## Realtime Billing Reconciliation Verification (2026-07-14)
+
+Scope: local migration 0028, stable open-queue pagination, frozen-expression
+preview, root-only verified apply, atomic settlement/refund, terminal
+provenance, and the controlled React/Bun operator workbench. The Go
+billing-expression contract was reviewed before implementation; normalized
+usage remains the only operator-supplied pricing input.
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 667/667, including reconciliation validation, preview digest,
+# idempotency, owner/revision CAS, and terminal readback tests
+
+bun run verify:sqlite
+# PASS; 28 migrations, 30 tables, 137 incremental columns, 27 key indexes
+
+bunx vitest run --config vitest.do.config.mjs `
+  -t "quarantines Realtime response.done with null usage"
+# PASS; selected Workerd refund path
+
+bunx vitest run --config vitest.do.config.mjs `
+  -t "settles quarantined Realtime usage through the operator workflow"
+# PASS; selected Workerd settlement path
+
+bun run check:do-lifecycle-runtime
+# PASS; release Worker/WFP builds and 29/29 Workerd tests
+
+bun run check:web:readiness
+# PASS; 50/50, including reconciliation workbench and ledger v3 contracts
+
+bun run check:web
+# PASS; TypeScript project build and production Rsbuild bundle
+
+bun run check:web:routes
+# PASS after intentional baseline update; 223 frontend calls, 326 Worker routes,
+# zero missing calls
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 29/29, Playground 1/1, frontend
+# build/audits, 28 D1 migrations, workspace tests, and all three wasm32 targets
+
+bun run check:cf:dry-run
+# PASS; release packaging resolved the Worker and kept
+# REALTIME_BILLING_RECONCILIATION_ENABLED=false
+```
+
+Verified behavior:
+
+- The open queue is ordered by `(finalization_required_at, reconciliation_id)`
+  and uses the same tuple as its cursor, so equal timestamps cannot skip rows.
+- Preview uses the reservation's frozen expression and request snapshot. Apply
+  requires a fresh root-admin verification, explicit confirmation, the exact
+  preview digest, a bounded evidence reference, and an idempotency key.
+- Settlement atomically updates user, token, channel, reservation, replay, and
+  type-2/type-3 audit state. Refund atomically restores quota and records the
+  terminal operator audit. Both paths use owner plus revision CAS and preserve
+  quarantine provenance.
+- The frontend exposes controlled action/reason values and every normalized
+  usage dimension, resets state when the reservation revision changes, and
+  keeps mutation controls unavailable unless the runtime capability is ready.
+
+This remains local implementation evidence. Remote migration 0028, staging D1
+application, authenticated operator drills, provider traffic, alert delivery,
+rollback rehearsal, and production approval are absent. The production gate is
+default-off, Go/VPS remains authoritative, and production is **NO-GO**.

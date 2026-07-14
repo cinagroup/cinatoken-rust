@@ -667,17 +667,19 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `27`, latest/expected
-    `0027_realtime_usage_reconciliation.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `28`, latest/expected
+    `0028_realtime_usage_reconciliation_resolution.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0027 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0028 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
    reconstructed across the lease and bridge-segment schema transitions.
    Apply 0022 with global recovery disabled, then complete the isolated recovery
-   smoke before enabling its gate.
+   smoke before enabling its gate. Apply 0028 with
+   `REALTIME_BILLING_RECONCILIATION_ENABLED=false`; do not enable mutation until
+   the isolated operator drill, dual-control policy, and rollback evidence pass.
 9. Upstash staging credentials are configured or the feature is deliberately
    disabled.
 10. No placeholder IDs or development origins remain in staging config.

@@ -568,6 +568,19 @@ pub(crate) struct RealtimeBillingSettlementPreviewMetadata {
     mutation_channel_scoped: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RealtimeBillingReconciliationUsage {
+    pub input_tokens: i32,
+    pub output_tokens: i32,
+    pub total_tokens: i32,
+    pub cached_tokens: i32,
+    pub cache_creation_tokens: i32,
+    pub image_input_tokens: i32,
+    pub image_output_tokens: i32,
+    pub audio_input_tokens: i32,
+    pub audio_output_tokens: i32,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 struct RealtimeBillingSettlementWriteMetadata {
     write_enabled: bool,
@@ -4893,6 +4906,32 @@ fn realtime_billing_settlement_preview(
     ))
 }
 
+pub(crate) fn realtime_billing_reconciliation_preview(
+    snapshot_json: &str,
+    request_json: &str,
+    usage: RealtimeBillingReconciliationUsage,
+) -> Result<RealtimeBillingSettlementPreviewMetadata, String> {
+    let snapshot = serde_json::from_str::<TieredBillingSnapshot>(snapshot_json)
+        .map_err(|err| format!("invalid frozen realtime billing snapshot: {err}"))?;
+    let request = serde_json::from_str::<RequestInput>(request_json)
+        .map_err(|err| format!("invalid frozen realtime billing request: {err}"))?;
+    let usage = RealtimeUsageMetadata {
+        source_event: "operator.reconciliation".to_string(),
+        response_status: "completed".to_string(),
+        response_identity_hash: String::new(),
+        prompt_tokens: usage.input_tokens,
+        completion_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        cached_tokens: usage.cached_tokens,
+        cache_creation_tokens: usage.cache_creation_tokens,
+        image_input_tokens: usage.image_input_tokens,
+        image_output_tokens: usage.image_output_tokens,
+        audio_input_tokens: usage.audio_input_tokens,
+        audio_output_tokens: usage.audio_output_tokens,
+    };
+    realtime_billing_settlement_preview(&snapshot, &usage, request, None)
+}
+
 impl RealtimeBillingSettlementHandoff {
     pub(crate) fn new(snapshot: TieredBillingSnapshot, request: RequestInput) -> Self {
         Self {
@@ -6217,6 +6256,18 @@ impl RealtimeBillingSettlementPreviewMetadata {
                 .map(RealtimeBillingSettlementMutationPlan::channel_scoped)
                 .unwrap_or(false),
         }
+    }
+
+    pub(crate) fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    pub(crate) fn pre_consumed_quota(&self) -> i64 {
+        self.pre_consumed_quota
+    }
+
+    pub(crate) fn final_quota(&self) -> i64 {
+        self.final_quota
     }
 }
 

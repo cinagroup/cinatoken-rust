@@ -36,6 +36,9 @@ use crate::quota_coordinator::{
     QUOTA_COORD_BINDING, QUOTA_COORD_RETENTION_VERIFIED_ENV, QUOTA_COORD_SHADOW_ENABLED_ENV,
     QUOTA_COORD_STAGING_VERIFIED_ENV,
 };
+use crate::realtime_billing_reconcile::{
+    realtime_billing_reconciliation_compiled, realtime_billing_reconciliation_enabled,
+};
 use crate::realtime_session::{
     realtime_billing_global_orphan_recovery_compiled, realtime_billing_orphan_recovery_enabled,
     realtime_billing_orphan_recovery_grace_seconds, realtime_billing_orphan_sweep_limit,
@@ -150,7 +153,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0027_realtime_usage_reconciliation.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0028_realtime_usage_reconciliation_resolution.sql";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -189,6 +192,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0025_relay_billing_finalization_incidents.sql",
     "0026_relay_billing_owner_generation.sql",
     "0027_realtime_usage_reconciliation.sql",
+    "0028_realtime_usage_reconciliation_resolution.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -441,6 +445,9 @@ struct PlatformCapabilities {
     realtime_session_billing_orphan_sweep_limit: i64,
     realtime_session_billing_ledger_status_compiled: bool,
     realtime_session_usage_reconciliation_compiled: bool,
+    realtime_session_billing_reconciliation_compiled: bool,
+    realtime_session_billing_reconciliation_enabled: bool,
+    realtime_session_billing_reconciliation_ready: bool,
     realtime_session_billing_settlement_staging_smoke_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_enabled: bool,
     realtime_session_billing_settlement_staging_smoke_ready: bool,
@@ -575,6 +582,10 @@ struct RealtimeBillingLedgerStatusMetadata {
     requires_reconciliation: bool,
     finalization_reason: Option<String>,
     finalization_required_at: Option<i64>,
+    reconciliation_id: Option<String>,
+    reconciliation_revision: i64,
+    reconciliation_resolution: Option<String>,
+    reconciliation_resolved_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -935,6 +946,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     let realtime_session_billing_orphan_sweep_limit = realtime_billing_orphan_sweep_limit(&env);
     let realtime_session_billing_ledger_status_compiled = true;
     let realtime_session_usage_reconciliation_compiled = realtime_usage_reconciliation_compiled();
+    let realtime_session_billing_reconciliation_compiled =
+        realtime_billing_reconciliation_compiled();
+    let realtime_session_billing_reconciliation_enabled =
+        realtime_billing_reconciliation_enabled(&env);
+    let realtime_session_billing_reconciliation_ready =
+        realtime_session_billing_reconciliation_compiled
+            && realtime_session_billing_reconciliation_enabled
+            && d1_migration_ready;
     let realtime_session_billing_settlement_staging_smoke_compiled =
         realtime_settlement_staging_smoke_compiled();
     let realtime_session_billing_settlement_staging_smoke_enabled =
@@ -1209,6 +1228,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_orphan_sweep_limit,
         realtime_session_billing_ledger_status_compiled,
         realtime_session_usage_reconciliation_compiled,
+        realtime_session_billing_reconciliation_compiled,
+        realtime_session_billing_reconciliation_enabled,
+        realtime_session_billing_reconciliation_ready,
         realtime_session_billing_settlement_staging_smoke_compiled,
         realtime_session_billing_settlement_staging_smoke_enabled,
         realtime_session_billing_settlement_staging_smoke_ready,
@@ -1426,7 +1448,7 @@ pub async fn realtime_billing_ledger_status(req: Request, env: Env) -> WorkerRes
         }
     };
     let status = RealtimeBillingLedgerStatus {
-        contract_version: 2,
+        contract_version: 3,
         count: records.len(),
         global_sweep,
         records,
@@ -1468,6 +1490,12 @@ fn realtime_billing_ledger_status_metadata(
             .then_some(row.finalization_reason),
         finalization_required_at: (row.finalization_required_at > 0)
             .then_some(row.finalization_required_at),
+        reconciliation_id: (!row.reconciliation_id.is_empty()).then_some(row.reconciliation_id),
+        reconciliation_revision: row.reconciliation_revision,
+        reconciliation_resolution: (!row.reconciliation_resolution.is_empty())
+            .then_some(row.reconciliation_resolution),
+        reconciliation_resolved_at: (row.reconciliation_resolved_at > 0)
+            .then_some(row.reconciliation_resolved_at),
     }
 }
 
@@ -3910,7 +3938,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0027_realtime_usage_reconciliation.sql"
+            "0028_realtime_usage_reconciliation_resolution.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -3956,6 +3984,12 @@ mod tests {
         assert!(realtime_usage_reconciliation.contains("finalization_owner"));
         assert!(realtime_usage_reconciliation.contains("usage_reconciliation"));
         assert!(realtime_usage_reconciliation.contains("last_recovery_required"));
+        let realtime_usage_resolution = include_str!(
+            "../../../migrations/d1/0028_realtime_usage_reconciliation_resolution.sql"
+        );
+        assert!(realtime_usage_resolution.contains("reconciliation_id"));
+        assert!(realtime_usage_resolution.contains("reconciliation_revision"));
+        assert!(realtime_usage_resolution.contains("idx_realtime_billing_reconciliation_id"));
     }
 
     #[test]
@@ -4026,6 +4060,13 @@ mod tests {
                 finalization_owner: String::new(),
                 finalization_reason: String::new(),
                 finalization_required_at: 0,
+                reconciliation_id: "a".repeat(64),
+                reconciliation_revision: 2,
+                reconciliation_resolution: "refunded".to_string(),
+                reconciliation_resolution_key: "private-resolution-key".to_string(),
+                reconciliation_resolved_at: 901,
+                reconciliation_operator_id: 42,
+                reconciliation_evidence_sha256: "private-evidence-hash".to_string(),
             },
             901,
         );
@@ -4033,6 +4074,8 @@ mod tests {
         assert!(!encoded.contains("private-reservation"));
         assert!(!encoded.contains("private-session"));
         assert!(!encoded.contains("private-segment"));
+        assert!(!encoded.contains("private-resolution-key"));
+        assert!(!encoded.contains("private-evidence-hash"));
         assert!(metadata.reservation_fingerprint.starts_with("sha256:"));
         assert!(metadata.scope_fingerprint.starts_with("sha256:"));
         assert_ne!(metadata.reservation_fingerprint, metadata.scope_fingerprint);

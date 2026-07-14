@@ -748,6 +748,303 @@ describe("Rust Durable Object lifecycle contracts", () => {
       replayCount: 0,
       auditCount: 0,
     });
+
+    const { cookie, password } = await setupAndLoginBillingRoot();
+    const queueResponse = await SELF.fetch(
+      "https://cinatoken.test/api/platform/realtime-billing/reconciliations?limit=50",
+      { headers: { cookie } },
+    );
+    expect(queueResponse.status).toBe(200);
+    expect(queueResponse.headers.get("cache-control")).toBe("no-store");
+    const queueText = await queueResponse.text();
+    expect(queueText).not.toContain(reservationKey);
+    const queue = JSON.parse(queueText);
+    expect(queue).toMatchObject({
+      success: true,
+      data: {
+        contract_version: 1,
+        count: 1,
+        next_cursor: null,
+        records: [
+          {
+            reconciliation_revision: 1,
+            quarantine_reason: "response_usage_null",
+            pre_consumed_quota: reserved.reservation.pre_consumed_quota,
+          },
+        ],
+      },
+    });
+    const reconciliationId = queue.data.records[0].reconciliation_id;
+    expect(reconciliationId).toMatch(/^[a-f0-9]{64}$/u);
+    const decision = {
+      action: "refund",
+      reason: "provider_confirms_no_billable_usage",
+      evidence_reference: "provider:usage/runtime-null-1",
+      usage: null,
+    };
+    const previewUrl =
+      `https://cinatoken.test/api/platform/realtime-billing/reconciliations/` +
+      `${reconciliationId}/preview`;
+    const previewResponse = await SELF.fetch(previewUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    expect(previewResponse.status).toBe(200);
+    expect(previewResponse.headers.get("cache-control")).toBe("no-store");
+    const preview = await previewResponse.json();
+    expect(preview).toMatchObject({
+      success: true,
+      data: {
+        reconciliation_id: reconciliationId,
+        reconciliation_revision: 1,
+        action: "refund",
+        quarantine_reason: "response_usage_null",
+        pricing_source: "reserved_quota_refund",
+        pre_consumed_quota: reserved.reservation.pre_consumed_quota,
+        final_quota: 0,
+        refund_quota: reserved.reservation.pre_consumed_quota,
+        additional_quota: 0,
+        settlement: null,
+      },
+    });
+    expect(preview.data.preview_token).toMatch(/^[a-f0-9]{64}$/u);
+    const applyUrl =
+      `https://cinatoken.test/api/platform/realtime-billing/reconciliations/` +
+      `${reconciliationId}/apply`;
+    const applyBody = {
+      ...decision,
+      preview_token: preview.data.preview_token,
+      idempotency_key: "runtime-null-refund-1",
+      confirm_resolution: true,
+    };
+    const unverified = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    expect(unverified.status).toBe(403);
+
+    const verified = await SELF.fetch("https://cinatoken.test/api/verify", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ method: "password", password }),
+    });
+    expect(verified.status).toBe(200);
+
+    const applied = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        reconciliation_id: reconciliationId,
+        action: "refund",
+        status: "applied",
+        reconciliation_revision: 2,
+      },
+    });
+    await expect(realtimeBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: {
+        status: "refunded",
+        finalization_owner: "",
+        finalization_reason: "response_usage_null",
+        reconciliation_resolution: "refunded",
+        reconciliation_revision: 2,
+      },
+      user: { quota: account.userQuota },
+      token: { remain_quota: account.tokenRemainQuota, used_quota: 0 },
+    });
+    const adminAudit = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM logs
+       WHERE type = 3 AND other LIKE '%realtime_billing.reconciliation_resolved%'`,
+    ).first();
+    expect(Number(adminAudit?.count ?? 0)).toBe(1);
+
+    const duplicate = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(applyBody),
+    });
+    expect(duplicate.status).toBe(200);
+    await expect(duplicate.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        status: "duplicate",
+        reconciliation_revision: 2,
+      },
+    });
+    const queueAfter = await SELF.fetch(
+      "https://cinatoken.test/api/platform/realtime-billing/reconciliations?limit=50",
+      { headers: { cookie } },
+    );
+    await expect(queueAfter.json()).resolves.toMatchObject({
+      success: true,
+      data: { count: 0, records: [] },
+    });
+  }, 30_000);
+
+  it("settles quarantined Realtime usage from the frozen billing expression", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+    const account = await seedAuthenticatedRealtimeGateway({
+      mockFault: null,
+      upstreamModel: "gpt-runtime-realtime-usage-null",
+    });
+    const socket = await openAuthenticatedRealtimeSession();
+    const statusMessage = nextJsonWebSocketMessage(
+      socket,
+      "usage settlement session status",
+    );
+    socket.send("status");
+    const session = (await statusMessage).context.session;
+    const reconciliationError = nextJsonWebSocketMessageMatching(
+      socket,
+      (message) =>
+        message?.error?.code === "billing_usage_reconciliation_required",
+      "usage settlement reconciliation error",
+    );
+    const terminalClose = nextWebSocketClose(
+      socket,
+      "usage settlement reconciliation close",
+    );
+
+    socket.send(
+      JSON.stringify({
+        type: "response.create",
+        event_id: "runtime-null-usage-settlement",
+        response: { instructions: "runtime operator settlement proof" },
+      }),
+    );
+    const reserved = await waitForRealtimeReservation(session);
+    const reservationKey = reserved.reservation.reservation_key;
+    await expect(reconciliationError).resolves.toMatchObject({
+      error: { code: "billing_usage_reconciliation_required" },
+    });
+    await expect(terminalClose).resolves.toMatchObject({ code: 1011 });
+
+    const { cookie, password } = await setupAndLoginBillingRoot();
+    const queueResponse = await SELF.fetch(
+      "https://cinatoken.test/api/platform/realtime-billing/reconciliations?limit=50",
+      { headers: { cookie } },
+    );
+    const queue = await queueResponse.json();
+    const reconciliationId = queue.data.records[0].reconciliation_id;
+    const decision = {
+      action: "settle",
+      reason: "provider_usage_verified",
+      evidence_reference: "provider:usage/runtime-settle-1",
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        cached_tokens: 2,
+        cache_creation_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        audio_input_tokens: 0,
+        audio_output_tokens: 0,
+      },
+    };
+    const previewUrl =
+      `https://cinatoken.test/api/platform/realtime-billing/reconciliations/` +
+      `${reconciliationId}/preview`;
+    const previewResponse = await SELF.fetch(previewUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json();
+    expect(preview).toMatchObject({
+      success: true,
+      data: {
+        reconciliation_id: reconciliationId,
+        action: "settle",
+        pricing_source: "frozen_tiered_snapshot",
+        settlement: {
+          expr_version: 1,
+          matched_tier: "runtime_realtime",
+          actual_prompt_tokens: 10,
+          actual_completion_tokens: 5,
+          actual_total_tokens: 15,
+        },
+      },
+    });
+    const expectedFinalQuota = preview.data.final_quota;
+    expect(expectedFinalQuota).toBeGreaterThan(0);
+
+    const verified = await SELF.fetch("https://cinatoken.test/api/verify", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ method: "password", password }),
+    });
+    expect(verified.status).toBe(200);
+    const applyUrl =
+      `https://cinatoken.test/api/platform/realtime-billing/reconciliations/` +
+      `${reconciliationId}/apply`;
+    const applied = await SELF.fetch(applyUrl, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        ...decision,
+        preview_token: preview.data.preview_token,
+        idempotency_key: "runtime-null-settlement-1",
+        confirm_resolution: true,
+      }),
+    });
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        reconciliation_id: reconciliationId,
+        action: "settle",
+        status: "applied",
+        reconciliation_revision: 2,
+      },
+    });
+    await expect(realtimeBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: {
+        status: "settled",
+        final_quota: expectedFinalQuota,
+        finalization_owner: "",
+        finalization_reason: "response_usage_null",
+        reconciliation_resolution: "settled",
+        reconciliation_revision: 2,
+      },
+      user: { quota: account.userQuota - expectedFinalQuota },
+      token: {
+        remain_quota: account.tokenRemainQuota - expectedFinalQuota,
+        used_quota: expectedFinalQuota,
+      },
+    });
+    const accounting = await env.DB.prepare(
+      `SELECT
+         (SELECT used_quota FROM channels WHERE id = 42) AS channel_used_quota,
+         (SELECT COUNT(*) FROM realtime_settlement_replays
+          WHERE replay_key = (
+            SELECT reconciliation_resolution_key
+            FROM realtime_billing_reservations
+            WHERE reservation_key = ?1
+          ) AND status = 'applied') AS replay_count,
+         (SELECT COUNT(*) FROM logs WHERE type = 2 AND model_name = ?2) AS billing_audit_count,
+         (SELECT COUNT(*) FROM logs WHERE type = 3
+          AND other LIKE '%realtime_billing.reconciliation_resolved%') AS admin_audit_count`,
+    )
+      .bind(reservationKey, realtimeModel)
+      .first();
+    expect(accounting).toMatchObject({
+      channel_used_quota: expectedFinalQuota,
+      replay_count: 1,
+      billing_audit_count: 1,
+      admin_audit_count: 1,
+    });
   }, 30_000);
 
   it("rejects an unbillable Realtime upgrade before provider or ledger mutation", async () => {
@@ -955,8 +1252,9 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 27,
-        d1_expected_migration: "0027_realtime_usage_reconciliation.sql",
+        d1_migration_applied_count: 28,
+        d1_expected_migration:
+          "0028_realtime_usage_reconciliation_resolution.sql",
         d1_migration_ready: true,
         relay_billing_prebind_owner_generation_contract_version: 1,
         relay_billing_prebind_owner_generation_compiled: true,
@@ -2681,9 +2979,11 @@ async function relayBillingFinalizationState(eventId) {
 async function realtimeBillingState(reservationKey) {
   const [reservation, user, token] = await Promise.all([
     env.DB.prepare(
-      `SELECT status, bridge_segment, refunded_at, recovery_attempt_count,
+      `SELECT status, bridge_segment, final_quota, refunded_at, recovery_attempt_count,
               recovery_next_attempt_at, finalization_owner,
-              finalization_reason, finalization_required_at
+              finalization_reason, finalization_required_at,
+              reconciliation_resolution, reconciliation_revision,
+              reconciliation_resolved_at
        FROM realtime_billing_reservations
        WHERE reservation_key = ?1`,
     )

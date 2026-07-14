@@ -20,6 +20,7 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import {
   compactRealtimeBillingFingerprint,
+  compactRealtimeBillingReconciliationId,
   normalizeRealtimeBillingLedgerStatus,
   summarizeRealtimeBillingLedger,
   type RealtimeBillingLedgerStatus,
@@ -44,6 +45,7 @@ describe('Realtime billing ledger presentation', () => {
     Object.assign(status.records[0], {
       bridge_segment: 'raw-bridge-segment',
       upstream_response_id: 'resp_raw_provider_identity',
+      reconciliation_resolution_key: 'private-resolution-key',
     })
 
     const normalized = normalizeRealtimeBillingLedgerStatus(status)
@@ -51,7 +53,20 @@ describe('Realtime billing ledger presentation', () => {
     assert.doesNotMatch(serialized, /raw-session-id/u)
     assert.doesNotMatch(serialized, /raw-bridge-segment/u)
     assert.doesNotMatch(serialized, /resp_raw_provider_identity/u)
+    assert.doesNotMatch(serialized, /private-resolution-key/u)
     assert.match(serialized, /response_usage_null/u)
+  })
+
+  test('compacts only canonical reconciliation ids', () => {
+    const reconciliationId = 'e'.repeat(64)
+    assert.equal(
+      compactRealtimeBillingReconciliationId(reconciliationId),
+      `${'e'.repeat(12)}...${'e'.repeat(8)}`
+    )
+    assert.equal(
+      compactRealtimeBillingReconciliationId('raw-reservation-id'),
+      'invalid-reconciliation-id'
+    )
   })
 
   test('compacts only canonical sha256 fingerprints', () => {
@@ -70,7 +85,7 @@ describe('Realtime billing ledger presentation', () => {
 function ledgerFixture(): RealtimeBillingLedgerStatus {
   const fingerprint = `sha256:${'a'.repeat(64)}`
   return {
-    contract_version: 2,
+    contract_version: 3,
     count: 2,
     global_sweep: null,
     records: [
@@ -92,6 +107,10 @@ function ledgerFixture(): RealtimeBillingLedgerStatus {
         requires_reconciliation: true,
         finalization_reason: 'response_usage_null',
         finalization_required_at: 101,
+        reconciliation_id: 'e'.repeat(64),
+        reconciliation_revision: 1,
+        reconciliation_resolution: null,
+        reconciliation_resolved_at: null,
       },
       {
         reservation_fingerprint: `sha256:${'c'.repeat(64)}`,
@@ -111,6 +130,10 @@ function ledgerFixture(): RealtimeBillingLedgerStatus {
         requires_reconciliation: false,
         finalization_reason: null,
         finalization_required_at: null,
+        reconciliation_id: 'f'.repeat(64),
+        reconciliation_revision: 2,
+        reconciliation_resolution: 'settled',
+        reconciliation_resolved_at: 201,
       },
     ],
   }

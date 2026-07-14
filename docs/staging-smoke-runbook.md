@@ -1458,8 +1458,8 @@ Preconditions:
 
 1. `bun run check` and `bun run check:do-lifecycle-runtime` pass at the exact
    candidate commit.
-2. Remote `d1_migrations` is the exact 24-file set through
-   `0024_relay_billing_finalization_events.sql`; archive redacted Wrangler output
+2. Remote `d1_migrations` is the exact 28-file set through
+   `0028_realtime_usage_reconciliation_resolution.sql`; archive redacted Wrangler output
    and `/api/platform/capabilities` with `d1_migration_ready=true`.
 3. Capabilities report global recovery compiled, grace 300, limit in `1..64`,
    ledger status compiled, recovery disabled, and v1 cutover false.
@@ -1658,9 +1658,10 @@ Preconditions:
 1. Query `relay_billing_reservations` from the frozen old deployment and prove
    zero `status='reserved'` rows. Migration 0026 must fail if this count is not
    zero; do not edit around its guard.
-2. Apply the exact 27-file migration set and archive redacted evidence for 30
-   tables, 130 checked incremental columns, 24 indexes, and latest migration
-   `0027_realtime_usage_reconciliation.sql`.
+2. Apply the exact 28-file migration set and archive redacted evidence for 30
+   tables, 137 checked incremental columns, 27 indexes, and latest migration
+   `0028_realtime_usage_reconciliation_resolution.sql`. Keep Realtime
+   reconciliation mutation disabled while applying and reading back the schema.
 3. Deploy one candidate with explicit reservation deadline and heartbeat
    values. Require capability state compiled=true, schema-ready=true,
    configured=true, staging-verified=false, and cutover-ready=false.
@@ -1770,3 +1771,40 @@ Execution:
 This phase cannot grant read or write authority. Any observer-driven quota
 mutation, hot-path comparison latency, raw token/reservation identifier, false
 ready capability, or unexplained delta is an immediate G4/G5/G7 abort.
+
+## Phase 4h: Realtime Billing Reconciliation Operator Drill
+
+Run only after credential rotation, remote migration 0028 readback, and named
+billing plus SRE reviewers. Keep Go/VPS authoritative and all unrelated
+Realtime writer/recovery gates false.
+
+1. Deploy with `REALTIME_BILLING_RECONCILIATION_ENABLED=false`. Require 28
+   exact migrations, 30 tables, 137 checked columns, 27 indexes, compiled=true,
+   enabled=false, and ready=false. Prove apply returns fail-closed while queue
+   and root preview remain no-store.
+2. Create isolated missing/null/malformed usage fixtures. Queue pagination must
+   be stable across equal timestamps and expose no reservation key, session,
+   bridge segment, provider response identity, user/token/channel identity,
+   operator id, resolution key, or evidence digest.
+3. Exercise settle/refund previews. Reject unknown fields, arbitrary quota or
+   expression input, mismatched reasons, missing usage, negative/overflow
+   values, inconsistent totals, stale revisions, and invalid evidence. Compare
+   accepted settlement output to the frozen expression and provider evidence.
+4. After reviewer approval, enable mutation for one isolated candidate. Require
+   root plus fresh secure verification, explicit confirmation, and a unique
+   idempotency key. Run one refund and one settlement. Reconcile reservation,
+   user/token/channel quota, replay state, type-2 billing audit, type-3 root
+   audit, and provider invoice evidence.
+5. Race duplicate identical applies and conflicting action/preview/revision
+   requests. Exactly one financial transition may win; identical retries must
+   converge to the canonical terminal revision and conflicts must return 409.
+   Inject D1 failure at every batch boundary and require complete rollback.
+6. Disable mutation before any traffic rollback. Prove terminal rows retain
+   quarantine provenance, open rows remain owned, scheduled recovery cannot
+   cross that owner, and the queue contains only unresolved rows. Archive only
+   redacted ids/digests, controlled reasons, aggregate deltas, alerts, and
+   reviewer signatures.
+
+Any raw financial identity leak, client-supplied pricing authority, missing
+audit, unexplained quota delta, second provider charge, partial D1 commit, or
+gate that remains enabled after the drill is an immediate G4/G5/G7 abort.

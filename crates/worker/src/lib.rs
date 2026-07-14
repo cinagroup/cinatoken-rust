@@ -54,6 +54,7 @@ mod pricing_api;
 mod quota_coordinator;
 mod rankings_api;
 mod ratio_sync;
+mod realtime_billing_reconcile;
 mod realtime_session;
 mod turnstile;
 mod webauthn;
@@ -205,6 +206,24 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             "/api/platform/realtime-billing/ledger/status",
             |req, ctx| async move {
                 platform_gateway::realtime_billing_ledger_status(req, ctx.env).await
+            },
+        )
+        .get_async(
+            "/api/platform/realtime-billing/reconciliations",
+            |req, ctx| async move { realtime_billing_reconcile::list(req, ctx.env).await },
+        )
+        .post_async(
+            "/api/platform/realtime-billing/reconciliations/:reconciliation_id/preview",
+            |req, ctx| async move {
+                let reconciliation_id = ctx.param("reconciliation_id").cloned();
+                realtime_billing_reconcile::preview(req, ctx.env, reconciliation_id).await
+            },
+        )
+        .post_async(
+            "/api/platform/realtime-billing/reconciliations/:reconciliation_id/apply",
+            |req, ctx| async move {
+                let reconciliation_id = ctx.param("reconciliation_id").cloned();
+                realtime_billing_reconcile::apply(req, ctx.env, reconciliation_id).await
             },
         )
         .get_async(

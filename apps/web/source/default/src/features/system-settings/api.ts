@@ -24,6 +24,11 @@ import {
 } from './integrations/quota-coordinator-reconciliation'
 import {
   normalizeRealtimeBillingLedgerStatus,
+  type RealtimeBillingReconciliationApplyRequest,
+  type RealtimeBillingReconciliationApplyResponse,
+  type RealtimeBillingReconciliationDecision,
+  type RealtimeBillingReconciliationPreviewResponse,
+  type RealtimeBillingReconciliationQueueResponse,
   type RealtimeBillingLedgerResponse,
 } from './integrations/realtime-billing-ledger'
 import {
@@ -115,6 +120,43 @@ export async function getRealtimeBillingLedgerStatus() {
     ...res.data,
     data: normalizeRealtimeBillingLedgerStatus(res.data.data),
   }
+}
+
+export async function previewRealtimeBillingReconciliation(
+  reconciliationId: string,
+  decision: RealtimeBillingReconciliationDecision
+) {
+  const res = await api.post<RealtimeBillingReconciliationPreviewResponse>(
+    `/api/platform/realtime-billing/reconciliations/${encodeURIComponent(reconciliationId)}/preview`,
+    decision,
+    { disableDuplicate: true }
+  )
+  return res.data
+}
+
+export async function getRealtimeBillingReconciliationQueue(
+  cursor?: string
+) {
+  const res = await api.get<RealtimeBillingReconciliationQueueResponse>(
+    '/api/platform/realtime-billing/reconciliations',
+    {
+      disableDuplicate: true,
+      params: { limit: 50, ...(cursor ? { cursor } : {}) },
+    }
+  )
+  return res.data
+}
+
+export async function applyRealtimeBillingReconciliation(
+  reconciliationId: string,
+  request: RealtimeBillingReconciliationApplyRequest
+) {
+  const res = await api.post<RealtimeBillingReconciliationApplyResponse>(
+    `/api/platform/realtime-billing/reconciliations/${encodeURIComponent(reconciliationId)}/apply`,
+    request,
+    { disableDuplicate: true }
+  )
+  return res.data
 }
 
 export async function reconcileQuotaCoordinator(

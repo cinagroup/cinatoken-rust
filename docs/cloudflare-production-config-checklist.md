@@ -173,6 +173,7 @@ Current `wrangler.toml` is development-shaped:
 - `RELAY_MODEL_FALLBACK_ENABLED = "false"`
 - `RELAY_MODEL_FALLBACKS_JSON = "{}"`
 - `RELAY_MODEL_FALLBACK_STAGING_VERIFIED = "false"`
+- `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED = "false"`
 - Route-specific WFP tenant AI Gateway IDs default empty:
   `AI_GATEWAY_ID_OPENAI_CHAT`, `AI_GATEWAY_ID_OPENAI_RESPONSES`,
   `AI_GATEWAY_ID_ANTHROPIC_MESSAGES`, and `AI_GATEWAY_ID_AI_RUN`
@@ -461,9 +462,10 @@ inventory proves no route targets this service.
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
 | `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
 | `RELAY_AI_GATEWAY_ROUTER_ENABLED` | var | Main relay AI Gateway REST router gate | Must stay `false` until channel-editor-created `channels.other_info.ai_gateway.enabled` canary metadata, provider-prefix policy, key/base-url coupling, same-channel direct fallback smoke, billing settlement, forwarder smoke, and staging panel evidence are approved |
-| `RELAY_MODEL_FALLBACK_ENABLED` | var | Independent Rust primary-to-fallback model gate | Default `false`; requires the AI Gateway router, opted-in primary/fallback channels, supported chat/responses route, a validated mapping, `relay_ai_gateway_cross_model_actual_group_billing_compiled=true`, and archived fixed/`auto` staging D1 evidence for maximum reservation plus actual-serving-group settlement/refund |
+| `RELAY_MODEL_FALLBACK_ENABLED` | var | Independent Rust primary-to-fallback model gate | Default `false`; requires the AI Gateway router, opted-in primary/fallback channels, supported chat/Responses/Messages route, a validated mapping, `relay_ai_gateway_cross_model_actual_group_billing_compiled=true`, and archived fixed/`auto` staging D1 evidence for maximum reservation plus actual-serving-group settlement/refund |
 | `RELAY_MODEL_FALLBACKS_JSON` | var | Exact JSON object from requested primary model to one AI-Gateway-prefixed fallback model | Default `{}`; maximum 128 mappings and 200 characters per model name; never use a silent wildcard or secret value |
 | `RELAY_MODEL_FALLBACK_STAGING_VERIFIED` | var | Production cutover evidence marker | Keep `false` until archived staging proves primary server failure, served fallback identity, token denial, channel reselection, exactly-one reserve/refund/settlement, audit metadata, streaming boundary, and rollback |
+| `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED` | var | Messages-specific fallback cutover evidence marker | Default `false`; requires independent `/v1/messages` logical/effective schema mismatch, full D1 candidate selection, sticky 401/403/429 veto, non-stream/stream, billing, audit, and rollback evidence. Overall fallback cutover requires this and the general marker |
 | `RELAY_ACTUAL_GROUP_BILLING_STAGING_SMOKE_ENABLED` | var | Admin-only actual-serving-group D1 Worker-binding smoke | Default `false` in every environment. Enable only against isolated non-production D1 for the three fixed smoke scenarios; require the three `relay_ai_gateway_actual_group_billing_staging_smoke_*` capabilities, strict PASS reports, and `cleanupVerified=true`, then disable again. This flag is not a fallback cutover marker. |
 | `AI_GATEWAY_ID_OPENAI_CHAT` | var | Optional WFP tenant gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only |
 | `AI_GATEWAY_ID_OPENAI_RESPONSES` | var | Optional WFP tenant gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only |

@@ -557,11 +557,12 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   rows in staging D1, prove the Worker cron fails them through CAS, applies the
   CAS-winner refund batch once, skips legacy imported-row refunds, and
   continues polling newer tasks after the stale window is cleared.
-- Continue AI Gateway cross-model fallback from the new default-off Rust outer
-  model-attempt foundation. It now supports single-group OpenAI-compatible
-  chat/responses, re-checks token limits, re-selects opted-in fallback channels,
-  replaces the request model before channel mapping, rebuilds billing input,
-  swaps tiered reservations, and records requested-versus-served model data.
+- Continue AI Gateway cross-model fallback from the default-off Rust outer
+  model-attempt foundation. It supports OpenAI-compatible chat/Responses and
+  schema-gated Anthropic Messages, re-checks token limits, reads the complete
+  fallback-model D1 pool, applies per-channel mappings before eligibility,
+  rebuilds billing input, swaps tiered reservations only after an executable
+  fallback plan exists, and records requested-versus-served model data.
   Keep `RELAY_MODEL_FALLBACK_ENABLED=false` and
   `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until isolated staging proves
   all status/fetch/refund/settlement/audit/stream/rollback cases. Before auto
@@ -575,6 +576,10 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   type-5 attempt ledger through
   `LOG_QUEUE`/D1; prove queue delivery, synchronous fallback, refund ordering,
   and admin-log visibility in staging before production cutover.
+  Keep `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED=false` until an
+  independent Messages replay also proves logical/effective schema rejection,
+  `401`/`403`/`429` sticky veto, full-D1 channel selection, streaming, billing,
+  audit, and rollback; overall cutover waits on both markers.
 - Continue TaskRunner M5b only after M5a staging evidence: the `TASK_RUNNER`
   Durable Object and video/remix/Suno submit-path arming remain default-off.
   Its typed poll result now distinguishes terminal settlement from non-terminal

@@ -427,6 +427,11 @@ never become a second public or admin paid-request authority.
 cinaVibeSDK pattern:
 
 - Agent actions are configured with primary and fallback models.
+- Each action has at most one configured fallback. `executeInference` switches
+  once and subsequent retries stay on that model; it is not an arbitrary chain.
+- Rate-limit, security, and cancellation errors stop immediately. The current
+  model test service exercises only the primary model, and the checked-in BYOK
+  surface does not constitute production-ready user-key fallback evidence.
 - `buildGatewayUrl` centralizes AI Gateway URL construction.
 - `getConfigurationForModel` couples base URL selection to key ownership.
 - `cf-aig-metadata` is attached for Cloudflare AI Gateway observability.
@@ -460,13 +465,16 @@ cinaVibeSDK pattern:
   never attempts provider-direct fallback.
 - Billing and usage parsing remain the main relay's responsibility. AI Gateway
   is transport and observability, not a billing replacement.
-- The current same-channel direct path is transport failover only; it does not
-  implement cinaVibeSDK's primary/fallback model switch. The default-off Rust
-  outer model-attempt layer now implements that switch for OpenAI-compatible
-  chat/responses: it revalidates token model limits, channel availability,
-  pricing/reservation, and audit identity for the fallback model. Production
-  replay and deployed Queue/D1 proof for the locally compiled terminal
-  attempt-ledger remain open.
+- The current same-channel direct path is transport failover only. The separate
+  default-off Rust outer model-attempt layer implements one central fallback for
+  OpenAI-compatible chat/Responses and Anthropic Messages. It revalidates token
+  model limits, reads a complete fallback-model D1 candidate set rather than a
+  primary/standard single-entry cache hit, applies each candidate's model
+  mapping, validates the effective Messages schema and Gateway plan before
+  reserve, and rebuilds pricing/reservation plus audit identity. Any primary
+  `401`, `403`, or `429` is a sticky veto across later channel attempts.
+  Production replay and deployed Queue/D1 proof remain open, with an independent
+  Messages staging marker.
 - Do not reuse the Gateway-prefixed body for direct egress, and do not treat
   Gateway `401`, `403`, or `429` as permission to bypass Gateway policy by going
   direct. The Rust direct-fallback classifier and provider-native body rewrite

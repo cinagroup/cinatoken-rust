@@ -15,10 +15,10 @@ use cinatoken_core::{
 };
 use cinatoken_providers::{
     ai_gateway::{
-        classify_ai_gateway_model_author, direct_provider_model_for_channel,
-        has_ai_gateway_provider_prefix, plan_ai_gateway_cutover, rest_gateway_endpoint_url,
-        AiGatewayCutoverDecision, AiGatewayCutoverInput, AiGatewayCutoverPlan,
-        AiGatewayModelAuthor,
+        ai_gateway_model_supports_messages, classify_ai_gateway_model_author,
+        direct_provider_model_for_channel, has_ai_gateway_provider_prefix, plan_ai_gateway_cutover,
+        rest_gateway_endpoint_url, AiGatewayCutoverDecision, AiGatewayCutoverInput,
+        AiGatewayCutoverPlan, AiGatewayModelAuthor,
     },
     ali::{
         ali_plugin_header_value, apply_ali_request, supports_ali_anthropic_messages_with_config,
@@ -100,6 +100,8 @@ const RELAY_MODEL_FALLBACK_ENABLED_ENV: &str = "RELAY_MODEL_FALLBACK_ENABLED";
 const RELAY_MODEL_FALLBACKS_JSON_ENV: &str = "RELAY_MODEL_FALLBACKS_JSON";
 pub(crate) const RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV: &str =
     "RELAY_MODEL_FALLBACK_STAGING_VERIFIED";
+pub(crate) const RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED_ENV: &str =
+    "RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED";
 const RELAY_MODEL_FALLBACKS_MAX_ENTRIES: usize = 128;
 const RELAY_MODEL_FALLBACK_NAME_MAX_CHARS: usize = 200;
 pub(crate) const RELAY_BILLING_RESERVATION_LEASE_SECONDS_ENV: &str =
@@ -2478,7 +2480,7 @@ async fn relay_endpoint_with_auth(
     // Resolve the candidate pool(s). For an "auto" token group, walk the user's
     // auto groups (Go `CacheGetRandomSatisfiedChannel`); otherwise a single group.
     let is_auto = group == "auto";
-    let supported_channel_types = channel_types_for_relay_route(endpoint.route);
+    let primary_supported_channel_types = channel_types_for_relay_route(endpoint.route);
     let mut group_pools = match resolve_relay_group_pools(
         &db,
         &env,
@@ -2486,7 +2488,8 @@ async fn relay_endpoint_with_auth(
         &group,
         &auth.user_group,
         endpoint.route.cache_family(),
-        &supported_channel_types,
+        &primary_supported_channel_types,
+        RelayChannelSelectionMode::Standard,
     )
     .await
     {
@@ -2605,6 +2608,7 @@ async fn relay_endpoint_with_auth(
 
     let mut last_failure: Option<RelayAttemptFailure> = None;
     let mut attempt_audits = RelayAttemptAuditLedger::default();
+    let mut model_fallback_policy_veto = false;
     // (channel, selected group, upstream response). The group is the actual
     // serving group and selects the authoritative billing snapshot.
     let mut selected_attempt: Option<(RelayChannel, String, Response)> = None;
@@ -2962,6 +2966,7 @@ async fn relay_endpoint_with_auth(
         match forward_result {
             Ok(mut response) => {
                 let status = response.status_code();
+                model_fallback_policy_veto |= should_veto_model_fallback_status(status);
                 if is_retryable_status(status) {
                     record_retryable_channel_failure(&env, &channel, status).await;
                     let failure = RelayAttemptFailure::retryable_status(
@@ -3017,29 +3022,24 @@ async fn relay_endpoint_with_auth(
         }
     }
 
-    let fallback_trigger = selected_attempt
-        .as_ref()
-        .and_then(|(_, _, response)| {
-            let status = response.status_code();
-            should_model_fallback_status(status).then(|| format!("upstream_status_{status}"))
-        })
-        .or_else(|| {
-            (selected_attempt.is_none()).then(|| {
-                last_failure
-                    .as_ref()
-                    .and_then(|failure| match failure.kind {
-                        RelayAttemptFailureKind::FetchError => Some("fetch_exhausted".to_string()),
-                        RelayAttemptFailureKind::ConfigurationError
-                        | RelayAttemptFailureKind::NoUsableKey
-                        | RelayAttemptFailureKind::RetryableStatus => None,
-                    })
-            })?
-        });
+    if model_fallback_policy_veto && configured_fallback_model.is_some() {
+        model_route_audit.fallback_skip_reason = Some("primary_policy_status_veto".to_string());
+    }
+    let fallback_trigger = relay_model_fallback_trigger(
+        selected_attempt
+            .as_ref()
+            .map(|(_, _, response)| response.status_code()),
+        last_failure.as_ref().map(|failure| failure.kind),
+        selected_attempt.is_none(),
+        model_fallback_policy_veto,
+    );
 
     if let (Some(fallback_model), Some(trigger)) =
         (configured_fallback_model.as_deref(), fallback_trigger)
     {
         model_route_audit.fallback_trigger = Some(trigger);
+        let fallback_supported_channel_types =
+            plan_relay_model_fallback(&endpoint, &model, fallback_model);
         let primary_ai_gateway_opted_in = selected_attempt
             .as_ref()
             .map(|(channel, _, _)| channel.ai_gateway_opted_in())
@@ -3055,8 +3055,8 @@ async fn relay_endpoint_with_auth(
         } else if !primary_ai_gateway_opted_in {
             model_route_audit.fallback_skip_reason =
                 Some("primary_channel_not_opted_in".to_string());
-        } else if !relay_model_fallback_supported(&endpoint) {
-            model_route_audit.fallback_skip_reason = Some("endpoint_not_supported".to_string());
+        } else if let Err(reason) = &fallback_supported_channel_types {
+            model_route_audit.fallback_skip_reason = Some(reason.as_skip_reason().to_string());
         } else if !model_allowed_for_token(
             auth.model_limits_enabled,
             &auth.model_limits,
@@ -3064,32 +3064,14 @@ async fn relay_endpoint_with_auth(
         ) {
             model_route_audit.fallback_skip_reason = Some("token_model_limit".to_string());
         } else {
-            if let Some(plan) = tiered_billing_group_plan
+            let fallback_supported_channel_types = fallback_supported_channel_types
                 .as_ref()
-                .filter(|plan| plan.reserve_applied)
-            {
-                if let Err(err) = refund_tiered_billing_group_plan(
-                    &env,
-                    context.as_ref(),
-                    &db,
-                    &auth,
-                    plan,
-                    "model_fallback",
-                    unix_timestamp(),
-                )
-                .await
-                {
-                    return openai_error_response(
-                        format!(
-                            "primary tiered billing reserve refund failed before model fallback: {err}"
-                        ),
-                        500,
-                    );
-                }
-                terminal_reserve_refund = "primary_refunded_for_fallback";
-            }
-            tiered_billing_group_plan = None;
-            tiered_billing_preflight = None;
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let mut fallback_request_body = json_body
+                .clone()
+                .unwrap_or_else(|| Value::Object(Default::default()));
+            apply_model_attempt_body(&mut fallback_request_body, fallback_model, None);
 
             let mut fallback_group_pools = match resolve_relay_group_pools(
                 &db,
@@ -3098,7 +3080,8 @@ async fn relay_endpoint_with_auth(
                 &group,
                 &auth.user_group,
                 endpoint.route.cache_family(),
-                &supported_channel_types,
+                fallback_supported_channel_types,
+                RelayChannelSelectionMode::AiGatewayFallback,
             )
             .await
             {
@@ -3113,9 +3096,13 @@ async fn relay_endpoint_with_auth(
                 json_body.as_ref(),
                 ali_messages_model_patterns.as_deref(),
             );
-            for (_, candidates) in &mut fallback_group_pools {
-                candidates.retain(RelayChannel::ai_gateway_opted_in);
-            }
+            let fallback_candidate_evidence = retain_ai_gateway_fallback_candidates(
+                &mut fallback_group_pools,
+                &endpoint,
+                fallback_model,
+                &fallback_request_body,
+                ai_gateway_runtime.as_ref(),
+            );
             let fallback_attempt_plan = plan_relay_attempts(
                 fallback_group_pools,
                 is_auto,
@@ -3137,18 +3124,48 @@ async fn relay_endpoint_with_auth(
             };
 
             if fallback_attempt_plan.is_empty() {
-                model_route_audit.fallback_skip_reason = Some("no_fallback_channel".to_string());
+                model_route_audit.fallback_skip_reason = Some(
+                    if fallback_candidate_evidence.model_schema_mismatch_count > 0 {
+                        "fallback_channel_model_schema_mismatch"
+                    } else {
+                        "no_fallback_channel"
+                    }
+                    .to_string(),
+                );
             } else {
+                if let Some(plan) = tiered_billing_group_plan
+                    .as_ref()
+                    .filter(|plan| plan.reserve_applied)
+                {
+                    if let Err(err) = refund_tiered_billing_group_plan(
+                        &env,
+                        context.as_ref(),
+                        &db,
+                        &auth,
+                        plan,
+                        "model_fallback",
+                        unix_timestamp(),
+                    )
+                    .await
+                    {
+                        return openai_error_response(
+                            format!(
+                                "primary tiered billing reserve refund failed before model fallback: {err}"
+                            ),
+                            500,
+                        );
+                    }
+                    terminal_reserve_refund = "primary_refunded_for_fallback";
+                }
+                tiered_billing_group_plan = None;
+                tiered_billing_preflight = None;
+
                 let fallback_billing_groups = fallback_attempt_plan
                     .iter()
                     .map(|plan| plan.group.clone())
                     .collect::<Vec<_>>();
                 model_route_audit.fallback_planned_group_count =
                     Some(unique_group_count(&fallback_billing_groups));
-                let mut fallback_request_body = json_body
-                    .clone()
-                    .unwrap_or_else(|| Value::Object(Default::default()));
-                apply_model_attempt_body(&mut fallback_request_body, fallback_model, None);
                 let mut fallback_billing_request_input = billing_request_input.clone();
                 fallback_billing_request_input.body = Some(fallback_request_body.clone());
                 let mut fallback_group_plan = match prepare_tiered_billing_group_plan(
@@ -3699,24 +3716,72 @@ pub(crate) fn relay_model_fallback_contract_compiled() -> bool {
     RELAY_MODEL_FALLBACK_ENABLED_ENV == "RELAY_MODEL_FALLBACK_ENABLED"
         && RELAY_MODEL_FALLBACKS_JSON_ENV == "RELAY_MODEL_FALLBACKS_JSON"
         && RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV == "RELAY_MODEL_FALLBACK_STAGING_VERIFIED"
-        && relay_model_fallback_supported(&RelayEndpoint {
-            display_name: "contract",
-            route: ProviderRelayRoute::ChatCompletions,
-            upstream_path: "chat/completions".to_string(),
-            upstream_query: None,
-            gemini_route: None,
-            provider: RelayProviderKind::OpenAiCompatible,
-            supports_streaming: true,
-            force_streaming: false,
-            stream_not_implemented_feature: None,
-            parse_non_stream_usage: true,
-            request_body_mode: RelayRequestBodyMode::Json,
-            request_validator: None,
-        })
+        && plan_relay_model_fallback(
+            &RelayEndpoint {
+                display_name: "contract",
+                route: ProviderRelayRoute::ChatCompletions,
+                upstream_path: "chat/completions".to_string(),
+                upstream_query: None,
+                gemini_route: None,
+                provider: RelayProviderKind::OpenAiCompatible,
+                supports_streaming: true,
+                force_streaming: false,
+                stream_not_implemented_feature: None,
+                parse_non_stream_usage: true,
+                request_body_mode: RelayRequestBodyMode::Json,
+                request_validator: None,
+            },
+            "openai/gpt-4.1",
+            "anthropic/claude-sonnet-4",
+        )
+        .is_ok()
         && !should_model_fallback_status(401)
         && !should_model_fallback_status(403)
         && !should_model_fallback_status(429)
+        && should_veto_model_fallback_status(401)
+        && should_veto_model_fallback_status(403)
+        && should_veto_model_fallback_status(429)
         && should_model_fallback_status(500)
+        && relay_model_fallback_trigger(
+            Some(500),
+            Some(RelayAttemptFailureKind::RetryableStatus),
+            false,
+            true,
+        )
+        .is_none()
+        && RelayChannelSelectionMode::Standard != RelayChannelSelectionMode::AiGatewayFallback
+}
+
+pub(crate) fn relay_messages_model_fallback_contract_compiled() -> bool {
+    let endpoint = RelayEndpoint {
+        display_name: "contract",
+        route: ProviderRelayRoute::AnthropicMessages,
+        upstream_path: "messages".to_string(),
+        upstream_query: None,
+        gemini_route: None,
+        provider: RelayProviderKind::AnthropicMessages,
+        supports_streaming: true,
+        force_streaming: false,
+        stream_not_implemented_feature: None,
+        parse_non_stream_usage: true,
+        request_body_mode: RelayRequestBodyMode::Json,
+        request_validator: None,
+    };
+
+    RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED_ENV
+        == "RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED"
+        && plan_relay_model_fallback(&endpoint, "anthropic/claude-sonnet-4", "openai/gpt-4.1")
+            .is_ok()
+        && plan_relay_model_fallback(
+            &endpoint,
+            "@cf/meta/llama-3.1-8b-instruct",
+            "openai/gpt-4.1",
+        ) == Err(RelayModelFallbackPlanError::PrimaryModelSchemaMismatch)
+        && plan_relay_model_fallback(
+            &endpoint,
+            "anthropic/claude-sonnet-4",
+            "@cf/meta/llama-3.1-8b-instruct",
+        ) == Err(RelayModelFallbackPlanError::FallbackModelSchemaMismatch)
 }
 
 pub(crate) fn relay_ai_gateway_direct_fallback_contract_compiled() -> bool {
@@ -3842,17 +3907,142 @@ impl RelayModelRouteAudit {
     }
 }
 
-fn relay_model_fallback_supported(endpoint: &RelayEndpoint) -> bool {
-    endpoint.provider == RelayProviderKind::OpenAiCompatible
-        && matches!(
-            endpoint.upstream_path.as_str(),
-            "chat/completions" | "responses"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayModelFallbackPlanError {
+    EndpointNotSupported,
+    PrimaryModelSchemaMismatch,
+    FallbackModelSchemaMismatch,
+}
+
+impl RelayModelFallbackPlanError {
+    fn as_skip_reason(self) -> &'static str {
+        match self {
+            Self::EndpointNotSupported => "endpoint_not_supported",
+            Self::PrimaryModelSchemaMismatch => "primary_model_schema_mismatch",
+            Self::FallbackModelSchemaMismatch => "fallback_model_schema_mismatch",
+        }
+    }
+}
+
+fn plan_relay_model_fallback(
+    endpoint: &RelayEndpoint,
+    primary_model: &str,
+    fallback_model: &str,
+) -> Result<Vec<i32>, RelayModelFallbackPlanError> {
+    if !endpoint.expects_json_request_body() {
+        return Err(RelayModelFallbackPlanError::EndpointNotSupported);
+    }
+
+    match (
+        endpoint.provider,
+        endpoint.route,
+        endpoint.upstream_path.as_str(),
+    ) {
+        (
+            RelayProviderKind::OpenAiCompatible,
+            ProviderRelayRoute::ChatCompletions,
+            "chat/completions",
         )
-        && endpoint.expects_json_request_body()
+        | (RelayProviderKind::OpenAiCompatible, ProviderRelayRoute::Responses, "responses") => {}
+        (
+            RelayProviderKind::AnthropicMessages,
+            ProviderRelayRoute::AnthropicMessages,
+            "messages",
+        ) => {
+            if !ai_gateway_model_supports_messages(primary_model) {
+                return Err(RelayModelFallbackPlanError::PrimaryModelSchemaMismatch);
+            }
+            if !ai_gateway_model_supports_messages(fallback_model) {
+                return Err(RelayModelFallbackPlanError::FallbackModelSchemaMismatch);
+            }
+        }
+        _ => return Err(RelayModelFallbackPlanError::EndpointNotSupported),
+    }
+
+    Ok(channel_types_for_relay_route(endpoint.route))
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RelayModelFallbackCandidateEvidence {
+    model_schema_mismatch_count: usize,
+    gateway_plan_rejection_count: usize,
+}
+
+fn retain_ai_gateway_fallback_candidates(
+    group_pools: &mut [(String, Vec<RelayChannel>)],
+    endpoint: &RelayEndpoint,
+    fallback_model: &str,
+    fallback_request_body: &Value,
+    runtime: Option<&RelayAiGatewayRuntime>,
+) -> RelayModelFallbackCandidateEvidence {
+    let mut evidence = RelayModelFallbackCandidateEvidence::default();
+    for (_, candidates) in group_pools {
+        candidates.retain(|channel| {
+            if !channel.ai_gateway_opted_in() {
+                evidence.gateway_plan_rejection_count += 1;
+                return false;
+            }
+            let mut effective_body = fallback_request_body.clone();
+            apply_model_attempt_body(
+                &mut effective_body,
+                fallback_model,
+                channel.model_mapping.as_deref(),
+            );
+            let Some(effective_model) = effective_body
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                evidence.gateway_plan_rejection_count += 1;
+                return false;
+            };
+            if endpoint.route == ProviderRelayRoute::AnthropicMessages
+                && !ai_gateway_model_supports_messages(&effective_model)
+            {
+                evidence.model_schema_mismatch_count += 1;
+                return false;
+            }
+            let Some(runtime) = runtime else {
+                evidence.gateway_plan_rejection_count += 1;
+                return false;
+            };
+            if !matches!(
+                plan_relay_ai_gateway_attempt(runtime, endpoint, channel, &effective_model),
+                Ok(Some(_))
+            ) {
+                evidence.gateway_plan_rejection_count += 1;
+                return false;
+            }
+            true
+        });
+    }
+    evidence
 }
 
 fn should_model_fallback_status(status: u16) -> bool {
     matches!(status, 500..=503 | 505..=523 | 525..=599)
+}
+
+fn should_veto_model_fallback_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429)
+}
+
+fn relay_model_fallback_trigger(
+    selected_status: Option<u16>,
+    last_failure_kind: Option<RelayAttemptFailureKind>,
+    attempts_exhausted: bool,
+    policy_veto: bool,
+) -> Option<String> {
+    if policy_veto {
+        return None;
+    }
+    selected_status
+        .filter(|status| should_model_fallback_status(*status))
+        .map(|status| format!("upstream_status_{status}"))
+        .or_else(|| {
+            (attempts_exhausted && last_failure_kind == Some(RelayAttemptFailureKind::FetchError))
+                .then(|| "fetch_exhausted".to_string())
+        })
 }
 
 /// One planned relay attempt: the channel to try and the group it was selected
@@ -4450,10 +4640,14 @@ async fn execute_relay_attempt_plan(
                                         }
                                     }
                                 }
-                                Ok(None) => Err(worker::Error::RustError(format!(
-                                    "cross-model fallback channel {} did not produce an AI Gateway plan",
-                                    channel.id
-                                ))),
+                                Ok(None) => {
+                                    forward_error_kind =
+                                        RelayAttemptFailureKind::ConfigurationError;
+                                    Err(worker::Error::RustError(format!(
+                                        "cross-model fallback channel {} did not produce an AI Gateway plan",
+                                        channel.id
+                                    )))
+                                }
                                 Err(err) => {
                                     forward_error_kind =
                                         RelayAttemptFailureKind::ConfigurationError;
@@ -4461,9 +4655,13 @@ async fn execute_relay_attempt_plan(
                                 }
                             }
                         }
-                        None => Err(worker::Error::RustError(
-                            "cross-model fallback requires a ready AI Gateway runtime".to_string(),
-                        )),
+                        None => {
+                            forward_error_kind = RelayAttemptFailureKind::ConfigurationError;
+                            Err(worker::Error::RustError(
+                                "cross-model fallback requires a ready AI Gateway runtime"
+                                    .to_string(),
+                            ))
+                        }
                     }
                 }
             }
@@ -5480,6 +5678,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
                 &auto_group,
                 realtime_route.cache_family(),
                 &realtime_channel_types,
+                RelayChannelSelectionMode::Standard,
             )
             .await?;
             pools.push((auto_group, candidates));
@@ -5493,6 +5692,7 @@ pub(crate) async fn plan_realtime_upstream_channel(
             &group,
             realtime_route.cache_family(),
             &realtime_channel_types,
+            RelayChannelSelectionMode::Standard,
         )
         .await?;
         vec![(group.clone(), candidates)]
@@ -7128,6 +7328,28 @@ async fn mark_token_status(db: &D1Database, token_id: i64, status: i32) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayChannelSelectionMode {
+    Standard,
+    AiGatewayFallback,
+}
+
+impl RelayChannelSelectionMode {
+    fn accepts(self, channel: &RelayChannel) -> bool {
+        match self {
+            Self::Standard => true,
+            Self::AiGatewayFallback => channel.ai_gateway_opted_in(),
+        }
+    }
+
+    fn retain(self, channels: Vec<RelayChannel>) -> Vec<RelayChannel> {
+        channels
+            .into_iter()
+            .filter(|channel| self.accepts(channel))
+            .collect()
+    }
+}
+
 async fn resolve_relay_group_pools(
     db: &D1Database,
     env: &Env,
@@ -7136,6 +7358,7 @@ async fn resolve_relay_group_pools(
     user_group: &str,
     cache_family: &str,
     supported_channel_types: &[i32],
+    selection_mode: RelayChannelSelectionMode,
 ) -> Result<Vec<(String, Vec<RelayChannel>)>, worker::Result<Response>> {
     if token_group != "auto" {
         let candidates = select_channels(
@@ -7145,6 +7368,7 @@ async fn resolve_relay_group_pools(
             token_group,
             cache_family,
             supported_channel_types,
+            selection_mode,
         )
         .await?;
         return Ok(vec![(token_group.to_string(), candidates)]);
@@ -7171,6 +7395,7 @@ async fn resolve_relay_group_pools(
             &auto_group,
             cache_family,
             supported_channel_types,
+            selection_mode,
         )
         .await?;
         pools.push((auto_group, candidates));
@@ -7190,14 +7415,24 @@ async fn select_channels(
     group: &str,
     cache_family: &str,
     supported_channel_types: &[i32],
+    selection_mode: RelayChannelSelectionMode,
 ) -> Result<Vec<RelayChannel>, worker::Result<Response>> {
+    // Cross-model fallback is rare and its eligibility depends on per-channel
+    // AI Gateway metadata plus model mapping. A single-entry standard cache hit
+    // cannot prove the complete predicate, so retain the full D1 candidate set.
+    if selection_mode == RelayChannelSelectionMode::AiGatewayFallback {
+        let candidates = select_channels_from_d1(db, model, group, supported_channel_types).await?;
+        return Ok(selection_mode.retain(candidates));
+    }
     let Some((redis, ttl_seconds)) = relay_read_cache(env)? else {
-        return select_channels_from_d1(db, model, group, supported_channel_types).await;
+        let candidates = select_channels_from_d1(db, model, group, supported_channel_types).await?;
+        return Ok(selection_mode.retain(candidates));
     };
     let cache_key = RelayCacheKeys::default().channel(cache_family, group, model);
 
     if let Ok(Some(cached)) = read_cached_relay_channel(&redis, &cache_key).await {
-        if supported_channel_types.contains(&cached.channel_type) {
+        if supported_channel_types.contains(&cached.channel_type) && selection_mode.accepts(&cached)
+        {
             // Cache hit: return just the cached channel. Route-scoped cache
             // families prevent a channel selected for one protocol from being
             // reused by another. A stale/incompatible legacy entry is treated
@@ -7211,6 +7446,7 @@ async fn select_channels(
     }
 
     let candidates = select_channels_from_d1(db, model, group, supported_channel_types).await?;
+    let candidates = selection_mode.retain(candidates);
     if let Some(first) = candidates.first() {
         if let Err(err) = write_cached_relay_channel(&redis, &cache_key, first, ttl_seconds).await {
             worker::console_warn!("failed to write relay channel cache: {}", err);
@@ -16276,6 +16512,47 @@ mod tests {
     }
 
     #[test]
+    fn relay_cross_model_fallback_attempt_uses_selected_channel_type() {
+        let runtime = ai_gateway_runtime_for_tests();
+        let endpoint = ai_gateway_chat_endpoint_for_tests();
+        let body = json!({"model": "deepseek/deepseek-chat", "messages": []});
+
+        let mut fallback_channel = test_channel(43, 0, 1);
+        fallback_channel.channel_type = CHANNEL_TYPE_DEEPSEEK;
+        fallback_channel.other_info = r#"{"ai_gateway":true}"#.to_string();
+        let fallback_attempt = plan_relay_ai_gateway_attempt(
+            &runtime,
+            &endpoint,
+            &fallback_channel,
+            "deepseek/deepseek-chat",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(fallback_attempt.direct_channel_type, CHANNEL_TYPE_DEEPSEEK);
+        assert_eq!(
+            prepare_ai_gateway_direct_fallback_body(&body, &fallback_attempt).unwrap()["model"],
+            "deepseek-chat"
+        );
+
+        let mut primary_channel = test_channel(14, 0, 1);
+        primary_channel.channel_type = ANTHROPIC_CHANNEL_TYPES[0];
+        primary_channel.other_info = r#"{"ai_gateway":true}"#.to_string();
+        let primary_attempt = plan_relay_ai_gateway_attempt(
+            &runtime,
+            &endpoint,
+            &primary_channel,
+            "deepseek/deepseek-chat",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            primary_attempt.direct_channel_type,
+            ANTHROPIC_CHANNEL_TYPES[0]
+        );
+        assert!(prepare_ai_gateway_direct_fallback_body(&body, &primary_attempt).is_none());
+    }
+
+    #[test]
     fn relay_direct_route_normalizes_only_matching_gateway_prefixed_models() {
         let mistral_body = json!({
             "model": "mistral/mistral-large-latest",
@@ -16368,11 +16645,30 @@ mod tests {
     #[test]
     fn relay_model_fallback_requires_compatible_route_and_server_failure() {
         let mut endpoint = ai_gateway_chat_endpoint_for_tests();
-        assert!(relay_model_fallback_supported(&endpoint));
+        assert!(plan_relay_model_fallback(
+            &endpoint,
+            "openai/gpt-4.1",
+            "anthropic/claude-sonnet-4"
+        )
+        .is_ok());
+        endpoint.route = ProviderRelayRoute::Responses;
         endpoint.upstream_path = "responses".to_string();
-        assert!(relay_model_fallback_supported(&endpoint));
+        assert!(plan_relay_model_fallback(
+            &endpoint,
+            "openai/gpt-4.1",
+            "anthropic/claude-sonnet-4"
+        )
+        .is_ok());
+        endpoint.route = ProviderRelayRoute::Embeddings;
         endpoint.upstream_path = "embeddings".to_string();
-        assert!(!relay_model_fallback_supported(&endpoint));
+        assert_eq!(
+            plan_relay_model_fallback(
+                &endpoint,
+                "openai/text-embedding-3-small",
+                "openai/text-embedding-3-large"
+            ),
+            Err(RelayModelFallbackPlanError::EndpointNotSupported)
+        );
 
         for status in [500, 503, 505, 523, 525, 599] {
             assert!(should_model_fallback_status(status));
@@ -16380,6 +16676,142 @@ mod tests {
         for status in [400, 401, 403, 408, 429, 504, 524] {
             assert!(!should_model_fallback_status(status));
         }
+        for status in [401, 403, 429] {
+            assert!(should_veto_model_fallback_status(status));
+        }
+        for status in [400, 408, 500, 503] {
+            assert!(!should_veto_model_fallback_status(status));
+        }
+        assert_eq!(
+            relay_model_fallback_trigger(
+                Some(500),
+                Some(RelayAttemptFailureKind::RetryableStatus),
+                false,
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            relay_model_fallback_trigger(
+                Some(500),
+                Some(RelayAttemptFailureKind::RetryableStatus),
+                false,
+                false
+            ),
+            Some("upstream_status_500".to_string())
+        );
+        assert_eq!(
+            relay_model_fallback_trigger(
+                None,
+                Some(RelayAttemptFailureKind::FetchError),
+                true,
+                false
+            ),
+            Some("fetch_exhausted".to_string())
+        );
+    }
+
+    #[test]
+    fn relay_messages_model_fallback_requires_both_models_to_support_schema() {
+        let mut endpoint = ai_gateway_chat_endpoint_for_tests();
+        endpoint.provider = RelayProviderKind::AnthropicMessages;
+        endpoint.route = ProviderRelayRoute::AnthropicMessages;
+        endpoint.upstream_path = "messages".to_string();
+
+        let channel_types =
+            plan_relay_model_fallback(&endpoint, "anthropic/claude-sonnet-4", "openai/gpt-4.1")
+                .unwrap();
+        assert_eq!(
+            channel_types,
+            channel_types_for_relay_route(ProviderRelayRoute::AnthropicMessages)
+        );
+        assert_ne!(
+            channel_types,
+            channel_types_for_relay_route(ProviderRelayRoute::ChatCompletions)
+        );
+        assert!(plan_relay_model_fallback(
+            &endpoint,
+            "openai/gpt-4.1",
+            "anthropic/claude-sonnet-4"
+        )
+        .is_ok());
+        assert_eq!(
+            plan_relay_model_fallback(
+                &endpoint,
+                "@cf/meta/llama-3.1-8b-instruct",
+                "openai/gpt-4.1"
+            ),
+            Err(RelayModelFallbackPlanError::PrimaryModelSchemaMismatch)
+        );
+        assert_eq!(
+            plan_relay_model_fallback(
+                &endpoint,
+                "anthropic/claude-sonnet-4",
+                "@cf/meta/llama-3.1-8b-instruct"
+            ),
+            Err(RelayModelFallbackPlanError::FallbackModelSchemaMismatch)
+        );
+        assert_eq!(
+            plan_relay_model_fallback(&endpoint, "claude-sonnet-4", "openai/gpt-4.1"),
+            Err(RelayModelFallbackPlanError::PrimaryModelSchemaMismatch)
+        );
+        assert_eq!(
+            plan_relay_model_fallback(
+                &endpoint,
+                "anthropic/claude-sonnet-4",
+                "unknown-provider/model"
+            ),
+            Err(RelayModelFallbackPlanError::FallbackModelSchemaMismatch)
+        );
+    }
+
+    #[test]
+    fn relay_gateway_fallback_selection_and_mapping_fail_closed_before_reserve() {
+        let mut direct = test_channel(1, 0, 1);
+        direct.other_info = "{}".to_string();
+        let mut gateway = test_channel(2, 0, 1);
+        gateway.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        let selected = RelayChannelSelectionMode::AiGatewayFallback
+            .retain(vec![direct.clone(), gateway.clone()]);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, gateway.id);
+        assert_eq!(
+            RelayChannelSelectionMode::Standard
+                .retain(vec![direct, gateway.clone()])
+                .len(),
+            2
+        );
+
+        let mut endpoint = ai_gateway_chat_endpoint_for_tests();
+        endpoint.provider = RelayProviderKind::AnthropicMessages;
+        endpoint.route = ProviderRelayRoute::AnthropicMessages;
+        endpoint.upstream_path = "messages".to_string();
+        let runtime = ai_gateway_runtime_for_tests();
+        let channel_type = ANTHROPIC_CHANNEL_TYPES[0];
+
+        let mut incompatible = test_channel(3, 0, 1);
+        incompatible.channel_type = channel_type;
+        incompatible.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        incompatible.model_mapping =
+            Some(r#"{"openai/gpt-4.1":"@cf/meta/llama-3.1-8b-instruct"}"#.to_string());
+        let mut compatible = test_channel(4, 0, 1);
+        compatible.channel_type = channel_type;
+        compatible.other_info = r#"{"ai_gateway":{"enabled":true}}"#.to_string();
+        compatible.model_mapping =
+            Some(r#"{"openai/gpt-4.1":"anthropic/claude-sonnet-4"}"#.to_string());
+        let mut pools = vec![("default".to_string(), vec![incompatible, compatible])];
+        let body = json!({"model": "openai/gpt-4.1", "messages": []});
+        let evidence = retain_ai_gateway_fallback_candidates(
+            &mut pools,
+            &endpoint,
+            "openai/gpt-4.1",
+            &body,
+            Some(&runtime),
+        );
+        assert_eq!(evidence.model_schema_mismatch_count, 1);
+        assert_eq!(evidence.gateway_plan_rejection_count, 0);
+        assert_eq!(pools[0].1.len(), 1);
+        assert_eq!(pools[0].1[0].id, 4);
     }
 
     #[test]

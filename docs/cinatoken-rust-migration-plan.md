@@ -814,23 +814,27 @@ Rust channel 配置需要支持：
 - account id。
 - model mapping。
 - cache ttl。
-- fallback model。
+- channel-level AI Gateway opt-in；跨模型 fallback 由中央 Rust relay 的精确映射管理，
+  不存入 channel 配置。
 - upstream timeout。
 
 ### 10.3 降级策略
 
-推荐降级顺序：
+生产实现采用三层、各自有边界的降级顺序：
 
 ```text
-primary channel
-  -> same provider next key
-  -> same model next provider
-  -> configured fallback model
-  -> cheaper/smaller model
+same logical model
+  -> bounded channel/group retry
+  -> same selected channel: AI Gateway transport to matching provider-direct
+  -> one centrally configured cross-model fallback
   -> structured error
 ```
 
-降级必须写入日志 `other.fallback`，便于后台审计。
+AI Gateway 只拥有 transport/cache/rate-limit/observability；token 授权、fallback
+模型许可、D1 channel 重选、reserve/refund/settlement 和最终 served-model 审计仍由
+中央 Rust relay 拥有。`401`/`403`/`429` 不允许触发跨模型或 provider-direct
+绕行。模型路由证据写入结构化 `model_route` 和有界 terminal attempt ledger，
+不使用调用方可伪造的 `other.fallback`。
 
 ## 11. 安全方案
 
@@ -1543,9 +1547,11 @@ Midjourney/Suno/视频上游）、自动重试、`waitForEvent`（等 Stripe/Cre
 - **Secrets Store**：provider/payment key 在 Worker + Container 间共享、需集中轮换与审计时，
   用账户级 Secrets Store 优于逐 Worker `wrangler secret put`。§11.1 密钥清单加"是否走
   Secrets Store"一列。
-- **AI Gateway 多卸载少自造**（修正 §10.3）：provider fallback / retry / 缓存 / 限流 /
-  统一日志 / 成本统计交给 AI Gateway，Worker 只管业务路由（channel/group/billing），减少
-  热路径代码与 subrequest 数。
+- **AI Gateway 多卸载少自造**（修正 §10.3）：provider transport retry、缓存、限流、
+  Gateway 日志与平台成本观测交给 AI Gateway；中央 Rust Worker 继续独占 token/model
+  授权、channel/group 选择、跨模型 fallback、billing reserve/refund/settlement 和审计。
+  不叠加 Cloudflare Dynamic Routing fallback 与 Rust 外层模型 fallback，除非实际 served
+  provider/model 能回流同一计费与审计契约。
 - **tokenizer crate 的 bundle/CPU 预算**：精确 token 计数会撑大 Worker 包（Paid 压缩后 10MB
   上限）并吃 CPU。大词表/merges 从 KV/R2 加载而非内嵌；设 `[limits] cpu_ms`；必要时把重
   tokenize 卸到 Container（§21.4）。挂在 billing P1 下。
@@ -6881,11 +6887,11 @@ blocked pending deployed replay.
 Implemented:
 
 - Added `RELAY_MODEL_FALLBACK_ENABLED`, an exact primary-to-fallback JSON map in
-  `RELAY_MODEL_FALLBACKS_JSON`, and
-  `RELAY_MODEL_FALLBACK_STAGING_VERIFIED`. All environments default the gate and
-  verification marker to `false`.
-- Cross-model fallback is limited to JSON OpenAI-compatible
-  `chat/completions` and `responses`, requires the normal AI Gateway router and
+  `RELAY_MODEL_FALLBACKS_JSON`, plus general and Messages-specific staging
+  verification markers. All environments default the gate and both verification
+  markers to `false`.
+- Cross-model fallback supports JSON OpenAI-compatible `chat/completions`,
+  `responses`, and route-aware Anthropic `messages`, requires the normal AI Gateway router and
   per-channel opt-in, and triggers only after server failures. Gateway/token
   `401`, `403`, and `429`, client errors, timeout exclusions, and successful
   response starts fail closed without changing model.
@@ -6907,6 +6913,10 @@ Implemented:
 - Added backend capabilities, frontend implementation/configuration/smoke/
   cutover signals, validated mapping counts, explicit guard visibility, and a
   smoke self-test that rejects the former route-contract drift.
+- Messages support is fail-closed: both primary and fallback provider prefixes
+  must advertise Anthropic Messages schema compatibility, `@cf/` is rejected,
+  and the fallback model re-resolves its own route-scoped D1 channel types.
+  Messages staging/cutover evidence is independent from the older chat replay.
 
 Required before cutover:
 
@@ -11954,3 +11964,58 @@ alert delivery for every non-matched state, load/latency/cost evidence,
 disable-first rollback, and the signed 30-day zero-unexplained-delta window. No
 credential, remote resource, provider request, or deployment was used.
 Production remains **NO-GO**.
+
+### 22.196 2026-07-14 Route-Aware AI Gateway Messages Fallback
+
+This increment extends the default-off central cross-model fallback contract to
+`/v1/messages` without weakening schema, authorization, billing, or audit
+ownership. It follows Cloudflare's current REST contract: the Messages endpoint
+uses the Anthropic schema for third-party models and does not support Workers AI
+`@cf/` models.
+
+Implemented locally:
+
+- The provider registry exposes one authoritative Messages-schema predicate.
+  The relay's pure fallback planner admits chat, Responses, and Messages as
+  distinct routes. Messages requires both requested and fallback model prefixes
+  to be registered and schema-compatible; unprefixed and `@cf/` models fail
+  closed with `primary_model_schema_mismatch` or
+  `fallback_model_schema_mismatch`.
+- Planning occurs before the primary tiered reserve is refunded. An incompatible
+  mapping therefore cannot mutate quota state or issue fallback egress. A valid
+  fallback bypasses the standard single-entry Redis channel cache and re-resolves
+  the complete D1 abilities pool, route-scoped channel types, model mapping,
+  affinity, candidate groups, billing input, and reservation for the fallback
+  model; it does not reuse the primary channel plan.
+- Every candidate's mapped effective model must still satisfy Messages schema
+  and produce an AI Gateway plan before the primary refund or fallback reserve.
+  A pool containing only incompatible mapped models records
+  `fallback_channel_model_schema_mismatch`.
+- Existing failure policy is unchanged: only bounded fetch exhaustion and the
+  explicit server-status set may trigger cross-model fallback. `401`, `403`,
+  `429`, client errors, timeout exclusions, and configuration failures do not.
+  Those three policy statuses are sticky across the complete primary attempt
+  chain, so a later fetch error or `5xx` cannot erase the veto.
+  Final settlement and audit continue to use the actual served model and group.
+- Platform capabilities and the React/Bun operations panel now expose Messages
+  compiled, staging-verified, and cutover-ready signals separately. Added
+  `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED=false` to every tracked
+  environment. Overall fallback cutover now requires both the general replay and
+  the independent Messages replay; the smoke contract rejects a forged overall
+  cutover that bypasses the Messages gate.
+- Focused evidence passed: 13 provider AI Gateway tests; the root fallback
+  contract runs 18 Worker tests, the 14-case fallback smoke self-test, and a
+  Messages dry-run; all 38 frontend readiness tests passed. Worker coverage now
+  locks Messages planning, sticky policy veto, mapped effective model, and the
+  selected fallback channel type. Worker lib 661/661, the complete root
+  `bun run check`, Wrangler dry-run, and serial startup analysis also passed.
+  The startup profile was removed; no deployment or paid provider request ran.
+
+This remains local contract evidence. Before either staging marker becomes
+true, run route-isolated non-stream and stream Messages cases for primary
+server failure, fallback success, both schema-mismatch branches, token denial,
+missing fallback channels, fetch exhaustion, actual-serving-group billing,
+terminal audit delivery, response identity, and disable-first rollback. Archive
+Cloudflare AI Gateway logs and redacted D1/Queue evidence independently from the
+chat/Responses replay. No credential, remote provider request, resource,
+migration, or deployment was used. Production remains **NO-GO**.

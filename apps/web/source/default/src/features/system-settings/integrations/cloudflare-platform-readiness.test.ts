@@ -66,6 +66,9 @@ const baseCapabilities: PlatformReadinessCapabilities = {
   relay_ai_gateway_rest_forwarder_compiled: false,
   relay_ai_gateway_same_channel_fallback_compiled: false,
   relay_ai_gateway_cross_model_fallback_compiled: false,
+  relay_ai_gateway_messages_cross_model_fallback_compiled: false,
+  relay_ai_gateway_messages_cross_model_fallback_staging_verified: false,
+  relay_ai_gateway_messages_cross_model_fallback_cutover_ready: false,
   relay_ai_gateway_cross_model_actual_group_billing_compiled: false,
   relay_ai_gateway_actual_group_billing_staging_smoke_compiled: false,
   relay_ai_gateway_actual_group_billing_staging_smoke_enabled: false,
@@ -238,6 +241,7 @@ describe('Cloudflare platform readiness headline', () => {
         relay_ai_gateway_rest_forwarder_compiled: true,
         relay_ai_gateway_same_channel_fallback_compiled: true,
         relay_ai_gateway_cross_model_fallback_compiled: true,
+        relay_ai_gateway_messages_cross_model_fallback_compiled: true,
         relay_ai_gateway_cross_model_actual_group_billing_compiled: true,
         relay_ai_gateway_actual_group_billing_staging_smoke_compiled: true,
         relay_ai_gateway_cross_model_terminal_audit_compiled: true,
@@ -399,6 +403,35 @@ describe('Cloudflare platform readiness headline', () => {
       (item) => item.id === 'ai-gateway-implementation'
     )
     assert.equal(signal?.status, 'blocked')
+  })
+
+  test('blocks AI Gateway implementation without the Messages fallback contract', () => {
+    const implementation = getStage(
+      buildPlatformReadinessSummary(
+        makeCapabilities({
+          relay_ai_gateway_rest_routes: ['/v1/messages'],
+          relay_ai_gateway_model_prefixes: ['anthropic/', 'openai/'],
+          relay_ai_gateway_direct_fallback_prefixes: ['anthropic/'],
+          relay_ai_gateway_cutover_guards: ['messages-schema-compatibility'],
+          relay_ai_gateway_channel_opt_in_supported: true,
+          relay_ai_gateway_rest_forwarder_compiled: true,
+          relay_ai_gateway_same_channel_fallback_compiled: true,
+          relay_ai_gateway_cross_model_fallback_compiled: true,
+          relay_ai_gateway_messages_cross_model_fallback_compiled: false,
+          relay_ai_gateway_cross_model_actual_group_billing_compiled: true,
+          relay_ai_gateway_actual_group_billing_staging_smoke_compiled: true,
+          relay_ai_gateway_cross_model_terminal_audit_compiled: true,
+        })
+      ),
+      'implementation'
+    )
+
+    assert.equal(
+      implementation.signals.find(
+        (item) => item.id === 'ai-gateway-implementation'
+      )?.status,
+      'blocked'
+    )
   })
 
   test('requires the active scheduling gateway and preview fail-closed contract', () => {

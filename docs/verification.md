@@ -2890,11 +2890,12 @@ bun run check
   requested primary model to one AI-Gateway-prefixed fallback. Malformed, empty,
   self-referential, oversized, or provider-unprefixed fallback configuration
   fails validation.
-- The Rust outer model-attempt path supports OpenAI-compatible chat/responses
-  only, re-checks token model limits, filters fallback channels to explicit AI
-  Gateway opt-in, replaces the logical model before channel mapping, rebuilds
-  billing request input, refunds primary tiered reserve, and reserves the
-  fallback snapshot before egress.
+- The Rust outer model-attempt path supports OpenAI-compatible chat/Responses
+  and route-aware Anthropic Messages. It re-checks token model limits, resolves
+  the fallback model's complete D1 candidate pool, filters to explicit AI
+  Gateway opt-in, applies per-channel model mapping, validates an executable
+  Gateway plan, rebuilds billing input, refunds the primary tiered reserve, and
+  reserves the fallback snapshot before egress.
 - Direct transport fallback now strips the Gateway prefix and is limited to
   fetch/server failures. `401`, `403`, and `429` remain Gateway responses and do
   not bypass policy. Internal transport evidence is carried through a fresh
@@ -2911,6 +2912,36 @@ bun run check
 - Still pending: deployed replay, terminal audit Queue/D1 delivery evidence,
   and fault-injected D1 proof of the locally compiled actual-serving-group
   reservation plan. The gate and staging verification marker remain false.
+
+### AI Gateway Messages cross-model fallback hardening (2026-07-14)
+
+- `plan_relay_model_fallback` now treats the relay route as part of the contract.
+  `/v1/messages` is admitted only when primary and fallback logical model
+  prefixes both support the Anthropic Messages schema. Workers AI `@cf/` and
+  unprefixed models fail closed before quota mutation.
+- Every fallback candidate is loaded from the full fallback-model D1 pool. The
+  standard single-entry Redis selection cache is intentionally bypassed for
+  this rare path because AI Gateway opt-in and per-channel model mapping are
+  part of eligibility. Each mapped effective model is schema-checked and must
+  produce an AI Gateway plan before primary refund and fallback reservation.
+- `401`, `403`, and `429` are sticky cross-model vetoes across the whole primary
+  channel attempt chain. A later `5xx` or fetch failure cannot erase the policy
+  decision; same-model channel retry remains unchanged.
+- Added `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED=false`. Platform JSON,
+  the React readiness panel, and the smoke contract expose Messages compiled,
+  staging, and cutover separately. Overall cutover requires both the existing
+  replay marker and the Messages marker; smoke self-test rejects bypass.
+- Focused local checks passed: provider AI Gateway 13/13; the root fallback
+  contract now runs 18 Worker tests, the 14-case smoke self-test, and a
+  Messages dry-run; frontend readiness passed 38/38. The Worker tests cover
+  logical schema, sticky veto, fallback channel ownership, selection mode,
+  mapped effective model, and readiness. This is not remote evidence. The
+  route-specific marker remains false pending deployed
+  non-stream/stream, billing, audit, mixed-status, and rollback replay.
+- Final local gates passed: Worker lib 661/661, the complete `bun run check`
+  chain, `bun run check:cf:dry-run`, and serial `bun run check:cf:startup` with
+  Wrangler 4.110.0. The generated startup profile was removed and no remote
+  deployment or provider request was made.
 
 ### Relay terminal attempt audit (2026-07-11)
 

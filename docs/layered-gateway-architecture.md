@@ -268,8 +268,8 @@ supports.
 | cinaVibeSDK (`worker/agents/inferutils/`) | cinatoken-rust translation |
 |---|---|
 | Unified AI Gateway baseURL (`/compat`, `/{provider}`) | `resolve_gateway_url()` — extends the existing `AI_GATEWAY_ID` js_sys-reflection routing (`relay.rs:3195-3276`) |
-| `AGENT_CONFIG` primary + fallback model per action | Primary+fallback **already exists** as `plan_relay_attempts` (N-attempt, `relay.rs:1551-1635`); this becomes labeled config + a `fallback_model` field |
-| `executeInference` exp-backoff + fallback; no-retry on RateLimit/Security/cancel | Already implemented: `is_retryable_status` table (`crates/relay/src/retry.rs:37-45`) + `plan_relay_attempts` loop |
+| `AGENT_CONFIG` one primary + one fallback model per action | Rust separates the SDK action-config axis from gateway policy: `plan_relay_attempts` is same-model channel/group retry, while exact requested-model → fallback-model policy lives in `RELAY_MODEL_FALLBACKS_JSON` and remains central/default-off |
+| `executeInference` exp-backoff + one model switch; no-retry on RateLimit/Security/cancel | Rust uses a narrower public-gateway classifier: bounded channel retries first, then at most one cross-model switch for approved fetch/server failures; `401`/`403`/`429`, client errors, configuration failures, and an exposed stream never switch model |
 | `getApiKey` resolution chain + **security coupling** (user `baseUrl` honored only with user key) | **Landed** as `plan_ai_gateway_cutover` with `is_user_credential` (`ai_gateway.rs:190-210`) — and *stricter* than vibesdk: any custom base URL routes **direct**, never through the shared gateway (see §L note 1) |
 | Per-model `creditCost` weighted limiting | **Keep the finer tiered-expression engine** (`crates/billing`) — do not regress to fixed cost |
 
@@ -569,7 +569,7 @@ by clearing the flag, no redeploy required.
 - **Rollback:** flag off → `/v1/realtime` returns the current structured 501.
 
 ### M7 — `AiGatewayRouter` (2 wk) — Paradigm C
-- **Status (2026-07-06): Gated substrate, request builder wired.** The
+- **Status (2026-07-14): Gated router and central fallback contract wired.** The
   cutover decision ladder (`plan_ai_gateway_cutover`), gateway URL builders
   (`provider_gateway_url`/`rest_gateway_url`), model-author classifier, and 8 cutover
   guards have landed as pure, fully unit-tested logic (`crates/providers/src/ai_gateway.rs`,
@@ -582,25 +582,26 @@ by clearing the flag, no redeploy required.
   panel (`platform_gateway.rs:100-116`), gated
   `RELAY_AI_GATEWAY_ROUTER_ENABLED=false`. The key-URL coupling is **stricter** than the
   scope below (§L note 1). **Remaining:** live staging canary, AI Gateway log capture,
-  and billing/usage evidence.
-- **Scope:** Unified gateway URL resolution (`gateway.ai.cloudflare.com/v1/{account}/{gateway}/{provider}`
-  for AI-Gateway-supported providers; direct otherwise), extending the existing
-  `AI_GATEWAY_ID` routing. Promote `plan_relay_attempts` to explicit
-  **primary + `fallback_model`** config (the N-attempt loop already exists — this
-  is labeling + a config field, not new control flow). Implement the **key-URL
-  security coupling** (`resolve_api_key` → `is_user_credential`; honor a user
-  `base_url` override only when the resolved key is the user's) — net-new, since
-  no BYOK base_url override exists today. Usage still settles through the
-  untouched `crates/billing` engine.
+  route-specific staging replay, AI Gateway log capture, and billing/usage evidence.
+- **Scope:** Unified REST gateway URL resolution for supported routes, extending
+  `AI_GATEWAY_ID` routing while keeping custom base URLs direct. Same-model
+  channel/group attempts remain in `plan_relay_attempts`; one exact cross-model
+  mapping is handled by the separate default-off planner in `relay.rs`. That
+  planner revalidates token limits, reselects D1 channels, rebuilds billing, and
+  records requested/served identity. `/v1/messages` additionally requires both
+  model prefixes to support the Anthropic schema and rejects Workers AI before
+  any reserve refund. Usage still settles through `crates/billing`.
 - **Current Cloudflare constraint:** do not implement this with the deprecated
   Universal Endpoint. The landed router uses `/compat` or provider-specific
   endpoint forms. Cloudflare Dynamic Routing remains a later option only after
   central billing can reconcile the actual selected provider and model.
-- **Files:** `crates/ai-gateway/src/router.rs` (new), `crates/providers/src/ai_gateway.rs`,
-  `crates/worker/src/relay.rs`.
+- **Files:** `crates/providers/src/ai_gateway.rs`, `crates/worker/src/relay.rs`,
+  `crates/worker/src/platform_gateway.rs`, and the Cloudflare platform readiness UI.
 - **Verify:** echo-upstream staging smoke (`verification.md:834-852`); fallback
-  trigger and key-coupling unit tests over every key×url combination; providers
-  AI Gateway can't proxy fall back to direct. Gate per-channel opt-in.
+  trigger/schema/key-coupling tests; providers AI Gateway cannot proxy fall back
+  direct only through the matching registered adapter. Gate per-channel opt-in,
+  keep general and Messages staging verification separate, and require both for
+  overall cutover.
 - **Rollback:** router defaults to today's direct/AI-binding paths.
 
 ### M8 — WFP dispatch namespace (2 wk, multi-tenant only) — Paradigm B

@@ -10,6 +10,27 @@ const endpointPaths = new Map([
   ["responses", "/v1/responses"],
   ["messages", "/v1/messages"],
 ]);
+const aiGatewayModelProviders = [
+  { prefix: "openai/", messages: true, directFallback: true },
+  { prefix: "anthropic/", messages: true, directFallback: true },
+  { prefix: "google-ai-studio/", messages: true, directFallback: false },
+  { prefix: "google/", messages: true, directFallback: false },
+  { prefix: "xai/", messages: true, directFallback: true },
+  { prefix: "deepseek/", messages: true, directFallback: true },
+  { prefix: "cohere/", messages: true, directFallback: false },
+  { prefix: "groq/", messages: true, directFallback: false },
+  { prefix: "mistral/", messages: true, directFallback: true },
+  { prefix: "perplexity/", messages: true, directFallback: true },
+  { prefix: "google-vertex-ai/", messages: true, directFallback: false },
+  { prefix: "cerebras/", messages: true, directFallback: false },
+  { prefix: "baseten/", messages: true, directFallback: false },
+  { prefix: "parallel/", messages: true, directFallback: false },
+  { prefix: "@cf/", messages: false, directFallback: false },
+];
+const aiGatewayModelPrefixes = aiGatewayModelProviders.map(({ prefix }) => prefix);
+const aiGatewayDirectFallbackPrefixes = aiGatewayModelProviders
+  .filter(({ directFallback }) => directFallback)
+  .map(({ prefix }) => prefix);
 
 try {
   const args = parseArgs(process.argv.slice(2));
@@ -525,6 +546,12 @@ function summarizeCapabilities(data) {
       data.relay_ai_gateway_same_channel_fallback_compiled === true,
     relay_ai_gateway_cross_model_fallback_compiled:
       data.relay_ai_gateway_cross_model_fallback_compiled === true,
+    relay_ai_gateway_messages_cross_model_fallback_compiled:
+      data.relay_ai_gateway_messages_cross_model_fallback_compiled === true,
+    relay_ai_gateway_messages_cross_model_fallback_staging_verified:
+      data.relay_ai_gateway_messages_cross_model_fallback_staging_verified === true,
+    relay_ai_gateway_messages_cross_model_fallback_cutover_ready:
+      data.relay_ai_gateway_messages_cross_model_fallback_cutover_ready === true,
     relay_ai_gateway_cross_model_terminal_audit_compiled:
       data.relay_ai_gateway_cross_model_terminal_audit_compiled === true,
     relay_ai_gateway_cross_model_actual_group_billing_compiled:
@@ -558,6 +585,7 @@ function validateCapabilities(capabilities, options) {
     ["relay_ai_gateway_rest_forwarder_compiled", true],
     ["relay_ai_gateway_same_channel_fallback_compiled", true],
     ["relay_ai_gateway_cross_model_fallback_compiled", true],
+    ["relay_ai_gateway_messages_cross_model_fallback_compiled", true],
     ["relay_ai_gateway_cross_model_terminal_audit_compiled", true],
     ["relay_ai_gateway_cross_model_actual_group_billing_compiled", true],
   ]) {
@@ -570,46 +598,18 @@ function validateCapabilities(capabilities, options) {
       throw new Error(`platform capabilities missing AI Gateway REST route ${route}`);
     }
   }
-  for (const prefix of [
-    "openai/",
-    "anthropic/",
-    "google-ai-studio/",
-    "deepseek/",
-    "cohere/",
-    "groq/",
-    "mistral/",
-    "perplexity/",
-    "google-vertex-ai/",
-    "cerebras/",
-    "baseten/",
-    "parallel/",
-    "@cf/",
-  ]) {
+  for (const prefix of aiGatewayModelPrefixes) {
     if (!capabilities.relay_ai_gateway_model_prefixes.includes(prefix)) {
       throw new Error(`platform capabilities missing AI Gateway model prefix ${prefix}`);
     }
   }
-  for (const prefix of ["openai/", "anthropic/", "deepseek/"]) {
+  for (const prefix of aiGatewayDirectFallbackPrefixes) {
     if (!capabilities.relay_ai_gateway_direct_fallback_prefixes.includes(prefix)) {
       throw new Error(`platform capabilities missing direct fallback prefix ${prefix}`);
     }
   }
-  for (const prefix of [
-    "google-ai-studio/",
-    "google/",
-    "xai/",
-    "cohere/",
-    "groq/",
-    "mistral/",
-    "perplexity/",
-    "google-vertex-ai/",
-    "cerebras/",
-    "baseten/",
-    "parallel/",
-    "@cf/",
-    "cloudflare/",
-  ]) {
-    if (capabilities.relay_ai_gateway_direct_fallback_prefixes.includes(prefix)) {
+  for (const prefix of capabilities.relay_ai_gateway_direct_fallback_prefixes) {
+    if (!aiGatewayDirectFallbackPrefixes.includes(prefix)) {
       throw new Error(`platform capabilities exposed unsafe direct fallback prefix ${prefix}`);
     }
   }
@@ -617,6 +617,7 @@ function validateCapabilities(capabilities, options) {
     "router_ready",
     "fallback_gate",
     "validated_mapping",
+    "messages_schema_compatibility",
     "token_model_limit_recheck",
     "fallback_channel_reselection",
     "fallback_billing_rereservation",
@@ -626,6 +627,7 @@ function validateCapabilities(capabilities, options) {
     "model_route_audit",
     "terminal_attempt_audit",
     "staging_replay",
+    "messages_staging_replay",
   ]) {
     if (!capabilities.relay_ai_gateway_cross_model_fallback_cutover_guards.includes(guard)) {
       throw new Error(`platform capabilities missing model fallback guard ${guard}`);
@@ -640,6 +642,12 @@ function validateCapabilities(capabilities, options) {
     if (!capabilities.relay_ai_gateway_cutover_guards.includes(guard)) {
       throw new Error(`platform capabilities missing cutover guard ${guard}`);
     }
+  }
+  if (
+    capabilities.relay_ai_gateway_cross_model_fallback_cutover_ready &&
+    !capabilities.relay_ai_gateway_messages_cross_model_fallback_cutover_ready
+  ) {
+    throw new Error("cross-model cutover cannot bypass Messages staging replay");
   }
   if (options.expectRouterEnabled && !capabilities.relay_ai_gateway_router_enabled) {
     throw new Error("expected relay_ai_gateway_router_enabled=true");
@@ -726,15 +734,20 @@ function validateModelForEndpoint(value, endpoint) {
   if (!model) {
     throw new Error("request body model must be non-empty");
   }
-  const providerPrefixed =
-    model.startsWith("@cf/") || /^[a-z][a-z0-9_-]*\/[^/].+/i.test(model);
-  if (!providerPrefixed) {
+  const normalized = model.toLowerCase();
+  const provider = aiGatewayModelProviders.find(
+    ({ prefix }) =>
+      normalized.startsWith(prefix) && model.slice(prefix.length).trim().length > 0,
+  );
+  if (!provider) {
     throw new Error(
-      `model must use Cloudflare AI Gateway provider prefix syntax, received: ${model}`,
+      `model must use a registered Cloudflare AI Gateway provider prefix, received: ${model}`,
     );
   }
-  if (endpoint === "messages" && model.startsWith("@cf/")) {
-    throw new Error("/v1/messages is Anthropic-schema traffic and must not use @cf Workers AI models");
+  if (endpoint === "messages" && !provider.messages) {
+    throw new Error(
+      `/v1/messages is Anthropic-schema traffic and does not support ${provider.prefix} models`,
+    );
   }
   return model;
 }
@@ -794,28 +807,8 @@ function runSelfTest() {
     relay_ai_gateway_router_enabled: false,
     relay_ai_gateway_router_ready: false,
     relay_ai_gateway_rest_routes: ["chat/completions", "responses", "messages"],
-    relay_ai_gateway_model_prefixes: [
-      "openai/",
-      "anthropic/",
-      "google-ai-studio/",
-      "google/",
-      "xai/",
-      "deepseek/",
-      "cohere/",
-      "groq/",
-      "mistral/",
-      "perplexity/",
-      "google-vertex-ai/",
-      "cerebras/",
-      "baseten/",
-      "parallel/",
-      "@cf/",
-    ],
-    relay_ai_gateway_direct_fallback_prefixes: [
-      "openai/",
-      "anthropic/",
-      "deepseek/",
-    ],
+    relay_ai_gateway_model_prefixes: aiGatewayModelPrefixes,
+    relay_ai_gateway_direct_fallback_prefixes: aiGatewayDirectFallbackPrefixes,
     relay_ai_gateway_cutover_guards: [
       "router_ready",
       "channel_opted_in",
@@ -826,6 +819,9 @@ function runSelfTest() {
     relay_ai_gateway_rest_forwarder_compiled: true,
     relay_ai_gateway_same_channel_fallback_compiled: true,
     relay_ai_gateway_cross_model_fallback_compiled: true,
+    relay_ai_gateway_messages_cross_model_fallback_compiled: true,
+    relay_ai_gateway_messages_cross_model_fallback_staging_verified: false,
+    relay_ai_gateway_messages_cross_model_fallback_cutover_ready: false,
     relay_ai_gateway_cross_model_terminal_audit_compiled: true,
     relay_ai_gateway_cross_model_actual_group_billing_compiled: true,
     relay_ai_gateway_cross_model_fallback_enabled: false,
@@ -839,6 +835,7 @@ function runSelfTest() {
       "router_ready",
       "fallback_gate",
       "validated_mapping",
+      "messages_schema_compatibility",
       "token_model_limit_recheck",
       "fallback_channel_reselection",
       "fallback_billing_rereservation",
@@ -848,6 +845,7 @@ function runSelfTest() {
       "model_route_audit",
       "terminal_attempt_audit",
       "staging_replay",
+      "messages_staging_replay",
     ],
   };
   const options = {
@@ -895,6 +893,16 @@ function runSelfTest() {
         relay_ai_gateway_cross_model_fallback_ready: false,
       }),
       { ...options, expectFallbackDisabled: false, expectFallbackReady: true },
+    ),
+  );
+  const messagesReplayBypassRejected = expectFailure(() =>
+    validateCapabilities(
+      summarizeCapabilities({
+        ...raw,
+        relay_ai_gateway_cross_model_fallback_cutover_ready: true,
+        relay_ai_gateway_messages_cross_model_fallback_cutover_ready: false,
+      }),
+      options,
     ),
   );
   const missingTerminalAuditRejected = expectFailure(() =>
@@ -955,16 +963,32 @@ function runSelfTest() {
       "req-terminal-self-test",
     ),
   );
+  const messagesAnthropicAccepted =
+    validateModelForEndpoint("anthropic/claude-sonnet-4", "messages") ===
+    "anthropic/claude-sonnet-4";
+  const messagesOpenAiAccepted =
+    validateModelForEndpoint("openai/gpt-4.1", "messages") === "openai/gpt-4.1";
+  const messagesWorkersAiRejected = expectFailure(() =>
+    validateModelForEndpoint("@cf/meta/llama-3.1-8b-instruct", "messages"),
+  );
+  const unknownProviderRejected = expectFailure(() =>
+    validateModelForEndpoint("unknown-provider/model", "chat"),
+  );
   return {
     ok:
       routeDriftRejected &&
       unsafeDirectPrefixRejected &&
       unsafeCutoverRejected &&
+      messagesReplayBypassRejected &&
       missingTerminalAuditRejected &&
       missingActualGroupBillingRejected &&
       servedModelParserOk &&
       terminalAuditValidatorOk &&
-      duplicateTerminalAuditRejected,
+      duplicateTerminalAuditRejected &&
+      messagesAnthropicAccepted &&
+      messagesOpenAiAccepted &&
+      messagesWorkersAiRejected &&
+      unknownProviderRejected,
     selfTest: true,
     cases: [
       { name: "canonical-capability-contract", ok: true },
@@ -974,6 +998,10 @@ function runSelfTest() {
         ok: unsafeDirectPrefixRejected,
       },
       { name: "unsafe-cutover-rejected", ok: unsafeCutoverRejected },
+      {
+        name: "messages-replay-bypass-rejected",
+        ok: messagesReplayBypassRejected,
+      },
       {
         name: "missing-terminal-audit-rejected",
         ok: missingTerminalAuditRejected,
@@ -994,6 +1022,10 @@ function runSelfTest() {
         name: "duplicate-terminal-audit-rejected",
         ok: duplicateTerminalAuditRejected,
       },
+      { name: "messages-anthropic-model-accepted", ok: messagesAnthropicAccepted },
+      { name: "messages-openai-model-accepted", ok: messagesOpenAiAccepted },
+      { name: "messages-workers-ai-model-rejected", ok: messagesWorkersAiRejected },
+      { name: "unknown-provider-rejected", ok: unknownProviderRejected },
     ],
   };
 }

@@ -75,15 +75,15 @@ use crate::relay::{
     relay_billing_reservation_lease_runtime_status, relay_billing_reservation_lease_seconds,
     relay_billing_reservation_ledger_compiled, relay_billing_stream_error_usage_recovery_compiled,
     relay_billing_stream_lease_heartbeat_runtime_status,
-    relay_billing_stream_lease_renewal_compiled, relay_model_fallback_contract_compiled,
-    relay_model_fallback_runtime_status, relay_retry_times_from_env,
-    relay_terminal_attempt_audit_contract_compiled,
+    relay_billing_stream_lease_renewal_compiled, relay_messages_model_fallback_contract_compiled,
+    relay_model_fallback_contract_compiled, relay_model_fallback_runtime_status,
+    relay_retry_times_from_env, relay_terminal_attempt_audit_contract_compiled,
     relay_wfp_authority_transport_contract_compiled,
     RELAY_BILLING_FINALIZATION_REPLAY_STAGING_VERIFIED_ENV,
     RELAY_BILLING_PREBIND_OWNER_GENERATION_CONTRACT_VERSION,
     RELAY_BILLING_STREAM_ERROR_USAGE_RECOVERY_STAGING_VERIFIED_ENV,
     RELAY_BILLING_STREAM_LEASE_RENEWAL_STAGING_VERIFIED_ENV,
-    RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
+    RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED_ENV, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV,
 };
 use crate::relay_billing_queue::BILLING_QUEUE_BINDING;
 use crate::relay_billing_smoke::{smoke_compiled, smoke_enabled, smoke_ready};
@@ -135,6 +135,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
     "router_ready",
     "fallback_gate",
     "validated_mapping",
+    "messages_schema_compatibility",
     "token_model_limit_recheck",
     "fallback_channel_reselection",
     "fallback_billing_rereservation",
@@ -144,6 +145,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
     "model_route_audit",
     "terminal_attempt_audit",
     "staging_replay",
+    "messages_staging_replay",
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
@@ -289,6 +291,9 @@ struct PlatformCapabilities {
     relay_ai_gateway_rest_forwarder_compiled: bool,
     relay_ai_gateway_same_channel_fallback_compiled: bool,
     relay_ai_gateway_cross_model_fallback_compiled: bool,
+    relay_ai_gateway_messages_cross_model_fallback_compiled: bool,
+    relay_ai_gateway_messages_cross_model_fallback_staging_verified: bool,
+    relay_ai_gateway_messages_cross_model_fallback_cutover_ready: bool,
     relay_ai_gateway_cross_model_fallback_enabled: bool,
     relay_ai_gateway_cross_model_fallback_configured: bool,
     relay_ai_gateway_cross_model_fallback_config_valid: bool,
@@ -602,7 +607,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         ai_gateway_id_configured,
         cloudflare_ai_gateway_token_configured,
     );
-    let relay_ai_gateway_cross_model_fallback_compiled = relay_model_fallback_contract_compiled();
+    let relay_ai_gateway_messages_cross_model_fallback_compiled =
+        relay_messages_model_fallback_contract_compiled();
+    let relay_ai_gateway_cross_model_fallback_compiled = relay_model_fallback_contract_compiled()
+        && relay_ai_gateway_messages_cross_model_fallback_compiled;
     let relay_ai_gateway_cross_model_actual_group_billing_compiled =
         relay_actual_serving_group_billing_contract_compiled();
     let relay_ai_gateway_actual_group_billing_staging_smoke_compiled = smoke_compiled();
@@ -623,9 +631,17 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
     );
     let relay_ai_gateway_cross_model_fallback_staging_verified =
         env_flag(&env, RELAY_MODEL_FALLBACK_STAGING_VERIFIED_ENV);
+    let relay_ai_gateway_messages_cross_model_fallback_staging_verified =
+        env_flag(&env, RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED_ENV);
+    let relay_ai_gateway_messages_cross_model_fallback_cutover_ready =
+        is_relay_model_fallback_cutover_ready(
+            relay_ai_gateway_cross_model_fallback_ready,
+            relay_ai_gateway_messages_cross_model_fallback_staging_verified,
+        );
     let relay_ai_gateway_cross_model_fallback_cutover_ready = is_relay_model_fallback_cutover_ready(
         relay_ai_gateway_cross_model_fallback_ready,
-        relay_ai_gateway_cross_model_fallback_staging_verified,
+        relay_ai_gateway_cross_model_fallback_staging_verified
+            && relay_ai_gateway_messages_cross_model_fallback_staging_verified,
     );
     let realtime_sessions_do_available = env.durable_object("REALTIME_SESSIONS").is_ok();
     let quota_coordinator_contract_version = quota_coordinator_contract_version();
@@ -1030,6 +1046,9 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         relay_ai_gateway_same_channel_fallback_compiled:
             relay_ai_gateway_direct_fallback_contract_compiled(),
         relay_ai_gateway_cross_model_fallback_compiled,
+        relay_ai_gateway_messages_cross_model_fallback_compiled,
+        relay_ai_gateway_messages_cross_model_fallback_staging_verified,
+        relay_ai_gateway_messages_cross_model_fallback_cutover_ready,
         relay_ai_gateway_cross_model_fallback_enabled: relay_model_fallback_runtime.enabled,
         relay_ai_gateway_cross_model_fallback_configured: relay_model_fallback_runtime.configured,
         relay_ai_gateway_cross_model_fallback_config_valid: relay_model_fallback_runtime.valid,
@@ -3515,6 +3534,7 @@ mod tests {
     #[test]
     fn relay_model_fallback_readiness_requires_every_runtime_and_replay_gate() {
         assert!(relay_model_fallback_contract_compiled());
+        assert!(relay_messages_model_fallback_contract_compiled());
         assert!(relay_actual_serving_group_billing_contract_compiled());
         assert!(smoke_compiled());
         assert!(relay_terminal_attempt_audit_contract_compiled());
@@ -3537,6 +3557,7 @@ mod tests {
             "router_ready",
             "fallback_gate",
             "validated_mapping",
+            "messages_schema_compatibility",
             "token_model_limit_recheck",
             "fallback_channel_reselection",
             "fallback_billing_rereservation",
@@ -3546,6 +3567,7 @@ mod tests {
             "model_route_audit",
             "terminal_attempt_audit",
             "staging_replay",
+            "messages_staging_replay",
         ] {
             assert!(
                 RELAY_MODEL_FALLBACK_CUTOVER_GUARDS.contains(&guard),

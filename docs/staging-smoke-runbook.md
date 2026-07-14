@@ -546,6 +546,7 @@ Configure staging only:
 RELAY_MODEL_FALLBACK_ENABLED = "true"
 RELAY_MODEL_FALLBACKS_JSON = '{"openai/gpt-4.1":"anthropic/claude-sonnet-4"}'
 RELAY_MODEL_FALLBACK_STAGING_VERIFIED = "false"
+RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED = "false"
 ```
 
 Run the local contract first, then a live non-stream request whose primary
@@ -554,6 +555,15 @@ channel is isolated to return a controlled `5xx`:
 ```powershell
 bun run check:relay-ai-gateway:fallback-contract
 bun run smoke:relay-ai-gateway -- --url $env:STAGING_BASE_URL --cookie $env:RELAY_AI_GATEWAY_SMOKE_COOKIE --api-key $env:RELAY_AI_GATEWAY_SMOKE_API_KEY --model openai/gpt-4.1 --expect-router-ready --expect-fallback-enabled --expect-fallback-ready --expect-served-model anthropic/claude-sonnet-4 --confirm-live --json
+```
+
+Run Messages as a separate canary window with its own mapping and evidence set;
+do not reuse the chat result as route proof:
+
+```powershell
+RELAY_MODEL_FALLBACKS_JSON = '{"anthropic/claude-sonnet-4":"openai/gpt-4.1"}'
+RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED = "false"
+bun run smoke:relay-ai-gateway -- --url $env:STAGING_BASE_URL --endpoint messages --cookie $env:RELAY_AI_GATEWAY_SMOKE_COOKIE --api-key $env:RELAY_AI_GATEWAY_SMOKE_API_KEY --model anthropic/claude-sonnet-4 --expect-router-ready --expect-fallback-enabled --expect-fallback-ready --expect-served-model openai/gpt-4.1 --confirm-live --json
 ```
 
 For the isolated fetch-exhaustion case, make both selected transports
@@ -591,6 +601,14 @@ Archive these independent cases:
    that served the response and refunds the exact excess. Repeat with a
    cross-model fallback and prove the primary plan is refunded before a new
    fallback-model candidate-group plan is reserved.
+9. Messages schema and candidate isolation. Prove logical primary/fallback and
+   each channel-mapped effective model are compatible; `@cf/`, unprefixed, and
+   incompatible mapped values fail before fallback reserve. Seed a standard
+   cached non-opt-in channel while D1 contains an opted-in fallback channel and
+   prove the fallback reads the full D1 pool and selects the latter.
+10. Sticky policy veto. Replay `429 -> fetch error` and `401 -> 500` across
+    primary channels. Same-model retry may continue, but no cross-model egress,
+    primary refund-for-fallback, or fallback reserve may occur.
 
 Keep `RELAY_MODEL_FALLBACK_STAGING_VERIFIED=false` until all cases, quota row
 deltas, final audit `model_route`, actual serving group, reservation strategy,
@@ -598,6 +616,10 @@ and rollback timestamps are archived. Actual-serving-group billing and the
 terminal attempt ledger are locally compiled; remote D1/Queue delivery,
 refund-before-audit ordering, user-log redaction, and admin-log visibility
 remain production blockers.
+
+Keep `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED=false` until the same
+evidence is archived independently for Messages non-stream and stream traffic.
+Overall cutover intentionally remains blocked if either marker is false.
 
 ## Phase 3d: Actual-Serving-Group Worker-Binding Smoke
 

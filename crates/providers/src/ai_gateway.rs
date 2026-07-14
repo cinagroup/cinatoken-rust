@@ -400,8 +400,7 @@ pub fn plan_ai_gateway_cutover(input: AiGatewayCutoverInput<'_>) -> AiGatewayCut
     }
 
     if endpoint == AiGatewayRestEndpoint::Messages
-        && !ai_gateway_model_provider(input.model)
-            .is_some_and(|provider| provider.messages_schema_supported)
+        && !ai_gateway_model_supports_messages(input.model)
     {
         return AiGatewayCutoverDecision::UseDirect {
             reason: AiGatewayCutoverBlockReason::ModelEndpointSchemaMismatch,
@@ -466,6 +465,10 @@ pub fn ai_gateway_model_provider(model: &str) -> Option<&'static AiGatewayModelP
                 .get(provider.prefix.len()..)
                 .is_some_and(|value| !value.trim().is_empty())
     })
+}
+
+pub fn ai_gateway_model_supports_messages(model: &str) -> bool {
+    ai_gateway_model_provider(model).is_some_and(|provider| provider.messages_schema_supported)
 }
 
 pub fn direct_provider_model_for_channel(
@@ -1022,7 +1025,44 @@ mod tests {
     }
 
     #[test]
-    fn cutover_planner_rejects_workers_ai_messages_schema_mismatch() {
+    fn messages_provider_registry_matches_cutover_planner() {
+        for provider in AI_GATEWAY_MODEL_PROVIDERS {
+            let model = format!("{}fixture-model", provider.prefix);
+            assert_eq!(
+                ai_gateway_model_supports_messages(&model),
+                provider.messages_schema_supported,
+                "Messages schema support drifted for {}",
+                provider.prefix
+            );
+            let decision = plan_ai_gateway_cutover(AiGatewayCutoverInput {
+                router_ready: true,
+                channel_opted_in: true,
+                provider: ProviderKind::AnthropicMessages,
+                relay_path: "messages",
+                model: &model,
+                channel_has_custom_base_url: false,
+                is_user_credential: false,
+            });
+            if provider.messages_schema_supported {
+                assert!(
+                    matches!(decision, AiGatewayCutoverDecision::UseGateway(_)),
+                    "Messages planner rejected {}",
+                    provider.prefix
+                );
+            } else {
+                assert_eq!(
+                    decision,
+                    AiGatewayCutoverDecision::UseDirect {
+                        reason: AiGatewayCutoverBlockReason::ModelEndpointSchemaMismatch,
+                    }
+                );
+            }
+        }
+
+        assert!(!ai_gateway_model_supports_messages("gpt-4.1"));
+        assert!(!ai_gateway_model_supports_messages(
+            "unknown-provider/model"
+        ));
         assert_eq!(
             plan_ai_gateway_cutover(AiGatewayCutoverInput {
                 router_ready: true,

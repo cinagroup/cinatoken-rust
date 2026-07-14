@@ -947,6 +947,38 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
+          label: t('Messages cross-model fallback'),
+          description: t(
+            'Allows /v1/messages fallback only when both model prefixes support the Anthropic Messages schema; Workers AI models fail closed before billing is re-reserved.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_messages_cross_model_fallback_compiled,
+          readyLabel: t('Compiled'),
+          missingLabel: t('Missing'),
+        },
+        {
+          label: t('Messages fallback staging replay'),
+          description: t(
+            'Requires separate /v1/messages primary-failure, fallback identity, billing, audit, streaming, and rollback evidence.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_messages_cross_model_fallback_staging_verified,
+          readyLabel: t('Verified'),
+          missingLabel: t('Required'),
+          missingVariant: 'warning',
+        },
+        {
+          label: t('Messages fallback cutover'),
+          description: t(
+            'Remains blocked until the shared runtime contract and the route-specific Messages replay are both ready.'
+          ),
+          ready:
+            capabilities.relay_ai_gateway_messages_cross_model_fallback_cutover_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
+          missingVariant: 'warning',
+        },
+        {
           label: t('Actual serving group billing'),
           description: t(
             'Reserves across candidate groups and settles against the group that served the final cross-model response.'

@@ -1527,9 +1527,10 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
                         }
                         if summary.failed > 0 {
                             worker::console_error!(
-                                "realtime billing orphan sweep: candidates={} refunded={} finalized={} active={} missing={} failed={} deferred={}",
+                                "realtime billing orphan sweep: candidates={} refunded={} recovery_required={} finalized={} active={} missing={} failed={} deferred={}",
                                 summary.candidates,
                                 summary.refunded,
+                                summary.recovery_required,
                                 summary.already_finalized,
                                 summary.lease_active,
                                 summary.not_found,
@@ -1538,9 +1539,10 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
                             );
                         } else {
                             worker::console_log!(
-                                "realtime billing orphan sweep: candidates={} refunded={} finalized={} active={} missing={} failed=0 deferred=0",
+                                "realtime billing orphan sweep: candidates={} refunded={} recovery_required={} finalized={} active={} missing={} failed=0 deferred=0",
                                 summary.candidates,
                                 summary.refunded,
+                                summary.recovery_required,
                                 summary.already_finalized,
                                 summary.lease_active,
                                 summary.not_found
@@ -1553,7 +1555,7 @@ pub async fn scheduled(_event: worker::ScheduledEvent, env: Env, _ctx: worker::S
                 }
             }
             Ok(false) => worker::console_error!(
-                "realtime billing orphan sweep refused: migration 0022 is not applied"
+                "realtime billing orphan sweep refused: migrations 0022 and 0027 are not applied"
             ),
             Err(err) => worker::console_error!(
                 "realtime billing orphan sweep migration check failed: {err}"

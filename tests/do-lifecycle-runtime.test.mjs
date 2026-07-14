@@ -643,6 +643,113 @@ describe("Rust Durable Object lifecycle contracts", () => {
     second.close(1000, "test complete");
   }, 30_000);
 
+  it("quarantines Realtime response.done with null usage without refunding the reservation", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+    const account = await seedAuthenticatedRealtimeGateway({
+      mockFault: null,
+      upstreamModel: "gpt-runtime-realtime-usage-null",
+    });
+    const socket = await openAuthenticatedRealtimeSession();
+    const statusMessage = nextJsonWebSocketMessage(
+      socket,
+      "usage reconciliation session status",
+    );
+    socket.send("status");
+    const status = await statusMessage;
+    const session = status.context.session;
+    const received = [];
+    const collectMessage = (event) => {
+      try {
+        received.push(JSON.parse(event.data));
+      } catch {
+        // This scenario only asserts JSON server events.
+      }
+    };
+    socket.addEventListener("message", collectMessage);
+    const reconciliationError = nextJsonWebSocketMessageMatching(
+      socket,
+      (message) =>
+        message?.error?.code === "billing_usage_reconciliation_required",
+      "usage reconciliation error",
+    );
+    const terminalClose = nextWebSocketClose(
+      socket,
+      "usage reconciliation close",
+    );
+
+    socket.send(
+      JSON.stringify({
+        type: "response.create",
+        event_id: "runtime-null-usage-reservation",
+        response: { instructions: "runtime null usage proof" },
+      }),
+    );
+    const reserved = await waitForRealtimeReservation(session);
+    const reservationKey = reserved.reservation.reservation_key;
+    expect(reserved.reservation.pre_consumed_quota).toBeGreaterThan(0);
+    await expect(reconciliationError).resolves.toMatchObject({
+      type: "error",
+      error: {
+        type: "server_error",
+        code: "billing_usage_reconciliation_required",
+      },
+    });
+    await expect(terminalClose).resolves.toMatchObject({
+      code: 1011,
+      reason: "upstream_bridge_event_stream_failed",
+    });
+    socket.removeEventListener("message", collectMessage);
+    expect(received.some((message) => message.type === "response.done")).toBe(
+      false,
+    );
+
+    const quarantined = await realtimeBillingState(reservationKey);
+    expect(quarantined).toMatchObject({
+      reservation: {
+        status: "reserved",
+        finalization_owner: "usage_reconciliation",
+        finalization_reason: "response_usage_null",
+        refunded_at: 0,
+      },
+      user: {
+        quota: account.userQuota - reserved.reservation.pre_consumed_quota,
+      },
+      token: {
+        remain_quota:
+          account.tokenRemainQuota - reserved.reservation.pre_consumed_quota,
+        used_quota: reserved.reservation.pre_consumed_quota,
+      },
+    });
+    expect(quarantined.reservation.finalization_required_at).toBeGreaterThan(0);
+    const mutationsBeforeRecovery = await realtimeBillingMutationCounts();
+    expect(mutationsBeforeRecovery).toEqual({ replayCount: 0, auditCount: 0 });
+
+    await env.DB.prepare(
+      "UPDATE realtime_billing_reservations SET lease_expires_at = ?1 WHERE reservation_key = ?2",
+    )
+      .bind(Math.floor(Date.now() / 1000) - 3_600, reservationKey)
+      .run();
+    await runScheduledRecovery();
+    await expect(realtimeBillingState(reservationKey)).resolves.toMatchObject({
+      reservation: {
+        status: "reserved",
+        finalization_owner: "usage_reconciliation",
+        finalization_reason: "response_usage_null",
+        refunded_at: 0,
+      },
+      user: quarantined.user,
+      token: quarantined.token,
+    });
+    await expect(realtimeBillingMutationCounts()).resolves.toEqual({
+      replayCount: 0,
+      auditCount: 0,
+    });
+  }, 30_000);
+
   it("rejects an unbillable Realtime upgrade before provider or ledger mutation", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     await env.REALTIME_PROVIDER_MOCK.fetch(
@@ -848,8 +955,8 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect(payload).toMatchObject({
       success: true,
       data: {
-        d1_migration_applied_count: 26,
-        d1_expected_migration: "0026_relay_billing_owner_generation.sql",
+        d1_migration_applied_count: 27,
+        d1_expected_migration: "0027_realtime_usage_reconciliation.sql",
         d1_migration_ready: true,
         relay_billing_prebind_owner_generation_contract_version: 1,
         relay_billing_prebind_owner_generation_compiled: true,
@@ -1953,6 +2060,28 @@ function nextJsonWebSocketMessage(socket, label) {
   });
 }
 
+function nextJsonWebSocketMessageMatching(socket, predicate, label) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.removeEventListener("message", onMessage);
+      reject(new Error(`timed out waiting for ${label}`));
+    }, 5_000);
+    const onMessage = (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (!predicate(message)) return;
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      resolve(message);
+    };
+    socket.addEventListener("message", onMessage);
+  });
+}
+
 async function openAuthenticatedRealtimeSession() {
   const response = await SELF.fetch(
     `https://worker.test/v1/realtime?model=${encodeURIComponent(realtimeModel)}`,
@@ -2016,16 +2145,23 @@ function providerState() {
   ).then((response) => response.json());
 }
 
-async function seedAuthenticatedRealtimeGateway() {
+async function seedAuthenticatedRealtimeGateway({
+  mockFault = "runtime_detached",
+  upstreamModel = realtimeModel,
+} = {}) {
   const now = Math.floor(Date.now() / 1000);
   const userQuota = 1_000_000;
   const tokenRemainQuota = 500_000;
   const otherInfo = JSON.stringify({
     realtime_mock_upstream: {
       queue_probe_delay_ms: 100,
-      fault: "runtime_detached",
+      ...(mockFault ? { fault: mockFault } : {}),
     },
   });
+  const modelMapping =
+    upstreamModel === realtimeModel
+      ? null
+      : JSON.stringify({ [realtimeModel]: upstreamModel });
   const billingExpression = 'tier("runtime_realtime", p * 2 + c * 8)';
   await env.DB.batch([
     env.DB.prepare(
@@ -2050,8 +2186,8 @@ async function seedAuthenticatedRealtimeGateway() {
          status_code_mapping, priority, auto_ban, other_info, channel_info, settings)
        VALUES (42, 1, 'runtime-upstream-secret', 1, 'runtime realtime upstream',
          1000, ?1, 'https://realtime-provider.invalid', '', 0, ?2, 'default',
-         0, NULL, '', 1000, 0, ?3, '{}', '')`,
-    ).bind(now, realtimeModel, otherInfo),
+         0, ?3, '', 1000, 0, ?4, '{}', '')`,
+    ).bind(now, realtimeModel, modelMapping, otherInfo),
     env.DB.prepare(
       `INSERT INTO abilities
         (group_name, model, channel_id, enabled, priority, weight)
@@ -2545,16 +2681,33 @@ async function relayBillingFinalizationState(eventId) {
 async function realtimeBillingState(reservationKey) {
   const [reservation, user, token] = await Promise.all([
     env.DB.prepare(
-      "SELECT status, bridge_segment, refunded_at, recovery_attempt_count, recovery_next_attempt_at FROM realtime_billing_reservations WHERE reservation_key = ?1",
+      `SELECT status, bridge_segment, refunded_at, recovery_attempt_count,
+              recovery_next_attempt_at, finalization_owner,
+              finalization_reason, finalization_required_at
+       FROM realtime_billing_reservations
+       WHERE reservation_key = ?1`,
     )
       .bind(reservationKey)
       .first(),
-    env.DB.prepare("SELECT quota FROM users WHERE id = 1").first(),
+    env.DB.prepare("SELECT quota, request_count FROM users WHERE id = 1").first(),
     env.DB.prepare(
       "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
     ).first(),
   ]);
   return { reservation, user, token };
+}
+
+async function realtimeBillingMutationCounts() {
+  const [replay, audit] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS count FROM realtime_settlement_replays").first(),
+    env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM logs WHERE channel_id = 42 AND type = 2",
+    ).first(),
+  ]);
+  return {
+    replayCount: Number(replay?.count ?? 0),
+    auditCount: Number(audit?.count ?? 0),
+  };
 }
 
 async function waitForRealtimeReservation(session) {

@@ -999,3 +999,24 @@ Queue replay, financial CAS, audit, and resolution. It does not prove remote
 Queue attachment, retry exhaustion, DLQ/parking retention response, D1 outage,
 or paid-provider reconciliation. Those remain staging gates, and production is
 **NO-GO**.
+
+## 2026-07-14 Realtime Reconciliation Ownership Alignment
+
+The ambiguous-usage increment applies the same cinaVibeSDK stateful-runtime
+lesson used by the Realtime bridge: a hibernating or replaced Durable Object
+cannot be the only owner of unfinished work. When terminal provider usage is
+not verifiable, D1 now persists `usage_reconciliation` ownership before the
+bridge closes. Startup, alarm, terminal-close, and global scheduled recovery
+paths all observe that owner instead of reconstructing a refund decision from
+missing in-memory context.
+
+The Realtime DO remains the live socket/ordering owner; D1 remains the financial
+truth; the admin frontend is an observation surface only. No singleton Agent or
+global DO is introduced, and WFP tenant/outbound Workers gain no settlement or
+repair authority. This keeps the cinaVibeSDK-inspired persistent-state boundary
+without importing its application-specific Agent lifecycle.
+
+Local Workerd proves persistence against a forced-overdue scheduled sweep, but
+remote eviction/redeploy, actual-provider invoice correlation, alerts,
+retention, and a dual-control operator resolution workflow remain absent.
+Production remains **NO-GO**.

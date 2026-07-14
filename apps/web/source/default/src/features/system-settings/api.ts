@@ -23,6 +23,10 @@ import {
   type QuotaCoordinatorReconciliationResponse,
 } from './integrations/quota-coordinator-reconciliation'
 import {
+  normalizeRealtimeBillingLedgerStatus,
+  type RealtimeBillingLedgerResponse,
+} from './integrations/realtime-billing-ledger'
+import {
   buildWfpTenantPlanRequest,
   type WfpTenantPlanFormInput,
   type WfpTenantPlanResponse,
@@ -100,6 +104,17 @@ export async function getTaskRunnerStatus(taskId: string) {
     { disableDuplicate: true }
   )
   return res.data
+}
+
+export async function getRealtimeBillingLedgerStatus() {
+  const res = await api.get<RealtimeBillingLedgerResponse>(
+    '/api/platform/realtime-billing/ledger/status',
+    { disableDuplicate: true }
+  )
+  return {
+    ...res.data,
+    data: normalizeRealtimeBillingLedgerStatus(res.data.data),
+  }
 }
 
 export async function reconcileQuotaCoordinator(

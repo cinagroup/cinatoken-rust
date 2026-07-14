@@ -1658,9 +1658,9 @@ Preconditions:
 1. Query `relay_billing_reservations` from the frozen old deployment and prove
    zero `status='reserved'` rows. Migration 0026 must fail if this count is not
    zero; do not edit around its guard.
-2. Apply the exact 26-file migration set and archive redacted evidence for 30
-   tables, 126 checked incremental columns, 23 indexes, and latest migration
-   `0026_relay_billing_owner_generation.sql`.
+2. Apply the exact 27-file migration set and archive redacted evidence for 30
+   tables, 130 checked incremental columns, 24 indexes, and latest migration
+   `0027_realtime_usage_reconciliation.sql`.
 3. Deploy one candidate with explicit reservation deadline and heartbeat
    values. Require capability state compiled=true, schema-ready=true,
    configured=true, staging-verified=false, and cutover-ready=false.

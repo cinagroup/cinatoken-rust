@@ -667,11 +667,11 @@ G1 can pass only when:
 6. `/api/status` reports expected staging feature flags, and the admin
    Operations -> Cloudflare Platform panel reports the expected
    `/api/platform/capabilities` binding/flag state, including
-    `d1_migration_status_available=true`, applied count `26`, latest/expected
-    `0026_relay_billing_owner_generation.sql`, exact set match, and
+    `d1_migration_status_available=true`, applied count `27`, latest/expected
+    `0027_realtime_usage_reconciliation.sql`, exact set match, and
    `d1_migration_ready=true`.
 7. Logs/traces show the status request.
-8. D1 migrations 0001-0026 are applied to staging, remote output is archived,
+8. D1 migrations 0001-0027 are applied to staging, remote output is archived,
    and the runtime capability exact-set gate agrees with the remote ledger.
    Before both 0020 and 0021, prove the reservation ledger has zero `reserved`
    rows; both migrations fail closed because active ownership cannot be safely
@@ -753,6 +753,24 @@ armed only when:
   draining generation-1 events created before cutover.
 - Require `/api/platform/capabilities` to report compiled, schema-ready,
   configured, staging-verified, and cutover-ready separately.
+
+### Realtime Usage Reconciliation Requirements
+
+- Apply migration 0027 with public Realtime admission, settlement writes, and
+  global orphan recovery disabled. Archive the exact-set migration readback.
+- Require `realtime_session_usage_reconciliation_compiled=true` and ledger
+  contract v2 before running any isolated fixture. A compiled bit is not remote
+  or billing evidence.
+- Missing identity or missing/null/malformed/inconsistent/completed-zero usage
+  must claim `usage_reconciliation`, retain pre-consumption, suppress the
+  provider terminal frame, and remain excluded from automatic refund and
+  settlement.
+- The admin endpoint and React panel stay read-only, no-store, and hash-only.
+  They must not accept a charge/refund/repair body or expose session, bridge,
+  response, user, token, channel, IP, request, or provider credential values.
+- Attach alert, retention, owner, provider-invoice lookup, dual-control
+  resolution, one-CAS financial mutation, audit, and rollback runbooks before
+  any reconciliation action is implemented or enabled.
 - Preserve `assets.run_worker_first = ["/api/*", "/v1/*"]` in default,
   staging, and production so SPA navigation fallback cannot answer API paths.
   Re-audit this on every asset-routing change against the official Cloudflare

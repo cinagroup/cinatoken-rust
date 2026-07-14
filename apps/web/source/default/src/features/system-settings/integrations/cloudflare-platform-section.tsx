@@ -35,6 +35,7 @@ import {
   type PlatformReadinessStage,
 } from './cloudflare-platform-readiness'
 import { QuotaCoordinatorReconciliationPanel } from './quota-coordinator-reconciliation-panel'
+import { RealtimeBillingLedgerPanel } from './realtime-billing-ledger-panel'
 import { WfpTenantPlanPanel } from './wfp-tenant-plan-panel'
 
 type CapabilityRow = {
@@ -163,6 +164,14 @@ export function CloudflarePlatformSection() {
             <QuotaCoordinatorReconciliationPanel
               runtimeReady={
                 capabilities.quota_coordinator_reconciliation_runtime_ready
+              }
+            />
+
+            <RealtimeBillingLedgerPanel
+              runtimeReady={
+                capabilities.d1_migration_ready &&
+                capabilities.realtime_session_billing_ledger_status_compiled &&
+                capabilities.realtime_session_usage_reconciliation_compiled
               }
             />
 
@@ -1986,6 +1995,18 @@ function buildCapabilityGroups(
             capabilities.realtime_session_billing_global_orphan_recovery_enabled
               ? 'red'
               : 'grey',
+        },
+        {
+          label: t('Realtime usage reconciliation'),
+          description: t(
+            'Quarantines reservations when response identity or terminal usage cannot be verified, prevents automatic refund or settlement, and exposes only redacted records for manual reconciliation.'
+          ),
+          ready:
+            capabilities.realtime_session_usage_reconciliation_compiled &&
+            capabilities.realtime_session_billing_ledger_status_compiled &&
+            capabilities.d1_migration_ready,
+          readyLabel: t('Ready'),
+          missingLabel: t('Blocked'),
         },
         {
           label: t('Realtime settlement retry'),

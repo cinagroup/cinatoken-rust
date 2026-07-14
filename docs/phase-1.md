@@ -957,3 +957,26 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   staging readback, prove Dynamic Dispatch context and v3 tamper/replay
   negatives, run the four-route billing canary, and race real Realtime
   settlement/recovery boundaries. Production remains **NO-GO**.
+
+## 2026-07-14 Realtime Ambiguous-Usage Reconciliation Increment
+
+- Added migration 0027 and a single-writer `usage_reconciliation` owner for
+  Realtime reservations whose response identity, terminal usage, or settlement
+  outcome cannot be verified. Owned rows remain reserved and are excluded from
+  settlement, terminal refund, lease refund, and global orphan recovery.
+- `response.done` parsing now requires an allowed terminal status plus a
+  complete, non-negative, internally consistent usage object. Missing, null,
+  malformed, unknown-status, and completed-zero cases fail closed with a safe
+  error and 1011 close before the terminal provider frame is forwarded.
+- Release Workerd covers a real authenticated reserve and mock null-usage
+  terminal frame, then forces the lease overdue and runs scheduled recovery.
+  The pre-consumption remains unchanged with no settlement replay, audit, or
+  refund.
+- Added capability and admin frontend visibility. The ledger contract v2 is
+  no-store and hash-only; the React panel is read-only and strips fields outside
+  its explicit response allowlist.
+- The exact local schema is now 27 migrations, 30 tables, 130 checked
+  incremental columns, and 24 indexes. Next: credential rotation, isolated
+  remote 0027 application, live provider usage/invoice reconciliation, fault
+  and redeploy races, alert/retention ownership, and an independently approved
+  operator resolution workflow. Production remains **NO-GO**.

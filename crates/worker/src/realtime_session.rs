@@ -503,6 +503,7 @@ struct RealtimeBridgeTerminalEvent {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct RealtimeUsageMetadata {
     source_event: String,
+    response_status: String,
     response_identity_hash: String,
     prompt_tokens: i32,
     completion_tokens: i32,
@@ -513,6 +514,21 @@ struct RealtimeUsageMetadata {
     image_output_tokens: i32,
     audio_input_tokens: i32,
     audio_output_tokens: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RealtimeResponseCreatedBillingEvent {
+    Identified(String),
+    IdentityMissing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RealtimeResponseDoneBillingEvent {
+    Billable(RealtimeUsageMetadata),
+    RecoveryRequired {
+        response_identity_hash: Option<String>,
+        reason: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -1425,7 +1441,8 @@ impl DurableObject for RealtimeSession {
                     Ok(
                         crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
                         | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
-                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound,
+                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound
+                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::RecoveryOwned,
                     ) => {
                         latest_lease_queue
                             .records
@@ -1517,6 +1534,7 @@ impl DurableObject for RealtimeSession {
                     crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
                         | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
                         | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound
+                        | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::RecoveryOwned
                 )
             );
             let mut latest_queue = load_realtime_billing_settlement_retry(&storage)
@@ -1681,7 +1699,8 @@ impl DurableObject for RealtimeSession {
                                 Ok(
                                     crate::d1_repositories::RealtimeBillingReservationRefundOutcome::Applied
                                     | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::AlreadyFinalized
-                                    | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound,
+                                    | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::NotFound
+                                    | crate::d1_repositories::RealtimeBillingReservationRefundOutcome::RecoveryOwned,
                                 ) => exhausted_refunded = true,
                                 Ok(
                                     crate::d1_repositories::RealtimeBillingReservationRefundOutcome::LeaseActive { .. },
@@ -3998,11 +4017,13 @@ pub(crate) fn realtime_upstream_usage_capture_compiled() -> bool {
     if !REALTIME_UPSTREAM_USAGE_CAPTURE_COMPILED {
         return false;
     }
-    let Some(usage) = realtime_usage_metadata_from_upstream_text_frame(
-        r#"{
+    let Some(RealtimeResponseDoneBillingEvent::Billable(usage)) =
+        realtime_response_done_billing_event(
+            r#"{
             "type":"response.done",
             "response":{
                 "id":"resp_realtime_123",
+                "status":"completed",
                 "usage":{
                     "input_tokens":1200,
                     "output_tokens":350,
@@ -4018,7 +4039,8 @@ pub(crate) fn realtime_upstream_usage_capture_compiled() -> bool {
             },
             "secret_probe":"sk-realtime-upstream-secret"
         }"#,
-    ) else {
+        )
+    else {
         return false;
     };
     let serialized = serde_json::to_string(&usage).unwrap_or_default();
@@ -4030,13 +4052,32 @@ pub(crate) fn realtime_upstream_usage_capture_compiled() -> bool {
         && usage.cached_tokens == 400
         && usage.audio_input_tokens == 180
         && usage.audio_output_tokens == 90
-        && realtime_usage_metadata_from_upstream_text_frame(
+        && realtime_response_done_billing_event(
             r#"{"type":"session.updated","usage":{"total_tokens":1}}"#,
         )
         .is_none()
         && !serialized.contains("sk-realtime-upstream-secret")
         && !serialized.contains("secret_probe")
         && !serialized.contains(OPENAI_REALTIME_API_KEY_PROTOCOL_PREFIX)
+}
+
+pub(crate) fn realtime_usage_reconciliation_compiled() -> bool {
+    let migration = include_str!("../../../migrations/d1/0027_realtime_usage_reconciliation.sql");
+    crate::d1_repositories::REALTIME_USAGE_RECONCILIATION_MIGRATION
+        == "0027_realtime_usage_reconciliation.sql"
+        && migration.contains("finalization_owner TEXT NOT NULL DEFAULT ''")
+        && migration.contains("finalization_reason TEXT NOT NULL DEFAULT ''")
+        && migration.contains("finalization_required_at INTEGER NOT NULL DEFAULT 0")
+        && migration.contains("idx_realtime_billing_reservations_finalization_owner")
+        && matches!(
+            realtime_response_done_billing_event(
+                r#"{"type":"response.done","response":{"id":"resp_reconcile","status":"completed","usage":null}}"#
+            ),
+            Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+                reason: "response_usage_null",
+                ..
+            })
+        )
 }
 
 pub(crate) fn realtime_billing_presettlement_snapshot_compiled() -> bool {
@@ -5502,20 +5543,10 @@ async fn record_realtime_upstream_usage(
     } else {
         None
     };
-    if !realtime_usage_metadata_has_tokens(&usage) {
-        if let Some(reservation) = reservation.as_ref() {
-            crate::d1_repositories::refund_realtime_billing_reservation_for_response(
-                &db,
-                &reservation.reservation_key,
-                &response_identity_hash,
-                crate::admin::unix_timestamp(),
-            )
-            .await?;
-            clear_realtime_billing_reservation_lease(storage, &reservation.reservation_key, now_ms)
-                .await?;
-        }
-        metrics.record_realtime_usage(Some(attachment), now_ms, usage, None);
-        return store_realtime_session_metrics(storage, &metrics).await;
+    if !realtime_usage_metadata_is_billable(&usage) {
+        return Err(worker::Error::RustError(
+            "response.done usage is not safe to settle".to_string(),
+        ));
     }
     if write_enabled && reservation.is_none() {
         metrics.record_realtime_usage(Some(attachment), now_ms, usage, None);
@@ -5789,6 +5820,93 @@ async fn record_realtime_upstream_usage(
     store_realtime_session_metrics(storage, &metrics).await
 }
 
+async fn require_realtime_usage_reconciliation(
+    env: &Env,
+    attachment: &SocketAttachment,
+    response_identity_hash: Option<&str>,
+    reason: &str,
+) -> WorkerResult<()> {
+    let db = env.d1("DB")?;
+    let required_at = crate::admin::unix_timestamp();
+    if let Some(response_identity_hash) = response_identity_hash {
+        match crate::d1_repositories::bind_realtime_response_to_reservation(
+            &db,
+            &attachment.session,
+            &attachment.bridge_segment,
+            response_identity_hash,
+            required_at,
+        )
+        .await?
+        {
+            crate::d1_repositories::RealtimeBillingResponseBindOutcome::Applied
+            | crate::d1_repositories::RealtimeBillingResponseBindOutcome::Duplicate => {}
+            crate::d1_repositories::RealtimeBillingResponseBindOutcome::NotFound => {
+                return Err(worker::Error::RustError(
+                    "response.done has no billing reservation to reconcile".to_string(),
+                ));
+            }
+        }
+        return match crate::d1_repositories::mark_realtime_billing_usage_recovery_required(
+            &db,
+            &attachment.session,
+            &attachment.bridge_segment,
+            response_identity_hash,
+            reason,
+            required_at,
+        )
+        .await?
+        {
+            crate::d1_repositories::RealtimeBillingUsageRecoveryOutcome::Applied
+            | crate::d1_repositories::RealtimeBillingUsageRecoveryOutcome::MatchingOwner => Ok(()),
+            crate::d1_repositories::RealtimeBillingUsageRecoveryOutcome::AlreadyFinalized => {
+                Err(worker::Error::RustError(
+                    "response.done billing reservation is already finalized".to_string(),
+                ))
+            }
+            crate::d1_repositories::RealtimeBillingUsageRecoveryOutcome::NotFound => {
+                Err(worker::Error::RustError(
+                    "response.done billing reservation was not found".to_string(),
+                ))
+            }
+        };
+    }
+    let updated = crate::d1_repositories::mark_realtime_billing_segment_usage_recovery_required(
+        &db,
+        &attachment.session,
+        &attachment.bridge_segment,
+        reason,
+        required_at,
+    )
+    .await?;
+    if updated == 0 {
+        return Err(worker::Error::RustError(
+            "realtime bridge has no billing reservation to reconcile".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn send_realtime_usage_reconciliation_error(client: &WebSocket) {
+    let _ = client.send(&json!({
+        "type": "error",
+        "error": {
+            "type": "server_error",
+            "code": "billing_usage_reconciliation_required",
+            "message": "Upstream usage could not be verified for billing"
+        }
+    }));
+}
+
+fn close_realtime_for_usage_reconciliation(
+    runtime_state: &Rc<RefCell<RealtimeUpstreamBridgeState>>,
+    client: &WebSocket,
+) {
+    send_realtime_usage_reconciliation_error(client);
+    let action = realtime_bridge_close_action(RealtimeBridgeCloseCause::UpstreamEventStreamFailed);
+    close_realtime_upstream_runtime(runtime_state, action);
+    let _ = client.close(Some(action.client_code), Some(action.client_reason));
+}
+
 fn realtime_billing_handoff_from_reservation(
     reservation: &crate::d1_repositories::RealtimeBillingReservation,
 ) -> Result<RealtimeBillingSettlementHandoff, String> {
@@ -5890,20 +6008,25 @@ fn realtime_response_create_request(
     RequestInput::from_json_body(body).with_headers(handoff.request.headers.clone())
 }
 
-fn realtime_response_created_identity_hash(text: &str) -> Option<String> {
+fn realtime_response_created_billing_event(
+    text: &str,
+) -> Option<RealtimeResponseCreatedBillingEvent> {
     let value = serde_json::from_str::<Value>(text).ok()?;
-    (value.get("type").and_then(Value::as_str) == Some("response.created"))
-        .then(|| {
-            value
-                .pointer("/response/id")
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(realtime_billing_identity_hash)
-        })
-        .flatten()
+    if value.get("type").and_then(Value::as_str) != Some("response.created") {
+        return None;
+    }
+    Some(
+        value
+            .pointer("/response/id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(realtime_billing_identity_hash)
+            .map(RealtimeResponseCreatedBillingEvent::Identified)
+            .unwrap_or(RealtimeResponseCreatedBillingEvent::IdentityMissing),
+    )
 }
 
-fn realtime_usage_metadata_from_upstream_text_frame(text: &str) -> Option<RealtimeUsageMetadata> {
+fn realtime_response_done_billing_event(text: &str) -> Option<RealtimeResponseDoneBillingEvent> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let source_event = value.get("type").and_then(Value::as_str)?;
     if source_event != "response.done" {
@@ -5912,19 +6035,110 @@ fn realtime_usage_metadata_from_upstream_text_frame(text: &str) -> Option<Realti
     let response_identity = value
         .pointer("/response/id")
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())?;
+        .filter(|value| !value.trim().is_empty());
+    let Some(response_identity) = response_identity else {
+        return Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+            response_identity_hash: None,
+            reason: "response_done_identity_missing",
+        });
+    };
+    let response_identity_hash = realtime_billing_identity_hash(response_identity);
+    let Some(response_status) = value
+        .pointer("/response/status")
+        .and_then(Value::as_str)
+        .filter(|status| matches!(*status, "completed" | "cancelled" | "failed" | "incomplete"))
+    else {
+        return Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+            response_identity_hash: Some(response_identity_hash),
+            reason: "response_usage_invalid",
+        });
+    };
+    let usage_value = value.pointer("/response/usage");
+    let Some(usage_value) = usage_value else {
+        return Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+            response_identity_hash: Some(response_identity_hash),
+            reason: "response_usage_missing",
+        });
+    };
+    if usage_value.is_null() {
+        return Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+            response_identity_hash: Some(response_identity_hash),
+            reason: "response_usage_null",
+        });
+    }
+    if !realtime_response_usage_is_well_formed(usage_value) {
+        return Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+            response_identity_hash: Some(response_identity_hash),
+            reason: "response_usage_invalid",
+        });
+    }
     let usage = usage_summary_from_body(text);
-    RealtimeUsageMetadata::from_usage(source_event, response_identity, usage)
+    let metadata =
+        RealtimeUsageMetadata::from_usage(source_event, response_status, response_identity, usage);
+    if !realtime_usage_metadata_is_billable(&metadata) {
+        return Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+            response_identity_hash: Some(response_identity_hash),
+            reason: "response_usage_zero",
+        });
+    }
+    Some(RealtimeResponseDoneBillingEvent::Billable(metadata))
+}
+
+fn realtime_response_usage_is_well_formed(usage: &Value) -> bool {
+    let Some(object) = usage.as_object() else {
+        return false;
+    };
+    let Some(input_tokens) = non_negative_realtime_token_count(object.get("input_tokens")) else {
+        return false;
+    };
+    let Some(output_tokens) = non_negative_realtime_token_count(object.get("output_tokens")) else {
+        return false;
+    };
+    let Some(total_tokens) = non_negative_realtime_token_count(object.get("total_tokens")) else {
+        return false;
+    };
+    if input_tokens.saturating_add(output_tokens) != total_tokens {
+        return false;
+    }
+    for details_name in ["input_token_details", "output_token_details"] {
+        let Some(details) = object.get(details_name) else {
+            continue;
+        };
+        let Some(details) = details.as_object() else {
+            return false;
+        };
+        for token_name in [
+            "text_tokens",
+            "audio_tokens",
+            "image_tokens",
+            "cached_tokens",
+        ] {
+            if details.contains_key(token_name)
+                && non_negative_realtime_token_count(details.get(token_name)).is_none()
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn non_negative_realtime_token_count(value: Option<&Value>) -> Option<i64> {
+    value
+        .and_then(Value::as_i64)
+        .filter(|value| (0..=i64::from(i32::MAX)).contains(value))
 }
 
 impl RealtimeUsageMetadata {
     fn from_usage(
         source_event: &str,
+        response_status: &str,
         response_identity: &str,
         usage: UsageSummary,
-    ) -> Option<Self> {
-        Some(Self {
+    ) -> Self {
+        Self {
             source_event: source_event.to_string(),
+            response_status: response_status.to_string(),
             response_identity_hash: realtime_billing_identity_hash(response_identity),
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
@@ -5935,7 +6149,7 @@ impl RealtimeUsageMetadata {
             image_output_tokens: usage.image_output_tokens,
             audio_input_tokens: usage.audio_input_tokens,
             audio_output_tokens: usage.audio_output_tokens,
-        })
+        }
     }
 
     fn to_tiered_token_usage(&self) -> TieredTokenUsage {
@@ -6006,8 +6220,8 @@ impl RealtimeBillingSettlementPreviewMetadata {
     }
 }
 
-fn realtime_usage_metadata_has_tokens(usage: &RealtimeUsageMetadata) -> bool {
-    usage.total_tokens > 0
+fn realtime_usage_metadata_is_billable(usage: &RealtimeUsageMetadata) -> bool {
+    let has_tokens = usage.total_tokens > 0
         || usage.prompt_tokens > 0
         || usage.completion_tokens > 0
         || usage.cached_tokens > 0
@@ -6015,7 +6229,12 @@ fn realtime_usage_metadata_has_tokens(usage: &RealtimeUsageMetadata) -> bool {
         || usage.image_input_tokens > 0
         || usage.image_output_tokens > 0
         || usage.audio_input_tokens > 0
-        || usage.audio_output_tokens > 0
+        || usage.audio_output_tokens > 0;
+    has_tokens
+        || matches!(
+            usage.response_status.as_str(),
+            "cancelled" | "failed" | "incomplete"
+        )
 }
 
 fn spawn_realtime_upstream_event_pump(
@@ -6145,70 +6364,148 @@ fn spawn_realtime_upstream_event_pump(
                                 client.close(Some(action.client_code), Some(action.client_reason));
                             break;
                         }
-                        if billing_settlement.is_some()
-                            && realtime_billing_settlement_write_enabled(&env)
-                        {
-                            if let Some(response_identity_hash) =
-                                realtime_response_created_identity_hash(&text)
+                        let billing_writes_active = billing_settlement.is_some()
+                            && realtime_billing_settlement_write_enabled(&env);
+                        if billing_writes_active {
+                            if let Some(created_event) =
+                                realtime_response_created_billing_event(&text)
                             {
-                                let binding = match env.d1("DB") {
-                                    Ok(db) => crate::d1_repositories::bind_realtime_response_to_reservation(
-                                        &db,
-                                        &attachment.session,
-                                        &attachment.bridge_segment,
-                                        &response_identity_hash,
-                                        crate::admin::unix_timestamp(),
-                                    )
-                                    .await,
-                                    Err(err) => Err(err),
-                                };
-                                if !matches!(
-                                    binding,
-                                    Ok(
-                                        crate::d1_repositories::RealtimeBillingResponseBindOutcome::Applied
-                                            | crate::d1_repositories::RealtimeBillingResponseBindOutcome::Duplicate
-                                    )
-                                ) {
-                                    worker::console_warn!(
-                                        "RealtimeSession could not bind response.created to a reservation"
-                                    );
-                                    let _ = client.send(&json!({
-                                        "type": "error",
-                                        "error": {
-                                            "type": "server_error",
-                                            "code": "billing_reservation_missing",
-                                            "message": "Upstream response has no billing reservation"
+                                match created_event {
+                                    RealtimeResponseCreatedBillingEvent::Identified(
+                                        response_identity_hash,
+                                    ) => {
+                                        let binding = match env.d1("DB") {
+                                            Ok(db) => crate::d1_repositories::bind_realtime_response_to_reservation(
+                                                &db,
+                                                &attachment.session,
+                                                &attachment.bridge_segment,
+                                                &response_identity_hash,
+                                                crate::admin::unix_timestamp(),
+                                            )
+                                            .await,
+                                            Err(err) => Err(err),
+                                        };
+                                        if !matches!(
+                                            binding,
+                                            Ok(
+                                                crate::d1_repositories::RealtimeBillingResponseBindOutcome::Applied
+                                                    | crate::d1_repositories::RealtimeBillingResponseBindOutcome::Duplicate
+                                            )
+                                        ) {
+                                            worker::console_warn!(
+                                                "RealtimeSession could not bind response.created to a reservation"
+                                            );
+                                            let _ = client.send(&json!({
+                                                "type": "error",
+                                                "error": {
+                                                    "type": "server_error",
+                                                    "code": "billing_reservation_missing",
+                                                    "message": "Upstream response has no billing reservation"
+                                                }
+                                            }));
+                                            let cause =
+                                                RealtimeBridgeCloseCause::UpstreamEventStreamFailed;
+                                            let action = realtime_bridge_close_action(cause);
+                                            close_realtime_upstream_runtime(&runtime_state, action);
+                                            let _ = client.close(
+                                                Some(action.client_code),
+                                                Some(action.client_reason),
+                                            );
+                                            break;
                                         }
-                                    }));
-                                    let cause = RealtimeBridgeCloseCause::UpstreamEventStreamFailed;
-                                    let action = realtime_bridge_close_action(cause);
-                                    close_realtime_upstream_runtime(&runtime_state, action);
-                                    let _ = client.close(
-                                        Some(action.client_code),
-                                        Some(action.client_reason),
-                                    );
-                                    break;
+                                    }
+                                    RealtimeResponseCreatedBillingEvent::IdentityMissing => {
+                                        if let Err(err) = require_realtime_usage_reconciliation(
+                                            &env,
+                                            &attachment,
+                                            None,
+                                            "response_created_identity_missing",
+                                        )
+                                        .await
+                                        {
+                                            worker::console_warn!(
+                                                "RealtimeSession could not quarantine response.created without identity: {}",
+                                                err
+                                            );
+                                        }
+                                        close_realtime_for_usage_reconciliation(
+                                            &runtime_state,
+                                            &client,
+                                        );
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        if let Some(usage) = realtime_usage_metadata_from_upstream_text_frame(&text)
-                        {
-                            let now_ms = js_sys::Date::now();
-                            runtime_state.borrow_mut().billing_settlement_inflight = true;
-                            let billing_result = record_realtime_upstream_usage(
-                                &mut metrics_storage,
-                                &env,
-                                &attachment,
-                                now_ms,
-                                usage,
-                                billing_settlement.as_ref(),
-                            )
-                            .await;
-                            runtime_state.borrow_mut().billing_settlement_inflight = false;
-                            if billing_result.is_err() {
-                                worker::console_warn!(
-                                    "RealtimeSession upstream usage metadata capture failed"
-                                );
+
+                            if let Some(done_event) = realtime_response_done_billing_event(&text) {
+                                match done_event {
+                                    RealtimeResponseDoneBillingEvent::Billable(usage) => {
+                                        let response_identity_hash =
+                                            usage.response_identity_hash.clone();
+                                        let now_ms = js_sys::Date::now();
+                                        runtime_state.borrow_mut().billing_settlement_inflight =
+                                            true;
+                                        let billing_result = record_realtime_upstream_usage(
+                                            &mut metrics_storage,
+                                            &env,
+                                            &attachment,
+                                            now_ms,
+                                            usage,
+                                            billing_settlement.as_ref(),
+                                        )
+                                        .await;
+                                        runtime_state.borrow_mut().billing_settlement_inflight =
+                                            false;
+                                        if let Err(err) = billing_result {
+                                            worker::console_warn!(
+                                                "RealtimeSession upstream usage settlement failed: {}",
+                                                err
+                                            );
+                                            if let Err(recovery_err) =
+                                                require_realtime_usage_reconciliation(
+                                                    &env,
+                                                    &attachment,
+                                                    Some(&response_identity_hash),
+                                                    "settlement_result_ambiguous",
+                                                )
+                                                .await
+                                            {
+                                                worker::console_warn!(
+                                                    "RealtimeSession could not quarantine ambiguous settlement: {}",
+                                                    recovery_err
+                                                );
+                                            }
+                                            close_realtime_for_usage_reconciliation(
+                                                &runtime_state,
+                                                &client,
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    RealtimeResponseDoneBillingEvent::RecoveryRequired {
+                                        response_identity_hash,
+                                        reason,
+                                    } => {
+                                        if let Err(err) = require_realtime_usage_reconciliation(
+                                            &env,
+                                            &attachment,
+                                            response_identity_hash.as_deref(),
+                                            reason,
+                                        )
+                                        .await
+                                        {
+                                            worker::console_warn!(
+                                                "RealtimeSession could not quarantine unverifiable usage: {}",
+                                                err
+                                            );
+                                        }
+                                        close_realtime_for_usage_reconciliation(
+                                            &runtime_state,
+                                            &client,
+                                        );
+                                        break;
+                                    }
+                                }
                             }
                         }
                         let text_bytes = text.as_bytes().len();
@@ -7451,6 +7748,7 @@ mod tests {
             7.0,
             RealtimeUsageMetadata {
                 source_event: "response.done".to_string(),
+                response_status: "completed".to_string(),
                 response_identity_hash: "response-metrics".to_string(),
                 prompt_tokens: 12,
                 completion_tokens: 5,
@@ -7616,6 +7914,7 @@ mod tests {
             "type":"response.done",
             "response":{
                 "id":"resp_realtime_123",
+                "status":"completed",
                 "usage":{
                     "input_tokens":1200,
                     "output_tokens":350,
@@ -7631,9 +7930,14 @@ mod tests {
             },
             "secret_probe":"do-not-store-this"
         }"#;
-        let usage = realtime_usage_metadata_from_upstream_text_frame(raw_frame).unwrap();
+        let RealtimeResponseDoneBillingEvent::Billable(usage) =
+            realtime_response_done_billing_event(raw_frame).unwrap()
+        else {
+            panic!("well-formed response.done must be billable");
+        };
 
         assert_eq!(usage.source_event, "response.done");
+        assert_eq!(usage.response_status, "completed");
         assert_eq!(
             usage.response_identity_hash,
             realtime_billing_identity_hash("resp_realtime_123")
@@ -7644,15 +7948,19 @@ mod tests {
         assert_eq!(usage.cached_tokens, 400);
         assert_eq!(usage.audio_input_tokens, 180);
         assert_eq!(usage.audio_output_tokens, 90);
-        assert!(realtime_usage_metadata_from_upstream_text_frame(
+        assert!(realtime_response_done_billing_event(
             r#"{"type":"session.updated","usage":{"total_tokens":99}}"#
         )
         .is_none());
-        let empty_usage = realtime_usage_metadata_from_upstream_text_frame(
-            r#"{"type":"response.done","response":{"id":"resp_empty","usage":null}}"#,
-        )
-        .expect("response.done without usage still releases its reservation");
-        assert!(!realtime_usage_metadata_has_tokens(&empty_usage));
+        assert!(matches!(
+            realtime_response_done_billing_event(
+                r#"{"type":"response.done","response":{"id":"resp_empty","status":"completed","usage":null}}"#
+            ),
+            Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+                reason: "response_usage_null",
+                ..
+            })
+        ));
 
         let serialized = serde_json::to_string(&usage).unwrap();
         assert!(!serialized.contains("do-not-store-this"));
@@ -7662,28 +7970,77 @@ mod tests {
 
     #[test]
     fn realtime_response_created_identity_matches_done_identity() {
-        let created = realtime_response_created_identity_hash(
-            r#"{"type":"response.created","response":{"id":"resp_parallel_2"}}"#,
+        let Some(RealtimeResponseCreatedBillingEvent::Identified(created)) =
+            realtime_response_created_billing_event(
+                r#"{"type":"response.created","response":{"id":"resp_parallel_2"}}"#,
+            )
+        else {
+            panic!("response.created identity");
+        };
+        let Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+            response_identity_hash: Some(done),
+            reason: "response_usage_null",
+        }) = realtime_response_done_billing_event(
+            r#"{"type":"response.done","response":{"id":"resp_parallel_2","status":"completed","usage":null}}"#,
         )
-        .expect("response.created identity");
-        let done = realtime_usage_metadata_from_upstream_text_frame(
-            r#"{"type":"response.done","response":{"id":"resp_parallel_2","usage":null}}"#,
-        )
-        .expect("response.done identity");
+        else {
+            panic!("response.done identity");
+        };
 
-        assert_eq!(created, done.response_identity_hash);
-        assert!(realtime_response_created_identity_hash(
-            r#"{"type":"response.created","response":{}}"#
-        )
-        .is_none());
-        assert!(realtime_response_created_identity_hash(
+        assert_eq!(created, done);
+        assert_eq!(
+            realtime_response_created_billing_event(r#"{"type":"response.created","response":{}}"#),
+            Some(RealtimeResponseCreatedBillingEvent::IdentityMissing)
+        );
+        assert!(realtime_response_created_billing_event(
             r#"{"type":"response.done","response":{"id":"resp_parallel_2"}}"#
         )
         .is_none());
-        assert!(realtime_usage_metadata_from_upstream_text_frame(
-            r#"{"type":"response.done","event_id":"evt_without_response_id","response":{"usage":{"total_tokens":1}}}"#
-        )
-        .is_none());
+        assert!(matches!(
+            realtime_response_done_billing_event(
+                r#"{"type":"response.done","event_id":"evt_without_response_id","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}}"#
+            ),
+            Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+                response_identity_hash: None,
+                reason: "response_done_identity_missing"
+            })
+        ));
+    }
+
+    #[test]
+    fn realtime_response_done_usage_validation_fails_closed() {
+        for frame in [
+            r#"{"type":"response.done","response":{"id":"resp_missing","status":"completed"}}"#,
+            r#"{"type":"response.done","response":{"id":"resp_object","status":"completed","usage":[]}}"#,
+            r#"{"type":"response.done","response":{"id":"resp_negative","status":"completed","usage":{"input_tokens":-1,"output_tokens":1,"total_tokens":0}}}"#,
+            r#"{"type":"response.done","response":{"id":"resp_mismatch","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":1}}}"#,
+            r#"{"type":"response.done","response":{"id":"resp_status","status":"queued","usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}}"#,
+        ] {
+            assert!(matches!(
+                realtime_response_done_billing_event(frame),
+                Some(RealtimeResponseDoneBillingEvent::RecoveryRequired { .. })
+            ));
+        }
+
+        assert!(matches!(
+            realtime_response_done_billing_event(
+                r#"{"type":"response.done","response":{"id":"resp_zero","status":"completed","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}"#
+            ),
+            Some(RealtimeResponseDoneBillingEvent::RecoveryRequired {
+                reason: "response_usage_zero",
+                ..
+            })
+        ));
+        assert!(matches!(
+            realtime_response_done_billing_event(
+                r#"{"type":"response.done","response":{"id":"resp_cancelled","status":"cancelled","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}"#
+            ),
+            Some(RealtimeResponseDoneBillingEvent::Billable(RealtimeUsageMetadata {
+                response_status,
+                total_tokens: 0,
+                ..
+            })) if response_status == "cancelled"
+        ));
     }
 
     #[test]

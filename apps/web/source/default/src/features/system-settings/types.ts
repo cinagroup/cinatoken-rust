@@ -565,6 +565,7 @@ export type PlatformCapabilities = {
   realtime_session_billing_orphan_recovery_grace_seconds: number
   realtime_session_billing_orphan_sweep_limit: number
   realtime_session_billing_ledger_status_compiled: boolean
+  realtime_session_usage_reconciliation_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_compiled: boolean
   realtime_session_billing_settlement_staging_smoke_enabled: boolean
   realtime_session_billing_settlement_staging_smoke_ready: boolean

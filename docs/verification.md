@@ -4404,3 +4404,66 @@ Authenticated staging bake, provider traffic, alert delivery, and remote
 rollback evidence remain absent. All Realtime writer/recovery and
 QuotaCoordinator runtime/cutover gates remain default-off; production is
 **NO-GO**.
+
+## Realtime Ambiguous-Usage Quarantine Verification (2026-07-14)
+
+Scope: local migration 0027, strict `response.done` classification,
+single-owner D1 quarantine, scheduled-recovery exclusion, hash-only ledger v2,
+and the read-only React/Bun operator panel. The required Go billing-expression
+contract was reviewed before implementation.
+
+```powershell
+cargo test -p cinatoken-worker --lib
+# PASS; 661/661, including strict Realtime terminal classification, quarantine,
+# settlement, and scheduled-recovery ownership tests
+
+cargo test -p cinatoken-worker --lib platform_gateway -- --nocapture
+# PASS; 30/30 selected platform tests, including hash-only Realtime ledger v2
+
+bun run verify:sqlite
+# PASS; 27 migrations, 30 tables, 130 incremental columns, 24 key indexes
+
+bunx vitest run --config vitest.do.config.mjs `
+  -t "quarantines Realtime response.done with null usage"
+# PASS; release Workerd 1/1 selected, 27 skipped
+
+bun run check:web:readiness
+# PASS; 49/49, including Realtime ledger field-allowlist/redaction tests
+
+bun run check:web
+# PASS; TypeScript project build and production Rsbuild bundle
+
+bun run check:web:routes
+# PASS after intentional baseline update; 220 frontend calls, 323 Worker routes,
+# zero missing calls
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 28/28, Playground 1/1, frontend
+# build/audits, 27 D1 migrations, workspace tests, and all three wasm32 targets
+
+bun run check:cf:dry-run
+# PASS with Wrangler 4.110.0; release packaging resolved all bindings and kept
+# Realtime, recovery, queue, QuotaCoordinator, and WFP rollout gates default-off
+```
+
+Verified behavior:
+
+- `response.created` without identity and `response.done` with missing identity,
+  missing/null/malformed/inconsistent usage, unknown status, completed zero
+  usage, or ambiguous settlement fail closed. Explicit zero usage remains valid
+  for cancelled, failed, and incomplete terminal responses.
+- The null-usage Workerd scenario creates a positive authenticated reservation,
+  claims `usage_reconciliation`, emits the safe billing error, closes 1011,
+  suppresses the terminal provider frame, retains pre-consumption, and records
+  no settlement replay or billing audit.
+- After forcing that lease 3600 seconds overdue, the real scheduled handler
+  leaves status/owner/quota unchanged. Automatic refund and settlement cannot
+  cross the reconciliation owner.
+- Ledger API/UI data contains only domain-separated fingerprints, controlled
+  status/reason/timestamps, and sweep counters. The frontend normalizer drops
+  unexpected raw session, bridge-segment, and provider-response fields.
+
+This is local implementation evidence only. Remote migration 0027, live
+provider usage/invoice reconciliation, D1/disconnect/eviction/redeploy races,
+alerts, retention, operator resolution, rollback, and production approval are
+absent. Go/VPS remains authoritative; production is **NO-GO**.

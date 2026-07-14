@@ -105,6 +105,9 @@ REQUIRED_COLUMNS = {
         "recovery_attempt_count",
         "recovery_next_attempt_at",
         "recovery_last_attempt_at",
+        "finalization_owner",
+        "finalization_reason",
+        "finalization_required_at",
     },
     "realtime_billing_recovery_state": {
         "id",
@@ -113,6 +116,7 @@ REQUIRED_COLUMNS = {
         "last_success_at",
         "last_candidates",
         "last_refunded",
+        "last_recovery_required",
         "last_failed",
         "last_deferred",
         "updated_at",
@@ -205,6 +209,7 @@ REQUIRED_INDEXES = {
         "idx_realtime_billing_reservations_segment_status": False,
         "idx_realtime_billing_reservations_global_lease": False,
         "idx_realtime_billing_reservations_recent_outcome": False,
+        "idx_realtime_billing_reservations_finalization_owner": False,
     },
     "relay_billing_reservations": {
         "idx_relay_billing_reservations_global_lease": False,

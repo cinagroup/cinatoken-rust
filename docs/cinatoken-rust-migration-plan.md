@@ -12084,3 +12084,39 @@ eviction/redeploy, lease/global-recovery races, audit/invoice reconciliation,
 alerts, and rollback with the settlement gates default-off until approved. No
 remote request, credential, resource, migration, or deployment was used.
 Production remains **NO-GO**.
+
+### 22.199 2026-07-14 Realtime Ambiguous-Usage Quarantine
+
+Realtime settlement now treats upstream `response.done` usage as a financial
+boundary rather than optional metadata. The Worker accepts only a terminal
+`completed`, `cancelled`, `failed`, or `incomplete` response with a non-empty
+response identity and a well-formed, internally consistent non-negative usage
+object. A completed response with explicit zero usage, a missing/null/malformed
+usage object, an unknown status, a missing identity, or an ambiguous settlement
+result fails closed before the terminal frame reaches the client.
+
+Migration `0027_realtime_usage_reconciliation.sql` adds an explicit
+`usage_reconciliation` finalization owner, controlled reason code, required
+timestamp, and indexed operator queue. Once claimed, the reservation remains
+`reserved`: settlement, terminal refund, lease expiry, and global orphan
+recovery cannot mutate it. The admin-only no-store ledger contract v2 exposes
+only domain-separated SHA-256 reservation/bridge fingerprints, controlled
+state/reason metadata, and aggregate sweep state. The React/Bun Cloudflare
+operations panel is read-only and normalizes the response through an explicit
+field allowlist before rendering.
+
+Release Workerd proves an authenticated positive pre-reserve followed by mock
+`response.created` and `response.done` with `usage:null`. It requires the
+client error `billing_usage_reconciliation_required`, close code 1011, no
+forwarded terminal frame, retained pre-consumption, zero settlement replay or
+billing audit, and no refund after forcing the lease overdue and running the
+real scheduled recovery handler. The local schema baseline is now 27
+migrations, 30 tables, 130 checked incremental columns, and 24 key indexes.
+
+This increment deliberately does not provide an operator repair/charge/refund
+action. Promotion requires a rotated scoped credential, remote migration 0027
+with all Realtime write/recovery gates false, live missing/null/malformed/zero
+usage and disconnect/redeploy races, provider invoice correlation, alert and
+retention ownership, a separately approved reconciliation workflow, and
+disable-first rollback. Go/VPS remains authoritative and production remains
+**NO-GO**.

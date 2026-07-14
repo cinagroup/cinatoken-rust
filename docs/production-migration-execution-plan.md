@@ -330,7 +330,7 @@ Corrected production rules:
 | Gate | Name | Opens When | Required Evidence | Blocks |
 | --- | --- | --- | --- | --- |
 | G0 | Scope and inventory freeze | Go source, DB, routes, providers, env, and secrets are inventoried | Route matrix, table matrix, provider matrix, secret inventory without values | Any production deployment planning |
-| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0026, `/api/status`, generated binding types, logs visible | Live smoke and canary |
+| G1 | Cloudflare staging foundation | Staging Worker has authenticated, verified D1/KV/R2/Queue/DO/Upstash/provider bindings | Rotated credential evidence, `wrangler deploy --env staging`, remote migrations 0001-0027, `/api/status`, generated binding types, logs visible | Live smoke and canary |
 | G2 | Data dry run | D1 migrations cover production-critical tables and are applied to remote staging | Source counts/hashes, staging import report, verification report, rollback export; local 26/26 and 30-table replay are prerequisites only | Any data cutover |
 | G3 | Relay parity | P0 relay routes are implemented and live-smoked | G3 report from `docs/route-provider-parity-runbook.md`, non-stream smoke, SSE smoke, error mapping smoke, upstream ID capture | Any customer relay canary |
 | G4 | Billing parity | Billing expression and quota deltas match Go for production-shaped inputs | Golden fixtures, shadow settlement reports, delta threshold report | Paid traffic ownership |
@@ -1112,9 +1112,9 @@ enable HTTP recovery after stream-heartbeat proof alone.
 2. Freeze old and new Rust relay admission. Drain Queue/DLQ work and reconcile
    every HTTP billing row until `status='reserved'` is zero. Keep Go/VPS
    authoritative.
-3. Apply the exact migration set through 0026 in isolated staging. The 0026
-   guard must reject a nonzero active count. Verify 26 migrations, 30 tables,
-   126 checked incremental columns, 23 indexes, and exact-set capability state.
+3. Apply the exact migration set through 0027 in isolated staging. The 0026
+   guard must reject a nonzero active count. Verify 27 migrations, 30 tables,
+   130 checked incremental columns, 24 indexes, and exact-set capability state.
 4. Deploy with Queue, reconcile, orphan recovery, and staging-proof flags false.
    Explicitly configure the reservation deadline and heartbeat. Require owner
    generation compiled/schema/configured true and staging/cutover false.
@@ -1131,8 +1131,33 @@ enable HTTP recovery after stream-heartbeat proof alone.
 
 Rollback order is recovery off, reconcile off, Queue finalization off, new Rust
 admission off, traffic to Go/VPS, then ledger/Queue drain and reconciliation.
-Retain migration 0026 and the highest generation. No remote evidence is
+Retain migrations 0026-0027 and the highest generation/Realtime finalization
+owner. No remote evidence is
 currently archived, so production remains **NO-GO**.
+
+## 2026-07-14 Realtime Usage Reconciliation Rollout
+
+1. Keep Go/VPS authoritative. Rotate the exposed Cloudflare credential and use
+   a separate scoped deploy identity from the readback identity.
+2. Freeze new Realtime admission, drain or explicitly classify every active
+   reservation, and archive redacted counts by status/finalization owner.
+3. Apply 0027 with `REALTIME_SESSION_V1_ENABLED=false`, settlement writes false,
+   and global orphan recovery false. Require exact 27-file migration readback
+   and `realtime_session_usage_reconciliation_compiled=true`.
+4. Enable one isolated fixture. Replay valid completed/cancelled/failed/
+   incomplete usage plus missing identity, missing/null/malformed/negative/
+   inconsistent/completed-zero usage, D1 ambiguity, client disconnect, provider
+   disconnect, DO eviction, Worker redeploy, and scheduled-recovery races.
+5. For every ambiguous case require one retained pre-consumption, owner
+   `usage_reconciliation`, no terminal refund/settlement/replay/audit mutation,
+   no raw identity in API/UI/logs, an alert, and provider invoice correlation.
+6. Design and separately approve an operator resolution contract with fresh
+   step-up, immutable evidence, one financial CAS, audit, dual control, bounded
+   retention, replay rejection, and rollback. Quarantine rows must not be
+   mutated by ad hoc SQL or by the read-only frontend.
+7. Promote Realtime traffic only after zero unexplained rows, signed accounting
+   reconciliation, alert/retention ownership, load/cost evidence, disable-first
+   rollback rehearsal, and G1-G8 approval.
 
 ## 2026-07-14 QuotaCoordinator Shadow Rollout Order
 

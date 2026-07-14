@@ -23,6 +23,9 @@ pub(crate) const RELAY_BILLING_FINALIZATION_INCIDENT_MIGRATION: &str =
     "0025_relay_billing_finalization_incidents.sql";
 pub(crate) const RELAY_BILLING_OWNER_GENERATION_MIGRATION: &str =
     "0026_relay_billing_owner_generation.sql";
+pub(crate) const REALTIME_USAGE_RECONCILIATION_MIGRATION: &str =
+    "0027_realtime_usage_reconciliation.sql";
+pub(crate) const REALTIME_USAGE_RECONCILIATION_OWNER: &str = "usage_reconciliation";
 pub(crate) const RELAY_BILLING_ORPHAN_RECOVERY_GRACE_SECONDS: i64 = 300;
 const RELAY_BILLING_ORPHAN_SWEEP_MAX_LIMIT: i64 = 64;
 const RELAY_BILLING_ORPHAN_RETRY_INITIAL_SECONDS: i64 = 60;
@@ -367,6 +370,9 @@ pub struct RealtimeBillingReservation {
     pub created_at: i64,
     pub updated_at: i64,
     pub lease_expires_at: i64,
+    pub finalization_owner: String,
+    pub finalization_reason: String,
+    pub finalization_required_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,20 +396,33 @@ pub enum RealtimeBillingReservationRefundOutcome {
         reservation_sequence: i64,
         lease_expires_at: i64,
     },
+    RecoveryOwned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeBillingUsageRecoveryOutcome {
+    Applied,
+    MatchingOwner,
+    AlreadyFinalized,
+    NotFound,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RealtimeBillingExpiredLeaseCandidate {
     pub reservation_key: String,
+    pub session: String,
+    pub bridge_segment: String,
     pub reservation_sequence: i64,
     pub lease_expires_at: i64,
     pub recovery_attempt_count: i64,
+    pub upstream_response_id_hash: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RealtimeBillingOrphanSweepSummary {
     pub candidates: u32,
     pub refunded: u32,
+    pub recovery_required: u32,
     pub already_finalized: u32,
     pub lease_active: u32,
     pub not_found: u32,
@@ -425,6 +444,9 @@ pub struct RealtimeBillingLedgerStatusRow {
     pub recovery_attempt_count: i64,
     pub recovery_next_attempt_at: i64,
     pub recovery_last_attempt_at: i64,
+    pub finalization_owner: String,
+    pub finalization_reason: String,
+    pub finalization_required_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -434,6 +456,7 @@ pub struct RealtimeBillingRecoveryStateRow {
     pub last_success_at: i64,
     pub last_candidates: i64,
     pub last_refunded: i64,
+    pub last_recovery_required: i64,
     pub last_failed: i64,
     pub last_deferred: i64,
 }
@@ -2747,9 +2770,13 @@ pub async fn reserved_realtime_billing_for_segment(
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
-          final_quota, created_at, updated_at, lease_expires_at
+          final_quota, created_at, updated_at, lease_expires_at,
+          finalization_owner, finalization_reason, finalization_required_at
         FROM realtime_billing_reservations
-        WHERE session = ?1 AND bridge_segment = ?2 AND status = 'reserved'
+        WHERE session = ?1
+          AND bridge_segment = ?2
+          AND status = 'reserved'
+          AND finalization_owner = ''
         ORDER BY reservation_sequence ASC, reservation_key ASC
         "#,
     )
@@ -2785,7 +2812,8 @@ pub async fn realtime_billing_reservation_for_response(
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
-          final_quota, created_at, updated_at, lease_expires_at
+          final_quota, created_at, updated_at, lease_expires_at,
+          finalization_owner, finalization_reason, finalization_required_at
         FROM realtime_billing_reservations
         WHERE session = ?1 AND bridge_segment = ?2 AND upstream_response_id_hash = ?3
         LIMIT 1
@@ -2838,12 +2866,14 @@ pub async fn bind_realtime_response_to_reservation(
                 AND bridge_segment = ?2
                 AND status = 'reserved'
                 AND upstream_response_id_hash = ''
+                AND finalization_owner = ''
               ORDER BY reservation_sequence ASC, reservation_key ASC
               LIMIT 1
             )
               AND status = 'reserved'
               AND bridge_segment = ?2
               AND upstream_response_id_hash = ''
+              AND finalization_owner = ''
             "#,
         )
         .bind_refs(&args)?
@@ -2873,6 +2903,140 @@ pub async fn bind_realtime_response_to_reservation(
                 Err(err)
             }
         }
+    }
+}
+
+pub async fn mark_realtime_billing_usage_recovery_required(
+    db: &D1Database,
+    session: &str,
+    bridge_segment: &str,
+    upstream_response_id_hash: &str,
+    reason: &str,
+    required_at: i64,
+) -> worker::Result<RealtimeBillingUsageRecoveryOutcome> {
+    let session = non_empty_realtime_reservation_field(session, "session")?;
+    let bridge_segment = non_empty_realtime_reservation_field(bridge_segment, "bridge segment")?;
+    let upstream_response_id_hash = non_empty_realtime_reservation_field(
+        upstream_response_id_hash,
+        "upstream response identity hash",
+    )?;
+    let reason = realtime_usage_recovery_reason(reason)?;
+    let Some(current) = realtime_billing_reservation_for_response(
+        db,
+        session,
+        bridge_segment,
+        upstream_response_id_hash,
+    )
+    .await?
+    else {
+        return Ok(RealtimeBillingUsageRecoveryOutcome::NotFound);
+    };
+    if current.status != "reserved" {
+        return Ok(RealtimeBillingUsageRecoveryOutcome::AlreadyFinalized);
+    }
+    if current.finalization_owner == REALTIME_USAGE_RECONCILIATION_OWNER {
+        return Ok(RealtimeBillingUsageRecoveryOutcome::MatchingOwner);
+    }
+    if !current.finalization_owner.is_empty() {
+        return Ok(RealtimeBillingUsageRecoveryOutcome::AlreadyFinalized);
+    }
+    let args = [
+        D1Type::Text(session),
+        D1Type::Text(bridge_segment),
+        D1Type::Text(upstream_response_id_hash),
+        D1Type::Text(REALTIME_USAGE_RECONCILIATION_OWNER),
+        D1Type::Text(reason),
+        D1Type::Integer(d1_i32(required_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE realtime_billing_reservations
+            SET finalization_owner = ?4,
+                finalization_reason = ?5,
+                finalization_required_at = ?6,
+                updated_at = MAX(updated_at, ?6)
+            WHERE session = ?1
+              AND bridge_segment = ?2
+              AND upstream_response_id_hash = ?3
+              AND status = 'reserved'
+              AND finalization_owner = ''
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1 {
+        return Ok(RealtimeBillingUsageRecoveryOutcome::Applied);
+    }
+    match realtime_billing_reservation_for_response(
+        db,
+        session,
+        bridge_segment,
+        upstream_response_id_hash,
+    )
+    .await?
+    {
+        None => Ok(RealtimeBillingUsageRecoveryOutcome::NotFound),
+        Some(current) if current.status != "reserved" => {
+            Ok(RealtimeBillingUsageRecoveryOutcome::AlreadyFinalized)
+        }
+        Some(current) if current.finalization_owner == REALTIME_USAGE_RECONCILIATION_OWNER => {
+            Ok(RealtimeBillingUsageRecoveryOutcome::MatchingOwner)
+        }
+        Some(_) => Ok(RealtimeBillingUsageRecoveryOutcome::AlreadyFinalized),
+    }
+}
+
+pub async fn mark_realtime_billing_segment_usage_recovery_required(
+    db: &D1Database,
+    session: &str,
+    bridge_segment: &str,
+    reason: &str,
+    required_at: i64,
+) -> worker::Result<usize> {
+    let session = non_empty_realtime_reservation_field(session, "session")?;
+    let bridge_segment = non_empty_realtime_reservation_field(bridge_segment, "bridge segment")?;
+    let reason = realtime_usage_recovery_reason(reason)?;
+    let args = [
+        D1Type::Text(session),
+        D1Type::Text(bridge_segment),
+        D1Type::Text(REALTIME_USAGE_RECONCILIATION_OWNER),
+        D1Type::Text(reason),
+        D1Type::Integer(d1_i32(required_at)),
+    ];
+    let result = db
+        .prepare(
+            r#"
+            UPDATE realtime_billing_reservations
+            SET finalization_owner = ?3,
+                finalization_reason = ?4,
+                finalization_required_at = ?5,
+                updated_at = MAX(updated_at, ?5)
+            WHERE session = ?1
+              AND bridge_segment = ?2
+              AND status = 'reserved'
+              AND finalization_owner = ''
+            "#,
+        )
+        .bind_refs(&args)?
+        .run()
+        .await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0))
+}
+
+fn realtime_usage_recovery_reason(value: &str) -> worker::Result<&str> {
+    match value.trim() {
+        "response_created_identity_missing"
+        | "response_done_identity_missing"
+        | "response_usage_missing"
+        | "response_usage_null"
+        | "response_usage_invalid"
+        | "response_usage_zero"
+        | "settlement_result_ambiguous" => Ok(value.trim()),
+        _ => Err(worker::Error::RustError(
+            "invalid realtime usage reconciliation reason".to_string(),
+        )),
     }
 }
 
@@ -2933,10 +3097,11 @@ pub async fn expired_realtime_billing_reservations(
     ];
     db.prepare(
         r#"
-        SELECT reservation_key, reservation_sequence, lease_expires_at,
-               recovery_attempt_count
+        SELECT reservation_key, session, bridge_segment, reservation_sequence,
+               lease_expires_at, recovery_attempt_count, upstream_response_id_hash
         FROM realtime_billing_reservations
         WHERE status = 'reserved'
+          AND finalization_owner = ''
           AND lease_expires_at > 0
           AND lease_expires_at < ?1
           AND recovery_next_attempt_at <= ?2
@@ -2953,13 +3118,16 @@ pub async fn expired_realtime_billing_reservations(
 pub async fn realtime_billing_global_recovery_schema_ready(
     db: &D1Database,
 ) -> worker::Result<bool> {
-    let args = [D1Type::Text(REALTIME_BILLING_GLOBAL_RECOVERY_MIGRATION)];
+    let args = [
+        D1Type::Text(REALTIME_BILLING_GLOBAL_RECOVERY_MIGRATION),
+        D1Type::Text(REALTIME_USAGE_RECONCILIATION_MIGRATION),
+    ];
     let row = db
-        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name = ?1")
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name IN (?1, ?2)")
         .bind_refs(&args)?
         .first::<CountRow>(None)
         .await?;
-    Ok(row.map(|row| row.count == 1).unwrap_or(false))
+    Ok(row.map(|row| row.count == 2).unwrap_or(false))
 }
 
 pub async fn sweep_expired_realtime_billing_reservations(
@@ -2973,6 +3141,40 @@ pub async fn sweep_expired_realtime_billing_reservations(
         ..RealtimeBillingOrphanSweepSummary::default()
     };
     for candidate in candidates {
+        if !candidate.upstream_response_id_hash.is_empty() {
+            match mark_realtime_billing_usage_recovery_required(
+                db,
+                &candidate.session,
+                &candidate.bridge_segment,
+                &candidate.upstream_response_id_hash,
+                "settlement_result_ambiguous",
+                now,
+            )
+            .await
+            {
+                Ok(RealtimeBillingUsageRecoveryOutcome::Applied)
+                | Ok(RealtimeBillingUsageRecoveryOutcome::MatchingOwner) => {
+                    summary.recovery_required = summary.recovery_required.saturating_add(1);
+                }
+                Ok(RealtimeBillingUsageRecoveryOutcome::AlreadyFinalized) => {
+                    summary.already_finalized = summary.already_finalized.saturating_add(1);
+                }
+                Ok(RealtimeBillingUsageRecoveryOutcome::NotFound) => {
+                    summary.not_found = summary.not_found.saturating_add(1);
+                }
+                Err(_) => {
+                    summary.failed = summary.failed.saturating_add(1);
+                    match defer_realtime_billing_orphan_recovery(db, &candidate, now).await {
+                        Ok(true) => summary.deferred = summary.deferred.saturating_add(1),
+                        Ok(false) => {}
+                        Err(_) => worker::console_error!(
+                            "realtime billing orphan sweep: bound retry deferral failed"
+                        ),
+                    }
+                }
+            }
+            continue;
+        }
         match refund_expired_realtime_billing_reservation(
             db,
             &candidate.reservation_key,
@@ -2986,6 +3188,9 @@ pub async fn sweep_expired_realtime_billing_reservations(
                 summary.refunded = summary.refunded.saturating_add(1);
             }
             Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized) => {
+                summary.already_finalized = summary.already_finalized.saturating_add(1);
+            }
+            Ok(RealtimeBillingReservationRefundOutcome::RecoveryOwned) => {
                 summary.already_finalized = summary.already_finalized.saturating_add(1);
             }
             Ok(RealtimeBillingReservationRefundOutcome::LeaseActive { .. }) => {
@@ -3035,6 +3240,7 @@ async fn defer_realtime_billing_orphan_recovery(
                 updated_at = MAX(updated_at, ?4)
             WHERE reservation_key = ?1
               AND status = 'reserved'
+              AND finalization_owner = ''
               AND reservation_sequence = ?2
               AND lease_expires_at = ?3
             "#,
@@ -3077,6 +3283,7 @@ pub async fn mark_realtime_billing_recovery_completed(
         D1Type::Integer(d1_i32(successful_at)),
         D1Type::Integer(d1_i32(i64::from(summary.candidates))),
         D1Type::Integer(d1_i32(i64::from(summary.refunded))),
+        D1Type::Integer(d1_i32(i64::from(summary.recovery_required))),
         D1Type::Integer(d1_i32(i64::from(summary.failed))),
         D1Type::Integer(d1_i32(i64::from(summary.deferred))),
     ];
@@ -3087,8 +3294,9 @@ pub async fn mark_realtime_billing_recovery_completed(
             last_success_at = CASE WHEN ?2 > 0 THEN ?2 ELSE last_success_at END,
             last_candidates = ?3,
             last_refunded = ?4,
-            last_failed = ?5,
-            last_deferred = ?6,
+            last_recovery_required = ?5,
+            last_failed = ?6,
+            last_deferred = ?7,
             updated_at = ?1
         WHERE id = 1
         "#,
@@ -3105,7 +3313,8 @@ pub async fn realtime_billing_recovery_state(
     db.prepare(
         r#"
         SELECT last_started_at, last_completed_at, last_success_at,
-               last_candidates, last_refunded, last_failed, last_deferred
+               last_candidates, last_refunded, last_recovery_required,
+               last_failed, last_deferred
         FROM realtime_billing_recovery_state
         WHERE id = 1
         "#,
@@ -3124,7 +3333,8 @@ pub async fn recent_realtime_billing_ledger_status(
         SELECT
           reservation_key, session, bridge_segment, status,
           reservation_sequence, lease_expires_at, updated_at, settled_at, refunded_at,
-          recovery_attempt_count, recovery_next_attempt_at, recovery_last_attempt_at
+          recovery_attempt_count, recovery_next_attempt_at, recovery_last_attempt_at,
+          finalization_owner, finalization_reason, finalization_required_at
         FROM realtime_billing_reservations
         ORDER BY updated_at DESC, reservation_sequence DESC, reservation_key ASC
         LIMIT ?1
@@ -3200,6 +3410,9 @@ async fn refund_realtime_billing_reservation_inner(
     if record.status != "reserved" {
         return Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized);
     }
+    if !record.finalization_owner.is_empty() {
+        return Ok(RealtimeBillingReservationRefundOutcome::RecoveryOwned);
+    }
     if let Some((reservation_sequence, lease_expires_at)) = expected_lease {
         if record.reservation_sequence != reservation_sequence
             || record.lease_expires_at != lease_expires_at
@@ -3243,6 +3456,7 @@ async fn refund_realtime_billing_reservation_inner(
                 refunded_at = ?2
             WHERE reservation_key = ?1
               AND status = 'reserved'
+              AND finalization_owner = ''
               AND (
                 ?4 = 0 OR (
                   reservation_sequence = ?4
@@ -3301,6 +3515,9 @@ async fn refund_realtime_billing_reservation_inner(
                 Some(current) if current.status != "reserved" => {
                     Ok(RealtimeBillingReservationRefundOutcome::AlreadyFinalized)
                 }
+                Some(current) if !current.finalization_owner.is_empty() => {
+                    Ok(RealtimeBillingReservationRefundOutcome::RecoveryOwned)
+                }
                 Some(current)
                     if expected_lease.is_some_and(
                         |(reservation_sequence, lease_expires_at)| {
@@ -3343,7 +3560,8 @@ async fn realtime_billing_reservation(
           pre_consumed_quota, snapshot_json, request_json,
           username, token_name, client_ip, request_id, started_at,
           endpoint_path, status, upstream_response_id_hash, replay_key,
-          final_quota, created_at, updated_at, lease_expires_at
+          final_quota, created_at, updated_at, lease_expires_at,
+          finalization_owner, finalization_reason, finalization_required_at
         FROM realtime_billing_reservations
         WHERE reservation_key = ?1
         LIMIT 1
@@ -3481,10 +3699,14 @@ async fn apply_realtime_settlement_batch_inner(
                     token_name = '',
                     client_ip = '',
                     request_id = '',
+                    finalization_owner = '',
+                    finalization_reason = '',
+                    finalization_required_at = 0,
                     updated_at = ?5,
                     settled_at = ?5
                 WHERE reservation_key = ?1
                   AND status = 'reserved'
+                  AND finalization_owner = ''
                   AND (upstream_response_id_hash = '' OR upstream_response_id_hash = ?2)
                   AND lease_expires_at > 0
                   AND ?5 <= lease_expires_at + ?6
@@ -11874,6 +12096,8 @@ mod tests {
             include_str!("../../../migrations/d1/0021_realtime_billing_bridge_segments.sql");
         let recovery_migration =
             include_str!("../../../migrations/d1/0022_realtime_billing_global_recovery.sql");
+        let usage_reconciliation_migration =
+            include_str!("../../../migrations/d1/0027_realtime_usage_reconciliation.sql");
         assert!(migration.contains("CREATE TABLE IF NOT EXISTS realtime_billing_reservations"));
         assert!(migration.contains("CHECK (status IN ('reserved', 'settled', 'refunded'))"));
         assert!(migration.contains("reservation_sequence"));
@@ -11903,6 +12127,20 @@ mod tests {
         assert!(recovery_migration.contains("ADD COLUMN recovery_next_attempt_at"));
         assert!(recovery_migration
             .contains("CREATE TABLE IF NOT EXISTS realtime_billing_recovery_state"));
+        for field in [
+            "finalization_owner",
+            "finalization_reason",
+            "finalization_required_at",
+            "last_recovery_required",
+        ] {
+            assert!(
+                usage_reconciliation_migration.contains(field),
+                "missing realtime usage reconciliation field {field}"
+            );
+        }
+        assert!(usage_reconciliation_migration
+            .contains("idx_realtime_billing_reservations_finalization_owner"));
+        assert!(usage_reconciliation_migration.contains("usage_reconciliation"));
     }
 
     fn relay_billing_test_reservation(status: &str) -> RelayBillingReservation {

@@ -442,8 +442,8 @@ the CAS: settlement is legal through L+300 and recovery starts at L+301. Queue
 schema v2 freezes owner generation; v1 is generation-1 drain compatibility.
 Migration 0026 refuses to run while an old `reserved` row exists.
 
-The local chain verifies as 26 migrations, 30 tables, 126 checked incremental
-columns, and 23 indexes. Rust, Wasm, frontend, and capability tests distinguish
+The local chain verifies as 27 migrations, 30 tables, 130 checked incremental
+columns, and 24 indexes. Rust, Wasm, frontend, and capability tests distinguish
 compiled, configured, staging proof, and cutover. Staging proof remains false,
 so scheduled HTTP recovery and production cutover remain false.
 
@@ -451,6 +451,26 @@ Credential rotation, isolated remote migration, delayed-header and D1 ambiguity
 fault replay, Queue v2 drain, direct/Gateway/WFP accounting, alerting, rollback,
 and G1-G8 approval remain required. Go/VPS stays authoritative and production
 remains **NO-GO**.
+
+## 2026-07-14 Realtime Usage Reconciliation Status
+
+Migration 0027 adds explicit finalization ownership for a Realtime reservation
+whose provider identity, terminal usage, or settlement result cannot be safely
+interpreted. The owner is a CAS state, not a label: settlement, terminal refund,
+lease refund, and global orphan recovery all exclude an owned row. A completed
+zero-usage response is ambiguous; explicit zero usage for cancelled, failed, or
+incomplete terminal states remains a valid settlement input.
+
+Local release Workerd now proves the null-usage path from authenticated public
+upgrade through provider WebSocket frames, D1 pre-reserve, safe client error and
+1011 close, retained quota, zero replay/audit, and forced-overdue scheduled
+recovery. Capability reporting and the React/Bun admin panel expose only
+allowlisted, hashed, read-only state.
+
+No operator resolution action exists. Remote migration, provider invoice
+correlation, missing/malformed/zero/D1/disconnect/redeploy race coverage,
+alerts, retention, dual-control repair design, rollback, and G1-G8 approval
+remain open. Go/VPS stays authoritative and production remains **NO-GO**.
 
 ## 2026-07-13 Ordinary Relay Billing Reservation Status
 

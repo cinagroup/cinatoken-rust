@@ -58,8 +58,9 @@ use crate::realtime_session::{
     realtime_upstream_bridge_send_failure_guard_compiled,
     realtime_upstream_channel_planner_compiled, realtime_upstream_connect_handoff_compiled,
     realtime_upstream_fetch_upgrade_adapter_compiled, realtime_upstream_usage_capture_compiled,
-    REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV, REALTIME_SESSION_CUTOVER_GUARDS,
-    REALTIME_SESSION_GATEWAY_ENABLED_ENV, REALTIME_SESSION_V1_ENABLED_ENV,
+    realtime_usage_reconciliation_compiled, REALTIME_BILLING_SETTLEMENT_WRITE_ENABLED_ENV,
+    REALTIME_SESSION_CUTOVER_GUARDS, REALTIME_SESSION_GATEWAY_ENABLED_ENV,
+    REALTIME_SESSION_V1_ENABLED_ENV,
 };
 use crate::relay::{
     relay_actual_serving_group_billing_contract_compiled,
@@ -149,7 +150,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0026_relay_billing_owner_generation.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0027_realtime_usage_reconciliation.sql";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
     "migration_0026_applied",
     "legacy_workers_drained",
@@ -187,6 +188,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0024_relay_billing_finalization_events.sql",
     "0025_relay_billing_finalization_incidents.sql",
     "0026_relay_billing_owner_generation.sql",
+    "0027_realtime_usage_reconciliation.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -438,6 +440,7 @@ struct PlatformCapabilities {
     realtime_session_billing_orphan_recovery_grace_seconds: i64,
     realtime_session_billing_orphan_sweep_limit: i64,
     realtime_session_billing_ledger_status_compiled: bool,
+    realtime_session_usage_reconciliation_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_compiled: bool,
     realtime_session_billing_settlement_staging_smoke_enabled: bool,
     realtime_session_billing_settlement_staging_smoke_ready: bool,
@@ -548,6 +551,7 @@ struct RealtimeBillingGlobalSweepStatus {
     last_success_at: Option<i64>,
     last_candidates: i64,
     last_refunded: i64,
+    last_recovery_required: i64,
     last_failed: i64,
     last_deferred: i64,
 }
@@ -568,6 +572,9 @@ struct RealtimeBillingLedgerStatusMetadata {
     recovery_next_attempt_at: Option<i64>,
     recovery_last_attempt_at: Option<i64>,
     recovery_state: RealtimeBillingRecoveryState,
+    requires_reconciliation: bool,
+    finalization_reason: Option<String>,
+    finalization_required_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -576,6 +583,7 @@ enum RealtimeBillingLedgerOutcome {
     Reserved,
     Settled,
     Refunded,
+    RecoveryRequired,
     Unknown,
 }
 
@@ -585,6 +593,7 @@ enum RealtimeBillingRecoveryState {
     SettlementGrace,
     RecoveryDue,
     RetryBackoff,
+    ManualReconciliation,
     Terminal,
     Unknown,
 }
@@ -925,6 +934,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_billing_orphan_recovery_grace_seconds();
     let realtime_session_billing_orphan_sweep_limit = realtime_billing_orphan_sweep_limit(&env);
     let realtime_session_billing_ledger_status_compiled = true;
+    let realtime_session_usage_reconciliation_compiled = realtime_usage_reconciliation_compiled();
     let realtime_session_billing_settlement_staging_smoke_compiled =
         realtime_settlement_staging_smoke_compiled();
     let realtime_session_billing_settlement_staging_smoke_enabled =
@@ -1198,6 +1208,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         realtime_session_billing_orphan_recovery_grace_seconds,
         realtime_session_billing_orphan_sweep_limit,
         realtime_session_billing_ledger_status_compiled,
+        realtime_session_usage_reconciliation_compiled,
         realtime_session_billing_settlement_staging_smoke_compiled,
         realtime_session_billing_settlement_staging_smoke_enabled,
         realtime_session_billing_settlement_staging_smoke_ready,
@@ -1415,7 +1426,7 @@ pub async fn realtime_billing_ledger_status(req: Request, env: Env) -> WorkerRes
         }
     };
     let status = RealtimeBillingLedgerStatus {
-        contract_version: 1,
+        contract_version: 2,
         count: records.len(),
         global_sweep,
         records,
@@ -1438,7 +1449,7 @@ fn realtime_billing_ledger_status_metadata(
         ),
         scope_kind: "realtime_bridge_segment",
         scope_fingerprint: realtime_recovery_fingerprint("bridge-scope-v1", &owner_seed),
-        outcome: realtime_billing_ledger_outcome(&row.status),
+        outcome: realtime_billing_ledger_outcome(&row.status, &row.finalization_owner),
         terminal: matches!(row.status.as_str(), "settled" | "refunded"),
         reservation_sequence: row.reservation_sequence,
         lease_expires_at: row.lease_expires_at,
@@ -1451,6 +1462,12 @@ fn realtime_billing_ledger_status_metadata(
         recovery_last_attempt_at: (row.recovery_last_attempt_at > 0)
             .then_some(row.recovery_last_attempt_at),
         recovery_state,
+        requires_reconciliation: row.finalization_owner
+            == crate::d1_repositories::REALTIME_USAGE_RECONCILIATION_OWNER,
+        finalization_reason: (!row.finalization_reason.is_empty())
+            .then_some(row.finalization_reason),
+        finalization_required_at: (row.finalization_required_at > 0)
+            .then_some(row.finalization_required_at),
     }
 }
 
@@ -1463,6 +1480,7 @@ fn realtime_billing_global_sweep_status(
         last_success_at: (row.last_success_at > 0).then_some(row.last_success_at),
         last_candidates: row.last_candidates,
         last_refunded: row.last_refunded,
+        last_recovery_required: row.last_recovery_required,
         last_failed: row.last_failed,
         last_deferred: row.last_deferred,
     }
@@ -1472,6 +1490,9 @@ fn realtime_billing_recovery_state(
     row: &crate::d1_repositories::RealtimeBillingLedgerStatusRow,
     now: i64,
 ) -> RealtimeBillingRecoveryState {
+    if row.finalization_owner == crate::d1_repositories::REALTIME_USAGE_RECONCILIATION_OWNER {
+        return RealtimeBillingRecoveryState::ManualReconciliation;
+    }
     match row.status.as_str() {
         "settled" | "refunded" => RealtimeBillingRecoveryState::Terminal,
         "reserved"
@@ -1490,7 +1511,13 @@ fn realtime_billing_recovery_state(
     }
 }
 
-fn realtime_billing_ledger_outcome(status: &str) -> RealtimeBillingLedgerOutcome {
+fn realtime_billing_ledger_outcome(
+    status: &str,
+    finalization_owner: &str,
+) -> RealtimeBillingLedgerOutcome {
+    if finalization_owner == crate::d1_repositories::REALTIME_USAGE_RECONCILIATION_OWNER {
+        return RealtimeBillingLedgerOutcome::RecoveryRequired;
+    }
     match status {
         "reserved" => RealtimeBillingLedgerOutcome::Reserved,
         "settled" => RealtimeBillingLedgerOutcome::Settled,
@@ -3883,7 +3910,7 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0026_relay_billing_owner_generation.sql"
+            "0027_realtime_usage_reconciliation.sql"
         );
         assert!(
             include_str!("../../../migrations/d1/0018_realtime_settlement_replays.sql")
@@ -3924,6 +3951,11 @@ mod tests {
             include_str!("../../../migrations/d1/0026_relay_billing_owner_generation.sql");
         assert!(relay_owner_generation.contains("CHECK (active_count = 0)"));
         assert!(relay_owner_generation.contains("ADD COLUMN owner_generation"));
+        let realtime_usage_reconciliation =
+            include_str!("../../../migrations/d1/0027_realtime_usage_reconciliation.sql");
+        assert!(realtime_usage_reconciliation.contains("finalization_owner"));
+        assert!(realtime_usage_reconciliation.contains("usage_reconciliation"));
+        assert!(realtime_usage_reconciliation.contains("last_recovery_required"));
     }
 
     #[test]
@@ -3991,6 +4023,9 @@ mod tests {
                 recovery_attempt_count: 2,
                 recovery_next_attempt_at: 0,
                 recovery_last_attempt_at: 899,
+                finalization_owner: String::new(),
+                finalization_reason: String::new(),
+                finalization_required_at: 0,
             },
             901,
         );
@@ -4012,7 +4047,7 @@ mod tests {
             RealtimeBillingRecoveryState::Terminal
         );
         assert_eq!(
-            realtime_billing_ledger_outcome("unexpected"),
+            realtime_billing_ledger_outcome("unexpected", ""),
             RealtimeBillingLedgerOutcome::Unknown
         );
     }

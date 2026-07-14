@@ -25,6 +25,7 @@ const realtimeBillingExpression =
   'tier("mock_realtime", p * 2 + c * 8 + ai * 3 + ao * 12)';
 const expectedResponseDoneUsage = {
   source_event: "response.done",
+  response_status: "completed",
   prompt_tokens: 1200,
   completion_tokens: 350,
   total_tokens: 1550,
@@ -36,6 +37,7 @@ const responseDoneUsageFrame = JSON.stringify({
   type: "response.done",
   response: {
     id: mockResponseId,
+    status: expectedResponseDoneUsage.response_status,
     usage: {
       input_tokens: expectedResponseDoneUsage.prompt_tokens,
       output_tokens: expectedResponseDoneUsage.completion_tokens,
@@ -837,6 +839,11 @@ function validateUsageFrame(frame, expected, label) {
   }
   if (frame.type !== expected.source_event) {
     throw new Error(`${label} type=${frame.type}, expected ${expected.source_event}`);
+  }
+  if (frame.response?.status !== expected.response_status) {
+    throw new Error(
+      `${label} response.status=${frame.response?.status}, expected ${expected.response_status}`,
+    );
   }
   const usage = frame.response?.usage;
   if (!usage || typeof usage !== "object") {
@@ -1646,6 +1653,7 @@ function summarizeUsageMetadata(usage) {
   if (!usage) return null;
   return {
     sourceEvent: usage.source_event,
+    responseStatus: usage.response_status,
     promptTokens: usage.prompt_tokens,
     completionTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,

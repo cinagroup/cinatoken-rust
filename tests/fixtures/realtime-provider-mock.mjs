@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 const providerName = "realtime-provider";
 const relayStreamSafetyTimeoutMs = 20_000;
+const realtimeUsageNullModel = "gpt-runtime-realtime-usage-null";
 
 export class MockRealtimeProvider extends DurableObject {
   async fetch(request) {
@@ -93,11 +94,39 @@ export class MockRealtimeProvider extends DurableObject {
       method: request.method,
       path: url.pathname,
       authorizationPresent: request.headers.has("authorization"),
+      realtimeModel: url.searchParams.get("model"),
     };
     await this.ctx.storage.put("state", state);
 
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
+    if (url.searchParams.get("model") === realtimeUsageNullModel) {
+      let emitted = false;
+      server.addEventListener("message", (event) => {
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (emitted || message?.type !== "response.create") return;
+        emitted = true;
+        const responseId = "resp_runtime_usage_null";
+        server.send(
+          JSON.stringify({
+            type: "response.created",
+            response: { id: responseId, status: "in_progress" },
+          }),
+        );
+        server.send(
+          JSON.stringify({
+            type: "response.done",
+            response: { id: responseId, status: "completed", usage: null },
+          }),
+        );
+      });
+      return new Response(null, { status: 101, webSocket: client });
+    }
     this.ctx.waitUntil(
       new Promise((resolve) => {
         setTimeout(() => {

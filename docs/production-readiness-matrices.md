@@ -542,7 +542,7 @@ engine contract and 56-test golden gap map is
 | Streaming usage reconciliation | Partial | Live SSE smoke with final usage and refund-on-missing-usage behavior. Final-chunk/audio-second-to-last extraction, `ValidUsage` gate, missing-usage estimate fallback, and stream_options matrix specified in `docs/source-usage-parsing-parity.md`. |
 | Non-stream usage reconciliation | Partial | Live JSON smoke for each first-canary provider. Usage parse + `ValidUsage`/estimate fallback per `docs/source-usage-parsing-parity.md`. |
 | Reserve/refund/additional settlement | Partial: local Realtime Worker-binding smoke passed 6/6 scenarios with zero-row cleanup after the route-precedence fix | Repeat all six through deployed staging D1; archive applied/duplicate/rollback/audit/no-double-charge evidence before G7. |
-| Non-tiered billing | Partial (implemented) | Implemented + wired (`crates/billing/src/flat.rs` -> `relay.rs:3200`). Remaining gaps: hardcoded completion-ratio table (defaults to 1.0), cache 5m/1h split, sub-category subtraction, tool surcharge, OtherRatios, `37.5` model-ratio default. See `docs/source-pricing-ratio-parity.md`. |
+| Non-tiered billing | Partial (implemented, schema-v3 frozen contract) | Decimal token/fixed arithmetic, cache/media sub-categories, request `OtherRatios`, Gemini input audio, DALL-E request pricing, unset-model admission, and bounded Responses/Claude tool surcharges are wired. Remaining gaps: OpenRouter cache-write inference, TTS audio-detail settlement, provider actual-image/count replacements, free-model policy, immutable Go manifest, and deployed reconciliation. See `docs/source-pricing-ratio-parity.md`. |
 | Subscription/pre-consume records | Planned | Schema, import, idempotency, replay tests. |
 | Payment balance mutations | Planned | Webhook signature validation, idempotent event storage, double-credit prevention. |
 | Shadow billing report | Planned | Production-shaped request sample with agreed delta threshold. |
@@ -637,7 +637,7 @@ reconcile, replay staging proof, D1 migration, and recovery admission all agree.
 | Terminal arithmetic | Exact decimal intermediates and half-away-from-zero final rounding pass Rust/Go boundary fixtures | Generate and sign an immutable Go flat manifest over production-shaped provider formulas |
 | Frozen contract | Migrations 0029-0030 require a snapshot/digest and reject later identity, snapshot, strategy, pre-consume, or quota-contract mutation | Apply 0030 remotely with write gates false, run negative D1 mutation probes, backup/rollback, and ledger reconciliation |
 | Runtime | Release main/tenant/outbound Rust/Wasm suite passes Workerd 38/38 | Local Workerd is E3 only; authenticate staging resources and complete Queue/DLQ, abort/idle, invoice, tracing, load, and rollback drills |
-| Cutover | `relay_flat_billing_go_parity_ready` is hard false | Remains NO-GO until audio/image/tool/provider multiplier and usage-source parity, Go manifest, G1-G8, and credential rotation are complete |
+| Cutover | `relay_flat_billing_go_parity_ready` is hard false | Remains NO-GO until OpenRouter/audio/provider actual-count and usage-source parity, the Go manifest, remote Queue/D1/provider evidence, G1-G8, and credential rotation are complete |
 
 ## HTTP Pre-Bind Owner Generation Gate (2026-07-14)
 

@@ -182,10 +182,12 @@ gaps vs Go (the actual remaining work):
   prompt base and re-adds them at `cacheRatio`/`cacheCreationRatio`/
   `imageRatio`; Anthropic usage keeps the no-subtract semantic, uses the generic
   create-cache ratio for unbucketed tokens, and uses dedicated ratios only for
-  explicit 5m/1h buckets. Still pending: Gemini separate audio-input pricing
-  (`GetGeminiInputAudioPricePerMillionTokens`), `OtherRatios` (image `n`
-  multiplier), and `ToolCallSurcharge` (web/file search, image-gen call) — all
-  niche additive adjustments.
+  explicit 5m/1h buckets. Gemini separate input-audio pricing and request-time
+  `OtherRatios` are frozen in schema v2. Schema v3 additionally freezes
+  `tool_price_setting.prices` and charges bounded Responses/Claude web search,
+  Responses file search, and one GPT Image 1 generation call before applying
+  `OtherRatios` and one final decimal round. Remaining formula gaps are listed
+  below.
 
 Remaining checklist:
 
@@ -197,11 +199,12 @@ Remaining checklist:
 3. Pricing option maps are loaded from D1 and participate in the existing
    token/channel read-through lifecycle. Keep mutation invalidation and cache
    schema versioning covered whenever another admission field is added.
-4. Per-token settlement arithmetic with the full sub-category ratio set — DONE
-   2026-06-26 in `flat.rs::compute_flat_quota` (cache-read/cache-write/image at
-   their own ratios, base subtraction for non-Anthropic, 5m/1h split for
-   Anthropic). Still pending: the `OtherRatios` multiplier and
-   `ToolCallSurcharge` additive adjustments (niche).
+4. Per-token settlement arithmetic with the full sub-category ratio set,
+   request-time `OtherRatios`, and bounded flat tool surcharges — DONE locally.
+   Mutable tool prices are request-frozen and response facts are capped; audit
+   metadata records the selected facts and prices. Still pending: OpenRouter
+   cost-based cache-write inference, TTS audio-detail arithmetic, provider
+   actual-image/count replacements, and tiered-path tool-surcharge parity.
 5. Implement the free-model rule and `EnableFreeModelPreConsume`.
 6. Add an immutable Go-generated flat manifest covering per-call, per-token,
    every sub-category, site/user unknown-model admission, free models, and group

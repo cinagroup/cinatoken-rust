@@ -52,10 +52,9 @@
 //!   each sub-category (cache-read, cache-write, image) at its own ratio,
 //!   subtracting them from the prompt base for non-Anthropic usage.
 //!
-//! ## Not implemented here (deferred)
-//!
-//! - `OtherRatios` (image `n` multiplier) and `ToolCallSurcharge` (web/file
-//!   search, image-generation call) additive quota adjustments.
+//! Tool-call prices are loaded from `tool_price_setting.prices`. Operator
+//! entries override the Go defaults and model-prefix overrides use longest
+//! prefix matching.
 
 use std::collections::HashMap;
 
@@ -84,6 +83,9 @@ pub struct PricingConfig {
     pub image_ratios: HashMap<String, f64>,
     pub audio_ratios: HashMap<String, f64>,
     pub audio_completion_ratios: HashMap<String, f64>,
+    /// Tool prices in USD per 1K calls. Keys use Go's
+    /// `tool_name[:model_prefix*]` format.
+    pub tool_prices: HashMap<String, f64>,
     /// True when Go would admit an unset model through site self-use or the
     /// user's `AcceptUnsetRatioModel`. An admitted unset model uses ratio 37.5.
     pub self_use_mode: bool,
@@ -183,6 +185,57 @@ impl PricingConfig {
             self.audio_completion_ratios = parse_ratio_map(json);
         }
         self
+    }
+
+    /// Parse `tool_price_setting.prices`. Go merges this operator map over its
+    /// hardcoded defaults, so an empty map does not disable the defaults.
+    pub fn with_tool_prices(mut self, tool_price_json: Option<&str>) -> Self {
+        if let Some(json) = tool_price_json {
+            self.tool_prices = parse_ratio_map(json);
+        }
+        self
+    }
+
+    /// Resolve a tool price in USD per 1K calls using Go's precedence:
+    /// longest matching model prefix, tool default, hardcoded fallback, zero.
+    pub fn tool_price_for_model(&self, tool_name: &str, model: &str) -> f64 {
+        let prefix = format!("{tool_name}:");
+        let operator_prefix = self
+            .tool_prices
+            .iter()
+            .filter_map(|(key, price)| {
+                let model_prefix = key.strip_prefix(&prefix)?;
+                let model_prefix = model_prefix.strip_suffix('*').unwrap_or(model_prefix);
+                model
+                    .starts_with(model_prefix)
+                    .then_some((model_prefix.len(), *price))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, price)| price);
+        if let Some(price) = operator_prefix {
+            return price;
+        }
+        if let Some(price) = self.tool_prices.get(tool_name) {
+            return *price;
+        }
+
+        let default_prefix = match tool_name {
+            "web_search_preview"
+                if model.starts_with("gpt-4o")
+                    || model.starts_with("gpt-4.1")
+                    || model.starts_with("gpt-4o-mini")
+                    || model.starts_with("gpt-4.1-mini") =>
+            {
+                Some(25.0)
+            }
+            _ => None,
+        };
+        default_prefix.unwrap_or(match tool_name {
+            "web_search" | "web_search_preview" => 10.0,
+            "file_search" => 2.5,
+            "google_search" => 14.0,
+            _ => 0.0,
+        })
     }
 
     /// Per-token prompt ratio for a model. Ports Go `GetModelRatio` precedence
@@ -834,5 +887,46 @@ mod tests {
             config.audio_input_price_per_million("gpt-4o-audio-preview"),
             0.0
         );
+    }
+
+    #[test]
+    fn tool_prices_use_go_defaults_and_longest_operator_prefix() {
+        let defaults = PricingConfig::new();
+        assert_eq!(
+            defaults.tool_price_for_model("web_search_preview", "gpt-4o-mini"),
+            25.0
+        );
+        assert_eq!(
+            defaults.tool_price_for_model("web_search_preview", "o3-mini"),
+            10.0
+        );
+        assert_eq!(defaults.tool_price_for_model("file_search", "any"), 2.5);
+
+        let configured = PricingConfig::new().with_tool_prices(Some(
+            r#"{
+                "web_search_preview": 12,
+                "web_search_preview:gpt-*": 30,
+                "web_search_preview:gpt-4o*": 40,
+                "web_search_preview:legacy-": 35,
+                "file_search": 3
+            }"#,
+        ));
+        assert_eq!(
+            configured.tool_price_for_model("web_search_preview", "gpt-4o-mini"),
+            40.0
+        );
+        assert_eq!(
+            configured.tool_price_for_model("web_search_preview", "gpt-5"),
+            30.0
+        );
+        assert_eq!(
+            configured.tool_price_for_model("web_search_preview", "o3-mini"),
+            12.0
+        );
+        assert_eq!(
+            configured.tool_price_for_model("web_search_preview", "legacy-model"),
+            35.0
+        );
+        assert_eq!(configured.tool_price_for_model("file_search", "any"), 3.0);
     }
 }

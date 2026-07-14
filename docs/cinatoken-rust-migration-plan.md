@@ -12387,3 +12387,48 @@ migration/readback, Queue/DLQ/provider-invoice proof, abort/idle replay,
 credential rotation, rollback, and signed G1-G8 approval remain mandatory.
 `relay_flat_billing_go_parity_ready` stays hard false, Go/VPS remains
 authoritative, and production remains **NO-GO**.
+
+### 22.206 2026-07-14 Frozen Flat Tool Surcharge Contract V3
+
+This increment supersedes the open Responses/Claude tool-surcharge and
+Zhipu/llama/Gemini stream-normalization items in 22.205. It does not alter the
+tiered expression contract reviewed in `pkg/billingexpr/expr.md`.
+
+Implemented and verified locally:
+
+- `FlatPricingSnapshot` schema v3 durably freezes resolved preview web search,
+  current web search, file search, and all nine GPT Image 1 call prices. The
+  contract digest is now `flat-v3:<sha256>` and the D1 repository rejects any
+  other flat prefix or payload mismatch.
+- `tool_price_setting.prices` follows Go's merge and lookup contract: operator
+  values override built-in defaults, the longest `tool:model-prefix*` match
+  wins, and missing values fall through to tool defaults. An administrator
+  update after admission cannot change an in-flight settlement.
+- Bounded response facts replace mutable settlement-time inference. Responses
+  non-stream JSON counts actual output items; SSE counts and deduplicates up to
+  256 `response.output_item.done` IDs; Claude keeps the maximum cumulative
+  server web-search count. The original request distinguishes preview from the
+  current web-search tool, and legacy search-preview models retain their
+  one-call rule.
+- Both per-token and fixed-price flat formulas add tool quota before the frozen
+  `OtherRatios` product and perform one final decimal half-away-from-zero round.
+  Audit output includes call counts, frozen unit prices, image price class, and
+  surcharge quota before the multiplier.
+- Usage parsing now recognizes top-level `usage.cached_tokens`; channel type 1
+  alone may fall back to root `timings.cache_n`. Gemini SSE counts generated
+  inline images and applies Go's 1,400 completion-token fallback while
+  preserving provider `totalTokenCount`.
+- Host verification passes billing 95/95, relay 80/80, Worker 673/673,
+  Workerd 38/38, frontend readiness 52/52, route parity 223/326 with zero
+  missing, D1 30 migrations/30 tables/139 incremental columns/27 key indexes,
+  workspace tests, and main/tenant/outbound Wasm checks.
+
+This is still not a cutover approval. Open P0/P1 work includes OpenRouter
+cost-based cache-creation inference and semantic/source provenance, TTS binary
+duration and dedicated audio-detail ratios, Gemini Imagen actual-image usage,
+image edits and Ali response actual-count replacement, free-model policy, and
+the immutable Go-generated flat manifest. Deployed migration 0030, Queue/DLQ,
+provider-invoice, direct/AI Gateway/WFP abort and idle fault, load, alert,
+credential rotation, rollback, and signed G1-G8 evidence remain absent.
+`relay_flat_billing_go_parity_ready` stays hard false, Go/VPS remains
+authoritative, and production remains **NO-GO**.

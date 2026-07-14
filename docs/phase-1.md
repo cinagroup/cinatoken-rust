@@ -1125,3 +1125,35 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   actual-count replacement, tool-call surcharges, provider usage normalization,
   a Go-generated immutable flat manifest, and all remote evidence. Production
   remains **NO-GO**.
+
+## 2026-07-14 Frozen Tool Surcharge And Usage Normalization V3 Increment
+
+- Flat snapshots are schema v3 with `flat-v3:<sha256>`. The exact request-time
+  `tool_price_setting.prices` resolution is frozen per candidate: longest
+  model-prefix override, tool default, Go fallback, then zero. The nine GPT
+  Image 1 quality/size prices are also durable contract facts.
+- Non-stream Responses counts actual `output` items. Streaming Responses counts
+  bounded `response.output_item.done` items, deduplicates at most 256 IDs, and
+  now covers web, file, and image-generation calls. Claude uses the maximum
+  cumulative `usage.server_tool_use.web_search_requests` value.
+- The retained request tool type selects preview versus current web-search
+  pricing. Legacy `*-search-preview` models still receive one preview call when
+  no built-in response fact exists. Image generation remains one charge per
+  response, matching Go.
+- Flat settlement adds search/file per-1K and image per-call quota after the
+  token/fixed base, applies the frozen `OtherRatios` product, and performs one
+  decimal half-away-from-zero round. Audit metadata records counts, frozen unit
+  prices, selected image class, and surcharge quota before `OtherRatios`.
+- Provider normalization now accepts Zhipu-style top-level
+  `usage.cached_tokens`, applies `timings.cache_n` only to channel type 1 when
+  standard cache evidence is absent, and applies Gemini's 1,400 completion
+  tokens per streamed generated image without rewriting provider total usage.
+- Local tests pass billing 95/95, relay 80/80, Worker 673/673, Workerd 38/38,
+  frontend readiness 52/52, route parity 223/326 with zero missing, and the
+  complete workspace/main-tenant-outbound Wasm gate. Remaining
+  flat blockers include OpenRouter cost-based cache-write inference, TTS
+  response-duration/audio-detail arithmetic, Gemini Imagen actual-image usage,
+  image-edit/Ali actual-count settlement, the Go-generated immutable flat
+  manifest, and all remote Queue/D1/provider evidence. Tiered tool surcharges
+  were intentionally not changed in this increment. Production remains
+  **NO-GO**.

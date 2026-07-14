@@ -3,8 +3,9 @@ use cinatoken_billing::{
     detect_billing_expr_variables, estimate_flat_pre_consumed_quota,
     estimate_tiered_billing_snapshot_with_request, rebase_tiered_billing_snapshot_group_ratio,
     settle, split_billing_expr_request_rule, BillingExprVariables, FlatBillingMode,
-    FlatPricingSnapshot, FlatQuotaResult, FlatUsage, PricingConfig, Quota, RequestInput,
-    TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
+    FlatPricingSnapshot, FlatQuotaResult, FlatUsage, ImageGenerationPriceClass, PricingConfig,
+    Quota, RequestInput, TieredBillingResult, TieredBillingSnapshot, TieredTokenUsage, TokenParams,
+    UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
 use cinatoken_core::relay::ErrorItem;
@@ -52,11 +53,12 @@ use cinatoken_relay::{
     mapped_model_name, usage_summary_from_anthropic_body, usage_summary_from_body,
     usage_summary_from_gemini_body, usage_summary_from_moonshot_body,
     usage_summary_from_rerank_body, CachedAuthenticatedToken, CachedRelayChannel, GeminiNativePath,
-    RelayCacheKeys, SseUsageAccumulator, UsageSummary, ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI,
-    CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA,
-    CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW,
-    CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI,
-    CHANNEL_TYPE_ZHIPU_V4, RELAY_CACHE_SCHEMA_VERSION,
+    ImageGenerationQuality, ImageGenerationSize, RelayCacheKeys, SseUsageAccumulator, UsageSummary,
+    ANTHROPIC_CHANNEL_TYPES, CHANNEL_TYPE_ALI, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_COHERE,
+    CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOONSHOT,
+    CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUBMODEL,
+    CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VOLCENGINE, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4,
+    RELAY_CACHE_SCHEMA_VERSION,
 };
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
@@ -8434,6 +8436,7 @@ async fn complete_relay_response(
             let (usage, usage_locally_estimated) = match response_usage_summary(
                 &mut audit_response,
                 provider,
+                channel.channel_type,
                 &endpoint_path,
                 max_json_response_bytes,
                 &model,
@@ -8679,7 +8682,12 @@ async fn complete_cohere_rerank_response(
             worker::console_error!("failed to transform Cohere rerank response: {}", err);
             (
                 body.clone(),
-                usage_summary_for_provider(&body, RelayProviderKind::OpenAiCompatible, "rerank"),
+                usage_summary_for_provider(
+                    &body,
+                    RelayProviderKind::OpenAiCompatible,
+                    "rerank",
+                    channel.channel_type,
+                ),
             )
         }
     };
@@ -9039,7 +9047,7 @@ async fn complete_buffered_relay_response(
         }
         return openai_error_response("invalid upstream JSON response".to_string(), 502);
     }
-    let usage = usage_summary_for_provider(&body, provider, endpoint_path);
+    let usage = usage_summary_for_provider(&body, provider, endpoint_path, channel.channel_type);
 
     if let Err(err) = record_relay_audit(
         &env,
@@ -9069,6 +9077,7 @@ async fn complete_buffered_relay_response(
 async fn response_usage_summary(
     response: &mut Response,
     provider: RelayProviderKind,
+    channel_type: i32,
     endpoint_path: &str,
     max_json_response_bytes: usize,
     model: &str,
@@ -9083,7 +9092,7 @@ async fn response_usage_summary(
             worker::Error::RustError(format!("invalid relay response JSON: {err}"))
         })?;
     }
-    let usage = usage_summary_for_provider(&body, provider, endpoint_path);
+    let usage = usage_summary_for_provider(&body, provider, endpoint_path, channel_type);
     // Missing-usage estimate fallback only applies to the OpenAI chat shape
     // (the body-text extraction is OpenAI-shaped); rerank carries its own usage.
     let estimate_applicable = estimate_enabled
@@ -9124,8 +9133,9 @@ fn usage_summary_for_provider(
     body: &str,
     provider: RelayProviderKind,
     endpoint_path: &str,
+    channel_type: i32,
 ) -> UsageSummary {
-    match provider {
+    let mut usage = match provider {
         RelayProviderKind::AliOpenAi if endpoint_path == "rerank" => {
             usage_summary_from_rerank_body(body)
         }
@@ -9152,7 +9162,16 @@ fn usage_summary_for_provider(
         | RelayProviderKind::DeepSeekMessages
         | RelayProviderKind::MoonshotMessages => usage_summary_from_anthropic_body(body),
         RelayProviderKind::GeminiNative => usage_summary_from_gemini_body(body),
+    };
+    if usage.cached_tokens <= 0 && channel_type == CHANNEL_TYPE_OPENAI {
+        usage.cached_tokens = serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|value| value.pointer("/timings/cache_n").and_then(Value::as_i64))
+            .map(clamp_i64_to_i32)
+            .unwrap_or_default()
+            .max(0);
     }
+    usage
 }
 
 #[derive(Debug, Clone)]
@@ -9593,7 +9612,7 @@ fn resolve_stream_usage(
             prompt_tokens: estimate.prompt_tokens as i32,
             completion_tokens: estimate.completion_tokens as i32,
             total_tokens: estimate.total_tokens as i32,
-            ..UsageSummary::default()
+            ..usage
         },
         true,
     )
@@ -10334,7 +10353,13 @@ async fn record_relay_audit(
             })
         } else if upstream_status < 400 && usage_present {
             let result = compute_flat_quota_from_snapshot(
-                &flat_usage_from_summary(usage, endpoint_path, preflight.estimated_prompt_tokens),
+                &flat_usage_from_summary(
+                    usage,
+                    endpoint_path,
+                    model,
+                    &audit.billing_request_input,
+                    preflight.estimated_prompt_tokens,
+                ),
                 &preflight.snapshot,
             );
             let final_quota = result.quota;
@@ -10555,6 +10580,17 @@ fn apply_flat_billing_audit(other: &mut Value, result: &FlatQuotaResult) {
             "image_price_ratio": result.image_price_ratio,
             "other_ratio_product": result.other_ratio_product,
             "audio_input_price_per_million": result.audio_input_price_per_million,
+            "tool_surcharge": {
+                "quota_before_other_ratio": result.tool_surcharge_quota,
+                "web_search_preview_calls": result.web_search_preview_calls,
+                "web_search_preview_price_per_1k": result.web_search_preview_price_per_1k,
+                "web_search_calls": result.web_search_calls,
+                "web_search_price_per_1k": result.web_search_price_per_1k,
+                "file_search_calls": result.file_search_calls,
+                "file_search_price_per_1k": result.file_search_price_per_1k,
+                "image_generation_price_class": result.image_generation_price_class,
+                "image_generation_price_per_call": result.image_generation_price_per_call,
+            },
         }),
     );
 }
@@ -10697,7 +10733,7 @@ pub(crate) struct ActualGroupBillingSmokeEvidence {
 
 const TIERED_BILLING_MAX_CANDIDATE_GROUP_STRATEGY: &str = "max_candidate_group";
 const TIERED_BILLING_SELECTED_GROUP_STRATEGY: &str = "selected_group";
-const FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v2:";
+const FLAT_BILLING_CONTRACT_PREFIX: &str = "flat-v3:";
 
 #[derive(Clone)]
 struct TieredBillingPreflight {
@@ -11213,6 +11249,7 @@ async fn prepare_flat_billing_group_plan(
         "AudioCompletionRatio",
         "PreConsumedQuota",
         "SelfUseModeEnabled",
+        "tool_price_setting.prices",
     ];
     let values = crate::d1_repositories::option_values(db, &keys).await?;
     let mut config = PricingConfig::new()
@@ -11230,6 +11267,7 @@ async fn prepare_flat_billing_group_plan(
             values[11].as_deref(),
             values[12].as_deref(),
         )
+        .with_tool_prices(values[15].as_deref())
         .with_self_use_mode(accept_unset_ratio_model || option_flag_enabled(values[14].as_deref()));
     if !config.admits_model(model) {
         return Ok(RelayBillingGroupPlanPreparation::UnconfiguredModel);
@@ -12033,8 +12071,30 @@ fn tiered_billing_settlement(
 fn flat_usage_from_summary(
     usage: &UsageSummary,
     endpoint_path: &str,
+    model: &str,
+    request: &RequestInput,
     estimated_prompt_tokens: i64,
 ) -> FlatUsage {
+    let responses_web_calls = i64::from(usage.tool_usage.responses_web_search_calls.max(0));
+    let request_uses_preview = request_has_tool_type(request, "web_search_preview");
+    let mut web_search_preview_calls = if request_uses_preview {
+        responses_web_calls
+    } else {
+        0
+    };
+    let web_search_calls = i64::from(usage.tool_usage.claude_web_search_calls.max(0))
+        .saturating_add(if request_uses_preview {
+            0
+        } else {
+            responses_web_calls
+        });
+    if endpoint_path == "chat/completions"
+        && model.ends_with("search-preview")
+        && web_search_preview_calls == 0
+        && web_search_calls == 0
+    {
+        web_search_preview_calls = 1;
+    }
     let mut flat = FlatUsage {
         prompt_tokens: usage.prompt_tokens as i64,
         completion_tokens: usage.completion_tokens as i64,
@@ -12045,6 +12105,40 @@ fn flat_usage_from_summary(
         cache_creation_1h_tokens: usage.claude_cache_creation_1h_tokens as i64,
         image_tokens: usage.image_input_tokens as i64,
         audio_input_tokens: usage.audio_input_tokens as i64,
+        web_search_preview_calls,
+        web_search_calls,
+        file_search_calls: i64::from(usage.tool_usage.responses_file_search_calls.max(0)),
+        image_generation_price_class: usage.tool_usage.image_generation.map(|image| {
+            match (image.quality, image.size) {
+                (ImageGenerationQuality::Low, ImageGenerationSize::Square1024) => {
+                    ImageGenerationPriceClass::Low1024x1024
+                }
+                (ImageGenerationQuality::Low, ImageGenerationSize::Portrait1024x1536) => {
+                    ImageGenerationPriceClass::Low1024x1536
+                }
+                (ImageGenerationQuality::Low, ImageGenerationSize::Landscape1536x1024) => {
+                    ImageGenerationPriceClass::Low1536x1024
+                }
+                (ImageGenerationQuality::Medium, ImageGenerationSize::Square1024) => {
+                    ImageGenerationPriceClass::Medium1024x1024
+                }
+                (ImageGenerationQuality::Medium, ImageGenerationSize::Portrait1024x1536) => {
+                    ImageGenerationPriceClass::Medium1024x1536
+                }
+                (ImageGenerationQuality::Medium, ImageGenerationSize::Landscape1536x1024) => {
+                    ImageGenerationPriceClass::Medium1536x1024
+                }
+                (ImageGenerationQuality::High, ImageGenerationSize::Square1024) => {
+                    ImageGenerationPriceClass::High1024x1024
+                }
+                (ImageGenerationQuality::High, ImageGenerationSize::Portrait1024x1536) => {
+                    ImageGenerationPriceClass::High1024x1536
+                }
+                (ImageGenerationQuality::High, ImageGenerationSize::Landscape1536x1024) => {
+                    ImageGenerationPriceClass::High1536x1024
+                }
+            }
+        }),
         is_anthropic_usage_semantic: usage.is_anthropic_usage_semantic,
     };
     if endpoint_path == "images/generations" && flat.total_tokens <= 0 {
@@ -12060,6 +12154,21 @@ fn flat_usage_from_summary(
         flat.total_tokens = estimated_prompt_tokens;
     }
     flat
+}
+
+fn request_has_tool_type(request: &RequestInput, expected: &str) -> bool {
+    request
+        .body
+        .as_ref()
+        .and_then(|body| body.get("tools"))
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                tool.get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind == expected)
+            })
+        })
 }
 
 fn request_other_ratio_product(
@@ -12320,7 +12429,7 @@ fn resolve_non_stream_usage(
             prompt_tokens: estimated_prompt_tokens as i32,
             completion_tokens: completion_tokens as i32,
             total_tokens: (estimated_prompt_tokens + completion_tokens) as i32,
-            ..UsageSummary::default()
+            ..usage
         },
         true,
     )
@@ -15729,7 +15838,8 @@ mod tests {
             usage_summary_for_provider(
                 r#"{"usage":{"total_tokens":21}}"#,
                 RelayProviderKind::OpenAiCompatible,
-                "rerank"
+                "rerank",
+                8,
             ),
             UsageSummary {
                 prompt_tokens: 21,
@@ -15741,7 +15851,8 @@ mod tests {
             usage_summary_for_provider(
                 r#"{"meta":{"billed_units":{"input_tokens":34,"output_tokens":2}}}"#,
                 RelayProviderKind::OpenAiCompatible,
-                "rerank"
+                "rerank",
+                8,
             ),
             UsageSummary {
                 prompt_tokens: 34,
@@ -15754,7 +15865,8 @@ mod tests {
             usage_summary_for_provider(
                 r#"{"meta":{"billed_units":{"search_units":1}}}"#,
                 RelayProviderKind::OpenAiCompatible,
-                "rerank"
+                "rerank",
+                8,
             ),
             UsageSummary {
                 prompt_tokens: 1,
@@ -15766,7 +15878,8 @@ mod tests {
             usage_summary_for_provider(
                 r#"{"usage":{"total_tokens":21}}"#,
                 RelayProviderKind::OpenAiCompatible,
-                "chat/completions"
+                "chat/completions",
+                8,
             ),
             UsageSummary {
                 total_tokens: 21,
@@ -16534,7 +16647,8 @@ mod tests {
             usage_summary_for_provider(
                 r#"{"usage":{"prompt_tokens":13,"completion_tokens":2,"total_tokens":15},"choices":[{"usage":{"cached_tokens":8}}]}"#,
                 RelayProviderKind::MoonshotOpenAi,
-                "chat/completions"
+                "chat/completions",
+                CHANNEL_TYPE_MOONSHOT,
             ),
             UsageSummary {
                 prompt_tokens: 13,
@@ -16555,7 +16669,8 @@ mod tests {
             usage_summary_for_provider(
                 r#"{"usage":{"total_tokens":19}}"#,
                 RelayProviderKind::MoonshotOpenAi,
-                "rerank"
+                "rerank",
+                CHANNEL_TYPE_MOONSHOT,
             ),
             UsageSummary {
                 prompt_tokens: 19,
@@ -18383,7 +18498,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v2:contract-a",
+            "flat-v3:contract-a",
             "sha256:request-a",
         )
         .unwrap();
@@ -18393,7 +18508,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v2:contract-a",
+            "flat-v3:contract-a",
             "sha256:request-a",
         )
         .unwrap();
@@ -18403,7 +18518,7 @@ mod tests {
             "gpt-test",
             "chat/completions",
             "flat",
-            "flat-v2:contract-b",
+            "flat-v3:contract-b",
             "sha256:request-a",
         )
         .unwrap();
@@ -18441,12 +18556,97 @@ mod tests {
             "chat/completions",
             false
         ));
-        let normalized = flat_usage_from_summary(&usage, "images/generations", 0);
+        let normalized = flat_usage_from_summary(
+            &usage,
+            "images/generations",
+            "image-model",
+            &RequestInput::default(),
+            0,
+        );
         assert_eq!(normalized.prompt_tokens, 1);
         assert_eq!(normalized.total_tokens, 1);
-        let audio = flat_usage_from_summary(&usage, "audio/speech", 240);
+        let audio = flat_usage_from_summary(
+            &usage,
+            "audio/speech",
+            "audio-model",
+            &RequestInput::default(),
+            240,
+        );
         assert_eq!(audio.prompt_tokens, 240);
         assert_eq!(audio.total_tokens, 240);
+    }
+
+    #[test]
+    fn flat_tool_usage_classifies_request_price_and_legacy_preview() {
+        let request = RequestInput::from_json_body(json!({
+            "tools": [{"type": "web_search_preview"}]
+        }));
+        let usage = UsageSummary {
+            prompt_tokens: 10,
+            total_tokens: 10,
+            tool_usage: cinatoken_relay::ToolUsageSummary {
+                responses_web_search_calls: 1,
+                responses_file_search_calls: 2,
+                claude_web_search_calls: 3,
+                image_generation: Some(cinatoken_relay::ImageGenerationToolUsage {
+                    quality: ImageGenerationQuality::Low,
+                    size: ImageGenerationSize::Landscape1536x1024,
+                }),
+            },
+            ..UsageSummary::default()
+        };
+        let flat = flat_usage_from_summary(&usage, "responses", "gpt-4o", &request, 0);
+        assert_eq!(flat.web_search_preview_calls, 1);
+        assert_eq!(flat.web_search_calls, 3);
+        assert_eq!(flat.file_search_calls, 2);
+        assert_eq!(
+            flat.image_generation_price_class,
+            Some(ImageGenerationPriceClass::Low1536x1024)
+        );
+
+        let legacy = flat_usage_from_summary(
+            &UsageSummary {
+                prompt_tokens: 1,
+                total_tokens: 1,
+                ..UsageSummary::default()
+            },
+            "chat/completions",
+            "gpt-4o-search-preview",
+            &RequestInput::default(),
+            0,
+        );
+        assert_eq!(legacy.web_search_preview_calls, 1);
+    }
+
+    #[test]
+    fn openai_channel_uses_llama_cache_timing_fallback_only_when_needed() {
+        let body = r#"{
+            "usage":{"prompt_tokens":100,"completion_tokens":5},
+            "timings":{"cache_n":64}
+        }"#;
+        let openai = usage_summary_for_provider(
+            body,
+            RelayProviderKind::OpenAiCompatible,
+            "chat/completions",
+            CHANNEL_TYPE_OPENAI,
+        );
+        assert_eq!(openai.cached_tokens, 64);
+
+        let custom = usage_summary_for_provider(
+            body,
+            RelayProviderKind::OpenAiCompatible,
+            "chat/completions",
+            8,
+        );
+        assert_eq!(custom.cached_tokens, 0);
+
+        let explicit = usage_summary_for_provider(
+            r#"{"usage":{"prompt_tokens":100,"cached_tokens":40},"timings":{"cache_n":64}}"#,
+            RelayProviderKind::OpenAiCompatible,
+            "chat/completions",
+            CHANNEL_TYPE_OPENAI,
+        );
+        assert_eq!(explicit.cached_tokens, 40);
     }
 
     #[test]
@@ -18457,6 +18657,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                web_search_calls: 1,
                 ..FlatUsage::default()
             },
             "gpt-4o",
@@ -18470,6 +18671,14 @@ mod tests {
         assert_eq!(other["billing_pending"], false);
         assert_eq!(other["flat_billing"]["quota"], result.quota);
         assert_eq!(other["flat_billing"]["mode"], "per_token");
+        assert_eq!(
+            other["flat_billing"]["tool_surcharge"]["web_search_calls"],
+            1
+        );
+        assert_eq!(
+            other["flat_billing"]["tool_surcharge"]["web_search_price_per_1k"],
+            10.0
+        );
     }
 
     #[test]

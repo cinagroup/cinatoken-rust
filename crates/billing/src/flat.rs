@@ -39,11 +39,9 @@
 //! half-away-from-zero rounding, matching Go's `shopspring/decimal` path.
 //! Tiered expressions retain the shared float `crate::quota_round` contract.
 //!
-//! ## Simplifications vs Go (deferred)
-//!
-//! - Only request-derived image `OtherRatios` are frozen; response-derived
-//!   provider adjustments remain deferred.
-//! - No `ToolCallSurcharge` (web_search / file_search fixed fees).
+//! Request-derived multipliers and mutable tool prices are frozen before the
+//! upstream call. Settlement adds bounded response-derived tool facts to the
+//! frozen token/fixed-price contract and rounds once at the end.
 
 use crate::pricing::PricingConfig;
 use rust_decimal::prelude::ToPrimitive;
@@ -77,10 +75,101 @@ pub struct FlatUsage {
     pub image_tokens: i64,
     /// Audio input tokens used by Gemini's separate per-million USD price.
     pub audio_input_tokens: i64,
+    /// Responses and Claude built-in tool facts. These counts are bounded by
+    /// the relay parser before entering billing.
+    pub web_search_preview_calls: i64,
+    pub web_search_calls: i64,
+    pub file_search_calls: i64,
+    /// GPT Image 1 charges at most one generated-image tool call per response,
+    /// matching the Go settlement contract.
+    pub image_generation_price_class: Option<ImageGenerationPriceClass>,
     /// True when the upstream usage follows Anthropic semantics, where
     /// `prompt_tokens` already excludes cache hits (so we add them back at
     /// the cache ratio instead of subtracting-then-remultiplying).
     pub is_anthropic_usage_semantic: bool,
+}
+
+/// Normalized GPT Image 1 quality/size price class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageGenerationPriceClass {
+    Low1024x1024,
+    Low1024x1536,
+    Low1536x1024,
+    Medium1024x1024,
+    Medium1024x1536,
+    Medium1536x1024,
+    High1024x1024,
+    High1024x1536,
+    High1536x1024,
+}
+
+/// Frozen per-call tool prices. Search prices are USD per 1K calls; image
+/// prices are USD per call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolSurchargePrices {
+    pub web_search_preview_per_1k: f64,
+    pub web_search_per_1k: f64,
+    pub file_search_per_1k: f64,
+    pub image_low_1024x1024: f64,
+    pub image_low_1024x1536: f64,
+    pub image_low_1536x1024: f64,
+    pub image_medium_1024x1024: f64,
+    pub image_medium_1024x1536: f64,
+    pub image_medium_1536x1024: f64,
+    pub image_high_1024x1024: f64,
+    pub image_high_1024x1536: f64,
+    pub image_high_1536x1024: f64,
+}
+
+impl ToolSurchargePrices {
+    fn from_config(model: &str, config: &PricingConfig) -> Self {
+        Self {
+            web_search_preview_per_1k: config.tool_price_for_model("web_search_preview", model),
+            web_search_per_1k: config.tool_price_for_model("web_search", model),
+            file_search_per_1k: config.tool_price_for_model("file_search", model),
+            image_low_1024x1024: 0.011,
+            image_low_1024x1536: 0.016,
+            image_low_1536x1024: 0.016,
+            image_medium_1024x1024: 0.042,
+            image_medium_1024x1536: 0.063,
+            image_medium_1536x1024: 0.063,
+            image_high_1024x1024: 0.167,
+            image_high_1024x1536: 0.250,
+            image_high_1536x1024: 0.250,
+        }
+    }
+
+    fn image_price(&self, class: ImageGenerationPriceClass) -> f64 {
+        match class {
+            ImageGenerationPriceClass::Low1024x1024 => self.image_low_1024x1024,
+            ImageGenerationPriceClass::Low1024x1536 => self.image_low_1024x1536,
+            ImageGenerationPriceClass::Low1536x1024 => self.image_low_1536x1024,
+            ImageGenerationPriceClass::Medium1024x1024 => self.image_medium_1024x1024,
+            ImageGenerationPriceClass::Medium1024x1536 => self.image_medium_1024x1536,
+            ImageGenerationPriceClass::Medium1536x1024 => self.image_medium_1536x1024,
+            ImageGenerationPriceClass::High1024x1024 => self.image_high_1024x1024,
+            ImageGenerationPriceClass::High1024x1536 => self.image_high_1024x1536,
+            ImageGenerationPriceClass::High1536x1024 => self.image_high_1536x1024,
+        }
+    }
+
+    fn values(&self) -> [f64; 12] {
+        [
+            self.web_search_preview_per_1k,
+            self.web_search_per_1k,
+            self.file_search_per_1k,
+            self.image_low_1024x1024,
+            self.image_low_1024x1536,
+            self.image_low_1536x1024,
+            self.image_medium_1024x1024,
+            self.image_medium_1024x1536,
+            self.image_medium_1536x1024,
+            self.image_high_1024x1024,
+            self.image_high_1024x1536,
+            self.image_high_1536x1024,
+        ]
+    }
 }
 
 impl FlatUsage {
@@ -138,11 +227,12 @@ pub struct FlatPricingSnapshot {
     /// Product of request-time `OtherRatios`, applied after all base and
     /// additive charges in both fixed-price and per-token modes.
     pub other_ratio_product: f64,
+    pub tool_prices: ToolSurchargePrices,
     pub pre_consumed_token_floor: i64,
 }
 
 impl FlatPricingSnapshot {
-    pub const SCHEMA_VERSION: u16 = 2;
+    pub const SCHEMA_VERSION: u16 = 3;
 
     pub fn from_config(
         model: &str,
@@ -179,6 +269,7 @@ impl FlatPricingSnapshot {
             model_price,
             image_price_ratio: 1.0,
             other_ratio_product,
+            tool_prices: ToolSurchargePrices::from_config(model, config),
             pre_consumed_token_floor: pre_consumed_token_floor.max(0),
         }
     }
@@ -222,6 +313,14 @@ impl FlatPricingSnapshot {
         {
             return Err("flat pricing snapshot contains an invalid price or ratio");
         }
+        if self
+            .tool_prices
+            .values()
+            .into_iter()
+            .any(|value| !value.is_finite() || value < 0.0)
+        {
+            return Err("flat pricing snapshot contains an invalid tool price");
+        }
         if self.quota_per_unit <= 0.0
             || self.image_price_ratio <= 0.0
             || self.other_ratio_product <= 0.0
@@ -248,6 +347,16 @@ pub struct FlatQuotaResult {
     pub image_price_ratio: f64,
     pub other_ratio_product: f64,
     pub audio_input_price_per_million: f64,
+    pub web_search_preview_calls: i64,
+    pub web_search_calls: i64,
+    pub file_search_calls: i64,
+    pub image_generation_price_class: Option<ImageGenerationPriceClass>,
+    pub web_search_preview_price_per_1k: f64,
+    pub web_search_price_per_1k: f64,
+    pub file_search_price_per_1k: f64,
+    pub image_generation_price_per_call: Option<f64>,
+    /// Additive tool quota before `other_ratio_product` and final rounding.
+    pub tool_surcharge_quota: f64,
 }
 
 /// Compute the flat quota for a single relay response.
@@ -286,7 +395,7 @@ pub fn compute_flat_quota_from_snapshot(
     let cache_creation_ratio_5m = snapshot.cache_creation_ratio_5m;
     let cache_creation_ratio_1h = snapshot.cache_creation_ratio_1h;
     let image_ratio = snapshot.image_ratio;
-    let result = |quota| FlatQuotaResult {
+    let result = |quota, tool_surcharge_quota| FlatQuotaResult {
         quota,
         mode: snapshot.mode,
         model_ratio,
@@ -296,6 +405,17 @@ pub fn compute_flat_quota_from_snapshot(
         image_price_ratio: snapshot.image_price_ratio,
         other_ratio_product,
         audio_input_price_per_million: snapshot.audio_input_price_per_million,
+        web_search_preview_calls: usage.web_search_preview_calls.max(0),
+        web_search_calls: usage.web_search_calls.max(0),
+        file_search_calls: usage.file_search_calls.max(0),
+        image_generation_price_class: usage.image_generation_price_class,
+        web_search_preview_price_per_1k: snapshot.tool_prices.web_search_preview_per_1k,
+        web_search_price_per_1k: snapshot.tool_prices.web_search_per_1k,
+        file_search_price_per_1k: snapshot.tool_prices.file_search_per_1k,
+        image_generation_price_per_call: usage
+            .image_generation_price_class
+            .map(|class| snapshot.tool_prices.image_price(class)),
+        tool_surcharge_quota,
     };
 
     let (
@@ -326,27 +446,29 @@ pub fn compute_flat_quota_from_snapshot(
         go_decimal_from_f64(snapshot.audio_input_price_per_million),
     )
     else {
-        return result(i64::MAX);
+        return result(i64::MAX, 0.0);
     };
+    let Some(tool_surcharge) =
+        tool_surcharge_quota(usage, snapshot, d_group_ratio, d_quota_per_unit)
+    else {
+        return result(i64::MAX, 0.0);
+    };
+    let tool_surcharge_audit = tool_surcharge.to_f64().unwrap_or(f64::MAX);
 
     // Fixed-price mode is request-priced and therefore independent of token
     // usage. The caller admits only successful billable responses.
     if let Some(price) = snapshot.model_price {
         let quota = go_decimal_from_f64(price).and_then(|price| {
-            checked_decimal_product(&[
-                price,
-                d_image_price_ratio,
-                d_quota_per_unit,
-                d_group_ratio,
-                d_other_ratio_product,
-            ])
+            checked_decimal_product(&[price, d_image_price_ratio, d_quota_per_unit, d_group_ratio])
+                .and_then(|base| base.checked_add(tool_surcharge))
+                .and_then(|total| total.checked_mul(d_other_ratio_product))
         });
-        return result(round_decimal_quota(quota));
+        return result(round_decimal_quota(quota), tool_surcharge_audit);
     }
 
     // Per-token mode cannot charge without usage.
     if usage.total_tokens <= 0 {
-        return result(0);
+        return result(0, 0.0);
     }
 
     // Per-token mode. Ports Go `calculateTextQuotaSummary` (service/text_quota.go):
@@ -356,7 +478,7 @@ pub fn compute_flat_quota_from_snapshot(
     // non-Anthropic usage) and re-added at their own ratio, so e.g. image
     // tokens bill at image_ratio, not the prompt rate.
     let Some(ratio) = checked_decimal_product(&[d_model_ratio, d_group_ratio]) else {
-        return result(i64::MAX);
+        return result(i64::MAX, tool_surcharge_audit);
     };
     let prompt = Decimal::from(usage.prompt_tokens.max(0));
     let completion = Decimal::from(usage.completion_tokens.max(0));
@@ -378,7 +500,7 @@ pub fn compute_flat_quota_from_snapshot(
             base_tokens -= cached;
         }
         let Some(value) = cached.checked_mul(d_cache_ratio) else {
-            return result(i64::MAX);
+            return result(i64::MAX, tool_surcharge_audit);
         };
         cached_with_ratio = value;
     }
@@ -390,7 +512,7 @@ pub fn compute_flat_quota_from_snapshot(
         if !usage.is_anthropic_usage_semantic {
             base_tokens -= cache_creation;
             let Some(value) = cache_creation.checked_mul(d_cache_creation_ratio) else {
-                return result(i64::MAX);
+                return result(i64::MAX, tool_surcharge_audit);
             };
             cache_creation_with_ratio = value;
         } else {
@@ -404,7 +526,7 @@ pub fn compute_flat_quota_from_snapshot(
                 cache_creation_1h.checked_mul(d_cache_creation_ratio_1h),
             ];
             let Some(value) = checked_decimal_options_sum(&parts) else {
-                return result(i64::MAX);
+                return result(i64::MAX, tool_surcharge_audit);
             };
             cache_creation_with_ratio = value;
         }
@@ -413,7 +535,7 @@ pub fn compute_flat_quota_from_snapshot(
     if !image.is_zero() {
         base_tokens -= image;
         let Some(value) = image.checked_mul(d_image_ratio) else {
-            return result(i64::MAX);
+            return result(i64::MAX, tool_surcharge_audit);
         };
         image_with_ratio = value;
     }
@@ -428,7 +550,7 @@ pub fn compute_flat_quota_from_snapshot(
             d_quota_per_unit,
         ])
         .and_then(|value| value.checked_div(Decimal::from(1_000_000))) else {
-            return result(i64::MAX);
+            return result(i64::MAX, tool_surcharge_audit);
         };
         audio_input_quota = value;
     }
@@ -439,18 +561,19 @@ pub fn compute_flat_quota_from_snapshot(
         image_with_ratio,
         cache_creation_with_ratio,
     ]) else {
-        return result(i64::MAX);
+        return result(i64::MAX, tool_surcharge_audit);
     };
     let Some(completion_quota) = completion.checked_mul(d_completion_ratio) else {
-        return result(i64::MAX);
+        return result(i64::MAX, tool_surcharge_audit);
     };
     let Some(raw_quota) = prompt_quota
         .checked_add(completion_quota)
         .and_then(|quota| quota.checked_mul(ratio))
         .and_then(|quota| quota.checked_add(audio_input_quota))
+        .and_then(|quota| quota.checked_add(tool_surcharge))
         .and_then(|quota| quota.checked_mul(d_other_ratio_product))
     else {
-        return result(i64::MAX);
+        return result(i64::MAX, tool_surcharge_audit);
     };
 
     // Floor: a billable model with ratio > 0 must charge at least 1.
@@ -460,7 +583,50 @@ pub fn compute_flat_quota_from_snapshot(
         round_decimal_quota(Some(raw_quota))
     };
 
-    result(quota)
+    result(quota, tool_surcharge_audit)
+}
+
+fn tool_surcharge_quota(
+    usage: &FlatUsage,
+    snapshot: &FlatPricingSnapshot,
+    group_ratio: Decimal,
+    quota_per_unit: Decimal,
+) -> Option<Decimal> {
+    let search = [
+        (
+            usage.web_search_preview_calls,
+            snapshot.tool_prices.web_search_preview_per_1k,
+        ),
+        (
+            usage.web_search_calls,
+            snapshot.tool_prices.web_search_per_1k,
+        ),
+        (
+            usage.file_search_calls,
+            snapshot.tool_prices.file_search_per_1k,
+        ),
+    ]
+    .into_iter()
+    .try_fold(Decimal::ZERO, |total, (calls, price)| {
+        let component = checked_decimal_product(&[
+            go_decimal_from_f64(price)?,
+            Decimal::from(calls.max(0)),
+            group_ratio,
+            quota_per_unit,
+        ])?
+        .checked_div(Decimal::from(1_000))?;
+        total.checked_add(component)
+    })?;
+
+    let image = match usage.image_generation_price_class {
+        Some(class) => checked_decimal_product(&[
+            go_decimal_from_f64(snapshot.tool_prices.image_price(class))?,
+            group_ratio,
+            quota_per_unit,
+        ])?,
+        None => Decimal::ZERO,
+    };
+    search.checked_add(image)
 }
 
 fn go_decimal_from_f64(value: f64) -> Option<Decimal> {
@@ -972,6 +1138,69 @@ mod tests {
         let json = serde_json::to_string(&snapshot).unwrap();
         let restored: FlatPricingSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, snapshot);
+        assert_eq!(restored.schema_version, 3);
+        assert_eq!(restored.tool_prices.web_search_per_1k, 10.0);
         restored.validate().unwrap();
+    }
+
+    #[test]
+    fn tool_surcharges_are_added_before_other_ratio_and_rounded_once() {
+        let mut config = config_with_model_ratio("gpt-4o", 1.0);
+        config.group_ratios.insert("vip".to_string(), 2.0);
+        let snapshot = FlatPricingSnapshot::from_config("gpt-4o", "vip", &config, 3.0, 0);
+        let usage = FlatUsage {
+            prompt_tokens: 10,
+            total_tokens: 10,
+            web_search_preview_calls: 1,
+            file_search_calls: 2,
+            image_generation_price_class: Some(ImageGenerationPriceClass::Low1024x1024),
+            ..FlatUsage::default()
+        };
+
+        // Token base: 10 * group 2 = 20.
+        // Tools before OtherRatios: preview 25_000 + file 5_000 + image 11_000.
+        // Final: (20 + 41_000) * 3 = 123_060.
+        let result = compute_flat_quota_from_snapshot(&usage, &snapshot);
+        assert_eq!(result.quota, 123_060);
+        assert_eq!(result.tool_surcharge_quota, 41_000.0);
+    }
+
+    #[test]
+    fn fixed_price_adds_tool_surcharge_before_other_ratio() {
+        let mut config = PricingConfig::new();
+        config
+            .model_prices
+            .insert("fixed-tool-model".to_string(), 0.04);
+        let snapshot =
+            FlatPricingSnapshot::from_config("fixed-tool-model", "default", &config, 2.0, 0);
+        let usage = FlatUsage {
+            web_search_calls: 1,
+            image_generation_price_class: Some(ImageGenerationPriceClass::High1024x1024),
+            ..FlatUsage::default()
+        };
+
+        // Fixed base 20_000 + web 5_000 + image 83_500, then OtherRatios 2.
+        let result = compute_flat_quota_from_snapshot(&usage, &snapshot);
+        assert_eq!(result.quota, 217_000);
+        assert_eq!(result.tool_surcharge_quota, 88_500.0);
+    }
+
+    #[test]
+    fn frozen_snapshot_ignores_later_tool_price_mutation() {
+        let mut config = config_with_model_ratio("tool-freeze", 1.0)
+            .with_tool_prices(Some(r#"{"web_search_preview:tool-*":40}"#));
+        let snapshot = FlatPricingSnapshot::from_config("tool-freeze", "default", &config, 1.0, 0);
+        config = config.with_tool_prices(Some(r#"{"web_search_preview:tool-*":99}"#));
+        let usage = FlatUsage {
+            prompt_tokens: 1,
+            total_tokens: 1,
+            web_search_preview_calls: 1,
+            ..FlatUsage::default()
+        };
+
+        let frozen = compute_flat_quota_from_snapshot(&usage, &snapshot);
+        let mutable = compute_flat_quota(&usage, "tool-freeze", "default", &config);
+        assert_eq!(frozen.quota, 20_001);
+        assert_ne!(frozen.quota, mutable.quota);
     }
 }

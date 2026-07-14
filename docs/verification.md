@@ -4711,3 +4711,38 @@ manifest remain open. Remote 0030/Queue/DLQ/provider-invoice and direct/Gateway/
 WFP fault evidence, credential rotation, rollback, and G1-G8 approval are also
 absent. `relay_flat_billing_go_parity_ready` remains hard false and production
 remains **NO-GO**.
+
+## Frozen Flat Tool Surcharge V3 Verification (2026-07-14)
+
+```powershell
+cargo test -p cinatoken-billing -p cinatoken-relay --lib
+# PASS; billing 95/95, relay 80/80
+
+cargo test -p cinatoken-worker --lib
+# PASS; 673/673
+
+bun run check
+# PASS; complete release gate: Workerd 38/38, frontend readiness 52/52,
+# 223 frontend calls / 326 Worker routes / zero missing, D1 30 migrations /
+# 30 tables / 139 incremental columns / 27 key indexes, workspace tests, and
+# main/tenant/outbound wasm32 checks
+```
+
+Verified behavior:
+
+- `tool_price_setting.prices` resolves Go defaults plus longest operator model
+  prefixes and is serialized into schema-v3 flat snapshots before egress.
+- Responses JSON/SSE web, file, and image facts are bounded; duplicate SSE item
+  IDs do not double charge. Claude cumulative web-search usage settles once.
+- Search/file per-1K and image per-call quota is added to per-token or fixed
+  base quota before `OtherRatios`; final decimal rounding occurs once.
+- Audit output exposes call counts, frozen unit prices, selected image price
+  class, and surcharge quota without storing provider credentials.
+- Top-level cached-token, OpenAI-only llama.cpp timing, and Gemini streamed-image
+  fallback vectors match the audited Go behavior.
+
+This is local E3 evidence. OpenRouter cache-write inference, TTS/audio detail,
+Gemini Imagen, image-edit/Ali actual count, a Go-generated flat manifest,
+remote Queue/D1/DLQ/provider reconciliation, abort/idle faults, credential
+rotation, rollback, and G1-G8 approval remain blocking. Tiered tool surcharge
+parity was outside this increment. Production remains **NO-GO**.

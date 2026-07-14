@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -70,6 +70,37 @@ pub struct UsageSummary {
     pub audio_input_tokens: i32,
     pub audio_output_tokens: i32,
     pub is_anthropic_usage_semantic: bool,
+    pub tool_usage: ToolUsageSummary,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ToolUsageSummary {
+    pub responses_web_search_calls: i32,
+    pub responses_file_search_calls: i32,
+    pub claude_web_search_calls: i32,
+    pub image_generation: Option<ImageGenerationToolUsage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageGenerationToolUsage {
+    pub quality: ImageGenerationQuality,
+    pub size: ImageGenerationSize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ImageGenerationQuality {
+    Low,
+    Medium,
+    #[default]
+    High,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ImageGenerationSize {
+    #[default]
+    Square1024,
+    Portrait1024x1536,
+    Landscape1536x1024,
 }
 
 pub fn is_openai_compatible_channel_type(channel_type: i32) -> bool {
@@ -415,7 +446,7 @@ pub fn usage_summary_from_body(body: &str) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
     };
-    usage_summary_from_value(&value).unwrap_or_default()
+    usage_summary_with_response_tools(&value, usage_summary_from_value(&value).unwrap_or_default())
 }
 
 pub fn usage_summary_from_rerank_body(body: &str) -> UsageSummary {
@@ -432,16 +463,20 @@ pub fn usage_summary_from_anthropic_body(body: &str) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
     };
-    usage_summary_from_value(&value)
+    let usage = usage_summary_from_value(&value)
         .map(mark_anthropic_usage_semantic)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    usage_summary_with_response_tools(&value, usage)
 }
 
 pub fn usage_summary_from_moonshot_body(body: &str) -> UsageSummary {
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return UsageSummary::default();
     };
-    usage_summary_from_moonshot_value(&value).unwrap_or_default()
+    usage_summary_with_response_tools(
+        &value,
+        usage_summary_from_moonshot_value(&value).unwrap_or_default(),
+    )
 }
 
 pub fn usage_summary_from_sse_stream(body: &str) -> UsageSummary {
@@ -489,6 +524,11 @@ pub struct SseUsageAccumulator {
     /// The largest `len(delta.tool_calls)` seen across the stream (Go uses a
     /// running max, not a sum). Feeds the `toolCount * 7` completion bump.
     tool_count: i64,
+    /// Responses built-in output items may be replayed by a provider. Keep a
+    /// bounded ID set so retries do not double charge without allowing an
+    /// unbounded stream to grow Worker memory.
+    tool_item_ids: HashSet<String>,
+    gemini_generated_image_count: i32,
 }
 
 impl SseUsageAccumulator {
@@ -542,6 +582,13 @@ impl SseUsageAccumulator {
             self.push_line(&line);
         }
         self.flush_event();
+        if self.mode == SseUsageMode::Gemini
+            && self.latest.completion_tokens <= 0
+            && self.gemini_generated_image_count > 0
+        {
+            self.latest.completion_tokens = self.gemini_generated_image_count.saturating_mul(1_400);
+            // Go intentionally preserves the provider-reported total here.
+        }
         (self.latest, self.response_text, self.tool_count)
     }
 
@@ -561,12 +608,19 @@ impl SseUsageAccumulator {
         match self.mode {
             SseUsageMode::OpenAi => {
                 if let Some(summary) = usage_summary_from_sse_data_lines(&self.data_lines, false) {
+                    let tool_usage = self.latest.tool_usage;
                     self.latest = summary;
+                    self.latest.tool_usage = tool_usage;
                 }
                 accumulate_openai_stream_text(
                     &self.data_lines,
                     &mut self.response_text,
                     &mut self.tool_count,
+                );
+                accumulate_openai_builtin_tool_usage(
+                    &self.data_lines,
+                    &mut self.latest.tool_usage,
+                    &mut self.tool_item_ids,
                 );
             }
             SseUsageMode::Anthropic => {
@@ -586,6 +640,10 @@ impl SseUsageAccumulator {
                 );
             }
             SseUsageMode::Gemini => {
+                self.gemini_generated_image_count = self
+                    .gemini_generated_image_count
+                    .saturating_add(gemini_generated_image_count(&self.data_lines))
+                    .min(MAX_BUILTIN_TOOL_CALLS);
                 if let Some(summary) = usage_summary_from_gemini_sse_data_lines(&self.data_lines) {
                     self.latest = summary;
                 }
@@ -634,6 +692,7 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
     ];
     let cached_tokens = first_non_zero_i32(&[
         nested_i32_field(usage, &input_token_detail_keys, &["cached_tokens"]),
+        first_i32_field(usage, &["cached_tokens"]),
         first_i32_field(usage, &["cache_read_input_tokens"]),
         first_i32_field(usage, &["prompt_cache_hit_tokens"]),
     ]);
@@ -699,7 +758,132 @@ fn usage_summary_from_value(value: &Value) -> Option<UsageSummary> {
         audio_input_tokens,
         audio_output_tokens,
         is_anthropic_usage_semantic,
+        tool_usage: ToolUsageSummary {
+            claude_web_search_calls: nested_i32_field(
+                usage,
+                &["server_tool_use"],
+                &["web_search_requests"],
+            )
+            .max(0),
+            ..ToolUsageSummary::default()
+        },
     })
+}
+
+const MAX_BUILTIN_TOOL_CALLS: i32 = 256;
+
+fn usage_summary_with_response_tools(value: &Value, mut usage: UsageSummary) -> UsageSummary {
+    let response_tools = tool_usage_from_response_value(value);
+    usage.tool_usage = merge_cumulative_tool_usage(usage.tool_usage, response_tools);
+    usage
+}
+
+fn tool_usage_from_response_value(value: &Value) -> ToolUsageSummary {
+    let output = value.get("output").or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("output"))
+    });
+    let mut usage = ToolUsageSummary::default();
+    if let Some(items) = output.and_then(Value::as_array) {
+        for item in items.iter().take(MAX_BUILTIN_TOOL_CALLS as usize) {
+            accumulate_builtin_tool_item(item, &mut usage);
+        }
+    }
+    usage
+}
+
+fn accumulate_openai_builtin_tool_usage(
+    data_lines: &[String],
+    usage: &mut ToolUsageSummary,
+    seen_ids: &mut HashSet<String>,
+) {
+    if data_lines.is_empty() {
+        return;
+    }
+    let payload = data_lines.join("\n");
+    let payload = payload.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("response.output_item.done") {
+        return;
+    }
+    let Some(item) = value.get("item") else {
+        return;
+    };
+    if let Some(id) = item.get("id").and_then(Value::as_str) {
+        if seen_ids.contains(id) || seen_ids.len() >= MAX_BUILTIN_TOOL_CALLS as usize {
+            return;
+        }
+        seen_ids.insert(id.to_string());
+    }
+    accumulate_builtin_tool_item(item, usage);
+}
+
+fn accumulate_builtin_tool_item(item: &Value, usage: &mut ToolUsageSummary) {
+    match item.get("type").and_then(Value::as_str) {
+        Some("web_search_call") => {
+            usage.responses_web_search_calls = usage
+                .responses_web_search_calls
+                .saturating_add(1)
+                .min(MAX_BUILTIN_TOOL_CALLS);
+        }
+        Some("file_search_call") => {
+            usage.responses_file_search_calls = usage
+                .responses_file_search_calls
+                .saturating_add(1)
+                .min(MAX_BUILTIN_TOOL_CALLS);
+        }
+        Some("image_generation_call") if usage.image_generation.is_none() => {
+            usage.image_generation = Some(ImageGenerationToolUsage {
+                quality: match item.get("quality").and_then(Value::as_str) {
+                    Some("low") => ImageGenerationQuality::Low,
+                    Some("medium") => ImageGenerationQuality::Medium,
+                    _ => ImageGenerationQuality::High,
+                },
+                size: match item.get("size").and_then(Value::as_str) {
+                    Some("1024x1536") => ImageGenerationSize::Portrait1024x1536,
+                    Some("1536x1024") => ImageGenerationSize::Landscape1536x1024,
+                    _ => ImageGenerationSize::Square1024,
+                },
+            });
+        }
+        _ => {}
+    }
+}
+
+fn gemini_generated_image_count(data_lines: &[String]) -> i32 {
+    if data_lines.is_empty() {
+        return 0;
+    }
+    let payload = data_lines.join("\n");
+    let Ok(value) = serde_json::from_str::<Value>(payload.trim()) else {
+        return 0;
+    };
+    value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|candidate| {
+            candidate
+                .pointer("/content/parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|part| {
+            part.get("inlineData")
+                .and_then(|inline| inline.get("mimeType"))
+                .and_then(Value::as_str)
+                .is_some_and(|mime| !mime.is_empty())
+        })
+        .take(MAX_BUILTIN_TOOL_CALLS as usize)
+        .count() as i32
 }
 
 fn usage_summary_from_moonshot_value(value: &Value) -> Option<UsageSummary> {
@@ -903,6 +1087,7 @@ fn merge_moonshot_stream_usage(previous: UsageSummary, current: UsageSummary) ->
         audio_output_tokens: non_zero_or(current.audio_output_tokens, previous.audio_output_tokens),
         is_anthropic_usage_semantic: current.is_anthropic_usage_semantic
             || previous.is_anthropic_usage_semantic,
+        tool_usage: merge_cumulative_tool_usage(previous.tool_usage, current.tool_usage),
     }
 }
 
@@ -1085,7 +1270,26 @@ fn merge_anthropic_stream_usage(mut current: UsageSummary, event: UsageSummary) 
     if usage_has_tokens(&current) || event.is_anthropic_usage_semantic {
         current.is_anthropic_usage_semantic = true;
     }
+    current.tool_usage = merge_cumulative_tool_usage(current.tool_usage, event.tool_usage);
     current
+}
+
+fn merge_cumulative_tool_usage(
+    previous: ToolUsageSummary,
+    current: ToolUsageSummary,
+) -> ToolUsageSummary {
+    ToolUsageSummary {
+        responses_web_search_calls: previous
+            .responses_web_search_calls
+            .max(current.responses_web_search_calls),
+        responses_file_search_calls: previous
+            .responses_file_search_calls
+            .max(current.responses_file_search_calls),
+        claude_web_search_calls: previous
+            .claude_web_search_calls
+            .max(current.claude_web_search_calls),
+        image_generation: current.image_generation.or(previous.image_generation),
+    }
 }
 
 fn usage_has_tokens(usage: &UsageSummary) -> bool {
@@ -2347,6 +2551,79 @@ mod tests {
                 ..UsageSummary::default()
             }
         );
+    }
+
+    #[test]
+    fn usage_summary_extracts_bounded_responses_and_claude_tool_facts() {
+        let usage = usage_summary_from_body(
+            r#"{
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "server_tool_use": {"web_search_requests": 3}
+                },
+                "output": [
+                    {"id":"w1","type":"web_search_call"},
+                    {"id":"f1","type":"file_search_call"},
+                    {"id":"i1","type":"image_generation_call","quality":"medium","size":"1024x1536"},
+                    {"id":"i2","type":"image_generation_call","quality":"low","size":"1536x1024"}
+                ]
+            }"#,
+        );
+        assert_eq!(usage.cached_tokens, 0);
+        assert_eq!(usage.tool_usage.responses_web_search_calls, 1);
+        assert_eq!(usage.tool_usage.responses_file_search_calls, 1);
+        assert_eq!(usage.tool_usage.claude_web_search_calls, 3);
+        assert_eq!(
+            usage.tool_usage.image_generation,
+            Some(ImageGenerationToolUsage {
+                quality: ImageGenerationQuality::Medium,
+                size: ImageGenerationSize::Portrait1024x1536,
+            })
+        );
+    }
+
+    #[test]
+    fn responses_sse_tool_items_are_counted_once_by_id() {
+        let body = concat!(
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"w1\",\"type\":\"web_search_call\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"w1\",\"type\":\"web_search_call\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"f1\",\"type\":\"file_search_call\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":2}}}\n\n",
+        );
+        let usage = usage_summary_from_sse_stream(body);
+        assert_eq!(usage.total_tokens, 9);
+        assert_eq!(usage.tool_usage.responses_web_search_calls, 1);
+        assert_eq!(usage.tool_usage.responses_file_search_calls, 1);
+    }
+
+    #[test]
+    fn anthropic_sse_uses_cumulative_server_tool_count() {
+        let body = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9,\"server_tool_use\":{\"web_search_requests\":2}}}}\n\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4,\"server_tool_use\":{\"web_search_requests\":3}}}\n\n",
+        );
+        let usage = usage_summary_from_anthropic_sse_stream(body);
+        assert_eq!(usage.tool_usage.claude_web_search_calls, 3);
+    }
+
+    #[test]
+    fn gemini_stream_images_apply_go_completion_fallback_without_rewriting_total() {
+        let body = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AA==\"}},{\"inlineData\":{\"mimeType\":\"image/webp\",\"data\":\"AA==\"}}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"totalTokenCount\":10}}\n\n",
+        );
+        let usage = usage_summary_from_gemini_sse_stream(body);
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 2_800);
+        assert_eq!(usage.total_tokens, 10);
+    }
+
+    #[test]
+    fn top_level_cached_tokens_is_a_supported_fallback() {
+        let usage = usage_summary_from_body(
+            r#"{"usage":{"prompt_tokens":100,"completion_tokens":10,"cached_tokens":40}}"#,
+        );
+        assert_eq!(usage.cached_tokens, 40);
     }
 
     #[test]

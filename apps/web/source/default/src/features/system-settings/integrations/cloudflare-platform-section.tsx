@@ -35,6 +35,7 @@ import {
   type PlatformReadinessStage,
 } from './cloudflare-platform-readiness'
 import { QuotaCoordinatorReconciliationPanel } from './quota-coordinator-reconciliation-panel'
+import { WfpTenantPlanPanel } from './wfp-tenant-plan-panel'
 
 type CapabilityRow = {
   label: string
@@ -162,6 +163,13 @@ export function CloudflarePlatformSection() {
             <QuotaCoordinatorReconciliationPanel
               runtimeReady={
                 capabilities.quota_coordinator_reconciliation_runtime_ready
+              }
+            />
+
+            <WfpTenantPlanPanel
+              planningReady={
+                capabilities.wfp_tenant_script_plan_compiled &&
+                capabilities.wfp_tenant_rust_wasm_runtime_compiled
               }
             />
 
@@ -1245,7 +1253,7 @@ function buildCapabilityGroups(
         {
           label: t('Outbound authority verifier'),
           description: t(
-            'Checks the central v2 signature, worker, path, method, and exact body at the final bearer-injection boundary.'
+            'Checks the central v3 signature, physical dispatch worker, fixed policy profile, path, method, and exact body at the final bearer-injection boundary.'
           ),
           ready: capabilities.wfp_outbound_authority_verifier_compiled,
           readyLabel: t('Compiled'),
@@ -1360,9 +1368,9 @@ function buildCapabilityGroups(
           missingLabel: t('Missing'),
         },
         {
-          label: t('Tenant AI Gateway policy'),
+          label: t('Outbound-owned AI Gateway policy'),
           description: t(
-            'Supports route-specific Gateway IDs, retry/cache/log policy headers, and metadata for tenant route smokes.'
+            'Discards tenant Gateway and attribution headers, then rebuilds route IDs, retry/cache/log policy, and signed metadata at the bearer boundary.'
           ),
           ready: capabilities.wfp_tenant_ai_gateway_policy_compiled,
           readyLabel: t('Compiled'),

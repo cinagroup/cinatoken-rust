@@ -7,8 +7,8 @@ import path from "node:path";
 const schemaVersion = 2;
 const expectedRuntime = "rust-wasm";
 const expectedOutboundAuthMode = "platform-outbound-v1";
-const expectedAuthorityVerifier = "platform-outbound-central-hmac-v2";
-const expectedReplayGuard = "platform-outbound-durable-object-once-v2";
+const expectedAuthorityVerifier = "platform-outbound-central-hmac-v3";
+const expectedReplayGuard = "platform-outbound-durable-object-once-v3";
 const expectedRoutes = [
   "/__cinatoken/tenant/status",
   "/v1/chat/completions",
@@ -23,6 +23,18 @@ const requiredBindings = new Map([
   ["CINATOKEN_WFP_OUTBOUND_AUTH_MODE", "plain_text"],
 ]);
 const forbiddenTenantBindings = new Set([
+  "AI_GATEWAY_ID",
+  "AI_GATEWAY_ID_OPENAI_CHAT",
+  "AI_GATEWAY_ID_OPENAI_RESPONSES",
+  "AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
+  "AI_GATEWAY_ID_AI_RUN",
+  "AI_GATEWAY_REQUEST_TIMEOUT_MS",
+  "AI_GATEWAY_MAX_ATTEMPTS",
+  "AI_GATEWAY_RETRY_DELAY_MS",
+  "AI_GATEWAY_BACKOFF",
+  "AI_GATEWAY_CACHE_TTL_SECONDS",
+  "AI_GATEWAY_SKIP_CACHE",
+  "AI_GATEWAY_COLLECT_LOG",
   "CF_API_TOKEN",
   "CLOUDFLARE_AI_GATEWAY_TOKEN",
   "CINATOKEN_WFP_OUTBOUND_AI_TOKEN",

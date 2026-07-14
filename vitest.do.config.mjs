@@ -71,12 +71,14 @@ export default defineConfig({
             maxBatchSize: 1,
             maxBatchTimeout: 0,
             maxRetries: 3,
-            deadLetterQueue: "cinatoken-rust-billing-finalization-runtime-parking",
+            deadLetterQueue:
+              "cinatoken-rust-billing-finalization-runtime-parking",
           },
         },
         outboundService: "realtime-provider-mock",
         serviceBindings: {
           WFP_TENANT_RUNTIME: "wfp-tenant-runtime",
+          WFP_OUTBOUND_RUNTIME: "wfp-outbound-runtime",
           WFP_OUTBOUND_MISSING_CONTEXT: "wfp-outbound-missing-context",
           WFP_OUTBOUND_WRONG_CONTEXT: "wfp-outbound-wrong-context",
           WFP_PROVIDER_MOCK: "wfp-provider-mock",
@@ -136,6 +138,9 @@ export default defineConfig({
             bindings: {
               CLOUDFLARE_ACCOUNT_ID: accountId,
               CINATOKEN_WFP_OUTBOUND_AI_TOKEN: "runtime-outbound-token",
+              AI_GATEWAY_ID: "runtime-outbound-gateway",
+              AI_GATEWAY_MAX_ATTEMPTS: "1",
+              AI_GATEWAY_COLLECT_LOG: "true",
               CINATOKEN_WFP_OUTBOUND_CONTEXT: {
                 version: 1,
                 route_kind: "relay-authority",
@@ -192,9 +197,9 @@ export default defineConfig({
               CINATOKEN_WFP_OUTBOUND_AI_TOKEN: "runtime-outbound-token",
               CINATOKEN_WFP_OUTBOUND_CONTEXT: {
                 version: 1,
-                route_kind: "preview-host",
+                route_kind: "relay-authority",
                 public_worker: authorityWorker,
-                dispatch_worker: authorityWorker,
+                dispatch_worker: "wrong-runtime-worker",
               },
             },
             durableObjects: {

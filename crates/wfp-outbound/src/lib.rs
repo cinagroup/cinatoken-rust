@@ -6,8 +6,8 @@
 
 use cinatoken_wfp_authority::{
     authority_replay_bucket, body_sha256, expected_ai_egress_path,
-    parse_unverified_authority_claims, OutboundInvocationContext, AUTHORITY_HEADER,
-    AUTHORITY_REPLAY_BINDING, OUTBOUND_CONTEXT_BINDING,
+    parse_unverified_authority_claims, AuthorityClaims, OutboundInvocationContext,
+    AUTHORITY_HEADER, AUTHORITY_REPLAY_BINDING, OUTBOUND_CONTEXT_BINDING, OUTBOUND_POLICY_PROFILE,
 };
 use futures_util::StreamExt;
 use serde_json::json;
@@ -21,6 +21,11 @@ use worker::{
 const CLOUDFLARE_AI_HOST: &str = "api.cloudflare.com";
 const ACCOUNT_ID_ENV: &str = "CLOUDFLARE_ACCOUNT_ID";
 const OUTBOUND_TOKEN_ENV: &str = "CINATOKEN_WFP_OUTBOUND_AI_TOKEN";
+const AI_GATEWAY_ID_ENV: &str = "AI_GATEWAY_ID";
+const AI_GATEWAY_ID_OPENAI_CHAT_ENV: &str = "AI_GATEWAY_ID_OPENAI_CHAT";
+const AI_GATEWAY_ID_OPENAI_RESPONSES_ENV: &str = "AI_GATEWAY_ID_OPENAI_RESPONSES";
+const AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV: &str = "AI_GATEWAY_ID_ANTHROPIC_MESSAGES";
+const AI_GATEWAY_ID_AI_RUN_ENV: &str = "AI_GATEWAY_ID_AI_RUN";
 const WFP_WORKER_HEADER: &str = "x-cinatoken-wfp-worker";
 const RELAY_AUTHORITY_ROUTE: &str = "relay-authority";
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -30,20 +35,35 @@ const ALLOWED_AI_PATHS: &[&str] = &[
     "/ai/v1/responses",
     "/ai/v1/messages",
 ];
-const FORWARDED_REQUEST_HEADERS: &[&str] = &[
-    "accept",
-    "content-type",
-    "cf-aig-gateway-id",
-    "cf-aig-request-timeout",
-    "cf-aig-max-attempts",
-    "cf-aig-retry-delay",
-    "cf-aig-backoff",
-    "cf-aig-cache-ttl",
-    "cf-aig-skip-cache",
-    "cf-aig-collect-log",
-    "cf-aig-metadata",
-    "x-cinatoken-tenant",
-    "x-cinatoken-wfp-runtime",
+const FORWARDED_REQUEST_HEADERS: &[&str] = &["accept", "content-type"];
+const AI_GATEWAY_REQUEST_POLICIES: &[AiGatewayRequestPolicy] = &[
+    AiGatewayRequestPolicy::positive_integer(
+        "AI_GATEWAY_REQUEST_TIMEOUT_MS",
+        "cf-aig-request-timeout",
+        1,
+        Some(600_000),
+    ),
+    AiGatewayRequestPolicy::positive_integer(
+        "AI_GATEWAY_MAX_ATTEMPTS",
+        "cf-aig-max-attempts",
+        1,
+        Some(10),
+    ),
+    AiGatewayRequestPolicy::positive_integer(
+        "AI_GATEWAY_RETRY_DELAY_MS",
+        "cf-aig-retry-delay",
+        0,
+        Some(60_000),
+    ),
+    AiGatewayRequestPolicy::backoff("AI_GATEWAY_BACKOFF", "cf-aig-backoff"),
+    AiGatewayRequestPolicy::positive_integer(
+        "AI_GATEWAY_CACHE_TTL_SECONDS",
+        "cf-aig-cache-ttl",
+        0,
+        None,
+    ),
+    AiGatewayRequestPolicy::boolean("AI_GATEWAY_SKIP_CACHE", "cf-aig-skip-cache"),
+    AiGatewayRequestPolicy::boolean("AI_GATEWAY_COLLECT_LOG", "cf-aig-collect-log"),
 ];
 const FORWARDED_RESPONSE_HEADERS: &[&str] = &[
     "content-type",
@@ -77,6 +97,52 @@ enum EgressPolicyError {
     AuthorityInvalid,
     AuthorityReplay,
     AuthorityUnavailable,
+    PolicyUnavailable,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AiGatewayRequestPolicy {
+    env: &'static str,
+    header: &'static str,
+    validator: PolicyValidator,
+}
+
+impl AiGatewayRequestPolicy {
+    const fn positive_integer(
+        env: &'static str,
+        header: &'static str,
+        min: u32,
+        max: Option<u32>,
+    ) -> Self {
+        Self {
+            env,
+            header,
+            validator: PolicyValidator::PositiveInteger { min, max },
+        }
+    }
+
+    const fn boolean(env: &'static str, header: &'static str) -> Self {
+        Self {
+            env,
+            header,
+            validator: PolicyValidator::Boolean,
+        }
+    }
+
+    const fn backoff(env: &'static str, header: &'static str) -> Self {
+        Self {
+            env,
+            header,
+            validator: PolicyValidator::Backoff,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PolicyValidator {
+    PositiveInteger { min: u32, max: Option<u32> },
+    Boolean,
+    Backoff,
 }
 
 #[event(fetch)]
@@ -103,9 +169,10 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> WorkerResult<Re
         Err(error) => return policy_error_response(error),
     };
 
-    if let Err(error) = authorize_egress_once(&req, &env, &url, &account_id, &body).await {
-        return policy_error_response(error);
-    }
+    let claims = match authorize_egress_once(&req, &env, &url, &account_id, &body).await {
+        Ok(claims) => claims,
+        Err(error) => return policy_error_response(error),
+    };
 
     let token = match env.secret(OUTBOUND_TOKEN_ENV) {
         Ok(value) if !value.to_string().trim().is_empty() => value,
@@ -117,7 +184,10 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> WorkerResult<Re
             )
         }
     };
-    let headers = outbound_headers(req.headers(), token.to_string().as_str())?;
+    let headers = match outbound_headers(req.headers(), &env, &claims, token.to_string().as_str()) {
+        Ok(headers) => headers,
+        Err(error) => return policy_error_response(error),
+    };
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
@@ -156,7 +226,7 @@ async fn authorize_egress_once(
     url: &Url,
     account_id: &str,
     body: &[u8],
-) -> Result<(), EgressPolicyError> {
+) -> Result<AuthorityClaims, EgressPolicyError> {
     let context: OutboundInvocationContext = env
         .object_var(OUTBOUND_CONTEXT_BINDING)
         .map_err(|_| EgressPolicyError::AuthorityUnavailable)?;
@@ -181,13 +251,16 @@ async fn authorize_egress_once(
     let actual_path =
         account_relative_path(url, account_id).ok_or(EgressPolicyError::AuthorityInvalid)?;
     if claims.method != "POST"
+        || claims.dispatch_worker != context.dispatch_worker
+        || claims.policy_profile != OUTBOUND_POLICY_PROFILE
         || expected_path != actual_path
         || claims.body_sha256 != body_sha256(body)
     {
         return Err(EgressPolicyError::AuthorityInvalid);
     }
 
-    consume_authority_once(env, &context.public_worker, &authority, claims.issued_at).await
+    consume_authority_once(env, &context.public_worker, &authority, claims.issued_at).await?;
+    Ok(claims)
 }
 
 fn account_relative_path<'a>(url: &'a Url, account_id: &str) -> Option<&'a str> {
@@ -317,15 +390,120 @@ fn append_bounded_chunk(
     Ok(())
 }
 
-fn outbound_headers(input: &Headers, token: &str) -> WorkerResult<Headers> {
+fn outbound_headers(
+    input: &Headers,
+    env: &Env,
+    claims: &AuthorityClaims,
+    token: &str,
+) -> Result<Headers, EgressPolicyError> {
     let mut headers = Headers::new();
     for name in FORWARDED_REQUEST_HEADERS {
-        if let Some(value) = input.get(name)? {
-            headers.set(name, &value)?;
+        if let Some(value) = input
+            .get(name)
+            .map_err(|_| EgressPolicyError::PolicyUnavailable)?
+        {
+            headers
+                .set(name, &value)
+                .map_err(|_| EgressPolicyError::PolicyUnavailable)?;
         }
     }
-    headers.set("authorization", &format!("Bearer {}", token.trim()))?;
+    if let Some(gateway_id) = outbound_gateway_id(env, &claims.path)? {
+        headers
+            .set("cf-aig-gateway-id", &gateway_id)
+            .map_err(|_| EgressPolicyError::PolicyUnavailable)?;
+    }
+    append_outbound_policy_headers(&mut headers, env)?;
+    headers
+        .set("cf-aig-metadata", &outbound_metadata(claims))
+        .map_err(|_| EgressPolicyError::PolicyUnavailable)?;
+    headers
+        .set("authorization", &format!("Bearer {}", token.trim()))
+        .map_err(|_| EgressPolicyError::PolicyUnavailable)?;
     Ok(headers)
+}
+
+fn outbound_gateway_id(env: &Env, public_path: &str) -> Result<Option<String>, EgressPolicyError> {
+    let route_env = match public_path {
+        "/v1/chat/completions" => AI_GATEWAY_ID_OPENAI_CHAT_ENV,
+        "/v1/responses" => AI_GATEWAY_ID_OPENAI_RESPONSES_ENV,
+        "/v1/messages" => AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
+        "/ai/run" => AI_GATEWAY_ID_AI_RUN_ENV,
+        _ => return Err(EgressPolicyError::PolicyUnavailable),
+    };
+    let value = runtime_value(env, route_env).or_else(|| runtime_value(env, AI_GATEWAY_ID_ENV));
+    value.map(validate_bounded_header_value).transpose()
+}
+
+fn append_outbound_policy_headers(
+    headers: &mut Headers,
+    env: &Env,
+) -> Result<(), EgressPolicyError> {
+    for policy in AI_GATEWAY_REQUEST_POLICIES {
+        let Some(value) = runtime_value(env, policy.env) else {
+            continue;
+        };
+        let value = validate_policy_value(&value, policy.validator)?;
+        headers
+            .set(policy.header, &value)
+            .map_err(|_| EgressPolicyError::PolicyUnavailable)?;
+    }
+    Ok(())
+}
+
+fn runtime_value(env: &Env, name: &str) -> Option<String> {
+    env.var(name)
+        .ok()
+        .map(|value| value.to_string())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_bounded_header_value(value: String) -> Result<String, EgressPolicyError> {
+    if value.len() > 128 || value.chars().any(char::is_control) {
+        Err(EgressPolicyError::PolicyUnavailable)
+    } else {
+        Ok(value)
+    }
+}
+
+fn validate_policy_value(
+    value: &str,
+    validator: PolicyValidator,
+) -> Result<String, EgressPolicyError> {
+    match validator {
+        PolicyValidator::PositiveInteger { min, max } => {
+            let parsed = value
+                .parse::<u32>()
+                .map_err(|_| EgressPolicyError::PolicyUnavailable)?;
+            if parsed < min || max.is_some_and(|max| parsed > max) {
+                return Err(EgressPolicyError::PolicyUnavailable);
+            }
+            Ok(parsed.to_string())
+        }
+        PolicyValidator::Boolean => match value.to_ascii_lowercase().as_str() {
+            "true" => Ok("true".to_string()),
+            "false" => Ok("false".to_string()),
+            _ => Err(EgressPolicyError::PolicyUnavailable),
+        },
+        PolicyValidator::Backoff => match value.to_ascii_lowercase().as_str() {
+            "constant" | "linear" | "exponential" => Ok(value.to_ascii_lowercase()),
+            _ => Err(EgressPolicyError::PolicyUnavailable),
+        },
+    }
+}
+
+fn outbound_metadata(claims: &AuthorityClaims) -> String {
+    json!({
+        "cinatoken": {
+            "authority_version": claims.version,
+            "channel_id": claims.channel_id,
+            "dispatch_worker": claims.dispatch_worker,
+            "policy_profile": claims.policy_profile,
+            "request_id": claims.request_id,
+            "worker": claims.worker,
+        }
+    })
+    .to_string()
 }
 
 fn public_response_headers(input: &Headers) -> WorkerResult<Headers> {
@@ -384,6 +562,11 @@ fn policy_error_response(error: EgressPolicyError) -> WorkerResult<Response> {
             503,
             "wfp_outbound_authority_unavailable",
             "outbound relay authority verification is unavailable",
+        ),
+        EgressPolicyError::PolicyUnavailable => (
+            503,
+            "wfp_outbound_policy_unavailable",
+            "outbound AI Gateway policy is unavailable",
         ),
         _ => (
             403,
@@ -524,7 +707,10 @@ mod tests {
     fn account_ids_and_header_sets_are_narrow() {
         assert!(valid_account_id(ACCOUNT));
         assert!(!valid_account_id("tenant-name"));
-        assert!(FORWARDED_REQUEST_HEADERS.contains(&"cf-aig-metadata"));
+        assert_eq!(FORWARDED_REQUEST_HEADERS, &["accept", "content-type"]);
+        assert!(!FORWARDED_REQUEST_HEADERS.contains(&"cf-aig-metadata"));
+        assert!(!FORWARDED_REQUEST_HEADERS.contains(&"cf-aig-gateway-id"));
+        assert!(!FORWARDED_REQUEST_HEADERS.contains(&"x-cinatoken-tenant"));
         assert!(!FORWARDED_REQUEST_HEADERS.contains(&"authorization"));
         assert!(!FORWARDED_REQUEST_HEADERS.contains(&"cookie"));
         assert!(!FORWARDED_RESPONSE_HEADERS.contains(&"set-cookie"));
@@ -533,5 +719,60 @@ mod tests {
         assert!(is_redirect_status(308));
         assert!(!is_redirect_status(299));
         assert!(!is_redirect_status(400));
+    }
+
+    #[test]
+    fn platform_policy_values_and_metadata_are_bounded() {
+        assert_eq!(
+            validate_policy_value(
+                "1",
+                PolicyValidator::PositiveInteger {
+                    min: 1,
+                    max: Some(10),
+                }
+            )
+            .as_deref(),
+            Ok("1")
+        );
+        assert_eq!(
+            validate_policy_value(
+                "11",
+                PolicyValidator::PositiveInteger {
+                    min: 1,
+                    max: Some(10),
+                }
+            ),
+            Err(EgressPolicyError::PolicyUnavailable)
+        );
+        assert_eq!(
+            validate_policy_value("TRUE", PolicyValidator::Boolean).as_deref(),
+            Ok("true")
+        );
+        assert_eq!(
+            validate_policy_value("random", PolicyValidator::Backoff),
+            Err(EgressPolicyError::PolicyUnavailable)
+        );
+
+        let claims = AuthorityClaims {
+            version: 3,
+            worker: "tenant-a".to_string(),
+            dispatch_worker: "staging-tenant-a".to_string(),
+            policy_profile: OUTBOUND_POLICY_PROFILE.to_string(),
+            method: "POST".to_string(),
+            path: "/v1/responses".to_string(),
+            body_sha256: "00".repeat(32),
+            request_id: "req-1".to_string(),
+            channel_id: 42,
+            issued_at: 100,
+            expires_at: 130,
+        };
+        let metadata: serde_json::Value =
+            serde_json::from_str(&outbound_metadata(&claims)).unwrap();
+        assert_eq!(metadata["cinatoken"]["authority_version"], 3);
+        assert_eq!(metadata["cinatoken"]["dispatch_worker"], "staging-tenant-a");
+        assert_eq!(
+            metadata["cinatoken"]["policy_profile"],
+            OUTBOUND_POLICY_PROFILE
+        );
     }
 }

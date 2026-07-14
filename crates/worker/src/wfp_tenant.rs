@@ -81,6 +81,8 @@ pub(crate) const WFP_TENANT_CUTOVER_GUARDS: &[&str] = &[
     "response_header_allowlist",
     "preview_response_security_headers",
     "ai_gateway_policy_headers",
+    "outbound_owned_ai_gateway_policy",
+    "signed_dispatch_worker",
     "central_billing_settlement",
     "tenant_status_smoke",
     "relay_authority_staging_replay",
@@ -143,6 +145,7 @@ struct TenantScriptPlanResponse {
     ai_gateway_id_configured: bool,
     route_ai_gateway_ids_configured: RouteGatewayIdConfigured,
     ai_gateway_request_policy_configured: GatewayRequestPolicyConfigured,
+    tenant_gateway_bindings_attached: bool,
     outbound_auth_mode: &'static str,
     tenant_cloudflare_token_attached: bool,
     artifact_upload_required: bool,
@@ -324,6 +327,16 @@ impl GatewayRequestPolicy {
             collect_log: self.collect_log.is_some(),
         }
     }
+
+    fn any_configured(&self) -> bool {
+        self.request_timeout_ms.is_some()
+            || self.max_attempts.is_some()
+            || self.retry_delay_ms.is_some()
+            || self.backoff.is_some()
+            || self.cache_ttl_seconds.is_some()
+            || self.skip_cache.is_some()
+            || self.collect_log.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -430,19 +443,21 @@ fn build_tenant_script_plan(
         .as_deref()
         .zip(namespace.as_deref())
         .map(|(account, ns)| dispatch_script_upload_url(account, ns, &script_name));
-    let redacted_metadata = upload_metadata(
-        &compatibility_date,
-        &tenant_id,
-        account_id.as_deref(),
-        ai_gateway_id.as_deref(),
-        &route_ai_gateway_ids,
-        &ai_gateway_request_policy,
-    );
-    let warnings = vec![
+    let redacted_metadata = upload_metadata(&compatibility_date, &tenant_id, account_id.as_deref());
+    let mut warnings = vec![
         "The generated JS fallback is status-only and cannot serve paid AI traffic.".to_string(),
         "Rust/Wasm artifact upload is required; use bun run deploy:wfp-tenant instead of the control-plane deploy endpoint.".to_string(),
         "Cloudflare AI authentication must be injected by the dispatch namespace outbound Worker; tenant scripts never receive CF_API_TOKEN.".to_string(),
     ];
+    if ai_gateway_id.is_some()
+        || route_ai_gateway_ids.any_configured()
+        || ai_gateway_request_policy.any_configured()
+    {
+        warnings.push(
+            "Legacy tenant AI Gateway settings were ignored; configure Gateway policy only on cinatoken-wfp-outbound."
+                .to_string(),
+        );
+    }
 
     Ok(TenantScriptPlanResponseInternal {
         plan: TenantScriptPlan {
@@ -490,6 +505,7 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
             || plan.route_ai_gateway_ids.any_configured(),
         route_ai_gateway_ids_configured: plan.route_ai_gateway_ids.configured(),
         ai_gateway_request_policy_configured: plan.ai_gateway_request_policy.configured(),
+        tenant_gateway_bindings_attached: false,
         outbound_auth_mode: WFP_OUTBOUND_AUTH_MODE,
         tenant_cloudflare_token_attached: false,
         artifact_upload_required: CONTROL_PLANE_ARTIFACT_UPLOAD_REQUIRED,
@@ -509,14 +525,7 @@ fn plan_response(plan: &TenantScriptPlanResponseInternal) -> TenantScriptPlanRes
     }
 }
 
-fn upload_metadata(
-    compatibility_date: &str,
-    tenant_id: &str,
-    account_id: Option<&str>,
-    ai_gateway_id: Option<&str>,
-    route_ai_gateway_ids: &RouteGatewayIds,
-    ai_gateway_request_policy: &GatewayRequestPolicy,
-) -> Value {
+fn upload_metadata(compatibility_date: &str, tenant_id: &str, account_id: Option<&str>) -> Value {
     let mut bindings = vec![json!({
         "name": "CINATOKEN_TENANT_ID",
         "type": "plain_text",
@@ -534,82 +543,11 @@ fn upload_metadata(
         "type": "plain_text",
         "text": WFP_OUTBOUND_AUTH_MODE
     }));
-    if let Some(ai_gateway_id) = ai_gateway_id {
-        bindings.push(json!({
-            "name": "AI_GATEWAY_ID",
-            "type": "plain_text",
-            "text": ai_gateway_id
-        }));
-    }
-    for (name, ai_gateway_id) in route_gateway_binding_values(route_ai_gateway_ids) {
-        if let Some(ai_gateway_id) = ai_gateway_id {
-            bindings.push(json!({
-                "name": name,
-                "type": "plain_text",
-                "text": ai_gateway_id
-            }));
-        }
-    }
-    for (name, value) in gateway_request_policy_binding_values(ai_gateway_request_policy) {
-        if let Some(value) = value {
-            bindings.push(json!({
-                "name": name,
-                "type": "plain_text",
-                "text": value
-            }));
-        }
-    }
     json!({
         "main_module": TENANT_MODULE_NAME,
         "compatibility_date": compatibility_date,
         "bindings": bindings
     })
-}
-
-fn gateway_request_policy_binding_values(
-    policy: &GatewayRequestPolicy,
-) -> [(&'static str, Option<&str>); 7] {
-    [
-        (
-            AI_GATEWAY_REQUEST_TIMEOUT_MS_ENV,
-            policy.request_timeout_ms.as_deref(),
-        ),
-        (AI_GATEWAY_MAX_ATTEMPTS_ENV, policy.max_attempts.as_deref()),
-        (
-            AI_GATEWAY_RETRY_DELAY_MS_ENV,
-            policy.retry_delay_ms.as_deref(),
-        ),
-        (AI_GATEWAY_BACKOFF_ENV, policy.backoff.as_deref()),
-        (
-            AI_GATEWAY_CACHE_TTL_SECONDS_ENV,
-            policy.cache_ttl_seconds.as_deref(),
-        ),
-        (AI_GATEWAY_SKIP_CACHE_ENV, policy.skip_cache.as_deref()),
-        (AI_GATEWAY_COLLECT_LOG_ENV, policy.collect_log.as_deref()),
-    ]
-}
-
-fn route_gateway_binding_values(
-    route_ai_gateway_ids: &RouteGatewayIds,
-) -> [(&'static str, Option<&str>); 4] {
-    [
-        (
-            AI_GATEWAY_ID_OPENAI_CHAT_ENV,
-            route_ai_gateway_ids.openai_chat.as_deref(),
-        ),
-        (
-            AI_GATEWAY_ID_OPENAI_RESPONSES_ENV,
-            route_ai_gateway_ids.openai_responses.as_deref(),
-        ),
-        (
-            AI_GATEWAY_ID_ANTHROPIC_MESSAGES_ENV,
-            route_ai_gateway_ids.anthropic_messages.as_deref(),
-        ),
-        (
-            AI_GATEWAY_ID_AI_RUN_ENV,
-            route_ai_gateway_ids.ai_run.as_deref(),
-        ),
-    ]
 }
 
 pub(crate) fn wfp_tenant_supported_routes() -> Vec<&'static str> {
@@ -656,6 +594,11 @@ pub(crate) fn wfp_outbound_egress_policy_compiled() -> bool {
         && source.contains("wfp_outbound_redirect_denied")
         && source.contains("is_redirect_status(status)")
         && source.contains("FORWARDED_REQUEST_HEADERS")
+        && source.contains("fn outbound_gateway_id")
+        && source.contains("fn append_outbound_policy_headers")
+        && source.contains("fn outbound_metadata")
+        && source.contains("claims.dispatch_worker != context.dispatch_worker")
+        && source.contains("claims.policy_profile != OUTBOUND_POLICY_PROFILE")
         && source.contains("FORWARDED_RESPONSE_HEADERS")
         && source.contains("OUTBOUND_CONTEXT_BINDING")
         && source.contains("parse_unverified_authority_claims")
@@ -726,13 +669,17 @@ pub(crate) fn wfp_tenant_internal_dispatch_required_compiled() -> bool {
 pub(crate) fn wfp_outbound_authority_verifier_compiled() -> bool {
     let tenant = include_str!("../../wfp-tenant/src/lib.rs");
     let outbound = include_str!("../../wfp-outbound/src/lib.rs");
-    tenant.contains("copy_header(req, &mut headers, AUTHORITY_HEADER)")
+    tenant.contains("OUTBOUND_REQUEST_HEADERS")
+        && tenant.contains("copy_header(req, &mut headers, name)")
+        && tenant.contains("tenant_gateway_headers_forwarded: false")
         && tenant.contains("bounded_verified_json")
         && !tenant.contains("WFP_RELAY_AUTHORITY_KEY")
         && !tenant.contains("consume_authority_once")
         && outbound.contains("parse_unverified_authority_claims")
         && outbound.contains("consume_authority_once")
         && outbound.contains("OUTBOUND_CONTEXT_BINDING")
+        && outbound.contains("claims.dispatch_worker != context.dispatch_worker")
+        && outbound.contains("claims.policy_profile != OUTBOUND_POLICY_PROFILE")
 }
 
 pub(crate) fn wfp_outbound_replay_guard_compiled() -> bool {
@@ -755,9 +702,20 @@ pub(crate) fn wfp_tenant_response_header_guard_compiled() -> bool {
 }
 
 pub(crate) fn wfp_tenant_ai_gateway_policy_compiled() -> bool {
+    let tenant = include_str!("../../wfp-tenant/src/lib.rs");
+    let outbound = include_str!("../../wfp-outbound/src/lib.rs");
+    let outbound_config = include_str!("../../wfp-outbound/wrangler.toml");
     WFP_TENANT_AI_GATEWAY_ROUTES.len() == 4
-        && route_gateway_binding_values(&RouteGatewayIds::default()).len() == 4
-        && gateway_request_policy_binding_values(&GatewayRequestPolicy::default()).len() == 7
+        && tenant.contains("tenant_gateway_headers_forwarded: false")
+        && tenant.contains(
+            "const OUTBOUND_REQUEST_HEADERS: &[&str] = &[\"content-type\", \"accept\", AUTHORITY_HEADER]",
+        )
+        && outbound.contains("const AI_GATEWAY_REQUEST_POLICIES")
+        && outbound.contains("fn outbound_gateway_id")
+        && outbound.contains("fn append_outbound_policy_headers")
+        && outbound.contains("fn outbound_metadata")
+        && outbound_config.contains("AI_GATEWAY_MAX_ATTEMPTS = \"1\"")
+        && outbound_config.contains("AI_GATEWAY_COLLECT_LOG = \"true\"")
 }
 
 fn tenant_worker_script() -> String {
@@ -1098,14 +1056,7 @@ mod tests {
 
     #[test]
     fn upload_metadata_requires_outbound_auth_and_never_attaches_cloudflare_token() {
-        let metadata = upload_metadata(
-            "2026-06-17",
-            "tenant-a",
-            Some("account"),
-            Some("gateway"),
-            &RouteGatewayIds::default(),
-            &GatewayRequestPolicy::default(),
-        );
+        let metadata = upload_metadata("2026-06-17", "tenant-a", Some("account"));
         let raw = metadata.to_string();
         assert!(raw.contains(WFP_OUTBOUND_AUTH_MODE_ENV));
         assert!(raw.contains(WFP_OUTBOUND_AUTH_MODE));
@@ -1113,65 +1064,11 @@ mod tests {
     }
 
     #[test]
-    fn upload_metadata_includes_route_specific_gateway_bindings() {
-        let route_gateway_ids = RouteGatewayIds {
-            openai_chat: Some("gateway-chat".to_string()),
-            anthropic_messages: Some("gateway-anthropic".to_string()),
-            ai_run: Some("gateway-ai-run".to_string()),
-            ..RouteGatewayIds::default()
-        };
-        let metadata = upload_metadata(
-            "2026-06-17",
-            "tenant-a",
-            Some("account"),
-            Some("gateway-default"),
-            &route_gateway_ids,
-            &GatewayRequestPolicy::default(),
-        );
+    fn upload_metadata_excludes_tenant_gateway_bindings() {
+        let metadata = upload_metadata("2026-06-17", "tenant-a", Some("account"));
         let raw = metadata.to_string();
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID\""));
-        assert!(raw.contains("\"text\":\"gateway-default\""));
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID_OPENAI_CHAT\""));
-        assert!(raw.contains("\"text\":\"gateway-chat\""));
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID_ANTHROPIC_MESSAGES\""));
-        assert!(raw.contains("\"text\":\"gateway-anthropic\""));
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_ID_AI_RUN\""));
-        assert!(raw.contains("\"text\":\"gateway-ai-run\""));
-        assert!(!raw.contains("AI_GATEWAY_ID_OPENAI_RESPONSES"));
-        assert!(!raw.contains("AI_GATEWAY_ID_OPENAI_EMBEDDINGS"));
-    }
-
-    #[test]
-    fn upload_metadata_includes_gateway_request_policy_bindings() {
-        let policy = GatewayRequestPolicy {
-            request_timeout_ms: Some("30000".to_string()),
-            max_attempts: Some("2".to_string()),
-            retry_delay_ms: Some("250".to_string()),
-            backoff: Some("exponential".to_string()),
-            collect_log: Some("true".to_string()),
-            ..GatewayRequestPolicy::default()
-        };
-        let metadata = upload_metadata(
-            "2026-06-17",
-            "tenant-a",
-            Some("account"),
-            Some("gateway-default"),
-            &RouteGatewayIds::default(),
-            &policy,
-        );
-        let raw = metadata.to_string();
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_REQUEST_TIMEOUT_MS\""));
-        assert!(raw.contains("\"text\":\"30000\""));
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_MAX_ATTEMPTS\""));
-        assert!(raw.contains("\"text\":\"2\""));
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_RETRY_DELAY_MS\""));
-        assert!(raw.contains("\"text\":\"250\""));
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_BACKOFF\""));
-        assert!(raw.contains("\"text\":\"exponential\""));
-        assert!(raw.contains("\"name\":\"AI_GATEWAY_COLLECT_LOG\""));
-        assert!(raw.contains("\"text\":\"true\""));
-        assert!(!raw.contains("AI_GATEWAY_SKIP_CACHE"));
-        assert!(!raw.contains("AI_GATEWAY_CACHE_TTL_SECONDS"));
+        assert!(!raw.contains("AI_GATEWAY"));
+        assert!(!raw.contains("cf-aig"));
     }
 
     #[test]

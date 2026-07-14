@@ -9,14 +9,15 @@ pub const AUTHORITY_SECRET_ENV: &str = "WFP_RELAY_AUTHORITY_SECRET";
 pub const AUTHORITY_REPLAY_BINDING: &str = "WFP_AUTHORITY_REPLAY";
 pub const AUTHORITY_REPLAY_CLASS: &str = "WfpAuthorityReplay";
 pub const OUTBOUND_CONTEXT_BINDING: &str = "CINATOKEN_WFP_OUTBOUND_CONTEXT";
-pub const AUTHORITY_VERSION: u8 = 2;
+pub const AUTHORITY_VERSION: u8 = 3;
 pub const OUTBOUND_CONTEXT_VERSION: u8 = 1;
+pub const OUTBOUND_POLICY_PROFILE: &str = "platform-ai-gateway-v1";
 pub const AUTHORITY_TTL_SECONDS: i64 = 30;
 pub const AUTHORITY_REPLAY_BUCKET_SECONDS: i64 = 60;
 const MAX_CLOCK_SKEW_SECONDS: i64 = 5;
 const MAX_AUTHORITY_LIFETIME_SECONDS: i64 = 60;
 pub const AUTHORITY_REPLAY_CLEANUP_GRACE_SECONDS: i64 = 5;
-const SIGNATURE_DOMAIN: &[u8] = b"cinatoken-wfp-central-authority:v2\0";
+const SIGNATURE_DOMAIN: &[u8] = b"cinatoken-wfp-central-authority:v3\0";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -24,6 +25,8 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct AuthorityClaims {
     pub version: u8,
     pub worker: String,
+    pub dispatch_worker: String,
+    pub policy_profile: String,
     pub method: String,
     pub path: String,
     pub body_sha256: String,
@@ -77,6 +80,8 @@ impl OutboundInvocationContext {
 #[derive(Debug, Clone, Copy)]
 pub struct AuthorityInput<'a> {
     pub worker: &'a str,
+    pub dispatch_worker: &'a str,
+    pub policy_profile: &'a str,
     pub method: &'a str,
     pub path: &'a str,
     pub body: &'a [u8],
@@ -88,6 +93,8 @@ pub struct AuthorityInput<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct AuthorityExpectation<'a> {
     pub worker: &'a str,
+    pub dispatch_worker: &'a str,
+    pub policy_profile: &'a str,
     pub method: &'a str,
     pub path: &'a str,
     pub body: &'a [u8],
@@ -125,6 +132,8 @@ pub fn sign_authority(secret: &[u8], input: AuthorityInput<'_>) -> Result<String
     validate_secret(secret)?;
     validate_identity(
         input.worker,
+        input.dispatch_worker,
+        input.policy_profile,
         input.method,
         input.path,
         input.request_id,
@@ -136,6 +145,8 @@ pub fn sign_authority(secret: &[u8], input: AuthorityInput<'_>) -> Result<String
     let claims = AuthorityClaims {
         version: AUTHORITY_VERSION,
         worker: input.worker.to_string(),
+        dispatch_worker: input.dispatch_worker.to_string(),
+        policy_profile: input.policy_profile.to_string(),
         method: input.method.to_ascii_uppercase(),
         path: input.path.to_string(),
         body_sha256: body_sha256(input.body),
@@ -159,7 +170,9 @@ pub fn verify_authority(
     expected: AuthorityExpectation<'_>,
 ) -> Result<AuthorityClaims, AuthorityError> {
     let claims = verify_claims_with_secret(secret, token, expected.worker, expected.now)?;
-    if claims.method != expected.method.to_ascii_uppercase()
+    if claims.dispatch_worker != expected.dispatch_worker
+        || claims.policy_profile != expected.policy_profile
+        || claims.method != expected.method.to_ascii_uppercase()
         || claims.path != expected.path
         || claims.body_sha256 != body_sha256(expected.body)
     {
@@ -232,6 +245,8 @@ fn decode_and_validate_claims(
         serde_json::from_slice(&payload).map_err(|_| AuthorityError::InvalidToken)?;
     validate_identity(
         &claims.worker,
+        &claims.dispatch_worker,
+        &claims.policy_profile,
         &claims.method,
         &claims.path,
         &claims.request_id,
@@ -312,12 +327,18 @@ pub fn validate_worker_name(worker: &str) -> Result<(), AuthorityError> {
 
 fn validate_identity(
     worker: &str,
+    dispatch_worker: &str,
+    policy_profile: &str,
     method: &str,
     path: &str,
     request_id: &str,
     channel_id: i64,
 ) -> Result<(), AuthorityError> {
     validate_worker_name(worker)?;
+    validate_worker_name(dispatch_worker)?;
+    if policy_profile != OUTBOUND_POLICY_PROFILE {
+        return Err(AuthorityError::InvalidInput);
+    }
     let method_valid = !method.is_empty()
         && method.len() <= 16
         && method.chars().all(|ch| ch.is_ascii_alphabetic());
@@ -379,6 +400,8 @@ mod tests {
     fn input<'a>(body: &'a [u8], issued_at: i64) -> AuthorityInput<'a> {
         AuthorityInput {
             worker: "tenant-a",
+            dispatch_worker: "staging-tenant-a",
+            policy_profile: OUTBOUND_POLICY_PROFILE,
             method: "POST",
             path: "/v1/responses",
             body,
@@ -391,6 +414,8 @@ mod tests {
     fn expected<'a>(body: &'a [u8], now: i64) -> AuthorityExpectation<'a> {
         AuthorityExpectation {
             worker: "tenant-a",
+            dispatch_worker: "staging-tenant-a",
+            policy_profile: OUTBOUND_POLICY_PROFILE,
             method: "POST",
             path: "/v1/responses",
             body,
@@ -402,7 +427,9 @@ mod tests {
     fn signed_authority_round_trips() {
         let token = sign_authority(SECRET, input(b"{}", 100)).unwrap();
         let claims = verify_authority(SECRET, &token, expected(b"{}", 101)).unwrap();
-        assert_eq!(claims.version, 2);
+        assert_eq!(claims.version, 3);
+        assert_eq!(claims.dispatch_worker, "staging-tenant-a");
+        assert_eq!(claims.policy_profile, OUTBOUND_POLICY_PROFILE);
         assert_eq!(claims.channel_id, 42);
         assert_eq!(claims.request_id, "req-1");
         assert_eq!(
@@ -427,6 +454,35 @@ mod tests {
         assert_eq!(
             verify_authority(SECRET, &token, wrong_worker).unwrap_err(),
             AuthorityError::InvalidSignature
+        );
+    }
+
+    #[test]
+    fn physical_dispatch_worker_and_policy_profile_are_signed() {
+        let token = sign_authority(SECRET, input(b"{}", 100)).unwrap();
+        let wrong_dispatch = AuthorityExpectation {
+            dispatch_worker: "production-tenant-a",
+            ..expected(b"{}", 101)
+        };
+        assert_eq!(
+            verify_authority(SECRET, &token, wrong_dispatch).unwrap_err(),
+            AuthorityError::ClaimMismatch
+        );
+        let wrong_profile = AuthorityExpectation {
+            policy_profile: "tenant-controlled-v1",
+            ..expected(b"{}", 101)
+        };
+        assert_eq!(
+            verify_authority(SECRET, &token, wrong_profile).unwrap_err(),
+            AuthorityError::ClaimMismatch
+        );
+        let invalid_input = AuthorityInput {
+            policy_profile: "tenant-controlled-v1",
+            ..input(b"{}", 100)
+        };
+        assert_eq!(
+            sign_authority(SECRET, invalid_input).unwrap_err(),
+            AuthorityError::InvalidInput
         );
     }
 

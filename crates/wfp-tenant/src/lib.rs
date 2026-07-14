@@ -31,6 +31,7 @@ const AI_GATEWAY_BACKOFF_ENV: &str = "AI_GATEWAY_BACKOFF";
 const AI_GATEWAY_CACHE_TTL_SECONDS_ENV: &str = "AI_GATEWAY_CACHE_TTL_SECONDS";
 const AI_GATEWAY_SKIP_CACHE_ENV: &str = "AI_GATEWAY_SKIP_CACHE";
 const AI_GATEWAY_COLLECT_LOG_ENV: &str = "AI_GATEWAY_COLLECT_LOG";
+const OUTBOUND_REQUEST_HEADERS: &[&str] = &["content-type", "accept", AUTHORITY_HEADER];
 const WFP_ROUTE_HEADER: &str = "x-cinatoken-wfp-route";
 const WFP_WORKER_HEADER: &str = "x-cinatoken-wfp-worker";
 const WFP_WORKER_NAME_ENV: &str = "CINATOKEN_WFP_WORKER_NAME";
@@ -39,8 +40,9 @@ const WFP_OUTBOUND_AUTH_MODE: &str = "platform-outbound-v1";
 const WFP_INTERNAL_ROUTE: &str = "internal-path";
 const WFP_RELAY_AUTHORITY_ROUTE: &str = "relay-authority";
 const STATUS_CONTROL_AUTHORITY_MODES: &[&str] = &[WFP_INTERNAL_ROUTE, WFP_RELAY_AUTHORITY_ROUTE];
-const PAID_AI_AUTHORITY_VERIFIER: &str = "platform-outbound-central-hmac-v2";
-const PAID_AI_REPLAY_GUARD: &str = "platform-outbound-durable-object-once-v2";
+const PAID_AI_AUTHORITY_VERIFIER: &str = "platform-outbound-central-hmac-v3";
+const PAID_AI_REPLAY_GUARD: &str = "platform-outbound-durable-object-once-v3";
+const AI_GATEWAY_POLICY_OWNER: &str = "platform-outbound-v1";
 const MAX_VERIFIED_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
 const UNKNOWN_TENANT: &str = "unknown";
 const SAFE_RESPONSE_HEADERS: &[&str] = &[
@@ -160,6 +162,8 @@ struct TenantStatus {
     default_ai_gateway_id_configured: bool,
     route_gateways: Vec<RouteGatewayStatus>,
     ai_gateway_request_policy: Vec<AiGatewayRequestPolicyStatus>,
+    ai_gateway_policy_owner: &'static str,
+    tenant_gateway_headers_forwarded: bool,
     inbound_sensitive_headers_present: bool,
     inbound_sensitive_headers: Vec<String>,
     status_control_authority_modes: &'static [&'static str],
@@ -274,6 +278,8 @@ fn tenant_status(req: &Request, env: &Env) -> WorkerResult<Response> {
         default_ai_gateway_id_configured,
         route_gateways,
         ai_gateway_request_policy: ai_gateway_request_policy_statuses(env),
+        ai_gateway_policy_owner: AI_GATEWAY_POLICY_OWNER,
+        tenant_gateway_headers_forwarded: false,
         inbound_sensitive_headers_present: !inbound_sensitive_headers.is_empty(),
         inbound_sensitive_headers,
         status_control_authority_modes: STATUS_CONTROL_AUTHORITY_MODES,
@@ -441,45 +447,12 @@ fn ai_gateway_url(account_id: &str, upstream_path: &str) -> WorkerResult<Url> {
     .map_err(|err| worker::Error::RustError(format!("failed to build AI Gateway URL: {err}")))
 }
 
-fn upstream_headers(req: &Request, env: &Env, route: TenantRoute) -> WorkerResult<Headers> {
+fn upstream_headers(req: &Request, _env: &Env, _route: TenantRoute) -> WorkerResult<Headers> {
     let mut headers = Headers::new();
-    copy_header(req, &mut headers, "content-type")?;
-    copy_header(req, &mut headers, "accept")?;
-    copy_header(req, &mut headers, AUTHORITY_HEADER)?;
-    if let Some(gateway_id) = gateway_id_for_route(env, route) {
-        headers.set("cf-aig-gateway-id", &gateway_id)?;
+    for name in OUTBOUND_REQUEST_HEADERS {
+        copy_header(req, &mut headers, name)?;
     }
-    append_ai_gateway_request_policy_headers(&mut headers, env)?;
-    headers.set(
-        "x-cinatoken-tenant",
-        &runtime_value(env, "CINATOKEN_TENANT_ID").unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
-    )?;
-    headers.set("x-cinatoken-wfp-runtime", "rust-wasm")?;
-    headers.set(
-        "cf-aig-metadata",
-        &ai_gateway_metadata_value(
-            &runtime_value(env, "CINATOKEN_TENANT_ID")
-                .unwrap_or_else(|| UNKNOWN_TENANT.to_string()),
-            route,
-        ),
-    )?;
     Ok(headers)
-}
-
-fn append_ai_gateway_request_policy_headers(headers: &mut Headers, env: &Env) -> WorkerResult<()> {
-    for policy in AI_GATEWAY_REQUEST_POLICIES {
-        let Some(value) = runtime_value(env, policy.env) else {
-            continue;
-        };
-        let Some(header_value) = validate_ai_gateway_policy_value(&value, policy.validator) else {
-            return Err(worker::Error::RustError(format!(
-                "{} is not a valid {} value",
-                policy.env, policy.header
-            )));
-        };
-        headers.set(policy.header, &header_value)?;
-    }
-    Ok(())
 }
 
 fn tenant_response_headers(upstream: &Headers, env: &Env) -> WorkerResult<Headers> {
@@ -519,13 +492,6 @@ fn route_gateway_statuses(env: &Env) -> Vec<RouteGatewayStatus> {
         .collect()
 }
 
-fn gateway_id_for_route(env: &Env, route: TenantRoute) -> Option<String> {
-    select_gateway_id(
-        runtime_value(env, route_gateway_env_name(route)),
-        runtime_value(env, AI_GATEWAY_ID_ENV),
-    )
-}
-
 fn route_gateway_env_name(route: TenantRoute) -> &'static str {
     match route.api_family {
         "openai_chat" => AI_GATEWAY_ID_OPENAI_CHAT_ENV,
@@ -534,10 +500,6 @@ fn route_gateway_env_name(route: TenantRoute) -> &'static str {
         "ai_run" => AI_GATEWAY_ID_AI_RUN_ENV,
         _ => AI_GATEWAY_ID_ENV,
     }
-}
-
-fn select_gateway_id(route_specific: Option<String>, default: Option<String>) -> Option<String> {
-    route_specific.or(default)
 }
 
 fn validate_ai_gateway_policy_value(
@@ -583,17 +545,6 @@ fn is_safe_response_header(name: &str) -> bool {
     SAFE_RESPONSE_HEADERS
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(name))
-}
-
-fn ai_gateway_metadata_value(tenant_id: &str, route: TenantRoute) -> String {
-    json!({
-        "tenant_id": tenant_id,
-        "runtime": "rust-wasm",
-        "source": SERVICE_NAME,
-        "route": route.public_path,
-        "api": route.api_family,
-    })
-    .to_string()
 }
 
 fn copy_header(req: &Request, output: &mut Headers, name: &str) -> WorkerResult<()> {
@@ -817,25 +768,6 @@ mod tests {
     }
 
     #[test]
-    fn ai_gateway_metadata_is_flat_and_route_specific() {
-        for route in SUPPORTED_ROUTES {
-            let metadata = ai_gateway_metadata_value("tenant-a", *route);
-            let parsed: serde_json::Value = serde_json::from_str(&metadata).unwrap();
-            assert_eq!(parsed["tenant_id"], "tenant-a");
-            assert_eq!(parsed["runtime"], "rust-wasm");
-            assert_eq!(parsed["source"], SERVICE_NAME);
-            assert_eq!(parsed["route"], route.public_path);
-            assert_eq!(parsed["api"], route.api_family);
-            assert_eq!(parsed.as_object().unwrap().len(), 5);
-            assert!(parsed
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|value| value.is_string()));
-        }
-    }
-
-    #[test]
     fn route_gateway_env_names_are_route_specific() {
         assert_eq!(
             route_gateway_env_name(target_route("/v1/chat/completions").unwrap()),
@@ -856,20 +788,19 @@ mod tests {
     }
 
     #[test]
-    fn route_gateway_selection_prefers_route_specific_id() {
+    fn outbound_request_headers_exclude_tenant_owned_gateway_policy() {
         assert_eq!(
-            select_gateway_id(
-                Some("route-gateway".to_string()),
-                Some("default".to_string())
-            )
-            .as_deref(),
-            Some("route-gateway")
+            OUTBOUND_REQUEST_HEADERS,
+            &["content-type", "accept", AUTHORITY_HEADER]
         );
-        assert_eq!(
-            select_gateway_id(None, Some("default".to_string())).as_deref(),
-            Some("default")
-        );
-        assert!(select_gateway_id(None, None).is_none());
+        for forbidden in [
+            "cf-aig-gateway-id",
+            "cf-aig-max-attempts",
+            "cf-aig-metadata",
+            "x-cinatoken-tenant",
+        ] {
+            assert!(!OUTBOUND_REQUEST_HEADERS.contains(&forbidden));
+        }
     }
 
     #[test]
@@ -1004,11 +935,11 @@ mod tests {
         assert_eq!(WFP_RELAY_AUTHORITY_ROUTE, "relay-authority");
         assert_eq!(
             PAID_AI_AUTHORITY_VERIFIER,
-            "platform-outbound-central-hmac-v2"
+            "platform-outbound-central-hmac-v3"
         );
         assert_eq!(
             PAID_AI_REPLAY_GUARD,
-            "platform-outbound-durable-object-once-v2"
+            "platform-outbound-durable-object-once-v3"
         );
         assert_eq!(WFP_WORKER_NAME_ENV, "CINATOKEN_WFP_WORKER_NAME");
         assert_eq!(MAX_VERIFIED_JSON_BODY_BYTES, 4 * 1024 * 1024);

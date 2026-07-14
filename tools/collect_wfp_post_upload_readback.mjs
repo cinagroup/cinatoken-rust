@@ -389,7 +389,7 @@ function validateSettings(envelope, identity) {
     names.add(name);
     requireSingleLine(binding.type, `[settings] ${name} type`);
   }
-  assertNoTenantAuthorityBindings(result.bindings, "settings");
+  assertNoForbiddenTenantBindings(result.bindings, "settings");
 }
 
 async function normalizeContent(response, identity, apiToken) {
@@ -418,7 +418,7 @@ async function normalizeContent(response, identity, apiToken) {
   if (!Array.isArray(metadata.bindings)) {
     throw new Error("[content] metadata bindings must be an array");
   }
-  assertNoTenantAuthorityBindings(metadata.bindings, "content metadata");
+  assertNoForbiddenTenantBindings(metadata.bindings, "content metadata");
   validateCompatibility(metadata, identity, "content metadata");
   const mainModule = requireModuleName(
     metadata.main_module,
@@ -476,8 +476,20 @@ async function normalizeContent(response, identity, apiToken) {
   };
 }
 
-function assertNoTenantAuthorityBindings(bindings, label) {
+function assertNoForbiddenTenantBindings(bindings, label) {
   const forbidden = new Set([
+    "AI_GATEWAY_ID",
+    "AI_GATEWAY_ID_OPENAI_CHAT",
+    "AI_GATEWAY_ID_OPENAI_RESPONSES",
+    "AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
+    "AI_GATEWAY_ID_AI_RUN",
+    "AI_GATEWAY_REQUEST_TIMEOUT_MS",
+    "AI_GATEWAY_MAX_ATTEMPTS",
+    "AI_GATEWAY_RETRY_DELAY_MS",
+    "AI_GATEWAY_BACKOFF",
+    "AI_GATEWAY_CACHE_TTL_SECONDS",
+    "AI_GATEWAY_SKIP_CACHE",
+    "AI_GATEWAY_COLLECT_LOG",
     "WFP_RELAY_AUTHORITY_KEY",
     "WFP_RELAY_AUTHORITY_SECRET",
     "WFP_AUTHORITY_REPLAY",
@@ -486,7 +498,7 @@ function assertNoTenantAuthorityBindings(bindings, label) {
     const binding = requireObject(raw, `[${label}] binding`);
     const name = requireBindingName(binding.name, `[${label}] binding name`);
     if (forbidden.has(name)) {
-      throw new Error(`[security] tenant authority binding ${name} is forbidden`);
+      throw new Error(`[security] tenant binding ${name} is forbidden`);
     }
   }
 }
@@ -862,7 +874,18 @@ async function runSelfTest() {
       changed.result.bindings[0].name = "WFP_RELAY_AUTHORITY_KEY";
       responses[1] = jsonResponse(changed);
     },
-    /tenant authority binding WFP_RELAY_AUTHORITY_KEY is forbidden/,
+    /tenant binding WFP_RELAY_AUTHORITY_KEY is forbidden/,
+    cases,
+  );
+  await expectCollectionFailure(
+    "tenant-gateway-binding-forbidden",
+    fixture,
+    (responses) => {
+      const changed = structuredClone(fixture.settingsEnvelope);
+      changed.result.bindings[0].name = "AI_GATEWAY_ID";
+      responses[1] = jsonResponse(changed);
+    },
+    /tenant binding AI_GATEWAY_ID is forbidden/,
     cases,
   );
 

@@ -1,7 +1,7 @@
 //! Final-boundary one-time consumption for WFP paid-request authority envelopes.
 //!
 //! The outbound Worker selects the canonical shard after exact-request checks;
-//! this platform-owned DO authenticates the central v2 signature and atomically
+//! this platform-owned DO authenticates the central v3 signature and atomically
 //! consumes the request ID before the outbound bearer can be injected.
 //!
 //! The tenant forwards the opaque envelope. The outbound Worker validates the

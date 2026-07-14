@@ -353,15 +353,19 @@ cinaVibeSDK pattern:
   sensitive request/response headers by rebuilding allowlists and blocks
   redirects.
 - Before WFP dispatch, the central relay creates an
-  `x-cinatoken-wfp-authority` envelope. Central-authority v2 is HMAC-SHA256
+  `x-cinatoken-wfp-authority` envelope. Central-authority v3 is HMAC-SHA256
   signed directly with platform-only `WFP_RELAY_AUTHORITY_SECRET`, expires
-  after 30 seconds, and binds the public worker, HTTP method, path,
-  request-body SHA-256, selected channel ID, and request ID. The artifact
+  after 30 seconds, and binds the public worker, physical dispatch Worker,
+  fixed outbound policy profile, HTTP method, path, request-body SHA-256,
+  selected channel ID, and request ID. The artifact
   uploader binds no authority signing or verification material into the tenant.
 - The tenant applies bounded route/body checks and forwards the opaque
   authority. Cloudflare injects `CINATOKEN_WFP_OUTBOUND_CONTEXT` into the
   outbound Worker, which validates route kind, public/dispatch worker, final
-  path/body, central signature, and replay before bearer access.
+  path/body, central signature, fixed policy, and replay before bearer access.
+- The tenant forwards no Gateway policy or attribution headers. The outbound
+  service owns route Gateway IDs, bounded retry/cache/logging, and metadata
+  derived from signed claims.
 - The paid tenant route set is deliberately limited to
   `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, and `/ai/run`.
   `/v1/embeddings` is not a valid WFP tenant route and has been removed.
@@ -496,7 +500,7 @@ and fallback behavior as the direct path.
 | `/v1/realtime` | `RealtimeSession` DO after G7 proof | DO long-session owner | `REALTIME_SESSION_V1_ENABLED` | Transient bridge lifecycle, frame guard, close/error mapping, send-failure cleanup, terminal event trace, upstream replay contract, backpressure policy plus runtime FIFO queue, controlled mock startup queue/drain and early fault plans, archived staging evidence, billing settlement, live protocol replay |
 | `/api/platform/realtime/:session...` | Platform smoke gateway | DO smoke/control surface | `REALTIME_SESSION_GATEWAY_ENABLED` | Status frame, persisted metrics, attachment restore, no-echo control probe, forged internal upstream header boundary smoke |
 | Tenant preview or internal dispatch hosts | WFP `DISPATCHER` | User-app dispatch boundary | `WFP_DISPATCH_ENABLED`, `WFP_INTERNAL_DISPATCH_ENABLED` | Capability preflight with tenant route/guard contract, Rust/Wasm runtime status, sanitized inbound headers, route markers, 401/403 negative tests |
-| Tenant AI routes | Main Rust relay, then WFP Rust tenant transport, outbound security boundary, then AI Gateway | Post-admission dispatch with signed body-bound central authority | Real `DISPATCHER`, exact outbound environment/context parameter, `WFP_RELAY_TRANSPORT_ENABLED`, tenant Gateway vars | Central reserve/settlement/audit evidence, authority/replay-free tenant readback, schema-3 outbound/replay readback, live context propagation, route-specific Gateway logs, response allowlist, and replay-resistance canary |
+| Tenant AI routes | Main Rust relay, then WFP Rust tenant transport, outbound security boundary, then AI Gateway | Post-admission dispatch with signed body-bound central authority | Real `DISPATCHER`, exact outbound environment/context parameter, `WFP_RELAY_TRANSPORT_ENABLED`, outbound-only Gateway vars | Central reserve/settlement/audit evidence, authority/replay/Gateway-policy-free tenant readback, schema-3 outbound/replay readback, live context propagation, route-specific Gateway logs, response allowlist, and replay-resistance canary |
 | Admin platform readiness | Main Rust Worker | Capability probe | Admin session | `/api/platform/capabilities` matches bindings, gates, WFP tenant route/guard contracts, and smoke readiness |
 
 ## Migration Stages

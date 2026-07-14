@@ -455,29 +455,29 @@ inventory proves no route targets this service.
 | `CLOUDFLARE_AI_GATEWAY_TOKEN` | secret | Preferred main-relay AI Gateway REST runtime token once the router is canaried | Prefer this narrower runtime secret over reusing the WFP dispatch deploy token |
 | `CINATOKEN_WFP_OUTBOUND_AI_TOKEN` | outbound Worker secret | AI Gateway REST authentication for `cinatoken-wfp-outbound` | Required only on the outbound service; never attach to a tenant, dispatch Worker, upload manifest, log, or evidence artifact; do not reuse the dispatch deploy token |
 | `CINATOKEN_WFP_OUTBOUND_AUTH_MODE` | tenant plain-text var | Declares platform-owned outbound auth | Must equal `platform-outbound-v1`; this marker replaces tenant runtime Cloudflare tokens and carries no credential |
-| `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central-authority v2 signing and platform replay verification | Master secret, minimum 32 bytes; retained only by the main Worker script and its DO; never make it available to an uploader, tenant, outbound Worker, manifest, log, or evidence artifact |
+| `WFP_RELAY_AUTHORITY_SECRET` | platform Worker secret | Central-authority v3 signing and platform replay verification | Master secret, minimum 32 bytes; retained only by the main Worker script and its DO; never make it available to an uploader, tenant, outbound Worker, manifest, log, or evidence artifact |
 | `CINATOKEN_WFP_OUTBOUND_CONTEXT` | dispatch outbound parameter | Bind route kind plus public and dispatched worker identity to final egress | The dispatch attachment declares exactly this one parameter; the main Worker supplies it in the Dynamic Dispatch third argument; it is not a tenant binding or credential |
 | `WFP_AUTHORITY_REPLAY` | Durable Object binding | One-time central-authority consumption before bearer access | Main Worker owns the class and master verifier; each outbound environment binds the matching main script externally. The tenant must have no replay binding. Missing/error fails paid AI closed |
 | `WFP_DISPATCH_NAMESPACE` | var | Tenant script upload target | Must match the commented `DISPATCHER` namespace once WFP is armed |
 | `WFP_TENANT_COMPATIBILITY_DATE` | var | Generated tenant Worker metadata | Defaults to `2026-06-17` to match the main Worker unless deliberately bumped |
-| `AI_GATEWAY_ID` | var | Optional tenant runtime `cf-aig-gateway-id` header | Empty means direct AI Gateway REST account path without a specific gateway id |
+| `AI_GATEWAY_ID` | outbound Worker var | Optional platform-owned default `cf-aig-gateway-id` header | Configure on `cinatoken-wfp-outbound`, never on the tenant; empty means the account path has no explicit Gateway ID |
 | `RELAY_AI_GATEWAY_ROUTER_ENABLED` | var | Main relay AI Gateway REST router gate | Must stay `false` until channel-editor-created `channels.other_info.ai_gateway.enabled` canary metadata, provider-prefix policy, key/base-url coupling, same-channel direct fallback smoke, billing settlement, forwarder smoke, and staging panel evidence are approved |
 | `RELAY_MODEL_FALLBACK_ENABLED` | var | Independent Rust primary-to-fallback model gate | Default `false`; requires the AI Gateway router, opted-in primary/fallback channels, supported chat/Responses/Messages route, a validated mapping, `relay_ai_gateway_cross_model_actual_group_billing_compiled=true`, and archived fixed/`auto` staging D1 evidence for maximum reservation plus actual-serving-group settlement/refund |
 | `RELAY_MODEL_FALLBACKS_JSON` | var | Exact JSON object from requested primary model to one AI-Gateway-prefixed fallback model | Default `{}`; maximum 128 mappings and 200 characters per model name; never use a silent wildcard or secret value |
 | `RELAY_MODEL_FALLBACK_STAGING_VERIFIED` | var | Production cutover evidence marker | Keep `false` until archived staging proves primary server failure, served fallback identity, token denial, channel reselection, exactly-one reserve/refund/settlement, audit metadata, streaming boundary, and rollback |
 | `RELAY_MODEL_FALLBACK_MESSAGES_STAGING_VERIFIED` | var | Messages-specific fallback cutover evidence marker | Default `false`; requires independent `/v1/messages` logical/effective schema mismatch, full D1 candidate selection, sticky 401/403/429 veto, non-stream/stream, billing, audit, and rollback evidence. Overall fallback cutover requires this and the general marker |
 | `RELAY_ACTUAL_GROUP_BILLING_STAGING_SMOKE_ENABLED` | var | Admin-only actual-serving-group D1 Worker-binding smoke | Default `false` in every environment. Enable only against isolated non-production D1 for the three fixed smoke scenarios; require the three `relay_ai_gateway_actual_group_billing_staging_smoke_*` capabilities, strict PASS reports, and `cleanupVerified=true`, then disable again. This flag is not a fallback cutover marker. |
-| `AI_GATEWAY_ID_OPENAI_CHAT` | var | Optional WFP tenant gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only |
-| `AI_GATEWAY_ID_OPENAI_RESPONSES` | var | Optional WFP tenant gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only |
-| `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | var | Optional WFP tenant gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only |
-| `AI_GATEWAY_ID_AI_RUN` | var | Optional WFP tenant gateway override for `/ai/run` | Overrides `AI_GATEWAY_ID` for this route only |
-| `AI_GATEWAY_REQUEST_TIMEOUT_MS` | var | Optional WFP tenant `cf-aig-request-timeout` header | Positive integer milliseconds; controlled by tenant binding, never by caller headers |
-| `AI_GATEWAY_MAX_ATTEMPTS` | var | Optional WFP tenant `cf-aig-max-attempts` header | Positive integer 1-5 |
-| `AI_GATEWAY_RETRY_DELAY_MS` | var | Optional WFP tenant `cf-aig-retry-delay` header | Positive integer 1-5000 milliseconds |
-| `AI_GATEWAY_BACKOFF` | var | Optional WFP tenant `cf-aig-backoff` header | `constant`, `linear`, or `exponential` |
-| `AI_GATEWAY_CACHE_TTL_SECONDS` | var | Optional WFP tenant `cf-aig-cache-ttl` header | Positive integer seconds |
-| `AI_GATEWAY_SKIP_CACHE` | var | Optional WFP tenant `cf-aig-skip-cache` header | `true` or `false`; useful for staging/provider parity smoke |
-| `AI_GATEWAY_COLLECT_LOG` | var | Optional WFP tenant `cf-aig-collect-log` header | `true` or `false`; keep enabled during staging smoke unless a redaction exception is approved |
+| `AI_GATEWAY_ID_OPENAI_CHAT` | outbound Worker var | Optional platform Gateway override for `/v1/chat/completions` | Overrides `AI_GATEWAY_ID` for this route only; never a tenant binding |
+| `AI_GATEWAY_ID_OPENAI_RESPONSES` | outbound Worker var | Optional platform Gateway override for `/v1/responses` | Overrides `AI_GATEWAY_ID` for this route only; never a tenant binding |
+| `AI_GATEWAY_ID_ANTHROPIC_MESSAGES` | outbound Worker var | Optional platform Gateway override for `/v1/messages` | Overrides `AI_GATEWAY_ID` for this route only; never a tenant binding |
+| `AI_GATEWAY_ID_AI_RUN` | outbound Worker var | Optional platform Gateway override for `/ai/run` | Overrides `AI_GATEWAY_ID` for this route only; never a tenant binding |
+| `AI_GATEWAY_REQUEST_TIMEOUT_MS` | outbound Worker var | Optional platform `cf-aig-request-timeout` header | Integer 1-600000 milliseconds; tenant input is discarded |
+| `AI_GATEWAY_MAX_ATTEMPTS` | outbound Worker var | Platform `cf-aig-max-attempts` header | Integer 1-10; tracked environments pin 1 for central exactly-one-attempt canaries |
+| `AI_GATEWAY_RETRY_DELAY_MS` | outbound Worker var | Optional platform `cf-aig-retry-delay` header | Integer 0-60000 milliseconds |
+| `AI_GATEWAY_BACKOFF` | outbound Worker var | Optional platform `cf-aig-backoff` header | `constant`, `linear`, or `exponential` |
+| `AI_GATEWAY_CACHE_TTL_SECONDS` | outbound Worker var | Optional platform `cf-aig-cache-ttl` header | Non-negative integer seconds |
+| `AI_GATEWAY_SKIP_CACHE` | outbound Worker var | Optional platform `cf-aig-skip-cache` header | `true` or `false`; useful for staging/provider parity smoke |
+| `AI_GATEWAY_COLLECT_LOG` | outbound Worker var | Platform `cf-aig-collect-log` header | `true` or `false`; tracked environments keep it true for evidence collection |
 
 Smoke order:
 
@@ -566,7 +566,7 @@ Smoke order:
    through the normal public relay token boundary. Do not call a tenant AI route
    through the admin dispatch endpoint. Before enabling the gate, require a
    fixed non-`auto` group with one candidate channel, `RELAY_RETRY_TIMES=0`,
-   cross-model fallback disabled, tenant `AI_GATEWAY_MAX_ATTEMPTS=1`, and both
+   cross-model fallback disabled, outbound `AI_GATEWAY_MAX_ATTEMPTS=1`, and both
    outbound attachment and tenant artifact/status readbacks. Run
    `check:wfp-outbound:egress-contract` and `check:wfp-outbound:egress-plan`,
    then execute `smoke:wfp-outbound-egress` once per route. Live mode uses the

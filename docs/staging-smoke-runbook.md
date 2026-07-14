@@ -251,7 +251,7 @@ audit. Keep `WFP_RELAY_TRANSPORT_ENABLED=false` except for the isolated canary.
 Preconditions:
 
 - Provision a staging-only `WFP_RELAY_AUTHORITY_SECRET` of at least 32 bytes on
-  the platform Worker only. It signs central-authority v2 directly and is also
+  the platform Worker only. It signs central-authority v3 directly and is also
   available to the platform-owned replay DO through that script. Do not derive
   or bind an authority key into any tenant, and do not record the value.
 - Use a least-privilege Cloudflare deploy token for script PUT/GET. Provision a
@@ -403,16 +403,20 @@ Pass criteria:
   the opaque request-scoped authority and forwards it to the outbound boundary.
 - The tenant status reports
   `paid_ai_authority_verifier=platform-outbound-central-hmac-v2`,
-  `paid_ai_replay_guard=platform-outbound-durable-object-once-v2`, and
+  `paid_ai_replay_guard=platform-outbound-durable-object-once-v3`, and
   `tenant_authority_replay_binding_bound=false`.
 - Remote staging proves that Cloudflare injects the exact outbound context and
-  that the outbound Worker validates context, authority, final path, body, and
-  replay before reading or injecting its bearer.
+  that the outbound Worker validates context, signed physical dispatch Worker,
+  fixed policy profile, authority, final path, body, and replay before reading
+  or injecting its bearer.
+- Configure route Gateway IDs and bounded retry/cache/logging values only on
+  `cinatoken-wfp-outbound`. Prove tenant `cf-aig-*`, identity, and metadata
+  headers cannot override the platform values.
 - The normal relay path owns token auth, D1 selection, reserve, exactly-once
   settlement/refund, and audit. Tenant forwarding does not duplicate them.
 - The transport gate is returned to `false` after the canary.
 
-Status as of 2026-07-13: central-authority v2, outbound context binding, final
+Status as of 2026-07-14: central-authority v3, outbound context binding, final
 verification, and replay consumption pass local Rust and Workerd tests. The
 signed-authority billing canary, real Dynamic Dispatch parameter propagation,
 live duplicate race, and real upload/binding readback remain pending. This

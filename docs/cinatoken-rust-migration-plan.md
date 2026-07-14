@@ -5268,7 +5268,10 @@ Implemented:
   - `AI_GATEWAY_CACHE_TTL_SECONDS` -> `cf-aig-cache-ttl`;
   - `AI_GATEWAY_SKIP_CACHE` -> `cf-aig-skip-cache`;
   - `AI_GATEWAY_COLLECT_LOG` -> `cf-aig-collect-log`.
-- Kept the policy controlled by tenant bindings only. The tenant still copies
+- Historical state: policy was controlled by tenant bindings in this increment.
+  Section 22.197 supersedes that design; the current tenant forwards no Gateway
+  policy and the platform outbound Worker owns every `cf-aig-*` value. At this
+  point the tenant still copied
   only `content-type` and `accept` from the caller before adding
   authorization, route gateway ID, tenant metadata, runtime marker, and the
   validated policy headers.
@@ -9494,8 +9497,9 @@ Current architecture:
   preview and admin controls do not authorize paid AI traffic.
 - The central relay sends `x-cinatoken-wfp-authority`, an HMAC-SHA256 envelope
   signed directly with the platform-only `WFP_RELAY_AUTHORITY_SECRET`. The
-  current central-authority v2 contract binds public worker, method, path, body
-  SHA-256, selected channel ID, and request ID for 30 seconds. No authority
+  current central-authority v3 contract binds public worker, physical dispatch
+  Worker, fixed policy profile, method, path, body SHA-256, selected channel ID,
+  and request ID for 30 seconds. No authority
   signing or verification material is derived into the Rust/Wasm tenant.
 - The WFP response returns to the central relay for the existing quota
   settlement/refund and audit path. The tenant runtime does not own token auth,
@@ -10078,8 +10082,9 @@ Authoritative architecture:
 - The outbound Worker rejects wrong scheme, host, account, port, path, URL
   credentials, query, and fragment. It rebuilds request and response headers
   from narrow allowlists and rejects redirects. Before reading or injecting
-  its bearer, it matches central-authority v2 to the invocation context,
-  method, final path, exact body hash, and one-time platform replay result.
+  its bearer, it matches central-authority v3 to the invocation context,
+  physical dispatch Worker, fixed policy profile, method, final path, exact
+  body hash, and one-time platform replay result.
 
 Production evidence boundary:
 
@@ -10927,8 +10932,9 @@ platform-owned components.
 #### Landed trust boundary
 
 1. The main Worker completes relay-token authentication, D1 channel selection,
-   quota reservation, and WFP worker selection. It signs central-authority v2
-   directly with `WFP_RELAY_AUTHORITY_SECRET`; no derived key is exported.
+   quota reservation, and WFP worker selection. It signs central-authority v3
+   directly with `WFP_RELAY_AUTHORITY_SECRET`, including physical target and
+   fixed policy claims; no derived key is exported.
 2. The tenant receives no Cloudflare bearer, authority key/master, or replay DO
    binding. It permits only the four reviewed routes, validates bounded JSON,
    and forwards the opaque request-scoped authority.
@@ -10990,15 +10996,15 @@ archive only redacted JSON, IDs, timestamps, counts, and hashes.
 | WFP-S0 | Keep transport false; deploy main Worker migration and DO | `v4-wfp-authority-replay`, secret-name inventory, no value exposure | Restore prior main version; leave D1/DO data intact |
 | WFP-S1 | Deploy `cinatoken-wfp-outbound` staging environment | No workers.dev, Preview URL, Custom Domain, or Zone route; bearer only on outbound | Remove namespace attachment before reverting service |
 | WFP-S2 | Attach staging namespace outbound service | Schema-3 readback proves exact service, `staging` environment, one context parameter, and staging replay script/class | Remove attachment; do not enable relay transport |
-| WFP-S3 | Upload strict Rust/Wasm tenant | PUT/GET module hashes match; no bearer, authority key/master, or replay binding; status-only admin smoke passes | Delete only the canary tenant script |
+| WFP-S3 | Upload strict Rust/Wasm tenant | PUT/GET module hashes match; no bearer, authority key/master, replay, or Gateway-policy binding; status-only admin smoke passes | Delete only the canary tenant script |
 | WFP-S4 | Run final-boundary negatives | Missing/wrong context, signature, worker, route, final path, body, time, and replay all fail closed with zero provider calls | Detach outbound service and preserve evidence |
 | WFP-S5 | Enable one fixed-group, one-channel route canary | One provider call, one reserve, one settlement/refund, one final type-2 audit row, expected Gateway log | Set `WFP_RELAY_TRANSPORT_ENABLED=false` first |
 | WFP-S6 | Replay, eviction, cleanup, and load | One winner under sequential/concurrent duplicates; persistence across eviction/redeploy; bounded cleanup/storage/latency | Disable transport; detach service if invariants drift |
 
 Do not combine stages or enable production while any prior artifact is absent.
 Run one reviewed route per process with central retries at zero, cross-model
-fallback off, one candidate WFP channel, and tenant Gateway attempts equal to
-one. Repeat the positive canary separately for chat, responses, messages, and
+fallback off, one candidate WFP channel, outbound Gateway attempts equal to
+one, and no tenant Gateway binding. Repeat the positive canary separately for chat, responses, messages, and
 ai-run only after each previous result is reconciled.
 
 #### Promotion and rollback gates
@@ -12019,3 +12025,62 @@ terminal audit delivery, response identity, and disable-first rollback. Archive
 Cloudflare AI Gateway logs and redacted D1/Queue evidence independently from the
 chat/Responses replay. No credential, remote provider request, resource,
 migration, or deployment was used. Production remains **NO-GO**.
+
+### 22.197 2026-07-14 WFP Authority V3 And Outbound-Owned Gateway Policy
+
+This increment closes the local bearer-boundary gap where an untrusted tenant
+could influence Cloudflare AI Gateway policy after central admission. It does
+not enable WFP transport, upload a tenant, attach a dispatch namespace, or make
+a remote request.
+
+Implemented locally:
+
+- Central authority v3 signs the public tenant, physical dispatch Worker,
+  `platform-ai-gateway-v1` policy profile, method, final path, body hash,
+  channel, request identity, and expiry. The Worker verifies the derived
+  physical target before dispatch; outbound verifies it again against the
+  Cloudflare invocation context before replay or bearer access.
+- The Rust/Wasm tenant forwards only `content-type`, `accept`, and the opaque
+  authority. It cannot select a Gateway ID, retry count, timeout, cache mode,
+  log mode, attribution, or metadata.
+- `cinatoken-wfp-outbound` owns default and route-specific Gateway IDs plus
+  bounded timeout/retry/cache/logging configuration. It discards tenant
+  `cf-aig-*` and identity headers, creates metadata from signed claims, consumes
+  replay, then injects its private bearer. Missing or invalid platform policy is
+  a fail-closed 503.
+- The root-admin React/Bun workbench plans the strict Rust artifact upload from
+  the existing no-deploy API, validates namespace/script/date/header inputs,
+  and copies an explicit redacted evidence allowlist. It does not accept a
+  Cloudflare token or expose a deploy action. The plan and Rust/Wasm uploader
+  attach no tenant Gateway binding; retired Gateway CLI flags fail closed, and
+  post-upload collection/verification reject those bindings.
+
+Local tests cover wrong physical target, wrong policy profile, tenant policy
+spoofing, central header reconstruction, exact metadata attribution, replay,
+Wasm compilation, dry-run upload planning, frontend route coverage, and the
+release Workerd path. These are implementation proofs only. Promotion still
+requires a rotated scoped credential, authenticated tenant/outbound/namespace
+readback, no-public-route evidence, live invocation-context propagation,
+sequential and concurrent replay races, four-route Gateway logs, central
+billing/audit reconciliation, cost/latency limits, and disable-first rollback.
+Production remains **NO-GO**.
+
+### 22.198 2026-07-14 Realtime Billable-Admission Interlock
+
+Realtime WebSocket admission now requires the same frozen tiered-expression
+snapshot used by reservation and settlement. If no expression exists for the
+selected model, the Worker returns OpenAI-compatible 503 code
+`realtime_billing_mode_unsupported` before creating the selected-upstream
+handoff or upgrading the client socket. There is no flat-billing fallback and
+no second pricing truth.
+
+The release Workerd regression removes the model expression after seeding an
+otherwise valid authenticated Realtime route, then requires zero provider
+connections, zero Realtime reservations, unchanged user/token/channel quota,
+and unchanged request count. This closes unbilled session admission locally;
+it does not prove provider usage completeness. Staging must still cover missing
+and null `response.done` usage, partial/malformed usage, disconnect, D1 failure,
+eviction/redeploy, lease/global-recovery races, audit/invoice reconciliation,
+alerts, and rollback with the settlement gates default-off until approved. No
+remote request, credential, resource, migration, or deployment was used.
+Production remains **NO-GO**.

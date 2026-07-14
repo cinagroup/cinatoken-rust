@@ -61,9 +61,10 @@ Last checked: 2026-07-13
   returns through central settlement/refund and audit.
 - `WFP_RELAY_TRANSPORT_ENABLED` is explicitly false in tracked environments.
   The platform Worker alone retains `WFP_RELAY_AUTHORITY_SECRET` and signs the
-  central-authority v2 envelope directly. No authority key or verifier secret
+  central-authority v3 envelope directly. No authority key or verifier secret
   is derived into or uploaded with a tenant. The 30-second envelope binds the
-  public worker, method, path, body hash, channel ID, and request ID.
+  public worker, physical dispatch Worker, fixed outbound policy profile,
+  method, path, body hash, channel ID, and request ID.
 - Admin dispatch is status-only, generated JavaScript fallback AI deploy is
   disabled, and the strict production artifact path is the Rust/Wasm uploader.
   The dispatch namespace must attach outbound service `cinatoken-wfp-outbound`.
@@ -2720,25 +2721,13 @@ baseline above.
   default gate; the only warnings remain the existing
   `d1_repositories.rs` dead-code warnings.
 
-- **WFP tenant AI Gateway request policy controls - locally verified
-  (2026-07-05).** The Rust/Wasm tenant runtime and generated JS fallback now
-  support tenant-bound AI Gateway per-request policy headers:
-  `cf-aig-request-timeout`, `cf-aig-max-attempts`, `cf-aig-retry-delay`,
-  `cf-aig-backoff`, `cf-aig-cache-ttl`, `cf-aig-skip-cache`, and
-  `cf-aig-collect-log`. These headers are generated only from validated
-  `AI_GATEWAY_*` tenant bindings; caller-supplied `cf-aig-*` headers are still
-  not forwarded through the tenant boundary. Tenant status exposes
-  `ai_gateway_request_policy` with env/header/configured/valid booleans, and
-  WFP dispatch smoke fails if any configured policy is invalid. The Rust/Wasm
-  artifact uploader and generated fallback control plane now include the same
-  plain-text policy bindings, with local deploy-plan coverage for timeout,
-  retry attempts, retry delay, backoff, and log collection. Local evidence:
-  `cargo test -p cinatoken-wfp-tenant` (passed; 10 tests),
-  `cargo test -p cinatoken-worker --lib wfp_tenant` (passed; 8 generated
-  fallback/control-plane tests), `bun run check:wfp-tenant:deploy-plan`
-  (passed with policy flags), and `bun run check:wfp-dispatch:smoke-plan`
-  (passed). Live staging still needs policy-bearing status smoke and AI Gateway
-  log evidence showing the selected gateway/policy behavior on route smoke.
+- **Historical WFP tenant Gateway controls - superseded (2026-07-14).** The
+  2026-07-05 increment attached validated `AI_GATEWAY_*` values to tenant
+  metadata. That ownership model is retired. New Rust/Wasm uploads reject the
+  old CLI flags, do not read those values from the uploader environment, and
+  attach no Gateway ID or request-policy binding. Post-upload collection and
+  verification treat every such tenant binding as forbidden. Gateway policy is
+  configured only on `cinatoken-wfp-outbound`.
 
 - **OpenAI Realtime DO auth boundary - locally verified (2026-07-05).**
   `/v1/realtime` is now an early-dispatch, default-off WebSocket route gated
@@ -2760,25 +2749,16 @@ baseline above.
   Realtime bridge, preconsume/settlement/audit, and live hibernation/protocol
   replay remain G7-gated.
 
-- **WFP tenant route-level AI Gateway selection - locally verified
-  (2026-07-05).** The Rust/Wasm tenant runtime and generated JS fallback now
-  support route-specific AI Gateway ID bindings for `/v1/chat/completions`,
-  `/v1/responses`, `/v1/messages`, `/v1/embeddings`, and `/ai/run`, falling
-  back to the default `AI_GATEWAY_ID` when a route override is absent. The
-  tenant status response reports `default_ai_gateway_id_configured` and
-  per-route `route_gateways` entries so staging smoke can prove which gateway
-  env var applies before live traffic is compared. The Worker control-plane
-  plan/deploy metadata and the local `bun run deploy:wfp-tenant` artifact
-  uploader now accept and attach the same route-specific bindings. Local
-  evidence: `cargo test -p cinatoken-wfp-tenant` (7 passed),
-  `cargo test -p cinatoken-worker --lib wfp_tenant` (7 passed; 388 filtered),
-  `bun run check:wfp-tenant` (passed), `bun run check` (passed; frontend route
-  audit 214 calls / 307 Worker routes / 0 missing calls), and a route-override
-  uploader dry-run with `--ai-gateway-id`, `--ai-gateway-id-openai-chat`,
-  `--ai-gateway-id-anthropic-messages`, and `--ai-gateway-id-ai-run` (metadata
-  included the expected plain-text Gateway bindings and redacted `CF_API_TOKEN`).
-  Live staging evidence still needs route-by-route AI Gateway log capture for
-  the configured default and override IDs.
+- **WFP outbound-owned AI Gateway selection - locally verified
+  (2026-07-14).** The Rust/Wasm tenant forwards no Gateway ID, policy,
+  attribution, or metadata headers. `cinatoken-wfp-outbound` owns the default
+  and four retained route-specific IDs for `/v1/chat/completions`,
+  `/v1/responses`, `/v1/messages`, and `/ai/run`, plus bounded timeout, retry,
+  cache, and logging policy. It discards spoofed tenant `cf-aig-*` values and
+  creates attribution metadata from signed authority claims. The tenant plan,
+  artifact uploader, readback collector, and verifier require Gateway bindings
+  to be absent. Live staging evidence still needs route-by-route Gateway log
+  capture and a tenant-policy spoof matrix against deployed code.
 
 - **RealtimeSession DO lifecycle observability - locally verified
   (2026-07-05).** The hibernatable `RealtimeSession` Durable Object now writes
@@ -3036,7 +3016,7 @@ bun run check
   boundary. The outbound Worker matches the Cloudflare-provided invocation
   context and exact final request before replay consumption or bearer access.
 - The outbound Worker calls the platform-owned replay DO. The DO authenticates
-  the central-authority v2 signature and consumes the signed request ID before
+  the central-authority v3 signature and consumes the signed request ID before
   paid egress. Duplicate, invalid, and unavailable outcomes map to explicit
   `409`, `403`, and `503` fail-closed responses.
 - The DO re-verifies claims with the platform master and requires its own ID to

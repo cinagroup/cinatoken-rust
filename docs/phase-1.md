@@ -712,7 +712,8 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   fixed, non-streaming, low-token route per invocation through the normal relay
   token boundary. It requires a fixed non-`auto` group, one WFP channel,
   capabilities `relay_retry_times=0`, cross-model fallback off, and readback
-  proof that tenant Gateway attempts equal one. It then requires one exact
+  proof that outbound Gateway attempts equal one and tenant Gateway bindings
+  are absent. It then requires one exact
   type-2 audit row with the requested worker/channel, resolved billing or
   refund, and no internal/sensitive response headers. Four-route local planning
   is not remote evidence; execute and reconcile each route separately after
@@ -934,3 +935,25 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Final local gate: `bun run check` passed with Workerd 19/19, Playground 1/1,
   frontend readiness 26/26, exact 25-migration replay, all local smoke
   contracts, workspace tests, and all three wasm32 targets.
+
+## 2026-07-14 WFP Authority V3 And Realtime Admission Increment
+
+- WFP authority v3 now binds the public tenant, physical dispatch Worker, and
+  fixed `platform-ai-gateway-v1` policy profile. A deployment target or policy
+  drift is rejected before replay consumption or bearer access.
+- The Rust tenant forwards only content type, accept, and the opaque authority.
+  The platform outbound Worker discards tenant Gateway/identity inputs and owns
+  route Gateway IDs, bounded retry/cache/logging policy, signed-claim metadata,
+  replay, and bearer injection.
+- The root-admin Cloudflare panel can generate a strict Rust/Wasm tenant upload
+  plan and copy only a redacted evidence allowlist. It performs no deployment,
+  accepts no Cloudflare token, and proves no tenant Gateway bindings are
+  attached. The artifact uploader retires the old Gateway flags, while
+  readback/verifier contracts reject any such binding.
+- Realtime now fails closed with `realtime_billing_mode_unsupported` before the
+  WebSocket upgrade when no tiered billing expression is available. Workerd
+  evidence requires zero provider calls, reservations, and quota mutations.
+- Next: rotate the exposed credential, collect authenticated outbound/tenant
+  staging readback, prove Dynamic Dispatch context and v3 tamper/replay
+  negatives, run the four-route billing canary, and race real Realtime
+  settlement/recovery boundaries. Production remains **NO-GO**.

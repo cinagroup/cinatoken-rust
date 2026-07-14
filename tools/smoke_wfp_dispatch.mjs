@@ -745,6 +745,8 @@ function expectedWfpCutoverGuards() {
     "response_header_allowlist",
     "preview_response_security_headers",
     "ai_gateway_policy_headers",
+    "outbound_owned_ai_gateway_policy",
+    "signed_dispatch_worker",
     "central_billing_settlement",
     "tenant_status_smoke",
     "relay_authority_staging_replay",
@@ -948,20 +950,22 @@ function validateAuthorityStatus(body, requestedRoute) {
     );
   }
   if (body.runtime === "rust-wasm") {
-    if (body.paid_ai_authority_verifier !== "platform-outbound-central-hmac-v2") {
+    if (
+      body.paid_ai_authority_verifier !== "platform-outbound-central-hmac-v3"
+    ) {
       throw new Error(
         "Rust tenant status did not report the outbound central HMAC verifier",
       );
     }
-    if (body.paid_ai_replay_guard !== "platform-outbound-durable-object-once-v2") {
+    if (
+      body.paid_ai_replay_guard !== "platform-outbound-durable-object-once-v3"
+    ) {
       throw new Error(
         "Rust tenant status did not report the outbound replay guard",
       );
     }
     if (body.tenant_authority_replay_binding_bound !== false) {
-      throw new Error(
-        "Rust tenant status reported forbidden replay access",
-      );
+      throw new Error("Rust tenant status reported forbidden replay access");
     }
     if (typeof body.paid_ai_capable !== "boolean") {
       throw new Error(

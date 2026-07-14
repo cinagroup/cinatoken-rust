@@ -10,7 +10,9 @@ export class MockEgressCounter extends DurableObject {
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/__mock/state" && request.method === "GET") {
-      return Response.json((await this.ctx.storage.get("state")) ?? { count: 0 });
+      return Response.json(
+        (await this.ctx.storage.get("state")) ?? { count: 0 },
+      );
     }
 
     const body = await request.text();
@@ -27,6 +29,10 @@ export class MockEgressCounter extends DurableObject {
       workerMarkerPresent: request.headers.has("x-cinatoken-wfp-worker"),
       cookiePresent: request.headers.has("cookie"),
       contentType: request.headers.get("content-type"),
+      gatewayId: request.headers.get("cf-aig-gateway-id"),
+      maxAttempts: request.headers.get("cf-aig-max-attempts"),
+      collectLog: request.headers.get("cf-aig-collect-log"),
+      metadata: request.headers.get("cf-aig-metadata"),
     };
     await this.ctx.storage.put("state", state);
 

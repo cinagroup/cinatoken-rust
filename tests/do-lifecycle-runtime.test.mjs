@@ -643,6 +643,62 @@ describe("Rust Durable Object lifecycle contracts", () => {
     second.close(1000, "test complete");
   }, 30_000);
 
+  it("rejects an unbillable Realtime upgrade before provider or ledger mutation", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+    const account = await seedAuthenticatedRealtimeGateway();
+    await env.DB.prepare(
+      `UPDATE options SET value = '{}' WHERE "key" = 'billing_setting.billing_expr'`,
+    ).run();
+
+    const response = await SELF.fetch(
+      `https://worker.test/v1/realtime?model=${encodeURIComponent(realtimeModel)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${realtimeToken}`,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Key": "cnVudGltZS1yZWFsdGltZQ==",
+        },
+      },
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        type: "invalid_request_error",
+        code: "realtime_billing_mode_unsupported",
+      },
+    });
+    expect(await providerState()).toMatchObject({ count: 0 });
+
+    const [user, token, channel, reservations] = await Promise.all([
+      env.DB.prepare(
+        "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
+      ).first(),
+      env.DB.prepare(
+        "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+      ).first(),
+      env.DB.prepare("SELECT used_quota FROM channels WHERE id = 42").first(),
+      env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM realtime_billing_reservations",
+      ).first(),
+    ]);
+    expect(user).toMatchObject({
+      quota: account.userQuota,
+      used_quota: 0,
+      request_count: 0,
+    });
+    expect(token).toMatchObject({
+      remain_quota: account.tokenRemainQuota,
+      used_quota: 0,
+    });
+    expect(channel).toMatchObject({ used_quota: 0 });
+    expect(reservations).toMatchObject({ count: 0 });
+  });
+
   it("globally refunds an expired Realtime reservation once through scheduled recovery", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     await seedRealtimeBillingAccount();
@@ -1551,6 +1607,19 @@ describe("Rust Durable Object lifecycle contracts", () => {
     );
     expect(wrongContext.status).toBe(403);
 
+    const wrongPolicyAuthority = await signedAuthority({
+      requestId: "runtime-outbound-wrong-policy",
+      path: "/v1/responses",
+      body,
+      policyProfile: "tenant-controlled-v1",
+    });
+    const wrongPolicy = await outboundRequest(
+      env.WFP_OUTBOUND_RUNTIME,
+      wrongPolicyAuthority.token,
+      body,
+    );
+    expect(wrongPolicy.status).toBe(403);
+
     const [forgedPayload, originalSignature] = authority.token.split(".");
     const forgedSignature = `${
       originalSignature.startsWith("A") ? "B" : "A"
@@ -1563,6 +1632,53 @@ describe("Rust Durable Object lifecycle contracts", () => {
       "https://wfp-provider-mock/__mock/state",
     );
     expect(await stateResponse.json()).toEqual({ count: 0 });
+  });
+
+  it("discards tenant Gateway policy and rebuilds platform-owned headers", async () => {
+    await env.WFP_PROVIDER_MOCK.fetch(
+      "https://wfp-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: "openai/gpt-4.1-mini",
+        input: "policy boundary",
+      }),
+    );
+    const authority = await signedAuthority({
+      requestId: "runtime-outbound-policy",
+      path: "/v1/responses",
+      body,
+    });
+    const response = await outboundRequest(
+      env.WFP_OUTBOUND_RUNTIME,
+      authority.token,
+      body,
+      {
+        "cf-aig-gateway-id": "tenant-spoofed-gateway",
+        "cf-aig-max-attempts": "9",
+        "cf-aig-collect-log": "false",
+        "cf-aig-metadata": '{"tenant":"spoofed"}',
+        "x-cinatoken-tenant": "spoofed-tenant",
+      },
+    );
+    expect(response.status).toBe(200);
+
+    const stateResponse = await env.WFP_PROVIDER_MOCK.fetch(
+      "https://wfp-provider-mock/__mock/state",
+    );
+    const state = await stateResponse.json();
+    expect(state).toMatchObject({
+      count: 1,
+      gatewayId: "runtime-outbound-gateway",
+      maxAttempts: "1",
+      collectLog: "true",
+    });
+    expect(state.metadata).not.toContain("spoofed");
+    expect(JSON.parse(state.metadata).cinatoken).toMatchObject({
+      request_id: "runtime-outbound-policy",
+      policy_profile: "platform-ai-gateway-v1",
+    });
   });
 
   it("allows one concurrent provider egress for one signed authority", async () => {
@@ -1615,6 +1731,18 @@ describe("Rust Durable Object lifecycle contracts", () => {
       workerMarkerPresent: false,
       cookiePresent: false,
       contentType: "application/json",
+      gatewayId: "runtime-outbound-gateway",
+      maxAttempts: "1",
+      collectLog: "true",
+    });
+    const metadata = JSON.parse(state.metadata);
+    expect(metadata.cinatoken).toMatchObject({
+      authority_version: 3,
+      channel_id: 42,
+      dispatch_worker: workerName,
+      policy_profile: "platform-ai-gateway-v1",
+      request_id: "runtime-cross-worker",
+      worker: workerName,
     });
   });
 
@@ -1666,22 +1794,28 @@ async function observeQuota(stub, tokenId, observation) {
     source_committed_at: 100,
     ...observation,
   };
-  const response = await stub.fetch("https://quota-coordinator.internal/observe", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [quotaTokenIdHeader]: `${tokenId}`,
+  const response = await stub.fetch(
+    "https://quota-coordinator.internal/observe",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [quotaTokenIdHeader]: `${tokenId}`,
+      },
+      body: JSON.stringify(retainedObservation),
     },
-    body: JSON.stringify(retainedObservation),
-  });
+  );
   await response.arrayBuffer();
   return response;
 }
 
 async function quotaCoordinatorStatus(stub, tokenId) {
-  const response = await stub.fetch("https://quota-coordinator.internal/status", {
-    headers: { [quotaTokenIdHeader]: `${tokenId}` },
-  });
+  const response = await stub.fetch(
+    "https://quota-coordinator.internal/status",
+    {
+      headers: { [quotaTokenIdHeader]: `${tokenId}` },
+    },
+  );
   return { response, status: await response.json() };
 }
 
@@ -1709,7 +1843,7 @@ function tenantRequest(token, body, path = "/v1/responses") {
   });
 }
 
-function outboundRequest(binding, token, body) {
+function outboundRequest(binding, token, body, extraHeaders = {}) {
   return binding.fetch(
     "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1/responses",
     {
@@ -1717,6 +1851,7 @@ function outboundRequest(binding, token, body) {
       headers: {
         "content-type": "application/json",
         "x-cinatoken-wfp-authority": token,
+        ...extraHeaders,
       },
       body,
     },
@@ -1727,11 +1862,15 @@ async function signedAuthority({
   requestId,
   path = "/v1/responses",
   body = new Uint8Array(),
+  dispatchWorker = workerName,
+  policyProfile = "platform-ai-gateway-v1",
 }) {
   const issuedAt = Math.floor(Date.now() / 1000);
   const claims = {
-    version: 2,
+    version: 3,
     worker: workerName,
+    dispatch_worker: dispatchWorker,
+    policy_profile: policyProfile,
     method: "POST",
     path,
     body_sha256: await sha256Hex(body),
@@ -1744,7 +1883,7 @@ async function signedAuthority({
   const signature = await hmac(
     new TextEncoder().encode(authoritySecret),
     concatBytes(
-      new TextEncoder().encode("cinatoken-wfp-central-authority:v2\0"),
+      new TextEncoder().encode("cinatoken-wfp-central-authority:v3\0"),
       new TextEncoder().encode(workerName),
       new Uint8Array([0]),
       payload,

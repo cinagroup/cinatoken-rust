@@ -22,6 +22,11 @@ import {
   type CanonicalPositiveI64String,
   type QuotaCoordinatorReconciliationResponse,
 } from './integrations/quota-coordinator-reconciliation'
+import {
+  buildWfpTenantPlanRequest,
+  type WfpTenantPlanFormInput,
+  type WfpTenantPlanResponse,
+} from './integrations/wfp-tenant-plan'
 import type {
   ConfirmPaymentComplianceResponse,
   DeleteLogsResponse,
@@ -103,6 +108,14 @@ export async function reconcileQuotaCoordinator(
   const res = await api.post<QuotaCoordinatorReconciliationResponse>(
     '/api/platform/quota-coordinator/reconciliation',
     buildQuotaCoordinatorReconciliationRequest(tokenId)
+  )
+  return res.data
+}
+
+export async function getWfpTenantPlan(input: WfpTenantPlanFormInput) {
+  const res = await api.post<WfpTenantPlanResponse>(
+    '/api/platform/wfp/tenant-script/plan',
+    buildWfpTenantPlanRequest(input)
   )
   return res.data
 }

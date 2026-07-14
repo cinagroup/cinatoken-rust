@@ -1,7 +1,7 @@
 {
-  "frontend_calls": 218,
+  "frontend_calls": 219,
   "frontend_detection_kinds": {
-    "call": 247,
+    "call": 248,
     "jsx-attribute": 1,
     "navigation": 1,
     "stream": 1

@@ -7,6 +7,7 @@ use cinatoken_billing::{
     TieredBillingSnapshot, TieredTokenUsage, TokenParams, UsageSemantic,
 };
 use cinatoken_cache::{ExpiringCounterRateLimiter, KeyValueCache, RateLimiter, UpstashRedis};
+use cinatoken_core::relay::ErrorItem;
 use cinatoken_core::{
     audio_duration_seconds, audio_transcription_tokens, auto_group_retry_step,
     format_matching_model_name, image_dimensions, image_tokens, image_tokens_needs_dimensions,
@@ -60,6 +61,7 @@ use cinatoken_relay::{
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use cinatoken_wfp_authority::{
     sign_authority, verify_authority, AuthorityExpectation, AuthorityInput, AUTHORITY_SECRET_ENV,
+    OUTBOUND_POLICY_PROFILE,
 };
 use futures_util::{
     future::{select, Either},
@@ -3850,6 +3852,8 @@ fn wfp_authority_contract_self_check() -> bool {
         SECRET,
         AuthorityInput {
             worker: "tenant-a",
+            dispatch_worker: "staging-tenant-a",
+            policy_profile: OUTBOUND_POLICY_PROFILE,
             method: "POST",
             path: "/v1/chat/completions",
             body,
@@ -3865,6 +3869,8 @@ fn wfp_authority_contract_self_check() -> bool {
         &token,
         AuthorityExpectation {
             worker: "tenant-a",
+            dispatch_worker: "staging-tenant-a",
+            policy_profile: OUTBOUND_POLICY_PROFILE,
             method: "POST",
             path: "/v1/chat/completions",
             body,
@@ -5736,14 +5742,21 @@ pub(crate) async fn plan_realtime_upstream_channel(
                         500,
                     )
                 })?;
-        let (billing_snapshot, billing_settlement) = billing_presettlement
-            .map(|billing| {
-                (
-                    Some(billing.snapshot_metadata),
-                    Some(billing.settlement_handoff),
-                )
-            })
-            .unwrap_or((None, None));
+        let Some(billing_presettlement) = billing_presettlement else {
+            return Err(json_with_status(
+                &ErrorBody {
+                    error: ErrorItem {
+                        message: "Realtime sessions require a configured tiered billing expression"
+                            .to_string(),
+                        kind: "invalid_request_error",
+                        code: "realtime_billing_mode_unsupported",
+                    },
+                },
+                503,
+            ));
+        };
+        let billing_snapshot = Some(billing_presettlement.snapshot_metadata);
+        let billing_settlement = Some(billing_presettlement.settlement_handoff);
         return crate::realtime_session::realtime_selected_upstream(
             crate::realtime_session::RealtimeSelectedUpstreamInput {
                 selected_group: &selected_group,
@@ -7627,6 +7640,8 @@ async fn forward_wfp_relay_transport(
         .map_err(|err| worker::Error::RustError(format!("invalid WFP relay URL: {err}")))?;
     target.set_path(&path);
     let body = serde_json::to_string(body)?;
+    let dispatch_worker =
+        crate::platform_gateway::authorized_relay_dispatch_worker(env, &worker_name)?;
     let secret = optional_secret_or_env_var(env, AUTHORITY_SECRET_ENV)
         .ok_or_else(|| worker::Error::RustError(format!("{AUTHORITY_SECRET_ENV} must be bound")))?;
     let request_id = wfp_authority_request_id()?;
@@ -7634,6 +7649,8 @@ async fn forward_wfp_relay_transport(
         secret.as_bytes(),
         AuthorityInput {
             worker: &worker_name,
+            dispatch_worker: &dispatch_worker,
+            policy_profile: OUTBOUND_POLICY_PROFILE,
             method: "POST",
             path: &path,
             body: body.as_bytes(),
@@ -7655,6 +7672,7 @@ async fn forward_wfp_relay_transport(
         outbound,
         env,
         &worker_name,
+        &dispatch_worker,
         &authority,
     )
     .await

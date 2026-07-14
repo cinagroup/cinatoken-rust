@@ -2547,7 +2547,8 @@ fn wfp_outbound_invocation_context_contract_compiled() -> bool {
         return false;
     };
     let options = dispatch_outbound_options_value(&context);
-    cinatoken_wfp_authority::AUTHORITY_VERSION == 2
+    cinatoken_wfp_authority::AUTHORITY_VERSION == 3
+        && cinatoken_wfp_authority::OUTBOUND_POLICY_PROFILE == "platform-ai-gateway-v1"
         && OUTBOUND_CONTEXT_BINDING == "CINATOKEN_WFP_OUTBOUND_CONTEXT"
         && options["outbound"][OUTBOUND_CONTEXT_BINDING]["route_kind"] == "relay-authority"
         && options["outbound"][OUTBOUND_CONTEXT_BINDING]["public_worker"] == "tenant-a"
@@ -2685,6 +2686,7 @@ pub(crate) async fn dispatch_authorized_relay_request(
     req: Request,
     env: &Env,
     public_name: &str,
+    signed_dispatch_worker: &str,
     authority: &str,
 ) -> WorkerResult<Response> {
     if !env_flag(env, WFP_DISPATCH_ENABLED_ENV) || !env_flag(env, WFP_RELAY_TRANSPORT_ENABLED_ENV) {
@@ -2702,8 +2704,29 @@ pub(crate) async fn dispatch_authorized_relay_request(
         prefix.as_deref(),
         Some(tenant_path),
     )?;
+    if target.worker_name != signed_dispatch_worker {
+        return gateway_error(
+            503,
+            "wfp_dispatch_authority_target_mismatch",
+            "WFP dispatch target changed after authority signing",
+        );
+    }
     target.authority = Some(authority.to_string());
     dispatch_request_with_env(req, env, target).await
+}
+
+pub(crate) fn authorized_relay_dispatch_worker(
+    env: &Env,
+    public_name: &str,
+) -> WorkerResult<String> {
+    let prefix = runtime_value(env, WFP_DISPATCH_WORKER_PREFIX_ENV);
+    dispatch_target(
+        DispatchRouteKind::RelayAuthority,
+        public_name,
+        prefix.as_deref(),
+        None,
+    )
+    .map(|target| target.worker_name)
 }
 
 fn dispatch_target(
@@ -3613,6 +3636,8 @@ mod tests {
             "response_header_allowlist",
             "preview_response_security_headers",
             "ai_gateway_policy_headers",
+            "outbound_owned_ai_gateway_policy",
+            "signed_dispatch_worker",
             "central_billing_settlement",
             "tenant_status_smoke",
             "relay_authority_staging_replay",

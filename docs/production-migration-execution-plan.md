@@ -205,13 +205,16 @@ Production decisions from the refreshed cinaVibeSDK and Cloudflare audit:
   increment now makes WFP a post-admission transport: the central relay owns
   token auth, D1 channel selection, reserve, settlement/refund, and audit, while
   `channels.other_info.wfp_worker` selects the tenant Worker. A 30-second
-  central-authority v2 HMAC binds body, path, method, channel, request ID, and
-  public worker directly with platform-only `WFP_RELAY_AUTHORITY_SECRET`.
+  central-authority v3 HMAC binds body, path, method, channel, request ID,
+  public worker, physical dispatch Worker, and fixed outbound policy directly
+  with platform-only `WFP_RELAY_AUTHORITY_SECRET`.
   Tenants receive no signing/verifier key or replay binding. Cloudflare passes
   a bounded route/public-worker/dispatch-worker context to the outbound Worker,
   which validates context, final path/body, signature, and one-time consumption
   through the platform-owned `WfpAuthorityReplay` DO before bearer access.
-  Duplicate/invalid/unavailable checks fail closed. Keep
+  The outbound service, not the tenant, owns Gateway IDs, retry/cache/logging,
+  and signed-claim attribution metadata. Duplicate/invalid/unavailable checks
+  fail closed. Keep
   `WFP_RELAY_TRANSPORT_ENABLED=false` until staging proves the complete path,
   external binding identity, and sequential/concurrent replay behavior.
 

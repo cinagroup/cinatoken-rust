@@ -91,6 +91,11 @@ const aiGatewayPolicyBindings = [
     kind: "boolean",
   },
 ];
+const retiredTenantGatewayFlags = new Set([
+  "ai-gateway-id",
+  ...routeGatewayBindings.map((binding) => binding.flag),
+  ...aiGatewayPolicyBindings.map((binding) => binding.flag),
+]);
 
 try {
   const args = parseArgs(process.argv.slice(2));
@@ -128,11 +133,6 @@ async function main(options) {
   const compatibilityDate = validateCompatibilityDate(
     options.compatibilityDate || defaultCompatibilityDate,
   );
-  const aiGatewayId = options.aiGatewayId
-    ? validatePlainValue(options.aiGatewayId, "ai-gateway-id")
-    : null;
-  const routeAiGatewayIds = validateRouteGatewayIds(options.routeAiGatewayIds);
-  const aiGatewayPolicy = validateAiGatewayPolicy(options.aiGatewayPolicy);
   const apiToken = required(options.apiToken, "api-token");
   const metadata = uploadMetadata({
     mainModule: options.mainModule,
@@ -140,9 +140,6 @@ async function main(options) {
     tenantId,
     workerName: publicScriptName,
     accountId,
-    aiGatewayId,
-    routeAiGatewayIds,
-    aiGatewayPolicy,
   });
   const uploadUrl = dispatchUploadUrl(accountId, namespace, scriptName);
   const modules = await collectArtifactModules(
@@ -162,8 +159,7 @@ async function main(options) {
       mainModule: options.mainModule,
       moduleCount: modules.length,
       artifactManifest: artifactManifest(options, modules),
-      routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
-      aiGatewayPolicyConfigured: configuredAiGatewayPolicy(aiGatewayPolicy),
+      tenantGatewayBindingsAttached: false,
       modules: modules.map((module) => ({
         name: module.name,
         bytes: module.bytes.length,
@@ -207,8 +203,7 @@ async function main(options) {
     mainModule: options.mainModule,
     moduleCount: modules.length,
     artifactManifest: artifactManifest(options, modules),
-    routeAiGatewayIdsConfigured: configuredRouteGatewayIds(routeAiGatewayIds),
-    aiGatewayPolicyConfigured: configuredAiGatewayPolicy(aiGatewayPolicy),
+    tenantGatewayBindingsAttached: false,
     modules: modules.map((module) => ({
       name: module.name,
       bytes: module.bytes.length,
@@ -247,6 +242,12 @@ function parseArgs(argv) {
         `${arg} is retired; Cloudflare AI authentication belongs to the WFP outbound Worker`,
       );
     }
+    if (retiredTenantGatewayFlags.has(arg.slice(2))) {
+      usage(
+        2,
+        `${arg} is retired; configure AI Gateway only on cinatoken-wfp-outbound`,
+      );
+    }
     if (arg === "--manifest-only") {
       usage(
         2,
@@ -277,19 +278,6 @@ function normalizeOptions(args) {
     namespace: value("namespace", "WFP_DISPATCH_NAMESPACE"),
     accountId: value("account-id", "CLOUDFLARE_ACCOUNT_ID"),
     apiToken: value("api-token", "CLOUDFLARE_API_TOKEN"),
-    aiGatewayId: value("ai-gateway-id", "AI_GATEWAY_ID"),
-    routeAiGatewayIds: Object.fromEntries(
-      routeGatewayBindings.map((binding) => [
-        binding.key,
-        value(binding.flag, binding.binding),
-      ]),
-    ),
-    aiGatewayPolicy: Object.fromEntries(
-      aiGatewayPolicyBindings.map((binding) => [
-        binding.key,
-        value(binding.flag, binding.binding),
-      ]),
-    ),
     compatibilityDate:
       value("compatibility-date", "WFP_TENANT_COMPATIBILITY_DATE") ||
       defaultCompatibilityDate,
@@ -315,18 +303,7 @@ function usage(exitCode, error) {
       "",
       "Options:",
       "  --tenant-id <id>",
-      "  --ai-gateway-id <id>        or AI_GATEWAY_ID",
-      "  --ai-gateway-id-openai-chat <id>        or AI_GATEWAY_ID_OPENAI_CHAT",
-      "  --ai-gateway-id-openai-responses <id>   or AI_GATEWAY_ID_OPENAI_RESPONSES",
-      "  --ai-gateway-id-anthropic-messages <id> or AI_GATEWAY_ID_ANTHROPIC_MESSAGES",
-      "  --ai-gateway-id-ai-run <id>             or AI_GATEWAY_ID_AI_RUN",
-      "  --ai-gateway-request-timeout-ms <ms>    or AI_GATEWAY_REQUEST_TIMEOUT_MS",
-      "  --ai-gateway-max-attempts <1-5>         or AI_GATEWAY_MAX_ATTEMPTS",
-      "  --ai-gateway-retry-delay-ms <1-5000>    or AI_GATEWAY_RETRY_DELAY_MS",
-      "  --ai-gateway-backoff <constant|linear|exponential> or AI_GATEWAY_BACKOFF",
-      "  --ai-gateway-cache-ttl-seconds <s>      or AI_GATEWAY_CACHE_TTL_SECONDS",
-      "  --ai-gateway-skip-cache <true|false>    or AI_GATEWAY_SKIP_CACHE",
-      "  --ai-gateway-collect-log <true|false>   or AI_GATEWAY_COLLECT_LOG",
+      "  AI Gateway IDs and request policy are outbound-only and cannot be attached to a tenant.",
       "  --worker-prefix <prefix>    or WFP_DISPATCH_WORKER_PREFIX",
       "  --compatibility-date <YYYY-MM-DD>",
       "  --artifact-dir <path>       default crates/wfp-tenant/build/worker",
@@ -429,9 +406,6 @@ function uploadMetadata({
   tenantId,
   workerName,
   accountId,
-  aiGatewayId,
-  routeAiGatewayIds,
-  aiGatewayPolicy,
 }) {
   const bindings = [
     {
@@ -455,103 +429,12 @@ function uploadMetadata({
       text: outboundAuthMode,
     },
   ];
-  if (aiGatewayId) {
-    bindings.push({
-      name: "AI_GATEWAY_ID",
-      type: "plain_text",
-      text: aiGatewayId,
-    });
-  }
-  for (const binding of routeGatewayBindings) {
-    const aiGatewayId = routeAiGatewayIds?.[binding.key];
-    if (aiGatewayId) {
-      bindings.push({
-        name: binding.binding,
-        type: "plain_text",
-        text: aiGatewayId,
-      });
-    }
-  }
-  for (const binding of aiGatewayPolicyBindings) {
-    const value = aiGatewayPolicy?.[binding.key];
-    if (value) {
-      bindings.push({
-        name: binding.binding,
-        type: "plain_text",
-        text: value,
-      });
-    }
-  }
   return {
     main_module: mainModule,
     compatibility_date: compatibilityDate,
     compatibility_flags: ["nodejs_compat"],
     bindings,
   };
-}
-
-function validateAiGatewayPolicy(values) {
-  return Object.fromEntries(
-    aiGatewayPolicyBindings.map((binding) => [
-      binding.key,
-      values?.[binding.key] ? validateAiGatewayPolicyValue(values[binding.key], binding) : null,
-    ]),
-  );
-}
-
-function validateAiGatewayPolicyValue(value, binding) {
-  const trimmed = required(value, binding.flag).trim();
-  if (binding.kind === "positive-integer") {
-    if (!/^\d+$/.test(trimmed)) {
-      throw new Error(`${binding.flag} must be a positive integer`);
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (!Number.isSafeInteger(parsed) || parsed < binding.min) {
-      throw new Error(`${binding.flag} must be at least ${binding.min}`);
-    }
-    if (binding.max && parsed > binding.max) {
-      throw new Error(`${binding.flag} must be at most ${binding.max}`);
-    }
-    return String(parsed);
-  }
-  if (binding.kind === "boolean") {
-    const lowered = trimmed.toLowerCase();
-    if (lowered !== "true" && lowered !== "false") {
-      throw new Error(`${binding.flag} must be true or false`);
-    }
-    return lowered;
-  }
-  if (binding.kind === "backoff") {
-    const lowered = trimmed.toLowerCase();
-    if (!["constant", "linear", "exponential"].includes(lowered)) {
-      throw new Error(`${binding.flag} must be constant, linear, or exponential`);
-    }
-    return lowered;
-  }
-  return validatePlainValue(trimmed, binding.flag);
-}
-
-function validateRouteGatewayIds(values) {
-  return Object.fromEntries(
-    routeGatewayBindings.map((binding) => [
-      binding.key,
-      values?.[binding.key]
-        ? validatePlainValue(values[binding.key], binding.flag)
-        : null,
-    ]),
-  );
-}
-
-function configuredRouteGatewayIds(values) {
-  return Object.fromEntries(
-    routeGatewayBindings.map((binding) => [binding.key, Boolean(values?.[binding.key])]),
-  );
-}
-
-function configuredAiGatewayPolicy(values) {
-  return Object.fromEntries(
-    aiGatewayPolicyBindings.map((binding) => [binding.key, Boolean(values?.[binding.key])]),
-  );
 }
 
 function redactMetadata(metadata) {
@@ -710,6 +593,9 @@ function runDeployPlanSelfTest() {
     throw new Error("tenant worker identity binding is missing");
   }
   const forbidden = new Set([
+    "AI_GATEWAY_ID",
+    ...routeGatewayBindings.map((binding) => binding.binding),
+    ...aiGatewayPolicyBindings.map((binding) => binding.binding),
     "WFP_RELAY_AUTHORITY_KEY",
     "WFP_RELAY_AUTHORITY_SECRET",
     "WFP_AUTHORITY_REPLAY",
@@ -728,9 +614,6 @@ function selfTestUploadMetadata() {
     tenantId: "tenant-smoke",
     workerName: "tenant-smoke",
     accountId: "00000000000000000000000000000000",
-    aiGatewayId: null,
-    routeAiGatewayIds: {},
-    aiGatewayPolicy: {},
   });
 }
 

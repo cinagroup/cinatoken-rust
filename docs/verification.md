@@ -4589,3 +4589,37 @@ This remains local evidence. Remote direct/AI Gateway/WFP replay, migration and
 Queue/D1 readback, provider invoice reconciliation, live network/redeploy
 interruption, alerts, rollback, credential rotation, and G1-G8 approval remain
 open. Production remains **NO-GO**.
+
+## Zero-Reserve And Usage-Less Non-Stream Verification (2026-07-14)
+
+```powershell
+cargo fmt --all -- --check
+cargo test -p cinatoken-worker --lib
+# PASS; 667/667
+
+bun run check:do-lifecycle-runtime
+# PASS; release Worker/WFP builds and 34/34 Workerd tests
+
+bun run check
+# PASS; release Worker/WFP builds, Workerd 34/34, Playground 1/1, frontend
+# production build/readiness 51/51, 223 frontend calls / 326 Worker routes /
+# zero missing, 28 D1 migrations, workspace tests, and all three wasm32 checks
+```
+
+Verified behavior:
+
+- A tiered expression using completion tokens only begins with
+  `pre_consumed_quota=0`, still creates and binds a reservation, and settles
+  positive provider usage once through `BILLING_QUEUE` and D1 CAS.
+- A configured flat model whose successful body cannot be inspected is blocked
+  with 502 before delivery. User/token/channel quota stays unchanged, request
+  count increments once, and the audit records
+  `not_charged_response_blocked` plus redacted disposition metadata.
+- Usage-less fixed-price `/v1/audio/speech` applies the configured `ModelPrice`
+  before returning the binary response, with exact user/token/channel and
+  request accounting.
+
+This remains local E3 evidence. Generic flat billing idempotency, abort/idle
+classification, remote direct/Gateway/WFP replay, provider invoice correlation,
+credential rotation, alerts, rollback, and G1-G8 approval remain open.
+Production remains **NO-GO**.

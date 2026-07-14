@@ -123,13 +123,16 @@ The Worker:
 - forwards native Gemini requests with `x-goog-api-key` and strips downstream
   `key` query parameters before calling the upstream provider;
 - returns the upstream body, status, and content type to the client;
-- for non-streaming relays with a Worker `Context`, returns the upstream
-  response directly and consumes a cloned audit branch in `wait_until`;
+- for successful non-streaming usage-bearing relays, performs bounded usage
+  inspection and billing observation before returning; an intact
+  uninspectable 2xx is forwarded only for a positive frozen tiered reserve,
+  while flat or zero-reserve traffic fails closed before delivery;
 - returns upstream chat completion, completion, response, image generation,
   Anthropic Messages, and native Gemini streams without buffering the full
   response;
 - returns upstream audio speech binary or audio-event responses without
-  buffering or parsing the response body;
+  parsing the response body, but synchronously applies the usage-less request
+  contract so configured fixed-price billing completes before delivery;
 - parses OpenAI-compatible usage metadata from JSON responses and streaming
   SSE `data:` events, including cached/cache-creation, GPT image generation
   output image tokens, and image/audio input/output token details;

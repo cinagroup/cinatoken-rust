@@ -4,6 +4,9 @@ const providerName = "realtime-provider";
 const relayStreamSafetyTimeoutMs = 20_000;
 const realtimeUsageNullModel = "gpt-runtime-realtime-usage-null";
 const nonStreamAuditLimitModel = "gpt-runtime-non-stream-audit-limit";
+const zeroReserveModel = "gpt-runtime-zero-reserve";
+const flatAuditLimitModel = "gpt-runtime-flat-audit-limit";
+const fixedAudioModel = "tts-runtime-fixed-price";
 const cohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
 
 export class MockRealtimeProvider extends DurableObject {
@@ -28,7 +31,11 @@ export class MockRealtimeProvider extends DurableObject {
         return new Response("Relay stream already active", { status: 409 });
       }
       const requestBody = await request.json().catch(() => ({}));
-      if (requestBody.model === nonStreamAuditLimitModel) {
+      if (
+        requestBody.model === nonStreamAuditLimitModel ||
+        requestBody.model === zeroReserveModel ||
+        requestBody.model === flatAuditLimitModel
+      ) {
         const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
         const body = JSON.stringify({
           id: "chatcmpl-runtime-audit-limit",
@@ -47,13 +54,16 @@ export class MockRealtimeProvider extends DurableObject {
           method: request.method,
           path: url.pathname,
           authorizationPresent: request.headers.has("authorization"),
-          nonStreamAuditLimit: true,
+          nonStreamAuditLimit: requestBody.model === nonStreamAuditLimitModel,
+          zeroReserve: requestBody.model === zeroReserveModel,
+          flatAuditLimit: requestBody.model === flatAuditLimitModel,
         });
+        const responseHeaders = { "content-type": "application/json" };
+        if (requestBody.model !== zeroReserveModel) {
+          responseHeaders["content-length"] = "2048";
+        }
         return new Response(body, {
-          headers: {
-            "content-type": "application/json",
-            "content-length": "2048",
-          },
+          headers: responseHeaders,
         });
       }
       const failAfterFirstChunk = requestBody.model === "gpt-runtime-stream-error";
@@ -112,6 +122,20 @@ export class MockRealtimeProvider extends DurableObject {
       });
       return new Response(body, {
         headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (url.pathname === "/v1/audio/speech" && request.method === "POST") {
+      const requestBody = await request.json().catch(() => ({}));
+      const previous = (await this.ctx.storage.get("state")) ?? { count: 0 };
+      await this.ctx.storage.put("state", {
+        count: previous.count + 1,
+        method: request.method,
+        path: url.pathname,
+        authorizationPresent: request.headers.has("authorization"),
+        fixedAudio: requestBody.model === fixedAudioModel,
+      });
+      return new Response("runtime-audio", {
+        headers: { "content-type": "audio/mpeg" },
       });
     }
     if (url.pathname.endsWith("/rerank") && request.method === "POST") {

@@ -8219,7 +8219,32 @@ async fn complete_relay_response(
         .await;
     }
     if !parse_usage {
-        if let Some(context) = context {
+        let tiered_reservation = audit
+            .tiered_billing_preflight
+            .as_ref()
+            .is_some_and(|preflight| preflight.reserve_applied);
+        let usage_less_billing_contract =
+            status < 400 && usage_less_request_contract_applies(&endpoint_path, false);
+        if tiered_reservation || usage_less_billing_contract {
+            if let Err(err) = record_relay_audit(
+                &env,
+                &db,
+                &auth,
+                &channel,
+                &model,
+                &group,
+                &endpoint_path,
+                status,
+                &UsageSummary::default(),
+                &audit,
+                upstream_request_id.as_deref(),
+                false,
+            )
+            .await
+            {
+                worker::console_error!("failed to record relay audit: {}", err);
+            }
+        } else if let Some(context) = context {
             context.wait_until(async move {
                 if let Err(err) = record_relay_audit(
                     &env,
@@ -8262,27 +8287,28 @@ async fn complete_relay_response(
         return finalize_relay_response(upstream, &content_type);
     }
 
+    let tiered_reservation = audit
+        .tiered_billing_preflight
+        .as_ref()
+        .is_some_and(|preflight| preflight.reserve_applied);
+    if status < 400 || tiered_reservation {
+        return complete_buffered_relay_response(
+            upstream,
+            &env,
+            &db,
+            &auth,
+            &channel,
+            &model,
+            &group,
+            &endpoint_path,
+            provider,
+            &audit,
+            max_json_response_bytes,
+        )
+        .await;
+    }
+
     if let Some(context) = context {
-        if audit
-            .tiered_billing_preflight
-            .as_ref()
-            .is_some_and(|preflight| preflight.reserve_applied)
-        {
-            return complete_buffered_relay_response(
-                upstream,
-                &env,
-                &db,
-                &auth,
-                &channel,
-                &model,
-                &group,
-                &endpoint_path,
-                provider,
-                &audit,
-                max_json_response_bytes,
-            )
-            .await;
-        }
         let mut audit_response = match upstream.cloned() {
             Ok(response) => response,
             Err(err) => {
@@ -8365,67 +8391,6 @@ async fn complete_relay_response(
         max_json_response_bytes,
     )
     .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn complete_passthrough_relay_response_with_usage(
-    upstream: Response,
-    env: Env,
-    db: D1Database,
-    context: Option<Context>,
-    auth: AuthenticatedToken,
-    channel: RelayChannel,
-    model: String,
-    group: String,
-    endpoint_path: String,
-    status: u16,
-    content_type: String,
-    usage: UsageSummary,
-    audit: RelayAuditContext,
-    upstream_request_id: Option<String>,
-    log_label: &'static str,
-) -> worker::Result<Response> {
-    if let Some(context) = context {
-        context.wait_until(async move {
-            if let Err(err) = record_relay_audit(
-                &env,
-                &db,
-                &auth,
-                &channel,
-                &model,
-                &group,
-                &endpoint_path,
-                status,
-                &usage,
-                &audit,
-                upstream_request_id.as_deref(),
-                false,
-            )
-            .await
-            {
-                worker::console_error!("failed to record {} audit: {}", log_label, err);
-            }
-        });
-    } else if let Err(err) = record_relay_audit(
-        &env,
-        &db,
-        &auth,
-        &channel,
-        &model,
-        &group,
-        &endpoint_path,
-        status,
-        &usage,
-        &audit,
-        upstream_request_id.as_deref(),
-        false,
-    )
-    .await
-    {
-        worker::console_error!("failed to record {} audit: {}", log_label, err);
-    }
-
-    finalize_relay_response(upstream, &content_type)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8552,24 +8517,42 @@ async fn complete_cohere_rerank_response(
                 "skipping Cohere rerank response transform: {}",
                 err.message("Cohere rerank response body")
             );
-            return complete_passthrough_relay_response_with_usage(
-                upstream,
+            let positive_tiered_reservation =
+                audit
+                    .tiered_billing_preflight
+                    .as_ref()
+                    .is_some_and(|preflight| {
+                        preflight.reserve_applied && preflight.pre_consumed_quota > 0
+                    });
+            let mut parse_failure_audit = audit;
+            parse_failure_audit.non_stream_usage_parse_failed = true;
+            record_owned_relay_audit(
+                context,
                 env,
                 db,
-                context,
                 auth,
                 channel,
                 model,
                 group,
                 endpoint_path,
-                status,
-                content_type,
+                if positive_tiered_reservation {
+                    status
+                } else {
+                    502
+                },
                 UsageSummary::default(),
-                audit,
+                parse_failure_audit,
                 upstream_request_id,
-                "Cohere rerank",
+                "Cohere rerank response inspection",
             )
             .await;
+            if positive_tiered_reservation {
+                return finalize_relay_response(upstream, &content_type);
+            }
+            return openai_error_response(
+                "Cohere rerank response could not be inspected for billing".to_string(),
+                502,
+            );
         }
         Err(err) => {
             record_owned_relay_audit(
@@ -8772,10 +8755,11 @@ async fn record_owned_relay_audit(
     // returning a buffered response. Streaming responses retain waitUntil so
     // their cloned body can be consumed after the client response starts; the
     // D1 lease sweep conservatively refunds an abandoned stream reservation.
-    if audit
-        .tiered_billing_preflight
-        .as_ref()
-        .is_some_and(|preflight| preflight.reserve_applied)
+    if audit.non_stream_usage_parse_failed
+        || audit
+            .tiered_billing_preflight
+            .as_ref()
+            .is_some_and(|preflight| preflight.reserve_applied)
     {
         if let Err(err) = record_relay_audit(
             &env,
@@ -8868,6 +8852,13 @@ async fn complete_buffered_relay_response(
             );
             let mut parse_failure_audit = audit.clone();
             parse_failure_audit.non_stream_usage_parse_failed = true;
+            let positive_tiered_reservation =
+                audit
+                    .tiered_billing_preflight
+                    .as_ref()
+                    .is_some_and(|preflight| {
+                        preflight.reserve_applied && preflight.pre_consumed_quota > 0
+                    });
             if let Err(err) = record_relay_audit(
                 env,
                 db,
@@ -8876,7 +8867,11 @@ async fn complete_buffered_relay_response(
                 model,
                 group,
                 endpoint_path,
-                status,
+                if positive_tiered_reservation {
+                    status
+                } else {
+                    502
+                },
                 &UsageSummary::default(),
                 &parse_failure_audit,
                 upstream_request_id.as_deref(),
@@ -8887,9 +8882,17 @@ async fn complete_buffered_relay_response(
                 worker::console_error!("failed to record relay audit: {}", err);
             }
 
-            return finalize_relay_response(upstream, &content_type);
+            if positive_tiered_reservation {
+                return finalize_relay_response(upstream, &content_type);
+            }
+            return openai_error_response(
+                "upstream response could not be inspected for billing".to_string(),
+                502,
+            );
         }
         Err(err) => {
+            let mut parse_failure_audit = audit.clone();
+            parse_failure_audit.non_stream_usage_parse_failed = true;
             if let Err(audit_err) = record_relay_audit(
                 env,
                 db,
@@ -8900,7 +8903,7 @@ async fn complete_buffered_relay_response(
                 endpoint_path,
                 502,
                 &UsageSummary::default(),
-                audit,
+                &parse_failure_audit,
                 upstream_request_id.as_deref(),
                 false,
             )
@@ -8921,6 +8924,8 @@ async fn complete_buffered_relay_response(
         }
     };
     if !body.trim().is_empty() && serde_json::from_str::<Value>(&body).is_err() {
+        let mut parse_failure_audit = audit.clone();
+        parse_failure_audit.non_stream_usage_parse_failed = true;
         if let Err(audit_err) = record_relay_audit(
             env,
             db,
@@ -8931,7 +8936,7 @@ async fn complete_buffered_relay_response(
             endpoint_path,
             502,
             &UsageSummary::default(),
-            audit,
+            &parse_failure_audit,
             upstream_request_id.as_deref(),
             false,
         )
@@ -9703,6 +9708,27 @@ async fn record_relay_audit(
     });
     if audit.non_stream_usage_parse_failed {
         set_json_bool(&mut other, "non_stream_usage_parse_failed", true);
+        let reservation_class = match audit.tiered_billing_preflight.as_ref() {
+            Some(preflight) if preflight.reserve_applied && preflight.pre_consumed_quota > 0 => {
+                "positive_tiered_reservation"
+            }
+            Some(_) => "zero_reserve_tiered",
+            None => "flat_or_unconfigured",
+        };
+        let client_disposition = if upstream_status < 400 {
+            "forwarded_at_frozen_reserve"
+        } else {
+            "blocked_before_delivery"
+        };
+        set_json_value(
+            &mut other,
+            "non_stream_billing_observation",
+            json!({
+                "usage_inspection": "unavailable",
+                "reservation_class": reservation_class,
+                "client_disposition": client_disposition,
+            }),
+        );
     }
     let mut admin_info = serde_json::Map::new();
     if let Some(affinity_context) = audit.affinity.as_ref() {
@@ -9767,7 +9793,10 @@ async fn record_relay_audit(
             );
             set_json_string(&mut other, "billing_ledger_outcome", "pending".to_string());
         }
-        if upstream_status < 400 && audit.non_stream_usage_parse_failed && preflight.reserve_applied
+        if upstream_status < 400
+            && audit.non_stream_usage_parse_failed
+            && preflight.reserve_applied
+            && preflight.pre_consumed_quota > 0
         {
             let finalization_reason = "non_stream_parse_fallback_settlement";
             let fallback_settlement = if billing_queue_available {
@@ -10104,6 +10133,20 @@ async fn record_relay_audit(
         }
     }
 
+    let tiered_reservation = audit
+        .tiered_billing_preflight
+        .as_ref()
+        .is_some_and(|preflight| preflight.reserve_applied);
+    if audit.non_stream_usage_parse_failed && upstream_status >= 400 && !tiered_reservation {
+        billing_resolved = true;
+        set_json_bool(&mut other, "billing_pending", false);
+        set_json_string(
+            &mut other,
+            "billing_ledger_outcome",
+            "not_charged_response_blocked".to_string(),
+        );
+    }
+
     if upstream_status < 400 && usage_present {
         if let Some(affinity_context) = audit.affinity.as_ref() {
             let mode = affinity_cached_token_rate_mode(endpoint_path, channel.channel_type);
@@ -10200,7 +10243,10 @@ fn usage_summary_is_present(usage: &UsageSummary, estimate_enabled: bool) -> boo
 }
 
 fn usage_less_request_contract_applies(endpoint_path: &str, reported_usage_present: bool) -> bool {
-    endpoint_path == "images/generations" && !reported_usage_present
+    matches!(
+        endpoint_path,
+        "images/generations" | "audio/speech" | "audio/transcriptions" | "audio/translations"
+    ) && !reported_usage_present
 }
 
 fn apply_flat_billing_audit(other: &mut Value, result: &FlatQuotaResult) {
@@ -10733,9 +10779,6 @@ async fn reserve_tiered_billing_group_plan(
     lease_seconds: i64,
     now: i64,
 ) -> worker::Result<()> {
-    if plan.reserved_quota == 0 {
-        return Ok(());
-    }
     let reservation_key = format!(
         "relayreserve-{}",
         random_terminal_audit_event_id().ok_or_else(|| {
@@ -10817,7 +10860,7 @@ async fn refund_tiered_billing_group_plan(
     finalization_reason: &str,
     now: i64,
 ) -> worker::Result<()> {
-    if !plan.reserve_applied || plan.reserved_quota == 0 {
+    if !plan.reserve_applied {
         return Ok(());
     }
     let reservation_key = plan
@@ -10970,7 +11013,7 @@ async fn refund_tiered_billing_preflight(
     request_accounting: crate::d1_repositories::RelayBillingRequestAccounting,
     now: i64,
 ) -> worker::Result<()> {
-    if !preflight.reserve_applied || preflight.pre_consumed_quota == 0 {
+    if !preflight.reserve_applied {
         return Ok(());
     }
     let reservation_key = preflight.reservation_key.as_deref().ok_or_else(|| {

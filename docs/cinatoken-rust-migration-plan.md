@@ -12213,3 +12213,44 @@ remote 0028 and Queue/D1 readback, direct/Gateway/WFP body-limit fault replay,
 provider invoice correlation, live network/redeploy interruption, dual-control
 and retention policy, alerts, rollback, and signed G1-G8 approval. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+### 22.202 2026-07-14 Zero-Reserve And Usage-Less Non-Stream Billing Intent
+
+The next financial audit pass found that the positive-reserve fix did not cover
+two adjacent paths. Tiered estimates of zero skipped reservation creation and
+could later apply actual-positive usage through an unkeyed direct debit. Flat
+and other no-positive-reserve responses could still be delivered before a
+detached usage parser discovered that billing evidence was unavailable. Audio
+speech/transcription/translation also opted out of body usage parsing without
+marking their fixed-price request contract as billable.
+
+Implemented locally:
+
+- Every tiered request now creates a reservation identity, including a
+  zero-debit estimate. Selection binding, owner generation, Queue identity, D1
+  CAS, request accounting, audit correlation, and QuotaCoordinator observation
+  are therefore shared by zero-to-positive settlement.
+- Successful non-stream usage-bearing responses are inspected within the
+  configured JSON bound before delivery. Positive tiered reservations may
+  forward an intact uninspectable 2xx only after frozen-reserve settlement.
+  Flat and zero-reserve traffic is blocked with 502 before delivery and records
+  only redacted reservation class, usage-inspection state, and client
+  disposition.
+- Consumed or malformed bodies now carry the same explicit parse-failure audit
+  classification. Cohere's unconsumed transform fallback follows the same
+  positive-reserve-only delivery rule.
+- Usage-less audio speech, transcription, and translation are explicit request
+  contracts. Fixed `ModelPrice` billing is completed synchronously before the
+  provider response is returned; no binary body parsing is introduced.
+- Release Workerd passes 34/34. The added scenarios prove a zero estimate with
+  positive final usage settles via `BILLING_QUEUE`, an uninspectable configured
+  flat model returns 502 with no quota debit, and fixed-price audio mutates
+  user/token/channel accounting before response completion.
+
+This closes the local zero-reserve durability and non-stream delivery window,
+but generic flat billing still lacks its own frozen idempotent intent and uses
+the legacy direct D1 mutation after successful usage parsing. Client abort,
+upstream idle timeout, remote Queue/D1 ambiguity, direct/Gateway/WFP replay,
+provider invoice correlation, credential rotation, alerts, rollback, and
+signed G1-G8 approval remain required. Go/VPS remains authoritative and
+production remains **NO-GO**.

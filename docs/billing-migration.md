@@ -77,13 +77,17 @@ upstream. For streaming chat completions, completions, responses, image
 generations, Anthropic Messages, and native Gemini streams, it tees the
 upstream response, streams one branch to the client, and consumes the audit
 branch in `wait_until` with an incremental SSE usage parser.
-For non-streaming relays with a Worker `Context`, it returns the original
-upstream response to the client and consumes a cloned audit branch in
-`wait_until` for usage parsing and post-response settlement; if response clone
-initialization fails, it falls back to the buffered response path.
-For audio speech, the Worker does not parse the binary/audio-event response
-body for usage; it records default usage metadata and relies on the normal
-no-usage refund/pending behavior.
+Successful non-streaming relays that parse usage now complete a bounded body
+inspection and billing observation before returning the response. Positive
+tiered reservations may still forward an intact uninspectable 2xx only after
+settling at the frozen reserve. Flat or zero-reserve traffic fails closed with
+502 when usage cannot be inspected, so a provider result is not delivered
+before the Worker discovers that it cannot be billed. Tiered zero estimates
+still create a zero-debit reservation and use the same Queue/CAS finalizer when
+actual usage is positive. Audio speech/transcription/translation responses do
+not parse binary/text bodies for usage; their successful request contract is
+observed synchronously so configured fixed `ModelPrice` billing completes
+before client delivery.
 
 For successful tiered-expression responses with usage metadata, including
 nested cached/cache-creation and image/audio token details, it rebuilds actual

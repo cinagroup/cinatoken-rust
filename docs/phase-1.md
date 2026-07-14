@@ -1032,3 +1032,24 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
 - Production remains **NO-GO** pending credential rotation, remote migration
   and resource readback, the signed staging fault/accounting matrix, and G1-G8
   approval.
+
+## 2026-07-14 Zero-Reserve And Usage-Less Billing Intent Increment
+
+- Successful non-stream usage parsing now completes synchronously before the
+  response is returned, including flat traffic and tiered estimates of zero.
+- Every tiered request creates and binds a reservation even when estimated
+  quota is zero. Actual-positive usage therefore settles through the existing
+  Queue event identity and D1 CAS instead of the unkeyed direct-debit path.
+- An intact uninspectable 2xx is forwarded only when a positive frozen reserve
+  can be conservatively settled. Flat and zero-reserve traffic returns 502
+  before client delivery and records a redacted blocked/no-charge observation.
+- Audio speech, transcription, and translation now use an explicit usage-less
+  request contract. Configured fixed `ModelPrice` billing is applied before
+  returning the binary/text provider response.
+- Release Workerd now passes 34/34. New cases prove zero-to-positive Queue/CAS
+  settlement, flat body-limit blocking without charge, and synchronous
+  fixed-price audio debit.
+- Next: introduce a frozen, idempotent ledger intent for generic flat billing,
+  add client-abort and upstream-idle taxonomy, and execute the signed remote
+  direct/Gateway/WFP fault and provider-invoice matrix after credential
+  rotation. Production remains **NO-GO**.

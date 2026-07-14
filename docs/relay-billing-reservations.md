@@ -130,12 +130,17 @@ any expected mutation changes a row count other than one.
   price, usage, or expression input.
 - No ordinary HTTP SSE Durable Object is planned; the Rust gateway remains the
   financial owner while WFP remains transport-only.
-- Pre-bind lease ownership and positive-reserve non-stream parse failure are
-  locally closed. The latter uses bounded synchronous inspection: an intact
-  uninspectable 2xx settles at the frozen reserve; a consumed or malformed body
-  returns 502 after owned refund. Client abort and idle-timeout classification,
-  bounded streamed-text accumulation, remote direct/Gateway/WFP replay, and
-  deployed finalization reconciliation remain production blockers.
+- Pre-bind lease ownership and successful non-stream observation are locally
+  closed. Every tiered request now creates a ledger identity even when its
+  estimate is zero, so actual-positive usage settles through Queue/CAS instead
+  of an unkeyed direct debit. Bounded synchronous inspection forwards an intact
+  uninspectable 2xx only for a positive frozen reserve; flat or zero-reserve
+  traffic is blocked before delivery, and consumed/malformed bodies return 502
+  after any owned refund. Usage-less fixed-price audio billing is synchronous.
+  A generalized idempotent flat-billing ledger, client abort and idle-timeout
+  classification, bounded streamed-text accumulation, remote
+  direct/Gateway/WFP replay, and deployed finalization reconciliation remain
+  production blockers.
 
 ## Configuration
 

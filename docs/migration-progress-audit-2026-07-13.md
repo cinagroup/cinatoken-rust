@@ -271,3 +271,24 @@ must prove that duration, latency, cost, eviction, expired-window alerting, and
 zero-diff reconciliation on the deployed candidate. Compiled compaction and
 operator-approved retention are separate capability fields; all runtime/proof
 gates remain false. Production remains **NO-GO**.
+
+## 2026-07-14 Zero-Reserve And Usage-Less Billing Addendum
+
+The follow-up audit closed the local zero-reserve durability gap. Tiered
+requests now create a zero-debit reservation instead of bypassing the ledger;
+actual-positive usage reaches the existing Queue/CAS finalizer. Successful
+usage-bearing non-stream responses are observed before delivery. When usage is
+unavailable, only a positive frozen tiered reserve may support conservative 2xx
+delivery; flat and zero-reserve traffic is blocked without charge.
+
+The same pass corrected usage-less fixed-price audio: speech, transcription,
+and translation success now triggers the request contract synchronously, so a
+configured `ModelPrice` is applied before client delivery. Workerd covers all
+three additions and passes 34/34.
+
+Remaining P1 work is explicit: generic flat billing still needs a frozen
+idempotent intent rather than its direct compensating D1 writes; HTTP client
+abort and upstream idle timeout need distinct terminal classes; Realtime
+recovery needs a generation-fenced scheduler lease and fresh-success readiness;
+AI Gateway opt-in must reject silent direct downgrade. Remote staging remains
+blocked on credential rotation and production remains **NO-GO**.

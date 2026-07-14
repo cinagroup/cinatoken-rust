@@ -676,3 +676,23 @@ that reference is active; only detached-upstream eviction is locally covered.
 Credential rotation, remote 0028/resource readback, signed operator and fault
 drills, live interruption/redeploy evidence, rollback, and G1-G8 approval remain
 open. Go/VPS stays authoritative and production remains **NO-GO**.
+
+## 2026-07-14 Zero-Reserve And Usage-Less Non-Stream Billing
+
+The next local non-stream gap is closed without changing the frozen billing
+expression contract. Successful usage-bearing responses are now bounded and
+observed before delivery. An uninspectable response can be forwarded only when
+a positive tiered reservation already exists; flat and zero-reserve responses
+are blocked with 502 before the client receives an unbillable provider result.
+
+Tiered requests with a zero estimate now create a zero-debit reservation,
+bind the selected attempt, and finalize through the existing Queue/CAS path.
+Release Workerd proves a zero pre-consumption becomes a positive final debit
+exactly once. Separate runtime cases prove flat body-limit blocking with no
+charge and synchronous fixed-price audio charging with no usage body.
+
+This does not make generic flat billing replay-safe: its successful debit still
+uses the existing non-ledger D1 mutation path. A frozen flat-pricing intent,
+abort/idle taxonomy, remote direct/Gateway/WFP fault replay, provider invoices,
+alerts, rollback, credential rotation, and G1-G8 approval remain open. Go/VPS
+stays authoritative and production remains **NO-GO**.

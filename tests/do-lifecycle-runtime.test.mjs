@@ -35,6 +35,12 @@ const relayStreamUsageErrorModel = "gpt-runtime-stream-usage-error";
 const relayStreamUsageErrorToken = "sk-runtime-stream-usage-error-billing";
 const relayNonStreamAuditLimitModel = "gpt-runtime-non-stream-audit-limit";
 const relayNonStreamAuditLimitToken = "sk-runtime-non-stream-audit-limit";
+const relayZeroReserveModel = "gpt-runtime-zero-reserve";
+const relayZeroReserveToken = "sk-runtime-zero-reserve";
+const relayFlatAuditLimitModel = "gpt-runtime-flat-audit-limit";
+const relayFlatAuditLimitToken = "sk-runtime-flat-audit-limit";
+const relayFixedAudioModel = "tts-runtime-fixed-price";
+const relayFixedAudioToken = "sk-runtime-fixed-audio";
 const relayCohereConsumedLimitModel = "rerank-runtime-cohere-consumed-limit";
 const relayCohereConsumedLimitToken = "sk-runtime-cohere-consumed-limit";
 
@@ -1689,6 +1695,216 @@ describe("Rust Durable Object lifecycle contracts", () => {
     await delay(2_000);
   }, 30_000);
 
+  it("settles zero-reserve tiered usage through the durable finalization ledger", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayZeroReserveModel,
+      token: relayZeroReserveToken,
+      billingExpression: 'tier("runtime_zero_reserve", c * 8)',
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch(
+      "https://cinatoken.test/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayZeroReserveToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: relayZeroReserveModel,
+          stream: false,
+          messages: [{ role: "user", content: "runtime zero reserve" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      choices: [
+        { message: { role: "assistant", content: "bounded result" } },
+      ],
+    });
+
+    const settled = await waitForRelayTerminalByModel(
+      relayZeroReserveModel,
+      "settled",
+    );
+    expect(settled.reservation.pre_consumed_quota).toBe(0);
+    expect(settled.reservation.final_quota).toBeGreaterThan(0);
+    expect(settled.reservation).toMatchObject({
+      status: "settled",
+      finalization_reason: "usage_settlement",
+      request_accounted: 1,
+    });
+    expect(settled.user).toMatchObject({
+      quota: account.userQuota - settled.reservation.final_quota,
+      used_quota: settled.reservation.final_quota,
+      request_count: 1,
+    });
+    expect(settled.token).toMatchObject({
+      remain_quota:
+        account.tokenRemainQuota - settled.reservation.final_quota,
+      used_quota: settled.reservation.final_quota,
+    });
+    expect(settled.channel.used_quota).toBe(
+      settled.reservation.final_quota,
+    );
+    expect(settled.log).toMatchObject({
+      usageSource: "upstream",
+      finalizationTransport: "billing_queue",
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/chat/completions",
+      zeroReserve: true,
+    });
+    const observedSettlement = await waitForQuotaCoordinatorTerminal(
+      1,
+      "settle",
+    );
+    expect(observedSettlement).toMatchObject({
+      reserve_count: 1,
+      settle_count: 1,
+      active_reservations: 0,
+      terminal_reservations: 1,
+    });
+    await delay(2_000);
+  }, 30_000);
+
+  it("blocks an uninspectable flat-billed response before client delivery", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayFlatAuditLimitModel,
+      token: relayFlatAuditLimitToken,
+      billingExpression: null,
+      pricingOptions: {
+        ModelRatio: { [relayFlatAuditLimitModel]: 1 },
+        CompletionRatio: { [relayFlatAuditLimitModel]: 1 },
+      },
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch(
+      "https://cinatoken.test/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${relayFlatAuditLimitToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: relayFlatAuditLimitModel,
+          stream: false,
+          messages: [{ role: "user", content: "runtime flat limit" }],
+        }),
+      },
+    );
+    expect(response.status).toBe(502);
+
+    const state = await waitForNonTieredRelayLog(relayFlatAuditLimitModel);
+    expect(state.user).toMatchObject({
+      quota: account.userQuota,
+      used_quota: 0,
+      request_count: 1,
+    });
+    expect(state.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota,
+      used_quota: 0,
+    });
+    expect(state.channel.used_quota).toBe(0);
+    expect(state.reservationCount).toBe(0);
+    expect(state.log).toMatchObject({
+      quota: 0,
+      billingPending: false,
+      billingLedgerOutcome: "not_charged_response_blocked",
+      usageSource: "unavailable_parse_failure",
+      reservationClass: "flat_or_unconfigured",
+      clientDisposition: "blocked_before_delivery",
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/chat/completions",
+      flatAuditLimit: true,
+    });
+  }, 30_000);
+
+  it("charges usage-less fixed-price audio before returning the response", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const account = await seedStreamingRelayBillingGateway({
+      model: relayFixedAudioModel,
+      token: relayFixedAudioToken,
+      billingExpression: null,
+      pricingOptions: {
+        ModelPrice: { [relayFixedAudioModel]: 0.01 },
+      },
+    });
+    await env.REALTIME_PROVIDER_MOCK.fetch(
+      "https://realtime-provider-mock/__mock/reset",
+      { method: "POST" },
+    );
+
+    const response = await SELF.fetch("https://cinatoken.test/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${relayFixedAudioToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: relayFixedAudioModel,
+        input: "runtime fixed price audio",
+        voice: "alloy",
+      }),
+    });
+    expect(response.status).toBe(200);
+    const audio = new TextDecoder().decode(await response.arrayBuffer());
+    expect(audio).toBe("runtime-audio");
+
+    const [immediateUser, immediateToken, immediateChannel] = await Promise.all([
+      env.DB.prepare(
+        "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
+      ).first(),
+      env.DB.prepare(
+        "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+      ).first(),
+      env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
+    ]);
+    expect(immediateUser.quota).toBeLessThan(account.userQuota);
+    expect(immediateUser.request_count).toBe(1);
+    expect(immediateToken.remain_quota).toBeLessThan(account.tokenRemainQuota);
+    expect(immediateChannel.used_quota).toBeGreaterThan(0);
+
+    const state = await waitForNonTieredRelayLog(relayFixedAudioModel);
+    expect(state.log.quota).toBeGreaterThan(0);
+    expect(state.user).toMatchObject({
+      quota: account.userQuota - state.log.quota,
+      used_quota: state.log.quota,
+      request_count: 1,
+    });
+    expect(state.token).toMatchObject({
+      remain_quota: account.tokenRemainQuota - state.log.quota,
+      used_quota: state.log.quota,
+    });
+    expect(state.channel.used_quota).toBe(state.log.quota);
+    expect(state.reservationCount).toBe(0);
+    expect(state.log).toMatchObject({
+      billingPending: false,
+      usageSource: "request_contract",
+      flatBillingMode: "fixed_price",
+    });
+    await expect(providerState()).resolves.toMatchObject({
+      count: 1,
+      path: "/v1/audio/speech",
+      fixedAudio: true,
+    });
+  }, 30_000);
+
   it("refunds a consumed Cohere rerank parse failure before returning 502", async () => {
     await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
     const account = await seedStreamingRelayBillingGateway({
@@ -2666,12 +2882,13 @@ async function seedStreamingRelayBillingGateway({
   model = relayStreamModel,
   token = relayStreamToken,
   channelType = 1,
+  billingExpression = 'tier("runtime_stream", p * 2 + c * 8)',
+  pricingOptions = {},
 } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const userQuota = 1_000_000;
   const tokenRemainQuota = 500_000;
-  const billingExpression = 'tier("runtime_stream", p * 2 + c * 8)';
-  await env.DB.batch([
+  const statements = [
     env.DB.prepare(
       `INSERT INTO users
         (id, username, password, display_name, role, status, email, quota,
@@ -2701,15 +2918,27 @@ async function seedStreamingRelayBillingGateway({
         (group_name, model, channel_id, enabled, priority, weight)
        VALUES ('default', ?1, 43, 1, 1000, 1000)`,
     ).bind(model),
-    env.DB.prepare(
-      `INSERT INTO options ("key", value)
-       VALUES ('billing_setting.billing_mode', ?1)`,
-    ).bind(JSON.stringify({ [model]: "tiered_expr" })),
-    env.DB.prepare(
-      `INSERT INTO options ("key", value)
-       VALUES ('billing_setting.billing_expr', ?1)`,
-    ).bind(JSON.stringify({ [model]: billingExpression })),
-  ]);
+  ];
+  if (billingExpression !== null) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO options ("key", value)
+         VALUES ('billing_setting.billing_mode', ?1)`,
+      ).bind(JSON.stringify({ [model]: "tiered_expr" })),
+      env.DB.prepare(
+        `INSERT INTO options ("key", value)
+         VALUES ('billing_setting.billing_expr', ?1)`,
+      ).bind(JSON.stringify({ [model]: billingExpression })),
+    );
+  }
+  for (const [key, value] of Object.entries(pricingOptions)) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO options ("key", value) VALUES (?1, ?2)`,
+      ).bind(key, JSON.stringify(value)),
+    );
+  }
+  await env.DB.batch(statements);
   return { userQuota, tokenRemainQuota };
 }
 
@@ -2964,6 +3193,61 @@ async function waitForRelayTerminalByModel(modelName, expectedStatus) {
   }
   throw new Error(
     `relay reservation did not reach ${expectedStatus}: ${JSON.stringify(state)}`,
+  );
+}
+
+async function waitForNonTieredRelayLog(modelName) {
+  const deadline = Date.now() + 5_000;
+  let state;
+  while (Date.now() < deadline) {
+    const [user, token, channel, reservationCount, log] = await Promise.all([
+      env.DB.prepare(
+        "SELECT quota, used_quota, request_count FROM users WHERE id = 1",
+      ).first(),
+      env.DB.prepare(
+        "SELECT remain_quota, used_quota FROM tokens WHERE id = 1",
+      ).first(),
+      env.DB.prepare("SELECT used_quota FROM channels WHERE id = 43").first(),
+      env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM relay_billing_reservations WHERE model_name = ?1",
+      )
+        .bind(modelName)
+        .first(),
+      env.DB.prepare(
+        `SELECT quota, other FROM logs
+         WHERE model_name = ?1 AND type = 2
+         ORDER BY id DESC LIMIT 1`,
+      )
+        .bind(modelName)
+        .first(),
+    ]);
+    let parsedLog = null;
+    if (typeof log?.other === "string" && log.other.length > 0) {
+      const other = JSON.parse(log.other);
+      parsedLog = {
+        quota: log.quota,
+        billingPending: other?.billing_pending,
+        billingLedgerOutcome: other?.billing_ledger_outcome,
+        usageSource: other?.usage_source,
+        flatBillingMode: other?.flat_billing?.mode,
+        reservationClass:
+          other?.non_stream_billing_observation?.reservation_class,
+        clientDisposition:
+          other?.non_stream_billing_observation?.client_disposition,
+      };
+    }
+    state = {
+      user,
+      token,
+      channel,
+      reservationCount: reservationCount?.count ?? -1,
+      log: parsedLog,
+    };
+    if (parsedLog) return state;
+    await delay(10);
+  }
+  throw new Error(
+    `non-tiered relay audit was not recorded: ${JSON.stringify(state)}`,
   );
 }
 
